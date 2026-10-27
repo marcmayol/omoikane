@@ -27,6 +27,9 @@ sqlite-vec = "0.1.9"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
 ulid = "3.0.0"
 
+[dev-dependencies]
+safetensors = "0.5.3"
+
 [profile.release]
 lto = true
 codegen-units = 1
