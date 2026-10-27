@@ -189,7 +189,9 @@ Presupuesto: ≤ 600 tokens por inyección; cada memoria truncada a su `title` +
 
 **Latencia**: el hook debe responder en < 50 ms en frío. En la fase 0 el modelo tardaba 1,65 s en cargar y el hook iba a quedarse sin semántica; **la fase 0.5 lo resolvió: el modelo abre en 2,7 ms** (ver §9). Así que **el hook hace búsqueda híbrida completa** (FTS + vector + `paths` + pinned) en cada mensaje. Presupuesto estimado: arrancar el proceso + abrir base (1,7 ms) + abrir modelo (2,7 ms) + vector de la consulta (0,4 ms) + KNN y FTS (≈ 7 ms con 5k memorias) ≈ 15 ms.
 
-Todos los procesos (hook, CLI, servidor MCP) cargan el modelo igual de rápido, así que no hay vectores pendientes ni carga en segundo plano: cada memoria se guarda con su vector en la misma transacción. La tabla está mapeada y compartida por el sistema operativo entre procesos: 5 sesiones no son 5 copias en RAM.
+Todos los procesos (hook, CLI, servidor MCP) cargan el modelo igual de rápido, así que no hay vectores pendientes ni carga en segundo plano: cada memoria se guarda con su vector en la misma transacción. La tabla está mapeada y compartida por el sistema operativo entre procesos: medido, 4 procesos a la vez ocupan **13 MB privados cada uno** (el resto del working set, ~68 MB, son páginas del modelo compartidas). model2vec-rs, para comparar: 1.014 MB privados por proceso.
+
+**Caché fría** (primer mensaje tras reiniciar; medido con copias sin búfer en NVMe): abrir 4,7 ms, primer vector 14-16 ms, cada vector siguiente ~7 ms hasta que las páginas del trie que se usan quedan en caché. Cabe en el presupuesto de 50 ms. En un disco mecánico sería mucho peor: el servidor MCP puede precargar el trie (18,5 MB) en un hilo al arrancar (`PrefetchVirtualMemory` / `madvise(WILLNEED)`), y el hook no lo necesita porque casi siempre habrá una sesión que ya lo calentó.
 
 **Compactación**: `SessionStart` con `matcher: compact` vuelve a inyectar las `preference`/`pinned`, que es lo que se pierde al compactar.
 
@@ -240,6 +242,12 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
   - Equivalencia comprobada (`examples/fase05.rs`): 165.282 frases, 3,6 M de tokens, **0 ids distintos** frente a `tokenizers`; coseno mínimo **0,999998** frente a model2vec-rs. Vector medio: 0,027 ms.
   - model2vec-rs pasa a ser solo dependencia de desarrollo (para el test de equivalencia).
   - Lo que se distribuye es ya el formato compilado (≈ 153 MB): el usuario no compila nada.
+- **Versiones del modelo en disco.** Windows no deja sobrescribir ni borrar un fichero mapeado mientras algún proceso lo usa, y siempre puede haber una sesión abierta. Por eso nunca se reemplaza en sitio:
+  - cada modelo vive en su carpeta inmutable `~/.omoikane/models/<nombre>-<hash8>/`, con el hash del contenido;
+  - `~/.omoikane/models/actual` es un fichero de texto con el nombre de la carpeta en uso; se cambia escribiendo `actual.tmp` y renombrándolo (atómico);
+  - cada proceso lee `actual` al arrancar, así que las sesiones abiertas siguen con su versión y las nuevas cogen la nueva;
+  - `meta.json` guarda el nombre del modelo, y la base guarda en `meta` con qué modelo se calcularon sus vectores: si no coincide con `actual`, `omoi reindex` (o el arranque del servidor MCP) recalcula los vectores;
+  - las carpetas viejas se borran con `omoi model --limpiar`; si alguna sigue mapeada, el borrado falla sin ruido y se reintenta otro día.
 - Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
 - Vector = `title + "\n" + content`, normalizado (coseno).
 - Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
@@ -293,6 +301,10 @@ Medidas en el PC de desarrollo (Windows 11, release), reproducibles con `cargo r
 - [x] Formato compilado y mapeado (`src/embeber.rs`): **abrir 2,7 ms**, primer vector 0,4 ms.
 - [x] Equivalencia: 0 ids distintos en 165.282 frases; coseno ≥ 0,999998.
 - [x] Decisión: el hook sí hace búsqueda semántica (§6).
+- [x] Caché fría: abrir 4,7 ms + primer vector ~15 ms (§6).
+- [x] RAM: 13 MB privados por proceso con el modelo compartido (§6).
+- [x] Test de equivalencia en `cargo test` (`tests/equivalencia.rs` + `tests/corpus.txt`, 1.840 frases públicas). Se salta si no está el modelo. Comprobado que falla: cambiar un `>` por `>=` en el desempate del Viterbi rompe 1 frase.
+- [x] Diseño de versiones del modelo en disco para Windows (§9).
 
 Similitud semántica de muestra (int8), con «fallo de login en la pantalla de acceso»: «login failure on the sign-in screen» **0,558** · «bug en auth: el token caduca antes de tiempo» **0,245** · «el middleware de autenticación…» 0,142 · temas ajenos entre −0,04 y 0,12. Ordena bien y cruza idiomas, pero con márgenes cortos en español: por eso va siempre fusionado con BM25 y nunca solo.
 
@@ -337,7 +349,7 @@ Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JS
 | Riesgo | Mitigación |
 |---|---|
 | El modelo multilingüe tardaba 1,78 s en cargar | resuelto en la fase 0.5: formato compilado y mapeado, 2,7 ms |
-| Nuestro troceado deja de coincidir con `tokenizers` si cambia el `tokenizer.json` del modelo | el test de equivalencia (`fase05 equivalencia`) se pasa en CI y antes de publicar cualquier modelo nuevo |
+| Nuestro troceado deja de coincidir con `tokenizers` si cambia el `tokenizer.json` del modelo | `cargo test` (`tests/equivalencia.rs`) en CI y antes de publicar cualquier modelo nuevo; `fase05 equivalencia` para pasarlo con un corpus grande |
 | sqlite-vec sin índice ANN: fuerza bruta, ~1 µs por vector | 5k memorias (uso intenso real) = 6 ms, bien. A partir de 20k (24 ms) probar `int8[256]` en vec0 (4× menos datos) o prefiltrar por proyecto con una columna de partición de vec0 |
 | Calidad de model2vec por debajo de MiniLM/E5 | va fusionado con BM25; la palabra exacta siempre cuenta. Backend intercambiable si hace falta ONNX |
 | El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar. Medir con `recent` cuántas memorias salen por sesión real |
