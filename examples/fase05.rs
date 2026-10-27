@@ -33,16 +33,46 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("abrir") => {
+            let dir = args.get(1).map_or(rapido, PathBuf::from);
             let t = Instant::now();
-            let m = Modelo::abrir(&rapido)?;
+            let m = Modelo::abrir(&dir)?;
             let abrir = ms(t);
             let t = Instant::now();
             let v = m.vector("el middleware de autenticación no se ejecuta en /health")?;
-            println!("abrir {abrir:.1} ms · primer vector {:.2} ms · dim {}", ms(t), v.len());
+            let primero = ms(t);
+            // Diez frases distintas más: con la caché fría, cada una puede tocar páginas nuevas del trie.
+            let t = Instant::now();
+            for f in DIFICILES.iter().take(10) {
+                std::hint::black_box(m.vector(f)?);
+            }
+            println!("abrir {abrir:.1} ms · primer vector {primero:.2} ms · 10 más {:.2} ms · dim {}", ms(t), v.len());
+            Ok(())
+        }
+        Some("residente") => {
+            // Abre, codifica un corpus y se queda vivo para medir su memoria desde fuera.
+            let m = Modelo::abrir(&rapido)?;
+            let frases = corpus(&args[2..]);
+            let t = Instant::now();
+            for f in &frases {
+                std::hint::black_box(m.vector(f)?);
+            }
+            println!("{} frases en {:.0} ms; esperando", frases.len(), ms(t));
+            std::thread::sleep(std::time::Duration::from_secs(args.get(1).map_or(Ok(20), |s| s.parse())?));
+            Ok(())
+        }
+        Some("residente-m2v") => {
+            // Lo mismo con model2vec-rs, para comparar.
+            let m = model2vec_rs::model::StaticModel::from_pretrained(&int8, None, None, None)?;
+            let frases = corpus(&args[2..]);
+            for lote in frases.chunks(512) {
+                std::hint::black_box(m.encode_with_args(lote, None, 512));
+            }
+            println!("{} frases; esperando", frases.len());
+            std::thread::sleep(std::time::Duration::from_secs(args.get(1).map_or(Ok(20), |s| s.parse())?));
             Ok(())
         }
         Some("equivalencia") => equivalencia(&int8, &rapido, &args[1..]),
-        _ => Err(anyhow!("uso: fase05 compilar | abrir | equivalencia DIR…")),
+        _ => Err(anyhow!("uso: fase05 compilar | abrir [DIR] | residente[-m2v] SEG DIR… | equivalencia DIR…")),
     }
 }
 

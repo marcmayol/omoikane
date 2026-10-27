@@ -1,0 +1,1836 @@
+# Corpus del test de equivalencia: líneas de los docs y el código de Omoikane y de model2vec-rs (MIT, The Minish Lab),
+# más frases en muchos idiomas y casos raros. Una frase por línea; las que empiezan por # se ignoran.
+"   ",
+"  leading",
+"$100 €50 £20 ¥30 ₹40 ₿1", // currency symbols (Sc)
+"0_StaticEmbedding/tokenizer.json",
+"<pad></s>",
+"<private>secreto</private> https://example.com/a?b=c&d=e#f",
+"ACCURACY {name:<15} cosine to f32: mean {mean:.6}  p1 {:.6}  min {:.6}",
+"E = mc², ∑ᵢ xᵢ² ≤ ∞, ∀x∈ℝ ¯\\_(ツ)_/¯",
+"Größere Äpfel schmecken süßer als kleinere, sagt Jürgen.",
+"Hello world".to_string(),
+"Hello, world!",
+"It's 3:45 p.m. on 2026-10-05; the price is $1,299.99 (incl. 18% GST).",
+"Les élèves ont étudié l’histoire de la Révolution française.",
+"PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+"Rust is awesome".to_string(),
+"SLOWER"
+"The quick brown fox jumps over the lazy dog.",
+"[CLS] hi [SEP]",
+"[MASK] [CLS] [SEP] [PAD] [UNK]",
+"[PAD][UNK][MASK]",
+"[unk] lowercase specials", // normalized-form collision check
+"\u{0001}\u{0002}\u{0003}", // all-control → empty after normalize
+"\u{10FFFF}",
+"\u{1F600} emoji 👩‍👩‍👧‍👦 👍🏽 🇮🇳",
+"\u{200b}cero\u{200b}ancho\u{feff}",
+"\u{a0}nbsp\u{3000}ideographic\u{2009}thin",
+"a  b\tc\n  d",
+"a",
+"a\u{000b}b\u{000c}c",      // vertical tab / form feed (Cc → removed, NOT spaced)
+"a\u{007f}b",               // DEL removed
+"a\u{00a0}b\u{2009}c",      // NBSP + thin space (Zs → become space → split)
+"a\u{200b}b\u{feff}c",      // zero-width space + BOM (Cf → removed)
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 101 chars: exceeds → unk
+"a≤b x→y n≠m", // Sm math symbols: NOT punctuation → stay in word
+"batch" => model.encode(&texts),
+"batch" => {
+"batch", "calls", "p50", "p99", "p99.9", "MB/s"
+"bug en auth: el token caduca antes de tiempo",
+"café résumé naïve fiancé",
+"decoder": null,
+"def f(x): return x**2  # squares\nprint(f(3))",
+"e.g., i.e. U.S.A. 3.14 1,000", // dotted abbreviations / decimals
+"e\u{301} é ñ n\u{303}",
+"el middleware de autenticación no se ejecuta en /health",
+"embeddings length {} != rows {} * cols {}",
+"em—dash en–dash …ellipsis", // Pd + Po
+"f32",
+"fallo de login en la pantalla de acceso",
+"fn main() { println!(\"{:?}\", vec![1, 2, 3]); } // código",
+"foo[SEP]bar text[MASK]here",
+"hello 👋 world 🌍",
+"int8 escrito         {:.1} MB modelo + {:.1} MB tokenizer  {}",
+"int8" => model.quantize_int8(),
+"la impresora 3D necesita brim para las piezas finas",
+"login failure on the sign-in screen",
+"max_input_chars_per_word": 100,
+"minishlab/potion-base-8M", // Model ID from Hugging Face or local path to model directory
+"model": {"type": "WordPiece", "unk_token": "[UNK]", "continuing_subword_prefix": "##",
+"no special tokens here",
+"no valid model layout found in {folder:?}. \
+"none" => model,
+"post_processor": null,
+"post_processor": null, "decoder": null,
+"pre_tokenizer": {"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true},
+"prefiero commits cortos y en inglés",
+"remote model downloads are disabled by the `local-only` feature; pass a local model directory instead"
+"sentence-transformers/static-retrieval-mrl-en-v1",
+"tab\tsep\u{b}vt\u{c}ff CRLF\r\nline\rcr",
+"tensores             filas {filas}, mapping {}, weights {}",
+"tokenizers/progressbar",
+"tokenizers/unstable_wasm"]
+"trailing  ",
+"usamos ULID en vez de UUID para que los ids se ordenen por fecha",
+"version": "1.0",
+"version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+"vocab": {"[UNK]": 0, "play": 1, "##ing": 2, "play": 3, "##s": 4, "##ing": 5, "p": 6}}
+"{name:<12} {:>7} {:>11.1?} {:>11.1?} {:>11.1?} {mbps:>10.2}",
+"«guillemets» \u{201c}smart\u{201d} \u{2018}quotes\u{2019}", // Pi/Pf → isolate
+"Å Ω µ",                         // chars with compatibility/canonical quirks
+"Ünïçödé ACCENTS Straße",
+"é à ñ ü ç",                     // precomposed (NFD path)
+"İstanbul",                  // U+0130: NFD→I+dot, strip dot, lower→i
+"İstanbul’da çay içip simit yedik.",
+"Η Αθήνα είναι η πρωτεύουσα της Ελλάδας.",
+"Москва — столица России, крупнейший город Европы.",
+"القاهرة هي عاصمة مصر وأكبر مدنها.",
+"مرحبا بالعالم، كيف حالك اليوم؟",
+"कर्मण्येवाधिकारस्ते मा फलेषु कदाचन ।",
+"क्षत्रि",                         // Devanagari combining (non-Latin marks)
+"हिंदी भारत की एक प्रमुख भाषा है।",
+"வணக்கம் உலகம், இன்று வானிலை நன்றாக உள்ளது.",
+"ᚠᚢᚦ 𐐀𐐁 zzqxjk",                                           // runic/deseret/rare → unk path
+"▁▁x",
+"こんにちは カタカナ 안녕하세요", // kana + hangul: must NOT be space-wrapped
+"你好world世界",                  // CJK adjacent to latin, no spaces
+"你好，世界！今天天气很好。",
+"字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字", // long multibyte: byte-len ≫ char-len (exercises the byte shortcut)
+"안녕하세요, 세계! 오늘 날씨가 좋네요.",
+"ﬁ ﬂ Ⅻ ① ㎏ ㍿",
+"ﬁle ﬀ ﬄ",                   // ligatures (fi, ff, ffl)
+"ＦＵＬＬＷＩＤＴＨ ａｂｃ", // fullwidth latin casing
+"ＦＵＬＬＷＩＤＴＨ ｶﾀｶﾅ",
+"🇺🇸 🇯🇵 flags",        // regional indicators
+"🎉party mixed🔥emoji",                                    // unk char glued to word
+"𠀀 𪛖 豈",                       // ext-B (U+20000) + compatibility (U+F900)
+&& let Some(weights) = inner.weights.take()
+&model.continuing_subword_prefix,
+&mut best[end],
+&r0[..n],
+&r3[..n],
+&r4[..n],
+&r5[..n],
+&sentences,
+'\t' | '\n' | '\r' => false,
+("docs", "batch") => (256, 4_000),
+("docs", "single") => (256, 1_000),
+("docs", "single", make(256, 1_000)),
+("embeddings".to_string(), TensorView::new(Dtype::I8, vec![filas, dim], &datos)?),
+("f32 control".to_string(), load(&model_id)),
+("f32".to_string(), load(&model_id)),
+("hotchpotch/bekko-static-embedding-v1", "tokenizer.json"),
+("minishlab/potion-base-8M", "tokenizer.json"),
+("minishlab/potion-retrieval-32M", "tokenizer.json"),
+("queries", "batch") => (8, 100_000),
+("queries", "batch", make(8, 100_000)),
+("weights".to_string(), TensorView::new(Dtype::F32, vec![tokens], &nuevos_b)?),
+(0..k).map(|_| palabras[(r.n() % 3000) as usize].as_str()).collect::<Vec<_>>().join(" ")
+(0x0, 0x1f),
+(0x20, 0x7e),
+(0x2000, 0x206f),
+(0x300, 0x36f),
+(0x3040, 0x30ff),
+(0x4E00..=0x9FFF).contains(&r)
+(0xa0, 0xff),
+(0xac00, 0xadff),
+(0xb80, 0xbff),
+(0xe00, 0xe7f),
+(0xff00, 0xffef),
+(None, None, None) => {
+(None, None, Some(row_scales)) => {
+(base, base, "config.json"),
+(base, subfolder, "config_sentence_transformers.json"),
+(class, c.len_utf8())
+(config_sentence_transformers.json), and 0_StaticEmbedding subfolder."
+(optionally restricted with `--models`). The baseline scores match Python
+(parent, base, "config_sentence_transformers.json"),
+(r1, s1),
+(r3, s3),
+(r6, s6),
+(r7, s7),
+(self.n() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+) -> FastWordPiece {
+) -> Result<ModelFiles> {
+) -> Result<Self>
+) -> Result<Self> {
+) -> std::os::raw::c_int,
+)?;
+*   **Encode a single sentence:**
+*   **Encode multiple lines from a file and save to an output file:**
+*   **Fast Inference:** Optimized Rust implementation for fast embedding generation.
+*   **Hugging Face Hub Integration:** Load pre-trained Model2Vec models directly from the Hugging Face Hub using model IDs, or use models from local paths.
+*   **Model Formats:** Supports models with f32, f16, and i8 weight types stored in `safetensors` files. Int8 models (model2vec's `quantize_to="int8"`) stay int8 in memory, and f32 models can be quantized to int8 at load time with `quantize_int8`.
+*   **[`model2vec`](https://github.com/MinishLab/model2vec) (Python-based):** Handles model **distillation, training, fine-tuning**, and slower Python-based inference.
+* `cli`: build the command-line executable with Clap (not enabled by default)
+* `default`: native build with `onig` tokenization and optional Hugging Face Hub downloads
+* `fancy-regex`: alternative tokenizer backend for native builds
+* `local-only`: disable remote model downloads and restrict loading to local paths or `from_bytes(...)`
+**Alternative: Loading from in-memory bytes (`wasm` / embedded use cases):**
+**Qué significa cada `kind`** (cada uno cambia cómo se recupera; un tipo que no cambia el comportamiento no existe):
+**a. Install the CLI tool:**
+**b. Generate embeddings via CLI:**
+**b. Load a model and generate embeddings:**
+*mut *mut std::os::raw::c_char,
+*slot = id as i32;
+*target = BestPath {
+*x /= denom;
++ f32::from(r1[j]) * s1
++ f32::from(r2[j]) * s2
++ f32::from(r5[j]) * s5
++ f32::from(r6[j]) * s6
+- **Automatic recall.** A Claude Code hook runs `omoi recall` on every prompt. It is a compiled subcommand, no bash, no curl, no server, and it answers in milliseconds with the 3-5 memories that matter for what you just typed, plus any *gotcha* attached to the files you mentioned.
+- **Búsqueda híbrida de serie.** Palabras (FTS5) y significado (embeddings estáticos locales) fusionados con reciprocal rank fusion. Funciona en español y en otros cien idiomas, no solo en inglés.
+- **Cuantización propia** (decidido en la fase 0). La comunitaria (`alikia2x/…-int8`) no sirve: solo trae int8 en ONNX, su safetensors sigue en f32. La nuestra: int8 con una escala por fila, plegada en el tensor `weights` para que model2vec-rs la aplique sin cambios. **130,1 MB**, fidelidad frente a f32: coseno mínimo **0,99996**.
+- **Historial con motivo.** Actualizar una memoria conserva la versión anterior y, si el agente lo dice, por qué cambió.
+- **Pequeño a propósito.** 8 herramientas MCP. Sin demonio, sin puerto, sin nube, sin sincronización. Un `~/.omoikane/omoikane.db`.
+- **Recall automático.** Un hook de Claude Code ejecuta `omoi recall` en cada mensaje. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
+- **Small on purpose.** 8 MCP tools. No daemon, no port, no cloud, no sync. One `~/.omoikane/omoikane.db`.
+- Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
+- Calibrar umbral de duplicado con 30 pares reales.
+- Crate `model2vec-rs` (MIT). Modelos estáticos: tokenizar + sumar vectores. Sin ONNX, sin GPU, microsegundos por frase.
+- FTS, vec, paths y memory se escriben en **una sola transacción**. Nunca hay memoria sin índice.
+- Hecho cuando: una sesión de Claude Code guarda y recupera memorias en este mismo repo.
+- La dimensión del vector se fija al crear la base según el modelo (`meta.embedding_dim`). Cambiar de modelo implica `omoi reindex`.
+- Lo que se distribuye es ya el formato compilado (≈ 153 MB): el usuario no compila nada.
+- Modelo por defecto: **potion-multilingual-128M** cuantizado a int8 (256 dims, 101 idiomas). Oficial f32: 512 MB de pesos + 18,6 MB de tokenizer. Se descarga una vez a `~/.omoikane/models/`.
+- Por qué int8 y no f32 (confirmado 27-oct-2026): cada sesión del agente arranca su propio `omoi mcp` con su copia del modelo. 3 sesiones = ~1,6 GB en f32 frente a ~450 MB en int8, con la misma calidad y velocidad.
+- Probar con Claude Code real (`claude mcp add`) y con el inspector MCP.
+- README final con GIF del recall funcionando.
+- Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
+- Sin embedding disponible (modelo no descargado, `--no-vec`), la búsqueda es FTS sola. Nunca falla por falta de modelo.
+- Términos de menos de 3 letras van igual por FTS (unicode61 no tiene el límite del trigram).
+- Un test de **coherencia**: tras N operaciones aleatorias, `memory`, `memory_fts`, `memory_vec` y `memory_path` tienen las mismas filas.
+- Un test de **concurrencia**: 4 procesos escribiendo a la vez sobre el mismo fichero durante 10 s, sin `SQLITE_BUSY` que escape.
+- Vector = `title + "\n" + content`, normalizado (coseno).
+- [x] Decisión: el hook sí hace búsqueda semántica (§6).
+- [x] Equivalencia: 0 ids distintos en 165.282 frases; coseno ≥ 0,999998.
+- [x] Esqueleto que compila con rusqlite + sqlite-vec + model2vec-rs + rmcp (`omoi doctor`).
+- [x] Medir `vec0` con 5.000 / 20.000 / 50.000 vectores de 256 dims.
+- [x] Perfil de la carga: 1.321 ms de 1.780 en `Tokenizer::from_bytes` (construir el vocabulario); el mismo tokenizer sin vocabulario carga en 3 ms.
+- `db.rs`, `memoria.rs`, `proyecto.rs`, `buscar.rs` (solo FTS).
+- `encode.rs`: latency percentiles of `StaticModel::encode` for one revision.
+- `mcp.rs` con las 8 tools, `instructions`, resolución del proyecto por cwd.
+- `nanobeir.rs`: retrieval quality (NDCG@10) of one model on NanoBEIR.
+- `publicar_release.py` (árbol limpio, tag, binarios Windows/Linux/macOS por GitHub Actions).
+- `quantize.rs`: throughput and accuracy of `StaticModel::quantize_int8`
+- `recall.rs`, `hook.rs`, `setup claude` con confirmación.
+- `remove_diacritics 2` hace que «autenticación» y «autenticacion» sean la misma palabra. Sin stemming en v1: el vector cubre las variantes morfológicas.
+- model2vec-rs pasa a ser solo dependencia de desarrollo (para el test de equivalencia).
+-- meta: schema_version, embedding_model, embedding_dim
+-- paths desplegados para el recall por fichero
+.all(|&(b, _, _)| !used.get(base + b as usize).copied().unwrap_or(false))
+.and_then(Value::as_u64)
+.as_chunks::<4>()
+.chunks(words_per_text)
+.collect::<String>()
+.collect::<Vec<_>>()
+.context("embeddings tensor not found")?;
+.context("failed to serialize unigram model")?
+.context("hf-hub API init failed")?;
+.encode(&accuracy_texts)
+.encode_fast(text.as_str(), false)
+.entry(field(&v, "query-id"))
+.enumerate()
+.expect("crate encode")
+.expect("usage: nanobeir data=<dir> [model=..] [quantize=none|int8]");
+.expect("usage: quantize corpus=<file> [model=..] [int8=<dir>] [rounds=N]");
+.expect("usage: throughput corpus=<file> [model=..] [workload=queries|docs] [mode=batch|single] [reps=N]");
+.field("byte_fallback", &self.byte_fallback)
+.field("unk_id", &self.unk_id)
+.field("vocab", &self.scores.len())
+.filter(|(d, _)| &doc_ids[*d] != qid)
+.filter(|p| p.join("corpus.jsonl").exists())
+.find(|(content, _)| text[i..].starts_with(content.as_str()))
+.finish()
+.first()
+.flat_map(|value| value.to_le_bytes())
+.get("unk_id")
+.get_added_vocabulary()
+.insert(field(&v, "corpus-id"));
+.into_iter()
+.iter()
+.lines()
+.map(|&b| f64::from_le_bytes(b) as f32)
+.map(|&b| i32::from_le_bytes(b) as usize)
+.map(|&id| id as usize)
+.map(|(a, b)| cosine(a, b))
+.map(|(rank, _)| 1.0 / (rank as f64 + 2.0).log2())
+.map(|_| (b'a' + next(26) as u8) as char)
+.map(|_| {
+.map(|c| c.join(" "))
+.map(|id| id as usize)
+.map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("bad line in {}: {e}", path.display())))
+.map(|rank| 1.0 / (rank as f64 + 2.0).log2())
+.map(|v| (field(v, "_id"), field(v, "text")))
+.map_or(s, |(byte_idx, _)| &s[..byte_idx])
+.maybe_par_iter()
+.model("minishlab/potion-multilingual-128M".to_string())
+.nth(max_tokens.saturating_mul(median_len))
+.ok_or_else(|| anyhow!("unk_token '{tok}' not found in vocabulary"))
+.or_else(|_| safet.tensor("0"))
+.parse()
+.quantize_int8();
+.skip(1)
+.sum();
+.take(texts_per_pass)
+.to_string()
+.zip(&reference)
+//       [int8=path/to/model2vec-int8-model] [rounds=24]
+//       workload=queries mode=batch reps=5
+//   cargo bench --bench nanobeir -- data=target/nanobeir/data model=minishlab/potion-base-8M \
+//   cargo bench --bench quantize -- corpus=big.txt model=minishlab/potion-base-8M \
+//   cargo bench --bench throughput -- corpus=big.txt model=minishlab/potion-base-8M \
+// (Default max_length: Some(512), all sentences in one batch)
+// (`{"query-id", "corpus-id"}`, binary relevance). Documents are ranked by
+// --- BertNormalizer ----------------------------------------------------
+// --- CJK / handle_chinese_chars boundaries and non-CJK scripts ---
+// --- Unicode predicates (match HuggingFace's bert normalizer) ----------------
+// --- WordPiece internals: subwords, unk, max_input_chars ---
+// --- casing that changes length or is context-sensitive ---
+// --- literal special/added tokens ---
+// --- normalization and unknown runs ---
+// --- punctuation isolation: ASCII vs Unicode P vs Unicode symbol ---
+// --- special and added tokens ---
+// --- whitespace, control characters, empty input ---
+// A duplicate piece resolves to its last ID.
+// A piece listed twice resolves to its last ID, as the crate's
+// Abre, codifica un corpus y se queda vivo para medir su memoria desde fuera.
+// Descarga (o reutiliza de la caché de Hugging Face) el modelo oficial en f32.
+// Diez frases distintas más: con la caché fría, cada una puede tocar páginas nuevas del trie.
+// Every piece starting here, shortest first, as the crate's
+// Generate embeddings using default parameters
+// Lo mismo con model2vec-rs, para comparar.
+// Load a model from the Hugging Face Hub or a local path.
+// Margen para que `base + byte` nunca se salga del array.
+// NFD, drop nonspacing marks, then (optionally) lowercase; left
+// NanoBEIR retrieval quality (NDCG@10) of one model, driven by
+// Normalizador y pre-tokenizer sin vocabulario: basta con dejar las piezas hasta el unk.
+// Pad so `base + byte` is always in bounds.
+// Prints one `CONFIG` line, one `CHECKSUM` line (a hash of the bits of every
+// Puntuaciones por id y piezas para el trie. Una pieza repetida se queda con su último id,
+// Read normalize default from config.json
+// Require the exact pipeline; anything else falls back to the crate.
+// Siguiente hueco libre con compresión de caminos.
+// Slots that keep failing are dropped as candidates, which keeps
+// Split on added tokens (leftmost-longest), then run the BERT
+// Tabla int8 y pesos (la escala de cada fila ya va plegada en `weights`).
+// The crate matches added tokens with `normalized: false` against raw
+// Throughput and accuracy of `StaticModel::quantize_int8` against the f32
+// Throughput benchmark for one (model, workload, mode) configuration, driven
+// Try bases that put the first child on a candidate free slot.
+// Una frase sin tokens útiles da el vector cero en los dos: cuenta como igual.
+// Vectores por lotes, sin truncar, para comparar lo mismo.
+// Vocab entries are valid UTF-8, so every match ends on a char boundary.
+// Vocabulario sintético de 3000 palabras para que BM25 tenga algo realista que puntuar.
+// Walk back from the end, fusing runs of unknown pieces. IDs are
+// `Vec<f32>` per sentence.
+// `cargo bench` injects libtest flags (e.g. `--bench`); keep only positionals.
+// `common_prefix_search` yields them.
+// `depth`-byte prefix.
+// `embeddings` is a Vec<Vec<f32>>
+// `encode_single_sequence` does them before the model.
+// `queries.jsonl` (`{"_id", "text"}`) and `qrels.jsonl`
+// `strip_accents: None` follows the lowercase setting, matching HuggingFace.
+// `token_to_ids` map does, and scores as that ID.
+// `tokenizers` keeps Unigram's `unk_id` private, so read it from the serialized model.
+// `unk_id` the crate fails on an unknown character.
+// a model quantized to int8 by Python model2vec. Each round times every
+// added tokens equals the model vocab.
+// by `scripts/bench_compare.py`. Uses only the public API so the same file
+// como el mapa `token_to_ids` de `tokenizers`.
+// cosine similarity; a document with the same id as the query is never
+// dataset.
+// follows every other equally often. Speedups are medians of per-round
+// from_pretrained con el id del repo descarga a la caché; luego buscamos el snapshot para leer los ficheros.
+// meta.json va el último: si existe, el resto está completo.
+// model it was made from, in one process.
+// output value, to confirm two revisions compute the same embeddings), and
+// pipeline on each span of ordinary text between them.
+// pushed in reverse and the new tail of `out` is flipped at the end.
+// retrieved, as in BEIR, and ties go to the larger document id, as in
+// revision.
+// scores. Uses only the public API so the same file builds against any
+// similarity to the f32 output.
+// sqlite-vec se registra como extensión automática antes de abrir ninguna conexión.
+// the search short at the cost of a few unused holes.
+// trec_eval. Prints one `SCORE <dataset> <ndcg@10>` line per
+// vocab id, so with every added token in the vocab the vocab with
+// whose speedup should be 1.00x), the per-row quantized model, and optionally
+//!   cargo run --release --example fase05 -- abrir           abrir + primer vector (medir en frío)
+//!   cargo run --release --example fase05 -- compilar        int8 → formato mapeable
+//!   cargo run --release --example fase05 -- equivalencia D… ids y vectores frente a tokenizers y model2vec-rs
+//! A purpose-built, IDs-only Unigram tokenizer.
+//! A purpose-built, IDs-only WordPiece tokenizer.
+//! BertNormalizer + BertPreTokenizer + WordPiece pipeline shared by every
+//! Embeddings estáticos (model2vec) que cargan en milisegundos.
+//! Esqueleto: solo `doctor` hace algo. El resto de subcomandos se implementan en las fases del PLAN.md.
+//! Fase 0 del PLAN.md: medir antes de decidir.
+//! Fase 0.5 del PLAN.md: cargar el modelo en milisegundos sin cambiar ni un vector.
+//! SentencePiece-Unigram multilingual model, or added tokens with
+//! This module implements just the forward text -> IDs mapping for the
+//! Tokenizers whose output this module would not reproduce (truncation or
+//! [`FastWordPiece::from_tokenizer`] so the caller falls back to the crate.
+//! `encode_batch_fast` builds full `Encoding` objects (offsets, alignment,
+//! `normalized`/`single_word`/`lstrip`/`rstrip` set) return `None` from
+//! `tokenizers` crate (verified by the parity test below).
+//! `tokenizers` tarda 1,3 s en construir el vocabulario Unigram de 500.000 piezas cada vez que se
+//! `tokenizers`: mismos desempates, misma penalización de desconocidos y misma fusión de rachas
+//! a character with no single-character piece gets the unknown score
+//! candidates are visited by start position, then by length, and replace the
+//! directly. The IDs are identical to the `tokenizers` crate (verified by the
+//! masks, type IDs) of which the static-embedding path uses only `get_ids()`.
+//! model2vec-rs (MIT, © The Minish Lab), que a su vez reproducen `Unigram::encode_optimized` de
+//! parity tests below).
+//! se mapean en memoria (`Modelo::abrir`): el trie de doble array, las puntuaciones, la tabla int8 y
+//! single array read and compare, with no hashing or substring copies.
+//! uses only `get_ids()`. This module keeps the crate's own added-token
+//! walks a trie with a hash map per node, returns every token as a `String`,
+//! which then resolves as `Unigram::tokenize` resolves it (a piece if it spells
+/// (unknown words emit the unk id, which the caller filters out).
+/// * `batch_size` - number of texts per batch.
+/// * `embeddings` - Owned int8 embedding data
+/// * `embeddings` - Static int8 embedding data (borrowed, no copy)
+/// * `normalize` - Optional flag to normalize embeddings (default from the resolved config file).
+/// * `repo_or_path` - HuggingFace repo ID or local path to the model folder.
+/// * `rows` - Number of vocabulary entries
+/// * `token_mapping` - Optional token ID mapping for quantized models
+/// * `token` - Optional HuggingFace token for authenticated downloads.
+/// * `tokenizer` - Pre-deserialized tokenizer
+/// * `weights` - Optional per-token weights for quantized models
+/// * `weights` - Optional static per-token weights for quantized models
+/// ASCII byte class: 0 = word, 1 = space, 2 = punctuation. Agrees with the
+/// Added tokens matched as literal substrings of the raw text before
+/// Append the IDs of pre-token `text` to `out`, as `Unigram::tokenize`
+/// Append the normalized `input` to `out`. Edge whitespace is kept, since
+/// Append, in reverse, the IDs of a fused unknown run: its piece if it
+/// Build from `(key, id)` pairs. Empty keys are ignored; for duplicate
+/// Build straight from `tokenizer.json` bytes without constructing a
+/// Byte position the last token starts at, or `NONE` while unset.
+/// Call `f` with the embedding row and scale (token weight times row
+/// Char-level truncation to max_tokens * median_token_length
+/// Clones share immutable model state instead of copying the tokenizer and embeddings.
+/// Comprueba que SQLite, FTS5 y sqlite-vec funcionan y dónde vive la base de datos.
+/// Compute median token length and unk_token_id from tokenizer.
+/// Construct from owned data.
+/// Construct from static slices (zero-copy for embedded binary data).
+/// Convierte un modelo model2vec (int8 con `weights`, como el de `examples/fase0.rs`) al formato
+/// Custom IDs-only Unigram model on top of the crate's pre-processing.
+/// Default flat encode: `max_length=512`
+/// Double-array trie over byte strings. The root is node 0.
+/// Embedding dimension of the vectors this model produces.
+/// Embedding table in its stored element type, row-major with `dim` columns.
+/// Encode a single sentence into a vector.
+/// Encode input texts into embeddings
+/// Encode texts into one row-major buffer of `sentences.len() * dim` floats.
+/// Failed placements after which a free slot stops being tried as a base.
+/// First byte of every added token, so the scan skips byte positions
+/// Free slots still tried during placement: `find(i)` is the smallest
+/// Fused clean + lowercase over ASCII bytes. Accent stripping (NFD is
+/// Generador determinista, para no añadir dependencias.
+/// Greedy longest-match-first. A word that cannot be fully tokenized (or
+/// HF repo ID or local dir
+/// Hugging Face repo ID or local path
+/// IDs-only Unigram tokenizer over a byte trie of the model's vocabulary.
+/// Input text or path to file (one sentence per line)
+/// Length of the UTF-8 sequence that starts with `lead`.
+/// Like [`Self::encode_ids`], but appends to a caller-owned buffer.
+/// Load a Model2Vec model directly from in-memory bytes.
+/// Load a Model2Vec model from a local folder or the HuggingFace Hub.
+/// Load from `tokenizer.json` bytes. WordPiece pipelines are read
+/// Longest token that is a prefix of `bytes`, walking from `start`:
+/// Mean-pool the first `max_length` token IDs, skipping the unk token.
+/// Median byte length of the vocabulary's tokens (1 for an empty vocabulary).
+/// Mejor camino que termina en una posición (en bytes) de un trozo.
+/// Modelo listo para codificar. Todo lo grande está mapeado, no copiado: el sistema solo lee del
+/// Nearest-rank percentile of sorted `samples`.
+/// Nodo del trie de doble array. Se guarda tal cual en `trie.bin` (12 bytes, little-endian).
+/// Number of slots, including free ones.
+/// Optional output file (JSON) for embeddings
+/// Parsed only once the pipeline is known to be WordPiece.
+/// Pipelines neither custom tokenizer reproduces.
+/// Quantize the embeddings to int8 with one scale per row, storing them in
+/// Reproducible random strings drawn from one to three Unicode blocks.
+/// Score of each token ID.
+/// Static embedding model for Model2Vec.
+/// Symmetric per-row int8 quantization: each row is divided by
+/// Take `candidate` as the best path into `target` if `target` is unset or
+/// The best path ending at a byte position of a pre-token.
+/// The child of `node` along `byte`, or `NONE`.
+/// The parts of `tokenizer.json` that [`FastWordPiece::from_json`] reads.
+/// The sentence to embed
+/// The token ID `key` spells, or `NONE`.
+/// This path is useful for runtimes that fetch model assets as bytes
+/// Token ID of each `<0xXX>` byte piece, or `NONE`.
+/// Trie de doble array, igual que `DoubleArrayTrie::build` de model2vec-rs.
+/// Trie node reached by the continuing-subword prefix, or `NONE`.
+/// WordPiece tokenizers of models already in the local Hugging Face
+/// `K_UNK_PENALTY` de `tokenizers`: un carácter desconocido puntúa esto por debajo de la peor pieza.
+/// `from_json` must build exactly what `from_tokenizer` builds from the
+/// `max|x| / 127`, rounded, and clamped to [-127, 127].
+/// `next[i] == i` for a candidate, else a slot no later than the next one.
+/// `sum += row * scale`.
+/// `tok` must be the tokenizer this was built from.
+/// `tokenizers`' `K_UNK_PENALTY`: an unknown character scores this much below
+/// a longer one with the same prefix.
+/// a quarter of the memory. Outputs are close to, but not bit-identical
+/// as written by model2vec's `quantize_to="int8"`.
+/// cache (the test does not download them).
+/// candidate at or after `i`. Every slot past the end is a candidate.
+/// crate's tokenizer, or decline.
+/// directly from the JSON without building a [`Tokenizer`].
+/// drawn from a handful of values so that tied paths are common.
+/// exceeds `max_input_chars_per_word`) maps to a single unk token.
+/// identity below 0x80) and Chinese handling are no-ops for ASCII.
+/// keys the first pair in sorted order wins.
+/// punctuation char as its own word, and call `emit` on each word in order.
+/// punctuation words skip the trie walk.
+/// que `Modelo::abrir` carga sin construir nada.
+/// rather than reading them from a local filesystem.
+/// returned unchanged.
+/// scale) of every non-unk token; returns the number of rows visited.
+/// spells one, else its bytes under byte fallback, else the unknown id.
+/// that cannot start a match with one array lookup.
+/// the lowest-scoring piece.
+/// use matching flags not implemented here. Only the fields read here are
+/// validated, so JSON the crate would reject elsewhere may still load.
+/// vocab, or added tokens that are duplicated, absent from the vocab, or
+/// with, those of the f32 model. Models that are already int8 are
+0..=0x1f | 0x7f => continue,
+0x80..=0xdf => 2,
+0xe0..=0xef => 3,
+1.  **As a library** in your Rust projects
+1. **Búsqueda híbrida de serie**: palabras (FTS5) + significado (vectores) fusionados. Funciona en español.
+1024 => self.sum_rows_fixed::<T, 1024>(table, ids, out),
+2 => {
+2. **Recall automático**: un hook del agente llama a `omoi recall` en cada mensaje; es un subcomando compilado, sin bash ni curl, y responde en milisegundos.
+2. Use the default 10 rounds or more; fewer than 5 rounds are not flagged.
+256 => self.sum_rows_fixed::<T, 256>(table, ids, out),
+3. Keep the machine idle and on power. `--threads 1` is the least noisy
+512,       // Custom batch size for processing
+64 => self.sum_rows_fixed::<T, 64>(table, ids, out),
+768 => self.sum_rows_fixed::<T, 768>(table, ids, out),
+8-word texts, `docs`: 256-word texts from `big.txt`), `--modes` (`batch`:
+<!-- <a href="YOUR_CI_LINK_HERE"><img src="YOUR_CI_BADGE_LINK_HERE" alt="Build Status"></a> -->
+<!-- Assuming this is the correct path for the Rust version's logo -->
+<!-- Optional: Add a build status badge if CI is set up -->
+</div>
+</p>
+<a href="#features"><strong>Features</strong></a> •
+<a href="#relation-to-python-model2vec"><strong>Relation to Python Model2Vec</strong></a>
+<a href="https://crates.io/crates/model2vec-rs"><img src="https://img.shields.io/crates/v/model2vec-rs.svg" alt="Crates.io"></a>
+<a href="https://discord.gg/4BDPR5nmtK">
+<a href="https://github.com/MinishLab/model2vec-rs/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+<img width="35%" alt="Model2Vec Rust logo" src="assets/images/model2vec_rs_logo.png">
+<omoikane>
+<p>
+> Omoikane (思兼, «el que reúne pensamientos») es el kami al que los demás dioses consultan cuando hay que decidir: recuerda todo lo que se sabe y lo junta. Eso es lo que hace este programa por un agente de IA.
+> Omoikane (思兼, «el que reúne pensamientos») es el kami al que los demás dioses consultan cuando hay que decidir: recuerda todo lo que se sabe y lo junta. Eso es lo que hace este programa por un agente.
+>(sqlite_vec::sqlite3_vec_init as *const ())));
+A memory is one paragraph the agent would want to read before touching something again.
+A variety of pre-trained Model2Vec models are available on the [HuggingFace Hub (MinishLab collection)](https://huggingface.co/collections/minishlab/model2vec-base-models-66fd9dd9b7c3b3c0f25ca90e). These can be loaded by `model2vec-rs` using their Hugging Face model ID or by providing a local path to the model files.
+C: AsRef<[u8]>,
+CREATE INDEX memory_project ON memory(project, kind);
+CREATE TABLE memory (
+CREATE TABLE memory_version (
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+Commands::EncodeSingle {
+Configurations are the product of `--models`, `--workloads` (`queries`:
+Doctor,
+Documento de trabajo. Lo que está aquí es lo decidido; lo que no está, no existe todavía.
+Dtype::F16 => Embeddings::F32(Cow::Owned(decode_f16(raw))),
+Dtype::F32 => decode_f32(raw),
+Dtype::F64 => raw
+Dtype::F64 => t.data().chunks_exact(8).map(|b| f64::from_le_bytes(b.try_into().unwrap()) as f32).collect(),
+Dtype::I64 => raw
+Dtype::I8 => Embeddings::I8(Cow::Owned(raw.iter().map(|&b| b as i8).collect())),
+Each `kind` changes how it is recalled: preferences and pinned memories are always injected; gotchas come up when the prompt or the files match; facts and decisions by relevance.
+Each round runs every variant once, cycling through all orderings so each
+Embeddings will be printed to the console in JSON format. This command should take less than 0.1s to execute.
+Embeddings::F32(Cow::Borrowed(embeddings)),
+Embeddings::F32(Cow::Owned(embeddings)),
+Embeddings::F32(table) => self.sum_rows(table, ids, sum),
+Embeddings::F32(table) => table.len(),
+Embeddings::I8(Cow::Borrowed(embeddings)),
+En planificación. Todavía no hay nada que instalar. El diseño completo y las fases están en [PLAN.md](PLAN.md).
+EncodeSingle {
+Err(anyhow!(
+Err(anyhow!("no valid model layout found in '{prefix}'"))
+Err(shared) => StaticModelInner {
+F32(Cow<'static, [f32]>),
+FastWordPiece {
+Formato de salida: JSON `hookSpecificOutput.additionalContext` con un bloque breve:
+From a checkout, use `cargo run --release --features cli -- ...`.
+I8(Cow<'static, [i8]>),
+LoadedTokenizer::from_tokenizer(tokenizer)?,
+M: AsRef<[u8]>,
+MIT · Marc Mayol
+Medidas en el PC de desarrollo (Windows 11, release), reproducibles con `cargo run --release --example fase0 -- cuantizar | cargar DIR | buscar N`:
+Memoria persistente y local para agentes de programación (Claude Code primero; cualquier cliente MCP después). Un binario `omoi`, un fichero SQLite. El agente guarda lo que aprende; Omoikane se lo devuelve cuando vuelve a hacer falta, **sin que el agente tenga que acordarse de buscar**.
+ModelWrapper::WordPiece(model) => Some(lookup(&model.unk_token)?),
+NONE
+NONE => NONE,
+Nombres cortos, sin prefijo: el cliente ya lo pone (`mcp__omoikane__remember`).
+None
+None                        // Optional: subfolder if model files are not at the root of the repo/path
+None => Api::new(),
+None => self.viterbi(piece, &mut best, &mut out),
+None => self.viterbi(trozo, &mut mejor, &mut salida),
+None,                       // Optional: Hugging Face API token for private models
+Normally run through `scripts/nanobeir.py`, not directly.
+Ok(())
+Ok(Self {
+Ok(m)
+Ok(out)
+Ok(salida)
+Ok(snap)
+Ok(unsafe { Mmap::map(&f)? })
+Orden::Doctor => doctor(),
+PRAGMA synchronous = NORMAL;
+PRIMARY KEY (memory_id, version)
+Para otros agentes (Codex, Gemini CLI, OpenCode…) v1 ofrece solo el MCP; sus hooks se añaden cuando alguien los pida.
+Presupuesto: ≤ 600 tokens por inyección; cada memoria truncada a su `title` + primeras 200 letras. El agente pide `get` si quiere el resto.
+Run this before every release:
+Rust · [rusqlite](https://crates.io/crates/rusqlite) (bundled SQLite + FTS5) · [sqlite-vec](https://github.com/asg017/sqlite-vec) · [model2vec-rs](https://github.com/MinishLab/model2vec-rs) · [rmcp](https://github.com/modelcontextprotocol/rust-sdk)
+Solo se lee con `history`. Búsqueda y recall miran la versión viva. El número de versiones **no** es una señal de ranking.
+Some("cargar") => cargar(Path::new(args.get(1).context("falta DIR")?)),
+Some("cuantizar") => cuantizar(),
+Some("equivalencia") => equivalencia(&int8, &rapido, &args[1..]),
+Some((content, id)) => {
+Some((ft, median))
+Some((id, len)) => {
+Some(Self::assemble(
+Some(p) => {
+Some(path) if !path.as_os_str().is_empty() => format!("{}/", path.display()),
+Some(t) => salida.extend(t.iter().map(|t| t.id)),
+Some(unk_id),
+StaticModel::from_pretrained(REPO, None, None, None)?;
+StaticModel::from_pretrained(id, None, None, None).unwrap_or_else(|e| panic!("failed to load {id}: {e}"))
+T: AsRef<[u8]>,
+The CLI is opt-in; default library builds do not include Clap.
+The Rust version is roughly **1.7×** faster than the Python version.
+The crate exposes a few feature combinations for different runtimes:
+The script checks the baseline out into a git worktree under
+The script downloads the 13 NanoBEIR datasets (`zeta-alpha-ai/Nano*`) into
+This `model2vec-rs` crate provides a Rust-based engine specifically for **inference** using these Model2Vec models.
+This command compiles the crate in release mode (for speed) and installs the `model2vec-rs` executable to Cargo's binary directory `~/.cargo/bin/`.
+To benchmark int8 storage, quantize models with Python model2vec and pass
+To score other models, pass `--models`. When a change is meant to alter
+Todos los procesos (hook, CLI, servidor MCP) cargan el modelo igual de rápido, así que no hay vectores pendientes ni carga en segundo plano: cada memoria se guarda con su vector en la misma transacción. La tabla está mapeada y compartida por el sistema operativo entre procesos: 5 sesiones no son 5 copias en RAM.
+Tokenization::Crate(tokenizer) => {
+Tokenization::Unigram(tokenizer, fu)
+Tokenization::WordPiece(ft)
+Tokenization::WordPiece(ft) => TOKEN_IDS.with_borrow_mut(|ids| {
+Tokenizer,
+Tokenizer::from_str(&json.to_string()).expect("build tokenizer")
+Tres ideas que lo definen:
+Typical invocations:
+Una memoria es un párrafo que el agente querría leer antes de volver a tocar algo.
+Uses only the public API, so it builds against any revision. Normally run
+We compared the performance of the Rust implementation with the Python version of Model2Vec. The benchmark was run single-threaded on a CPU.
+When filesystem access is unavailable, use `from_bytes` instead of `from_pretrained`:
+[English](README.md)
+[Español](README.es.md)
+[[bin]]
+[profile.release]
+] = *rows;
+] {
+_ => Err(anyhow!("uso: fase0 cuantizar | cargar DIR | buscar N")),
+_ => Err(anyhow!("uso: fase05 compilar | abrir [DIR] | residente[-m2v] SEG DIR… | equivalencia DIR…")),
+_ => c.is_other(),
+_ => panic!("not a Unigram tokenizer"),
+_ => t.data().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(),
+_ => t.data().chunks_exact(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as usize).collect(),
+_ => texts.iter().map(|t| model.encode_single(t)).collect(),
+_ => {}
+```bibtex
+```sh
+```shell
+`benches/nanobeir_baseline.json` (NDCG@10, cosine similarity, binary
+`encode`, `single`: `encode_single` in a loop) and `--threads` (`all`, or a
+`pinned` fuerza la inyección sea cual sea el `kind`.
+`quantize_int8` stores the embeddings as int8 with one scale per row, using a quarter of the memory and encoding faster. Outputs stay very close to the f32 model (cosine similarity above 0.9998 on the potion models).
+`target/bench-compare/`, copies this `throughput.rs` into it, builds each
+`target/nanobeir/data/`, builds `nanobeir.rs`, and scores every model in
+a.iter().zip(b).map(|(x, y)| x * y).sum()
+add_rows(sum, &pending);
+added(1, "<s>", false, true, false),
+added(n + 1, "and", false, false, true),
+added_tokens,
+added_tokens.sort_by(|(a, _), (b, _)| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+added_tokens: Vec<(String, u32)>,
+anyhow::ensure!(ids_distintos == 0 && peor >= 0.9999, "NO equivalente");
+assert!(!chunks.is_empty(), "corpus {corpus} is empty");
+assert!(!datasets.is_empty(), "no datasets found in {data}");
+assert!(!declines(&|_| {}));
+assert!(!words.is_empty(), "corpus {corpus} contains no words");
+assert!(FastUnigram::from_tokenizer(&tok, None).is_none());
+assert!(FastUnigram::from_tokenizer(&tok, Some(0)).is_none());
+assert!(FastWordPiece::from_json(tok.to_string(false).unwrap().as_bytes()).is_none());
+assert!(FastWordPiece::from_tokenizer(&tok).is_none());
+assert!(declines(&|j| j["added_tokens"][0]["content"] = "[NOT IN VOCAB]".into()));
+assert!(declines(&|j| j["added_tokens"][0]["normalized"] = true.into()));
+assert!(declines(&|j| j["model"]["unk_token"] = "[NOT IN VOCAB]".into()));
+assert!(declines(&|j| {
+assert!(err.to_string().contains("unsupported mapping dtype"));
+assert!(matches!(&inner.embeddings, Embeddings::I8(Cow::Owned(_))));
+assert!(nodes.len() < NONE as usize, "vocabulary trie exceeds 32-bit offsets");
+assert!(nodos.len() < NONE as usize, "el trie no cabe en 32 bits");
+assert_eq!(decode_token_mapping(Dtype::I32, &i32_raw).unwrap(), vec![1, 2, 3]);
+assert_eq!(got, want, "token-id mismatch for {text:?}");
+assert_eq!(inner.row_scales.as_ref().map(Vec::len), Some(rows));
+assert_eq!(inner.weights.is_none(), inner.token_mapping.is_none());
+assert_eq!(trie.get(b"a"), 1);
+assert_eq!(trie.get(missing.as_bytes()), NONE, "{missing}");
+assert_eq!(trie.longest_prefix(0, b"c"), None);
+assert_eq!(trie.longest_prefix(cont, b"bcd"), Some((5, 2)));
+assert_json_matches_tokenizer(&std::fs::read(&path).expect("read cached tokenizer"));
+assert_json_matches_tokenizer(json.as_bytes());
+assert_matches_crate(&small_unigram(&texts, true), &texts);
+assert_matches_crate(&tok, &corpus());
+assert_matches_crate(&tok, &texts);
+author       = {Stephan Tulkens and {van Dongen}, Thomas},
+b += b'a' - b'A';
+b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => 2,
+base: 0,
+base: u32,
+baseline models takes about fifteen seconds once the data and models are
+best
+best.resize(size + 1, UNSET);
+black_box(model.encode(group));
+black_box(model.encode(texts));
+black_box(run());
+boosts          = ×1.5 si pinned · ×(1 + 0.3·recencia) con recencia = 1/(1 + días/90)
+break;
+byte_fallback: bool,
+byte_fallback: uni.byte_fallback(),
+byte_ids: [u32; 256],
+bytes: [NONE; 256],
+bytes: [u32; 256],
+cached.
+candidatos_fts  = top 40 por bm25(memory_fts, 3.0, 1.0, 2.0)   -- título pesa 3, tags 2
+candidatos_vec  = top 40 por distancia coseno en memory_vec
+cargo check --no-default-features --features wasm --target wasm32-unknown-unknown
+categories = ["command-line-utilities", "development-tools"]
+changed_at TEXT NOT NULL,
+char::from_u32(lo + next((hi - lo + 1) as u64) as u32).unwrap_or(' ')
+chars.push(c);
+children.clear();
+clap = { version = "4.0", features = ["derive"], optional = true }
+clean_text,
+cmd: Commands,
+cnt
+codegen-units = 1
+cols
+cols,
+cols: usize,
+config,
+config: PathBuf,
+config_bytes: &[u8],
+config_file: &str,
+config_prefix: &str,
+const BLOCKS: [(u32, u32); 16] = [
+const FRASES: &[&str] = &[
+const F_META: &str = "meta.json";
+const F_NORMALIZADOR: &str = "normalizador.json";
+const F_PUNTUACIONES: &str = "puntuaciones.bin";
+const K: usize = 10;
+const MAX_FAILURES: u8 = 16;
+const PENALIZACION_DESCONOCIDO: f64 = 10.0;
+const REPO: &str = "minishlab/potion-multilingual-128M";
+const SIN_CAMINO: Camino = Camino { puntuacion: 0.0, empieza: NONE, token: 0 };
+const UNK_PENALTY: f64 = 10.0;
+const UNSET: BestPath = BestPath {
+content='', tokenize='unicode61 remove_diacritics 2'
+continuation: u32,
+continue;
+continuing_subword_prefix: &str,
+control that should come out at 1.00x), the per-row quantized model, and
+cos.sort_by(f64::total_cmp);
+cos[cos.len() / 100],
+count; `1` also disables tokenizer parallelism). The full default run takes
+data.extend(row.iter().map(|&v| (v / scale).round().clamp(-127.0, 127.0) as i8));
+data.extend(std::iter::repeat_n(0, row.len()));
+datasets.sort();
+datos.extend(fila.iter().map(|&v| if e > 0.0 { (v / e).round().clamp(-127.0, 127.0) as i8 as u8 } else { 0 }));
+db.execute_batch(
+db.execute_batch("create virtual table t using fts5(x, tokenize='unicode61 remove_diacritics 2');")?;
+dcg / idcg
+description = "Official Rust Implementation of Model2Vec"
+dim,
+dim: cols,
+dim: shared.dim,
+dim: usize,
+dirs::home_dir().unwrap().join(".omoikane/models")
+dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8")
+doi          = {10.5281/zenodo.17270888},
+drop(m);
+drop(v);
+drop(warm);
+drops by more than `--tolerance` (default 0.002) or any single dataset
+echo -e "This is the first sentence.\nThis is another sentence." > my_texts.txt
+elapsed += took;
+embeddings
+embeddings,
+embeddings.extend(pooled);
+embeddings: &'static [i8],
+embeddings: Vec<f32>,
+emit(&s[i..i + size]);
+emit(&s[start as usize..]);
+emit(&s[start as usize..i]);
+end += 1;
+ends_at = starts_at;
+ensure!(emb.dtype() == safetensors::Dtype::I8, "la tabla tiene que ser int8, es {:?}", emb.dtype());
+ensure!(m.puntuaciones.len() == m.meta.filas * 8, "puntuaciones.bin no cuadra con meta.json");
+enum Embeddings {
+enum Orden {
+eprintln!("skipped: minishlab/potion-multilingual-128M is not in the local cache");
+eprintln!("skipped: {repo} is not in the local cache");
+escalas.push(e);
+exclude = ["tests/*", "assets/*", "local/*"]
+f(&table[tok * dim..(tok + 1) * dim], row_scales[tok]);
+f32: From<T>,
+f64::from_le_bytes(self.puntuaciones[o..o + 8].try_into().unwrap())
+failures.resize(slot + 1, 0);
+failures[slot] += 1;
+fallos[hueco] += 1;
+fancy-regex  = ["tokenizers/fancy-regex",
+fin_racha.get_or_insert(fin);
+fmt.debug_struct("FastUnigram")
+fn ascii_class(b: u8) -> u8 {
+fn assert_json_matches_tokenizer(bytes: &[u8]) {
+fn assert_matches_crate(tok: &Tokenizer, texts: &[String]) {
+fn buscar(&mut self, mut i: usize) -> usize {
+fn buscar(n: usize) -> Result<()> {
+fn cargar(dir: &Path) -> Result<()> {
+fn checksum(embeddings: &[Vec<f32>]) -> u64 {
+fn coseno(a: &[f32], b: &[f32]) -> f32 {
+fn cuantizar() -> Result<()> {
+fn decode_f32(raw: &[u8]) -> Vec<f32> {
+fn decode_token_mapping(dtype: Dtype, raw: &[u8]) -> Result<Vec<usize>> {
+fn decode_token_mapping_supports_i32_and_i64() {
+fn desconocido_al_reves(&self, racha: &str, salida: &mut Vec<u32>) {
+fn dir_int8() -> PathBuf {
+fn download_model_files(repo_id: &str, token: Option<&str>, subfolder: Option<&str>) -> Result<ModelFiles> {
+fn duplicate_keys_keep_the_smallest_id() {
+fn duplicate_vocab_key_matches_crate() {
+fn encode_ids_with(&self, text: &str, out: &mut Vec<u32>, scratch: &mut String) {
+fn encode_one(&self, text: &str, max_length: Option<usize>) -> Vec<f32> {
+fn equivalencia(int8: &Path, rapido: &Path, dirs: &[String]) -> Result<()> {
+fn evaluate(model: &StaticModel, dir: &Path) -> f64 {
+fn fast_matches_crate() {
+fn fast_matches_crate_on_cached_models() {
+fn field(v: &Value, key: &str) -> String {
+fn find(&mut self, mut i: usize) -> usize {
+fn for_each_row<'t, T>(&self, table: &'t [T], ids: &[u32], mut f: impl FnMut(&'t [T], f32)) -> usize {
+fn from_bytes(bytes: &[u8]) -> Result<Self> {
+fn from_loaded_bytes(
+fn from_storage(
+fn hijo(&self, nodo: u32, byte: u8) -> u32 {
+fn int8_models_keep_i8_storage() {
+fn is_chinese_char(c: char) -> bool {
+fn is_control(c: char) -> bool {
+fn is_whitespace(c: char) -> bool {
+fn len(&self) -> usize {
+fn main() -> Result<()> {
+fn main() {
+fn mapear(ruta: &Path) -> Result<Mmap> {
+fn match_hub_layout(
+fn matches_a_map() {
+fn median(v: &[f64]) -> f64 {
+fn modelos() -> PathBuf {
+fn n(&mut self) -> u64 {
+fn nodo(&self, i: u32) -> Nodo {
+fn noise(n: usize) -> Vec<String> {
+fn normalize_ascii(&self, input: &str, out: &mut String) {
+fn normalize_into(&self, input: &str, out: &mut String) {
+fn normalize_unicode(&self, input: &str, out: &mut String) {
+fn normalized(mut v: Vec<f32>) -> Vec<f32> {
+fn normalized_added_token_falls_back() {
+fn percentile(samples: &[Duration], p: f64) -> Duration {
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+fn pre_tokenize<'a>(s: &'a str, mut emit: impl FnMut(&'a str)) {
+fn push_unk(&self, out: &mut Vec<u32>) {
+fn push_unknown_rev(&self, run: &str, out: &mut Vec<u32>) {
+fn quitar(&mut self, i: usize) {
+fn read_jsonl(path: &Path) -> Vec<Value> {
+fn read_texts(path: &Path) -> (Vec<String>, Vec<String>) {
+fn relajar(destino: &mut Camino, candidato: f64, empieza: usize, token: u32) {
+fn relax(&self, target: &mut BestPath, candidate: f64, starts_at: usize, token_id: u32) {
+fn remove(&mut self, i: usize) {
+fn resolve_model_files<P: AsRef<Path>>(
+fn sum_rows_dyn<T: Copy>(&self, table: &[T], ids: &[u32], sum: &mut [f32]) -> usize
+fn sum_rows_fixed<T: Copy, const D: usize>(&self, table: &[T], ids: &[u32], out: &mut [f32]) -> usize
+fn truncation_falls_back() {
+fn utf8_len(lead: u8) -> usize {
+fn vector(r: &mut Xs) -> Vec<u8> {
+fn viterbi(&self, text: &str, best: &mut Vec<BestPath>, out: &mut Vec<u32>) {
+fn word_to_ids(&self, word: &str, out: &mut Vec<u32>) {
+for &(b, lo, hi) in &hijos {
+for &(row, scale) in &pending[..n] {
+for &b in clave {
+for &byte in key {
+for &i in &orders[r % orders.len()] {
+for &orig in input.as_bytes() {
+for (_, model) in &variants {
+for (b, slot) in single_byte.iter_mut().enumerate() {
+for (byte, slot) in byte_ids.iter_mut().enumerate() {
+for (config_prefix, model_prefix, config_file) in layout_candidates(prefix, sub_prefix.as_str(), parent.as_str()) {
+for (content, _) in &added_tokens {
+for (f, va) in lote.iter().zip(a) {
+for (h, &b) in halves.iter_mut().zip(src) {
+for (i, &byte) in bytes.iter().enumerate() {
+for (i, (name, _)) in variants.iter().enumerate().skip(1) {
+for (piece, _, tokens) in pretokenized.get_splits(OffsetReferential::Normalized, OffsetType::None) {
+for (piece, score) in model.iter() {
+for (repo, file) in [
+for (row, scale) in scales.iter_mut().enumerate() {
+for (s, &v) in sum.iter_mut().zip(row) {
+for (s, &v) in suma.iter_mut().zip(fila) {
+for (src, dst) in raw.chunks(halves.len()).zip(out.chunks_mut(halves.len())) {
+for (trozo, _, tokens) in pre.get_splits(OffsetReferential::Normalized, OffsetType::None) {
+for (workload, mode, texts) in &workloads {
+for b in 0..256 {
+for byte in 0..=255u8 {
+for c in input.chars() {
+for c in staged.nfd() {
+for dir in datasets {
+for e in es.flatten() {
+for f in &frases {
+for f in DIFICILES.iter().take(10) {
+for f in ["tokenizer.json", "config.json"] {
+for f in std::fs::read_dir(&rapido)? {
+for fila in tabla.chunks_exact(dim) {
+for group in chunks.chunks(bs) {
+for i in 0..=rest.len() {
+for i in 1..=n as i64 {
+for id in self.ids(texto)? {
+for j in 0..n {
+for lote in frases.chunks(512) {
+for missing in ["", "abcd", "c", "##", "#", "hé", "zzz"] {
+for model_id in ["minishlab/potion-base-8M", "minishlab/potion-retrieval-32M"]:
+for rest in permutations(n - 1) {
+for row in table.chunks_exact(dim.max(1)) {
+for text in texts.iter().take(60) {
+for tok in tokens {
+for tx in &textos {
+for width in 1..=4 {
+for window in chars.windows(width).step_by(width) {
+for x in v {
+formato: u32,
+from model2vec import StaticModel
+fs,
+ft.encode_ids_into(text, ids);
+fusion          = RRF con k = 60:  score = Σ 1 / (k + rango_i)
+h = (h ^ v.len() as u64).wrapping_mul(0x100000001b3);
+halves.convert_to_f32_slice(dst);
+handle_chinese_chars,
+handle_chinese_chars: Option<bool>,
+handle_chinese_chars: bool,
+has_single_node |= end - starts_at == char_len;
+hf-hub       = ["dep:hf-hub", "dep:ureq"]
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"], optional = true }
+hijos.clear();
+hijos.push((b, lo, fin));
+hueco = huecos.buscar(hueco + 1);
+huecos.quitar(0);
+huecos.quitar(h);
+i += content.len();
+i = arriba;
+id           TEXT PRIMARY KEY,
+ids.clear();
+ids_distintos += 1;
+if !byte.is_multiple_of(3) {
+if !has_single_node {
+if !matches!(tok.get_pre_tokenizer(), Some(PreTokenizerWrapper::BertPreTokenizer(_))) {
+if !nombre.starts_with('.') && nombre != "target" && nombre != "node_modules" {
+if !tiene_un_char {
+if (h as usize) * 12 < self.trie.len() && self.nodo(h).padre == nodo { h } else { NONE }
+if (width == 1 && i.is_multiple_of(5)) || !seen.insert(piece.clone()) {
+if a != b {
+if added_tokens.iter().any(|(content, _)| *content == t.content) {
+if arriba < self.0.len() {
+if both sides produce the same binary, and runs them alternately
+if byte_fallback {
+if bytes.len() == 1 {
+if c == '\0' || c == '\u{fffd}' || is_control(c) {
+if c.is_mark_nonspacing() {
+if embeddings.len() != rows * cols {
+if failures[slot] >= MAX_FAILURES {
+if fallos[hueco] >= MAX_FALLOS {
+if hijos.is_empty() {
+if hijos.iter().all(|&(b, _, _)| !usado.get(base + b as usize).copied().unwrap_or(false)) {
+if i >= self.0.len() {
+if id != NONE {
+if input.is_ascii() {
+if is_whitespace(c) {
+if let Some(files) = match_hub_layout(repo, config_prefix, model_prefix, config_file)? {
+if let Some(id) = model.token_to_id(&format!("<0x{byte:02X}>")) {
+if let Some(m) = &mapeo_b {
+if let Some(r) = fin_racha.take() {
+if let Some(row_scales) = row_scales {
+if let Some(run_end) = unk_run_end {
+if let Some(u) = self.unk_id {
+if m.meta.byte_fallback {
+if model.kind.as_deref() != Some("WordPiece") || json.pre_tokenizer?.kind != "BertPreTokenizer" {
+if model.normalize {
+if n == 0 {
+if n == NONE {
+if node == NONE {
+if nodo == NONE {
+if norm.kind != "BertNormalizer" {
+if path.token_id == self.unk_id {
+if self.handle_chinese_chars && is_chinese_char(c) {
+if self.lowercase && b.is_ascii_uppercase() {
+if self.lowercase {
+if self.meta.normalizar {
+if self.nodes[slot].parent == node {
+if size == 0 {
+if span.is_empty() {
+if start < 0 {
+if t.content.is_empty() || t.normalized || t.single_word || t.lstrip || t.rstrip {
+if target.starts_at == NONE || candidate > target.score {
+if token != NONE {
+if tope >= nodos.len() {
+if up < self.next.len() {
+if word.len() > self.max_input_chars_per_word && word.chars().count() > self.max_input_chars_per_word {
+impl Candidates {
+impl DoubleArrayTrie {
+impl Embeddings {
+impl FastUnigram {
+impl Huecos {
+impl Modelo {
+impl StaticModel {
+impl Xs {
+include_bytes!("path/to/model.safetensors").as_ref(),
+include_bytes!("path/to/tokenizer.json").as_ref(),
+ini += largo_char;
+inner.embeddings = embeddings;
+inner.row_scales = Some(scales);
+inner: Arc::new(StaticModelInner {
+inner: Arc<StaticModelInner>,
+input: String,
+j["model"].as_object_mut().unwrap().remove("max_input_chars_per_word");
+json!({"id": id, "content": content, "single_word": single_word, "lstrip": false,
+keywords = ["mcp", "memory", "agents", "sqlite", "claude-code"]
+kind         TEXT NOT NULL CHECK (kind IN ('fact','decision','gotcha','preference')),
+kind       TEXT NOT NULL,
+kind: String,
+let (lo, hi) = blocks[next(blocks.len() as u64) as usize];
+let (lo, hi) = bootstrap_ci(&ratios);
+let (median_token_length, unk_token_id) = compute_metadata(&tokenizer)?;
+let (mut node, mut end) = (0, starts_at);
+let (mut nodo, mut fin) = (0, ini);
+let (query_ids, queries) = read_texts(&dir.join("queries.jsonl"));
+let (words_per_text, texts_per_pass) = match (workload.as_str(), mode.as_str()) {
+let ModelWrapper::Unigram(uni) = tok.get_model() else {
+let Ok(es) = std::fs::read_dir(&p) else { continue };
+let Some(config) = fetch(format!("{config_prefix}{config_file}"))? else {
+let Some(path) = cache
+let [filas, dim]: [usize; 2] = emb.shape().try_into()?;
+let [rows, cols]: [usize; 2] = tensor.shape().try_into().context("embedding tensor is not 2-D")?;
+let _: i64 = db.query_row("SELECT count(*) FROM f WHERE f MATCH '\"cador\"'", [], |f| f.get(0))?;
+let a = f32m.encode(&frases);
+let a = original.encode_with_args(lote, None, 512);
+let a = referencia.encode(f.as_str(), false).map_err(|e| anyhow!("{e}"))?.get_ids().to_vec();
+let added = |id: usize, content: &str, normalized: bool, special: bool, single_word: bool| {
+let api = hf_hub_dir()?;
+let arg = |k: &str, default: &str| args.get(k).cloned().unwrap_or_else(|| default.to_string());
+let arriba = self.0[i];
+let b = i8m.encode(&frases);
+let b = piezas[lo].0[prof];
+let b = texto.as_bytes();
+let base = dirs::home_dir().unwrap().join(".cache/huggingface/hub/models--minishlab--potion-multilingual-128M/snapshots");
+let base = slot - min_byte;
+let bytes = text.as_bytes();
+let bytes = word.as_bytes();
+let c = mejor[fin];
+let c = s[i..].chars().next().unwrap();
+let carga = ms(t);
+let cfg: Value = serde_json::from_slice(config_bytes).context("failed to parse config.json")?;
+let cfg_norm = cfg.get("normalize").and_then(Value::as_bool).unwrap_or(true);
+let chars: Vec<char> = format!("▁{}", text.replace(' ', "▁")).chars().collect();
+let cli = Cli::parse();
+let cnt = match &model.embeddings {
+let config = config_base.join(config_file);
+let config: serde_json::Value = serde_json::from_slice(&std::fs::read(origen.join("config.json"))?)?;
+let config_bytes = fs::read(&files.config).context("failed to read config.json")?;
+let consulta = tx.split(' ').map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(" OR ");
+let custom_embeddings = model.encode_with_args(
+let data = args
+let db = rusqlite::Connection::open(&ruta)?;
+let db = rusqlite::Connection::open_in_memory()?;
+let dcg: f64 = ranked
+let declines = |edit: &dyn Fn(&mut serde_json::Value)| {
+let denom = cnt.max(1) as f32;
+let dim = model.dim;
+let dim = self.inner.dim;
+let dim = self.meta.dim;
+let dir = args.get(1).map_or(rapido, PathBuf::from);
+let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+let dir = dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8");
+let doc_emb: Vec<Vec<f32>> = model.encode(&docs).into_iter().map(normalized).collect();
+let dot: f64 = a.iter().zip(b).map(|(&x, &y)| x as f64 * y as f64).sum();
+let e = max / 127.0;
+let emb = st.tensor("embeddings").context("sin embeddings")?;
+let emb = st.tensor("embeddings").or_else(|_| st.tensor("0")).context("sin embeddings")?;
+let embeddings = Embeddings::I8(Cow::Owned(data));
+let embeddings = model.encode(&["Hello world".to_string()]);
+let encoding = tokenizer.encode_fast(text, false).expect("tokenization failed");
+let err = decode_token_mapping(Dtype::F32, &[0, 0, 0, 0]).unwrap_err();
+let f = f?;
+let fast = FastUnigram::from_tokenizer(tok, unk_id.map(|id| id as usize)).expect("fast path applies");
+let fetch = |path: String| -> Result<Option<PathBuf>> {
+let fila = mapeo.as_ref().map_or(tok, |m| m[tok]);
+let filas: Vec<i64> = q.query_map([c], |f| f.get(0))?.collect::<Result<_, _>>()?;
+let filas: Vec<i64> = q.query_map([consulta], |f| f.get(0))?.collect::<Result<_, _>>()?;
+let file = File::create(&p).context("failed to create output file")?;
+let files = resolve_model_files(repo_or_path, token, subfolder)?;
+let first = j["added_tokens"][0].clone();
+let found = if node == NONE {
+let frase = |r: &mut Xs, k: u64| -> String {
+let ft = FastWordPiece::from_tokenizer(tok).expect("WordPiece pipeline");
+let ft = Self::assemble(
+let got = fast.encode_ids(tok, text).expect("fast encode");
+let h = self.nodo(nodo).base.wrapping_add(byte as u32);
+let hasta_aqui = mejor[ini].puntuacion;
+let hit = self.added_token_first_bytes[bytes[i] as usize]
+let i32_raw = [1i32, 2, 3]
+let i64_raw = [4i64, 5, 6]
+let id = *vocab.get(&t.content)?;
+let id = self.trie.get(run.as_bytes());
+let idcg: f64 = (0..relevant.len().min(K))
+let int8 = StaticModel::from_pretrained(format!("{dir}/test-model-int8"), None, None, None).unwrap();
+let int8 = modelos().join("potion-multilingual-128M-int8");
+let len = self.next.len();
+let load = |id: &str| {
+let lookup = |tok: &str| {
+let lowercase = norm.lowercase?;
+let m = Modelo {
+let m = Modelo::abrir(&dir)?;
+let m = Modelo::abrir(&rapido)?;
+let make = |n: usize, k: usize| -> Vec<String> { words.chunks(n).cycle().take(k).map(|c| c.join(" ")).collect() };
+let mapeo: Option<Vec<usize>> = st.tensor("mapping").ok().map(|t| match t.dtype() {
+let mapeo_b: Option<Vec<u8>> = mapeo.as_ref().map(|m| m.iter().flat_map(|&v| (v as i64).to_le_bytes()).collect());
+let marca = salida.len();
+let max = fila.iter().fold(0.0_f32, |m, &v| m.max(v.abs()));
+let mean = cos.iter().sum::<f64>() / cos.len() as f64;
+let median = median_token_length(vocab.keys().map(String::as_str));
+let meta = Meta {
+let min = hijos[0].0 as usize;
+let min_byte = children[0].0 as usize;
+let mode = arg("mode", "batch");
+let model = StaticModel::from_pretrained(&model_id, None, None, None)
+let model = StaticModel::from_pretrained(format!("{dir}/test-model-vocab-quantized"), None, None, None)
+let model = StaticModel::from_pretrained(model_id, None, None, None)
+let model = json.model;
+let model = match quantize {
+let model = model_base.join("model.safetensors");
+let model_bytes = fs::read(&files.model).context("failed to read model.safetensors")?;
+let model_id = arg("model", "minishlab/potion-base-8M");
+let mut added_tokens = Vec::new();
+let mut added_tokens: Vec<(String, u32)> = Vec::with_capacity(json.added_tokens.len());
+let mut b = orig;
+let mut best = None;
+let mut byte_ids = [NONE; 256];
+let mut chars: Vec<char> = Vec::with_capacity(input.len());
+let mut children: Vec<(u8, usize, usize)> = Vec::new();
+let mut cos: Vec<f64> = model
+let mut datasets: Vec<_> = fs::read_dir(data)
+let mut datos = Vec::with_capacity(tabla.len());
+let mut elapsed = Duration::ZERO;
+let mut embeddings = Vec::with_capacity(sentences.len());
+let mut end = lo + 1;
+let mut escalas = Vec::with_capacity(filas);
+let mut failures: Vec<u8> = Vec::new();
+let mut fallos: Vec<u8> = Vec::new();
+let mut fin = lo + 1;
+let mut fin = n;
+let mut fin_racha = None;
+let mut h: u64 = 0xcbf29ce484222325;
+let mut halves = [f16::ZERO; 1024];
+let mut has_single_node = false;
+let mut hijos: Vec<(u8, usize, usize)> = Vec::new();
+let mut huecos = Huecos(Vec::new());
+let mut i = 0;
+let mut i = 0u64;
+let mut if_ = tx.prepare("INSERT INTO f(rowid, title, content) VALUES (?, ?, ?)")?;
+let mut ini = 0;
+let mut inner = match Arc::try_unwrap(self.inner) {
+let mut json = json.clone();
+let mut json: serde_json::Value = serde_json::from_slice(&tok_b)?;
+let mut mejor = Vec::new();
+let mut n = 0;
+let mut node = 0;
+let mut node = start;
+let mut nodos = vec![LIBRE];
+let mut out = String::with_capacity(staged.len());
+let mut out = Vec::new();
+let mut out = vec![0.0_f32; self.inner.dim];
+let mut p = rest.clone();
+let mut peor = 1.0f32;
+let mut peor_frase = String::new();
+let mut pieces = Vec::with_capacity(model.get_vocab_size());
+let mut piezas = Vec::with_capacity(uni.get_vocab_size());
+let mut pila: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+let mut pretokenized = tok
+let mut puntuaciones = Vec::with_capacity(uni.get_vocab_size());
+let mut qrels: HashMap<String, HashSet<String>> = HashMap::new();
+let mut queue = std::collections::VecDeque::from([(0u32, 0usize, 0usize, pieces.len())]);
+let mut salida = Vec::new();
+let mut samples = Vec::new();
+let mut scale = weights.as_ref().and_then(|w| w.get(tok)).copied().unwrap_or(1.0);
+let mut scales = Vec::with_capacity(table.len() / dim.max(1));
+let mut scored: Vec<(f32, usize)> = doc_emb
+let mut scores = Vec::with_capacity(model.get_vocab_size());
+let mut slot = candidates.find(min_byte + 1);
+let mut start = 0;
+let mut start: isize = -1;
+let mut starts_at = 0;
+let mut state = 0x2545_f491_4f6c_dd1d_u64;
+let mut state: u64 = 0x9E3779B97F4A7C15;
+let mut suma = vec![0.0f32; dim];
+let mut texts: Vec<String> = [
+let mut texts: Vec<String> = corpus().into_iter().map(String::from).collect();
+let mut times: Vec<Vec<f64>> = vec![Vec::new(); variants.len()];
+let mut tok = Tokenizer::from_file(path).expect("load fixture tokenizer");
+let mut tok = small_unigram(&texts, false);
+let mut tokens = 0usize;
+let mut total = 0.0;
+let mut unk_run_end = None;
+let mut v = v.to_vec();
+let mut variants = vec![
+let mut vocab = vec![json!(["<unk>", 0.0]), json!(["<s>", 0.0]), json!(["</s>", 0.0])];
+let n = b.len();
+let n = tok.get_vocab(false).len();
+let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+let n = vocab.len();
+let na = a.iter().map(|&x| x as f64 * x as f64).sum::<f64>().sqrt();
+let name = dir.file_name().unwrap().to_string_lossy();
+let name = if bs == chunks.len() {
+let node = if start == 0 { 0 } else { self.continuation };
+let norm = json.normalizer?;
+let norm = sq.sqrt().max(1e-12);
+let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+let norma = suma.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+let normalizador = Tokenizer::from_file(dir.join(F_NORMALIZADOR)).map_err(|e| anyhow!("normalizador: {e}"))?;
+let normalize = normalize.unwrap_or(cfg_norm);
+let nuevo = Modelo::abrir(rapido)?;
+let nuevos_b: Vec<u8> = nuevos.iter().flat_map(|v| v.to_le_bytes()).collect();
+let o = id as usize * 8;
+let original = model2vec_rs::model::StaticModel::from_pretrained(int8, None, None, None)?;
+let p = e.path();
+let palabras: Vec<String> = (0..3000)
+let parent = match Path::new(trimmed).parent() {
+let path = concat!(
+let pesos: Option<Vec<f32>> = st.tensor("weights").ok().map(|t| match t.dtype() {
+let piece: String = window.iter().collect();
+let pieces: Vec<(&[u8], u32)> = words
+let pooled: Vec<Vec<f32>> = batch
+let pos: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+let processed: String = if self.strip_accents {
+let punt_b: Vec<u8> = puntuaciones.iter().flat_map(|p| p.to_le_bytes()).collect();
+let quantize = args.get("quantize").map_or("none", String::as_str);
+let query_emb: Vec<Vec<f32>> = model.encode(&queries).into_iter().map(normalized).collect();
+let rapido = modelos().join("potion-multilingual-128M-omoi");
+let ratios: Vec<f64> = times[0].iter().zip(&times[i]).map(|(a, b)| a / b).collect();
+let raw = raw.as_chunks::<2>().0;
+let raw = t.data();
+let raw = tensor.data();
+let raw: Vec<i8> = mod_b[..].iter().map(|&b| b as i8).collect();
+let reference = variants[0].1.encode(&accuracy_texts);
+let referencia = tokenizers::Tokenizer::from_file(int8.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
+let repo = api.model(repo_id.to_owned());
+let rounds: usize = arg("rounds", &orders.len().to_string())
+let row_idx = mapping.as_ref().and_then(|m| m.get(tok)).copied().unwrap_or(tok);
+let rows = inner.embeddings.len() / inner.dim;
+let run = |model: &StaticModel| -> f64 {
+let run = || -> Vec<Vec<f32>> {
+let salida = dir_int8();
+let sample: Vec<f64> = (0..ratios.len())
+let scale = max / 127.0;
+let sentences = vec![
+let silabas = ["ca", "lo", "ser", "vi", "dor", "men", "to", "ra", "pre", "con", "fi", "gu", "ción", "es", "tá", "bu", "ño", "au", "te", "di"];
+let slot = base + b as usize;
+let snap = std::fs::read_dir(&base)?.next().context("sin snapshot")??.path();
+let sqlite: String = db.query_row("select sqlite_version()", [], |r| r.get(0))?;
+let st = SafeTensors::deserialize(&bytes)?;
+let st = safetensors::SafeTensors::deserialize(&st_b)?;
+let staged: String = chars.into_iter().collect();
+let start = Instant::now();
+let sub_prefix = format!("{prefix}0_StaticEmbedding/");
+let subfolder = folder.join("0_StaticEmbedding");
+let t = Instant::now();
+let tabla: Vec<f32> = emb.data().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+let tensor = safet
+let text = max_length.map_or(text, |max_tok| {
+let textos: Vec<String> = (0..50).map(|_| frase(&mut r, 4)).collect();
+let texts: Vec<String> = ["play", "playing plays", "pplay", "ping"].map(String::from).into();
+let texts: Vec<String> = words
+let tok = Tokenizer::from_bytes(&tok_b).map_err(|e| anyhow!("tokenizer: {e}"))?;
+let tok = Tokenizer::from_bytes(&tok_b).map_err(|e| anyhow::anyhow!("{e}"))?;
+let tok = Tokenizer::from_file(&path).expect("load cached tokenizer");
+let tok = Tokenizer::from_file(path).expect("load fixture tokenizer");
+let tok = Tokenizer::from_str(json).expect("build tokenizer");
+let tok = small_unigram(&corpus(), false);
+let tok_b = std::fs::read(dir.join("tokenizer.json"))?;
+let tok_b = std::fs::read(origen.join("tokenizer.json"))?;
+let token = self.token(node);
+let tokenization = if let Some(ft) = FastWordPiece::from_tokenizer(&tokenizer) {
+let tokenizer = LoadedTokenizer::from_bytes(tokenizer_bytes.as_ref())?;
+let tokenizer = Tokenizer::from_bytes(bytes).map_err(|e| anyhow!("failed to load tokenizer: {e}"))?;
+let tokenizer = model_base.join("tokenizer.json");
+let tokenizer_bytes = fs::read(&files.tokenizer).context("failed to read tokenizer.json")?;
+let tokens = mapeo.as_ref().map_or(filas, Vec::len).max(pesos.as_ref().map_or(0, Vec::len));
+let took = start.elapsed();
+let tope = base + hijos.last().unwrap().0 as usize;
+let trie = DoubleArrayTrie::build(vec![(b"ab".as_slice(), 7), (b"ab", 3), (b"a", 1), (b"ab", 5)]);
+let trie_b: Vec<u8> = trie.iter().flat_map(|n| [n.base, n.padre, n.token]).flat_map(u32::to_le_bytes).collect();
+let unk_id = json["model"]["unk_id"].as_u64().context("sin unk_id")? as u32;
+let unk_id = u32::try_from(unk_id?).ok()?;
+let unk_id = vocab.get(&model.unk_token).copied();
+let unk_score = model.min_score - UNK_PENALTY;
+let v = m.encode(&["fallo de login".to_string()]);
+let v = m.vector("el middleware de autenticación no se ejecuta en /health")?;
+let v = serde_json::to_value(tok.get_model())?;
+let v: Vec<f32> = (0..256).map(|_| r.f()).collect();
+let v: serde_json::Value = serde_json::from_slice(&tok_b)?;
+let vb = nuevo.vector(f)?;
+let vec: String = db.query_row("select vec_version()", [], |r| r.get(0))?;
+let vocab = DoubleArrayTrie::build(vocab.iter().map(|(k, &id)| (k.as_bytes(), id)).collect());
+let vocab = json["model"]["vocab"].as_array_mut().context("sin vocab")?;
+let vocab = tok.get_vocab(false);
+let vocab: HashMap<String, u32> = serde_json::from_str(model.vocab?.get()).ok()?;
+let want: Vec<u32> = tok
+let want: Vec<u32> = tok.encode_fast(text, false).expect("crate encode").get_ids().to_vec();
+let weights = match safet.tensor("weights") {
+let words = ["a", "ab", "abc", "b", "##b", "##bc", "héllo", "\u{ff}", "zz", "z"];
+let workload = arg("workload", "queries");
+license = "MIT"
+lo = fin;
+lstrip: bool,
+mapeo.as_ref().map_or("no".into(), |m| m.len().to_string()),
+match &model.tokenizer.tokenization {
+match *mode {
+match b {
+match c {
+match cli.cmd {
+match cli.orden {
+match found {
+match hit {
+match lead {
+match mode.as_str() {
+match self {
+match tokens {
+matches!(c, '\t' | '\n' | '\r') || c.is_whitespace()
+max_input_chars_per_word,
+max_input_chars_per_word: Option<usize>,
+max_input_chars_per_word: usize,
+mb(&salida.join("model.safetensors")),
+mb(&salida.join("tokenizer.json")),
+median throughput, the paired speedup with a 95% bootstrap confidence
+median(&ratios)
+median(&sample)
+median_token_length: usize,
+meds.sort_by(f64::total_cmp);
+mejor[0].empieza = 0;
+memmap2 = "0.9.12"
+memory
+memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+meta,
+mod fast_unigram;
+mod fast_wordpiece;
+mod trie;
+model.save_pretrained(f"target/bench-compare/int8-models/{model_id.split('/')[1]}")
+model2vec (pinned in the script) and saved under `target/nanobeir/models/`.
+model2vec scored with `pytrec_eval` to within 2e-4.
+model2vec-rs = "0.3.0"
+model: PathBuf,
+model: String,
+model_bytes: &[u8],
+models::ModelWrapper,
+mut added_tokens: Vec<(String, u32)>,
+n += 1;
+n = 0;
+name = "encode"
+name = "model2vec-rs"
+name = "nanobeir"
+name = "omoikane"
+name = "quantize"
+name = "throughput"
+node = self.trie.child(node, bytes[end]);
+node => self.token(node),
+nodes.resize(nodes.len() + 256, FREE);
+nodes.resize(top + 1, FREE);
+nodes[node as usize].base = base as u32;
+nodes[slot].parent = node;
+nodo = self.hijo(nodo, b[fin]);
+nodos
+nodos[nodo as usize].base = base as u32;
+nodos[nodo as usize].token = piezas[lo].1;
+norm.clean_text?,
+norm.handle_chinese_chars?,
+norm.lowercase,
+norm.strip_accents.unwrap_or(lowercase),
+norm.strip_accents.unwrap_or(norm.lowercase),
+normalizador,
+normalizar: config.get("normalize").and_then(|v| v.as_bool()).unwrap_or(true),
+normalize,
+normalize: Option<bool>,
+normalize: bool,
+normalize: shared.normalize,
+normalized.clear();
+normalizer: Option<NormalizerJson>,
+omoi export                JSONL de todo (lo que haga falta para no quedarse atrapado)
+omoi projects              proyectos con memorias y cuántas
+omoi remember|search|get|update|forget|history|recent   espejo de las tools
+one suffixed with `:model2vec-int8` is first quantized to int8 by Python
+orden: Orden,
+other => panic!("unknown quantize mode {other:?}"),
+other => panic!("unknown workload/mode {other:?}"),
+other => return Err(anyhow!("unsupported mapping dtype: {:?}", other)),
+other => return Err(anyhow!("unsupported tensor dtype: {other:?}")),
+other => return Err(anyhow!("unsupported weights dtype: {:?}", other)),
+out.extend(c.to_lowercase());
+out.push(b as char);
+out.push(id);
+out.push(self.unk_id);
+out.reserve(input.len());
+out.truncate(mark);
+out[mark..].reverse();
+output,
+output: Option<String>,
+padre: u32,
+parallelism::{MaybeParallelRefIterator, MaybeParallelRefMutIterator},
+path::{Path, PathBuf},
+paths      TEXT NOT NULL,
+pending[n] = (row, scale);
+peor = c;
+peor_frase = f.clone();
+percentile(&samples, 0.99),
+percentile(&samples, 0.999),
+pesos.as_ref().map_or("no".into(), |w| w.len().to_string())
+pesos: mapear(&dir.join(F_PESOS))?,
+pieces.push((piece.as_bytes(), model.token_to_id(piece)?));
+pieces.sort_unstable();
+piezas.dedup_by(|a, b| a.0 == b.0);
+piezas.push((pieza.as_bytes().to_vec(), uni.token_to_id(pieza).context("pieza sin id")?));
+piezas.retain(|(k, _)| !k.is_empty());
+piezas.sort_unstable();
+pinned       INTEGER NOT NULL DEFAULT 0,
+pre_tokenize(normalized, |word| self.word_to_ids(word, out));
+pre_tokenizer.pre_tokenize(&mut pretokenized)?;
+pre_tokenizer: Option<PreTokenizerJson>,
+println!(
+println!("  {:.3}  {f}", coseno(&b[0], &b[i]));
+println!("  {:<20} {:>8.1} MB", f.file_name().to_string_lossy(), f.metadata()?.len() as f64 / 1e6);
+println!("First value: {}", row[0]);
+println!("Generated {} custom embeddings.", custom_embeddings.len());
+println!("SAMPLE {:.9}", start.elapsed().as_secs_f64());
+println!("SCORE {name} {:.6}", evaluate(&model, &dir));
+println!("\nsimilitud con «{}» (int8):", FRASES[0]);
+println!("abrir base + 1 consulta  {:>8.2} ms (lo que paga el hook)", ms(t));
+println!("abrir {abrir:.1} ms · primer vector {primero:.2} ms · 10 más {:.2} ms · dim {}", ms(t), v.len());
+println!("carga f32            {:>8.0} ms", ms(t));
+println!("carga {carga:.0} ms · primer encode {:.2} ms · dim {}", ms(t), v[0].len());
+println!("compilado en {:.0} ms → {}", ms(t), rapido.display());
+println!("coseno mínimo con model2vec-rs  {peor:.6}  ({peor_frase:.80?})");
+println!("datos      {}", datos.display());
+println!("fidelidad int8 vs f32  coseno mínimo {fidelidad:.5}");
+println!("frases con ids distintos  {ids_distintos} de {}", frases.len());
+println!("from_bytes completo        {:>7.0} ms", ms(t));
+println!("fts5       ok (unicode61, sin acentos)");
+println!("insertar {n} memorias   {:>8.0} ms", ms(t));
+println!("sqlite-vec {vec}");
+println!("tokens comparados      {tokens}");
+println!("vec0       ok");
+println!("{data:#?}");
+println!("{} frases", frases.len());
+project      TEXT NOT NULL DEFAULT '',
+pub fn abrir(dir: &Path) -> Result<Modelo> {
+pub fn dim(&self) -> usize {
+pub fn encode(&self, sentences: &[String]) -> Vec<Vec<f32>> {
+pub fn encode_flat(&self, sentences: &[String]) -> Vec<f32> {
+pub fn encode_flat_with_args(&self, sentences: &[String], max_length: Option<usize>) -> Vec<f32> {
+pub fn encode_single(&self, sentence: &str) -> Vec<f32> {
+pub fn encode_with_args(
+pub fn from_borrowed(
+pub fn from_borrowed_i8(
+pub fn from_owned(
+pub fn from_owned_i8(
+pub fn ids(&self, texto: &str) -> Result<Vec<u32>> {
+pub fn vector(&self, texto: &str) -> Result<Vec<f32>> {
+pub mod embeber;
+pub mod model;
+pub struct Modelo {
+pub(crate) fn build(mut pieces: Vec<(&[u8], u32)>) -> DoubleArrayTrie {
+pub(crate) fn encode_ids(&self, text: &str) -> Vec<u32> {
+pub(crate) fn encode_ids_into(&self, text: &str, out: &mut Vec<u32>) {
+pub(crate) fn from_json(bytes: &[u8]) -> Option<(FastWordPiece, usize)> {
+pub(crate) fn from_tokenizer(tok: &Tokenizer, unk_id: Option<usize>) -> Option<FastUnigram> {
+pub(crate) fn median_token_length<'a>(tokens: impl Iterator<Item = &'a str>) -> usize {
+pub(crate) fn unk_id(&self) -> Option<u32> {
+pub(crate) struct DoubleArrayTrie {
+pub(crate) struct FastUnigram {
+pub(crate) struct FastWordPiece {
+publisher    = {Zenodo},
+puntuacion: f64,
+puntuaciones: mapear(&dir.join(F_PUNTUACIONES))?,
+python3 scripts/bench_compare.py                      # main vs the working tree
+python3 scripts/bench_compare.py --baseline v0.3.0 --candidate my-branch
+qrels
+queue.push_back((slot as u32, depth + 1, lo, hi));
+ratios[(state % ratios.len() as u64) as usize]
+read_jsonl(path)
+readme = "README.md"
+recalled_at  TEXT,
+relajar(&mut mejor[fin], self.puntuacion(id) + hasta_aqui, ini, id);
+relajar(&mut mejor[ini + largo_char], self.meta.unk_puntuacion + hasta_aqui, ini, self.meta.unk_id);
+relevance, scored like `pytrec_eval`). It fails if a model's mean score
+repo_or_path: P,
+repository = "https://github.com/MinishLab/model2vec-rs"
+repository = "https://github.com/marcmayol/omoikane"
+required-features = ["cli"]
+resolve_hub_model_files(&repo, &prefix).with_context(|| format!("could not load '{repo_id}' from HuggingFace Hub"))
+resultado       = top N tras filtrar por project/kind/tags
+return Err(anyhow!(
+return Err(anyhow!("embedding dimension must be greater than 0"));
+return Err(anyhow!("solo se admiten tokenizers Unigram"));
+return NONE;
+return None;
+return Ok(None);
+return Ok(Self {
+return Ok(files);
+return resolve_local_model_files(&folder).ok_or_else(|| {
+return self;
+return vec![Vec::new()];
+return;
+rmcp = { version = "3.8.0", features = ["server", "macros", "transport-io"] }
+row_scales: None,
+rowid INTEGER PRIMARY KEY,
+rows,
+rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+rust-version = "1.88"
+safetensors::serialize_to_file(vistas, &None, &salida.join("model.safetensors"))?;
+salida.extend(racha.bytes().rev().map(|b| self.bytes[b as usize]));
+salida[marca..].reverse();
+samples.len(),
+samples.push(took);
+samples.sort_unstable();
+samples[rank.clamp(1, samples.len()) - 1]
+scale *= row_scales[row_idx];
+scales.push(scale);
+schemars = "1.2.3"
+score: f64,
+scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| doc_ids[b.1].cmp(&doc_ids[a.1])));
+scores,
+scores.push(*score);
+self.0
+self.0 ^= self.0 << 13;
+self.0[i] = i + 1;
+self.added_tokens
+self.desconocido_al_reves(&texto[..r], salida);
+self.desconocido_al_reves(&texto[fin..r], salida);
+self.encode_flat_with_args(sentences, Some(512))
+self.encode_into(text, max_length, &mut out);
+self.encode_one(sentence, Some(512))
+self.encode_span(&text[start..], out, scratch);
+self.encode_span(&text[start..i], out, scratch);
+self.inner.dim
+self.next.extend(len..=i);
+self.next[i] = i + 1;
+self.next[i] = self.next[up];
+self.nodes.len()
+self.nodes[node as usize].token
+self.nodo(n).token
+self.normalize_ascii(input, out)
+self.normalize_into(span, normalized);
+self.normalize_unicode(input, out)
+self.pool_ids(&ids, max_length, out)
+self.push_unk(out);
+self.scores[id as usize] + score_till_here,
+self.sum_rows_blocked(table, ids, sum)
+self.unk_id
+sentence,
+sentence: String,
+sentences: &[String],
+serde_json = "1.0"
+serde_json = "1.0.154"
+serde_json = { version = "1.0", features = ["raw_value"] }
+serde_json::to_writer(BufWriter::new(file), data).context("failed to write JSON")
+single_byte,
+single_word: bool,
+source       TEXT NOT NULL DEFAULT '',
+speedup over f32 with a 95% bootstrap CI, and cosine similarity to the f32
+sq += *x * *x;
+staged
+start += len;
+start = i as isize;
+start.elapsed().as_secs_f64()
+starts_at += char_len;
+starts_at,
+starts_at: NONE,
+starts_at: starts_at as u32,
+starts_at: u32,
+state % bound
+state % m
+state ^= state << 13;
+state ^= state >> 7;
+std::fs::create_dir_all(destino)?;
+std::fs::read_to_string(&input)?.lines().map(str::to_string).collect()
+std::fs::write(destino.join(F_META), serde_json::to_vec_pretty(&meta)?)?;
+std::fs::write(destino.join(F_TABLA), emb.data())?;
+std::fs::write(destino.join(F_TRIE), trie_b)?;
+std::hint::black_box(i8m.encode(&una));
+std::hint::black_box(m.encode_with_args(lote, None, 512));
+std::hint::black_box(m.vector(f)?);
+std::thread::sleep(std::time::Duration::from_secs(args.get(1).map_or(Ok(20), |s| s.parse())?));
+strip_accents,
+strip_accents: Option<bool>,
+strip_accents: bool,
+struct AddedTokenJson {
+struct Camino {
+struct Candidates {
+struct Huecos(Vec<usize>);
+struct LoadedTokenizer {
+struct Meta {
+struct Node {
+struct Nodo {
+struct PreTokenizerJson {
+struct TokenizerJson<'a> {
+sum[j] = sum[j]
+suma.iter_mut().for_each(|x| *x /= d);
+suma.iter_mut().for_each(|x| *x /= norma);
+sync::Arc,
+t.elapsed().as_secs_f64() * 1000.0
+tabla: Mmap,
+tabla: mapear(&dir.join(F_TABLA))?,
+tags         TEXT NOT NULL DEFAULT '[]',
+tags       TEXT NOT NULL,
+tempfile = "3"
+texts.extend(noise(2000));
+texts.extend(noise(600));
+texts.len() as f64 / median(&times[i]),
+texts.push(texts[..20].join(" "));
+through `scripts/bench_compare.py`, not directly.
+title        = {Model2Vec: Fast State-of-the-Art Static Embeddings},
+title        TEXT NOT NULL,
+title      TEXT NOT NULL,
+title, content, tags,
+tok.add_tokens(&[tokenizers::AddedToken::from("hello world", false)]);
+tok.with_truncation(Some(tokenizers::TruncationParams::default()))
+token: NONE,
+token: u32,
+token_id,
+token_id: 0,
+token_id: u32,
+token_mapping,
+token_mapping.map(Cow::Borrowed),
+token_mapping.map(Cow::Owned),
+token_mapping: Option<Cow<'static, [usize]>>,
+token_mapping: shared.token_mapping.clone(),
+tokenization,
+tokenization: Tokenization,
+tokenization: Tokenization::WordPiece(ft),
+tokenizer
+tokenizer,
+tokenizer: LoadedTokenizer,
+tokenizer: PathBuf,
+tokenizer: Tokenizer,
+tokenizer: shared.tokenizer.clone(),
+tokenizer_bytes: T,
+tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
+total += ndcg_at_k(&ranked, &doc_ids, relevant);
+trie: Mmap,
+trie: mapear(&dir.join(F_TRIE))?,
+tx.commit()?;
+ulid = "3.0.0"
+unicode-normalization = "0.1"
+unk_id: Option<u32>,
+unk_id: u32,
+unk_puntuacion: f64,
+unk_run_end.get_or_insert(ends_at);
+unk_score: f64,
+unk_token: Option<String>,
+unk_token_id,
+unk_token_id: Option<usize>,
+unsafe extern "C" fn(
+unsafe {
+ureq = { version = "2", optional = true }
+url          = {https://github.com/MinishLab/model2vec},
+usado[h] = true;
+use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
+use anyhow::{Result, anyhow};
+use crate::fast_unigram::FastUnigram;
+use crate::model::median_token_length;
+use crate::trie::{DoubleArrayTrie, NONE};
+use hf_hub::api::sync::{Api, ApiBuilder, ApiRepo};
+use memmap2::Mmap;
+use model2vec_rs::model::StaticModel;
+use safetensors::{SafeTensors, tensor::Dtype};
+use serde::Deserialize;
+use serde_json::Value;
+use serde_json::value::RawValue;
+use std::cell::RefCell;
+use std::env;
+use std::hint::black_box;
+use std::io::BufWriter;
+use std::str::FromStr;
+use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokenizers::{Model, OffsetReferential, OffsetType, PreTokenizer, Tokenizer, models::ModelWrapper};
+use unicode_categories::UnicodeCategories;
+use unicode_normalization::UnicodeNormalization;
+uv run scripts/nanobeir.py
+v.iter().flat_map(|x| (x / n).to_le_bytes()).collect()
+v.iter_mut().for_each(|x| *x /= norm);
+v.sort();
+v.sort_by(f64::total_cmp);
+v[key]
+v[v.len() / 2]
+vec![
+vec![input]
+version    INTEGER NOT NULL,
+version = "0.3.0"
+vocab.push(json!(["▁the", -0.5]));
+vocab.push(json!([format!("<0x{byte:02X}>"), -20.0]));
+vocab.push(json!([piece, -(((i * 7919) % 6) as f64) - 1.0]));
+vocab: &HashMap<String, u32>,
+vocab: DoubleArrayTrie,
+weights,
+weights: Option<&'static [f32]>,
+weights: Option<Cow<'static, [f32]>>,
+weights: shared.weights.clone(),
+where
+while end < hi && pieces[end].0[depth] == byte {
+while end < size {
+while ends_at > 0 {
+while fin < hi && piezas[fin].0[prof] == b {
+while fin < n {
+while i < self.0.len() && self.0[i] != i {
+while i < self.next.len() && self.next[i] != i {
+while i < text.len() {
+while ini < n {
+while let Some((node, depth, mut lo, hi)) = queue.pop_front() {
+while lo < hi {
+while start < bytes.len() {
+year         = {2024},
+| -------------- | -------------------------------------------------- |
+| Almacenamiento | SQLite (rusqlite `bundled`) + FTS5 + sqlite-vec, un fichero en `~/.omoikane/omoikane.db` |
+| CLI | `clap` |
+| Calidad de model2vec por debajo de MiniLM/E5 | va fusionado con BM25; la palabra exacta siempre cuenta. Backend intercambiable si hace falta ONNX |
+| Concurrencia | una conexión por proceso, WAL, `BEGIN IMMEDIATE`, `busy_timeout` 5 s. Sin demonio |
+| El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar. Medir con `recent` cuántas memorias salen por sesión real |
+| El modelo multilingüe tardaba 1,78 s en cargar | resuelto en la fase 0.5: formato compilado y mapeado, 2,7 ms |
+| Embeddings | model2vec (estáticos, Rust puro, sin ONNX). Modelo por defecto multilingüe. **Cero dependencias externas es un principio**: descartado EmbeddingGemma 2 / ONNX Runtime (el de Troba) aunque tenga mejor calidad (27-oct-2026) |
+| Idioma del código | identificadores y comentarios en español (como Troba); README en inglés y español |
+| Implementation | Throughput                                         |
+| Importación/conversión | **aparcado**. Más adelante, aparte del núcleo: convertidor desde otros sistemas y JSON/JSONL/Markdown |
+| Lenguaje | Rust 2024, MSRV 1.88 |
+| Licencia | MIT |
+| MCP | `rmcp` (SDK oficial), transporte stdio |
+| Model                                                                 | Language    | Sentence Transformer                                            | Params  | Task      |
+| Nombre | Omoikane; binario y crate `omoikane`, comando `omoi` |
+| Nuestro troceado deja de coincidir con `tokenizers` si cambia el `tokenizer.json` del modelo | el test de equivalencia (`fase05 equivalencia`) se pasa en CI y antes de publicar cualquier modelo nuevo |
+| Qué | Resultado |
+| Tool | Parámetros | Devuelve |
+| Windows (MSVC, rutas, hooks) | se desarrolla en Windows desde el día 1; Linux en el servidor casero; macOS por CI |
+| [potion-base-32M](https://huggingface.co/minishlab/potion-base-32M)   | English    | [bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | 32.3M   | General   |
+| [potion-base-8M](https://huggingface.co/minishlab/potion-base-8M)     | English    | [bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | 7.5M    | General   |
+| [potion-retrieval-32M](https://huggingface.co/minishlab/potion-retrieval-32M) | English    | [bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | 32.3M   | Retrieval |
+| `SessionStart` | `omoi recall --session-start` | `preference` + `pinned` del proyecto y globales. Y una línea: «Tienes memoria: usa `remember` para guardar lo que aprendas» |
+| `UserPromptSubmit` | `omoi recall` (lee el JSON del hook por stdin) | top 3-5 por relevancia con el prompt, más `gotcha` cuyos `paths` aparezcan mencionados en el prompt |
+| `decision` | elección con sus motivos | por relevancia |
+| `fact` | cómo es algo del proyecto | por relevancia |
+| `forget` | id | borrado (duro; el historial se va con ella) |
+| `gotcha` | trampa, bug no obvio, «no hagas X porque Y» | cuando el prompt o los `paths` coinciden |
+| `history` | id | versiones |
+| `paths`, `tags`, `pinned` | el agente, si quiere |
+| `paths`, `tags`, `pinned` | the agent, optionally |
+| `preference` | cómo quiere trabajar el usuario | siempre, en su ámbito |
+| `project`, `source`, fechas, estadísticas de recall, historial de versiones | Omoikane |
+| `recent` | limit?, kind? | últimas guardadas en el proyecto |
+| `remember` | title, content, kind, paths?, tags?, pinned? | id, o `duplicate_of` + candidata si hay una muy parecida |
+| `search` | query, kind?, tags?, limit? (10), all_projects? | lista compacta: id, kind, title, 200 letras, paths |
+| `title`, `content`, `kind` (`fact` · `decision` · `gotcha` · `preference`) | el agente |
+| `title`, `content`, `kind` (`fact` · `decision` · `gotcha` · `preference`) | the agent |
+| `update` | id, title?, content?, kind?, paths?, tags?, pinned?, reason? | nueva versión |
+| abrir base + 1 consulta FTS | 1,7 ms |
+| campo | quién lo pone |
+| field | who sets it |
+| sqlite-vec sin índice ANN: fuerza bruta, ~1 µs por vector | 5k memorias (uso intenso real) = 6 ms, bien. A partir de 20k (24 ms) probar `int8[256]` en vec0 (4× menos datos) o prefiltrar por proyecto con una columna de partición de vec0 |
+| Ámbitos | `project` (raíz git canónica) o `global`. Nada más |
+|-----------------------------------------------------------------------|------------|-----------------------------------------------------------------|---------|-----------|
+|---|---|
+|---|---|---|
+|| (0x2A700..=0x2B73F).contains(&r)
+|| (0x2B740..=0x2B81F).contains(&r)
+|| (0x2F800..=0x2FA1F).contains(&r)
+|| (0x3400..=0x4DBF).contains(&r)
+} => {
+} else if hi < 1.0 {
+} else if let Some(fu) = FastUnigram::from_tokenizer(&tokenizer, unk_token_id) {
+} else if self.lowercase {
+} else if self.meta.byte_fallback && racha.bytes().all(|b| self.bytes[b as usize] != NONE) {
+} else {
+}"###;
+└─ reason        opcional: por qué cambia
+└─ recall_count  veces devuelto (lo mantiene Omoikane)
+└─ setup.rs        instalar en ~/.claude y otros agentes
+├─ LICENSE
+├─ README.es.md       español
+├─ README.md          inglés
+├─ buscar.rs       FTS + vec + RRF + boosts
+├─ content       markdown corto: qué, por qué, dónde
+├─ db.rs           conexión, PRAGMA, esquema, migraciones
+├─ embeber.rs      modelo compilado y mapeado: compilar, abrir, ids, vector
+├─ lib.rs          módulos (para que los examples y tests los usen)
+├─ main.rs         CLI (clap) y arranque
+├─ mcp.rs          servidor stdio con rmcp
+├─ memoria.rs      tipos, guardar, actualizar, historial, borrar
+├─ paths         JSON array de rutas relativas a la raíz del proyecto (opcional)
+├─ pinned        0/1: se inyecta siempre en su proyecto
+├─ project       raíz git canónica (ruta absoluta normalizada); '' = global
+├─ proyecto.rs     raíz git canónica desde un cwd
+├─ publicar_release.py  (fase 5, como en Troba)
+├─ source        agente + sesión que lo guardó ("claude-code:<session_id>")
+├─ tags          JSON array de etiquetas libres (opcional)
+├─ title         una línea
+"!!!??? ((())) [a]{b}", // punctuation runs / adjacency
+El ayuntamiento recoge el vidrio los miércoles; el cartón, los viernes.
+¿Por qué falla el login después de actualizar la librería de autenticación?
+L'Ajuntament d'Artà recull el vidre dimecres i el paper divendres.
+Les élèves ont étudié l’histoire de la Révolution française.
+Größere Äpfel schmecken süßer als kleinere, sagt Jürgen.
+O pão de queijo é típico de Minas Gerais, no Brasil.
+La pizza napoletana è patrimonio dell'UNESCO dal 2017.
+Het fietspad langs de gracht is afgesloten tot vrijdag.
+Москва — столица России, крупнейший город Европы.
+Η Αθήνα είναι η πρωτεύουσα της Ελλάδας.
+Київ є столицею України.
+Warszawa leży nad Wisłą.
+İstanbul, Avrupa ile Asya arasında bir köprüdür.
+東京は日本の首都です。人口は約1400万人。
+北京是中国的首都，有三千多年的历史。
+臺北一〇一曾經是世界最高的建築。
+서울은 대한민국의 수도입니다.
+القاهرة هي عاصمة مصر وأكبر مدنها.
+ירושלים היא עיר עתיקה מאוד.
+हिंदी भारत की एक प्रमुख भाषा है।
+ভাষা আন্দোলন ১৯৫২ সালে হয়েছিল।
+ภาษาไทยไม่มีช่องว่างระหว่างคำ
+Tiếng Việt có sáu thanh điệu.
+Kiswahili ni lugha ya Afrika Mashariki.
+Ísland er eyja í Norður-Atlantshafi.
+½ café, 2³ = 8, ﬁn, Ⅻ, ｆｕｌｌｗｉｄｔｈ, ℃, №5
+emoji 🤖🧠 y combinados 👩‍💻 🇪🇸 👍🏽
+<private>secreto</private> https://example.com/a?b=c&d=e#f
+fn main() { println!("{:?}", vec![1, 2, 3]); } // código
+SELECT * FROM memory WHERE kind = 'gotcha' AND pinned = 1;
+ꙮ 𓀀 𝔘𝔫𝔦𝔠𝔬𝔡𝔢 ﷽
+a
+ñ
