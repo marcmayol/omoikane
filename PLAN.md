@@ -25,7 +25,7 @@ No es una adaptación de ningún otro sistema de memoria. El modelo de datos es 
 | Licencia | MIT |
 | Almacenamiento | SQLite (rusqlite `bundled`) + FTS5 + sqlite-vec, un fichero en `~/.omoikane/omoikane.db` |
 | Concurrencia | una conexión por proceso, WAL, `BEGIN IMMEDIATE`, `busy_timeout` 5 s. Sin demonio |
-| Embeddings | model2vec (estáticos, Rust puro, sin ONNX). Modelo por defecto multilingüe; backend intercambiable |
+| Embeddings | model2vec (estáticos, Rust puro, sin ONNX). Modelo por defecto multilingüe. **Cero dependencias externas es un principio**: descartado EmbeddingGemma 2 / ONNX Runtime (el de Troba) aunque tenga mejor calidad (27-oct-2026) |
 | MCP | `rmcp` (SDK oficial), transporte stdio |
 | CLI | `clap` |
 | Ámbitos | `project` (raíz git canónica) o `global`. Nada más |
