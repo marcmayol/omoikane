@@ -187,9 +187,9 @@ Formato de salida: JSON `hookSpecificOutput.additionalContext` con un bloque bre
 
 Presupuesto: ≤ 600 tokens por inyección; cada memoria truncada a su `title` + primeras 200 letras. El agente pide `get` si quiere el resto.
 
-**Latencia**: el hook debe responder en < 50 ms en frío. **Decidido en la fase 0: el hook no carga el modelo** (tarda 1,65 s en cargar, casi todo en el tokenizer de 500.000 entradas). El hook hace FTS + `paths` + pinned: abrir la base y consultar cuesta 1,7 ms. La parte semántica vive en el servidor MCP, que es un proceso largo: carga el modelo en un hilo aparte al arrancar, así que la primera `search` no paga la espera (si llega antes de que termine, responde solo con FTS).
+**Latencia**: el hook debe responder en < 50 ms en frío. En la fase 0 el modelo tardaba 1,65 s en cargar y el hook iba a quedarse sin semántica; **la fase 0.5 lo resolvió: el modelo abre en 2,7 ms** (ver §9). Así que **el hook hace búsqueda híbrida completa** (FTS + vector + `paths` + pinned) en cada mensaje. Presupuesto estimado: arrancar el proceso + abrir base (1,7 ms) + abrir modelo (2,7 ms) + vector de la consulta (0,4 ms) + KNN y FTS (≈ 7 ms con 5k memorias) ≈ 15 ms.
 
-**Vectores pendientes**: quien guarde sin modelo cargado (el CLI con `--rapido`, o el servidor antes de terminar de cargar) deja la memoria sin vector. El servidor MCP, al tener el modelo listo, rellena los que falten. Así nada bloquea por el modelo y el índice vectorial converge solo.
+Todos los procesos (hook, CLI, servidor MCP) cargan el modelo igual de rápido, así que no hay vectores pendientes ni carga en segundo plano: cada memoria se guarda con su vector en la misma transacción. La tabla está mapeada y compartida por el sistema operativo entre procesos: 5 sesiones no son 5 copias en RAM.
 
 **Compactación**: `SessionStart` con `matcher: compact` vuelve a inyectar las `preference`/`pinned`, que es lo que se pierde al compactar.
 
@@ -236,6 +236,10 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
   - **Cuantización propia** (decidido en la fase 0). La comunitaria (`alikia2x/…-int8`) no sirve: solo trae int8 en ONNX, su safetensors sigue en f32. La nuestra: int8 con una escala por fila, plegada en el tensor `weights` para que model2vec-rs la aplique sin cambios. **130,1 MB**, fidelidad frente a f32: coseno mínimo **0,99996**.
   - Por qué int8 y no f32 (confirmado 27-oct-2026): cada sesión del agente arranca su propio `omoi mcp` con su copia del modelo. 3 sesiones = ~1,6 GB en f32 frente a ~450 MB en int8, con la misma calidad y velocidad.
   - Se publicará en Hugging Face bajo `marcmayol/` en la fase 5. Hasta entonces, `omoi model` puede generarla desde el f32 oficial (es el código de `examples/fase0.rs`).
+- **Carga en 2,7 ms (fase 0.5)**. `tokenizers` gastaba 1,3 s de los 1,78 en construir el vocabulario Unigram (500.353 piezas) en cada arranque. `src/embeber.rs` hace ese trabajo una vez (`compilar`, 2,7 s) y lo deja en ficheros planos que luego solo se mapean (`memmap2`): trie de doble array (18,5 MB), puntuaciones (4 MB), tabla int8 (128 MB), pesos (2 MB), y el `tokenizer.json` **sin vocabulario** (0,3 MB, carga en 3 ms) para normalizar y pre-tokenizar. El troceado (Viterbi) y el trie reproducen los de model2vec-rs (MIT, The Minish Lab).
+  - Equivalencia comprobada (`examples/fase05.rs`): 165.282 frases, 3,6 M de tokens, **0 ids distintos** frente a `tokenizers`; coseno mínimo **0,999998** frente a model2vec-rs. Vector medio: 0,027 ms.
+  - model2vec-rs pasa a ser solo dependencia de desarrollo (para el test de equivalencia).
+  - Lo que se distribuye es ya el formato compilado (≈ 153 MB): el usuario no compila nada.
 - Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
 - Vector = `title + "\n" + content`, normalizado (coseno).
 - Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
@@ -255,7 +259,8 @@ Omoikane/
    ├─ db.rs           conexión, PRAGMA, esquema, migraciones
    ├─ memoria.rs      tipos, guardar, actualizar, historial, borrar
    ├─ buscar.rs       FTS + vec + RRF + boosts
-   ├─ embeber.rs      model2vec: descarga, carga, encode
+   ├─ lib.rs          módulos (para que los examples y tests los usen)
+   ├─ embeber.rs      modelo compilado y mapeado: compilar, abrir, ids, vector
    ├─ proyecto.rs     raíz git canónica desde un cwd
    ├─ recall.rs       selección e inyección (SessionStart / UserPromptSubmit)
    ├─ hook.rs         leer el JSON de Claude Code por stdin, escribir la respuesta
@@ -282,6 +287,12 @@ Medidas en el PC de desarrollo (Windows 11, release), reproducibles con `cargo r
 | FTS5 bm25 top 40 | 0,68 ms (5k) · 4,7 ms (50k) |
 | KNN vec0 k=40, fuerza bruta | 5,8 ms (5k) · 24 ms (20k) · 53 ms (50k) |
 | tamaño base | 10 MB (5k) · 100 MB (50k) |
+
+### Fase 0.5 · cargar el modelo en milisegundos ✅ (27-oct-2026)
+- [x] Perfil de la carga: 1.321 ms de 1.780 en `Tokenizer::from_bytes` (construir el vocabulario); el mismo tokenizer sin vocabulario carga en 3 ms.
+- [x] Formato compilado y mapeado (`src/embeber.rs`): **abrir 2,7 ms**, primer vector 0,4 ms.
+- [x] Equivalencia: 0 ids distintos en 165.282 frases; coseno ≥ 0,999998.
+- [x] Decisión: el hook sí hace búsqueda semántica (§6).
 
 Similitud semántica de muestra (int8), con «fallo de login en la pantalla de acceso»: «login failure on the sign-in screen» **0,558** · «bug en auth: el token caduca antes de tiempo» **0,245** · «el middleware de autenticación…» 0,142 · temas ajenos entre −0,04 y 0,12. Ordena bien y cruza idiomas, pero con márgenes cortos en español: por eso va siempre fusionado con BM25 y nunca solo.
 
@@ -325,7 +336,8 @@ Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JS
 
 | Riesgo | Mitigación |
 |---|---|
-| El modelo multilingüe tarda 1,65 s en cargar | resuelto: el hook no lo usa; el servidor MCP lo carga en segundo plano |
+| El modelo multilingüe tardaba 1,78 s en cargar | resuelto en la fase 0.5: formato compilado y mapeado, 2,7 ms |
+| Nuestro troceado deja de coincidir con `tokenizers` si cambia el `tokenizer.json` del modelo | el test de equivalencia (`fase05 equivalencia`) se pasa en CI y antes de publicar cualquier modelo nuevo |
 | sqlite-vec sin índice ANN: fuerza bruta, ~1 µs por vector | 5k memorias (uso intenso real) = 6 ms, bien. A partir de 20k (24 ms) probar `int8[256]` en vec0 (4× menos datos) o prefiltrar por proyecto con una columna de partición de vec0 |
 | Calidad de model2vec por debajo de MiniLM/E5 | va fusionado con BM25; la palabra exacta siempre cuenta. Backend intercambiable si hace falta ONNX |
 | El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar. Medir con `recent` cuántas memorias salen por sesión real |
