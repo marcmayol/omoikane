@@ -33,6 +33,8 @@ No es una adaptación de ningún otro sistema de memoria. El modelo de datos es 
 | Importación/conversión | **aparcado**. Más adelante, aparte del núcleo: convertidor desde otros sistemas y JSON/JSONL/Markdown |
 | Fuera de v1 | nube, sincronización, TUI, export a Obsidian, relaciones entre memorias, caducidades por tipo |
 | Idioma del código | identificadores y comentarios en español (como Troba); README en inglés y español |
+| Idioma de la CLI | ayuda, mensajes y errores en **inglés por defecto**, en español con `OMOIKANE_LANG=es` (decidido 27-oct-2026). Los comandos son siempre en inglés |
+| Proyecto | raíz del repo git que contiene la carpeta (`.git` carpeta o fichero, para worktrees); si no hay git, la propia carpeta. Ruta canónica (en Windows sin `\\?\` y con la unidad en mayúscula) |
 
 ## 3. Modelo de memoria
 
@@ -84,59 +86,37 @@ Solo se lee con `history`. Búsqueda y recall miran la versión viva. El número
 
 ## 4. Esquema SQL
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
+El que crea `src/db.rs` (esquema 1, `PRAGMA user_version`). La conexión usa WAL, `synchronous=NORMAL`, `foreign_keys=ON` y `busy_timeout` de 5 s; toda escritura va en una transacción `IMMEDIATE`.
 
+```sql
 CREATE TABLE memory (
-  id           TEXT PRIMARY KEY,
-  project      TEXT NOT NULL DEFAULT '',
+  n            INTEGER PRIMARY KEY,          -- enlace estable con FTS (y con vec en la fase 2)
+  id           TEXT NOT NULL UNIQUE,         -- ULID: lo que ven el agente y la persona
+  project      TEXT NOT NULL DEFAULT '',     -- '' = global
   kind         TEXT NOT NULL CHECK (kind IN ('fact','decision','gotcha','preference')),
   title        TEXT NOT NULL,
   content      TEXT NOT NULL,
-  paths        TEXT NOT NULL DEFAULT '[]',
-  tags         TEXT NOT NULL DEFAULT '[]',
+  paths        TEXT NOT NULL DEFAULT '[]',   -- JSON
+  tags         TEXT NOT NULL DEFAULT '[]',   -- JSON
   pinned       INTEGER NOT NULL DEFAULT 0,
   source       TEXT NOT NULL DEFAULT '',
-  created_at   TEXT NOT NULL,
+  created_at   TEXT NOT NULL,                -- ISO-8601 UTC con milisegundos
   updated_at   TEXT NOT NULL,
   recalled_at  TEXT,
   recall_count INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX memory_project ON memory(project, kind);
+CREATE INDEX memory_project ON memory(project, kind, updated_at);
 CREATE INDEX memory_pinned  ON memory(project) WHERE pinned = 1;
 
 CREATE TABLE memory_version (
   memory_id  TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
   version    INTEGER NOT NULL,
-  title      TEXT NOT NULL,
-  content    TEXT NOT NULL,
-  kind       TEXT NOT NULL,
-  paths      TEXT NOT NULL,
-  tags       TEXT NOT NULL,
+  title TEXT NOT NULL, content TEXT NOT NULL, kind TEXT NOT NULL, paths TEXT NOT NULL, tags TEXT NOT NULL,
   changed_at TEXT NOT NULL,
   reason     TEXT,
   PRIMARY KEY (memory_id, version)
 );
 
--- rowid entero para enlazar FTS y vec con el id ULID
-CREATE TABLE memory_rowid (
-  rowid INTEGER PRIMARY KEY,
-  id    TEXT NOT NULL UNIQUE REFERENCES memory(id) ON DELETE CASCADE
-);
-
-CREATE VIRTUAL TABLE memory_fts USING fts5(
-  title, content, tags,
-  content='', tokenize='unicode61 remove_diacritics 2'
-);
--- índice externo (content=''): se mantiene a mano en las mismas transacciones que memory
-
-CREATE VIRTUAL TABLE memory_vec USING vec0(
-  embedding float[256] distance_metric=cosine
-);
-
--- paths desplegados para el recall por fichero
 CREATE TABLE memory_path (
   memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
   path      TEXT NOT NULL,
@@ -144,27 +124,41 @@ CREATE TABLE memory_path (
 );
 CREATE INDEX memory_path_path ON memory_path(path);
 
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+  title, content, tags,
+  content='', contentless_delete=1,
+  tokenize='unicode61 remove_diacritics 2'
+);
+
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
--- meta: schema_version, embedding_model, embedding_dim
 ```
 
+Fase 2 (esquema 2): `memory_vec USING vec0(embedding float[256] distance_metric=cosine)` con `rowid = memory.n`, y en `meta` el modelo con el que se calcularon los vectores.
+
 Notas:
-- `remove_diacritics 2` hace que «autenticación» y «autenticacion» sean la misma palabra. Sin stemming en v1: el vector cubre las variantes morfológicas.
-- La dimensión del vector se fija al crear la base según el modelo (`meta.embedding_dim`). Cambiar de modelo implica `omoi reindex`.
-- FTS, vec, paths y memory se escriben en **una sola transacción**. Nunca hay memoria sin índice.
+- **Cambio respecto al primer borrador** (fase 1): en vez de una tabla `memory_rowid` aparte, `memory` lleva su propio `n INTEGER PRIMARY KEY`. Es una tabla menos, y un alias de rowid no cambia con `VACUUM` (el rowid implícito de una tabla con clave `TEXT` sí puede cambiar).
+- `memory_fts` no guarda texto (`content=''`): el texto ya está en `memory`. `contentless_delete=1` (SQLite ≥ 3.43) permite borrar por rowid sin pasar los valores viejos.
+- `remove_diacritics 2` hace que «autenticación» y «autenticacion» sean la misma palabra. Sin stemming: en la fase 2 el vector cubre las variantes morfológicas.
+- Fijar o desfijar no crea versión ni cambia `updated_at` (que da la recencia).
+- Borrar es borrar: `memory_version` y `memory_path` caen por `ON DELETE CASCADE` y el FTS se borra en la misma transacción.
 
 ## 5. Búsqueda y ranking
 
 ```
-candidatos_fts  = top 40 por bm25(memory_fts, 3.0, 1.0, 2.0)   -- título pesa 3, tags 2
-candidatos_vec  = top 40 por distancia coseno en memory_vec
-fusion          = RRF con k = 60:  score = Σ 1 / (k + rango_i)
+consulta        = palabras de lo escrito, sin palabras vacías (castellano, inglés, catalán),
+                  cada una entre comillas; desde 3 letras, exacta OR prefijo ("token" OR "token"*)
+candidatos_fts  = top 40 por bm25(memory_fts, 3.0, 1.0, 2.0)   -- título pesa 3, etiquetas 2
+relevancia      = -bm25 + cobertura                            -- cobertura: parte de las palabras presentes (0-1)
+candidatos_vec  = top 40 por distancia coseno en memory_vec                        (fase 2)
+fusion          = RRF con k = 60:  score = Σ 1 / (k + rango_i)                     (fase 2)
 boosts          = ×1.5 si pinned · ×(1 + 0.3·recencia) con recencia = 1/(1 + días/90)
-resultado       = top N tras filtrar por project/kind/tags
+resultado       = top N tras filtrar por proyecto (+ globales) / kind / etiquetas
 ```
 
-- Sin embedding disponible (modelo no descargado, `--no-vec`), la búsqueda es FTS sola. Nunca falla por falta de modelo.
-- Términos de menos de 3 letras van igual por FTS (unicode61 no tiene el límite del trigram).
+- **Exacta y prefijo a la vez**: «memoria» encuentra «memorias», pero quien dice «memoria» suma las dos y queda delante. Sin esto, buscar «marca20» sacaba antes «marca200» (lo destapó el test de coherencia).
+- **Cobertura**: con pocas memorias BM25 no distingue (si una palabra está en la mitad de los documentos, su IDF es 0 y todo puntúa casi 0). La parte de las palabras buscadas que aparece en la memoria desempata; con muchas memorias pesa poco al lado de BM25.
+- Ninguna sintaxis FTS5 de lo que escribe la persona llega al índice: todo va entre comillas.
+- Sin embedding disponible, la búsqueda es FTS sola. Nunca falla por falta de modelo.
 - Cada resultado devuelto por `search` o `recall` actualiza `recalled_at` y `recall_count`.
 
 ## 6. Recall automático
@@ -311,11 +305,12 @@ Medidas en el PC de desarrollo (Windows 11, release), reproducibles con `cargo r
 
 Similitud semántica de muestra (int8), con «fallo de login en la pantalla de acceso»: «login failure on the sign-in screen» **0,558** · «bug en auth: el token caduca antes de tiempo» **0,245** · «el middleware de autenticación…» 0,142 · temas ajenos entre −0,04 y 0,12. Ordena bien y cruza idiomas, pero con márgenes cortos en español: por eso va siempre fusionado con BM25 y nunca solo.
 
-### Fase 1 · núcleo (2 días)
-- `db.rs`, `memoria.rs`, `proyecto.rs`, `buscar.rs` (solo FTS).
-- CLI: remember, search, get, update, forget, history, recent, projects, export.
-- Tests de integración con base en memoria: guardar/buscar en español con acentos, update crea versión, forget borra todo, FTS y tabla siempre coherentes.
-- Hecho cuando: `omoi remember` + `omoi search "fallo de autenticación"` encuentra «bug en auth» por FTS con la palabra y los tests pasan.
+### Fase 1 · núcleo ✅ (27-oct-2026)
+- [x] `db.rs` (esquema 1, WAL, transacciones IMMEDIATE), `memoria.rs`, `proyecto.rs`, `buscar.rs` (solo FTS), `idioma.rs`.
+- [x] CLI: remember, search, get, update, forget, history, recent, projects, export, doctor; todas con `--json`; `--db` y `--dir` globales; contenido por argumento o por la entrada estándar; ids por su principio (la CLI enseña 12 caracteres).
+- [x] Tests (28 en total): 8 unitarios, 12 de núcleo (tildes, orden, versiones, fijar, borrar, ámbitos, filtros, ids, recuperadas, export, **coherencia** tras 400 operaciones al azar, **concurrencia** con 4 conexiones escribiendo a la vez), 7 de CLI de punta a punta (incluido el criterio de «hecho»), y el de equivalencia de la 0.5.
+- [x] CI en GitHub Actions: Windows, Linux y macOS (adelantado de la fase 5), con el modelo int8 descargado de Hugging Face y en caché.
+- [x] Hecho: `omoi remember` + `omoi search "fallo de autenticación"` encuentra «Bug en auth» con y sin tilde.
 
 ### Fase 2 · vectores (1 día)
 - `embeber.rs`, tabla `memory_vec`, RRF, dedupe por similitud, `omoi model`, `omoi reindex`.

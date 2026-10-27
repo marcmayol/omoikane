@@ -8,9 +8,27 @@
 
 ## Estado
 
-En desarrollo. Todavía no hay nada que instalar. El diseño completo y las fases están en [PLAN.md](PLAN.md).
+En desarrollo. El diseño completo y las fases están en [PLAN.md](PLAN.md).
 
-Hecho hasta ahora: el motor de embeddings. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
+Funciona ya: el almacén de memorias y su CLI (fase 1), con búsqueda por palabras. Lo siguiente: búsqueda por significado (fase 2), el servidor MCP (fase 3) y el recall automático con hooks (fase 4). La CI corre en Windows, Linux y macOS.
+
+El motor de embeddings de la fase 2 también está listo. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
+
+## Probarlo
+
+Hace falta [Rust](https://rustup.rs). Después:
+
+```sh
+cargo install --git https://github.com/marcmayol/omoikane
+cd tu-proyecto
+omoi remember -k gotcha -t "El token caduca antes de tiempo" --path src/auth.rs \
+  "El middleware compara la hora local con la caducidad del token, que va en UTC."
+omoi search "token caduca"
+omoi recent
+OMOIKANE_LANG=es omoi --help
+```
+
+Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
 ## Qué va a hacer
 

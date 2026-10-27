@@ -8,9 +8,27 @@
 
 ## Status
 
-Early development. Nothing to install yet. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
+Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Done so far: the embedding engine. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1), with keyword search. Coming next: meaning-based search (phase 2), the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS.
+
+The embedding engine for phase 2 is ready too. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+
+## Try it
+
+You need [Rust](https://rustup.rs). Then:
+
+```sh
+cargo install --git https://github.com/marcmayol/omoikane
+cd your-project
+omoi remember -k gotcha -t "Token expires early" --path src/auth.rs \
+  "Auth middleware compares local time against the token's UTC expiry."
+omoi search "auth token"
+omoi recent
+omoi --help
+```
+
+Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
 ## What it will do
 
