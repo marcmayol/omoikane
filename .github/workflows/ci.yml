@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      OMOI_MODELO_INT8: ${{ github.workspace }}/../modelo-int8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # El modelo int8 (150 MB) para el test de equivalencia: sin él, el test se salta.
+      - uses: actions/cache@v4
+        id: modelo
+        with:
+          path: ${{ github.workspace }}/../modelo-int8
+          key: modelo-int8-potion-multilingual-128M-v1
+      - name: Descargar el modelo
+        if: steps.modelo.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$OMOI_MODELO_INT8"
+          for f in model.safetensors tokenizer.json config.json; do
+            curl -sSfL --retry 3 -o "$OMOI_MODELO_INT8/$f" \
+              "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main/$f"
+          done
+
+      - run: cargo build --release --locked --all-targets
+      - run: cargo test --release --locked -- --nocapture
+      - name: Probar el binario
+        run: |
+          export OMOIKANE_DB="$RUNNER_TEMP/humo.db"
+          ./target/release/omoi doctor
+          ./target/release/omoi remember -k gotcha -t "Bug en auth" "Fallo de autenticación: el token caduca."
+          ./target/release/omoi search "fallo de autenticación" | grep -q "Bug en auth"
