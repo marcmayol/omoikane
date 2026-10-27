@@ -18,6 +18,11 @@ use std::path::Path;
 use tokenizers::models::ModelWrapper;
 use tokenizers::{Model, OffsetReferential, OffsetType, PreTokenizer, Tokenizer};
 
+// Los ficheros del modelo se escriben y se leen en little-endian (x86-64 y ARM64, Apple Silicon
+// incluido). En una máquina big-endian saldrían vectores basura sin avisar: mejor no compilar.
+#[cfg(target_endian = "big")]
+compile_error!("omoikane solo funciona en plataformas little-endian");
+
 const NONE: u32 = u32::MAX;
 /// `K_UNK_PENALTY` de `tokenizers`: un carácter desconocido puntúa esto por debajo de la peor pieza.
 const PENALIZACION_DESCONOCIDO: f64 = 10.0;
