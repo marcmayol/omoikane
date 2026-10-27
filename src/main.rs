@@ -366,7 +366,9 @@ fn doctor(c: &Comun) -> Result<()> {
         let p: i64 = base.query_row("SELECT count(DISTINCT project) FROM memory", [], |f| f.get(0))?;
         let v = db::VERSION_ESQUEMA;
         let r = ruta.display();
-        println!("{}", tr!("database   {r} ({n} memories, {p} projects, schema {v})", "base       {r} ({n} memorias, {p} proyectos, esquema {v})"));
+        let memorias = if n == 1 { tr!("1 memory", "1 memoria") } else { tr!("{n} memories", "{n} memorias") };
+        let proyectos = if p == 1 { tr!("1 project", "1 proyecto") } else { tr!("{p} projects", "{p} proyectos") };
+        println!("{}", tr!("database   {r} ({memorias}, {proyectos}, schema {v})", "base       {r} ({memorias}, {proyectos}, esquema {v})"));
     } else {
         let r = ruta.display();
         println!("{}", tr!("database   {r} (not created yet: it appears with the first memory)", "base       {r} (todavía no existe: se crea al guardar la primera memoria)"));
