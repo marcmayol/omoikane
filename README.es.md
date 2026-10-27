@@ -8,7 +8,9 @@
 
 ## Estado
 
-En planificación. Todavía no hay nada que instalar. El diseño completo y las fases están en [PLAN.md](PLAN.md).
+En desarrollo. Todavía no hay nada que instalar. El diseño completo y las fases están en [PLAN.md](PLAN.md).
+
+Hecho hasta ahora: el motor de embeddings. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
 
 ## Qué va a hacer
 
