@@ -8,7 +8,9 @@
 
 ## Status
 
-Planning. Nothing to install yet. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
+Early development. Nothing to install yet. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
+
+Done so far: the embedding engine. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
 ## What it will do
 
