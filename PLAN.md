@@ -234,6 +234,7 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
 - Crate `model2vec-rs` (MIT). Modelos estáticos: tokenizar + sumar vectores. Sin ONNX, sin GPU, microsegundos por frase.
 - Modelo por defecto: **potion-multilingual-128M** cuantizado a int8 (256 dims, 101 idiomas). Oficial f32: 512 MB de pesos + 18,6 MB de tokenizer. Se descarga una vez a `~/.omoikane/models/`.
   - **Cuantización propia** (decidido en la fase 0). La comunitaria (`alikia2x/…-int8`) no sirve: solo trae int8 en ONNX, su safetensors sigue en f32. La nuestra: int8 con una escala por fila, plegada en el tensor `weights` para que model2vec-rs la aplique sin cambios. **130,1 MB**, fidelidad frente a f32: coseno mínimo **0,99996**.
+  - Por qué int8 y no f32 (confirmado 27-oct-2026): cada sesión del agente arranca su propio `omoi mcp` con su copia del modelo. 3 sesiones = ~1,6 GB en f32 frente a ~450 MB en int8, con la misma calidad y velocidad.
   - Se publicará en Hugging Face bajo `marcmayol/` en la fase 5. Hasta entonces, `omoi model` puede generarla desde el f32 oficial (es el código de `examples/fase0.rs`).
 - Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
 - Vector = `title + "\n" + content`, normalizado (coseno).
