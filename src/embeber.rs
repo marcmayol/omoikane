@@ -258,6 +258,14 @@ impl Modelo {
         ensure!(m.tabla.len() == m.meta.filas * m.meta.dim, "tabla.i8 no cuadra con meta.json");
         ensure!(m.pesos.len() == m.meta.filas * 4, "pesos.f32 no cuadra con meta.json");
         ensure!(m.puntuaciones.len() == m.meta.filas * 8, "puntuaciones.bin no cuadra con meta.json");
+        // Cada token lee una fila suelta de 256 bytes de la tabla: sin este aviso, Linux lee 128 KB
+        // alrededor de cada fallo de página. Con la caché fría en un SSD SATA, el primer vector baja
+        // de ~50 a ~44 ms y los diez siguientes de ~170 a ~130 ms (A/B intercalado). En el trie no
+        // conviene: sus accesos sí están agrupados.
+        #[cfg(unix)]
+        for mapa in [&m.tabla, &m.pesos] {
+            let _ = mapa.advise(memmap2::Advice::Random);
+        }
         let mut m = m;
         if m.meta.byte_fallback {
             for b in 0..256 {
