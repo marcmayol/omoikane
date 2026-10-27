@@ -1134,6 +1134,7 @@ dependencies = [
  "model2vec-rs",
  "rmcp",
  "rusqlite",
+ "safetensors",
  "schemars",
  "serde",
  "serde_json",

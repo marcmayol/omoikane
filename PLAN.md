@@ -187,7 +187,9 @@ Formato de salida: JSON `hookSpecificOutput.additionalContext` con un bloque bre
 
 Presupuesto: ≤ 600 tokens por inyección; cada memoria truncada a su `title` + primeras 200 letras. El agente pide `get` si quiere el resto.
 
-**Latencia**: el hook debe responder en < 50 ms en frío. Por eso el hook **no carga el modelo de embeddings** salvo que cargue en < 30 ms (se mide en la fase 0). Si no: el hook hace FTS + `paths` + pinned, y la parte semántica queda para la tool `search` del servidor MCP (proceso largo, modelo cargado una vez). Decisión pendiente de la medida.
+**Latencia**: el hook debe responder en < 50 ms en frío. **Decidido en la fase 0: el hook no carga el modelo** (tarda 1,65 s en cargar, casi todo en el tokenizer de 500.000 entradas). El hook hace FTS + `paths` + pinned: abrir la base y consultar cuesta 1,7 ms. La parte semántica vive en el servidor MCP, que es un proceso largo: carga el modelo en un hilo aparte al arrancar, así que la primera `search` no paga la espera (si llega antes de que termine, responde solo con FTS).
+
+**Vectores pendientes**: quien guarde sin modelo cargado (el CLI con `--rapido`, o el servidor antes de terminar de cargar) deja la memoria sin vector. El servidor MCP, al tener el modelo listo, rellena los que falten. Así nada bloquea por el modelo y el índice vectorial converge solo.
 
 **Compactación**: `SessionStart` con `matcher: compact` vuelve a inyectar las `preference`/`pinned`, que es lo que se pierde al compactar.
 
@@ -230,8 +232,9 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
 ## 9. Embeddings
 
 - Crate `model2vec-rs` (MIT). Modelos estáticos: tokenizar + sumar vectores. Sin ONNX, sin GPU, microsegundos por frase.
-- Modelo por defecto: **potion-multilingual-128M** cuantizado a int8 (256 dims, 101 idiomas). Oficial f32: 512 MB de pesos + 18,6 MB de tokenizer. Int8 ≈ 130 MB. Se descarga una vez a `~/.omoikane/models/`.
-  - Fase 0 decide si usar la cuantización comunitaria (`alikia2x/potion-multilingual-128M-int8`) o publicar una propia en Hugging Face bajo `marcmayol/` para no depender de un tercero.
+- Modelo por defecto: **potion-multilingual-128M** cuantizado a int8 (256 dims, 101 idiomas). Oficial f32: 512 MB de pesos + 18,6 MB de tokenizer. Se descarga una vez a `~/.omoikane/models/`.
+  - **Cuantización propia** (decidido en la fase 0). La comunitaria (`alikia2x/…-int8`) no sirve: solo trae int8 en ONNX, su safetensors sigue en f32. La nuestra: int8 con una escala por fila, plegada en el tensor `weights` para que model2vec-rs la aplique sin cambios. **130,1 MB**, fidelidad frente a f32: coseno mínimo **0,99996**.
+  - Se publicará en Hugging Face bajo `marcmayol/` en la fase 5. Hasta entonces, `omoi model` puede generarla desde el f32 oficial (es el código de `examples/fase0.rs`).
 - Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
 - Vector = `title + "\n" + content`, normalizado (coseno).
 - Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
@@ -261,12 +264,25 @@ Omoikane/
 
 ## 11. Fases
 
-### Fase 0 · medir antes de decidir (½ día)
+### Fase 0 · medir antes de decidir ✅ (27-oct-2026)
 - [x] Esqueleto que compila con rusqlite + sqlite-vec + model2vec-rs + rmcp (`omoi doctor`).
-- [ ] Medir carga del modelo int8 en frío y en caliente, y encode de una frase.
-- [ ] Medir `vec0` con 50.000 vectores de 256 dims: tiempo de un KNN.
-- [ ] Decidir: ¿el hook carga el modelo? (ver §6). Decidir cuantización propia o comunitaria (§9).
-- Hecho cuando: hay números en este documento y las dos decisiones tomadas.
+- [x] Medir carga del modelo int8 en frío y en caliente, y encode de una frase.
+- [x] Medir `vec0` con 5.000 / 20.000 / 50.000 vectores de 256 dims.
+- [x] Decidir: el hook **no** carga el modelo (§6). Cuantización **propia** (§9).
+
+Medidas en el PC de desarrollo (Windows 11, release), reproducibles con `cargo run --release --example fase0 -- cuantizar | cargar DIR | buscar N`:
+
+| Qué | Resultado |
+|---|---|
+| carga modelo f32 / int8 propio | 1.896 ms / 1.650-1.805 ms (igual en caliente: es CPU, el tokenizer) |
+| encode de una frase | 0,037 ms |
+| fidelidad int8 vs f32 | coseno mínimo 0,99996 |
+| abrir base + 1 consulta FTS | 1,7 ms |
+| FTS5 bm25 top 40 | 0,68 ms (5k) · 4,7 ms (50k) |
+| KNN vec0 k=40, fuerza bruta | 5,8 ms (5k) · 24 ms (20k) · 53 ms (50k) |
+| tamaño base | 10 MB (5k) · 100 MB (50k) |
+
+Similitud semántica de muestra (int8), con «fallo de login en la pantalla de acceso»: «login failure on the sign-in screen» **0,558** · «bug en auth: el token caduca antes de tiempo» **0,245** · «el middleware de autenticación…» 0,142 · temas ajenos entre −0,04 y 0,12. Ordena bien y cruza idiomas, pero con márgenes cortos en español: por eso va siempre fusionado con BM25 y nunca solo.
 
 ### Fase 1 · núcleo (2 días)
 - `db.rs`, `memoria.rs`, `proyecto.rs`, `buscar.rs` (solo FTS).
@@ -308,8 +324,8 @@ Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JS
 
 | Riesgo | Mitigación |
 |---|---|
-| El modelo multilingüe (130 MB) tarda en cargar y rompe el presupuesto del hook | fase 0 lo mide; plan B: hook sin vectores, semántica solo en MCP |
-| sqlite-vec sin índice ANN: fuerza bruta | a 256 dims, 50k memorias ≈ 1-2 ms. Si alguien pasa de 200k, ya no es su herramienta |
+| El modelo multilingüe tarda 1,65 s en cargar | resuelto: el hook no lo usa; el servidor MCP lo carga en segundo plano |
+| sqlite-vec sin índice ANN: fuerza bruta, ~1 µs por vector | 5k memorias (uso intenso real) = 6 ms, bien. A partir de 20k (24 ms) probar `int8[256]` en vec0 (4× menos datos) o prefiltrar por proyecto con una columna de partición de vec0 |
 | Calidad de model2vec por debajo de MiniLM/E5 | va fusionado con BM25; la palabra exacta siempre cuenta. Backend intercambiable si hace falta ONNX |
 | El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar. Medir con `recent` cuántas memorias salen por sesión real |
 | Windows (MSVC, rutas, hooks) | se desarrolla en Windows desde el día 1; Linux en el servidor casero; macOS por CI |
