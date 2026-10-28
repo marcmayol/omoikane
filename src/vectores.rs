@@ -18,11 +18,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 /// aporta: está para cuando la similitud es alta de verdad (ver PLAN.md §5).
 pub const SIMILITUD_BUSQUEDA: f32 = 0.25;
 
-/// Similitud (vectores centrados) a partir de la cual guardar propone actualizar la memoria que ya
-/// existe. Con 127 notas reales, todas distintas: 1 de 8.001 pares pasa de 0,70 (4 de 0,65), lo que
-/// con 1.000 memorias da un aviso de más en ~12 % de los guardados (~40 % con 0,65). Lo que se
-/// detecta de `tests/pares_duplicados.tsv` lo mide el test `umbral_de_duplicados`.
-pub const SIMILITUD_DUPLICADO: f32 = 0.70;
+/// Cuándo guardar propone actualizar la memoria que ya existe: si el parecido (vectores centrados)
+/// llega a `SIMILITUD_DUPLICADO`, o si llega a `SIMILITUD_DUPLICADO_CON_PALABRAS` y las palabras de la
+/// nueva están en la existente (`COBERTURA_DUPLICADO` de su peso IDF, como en el recall). El vector
+/// solo no separaba: con 0,70, el 3,9 % de 127 notas reales distintas avisaba en falso y solo se
+/// detectaba el 66 % de esas notas guardadas otra vez como lo haría un agente (otro título, el
+/// principio del texto). Con las dos señales: 0 % de avisos en falso (notas y frases cortas) y 89 %
+/// detectadas (`examples/fase2.rs dupcob`). Lo que se pierde: paráfrasis cortas con otras palabras.
+pub const SIMILITUD_DUPLICADO: f32 = 0.78;
+pub const SIMILITUD_DUPLICADO_CON_PALABRAS: f32 = 0.40;
+pub const COBERTURA_DUPLICADO: f64 = 0.60;
 
 /// Lo que se convierte en vector: el título y el contenido.
 pub fn texto(title: &str, content: &str) -> String {
@@ -167,8 +172,17 @@ pub fn parecidas(
 /// Si ya hay una memoria casi igual en el mismo ámbito (el proyecto y las globales, o solo las
 /// globales si la nueva es global), la devuelve con su similitud.
 pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
-    let mut v = parecidas(db, modelo, &texto(title, content), Some(project), None, SIMILITUD_DUPLICADO, 1)?;
-    Ok(v.pop())
+    let nueva = texto(title, content);
+    let mut v = parecidas(db, modelo, &nueva, Some(project), None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
+        return Ok(Some(v.swap_remove(0)));
+    }
+    if v.is_empty() {
+        return Ok(None);
+    }
+    let coberturas = crate::recall::cobertura(db, project, &nueva, v.iter().map(|x| &x.0))?;
+    let mejor = coberturas.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
+    Ok(mejor.map(|i| v.swap_remove(i)))
 }
 
 /// Para `doctor`: con qué modelo están calculados los vectores y cuántos hay.

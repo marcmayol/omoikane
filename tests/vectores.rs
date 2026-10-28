@@ -123,10 +123,12 @@ fn pares() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// El umbral de duplicados, por el camino de verdad (vectores centrados con la media de la base):
-/// ningún falso positivo en los pares de calibración y al menos 4 de cada 10 duplicados detectados.
-/// El umbral está puesto para no molestar con notas reales (ver vectores::SIMILITUD_DUPLICADO), así
-/// que con frases cortas deja pasar duplicados: es el precio de no avisar en falso.
+/// El aviso de duplicados, por el camino de verdad (`vectores::duplicada`: vector centrado y
+/// palabras): ningún aviso en falso con los pares de calibración (ni de su pareja ni de otra frase de
+/// la base) y al menos un tercio de los duplicados detectados, apuntando a su pareja. Estos pares son
+/// paráfrasis cortas con otras palabras, lo más difícil para la regla: solo los coge el vector (desde
+/// 0,78). Con 0,70 se cogían algunos más, pero en notas reales avisaba en falso el 3,9 % de las veces
+/// y se escapaban un tercio de las notas guardadas dos veces (ver vectores::SIMILITUD_DUPLICADO).
 #[test]
 fn umbral_de_duplicados() {
     let Some(m) = modelo() else { return };
@@ -140,19 +142,20 @@ fn umbral_de_duplicados() {
     }
     let (mut acertados, mut duplicados, mut falsos) = (0, 0, Vec::new());
     for (clase, a, b) in &pares {
-        let p = vectores::parecidas(&db, &m, b, Some("/p"), None, -1.0, 100).unwrap();
-        let s = p.iter().find(|(mem, _)| &mem.title == a).map(|x| x.1).unwrap();
-        let detectado = s >= vectores::SIMILITUD_DUPLICADO;
+        let d = vectores::duplicada(&db, &m, "/p", b, b).unwrap();
         if clase == "dup" {
             duplicados += 1;
-            acertados += usize::from(detectado);
-        } else if detectado {
-            falsos.push(format!("{s:.3} «{a}» / «{b}»"));
+            acertados += usize::from(d.as_ref().is_some_and(|(mem, _)| &mem.title == a));
+        } else if let Some((mem, s)) = d
+            // Alguna B es la A de otro par: si esa frase ya está guardada, avisar es lo correcto.
+            && &mem.title != b
+        {
+            falsos.push(format!("{s:.3} «{}» / «{b}»", mem.title));
         }
     }
     eprintln!("duplicados detectados: {acertados} de {duplicados}");
     assert!(falsos.is_empty(), "falsos positivos: {falsos:?}");
-    assert!(acertados * 10 >= duplicados * 4, "solo {acertados} de {duplicados} duplicados");
+    assert!(acertados * 3 >= duplicados, "solo {acertados} de {duplicados} duplicados");
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }

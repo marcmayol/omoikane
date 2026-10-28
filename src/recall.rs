@@ -118,6 +118,22 @@ fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f
     Ok((n as f64, df))
 }
 
+/// Qué parte del peso IDF de las palabras de `texto` está en cada memoria (IDF del ámbito, como en
+/// `relevantes`). La usa también el aviso de duplicados.
+pub fn cobertura<'a>(db: &Connection, project: &str, texto: &str, memorias: impl Iterator<Item = &'a Memoria>) -> Result<Vec<f64>> {
+    let terminos = utiles(texto);
+    let (n, df) = frecuencias(db, project, &terminos)?;
+    let idf: Vec<f64> = df.iter().map(|d| (1.0 + (n - d.max(1.0) + 0.5) / (d.max(1.0) + 0.5)).ln()).collect();
+    let total: f64 = idf.iter().sum();
+    Ok(memorias
+        .map(|m| {
+            let f = fichas(m);
+            let dentro: f64 = terminos.iter().zip(&idf).filter(|(t, _)| esta(t, &f)).map(|(_, i)| i).sum();
+            if total > 0.0 { dentro / total } else { 0.0 }
+        })
+        .collect())
+}
+
 /// Las memorias que tienen que ver con `prompt`, de la más a la menos, con su cobertura.
 pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Vec<(Memoria, f64)>> {
     let terminos = utiles(prompt);

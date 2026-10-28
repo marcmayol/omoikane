@@ -3,6 +3,7 @@
 //!   cargo run --release --example fase2 -- duplicados   ¿separa el coseno los duplicados de los temas parecidos?
 //!   cargo run --release --example fase2 -- vectores N   vec0 frente a BLOB + vec_distance_cosine, filtrando por proyecto
 //!   cargo run --release --example fase2 -- busqueda     acierto de la búsqueda con tests/busquedas.tsv según el umbral
+//!   cargo run --release --example fase2 -- dupreal DIR  el aviso de duplicado, con el código de producción y notas reales
 
 use anyhow::{Result, anyhow};
 use omoikane::embeber::Modelo;
@@ -17,6 +18,9 @@ fn main() -> Result<()> {
         Some("variantes") => variantes(),
         Some("centrar") => centrar(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
         Some("real") => real(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
+        Some("dupprod") => dupprod(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
+        Some("dupcob") => dupcob(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
+        Some("dupreal") => dupreal(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
         _ => Err(anyhow!("uso: fase2 duplicados | vectores N | busqueda")),
     }
 }
@@ -571,4 +575,353 @@ fn configuraciones() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
         v.push((format!("rescate >= {u:.2}"), true, u, Fusion::Rescate));
     }
     v
+}
+
+/// El aviso de duplicado tal como lo da `vectores::parecidas` (centrado incluido), con notas reales
+/// de `dir` (las de `real`; no se suben). Tres medidas:
+/// - distintas: cada nota, antes de guardarla, contra las ya guardadas. Ninguna es duplicada de otra,
+///   así que todo aviso es un falso positivo.
+/// - reguardadas: cada nota dicha otra vez como lo haría un agente que no la ve (el resumen del índice
+///   como título y el principio del cuerpo). Debería avisar, y de su original.
+/// - los pares escritos a mano de tests/pares_duplicados.tsv, en la misma base.
+fn dupreal(dir: &std::path::Path) -> Result<()> {
+    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::vectores::{parecidas, texto};
+    let m = modelo()?;
+    let mut notas: Vec<(String, String, String)> = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if !f.ends_with(".md") || f == "MEMORY.md" {
+            continue;
+        }
+        let t = std::fs::read_to_string(e.path())?;
+        let Some(r) = t.strip_prefix("---") else { continue };
+        let Some(i) = r.find("
+---") else { continue };
+        let (cabecera, cuerpo) = (&r[..i], r[i + 4..].trim());
+        let Some(titulo) = cabecera.lines().find_map(|l| l.trim().strip_prefix("description:")) else { continue };
+        let titulo: String = titulo.trim().trim_matches('"').chars().take(120).collect();
+        notas.push((f, titulo, cuerpo.to_string()));
+    }
+    notas.sort();
+    let indice = std::fs::read_to_string(dir.join("MEMORY.md"))?;
+    let mut resumen_de = std::collections::HashMap::new();
+    for l in indice.lines() {
+        let (Some(i), Some(j), Some(k)) = (l.find("]("), l.find(".md)"), l.find(" — ")) else { continue };
+        let titulo = &l[l.find('[').unwrap_or(0) + 1..l.find("](").unwrap_or(0)];
+        let resumen = l[k + " — ".len()..].trim().trim_end_matches('…');
+        resumen_de.insert(format!("{}.md", &l[i + 2..j]), format!("{titulo}: {resumen}"));
+    }
+
+    let tmp = std::env::temp_dir().join(format!("omoi-dupreal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut distintas = Vec::new(); // (máxima similitud con las anteriores, fichero, con cuál)
+    let mut id_de = std::collections::HashMap::new();
+    for (f, t, c) in &notas {
+        let p = parecidas(&db, &m, &texto(t, c), Some("/p"), None, -1.0, 1)?;
+        if let Some((otra, s)) = p.first() {
+            distintas.push((*s, f.clone(), otra.title.chars().take(50).collect::<String>()));
+        }
+        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        id_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+    }
+    let mut reguardadas = Vec::new(); // (similitud con su original, mejor de las otras)
+    for (f, _, c) in &notas {
+        let Some(titulo) = resumen_de.get(f) else { continue };
+        let principio: String = c.chars().take(300).collect();
+        let p = parecidas(&db, &m, &texto(titulo, &principio), Some("/p"), None, -1.0, 200)?;
+        let propia = p.iter().find(|(x, _)| &id_de[&x.id] == f).map_or(-1.0, |x| x.1);
+        let otra = p.iter().find(|(x, _)| &id_de[&x.id] != f).map_or(-1.0, |x| x.1);
+        reguardadas.push((propia, otra));
+    }
+    let mut mano = Vec::new(); // (clase, similitud de b con a)
+    for (i, l) in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).enumerate() {
+        let c: Vec<&str> = l.split('\t').collect();
+        let proyecto = format!("/cal{i}");
+        let n = Nueva { project: proyecto.clone(), kind: Some(Tipo::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
+        let a = memoria::guardar(&mut db, n, Some(&m))?.id;
+        let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&proyecto), None, -1.0, 50)?;
+        mano.push((c[0].to_string(), p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1)));
+    }
+
+    let n_d = distintas.len() as f64;
+    let n_r = reguardadas.len() as f64;
+    let cuenta = |clase: &str| mano.iter().filter(|x| x.0 == clase).count() as f64;
+    println!("{} notas distintas, {} reguardadas, {} pares a mano
+", distintas.len(), reguardadas.len(), mano.len());
+    println!("umbral  falsos(distintas)  reguardadas: avisa  y de la suya  | a mano: dup  rel  otro");
+    for u in [0.60f32, 0.65, 0.70, 0.72, 0.75, 0.78, 0.80, 0.85, 0.90] {
+        let fp = distintas.iter().filter(|x| x.0 >= u).count() as f64;
+        let avisa = reguardadas.iter().filter(|x| x.0.max(x.1) >= u).count() as f64;
+        let bien = reguardadas.iter().filter(|x| x.0 >= u && x.0 >= x.1).count() as f64;
+        let de = |clase: &str| mano.iter().filter(|x| x.0 == clase && x.1 >= u).count() as f64 / cuenta(clase);
+        println!(
+            "{u:.2}    {:>6.1}%            {:>6.1}%  {:>6.1}%       |       {:>4.0}% {:>4.0}% {:>4.0}%",
+            100.0 * fp / n_d,
+            100.0 * avisa / n_r,
+            100.0 * bien / n_r,
+            100.0 * de("dup"),
+            100.0 * de("rel"),
+            100.0 * de("otro")
+        );
+    }
+    distintas.sort_by(|a, b| b.0.total_cmp(&a.0));
+    println!("
+las distintas más parecidas:");
+    for (s, f, otra) in distintas.iter().take(10) {
+        println!("  {s:.3}  {f}  ~  {otra}");
+    }
+    let mut r = reguardadas.clone();
+    r.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!("reguardadas con menos similitud con la suya: {:?}", r.iter().take(8).map(|x| (x.0 * 1000.0).round() / 1000.0).collect::<Vec<_>>());
+    drop(db);
+    let _ = std::fs::remove_dir_all(tmp);
+    Ok(())
+}
+
+/// Una candidata a duplicada: (coseno centrado, (cobertura IDF, palabras raras compartidas)).
+type Candidata = (f32, (f64, usize));
+
+/// Como `dupreal`, pero con una segunda señal además del vector: la cobertura IDF (qué parte del
+/// peso de las palabras de la nueva está en la candidata, con el IDF de Lucene sobre las notas, el
+/// mismo del recall). Regla: duplicada si coseno ≥ a, o si coseno ≥ b y cobertura ≥ k.
+fn dupcob(dir: &std::path::Path) -> Result<()> {
+    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::vectores::{parecidas, texto};
+    use std::collections::{BTreeSet, HashMap};
+    let m = modelo()?;
+    let fichas = |s: &str| -> BTreeSet<String> {
+        omoikane::buscar::terminos(s)
+            .into_iter()
+            .map(|t| {
+                t.chars()
+                    .map(|c| match c {
+                        'á' | 'à' | 'ä' | 'â' => 'a',
+                        'é' | 'è' | 'ë' | 'ê' => 'e',
+                        'í' | 'ì' | 'ï' | 'î' => 'i',
+                        'ó' | 'ò' | 'ö' | 'ô' => 'o',
+                        'ú' | 'ù' | 'ü' | 'û' => 'u',
+                        c => c,
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let mut notas: Vec<(String, String, String)> = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if !f.ends_with(".md") || f == "MEMORY.md" {
+            continue;
+        }
+        let t = std::fs::read_to_string(e.path())?;
+        let Some(r) = t.strip_prefix("---") else { continue };
+        let Some(i) = r.find("\n---") else { continue };
+        let (cabecera, cuerpo) = (&r[..i], r[i + 4..].trim());
+        let Some(titulo) = cabecera.lines().find_map(|l| l.trim().strip_prefix("description:")) else { continue };
+        let titulo: String = titulo.trim().trim_matches('"').chars().take(120).collect();
+        notas.push((f, titulo, cuerpo.to_string()));
+    }
+    notas.sort();
+    let indice = std::fs::read_to_string(dir.join("MEMORY.md"))?;
+    let mut resumen_de = HashMap::new();
+    for l in indice.lines() {
+        let (Some(i), Some(j), Some(k)) = (l.find("]("), l.find(".md)"), l.find(" — ")) else { continue };
+        let titulo = &l[l.find('[').unwrap_or(0) + 1..i];
+        let resumen = l[k + " — ".len()..].trim().trim_end_matches('…');
+        resumen_de.insert(format!("{}.md", &l[i + 2..j]), format!("{titulo}: {resumen}"));
+    }
+    // df sobre todas las notas.
+    let fichas_nota: HashMap<String, BTreeSet<String>> = notas.iter().map(|(f, t, c)| (f.clone(), fichas(&texto(t, c)))).collect();
+    let mut df: HashMap<String, f64> = HashMap::new();
+    for fs in fichas_nota.values() {
+        for t in fs {
+            *df.entry(t.clone()).or_default() += 1.0;
+        }
+    }
+    let n = notas.len() as f64;
+    let idf = |t: &str| {
+        let d = df.get(t).copied().unwrap_or(0.0).max(1.0);
+        (1.0 + (n - d + 0.5) / (d + 0.5)).ln()
+    };
+    // (cobertura, palabras raras compartidas: en como mucho el 20 % de las notas)
+    let cobertura = |nueva: &BTreeSet<String>, candidata: &BTreeSet<String>| -> (f64, usize) {
+        let total: f64 = nueva.iter().map(|t| idf(t)).sum();
+        let dentro: f64 = nueva.iter().filter(|t| candidata.contains(*t)).map(|t| idf(t)).sum();
+        let raras = nueva.iter().filter(|t| candidata.contains(*t) && df.get(*t).copied().unwrap_or(0.0) <= 0.2 * n).count();
+        (if total > 0.0 { dentro / total } else { 0.0 }, raras)
+    };
+
+    let tmp = std::env::temp_dir().join(format!("omoi-dupcob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut fichero_de = HashMap::new();
+    let mut fichas_id: HashMap<String, BTreeSet<String>> = HashMap::new();
+    // distintas: candidatas (coseno, cobertura) de cada nota contra las anteriores; todas son falsos.
+    let mut distintas: Vec<Vec<Candidata>> = Vec::new();
+    for (f, t, c) in &notas {
+        let nueva = &fichas_nota[f];
+        let p = parecidas(&db, &m, &texto(t, c), Some("/p"), None, -1.0, 5)?;
+        distintas.push(p.iter().map(|(x, s)| (*s, cobertura(nueva, &fichas_id[&x.id]))).collect());
+        let nn = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        let id = memoria::guardar(&mut db, nn, Some(&m))?.id;
+        fichero_de.insert(id.clone(), f.clone());
+        fichas_id.insert(id, nueva.clone());
+    }
+    // reguardadas: (la suya, las otras candidatas).
+    let mut reguardadas: Vec<(Option<Candidata>, Vec<Candidata>)> = Vec::new();
+    for (f, _, c) in &notas {
+        let Some(titulo) = resumen_de.get(f) else { continue };
+        let principio: String = c.chars().take(300).collect();
+        let txt = texto(titulo, &principio);
+        let nueva = fichas(&txt);
+        let p = parecidas(&db, &m, &txt, Some("/p"), None, -1.0, 5)?;
+        let mut suya = None;
+        let mut otras = Vec::new();
+        for (x, s) in &p {
+            let par = (*s, cobertura(&nueva, &fichas_id[&x.id]));
+            if &fichero_de[&x.id] == f { suya = Some(par) } else { otras.push(par) }
+        }
+        reguardadas.push((suya, otras));
+    }
+    // a mano: (clase, coseno, cobertura de b sobre a).
+    let mut mano: Vec<(String, f32, (f64, usize))> = Vec::new();
+    for (i, l) in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).enumerate() {
+        let c: Vec<&str> = l.split('\t').collect();
+        let proyecto = format!("/cal{i}");
+        let nn = Nueva { project: proyecto.clone(), kind: Some(Tipo::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
+        let a = memoria::guardar(&mut db, nn, Some(&m))?.id;
+        let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&proyecto), None, -1.0, 50)?;
+        let s = p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1);
+        mano.push((c[0].to_string(), s, cobertura(&fichas(c[2]), &fichas(c[1]))));
+    }
+
+    // cortas: cada frase de los pares contra las notas (ninguna es duplicada de una nota).
+    let mut cortas: Vec<Vec<Candidata>> = Vec::new();
+    for l in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        for frase in l.split('\t').skip(1) {
+            let nueva = fichas(frase);
+            let p = parecidas(&db, &m, &texto(frase, frase), Some("/p"), None, -1.0, 5)?;
+            cortas.push(p.iter().filter(|(x, _)| fichas_id.contains_key(&x.id)).map(|(x, s)| (*s, cobertura(&nueva, &fichas_id[&x.id]))).collect());
+        }
+    }
+    let nc = cortas.len() as f64;
+    let nd = distintas.len() as f64;
+    let nr = reguardadas.len() as f64;
+    let total_clase = |k: &str| mano.iter().filter(|x| x.0 == k).count() as f64;
+    println!("{} distintas, {} reguardadas, {} a mano", distintas.len(), reguardadas.len(), mano.len());
+    println!("  a     b     k  r  | falsos largas cortas | reguardadas: la suya  otra  | a mano: dup  rel  otro");
+    let mut filas = Vec::new();
+    for a in [0.70f32, 0.75, 0.78, 0.80, 0.85, 2.0] {
+        for b in [0.30f32, 0.40, 0.50, 0.60] {
+            for k in [0.40f64, 0.50, 0.60, 0.70] {
+              for r in [0usize, 2, 3] {
+                let dup = |c: &Candidata| c.0 >= a || (c.0 >= b && c.1.0 >= k && c.1.1 >= r);
+                let fp = distintas.iter().filter(|v| v.iter().any(dup)).count() as f64 / nd;
+                let fc = cortas.iter().filter(|v| v.iter().any(dup)).count() as f64 / nc;
+                let suya = reguardadas.iter().filter(|r| r.0.as_ref().is_some_and(dup)).count() as f64 / nr;
+                let otra = reguardadas.iter().filter(|r| r.1.iter().any(dup)).count() as f64 / nr;
+                let de = |cl: &str| mano.iter().filter(|x| x.0 == cl && dup(&(x.1, x.2))).count() as f64 / total_clase(cl);
+                filas.push((a, b, k, r, fp, fc, suya, otra, de("dup"), de("rel"), de("otro")));
+              }
+            }
+        }
+    }
+    // Las mejores sin falsos en las distintas ni en los rel, por las reguardadas que caza.
+    filas.sort_by(|x, y| (x.4 + x.5 + x.7 + x.9).total_cmp(&(y.4 + y.5 + y.7 + y.9)).then(y.6.total_cmp(&x.6)).then(y.8.total_cmp(&x.8)));
+    for f in filas.iter().take(25) {
+        println!(
+            "{:.2}  {:.2}  {:.2}  {}  | {:>5.1}%  {:>5.1}%  |  {:>5.1}%  {:>5.1}%  |  {:>4.0}% {:>4.0}% {:>4.0}%",
+            f.0, f.1, f.2, f.3, 100.0 * f.4, 100.0 * f.5, 100.0 * f.6, 100.0 * f.7, 100.0 * f.8, 100.0 * f.9, 100.0 * f.10
+        );
+    }
+    println!("\nla regla actual (solo coseno ≥ 0,70):");
+    for f in filas.iter().filter(|f| f.0 == 0.70 && f.1 == 0.60 && f.2 == 0.70 && f.3 == 0) {
+        println!("  falsos {:.1}% / cortas {:.1}%, la suya {:.1}%, a mano dup {:.0}% rel {:.0}%", 100.0 * f.4, 100.0 * f.5, 100.0 * f.6, 100.0 * f.8, 100.0 * f.9);
+    }
+    drop(db);
+    let _ = std::fs::remove_dir_all(tmp);
+    Ok(())
+}
+
+/// El aviso de duplicados de producción (`vectores::duplicada`) con las notas reales de `dir`:
+/// distintas (cada nota antes de guardarla: todo aviso es falso), reguardadas (cada nota dicha otra
+/// vez: debe avisar, y de la suya) y frases cortas de los pares contra las notas (todo aviso es falso).
+fn dupprod(dir: &std::path::Path) -> Result<()> {
+    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::vectores::duplicada;
+    use std::collections::HashMap;
+    use std::time::Instant;
+    let m = modelo()?;
+    let mut notas: Vec<(String, String, String)> = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if !f.ends_with(".md") || f == "MEMORY.md" {
+            continue;
+        }
+        let t = std::fs::read_to_string(e.path())?;
+        let Some(r) = t.strip_prefix("---") else { continue };
+        let Some(i) = r.find("\n---") else { continue };
+        let (cabecera, cuerpo) = (&r[..i], r[i + 4..].trim());
+        let Some(titulo) = cabecera.lines().find_map(|l| l.trim().strip_prefix("description:")) else { continue };
+        let titulo: String = titulo.trim().trim_matches('"').chars().take(120).collect();
+        notas.push((f, titulo, cuerpo.to_string()));
+    }
+    notas.sort();
+    let indice = std::fs::read_to_string(dir.join("MEMORY.md"))?;
+    let mut resumen_de = HashMap::new();
+    for l in indice.lines() {
+        let (Some(i), Some(j), Some(k)) = (l.find("]("), l.find(".md)"), l.find(" — ")) else { continue };
+        let titulo = &l[l.find('[').unwrap_or(0) + 1..i];
+        let resumen = l[k + " — ".len()..].trim().trim_end_matches('…');
+        resumen_de.insert(format!("{}.md", &l[i + 2..j]), format!("{titulo}: {resumen}"));
+    }
+    let tmp = std::env::temp_dir().join(format!("omoi-dupprod-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut fichero_de = HashMap::new();
+    let (mut falsos, mut tiempos) = (Vec::new(), Vec::new());
+    for (f, t, c) in &notas {
+        let ahora = Instant::now();
+        if let Some((otra, s)) = duplicada(&db, &m, "/p", t, c)? {
+            falsos.push(format!("{s:.3} {f} ~ {}", otra.title.chars().take(50).collect::<String>()));
+        }
+        tiempos.push(ahora.elapsed().as_secs_f64() * 1000.0);
+        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+    }
+    let (mut suya, mut otra, mut total) = (0, 0, 0);
+    for (f, _, c) in &notas {
+        let Some(titulo) = resumen_de.get(f) else { continue };
+        total += 1;
+        let principio: String = c.chars().take(300).collect();
+        match duplicada(&db, &m, "/p", titulo, &principio)? {
+            Some((x, _)) if &fichero_de[&x.id] == f => suya += 1,
+            Some(_) => otra += 1,
+            None => {}
+        }
+    }
+    let (mut cortas, mut falsas_cortas) = (0, Vec::new());
+    for l in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        for frase in l.split('\t').skip(1) {
+            cortas += 1;
+            if let Some((x, s)) = duplicada(&db, &m, "/p", frase, frase)? {
+                falsas_cortas.push(format!("{s:.3} «{frase}» ~ {}", x.title.chars().take(40).collect::<String>()));
+            }
+        }
+    }
+    tiempos.sort_by(f64::total_cmp);
+    println!("distintas: {} avisos en falso de {}", falsos.len(), notas.len());
+    for x in &falsos {
+        println!("  {x}");
+    }
+    println!("reguardadas: {suya} de {total} avisan de la suya ({:.1} %), {otra} de otra", 100.0 * suya as f64 / total as f64);
+    println!("cortas: {} avisos en falso de {cortas}", falsas_cortas.len());
+    for x in &falsas_cortas {
+        println!("  {x}");
+    }
+    println!("tiempo de la comprobación: mediana {:.1} ms, p95 {:.1} ms", tiempos[tiempos.len() / 2], tiempos[tiempos.len() * 95 / 100]);
+    drop(db);
+    let _ = std::fs::remove_dir_all(tmp);
+    Ok(())
 }
