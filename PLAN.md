@@ -192,25 +192,34 @@ resultado       = top N tras filtrar por proyecto (+ globales) / kind / etiqueta
 
 ## 6. Recall automático
 
-Es la pieza que justifica el proyecto. Dos hooks de Claude Code, los dos llamando al binario directamente:
+Es la pieza que justifica el proyecto. Va en el **plugin** de Claude Code (el propio repo: `.claude-plugin/plugin.json`, que declara el servidor MCP y los dos hooks); los dos hooks llaman al binario directamente (`omoi recall`), sin scripts:
 
 | Hook | Comando | Qué inyecta |
 |---|---|---|
-| `SessionStart` | `omoi recall --session-start` | `preference` + `pinned` del proyecto y globales. Y una línea: «Tienes memoria: usa `remember` para guardar lo que aprendas» |
-| `UserPromptSubmit` | `omoi recall` (lee el JSON del hook por stdin) | top 3-5 por relevancia con el prompt, más `gotcha` cuyos `paths` aparezcan mencionados en el prompt |
+| `SessionStart` (`startup`, `resume`, `clear`, `compact`) | `omoi recall --session-start` | cuántas memorias hay y cómo usarlas, más las `preference` y las fijadas del proyecto y globales |
+| `UserPromptSubmit` | `omoi recall` (lee el JSON del hook por stdin) | hasta 3 memorias que de verdad tengan que ver con el mensaje, más las que tengan una ruta nombrada en él; o **nada** |
 
-Formato de salida: JSON `hookSpecificOutput.additionalContext` con un bloque breve:
+Formato: JSON con `hookSpecificOutput.additionalContext`, dentro de `<omoikane>…</omoikane>`, una línea por memoria (tipo, rutas, título, 200 caracteres e id). El proyecto sale del `cwd` que manda Claude Code. Un fallo nunca molesta: se escribe en stderr y no se inyecta nada (código 0).
 
-```
-<omoikane>
-[gotcha] src/auth.rs: el middleware no se ejecuta en rutas /health (#01J…)
-[decision] Usamos ULID y no UUID por orden temporal (#01J…)
-</omoikane>
-```
+**Cuándo inyectar en cada mensaje** (calibrado el 28-oct-2026 con 127 notas reales y 300 mensajes reales de Marc, en local, `examples/fase4.rs`). Inyectar de más ensucia el contexto del agente; el criterio:
+1. el mensaje tiene al menos **3 palabras útiles** (≥ 3 letras, no solo cifras, sin palabras vacías ni muletillas de charla como *pues*, *dale*, *vale*, *mira*);
+2. la memoria comparte al menos **2 palabras raras** (presentes en ≤ 20 % de las memorias del ámbito);
+3. esas palabras pesan, por IDF, al menos **el 35 %** de lo que pesa el mensaje (IDF de Lucene, siempre positivo: con la clásica, una base de 1-2 memorias no inyectaba nunca);
+4. solo las que se acercan (≥ 70 %) a la mejor, como mucho 3; empate → la que tiene más palabras del mensaje en el título;
+5. prefijo solo desde 5 letras («pon» coincidía con «pone»).
 
-Presupuesto: ≤ 600 tokens por inyección; cada memoria truncada a su `title` + primeras 200 letras. El agente pide `get` si quiere el resto.
+| criterio | positivos (resúmenes de `MEMORY.md`) con su nota | mensajes reales con algo inyectado |
+|---|---|---|
+| cualquier palabra en común (top 3) | 100 % | 97 % (2,9 memorias por mensaje) |
+| ≥ 3 palabras en común | 100 % | 66 % |
+| cobertura IDF ≥ 0,35 | 100 % | 24 % |
+| **el criterio completo** | **99 %** (1,5 por mensaje) | **15 %** (0,23 por mensaje) |
 
-**Latencia**: el hook debe responder en < 50 ms en frío. En la fase 0 el modelo tardaba 1,65 s en cargar y el hook iba a quedarse sin semántica; **la fase 0.5 lo resolvió: el modelo abre en 2,7 ms** (ver §9). Así que **el hook hace búsqueda híbrida completa** (FTS + vector + `paths` + pinned) en cada mensaje. Presupuesto estimado: arrancar el proceso + abrir base (1,7 ms) + abrir modelo (2,7 ms) + vector de la consulta (0,4 ms) + KNN y FTS (≈ 7 ms con 5k memorias) ≈ 15 ms.
+En la muestra revisada a mano casi todo lo inyectado es pertinente (la app del gimnasio → su nota; «PETG» y «riser» → la K2; «carteles KISS» → posters); queda algo de ruido en mensajes de charla con alguna palabra rara. El vector no se usa en el recall: no mejoró la búsqueda de forma medible (§5) y así el hook ni abre el modelo.
+
+Cada memoria se inyecta **una vez por sesión** (tabla `recall_log`, esquema 3); `SessionStart` (también tras compactar) vacía la de su sesión, porque ese contexto se ha perdido. Lo que se inyecta cuenta como recuperado.
+
+**Latencia** (medida en la fase 4, proceso entero como lo lanza Claude Code, base de 127 notas reales, Windows): `SessionStart` 15 ms; mensaje que inyecta algo 26 ms; mensaje que no inyecta nada 15 ms. El presupuesto era 50 ms. (En la fase 0.5 se resolvió que el modelo abre en 2,7 ms, pero al final el recall no lo usa.)
 
 Todos los procesos (hook, CLI, servidor MCP) cargan el modelo igual de rápido, así que no hay vectores pendientes ni carga en segundo plano: cada memoria se guarda con su vector en la misma transacción. La tabla está mapeada y compartida por el sistema operativo entre procesos: medido, 4 procesos a la vez ocupan **13 MB privados cada uno** (el resto del working set, ~68 MB, son páginas del modelo compartidas). model2vec-rs, para comparar: 1.014 MB privados por proceso.
 
@@ -384,10 +393,15 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] **Hecho**, con Claude Code de verdad (2.1.312) y sin tocar su configuración: dos sesiones `claude -p` con `--mcp-config` temporal y `--strict-mcp-config`, en este repo. La primera guardó un `gotcha` sobre `tests/equivalencia.rs` (proyecto `D:\Omoikane`, origen `mcp`); la segunda, sin contexto, lo encontró sola y citó su id.
 - No se usó el inspector MCP: los tests ya hablan el protocolo con el cliente oficial de Rust, y Claude Code es el cliente que importa.
 
-### Fase 4 · recall automático (1 día)
-- `recall.rs`, `hook.rs`, `setup claude` con confirmación.
-- Medir latencia del hook en Windows y Linux (< 50 ms).
-- Hecho cuando: abres Claude Code en un proyecto y, sin pedirlo, el agente sabe las preferencias y, al mencionar un fichero, le salen los `gotcha` de ese fichero.
+### Fase 4 · recall automático y plugin ✅ (28-oct-2026)
+- [x] **Plugin** (decisión de Marc del 28-oct): `.claude-plugin/plugin.json` en la raíz del repo, con el servidor MCP (`omoi mcp`) y los dos hooks dentro, sin scripts. Enlazado desde su marketplace `drac` con `source: github`. El binario `omoi` va aparte (por ahora `cargo install`; en la fase 5, binarios en las Releases). `claude plugin validate .` pasa.
+- [x] `src/recall.rs` + `omoi recall [--session-start]`: lee el JSON del hook, saca el proyecto de su `cwd`, escribe `hookSpecificOutput.additionalContext` o nada.
+- [x] Criterio de inyección calibrado con datos reales (§6): 99 % de positivos con su nota, 15 % de los mensajes reales con algo inyectado. Antes de calibrar, el primer criterio inyectaba en el 97 %.
+- [x] Una vez por sesión (`recall_log`, esquema 3); tras compactar se vuelve a poder.
+- [x] Rutas nombradas en el mensaje (también con `\` de Windows) traen sus memorias.
+- [x] Tests (`tests/recall.rs`, 5): contexto al empezar, relevancia y charla, una vez por sesión, rutas, ámbito, y el hook de punta a punta con el JSON de Claude Code (incluida una entrada rota, que no debe dar error).
+- [x] Latencia del hook: 15-26 ms (§6).
+- Hecho cuando: abrir Claude Code en un proyecto inyecta preferencias y fijadas, y al mencionar un tema o un fichero salen sus memorias, sin pedirlo. Probado con Claude Code de verdad (ver el commit).
 
 ### Fase 5 · publicar (½ día)
 - `publicar_release.py` (árbol limpio, tag, binarios Windows/Linux/macOS por GitHub Actions).

@@ -10,7 +10,7 @@
 
 Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), and the MCP server for agents (phase 3). Coming next: automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), the MCP server for agents (phase 3), and automatic recall through Claude Code hooks, packaged as a plugin (phase 4). Coming next: prebuilt binaries (phase 5). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
 ## Try it
 
@@ -27,13 +27,13 @@ omoi recent
 omoi --help
 ```
 
-To give Claude Code (or any MCP client) its memory:
+To give Claude Code its memory, install the plugin (it brings the MCP server and the recall hooks; it needs `omoi` on your PATH):
 
-```sh
-claude mcp add omoikane --scope user -- omoi mcp
+```
+/plugin install omoikane --marketplace marcmayol/drac-plugins
 ```
 
-The agent gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) and instructions on when to use them.
+The agent gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). Any other MCP client can use `omoi mcp` directly.
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 

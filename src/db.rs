@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 2;
+pub const VERSION_ESQUEMA: i64 = 3;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -84,6 +84,9 @@ fn migrar(db: &mut Connection) -> Result<()> {
             [],
         )?;
     }
+    if v < 3 {
+        tx.execute_batch(ESQUEMA_3)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
@@ -141,6 +144,17 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 ";
 
+/// Fase 4: qué memorias se han inyectado ya en cada sesión, para no repetirlas en cada mensaje.
+const ESQUEMA_3: &str = "
+CREATE TABLE recall_log (
+  session   TEXT NOT NULL,
+  memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+  at        TEXT NOT NULL,
+  PRIMARY KEY (session, memory_id)
+);
+CREATE INDEX recall_log_at ON recall_log(at);
+";
+
 /// Fase 2: las rutas entran en la búsqueda (FTS5 no deja añadir columnas: se rehace el índice) y
 /// los vectores van en una tabla normal. Un BLOB con `vec_distance_cosine` filtra por proyecto en el
 /// mismo SQL y fue el doble de rápido que `vec0` (que no sabe filtrar dentro del KNN).
@@ -182,7 +196,7 @@ mod tests {
             .unwrap();
         }
         let db = abrir(&ruta).unwrap();
-        assert_eq!(version(&db).unwrap(), 2);
+        assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
         let por = |q: &str| -> i64 {
             db.query_row("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1", [q], |f| f.get(0)).unwrap()
         };

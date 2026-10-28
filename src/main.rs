@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser
 use omoikane::buscar::{self, Opciones};
 use omoikane::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo, Version};
 use omoikane::embeber::Modelo;
-use omoikane::{db, idioma, modelos, proyecto, tr, vectores};
+use omoikane::{db, idioma, modelos, proyecto, recall, tr, vectores};
 use rusqlite::Connection;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -164,6 +164,12 @@ enum Orden {
     Reindex,
     /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
     Mcp,
+    /// For Claude Code hooks: reads the hook's JSON on stdin and prints the memories to inject.
+    Recall {
+        /// At session start (or after compacting): preferences and pinned memories.
+        #[arg(long)]
+        session_start: bool,
+    },
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
 }
@@ -189,6 +195,13 @@ fn main() -> Result<()> {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
+        Orden::Recall { session_start } => {
+            // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
+            if let Err(e) = recall(c, session_start) {
+                eprintln!("omoikane: {e:#}");
+            }
+            Ok(())
+        }
         Orden::Reindex => {
             let mut db = abrir(c)?;
             let n = memoria::reindexar_palabras(&mut db)?;
@@ -340,6 +353,31 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn recall(c: &Comun, al_empezar: bool) -> Result<()> {
+    let mut entrada = String::new();
+    std::io::stdin().read_to_string(&mut entrada)?;
+    let e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
+    let project = match (&c.dir, e.cwd.is_empty()) {
+        (Some(d), _) => proyecto::de(d)?,
+        (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
+        (None, true) => proyecto::actual()?,
+    };
+    let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    if !ruta.exists() && !al_empezar {
+        return Ok(()); // sin memorias todavía: nada que inyectar
+    }
+    let mut db = db::abrir(&ruta)?;
+    let (evento, texto) = if al_empezar {
+        ("SessionStart", recall::al_empezar(&mut db, &project, &e)?)
+    } else {
+        ("UserPromptSubmit", recall::al_preguntar(&mut db, &project, &e)?)
+    };
+    if let Some(t) = texto {
+        println!("{}", recall::salida(evento, &t));
+    }
+    Ok(())
 }
 
 /// La base y el modelo, con los vectores al día (si el modelo cambió o faltan, se calculan ahora).
@@ -620,6 +658,10 @@ fn en_espanol(c: Command) -> Command {
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
+        ("recall", "Para los hooks de Claude Code: lee el JSON del hook y escribe las memorias que hay que inyectar.", &[(
+            "session_start",
+            "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas.",
+        )]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
     ];
     let c = textos.iter().fold(c, |c, (orden, about, args)| {
