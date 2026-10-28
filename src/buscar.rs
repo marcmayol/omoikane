@@ -34,6 +34,8 @@ pub struct Resultado {
     /// Coseno con la consulta, si salió por significado.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub similarity: Option<f32>,
+    /// Cuántas palabras distintas de la consulta tiene la memoria (0 si solo salió por significado).
+    pub matched_words: usize,
 }
 
 /// Palabras que casi todo texto contiene y no ayudan a encontrar nada (castellano, inglés, catalán).
@@ -75,7 +77,7 @@ pub fn consulta_fts(texto: &str) -> Option<String> {
 }
 
 /// Las palabras de la consulta que cuentan, en minúsculas.
-fn terminos(texto: &str) -> Vec<String> {
+pub fn terminos(texto: &str) -> Vec<String> {
     let palabras: Vec<String> =
         texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).map(|p| p.to_lowercase()).collect();
     let utiles: Vec<&String> = palabras.iter().filter(|p| !VACIAS.contains(&sin_tildes(p).as_str())).collect();
@@ -84,20 +86,31 @@ fn terminos(texto: &str) -> Vec<String> {
     elegidas.into_iter().cloned().collect()
 }
 
-/// Qué parte de los términos aparece en la memoria (0 a 1), con la misma regla que el índice:
-/// sin tildes y por prefijo a partir de 3 letras. Desempata cuando BM25 no distingue, que es lo
-/// normal con pocas memorias (si una palabra está en la mitad de ellas, su IDF es cero).
-fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
-    if terminos.is_empty() {
-        return 0.0;
-    }
+/// Cuántos de los términos aparecen en la memoria, con la misma regla que el índice: sin tildes y
+/// por prefijo a partir de 3 letras.
+fn coincidencias(terminos: &[String], m: &Memoria) -> usize {
     let texto = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
     let palabras: Vec<&str> = texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
     let esta = |t: &String| {
         let t = sin_tildes(t);
         if t.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(&t)) } else { palabras.contains(&t.as_str()) }
     };
-    terminos.iter().filter(|t| esta(t)).count() as f64 / terminos.len() as f64
+    let mut vistos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
+    vistos.sort();
+    vistos.dedup();
+    vistos.iter().filter(|t| esta(t)).count()
+}
+
+/// Qué parte de los términos aparece en la memoria (0 a 1). Desempata cuando BM25 no distingue, que
+/// es lo normal con pocas memorias (si una palabra está en la mitad de ellas, su IDF es cero).
+fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
+    let mut distintos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
+    distintos.sort();
+    distintos.dedup();
+    if distintos.is_empty() {
+        return 0.0;
+    }
+    coincidencias(terminos, m) as f64 / distintos.len() as f64
 }
 
 /// Búsqueda: manda el orden por palabras (BM25); el vector añade detrás lo que se parece mucho y
@@ -119,6 +132,12 @@ pub enum Fusion {
 /// al 84 % (peso 1) o al 90 % (peso 0,5); el rescate lo deja en el 98 %.
 const FUSION: Fusion = Fusion::Rescate;
 
+/// Solo por palabras y sin contar los resultados como recuperados: para quien filtra después (el
+/// recall), que apunta solo lo que de verdad usa.
+pub fn buscar_sin_apuntar(db: &mut Connection, texto: &str, o: &Opciones) -> Result<Vec<Resultado>> {
+    buscar_base(db, texto, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false)
+}
+
 /// `buscar` con otra similitud mínima y otra fusión (para calibrarlas).
 pub fn buscar_con(
     db: &mut Connection,
@@ -128,10 +147,22 @@ pub fn buscar_con(
     similitud_minima: f32,
     fusion_elegida: Fusion,
 ) -> Result<Vec<Resultado>> {
+    buscar_base(db, texto, o, modelo, similitud_minima, fusion_elegida, true)
+}
+
+fn buscar_base(
+    db: &mut Connection,
+    texto: &str,
+    o: &Opciones,
+    modelo: Option<&Modelo>,
+    similitud_minima: f32,
+    fusion_elegida: Fusion,
+    apuntar: bool,
+) -> Result<Vec<Resultado>> {
     let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
     let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
 
-    let por_palabras: Vec<Memoria> = palabras(db, texto, o)?.into_iter().filter(|m| con_tags(m)).collect();
+    let por_palabras: Vec<(Memoria, usize)> = palabras(db, texto, o)?.into_iter().filter(|(m, _)| con_tags(m)).collect();
     let por_significado: Vec<(Memoria, f32)> = match modelo {
         Some(modelo) if !texto.trim().is_empty() => vectores::parecidas(
             db,
@@ -151,36 +182,36 @@ pub fn buscar_con(
 
     // RRF: cada lista aporta 1 / (k + puesto). Lo que sale en las dos, suma las dos.
     let mut fusion: Vec<Resultado> = Vec::new();
-    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>, peso: f64| {
+    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>, peso: f64, n: usize| {
         let aporte = peso / (RRF_K + puesto as f64 + 1.0);
         match fusion.iter_mut().find(|r| r.memoria.id == m.id) {
             Some(r) => {
                 r.score += aporte;
                 r.similarity = r.similarity.or(sim);
             }
-            None => fusion.push(Resultado { memoria: m.clone(), score: aporte, similarity: sim }),
+            None => fusion.push(Resultado { memoria: m.clone(), score: aporte, similarity: sim, matched_words: n }),
         }
     };
-    for (i, m) in por_palabras.iter().enumerate() {
-        sumar(m, i, None, 1.0);
+    for (i, (m, n)) in por_palabras.iter().enumerate() {
+        sumar(m, i, None, 1.0, *n);
     }
     // Lo que sale por palabras y por significado suma las dos posiciones. Lo que solo trae el vector
     // entra únicamente si se parece de verdad: con un modelo estático, cualquier texto se parece
     // algo a cualquier otro (sobre todo en el mismo idioma) y sin este filtro todo devuelve ruido.
     let n_palabras = por_palabras.len();
     for (i, (m, s)) in por_significado.iter().enumerate() {
-        let tambien_por_palabras = por_palabras.iter().any(|p| p.id == m.id);
+        let tambien_por_palabras = por_palabras.iter().any(|(p, _)| p.id == m.id);
         match fusion_elegida {
             Fusion::Rrf { peso_vector } => {
                 if *s >= similitud_minima || tambien_por_palabras {
-                    sumar(m, i, Some(*s), peso_vector);
+                    sumar(m, i, Some(*s), peso_vector, 0);
                 }
             }
             Fusion::Rescate => {
                 if tambien_por_palabras {
-                    sumar(m, 0, Some(*s), 0.0); // solo apunta la similitud, sin mover el orden
+                    sumar(m, 0, Some(*s), 0.0, 0); // solo apunta la similitud, sin mover el orden
                 } else if *s >= similitud_minima {
-                    sumar(m, n_palabras + i, Some(*s), 1.0);
+                    sumar(m, n_palabras + i, Some(*s), 1.0, 0);
                 }
             }
         }
@@ -196,13 +227,15 @@ pub fn buscar_con(
     drop(dias);
     fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
     fusion.truncate(o.limite);
-    apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()))?;
+    if apuntar {
+        apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()))?;
+    }
     Ok(fusion)
 }
 
-/// Candidatos por palabras, del mejor al peor: BM25 más la cobertura (que desempata cuando BM25
-/// no distingue, como pasa con pocas memorias).
-fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<Memoria>> {
+/// Candidatos por palabras, del mejor al peor (BM25 más la cobertura, que desempata cuando BM25 no
+/// distingue, como pasa con pocas memorias), con cuántas palabras de la consulta tiene cada uno.
+fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize)>> {
     let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
     let terminos = terminos(texto);
     let columnas = COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
@@ -224,7 +257,7 @@ fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<Memoria>> 
         *r += cobertura(&terminos, m);
     }
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
-    Ok(v.into_iter().map(|(m, _)| m).collect())
+    Ok(v.into_iter().map(|(m, _)| { let n = coincidencias(&terminos, &m); (m, n) }).collect())
 }
 
 /// Lo que devuelven la búsqueda y el recall cuenta como recuperado: sirve para ordenar y, más
