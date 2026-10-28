@@ -26,7 +26,7 @@ irm https://raw.githubusercontent.com/marcmayol/omoikane/master/install.ps1 | ie
 curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.sh | sh
 ```
 
-El instalador comprueba la suma SHA-256 del binario antes de instalarlo. `OMOIKANE_NO_MODEL=1` se salta el modelo (búsqueda solo por palabras) y `OMOIKANE_NO_SETUP=1` no toca Claude Code; puedes ejecutar `omoi setup claude` después. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel. Para cualquier otro: `cargo install --git https://github.com/marcmayol/omoikane`.
+El instalador comprueba la suma SHA-256 del binario antes de instalarlo. `OMOIKANE_NO_MODEL=1` se salta el modelo (búsqueda solo por palabras) y `OMOIKANE_NO_SETUP=1` no toca Claude Code; puedes ejecutar `omoi setup claude` después. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel. Para cualquier otro: `cargo install omoikane`.
 
 ¿Ya tienes `omoi`? En Claude Code: `/plugin marketplace add marcmayol/drac-plugins` y después `/plugin install omoikane@drac`, o `omoi setup claude`.
 
