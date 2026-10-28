@@ -311,6 +311,11 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] Tests (28 en total): 8 unitarios, 12 de núcleo (tildes, orden, versiones, fijar, borrar, ámbitos, filtros, ids, recuperadas, export, **coherencia** tras 400 operaciones al azar, **concurrencia** con 4 conexiones escribiendo a la vez), 7 de CLI de punta a punta (incluido el criterio de «hecho»), y el de equivalencia de la 0.5.
 - [x] CI en GitHub Actions: Windows, Linux y macOS (adelantado de la fase 5), con el modelo int8 descargado de Hugging Face y en caché.
 - [x] Hecho: `omoi remember` + `omoi search "fallo de autenticación"` encuentra «Bug en auth» con y sin tilde.
+- [x] Revisión del 28-oct (decisiones de Marc sobre el informe de la noche):
+  - `forget` pide confirmación: en una terminal pregunta `[y/N]`; en cualquier otro sitio (un agente, un script) se niega sin `--yes`. El MCP de la fase 3 borrará sin preguntar, porque el agente ya lo ha decidido.
+  - Ayuda en español completa con `OMOIKANE_LANG=es`, incluidos los títulos fijos de clap («Uso», «Comandos», «Argumentos», «Opciones») y los errores del motor de embeddings.
+  - `clippy` instalado y en la CI con los avisos como errores.
+  - Las rutas entran en el índice de búsqueda en la **fase 2** (ver allí).
 - Medidas en el PC (Windows, release): binario de 2,9 MB; arrancar el proceso (`omoi --version`) 11 ms; `search` con 100 memorias ~20 ms de punta a punta (mediana y p90 en 20-21 ms); `remember` ~21 ms. Queda margen para el hook de la fase 4 (presupuesto de 50 ms, más ~5 ms de abrir el modelo).
 
 ### Fase 2 · vectores (1 día)

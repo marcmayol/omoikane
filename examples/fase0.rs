@@ -61,14 +61,14 @@ fn cuantizar() -> Result<()> {
     let emb = st.tensor("embeddings").or_else(|_| st.tensor("0")).context("sin embeddings")?;
     let [filas, dim]: [usize; 2] = emb.shape().try_into()?;
     anyhow::ensure!(emb.dtype() == Dtype::F32, "se esperaba f32, es {:?}", emb.dtype());
-    let tabla: Vec<f32> = emb.data().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+    let tabla: Vec<f32> = emb.data().as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
     let mapeo: Option<Vec<usize>> = st.tensor("mapping").ok().map(|t| match t.dtype() {
-        Dtype::I64 => t.data().chunks_exact(8).map(|b| i64::from_le_bytes(b.try_into().unwrap()) as usize).collect(),
-        _ => t.data().chunks_exact(4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as usize).collect(),
+        Dtype::I64 => t.data().as_chunks::<8>().0.iter().map(|b| i64::from_le_bytes(*b) as usize).collect(),
+        _ => t.data().as_chunks::<4>().0.iter().map(|b| i32::from_le_bytes(*b) as usize).collect(),
     });
     let pesos: Option<Vec<f32>> = st.tensor("weights").ok().map(|t| match t.dtype() {
-        Dtype::F64 => t.data().chunks_exact(8).map(|b| f64::from_le_bytes(b.try_into().unwrap()) as f32).collect(),
-        _ => t.data().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect(),
+        Dtype::F64 => t.data().as_chunks::<8>().0.iter().map(|b| f64::from_le_bytes(*b) as f32).collect(),
+        _ => t.data().as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect(),
     });
     println!(
         "tensores             filas {filas}, mapping {}, weights {}",

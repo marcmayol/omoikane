@@ -113,10 +113,10 @@ fn corpus(dirs: &[String]) -> Vec<String> {
                 if !nombre.starts_with('.') && nombre != "target" && nombre != "node_modules" {
                     pila.push(p);
                 }
-            } else if matches!(p.extension().and_then(|e| e.to_str()), Some("md" | "rs" | "go" | "txt" | "py" | "json")) {
-                if let Ok(t) = std::fs::read_to_string(&p) {
-                    v.extend(t.lines().map(str::trim).filter(|l| !l.is_empty() && l.len() < 2000).map(String::from));
-                }
+            } else if matches!(p.extension().and_then(|e| e.to_str()), Some("md" | "rs" | "go" | "txt" | "py" | "json"))
+                && let Ok(t) = std::fs::read_to_string(&p)
+            {
+                v.extend(t.lines().map(str::trim).filter(|l| !l.is_empty() && l.len() < 2000).map(String::from));
             }
         }
     }

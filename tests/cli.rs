@@ -115,7 +115,12 @@ fn update_history_y_forget() {
     assert!(e.ok(&["get", corto]).contains("Se ordenan por fecha."));
     e.ok(&["update", corto, "--pin"]);
     assert_eq!(e.json(&["get", corto])["pinned"], true);
-    assert!(e.ok(&["forget", corto]).contains("Usamos ULID"));
+    // Sin --yes y fuera de una terminal, se niega y no borra nada.
+    let o = e.omoi(&["forget", corto]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--yes"));
+    assert!(e.omoi(&["get", corto]).status.success());
+    assert!(e.ok(&["forget", corto, "--yes"]).contains("Usamos ULID"));
     assert!(!e.omoi(&["get", corto]).status.success());
 }
 
@@ -150,6 +155,14 @@ fn ayuda_en_ingles_y_en_espanol() {
     let o = e.omoi_con(&["remember", "--help"], None, &[("OMOIKANE_LANG", "es")]);
     let es = String::from_utf8(o.stdout).unwrap();
     assert!(es.contains("Guarda una memoria"), "{es}");
+    assert!(es.contains("Uso:") && es.contains("Opciones:") && !es.contains("Options:"), "{es}");
+    let o = e.omoi_con(&["--help"], None, &[("OMOIKANE_LANG", "es")]);
+    let es = String::from_utf8(o.stdout).unwrap();
+    assert!(es.contains("Comandos:") && !es.contains("Commands:") && es.contains("Muestra la versión"), "{es}");
+    // Las opciones globales salen en los subcomandos, también en español.
+    let o = e.omoi_con(&["search", "-h"], None, &[("OMOIKANE_LANG", "es")]);
+    let es = String::from_utf8(o.stdout).unwrap();
+    assert!(es.contains("Base de datos") && es.contains("Argumentos:"), "{es}");
     // Los errores también.
     let o = e.omoi_con(&["get", "ZZZZZZZZ"], None, &[("OMOIKANE_LANG", "es")]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no existe"));
