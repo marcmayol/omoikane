@@ -1,24 +1,28 @@
 //! Vectores de las memorias: guardarlos, tenerlos al día con el modelo y buscar los más parecidos.
 //!
-//! Van en `memory_vec` como BLOB (256 `f32` en little-endian, normalizados) y se comparan con
-//! `vec_distance_cosine` de sqlite-vec, con el filtro de proyecto en el mismo SQL.
+//! Van en `memory_vec` como BLOB (256 `f32` en little-endian, normalizados). Para comparar se
+//! **centran**: se les resta el vector medio de las memorias de la base. Los modelos estáticos
+//! comparten una dirección común que hace que todo se parezca a todo, sobre todo con textos largos
+//! (con 127 notas reales, el 31 % de los pares de notas distintas pasaba de 0,65 sin centrar; 4 de
+//! 8.001 centrando). La media se calcula al comparar, así que siempre es la de la base actual; con
+//! pocas memorias se mezcla con una media genérica para que no salga cero.
 
 use crate::embeber::Modelo;
 use crate::memoria::{COLUMNAS, Memoria, Tipo, de_fila};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-/// Similitud mínima para que una memoria que solo sale por significado (no por palabras) entre en
-/// una búsqueda. Calibrada en la fase 2 con `tests/busquedas.tsv` (`examples/fase2.rs busqueda`):
-/// con model2vec cualquier texto se parece algo a cualquier otro, sobre todo en el mismo idioma, y
-/// por debajo de ~0,28 las consultas sin respuesta devuelven ruido. Con 0,28: 88 % de acierto en el
-/// primer puesto (85 % solo con palabras) y 1 de 5 consultas sin respuesta con un resultado de más.
-pub const SIMILITUD_BUSQUEDA: f32 = 0.28;
+/// Similitud mínima (vectores centrados) para que la búsqueda añada una memoria que no salió por
+/// palabras. Calibrada en la fase 2 con `tests/busquedas.tsv` y con 127 notas reales: desde 0,25
+/// las consultas sin respuesta no devuelven nada. Con un modelo estático el rescate rara vez
+/// aporta: está para cuando la similitud es alta de verdad (ver PLAN.md §5).
+pub const SIMILITUD_BUSQUEDA: f32 = 0.25;
 
-/// Similitud a partir de la cual guardar propone actualizar la memoria existente. Con los 40 pares
-/// de `tests/pares_duplicados.tsv`: 0 falsos positivos y el 80 % de los duplicados detectados
-/// (los temas parecidos llegan hasta 0,64; los duplicados tienen mediana 0,73).
-pub const SIMILITUD_DUPLICADO: f32 = 0.65;
+/// Similitud (vectores centrados) a partir de la cual guardar propone actualizar la memoria que ya
+/// existe. Con 127 notas reales, todas distintas: 1 de 8.001 pares pasa de 0,70 (4 de 0,65), lo que
+/// con 1.000 memorias da un aviso de más en ~12 % de los guardados (~40 % con 0,65). Lo que se
+/// detecta de `tests/pares_duplicados.tsv` lo mide el test `umbral_de_duplicados`.
+pub const SIMILITUD_DUPLICADO: f32 = 0.70;
 
 /// Lo que se convierte en vector: el título y el contenido.
 pub fn texto(title: &str, content: &str) -> String {
@@ -72,8 +76,56 @@ pub fn sincronizar(db: &mut Connection, modelo: &Modelo) -> Result<usize> {
     Ok(pendientes.len())
 }
 
-/// Memorias más parecidas a `texto`, de la más a la menos, con su similitud (coseno). `proyecto`
-/// como en `Ambito`: `Some(p)` = las de `p` más las globales; `None` = todas.
+/// Cuánto pesa la media genérica frente a las memorias de la base (como si fueran tantas memorias).
+const PESO_MEDIA_GENERICA: f32 = 20.0;
+
+fn normalizado(mut v: Vec<f32>) -> Vec<f32> {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+    v.iter_mut().for_each(|x| *x /= n);
+    v
+}
+
+/// Producto escalar de un vector guardado (bytes little-endian) con otro, sin copiarlo.
+fn punto(b: &[u8], v: &[f32]) -> f32 {
+    b.as_chunks::<4>().0.iter().zip(v).map(|(x, y)| f32::from_le_bytes(*x) * y).sum()
+}
+
+/// Media de un corpus genérico (el de los tests: código, documentación y frases en muchos idiomas)
+/// con este modelo. Se calcula una vez por modelo (~50 ms) y se guarda en `meta`.
+fn media_generica(db: &Connection, modelo: &Modelo) -> Result<Vec<f32>> {
+    let clave = format!("media:{}", modelo.id());
+    if let Some(t) = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get::<_, String>(0)).optional()? {
+        return Ok(serde_json::from_str(&t)?);
+    }
+    let lineas: Vec<&str> = include_str!("../tests/corpus.txt").lines().filter(|l| !l.starts_with('#')).collect();
+    let mut media = vec![0f32; modelo.dim()];
+    for l in &lineas {
+        for (m, x) in media.iter_mut().zip(modelo.vector(l)?) {
+            *m += x / lineas.len() as f32;
+        }
+    }
+    db.execute("INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)", params![clave, serde_json::to_string(&media)?])?;
+    Ok(media)
+}
+
+/// La media con la que se centra: la de las memorias de la base, con la genérica como si fuera
+/// `PESO_MEDIA_GENERICA` memorias más.
+fn media(db: &Connection, modelo: &Modelo) -> Result<Vec<f32>> {
+    let mut suma: Vec<f32> = media_generica(db, modelo)?.iter().map(|x| x * PESO_MEDIA_GENERICA).collect();
+    let mut n = PESO_MEDIA_GENERICA;
+    let mut q = db.prepare("SELECT e FROM memory_vec")?;
+    let mut filas = q.query([])?;
+    while let Some(f) = filas.next()? {
+        for (s, x) in suma.iter_mut().zip(f.get_ref(0)?.as_blob()?.as_chunks::<4>().0) {
+            *s += f32::from_le_bytes(*x);
+        }
+        n += 1.0;
+    }
+    Ok(suma.iter().map(|s| s / n).collect())
+}
+
+/// Memorias más parecidas a `texto`, de la más a la menos, con su similitud (coseno de los vectores
+/// centrados). `proyecto` como en `Ambito`: `Some(p)` = las de `p` más las globales; `None` = todas.
 pub fn parecidas(
     db: &Connection,
     modelo: &Modelo,
@@ -83,26 +135,33 @@ pub fn parecidas(
     minimo: f32,
     limite: usize,
 ) -> Result<Vec<(Memoria, f32)>> {
-    let v = bytes(&modelo.vector(texto)?);
-    let columnas = COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
-    let mut q = db.prepare(&format!(
-        "SELECT {columnas}, 1.0 - vec_distance_cosine(v.e, ?1) AS sim
-         FROM memory_vec v JOIN memory m ON m.n = v.n
-         WHERE (?2 IS NULL OR m.project = ?2 OR m.project = '') AND (?3 IS NULL OR m.kind = ?3)
-         ORDER BY vec_distance_cosine(v.e, ?1) LIMIT ?4"
-    ))?;
-    let ncol = COLUMNAS.split(", ").count();
-    let filas = q.query_map(params![v, proyecto, kind.map(Tipo::as_str), limite as i64], |f| {
-        Ok((de_fila(f)?, f.get::<_, f64>(ncol)? as f32))
-    })?;
-    let mut res = Vec::new();
-    for f in filas {
-        let (m, s) = f?;
-        if s >= minimo {
-            res.push((m, s));
+    let media = media(db, modelo)?;
+    let consulta = normalizado(modelo.vector(texto)?.iter().zip(&media).map(|(x, m)| x - m).collect());
+    // Con `a` normalizado: cos(a - μ, q) = (a·q - μ·q) / |a - μ|, y |a - μ|² = 1 - 2·a·μ + μ·μ.
+    // Así no hace falta centrar (ni copiar) cada vector guardado: bastan dos productos escalares.
+    let mq: f32 = media.iter().zip(&consulta).map(|(a, b)| a * b).sum();
+    let mm: f32 = media.iter().map(|x| x * x).sum();
+    let mut sims: Vec<(i64, f32)> = Vec::new();
+    {
+        let mut q = db.prepare(
+            "SELECT v.n, v.e FROM memory_vec v JOIN memory m ON m.n = v.n
+             WHERE (?1 IS NULL OR m.project = ?1 OR m.project = '') AND (?2 IS NULL OR m.kind = ?2)",
+        )?;
+        let mut filas = q.query(params![proyecto, kind.map(Tipo::as_str)])?;
+        while let Some(f) = filas.next()? {
+            let e = f.get_ref(1)?.as_blob()?;
+            let norma = (1.0 - 2.0 * punto(e, &media) + mm).max(1e-12).sqrt();
+            let s = (punto(e, &consulta) - mq) / norma;
+            if s >= minimo {
+                sims.push((f.get(0)?, s));
+            }
         }
     }
-    Ok(res)
+    sims.sort_by(|a, b| b.1.total_cmp(&a.1));
+    sims.truncate(limite);
+    // Solo se leen enteras las que se devuelven.
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory WHERE n = ?1"))?;
+    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
 }
 
 /// Si ya hay una memoria casi igual en el mismo ámbito (el proyecto y las globales, o solo las

@@ -82,7 +82,7 @@ memory_version
 
 Solo se lee con `history`. Búsqueda y recall miran la versión viva. El número de versiones **no** es una señal de ranking.
 
-**Duplicados**: al guardar, si existe una memoria del mismo ámbito (el proyecto y las globales; si la nueva es global, solo las globales) con similitud coseno **≥ 0,65**, no se guarda: se devuelve la candidata y se propone `update` (en la CLI, código de salida 2; `--force` guarda igualmente). El 0,92 del primer borrador era un error: con model2vec los duplicados tienen mediana 0,73 y los temas parecidos llegan a 0,64 (calibrado en la fase 2 con `tests/pares_duplicados.tsv`).
+**Duplicados**: al guardar, si existe una memoria del mismo ámbito (el proyecto y las globales; si la nueva es global, solo las globales) con similitud **≥ 0,70 entre vectores centrados** (§9), no se guarda: se devuelve la candidata y se propone `update` (en la CLI, código de salida 2; `--force` guarda igualmente). En el MCP de la fase 3, lo mismo: se devuelve la parecida y **el agente decide** entre `update` o forzar (decidido por Marc el 28-oct-2026). Historia del umbral: el 0,92 del primer borrador era un error; 0,65 sin centrar salía bien con 40 pares de frases cortas pero, con 127 notas reales, el 31 % de los pares de notas distintas lo pasaba. Centrando, 1 de 8.001 pares pasa de 0,70.
 
 ## 4. Esquema SQL
 
@@ -172,18 +172,21 @@ resultado       = top N tras filtrar por proyecto (+ globales) / kind / etiqueta
 - **Exacta y prefijo a la vez**: «memoria» encuentra «memorias», pero quien dice «memoria» suma las dos y queda delante. Sin esto, buscar «marca20» sacaba antes «marca200» (lo destapó el test de coherencia).
 - **Cobertura**: con pocas memorias BM25 no distingue (si una palabra está en la mitad de los documentos, su IDF es 0 y todo puntúa casi 0). La parte de las palabras buscadas que aparece en la memoria desempata; con muchas memorias pesa poco al lado de BM25.
 - Ninguna sintaxis FTS5 de lo que escribe la persona llega al índice: todo va entre comillas.
-- **Calibración** (`tests/busquedas.tsv`: 18 memorias, 26 consultas con respuesta y 5 sin ella; `examples/fase2.rs busqueda`):
+- **Fusión: rescate, no RRF** (ajuste del 28-oct-2026). El orden por palabras manda; el vector solo añade, detrás, lo que las palabras no encontraron y se parece mucho (coseno centrado ≥ 0,25). Lo que sale por las dos listas lleva su similitud en `--json`.
+- **Calibración**, en dos conjuntos:
+  - `tests/busquedas.tsv` (público, escrito a mano: 18 memorias, 26 consultas con respuesta, 5 sin ella);
+  - 127 notas reales de memoria de Marc, **solo en local** (no se suben): cada resumen de `MEMORY.md` como consulta y su nota como respuesta (`examples/fase2.rs real <carpeta>`).
 
-  | modo | 1.º acierto | sin respuesta que devuelven algo |
-  |---|---|---|
-  | solo palabras | 85 % | 0 de 5 |
-  | híbrida, RRF sin filtro, ≥ 0,20 | 88 % | 3 de 5 |
-  | híbrida, solo-vector ≥ 0,28 (**la elegida**) | 88 % | 1 de 5 |
-  | híbrida, solo-vector ≥ 0,30 | 85 % | 0 de 5 |
+  | configuración | sintético: 1.º acierto | sintético: sin respuesta con algo | real: 1.º acierto |
+  |---|---|---|---|
+  | solo palabras | 85 % | 0 de 5 | **98 %** |
+  | RRF, vectores sin centrar, ≥ 0,28 (la primera versión) | 88 % | 1 de 5 | 87 % |
+  | RRF peso 1, centrados | 85 % | 0-4 de 5 | 84 % |
+  | RRF peso 0,5, centrados | 85 % | 0-4 de 5 | 90 % |
+  | **rescate, centrados, ≥ 0,25 (la elegida)** | **85 %** | **0 de 5** | **98 %** |
 
-  Con model2vec cualquier texto se parece algo a cualquier otro, sobre todo en el mismo idioma («login failure» se parecía más al script de *deploy*, en inglés, que a la memoria del token). Por eso lo que solo trae el vector necesita una similitud alta. Vectorizar título + contenido es lo mejor (85 % de acierto con el vector solo; solo el título 65 %; solo el contenido 62 %).
-- **Lo que el vector no puede**: «fallo de login» frente a «Bug en auth: el token caduca…» da 0,139, por debajo del ruido. Relacionar *login* con *token/auth* necesita conocimiento del mundo que un modelo estático no tiene. El criterio de «hecho» de la fase 2 se ha cambiado por uno que sí se cumple (ver §11).
-- El recall automático de la fase 4 debería ser más estricto (~0,33): ahí el ruido ensucia el contexto del agente.
+- **Conclusión honesta: con model2vec el vector no mejora la búsqueda de forma medible.** Con las notas reales, cualquier fusión que deje opinar al vector sobre el orden lo empeora; el rescate al menos no empeora nada. La semántica de un modelo estático es débil: «fallo de login» frente a «Bug en auth: el token caduca…» da 0,139 sin centrar y −0,017 centrando. Donde el vector sí sirve es en los **duplicados** (§3). Marc aceptó este alcance el 28-oct-2026: es lo mejor que hay sin dependencias externas.
+- El recall automático de la fase 4 tendrá que calibrarse otra vez (las similitudes centradas están en otra escala) y ser más estricto que la búsqueda: ahí el ruido ensucia el contexto del agente.
 - Sin modelo instalado, la búsqueda es FTS sola. Nunca falla por falta de modelo.
 - Cada resultado devuelto por `search` o `recall` actualiza `recalled_at` y `recall_count`.
 
@@ -268,11 +271,13 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
   - cada proceso lee `actual` al arrancar, así que las sesiones abiertas siguen con su versión y las nuevas cogen la nueva;
   - `meta.json` guarda el nombre del modelo, y la base guarda en `meta` con qué modelo se calcularon sus vectores: si no coincide con `actual`, `omoi reindex` (o el arranque del servidor MCP) recalcula los vectores;
   - las carpetas viejas se borran con `omoi model --limpiar`; si alguna sigue mapeada, el borrado falla sin ruido y se reintenta otro día.
-- **Instalación** (fase 2): `omoi model install` descarga el int8 de Hugging Face (150 MB, 8 s en el PC; `ureq` con rustls, Rust puro) y lo compila en local (unos segundos). Se distribuye el int8 y no el formato compilado: así el formato puede cambiar entre versiones de omoi sin volver a publicar nada. `--from <carpeta>` instala sin red (lo usan la CI y los tests). La carpeta del modelo se llama por la huella de su contenido (`potion-multilingual-128M-int8-7af456ef`): la descarga y el int8 local dieron la misma.
+- **Instalación** (fase 2): `omoi model install` descarga el int8 (150 MB, 8 s en el PC; `ureq` con rustls, Rust puro; Marc decidió el 28-oct mantenerlo frente a usar el `curl` del sistema) y lo compila en local (unos segundos). **Dos fuentes**, en orden: Hugging Face y, si falla, la Release [`modelo-potion-int8-v1`](https://github.com/marcmayol/omoikane/releases/tag/modelo-potion-int8-v1) de este repo, con los mismos ficheros (las dos dan la huella `7af456ef`). `OMOIKANE_MODEL_SOURCE` las sustituye por una o varias separadas por comas (espejos propios, pruebas). Se distribuye el int8 y no el formato compilado: así el formato puede cambiar entre versiones de omoi sin volver a publicar nada. `--from <carpeta>` instala sin red (lo usan la CI y los tests). La carpeta del modelo se llama por la huella de su contenido (`potion-multilingual-128M-int8-7af456ef`): la descarga y el int8 local dieron la misma.
 - `omoi model` dice cuál está en uso; `omoi model clean` borra los demás; `omoi reindex` rehace palabras y vectores.
 - Los vectores se mantienen solos: cada orden que los usa (`search`, `remember`, `update`) mira si faltan o si son de otro modelo y los calcula (≈ 0,03 ms por memoria). Guardar sin modelo no rompe nada: el vector llega la próxima vez.
 - Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB). Sin hacer: no hay demanda todavía.
 - Vector = `title + "\n" + content`, normalizado (coseno).
+- **Centrado** (ajuste del 28-oct-2026): para comparar se resta la media de los vectores de la base, mezclada con una media genérica (la del corpus de los tests, ~50 ms una vez por modelo, guardada en `meta`) con peso de 20 memorias, para que con pocas memorias no salga cero. Los modelos estáticos comparten una dirección común que hace que todo se parezca: con 127 notas reales, sin centrar, 3.134 de 8.001 pares de notas distintas pasaban de 0,65; centrando, 4. Con una media genérica fija en vez de la de la base, 259: la de la base captura el estilo de las notas de cada uno, por eso se calcula al comparar.
+- La similitud centrada se calcula en Rust sin copiar los vectores (cos(a−μ, q) con dos productos escalares). Con 2.000 memorias, `search` tarda ~38 ms por proceso y `remember` con control de duplicados ~30 ms; con 100, menos de 25.
 - Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
 
 ## 10. Estructura del repo (plana)
@@ -358,6 +363,14 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] Calibración con datos en vez de umbrales a ojo: `tests/pares_duplicados.tsv` (40 pares) y `tests/busquedas.tsv` (31 consultas), ambos escritos a mano y públicos.
 - Hecho (criterio revisado): «problema de zona horaria con la autenticación» encuentra «Bug en auth: el token caduca…» sin compartir palabras, y guardar lo mismo con otras palabras propone `update`. El criterio original («fallo de login» → «bug en auth») no se cumple con un modelo estático (§5).
 - Medidas en el PC: binario de 8,4 MB (2,9 en la fase 1: TLS para la descarga y `tokenizers`); `search` con modelo y 100 memorias, 19-31 ms por proceso; `remember` con control de duplicados, 19 ms.
+
+**Ajustes del 28-oct-2026** (tras el borrador de resultados; decisiones de Marc: 1 aceptar el alcance semántico, 2 recalibrar con datos reales, 3 segunda fuente en GitHub, 4 mantener `ureq`, 5 que el agente decida ante un duplicado, 6 recall más estricto):
+- [x] Recalibración con 127 notas reales (en local): destapó que el umbral de duplicados daba un 31 % de falsos avisos con notas largas y que RRF empeoraba la búsqueda (98 % → 87 %).
+- [x] Vectores centrados (§9): falsos avisos de duplicado de 3.134 a 4 de 8.001 pares a 0,65; umbral subido a 0,70 (1 de 8.001). Con frases cortas detecta 9 de 20 duplicados sin ningún falso aviso: es el precio de no molestar.
+- [x] Fusión por rescate (§5): la búsqueda con modelo nunca es peor que sin él; los tests lo comprueban.
+- [x] Release `modelo-potion-int8-v1` como segunda fuente y prueba de que, si la primera falla, se usa la segunda.
+- [x] Similitud centrada sin copias: de ~43 a ~38 ms con 2.000 memorias.
+- [x] Criterio de «hecho» final: guardar lo mismo dicho de otra forma propone `update`; la búsqueda con modelo no es peor que sin él en ningún conjunto; y la ruta de un fichero encuentra sus memorias. El de «fallo de login» → «bug en auth» queda descartado: no es posible con un modelo estático.
 
 ### Fase 3 · MCP (1 día)
 - `mcp.rs` con las 8 tools, `instructions`, resolución del proyecto por cwd.

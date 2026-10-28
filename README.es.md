@@ -10,7 +10,7 @@
 
 En desarrollo. El diseño completo y las fases están en [PLAN.md](PLAN.md).
 
-Funciona ya: el almacén de memorias y su CLI (fase 1) con búsqueda híbrida por palabras y por significado, y aviso de duplicados al guardar (fase 2). Lo siguiente: el servidor MCP (fase 3) y el recall automático con hooks (fase 4). La CI corre en Windows, Linux y macOS. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
+Funciona ya: el almacén de memorias y su CLI (fase 1) con búsqueda por palabras (y por significado como rescate) y aviso de duplicados al guardar (fase 2). Lo siguiente: el servidor MCP (fase 3) y el recall automático con hooks (fase 4). La CI corre en Windows, Linux y macOS. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
 
 ## Probarlo
 
@@ -35,7 +35,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 
 Omoikane guarda eso como memorias cortas y tipadas en un SQLite local, y las devuelve:
 
-- **Búsqueda híbrida de serie.** Palabras (FTS5) y significado (embeddings estáticos locales) fusionados con reciprocal rank fusion. Funciona en español y en otros cien idiomas, no solo en inglés.
+- **Búsqueda que funciona en tu idioma.** Las palabras (FTS5, sin importar las tildes, rutas de fichero incluidas) ordenan los resultados; un modelo de embeddings estático y local añade lo muy parecido que no comparte palabras y detecta duplicados al guardar. Medido con notas reales, las palabras solas sacan primero la memoria correcta el 98 % de las veces; los embeddings están para pillar duplicados, no para sustituir eso.
 - **Recall automático.** Un hook de Claude Code ejecuta `omoi recall` en cada mensaje. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
 - **Pequeño a propósito.** 8 herramientas MCP. Sin demonio, sin puerto, sin nube, sin sincronización. Un `~/.omoikane/omoikane.db`.
 - **Historial con motivo.** Actualizar una memoria conserva la versión anterior y, si el agente lo dice, por qué cambió.

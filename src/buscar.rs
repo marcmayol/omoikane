@@ -1,4 +1,4 @@
-//! Búsqueda híbrida: palabras (FTS5 con BM25) y significado (vectores), fusionadas con RRF.
+//! Búsqueda: palabras (FTS5 con BM25) y, como rescate, significado (vectores centrados).
 
 use crate::embeber::Modelo;
 use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, Tipo, de_fila};
@@ -100,19 +100,33 @@ fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
     terminos.iter().filter(|t| esta(t)).count() as f64 / terminos.len() as f64
 }
 
-/// Búsqueda híbrida: la lista por palabras (BM25) y la lista por significado (vector) se fusionan
-/// por posición con RRF, y después pesan la fijada y la recencia. Sin modelo, solo palabras.
+/// Búsqueda: manda el orden por palabras (BM25); el vector añade detrás lo que se parece mucho y
+/// las palabras no encontraron. Después pesan la fijada y la recencia. Sin modelo, solo palabras.
 pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
-    buscar_con(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA)
+    buscar_con(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION)
 }
 
-/// `buscar` con otra similitud mínima para la lista por significado (para calibrarla).
+/// Cómo se juntan la lista por palabras y la lista por significado.
+#[derive(Clone, Copy, Debug)]
+pub enum Fusion {
+    /// RRF: cada lista aporta `peso / (k + puesto)`; el vector con el peso dado (las palabras, 1).
+    Rrf { peso_vector: f64 },
+    /// El orden por palabras manda; el vector solo añade, detrás, lo que las palabras no encontraron.
+    Rescate,
+}
+
+/// Rescate y no RRF: con 127 notas reales, RRF bajaba el primer acierto del 98 % (solo palabras)
+/// al 84 % (peso 1) o al 90 % (peso 0,5); el rescate lo deja en el 98 %.
+const FUSION: Fusion = Fusion::Rescate;
+
+/// `buscar` con otra similitud mínima y otra fusión (para calibrarlas).
 pub fn buscar_con(
     db: &mut Connection,
     texto: &str,
     o: &Opciones,
     modelo: Option<&Modelo>,
     similitud_minima: f32,
+    fusion_elegida: Fusion,
 ) -> Result<Vec<Resultado>> {
     let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
     let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
@@ -137,8 +151,8 @@ pub fn buscar_con(
 
     // RRF: cada lista aporta 1 / (k + puesto). Lo que sale en las dos, suma las dos.
     let mut fusion: Vec<Resultado> = Vec::new();
-    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>| {
-        let aporte = 1.0 / (RRF_K + puesto as f64 + 1.0);
+    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>, peso: f64| {
+        let aporte = peso / (RRF_K + puesto as f64 + 1.0);
         match fusion.iter_mut().find(|r| r.memoria.id == m.id) {
             Some(r) => {
                 r.score += aporte;
@@ -148,14 +162,27 @@ pub fn buscar_con(
         }
     };
     for (i, m) in por_palabras.iter().enumerate() {
-        sumar(m, i, None);
+        sumar(m, i, None, 1.0);
     }
     // Lo que sale por palabras y por significado suma las dos posiciones. Lo que solo trae el vector
     // entra únicamente si se parece de verdad: con un modelo estático, cualquier texto se parece
     // algo a cualquier otro (sobre todo en el mismo idioma) y sin este filtro todo devuelve ruido.
+    let n_palabras = por_palabras.len();
     for (i, (m, s)) in por_significado.iter().enumerate() {
-        if *s >= similitud_minima || por_palabras.iter().any(|p| p.id == m.id) {
-            sumar(m, i, Some(*s));
+        let tambien_por_palabras = por_palabras.iter().any(|p| p.id == m.id);
+        match fusion_elegida {
+            Fusion::Rrf { peso_vector } => {
+                if *s >= similitud_minima || tambien_por_palabras {
+                    sumar(m, i, Some(*s), peso_vector);
+                }
+            }
+            Fusion::Rescate => {
+                if tambien_por_palabras {
+                    sumar(m, 0, Some(*s), 0.0); // solo apunta la similitud, sin mover el orden
+                } else if *s >= similitud_minima {
+                    sumar(m, n_palabras + i, Some(*s), 1.0);
+                }
+            }
         }
     }
 

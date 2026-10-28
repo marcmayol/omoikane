@@ -15,6 +15,8 @@ fn main() -> Result<()> {
         Some("vectores") => vectores(args.get(1).map_or(Ok(5000), |n| n.parse())?),
         Some("busqueda") => busqueda(),
         Some("variantes") => variantes(),
+        Some("centrar") => centrar(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
+        Some("real") => real(std::path::Path::new(args.get(1).ok_or_else(|| anyhow!("falta la carpeta"))?)),
         _ => Err(anyhow!("uso: fase2 duplicados | vectores N | busqueda")),
     }
 }
@@ -247,14 +249,12 @@ fn busqueda() -> Result<()> {
     println!("{} memorias, {} consultas con respuesta, {} sin respuesta
 ", claves.len(), con_respuesta, consultas.len() - con_respuesta);
     println!("{:<18} {:>7} {:>7} {:>6}   {:>16} {:>14}", "modo", "top-1", "top-3", "MRR", "sin resp. con algo", "ruido medio");
-    let configs: Vec<(String, bool, f32)> = std::iter::once(("solo palabras".to_string(), false, 0.0))
-        .chain([0.20f32, 0.25, 0.28, 0.30, 0.33, 0.35, 0.40].into_iter().map(|u| (format!("híbrida ≥ {u:.2}"), true, u)))
-        .collect();
+    let configs = configuraciones();
     let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
-    for (nombre, con_modelo, u) in &configs {
+    for (nombre, con_modelo, u, fusion) in &configs {
         let (mut top1, mut top3, mut mrr, mut con_algo, mut ruido) = (0, 0, 0.0, 0, 0);
         for (clave, q) in &consultas {
-            let r = buscar_con(&mut db, q, &o, con_modelo.then_some(&m), *u)?;
+            let r = buscar_con(&mut db, q, &o, con_modelo.then_some(&m), *u, *fusion)?;
             let puestos: Vec<&String> = r.iter().map(|r| &claves[&r.memoria.id]).collect();
             if clave == "-" {
                 if std::env::var_os("DETALLE").is_some() && !puestos.is_empty() {
@@ -350,4 +350,225 @@ fn variantes() -> Result<()> {
         println!("{:<20} top-1 solo vector {:>3.0}%   máx. similitud en las sin respuesta {:.3}", nombres[k], 100.0 * top1[k] as f64 / n as f64, ruido[k]);
     }
     Ok(())
+}
+
+/// Calibración con notas reales (no se suben al repo): una carpeta de memorias de Claude Code, con
+/// un `.md` por nota (frontmatter `name`/`description` y cuerpo) y un `MEMORY.md` con una línea por
+/// nota: `- [Título](fichero.md) — resumen`. El resumen es la consulta; su nota, la respuesta.
+/// También mira todos los pares de notas distintas: cualquier aviso de duplicado es un falso positivo.
+fn real(dir: &std::path::Path) -> Result<()> {
+    use omoikane::buscar::{Opciones, buscar_con};
+    use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+    let m = modelo()?;
+    let mut notas: Vec<(String, String, String)> = Vec::new(); // (fichero, título, cuerpo)
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if !f.ends_with(".md") || f == "MEMORY.md" {
+            continue;
+        }
+        let t = std::fs::read_to_string(e.path())?;
+        let (cabecera, cuerpo) = match t.strip_prefix("---") {
+            Some(r) => match r.find("
+---") {
+                Some(i) => (&r[..i], r[i + 4..].trim()),
+                None => ("", t.as_str()),
+            },
+            None => ("", t.as_str()),
+        };
+        let titulo = cabecera
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("description:"))
+            .map(|d| d.trim().trim_matches('"').to_string())
+            .unwrap_or_else(|| f.trim_end_matches(".md").replace(['_', '-'], " "));
+        let titulo: String = titulo.chars().take(200).collect();
+        if !cuerpo.is_empty() {
+            notas.push((f, titulo, cuerpo.to_string()));
+        }
+    }
+    let indice = std::fs::read_to_string(dir.join("MEMORY.md"))?;
+    let mut consultas: Vec<(String, String)> = Vec::new(); // (fichero esperado, consulta)
+    for l in indice.lines() {
+        let (Some(i), Some(j)) = (l.find("]("), l.find(".md)")) else { continue };
+        let fichero = format!("{}.md", &l[i + 2..j]);
+        if let Some(k) = l.find(" — ") {
+            let resumen = l[k + " — ".len()..].trim().trim_end_matches('…').to_string();
+            if notas.iter().any(|n| n.0 == fichero) && resumen.len() > 10 {
+                consultas.push((fichero, resumen));
+            }
+        }
+    }
+    println!("{} notas, {} consultas (resúmenes del índice)", notas.len(), consultas.len());
+
+    // Duplicados: todos los pares de notas distintas.
+    let vs: Vec<Vec<f32>> = notas.iter().map(|n| m.vector(&omoikane::vectores::texto(&n.1, &n.2))).collect::<Result<_>>()?;
+    let mut pares = Vec::new();
+    for i in 0..vs.len() {
+        for j in i + 1..vs.len() {
+            pares.push((coseno(&vs[i], &vs[j]), i, j));
+        }
+    }
+    pares.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let total = pares.len();
+    for u in [0.60f32, 0.65, 0.70, 0.75, 0.80] {
+        let n = pares.iter().filter(|p| p.0 >= u).count();
+        println!("pares de notas distintas con coseno ≥ {u:.2}: {n} de {total}");
+    }
+    println!("los más parecidos (revisar si son duplicados de verdad):");
+    for (s, i, j) in pares.iter().take(8) {
+        println!("  {s:.3}  {} / {}", notas[*i].0, notas[*j].0);
+    }
+
+    // Búsqueda.
+    let tmp = std::env::temp_dir().join(format!("omoi-real-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut fichero_de = std::collections::HashMap::new();
+    for (f, t, c) in &notas {
+        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+    }
+    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
+    println!("
+{:<18} {:>7} {:>7} {:>6}", "modo", "top-1", "top-3", "MRR");
+    let configs = configuraciones();
+    for (nombre, con, u, fusion) in &configs {
+        let (mut t1, mut t3, mut mrr) = (0, 0, 0.0);
+        for (f, q) in &consultas {
+            let r = buscar_con(&mut db, q, &o, con.then_some(&m), *u, *fusion)?;
+            if let Some(i) = r.iter().position(|r| &fichero_de[&r.memoria.id] == f) {
+                t1 += usize::from(i == 0);
+                t3 += usize::from(i < 3);
+                mrr += 1.0 / (i as f64 + 1.0);
+            }
+        }
+        let n = consultas.len() as f64;
+        println!("{nombre:<18} {:>6.0}% {:>6.0}% {:>6.2}", 100.0 * t1 as f64 / n, 100.0 * t3 as f64 / n, mrr / n);
+    }
+    drop(db);
+    let _ = std::fs::remove_dir_all(tmp);
+    Ok(())
+}
+
+/// Resta el vector medio y renormaliza.
+fn centrados(vs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    let d = vs[0].len();
+    let mut media = vec![0f32; d];
+    for v in vs {
+        for (m, x) in media.iter_mut().zip(v) {
+            *m += x / vs.len() as f32;
+        }
+    }
+    vs.iter()
+        .map(|v| {
+            let c: Vec<f32> = v.iter().zip(&media).map(|(x, m)| x - m).collect();
+            let n = c.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            c.iter().map(|x| x / n).collect()
+        })
+        .collect()
+}
+
+/// ¿Separa mejor los duplicados restar el vector medio de la colección? Con las notas reales de
+/// `dir` (todas distintas: lo que pase el umbral es falso positivo) y con los pares de calibración.
+fn centrar(dir: &std::path::Path) -> Result<()> {
+    let m = modelo()?;
+    // Notas reales.
+    let mut textos = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let f = e.file_name().to_string_lossy().into_owned();
+        if f.ends_with(".md") && f != "MEMORY.md" {
+            textos.push(std::fs::read_to_string(e.path())?);
+        }
+    }
+    let vs: Vec<Vec<f32>> = textos.iter().map(|t| m.vector(t)).collect::<Result<_>>()?;
+    let cs = centrados(&vs);
+    let pares = |v: &[Vec<f32>]| -> Vec<f32> {
+        let mut p = Vec::new();
+        for i in 0..v.len() {
+            for j in i + 1..v.len() {
+                p.push(coseno(&v[i], &v[j]));
+            }
+        }
+        p
+    };
+    let (pb, pc) = (pares(&vs), pares(&cs));
+    println!("{} notas reales, {} pares (todos distintos)", textos.len(), pb.len());
+    for u in [0.5f32, 0.6, 0.65, 0.7, 0.8] {
+        println!(
+            "  ≥ {u:.2}: sin centrar {:>5}   centrados {:>5}",
+            pb.iter().filter(|x| **x >= u).count(),
+            pc.iter().filter(|x| **x >= u).count()
+        );
+    }
+    // Pares de calibración: centrados con la media de sus propias frases.
+    let pares_cal: Vec<(String, String, String)> = include_str!("../tests/pares_duplicados.tsv")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c[0].to_string(), c[1].to_string(), c[2].to_string())
+        })
+        .collect();
+    let frases: Vec<String> = pares_cal.iter().flat_map(|p| [p.1.clone(), p.2.clone()]).collect();
+    let fv: Vec<Vec<f32>> = frases.iter().map(|t| m.vector(t)).collect::<Result<_>>()?;
+    for (nombre, v) in [("sin centrar", fv.clone()), ("centrados", centrados(&fv))] {
+        let r: Vec<(String, f32)> = pares_cal.iter().enumerate().map(|(i, p)| (p.0.clone(), coseno(&v[2 * i], &v[2 * i + 1]))).collect();
+        resumen(&format!("pares de calibración, {nombre}"), &r);
+    }
+    // Notas reales centradas con la media de las notas, pares de calibración centrados con la misma.
+    let d = vs[0].len();
+    let mut media = vec![0f32; d];
+    for v in &vs {
+        for (mm, x) in media.iter_mut().zip(v) {
+            *mm += x / vs.len() as f32;
+        }
+    }
+    let con_media = |v: &Vec<f32>| -> Vec<f32> {
+        let c: Vec<f32> = v.iter().zip(&media).map(|(x, mm)| x - mm).collect();
+        let n = c.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+        c.iter().map(|x| x / n).collect()
+    };
+    let r: Vec<(String, f32)> =
+        pares_cal.iter().enumerate().map(|(i, p)| (p.0.clone(), coseno(&con_media(&fv[2 * i]), &con_media(&fv[2 * i + 1])))).collect();
+    resumen("pares de calibración centrados con la media de las notas reales", &r);
+
+    // ¿Y con una media genérica, fija por modelo? La del corpus de los tests (código, docs y frases
+    // en muchos idiomas), que no tiene nada que ver con las notas.
+    let generico: Vec<Vec<f32>> = include_str!("../tests/corpus.txt")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| m.vector(l))
+        .collect::<Result<_>>()?;
+    let mut mg = vec![0f32; d];
+    for v in &generico {
+        for (mm, x) in mg.iter_mut().zip(v) {
+            *mm += x / generico.len() as f32;
+        }
+    }
+    let con = |v: &Vec<f32>, med: &[f32]| -> Vec<f32> {
+        let c: Vec<f32> = v.iter().zip(med).map(|(x, mm)| x - mm).collect();
+        let n = c.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+        c.iter().map(|x| x / n).collect()
+    };
+    let cg: Vec<Vec<f32>> = vs.iter().map(|v| con(v, &mg)).collect();
+    let pg = pares(&cg);
+    println!("
+notas reales centradas con la media GENÉRICA del corpus de tests:");
+    for u in [0.5f32, 0.6, 0.65, 0.7, 0.8] {
+        println!("  ≥ {u:.2}: {:>5}", pg.iter().filter(|x| **x >= u).count());
+    }
+    let r: Vec<(String, f32)> =
+        pares_cal.iter().enumerate().map(|(i, p)| (p.0.clone(), coseno(&con(&fv[2 * i], &mg), &con(&fv[2 * i + 1], &mg)))).collect();
+    resumen("pares de calibración centrados con la media genérica", &r);
+    Ok(())
+}
+
+fn configuraciones() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
+    use omoikane::buscar::Fusion;
+    let mut v = vec![("solo palabras".to_string(), false, 0.0, Fusion::Rescate)];
+    for u in [0.15f32, 0.20, 0.25, 0.30, 0.35] {
+        v.push((format!("rrf 1.0 >= {u:.2}"), true, u, Fusion::Rrf { peso_vector: 1.0 }));
+        v.push((format!("rrf 0.5 >= {u:.2}"), true, u, Fusion::Rrf { peso_vector: 0.5 }));
+        v.push((format!("rescate >= {u:.2}"), true, u, Fusion::Rescate));
+    }
+    v
 }
