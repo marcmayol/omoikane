@@ -26,6 +26,7 @@ impl Entorno {
         c.args(args)
             .current_dir(self.dir.join("repo").join("src"))
             .env("OMOIKANE_DB", self.dir.join("o.db"))
+            .env("OMOIKANE_MODELS", self.dir.join("models"))
             .env_remove("OMOIKANE_LANG")
             .stdin(if entrada.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -176,4 +177,57 @@ fn tipo_desconocido_falla_sin_guardar() {
     let o = e.omoi(&["remember", "-k", "bugfix", "-t", "X", "y"]);
     assert!(!o.status.success());
     assert!(!e.dir.join("o.db").exists() || e.json(&["recent"]).as_array().unwrap().is_empty());
+}
+
+fn modelo_int8() -> Option<PathBuf> {
+    let dir = std::env::var_os("OMOI_MODELO_INT8")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
+    dir.join("model.safetensors").exists().then_some(dir)
+}
+
+/// Fase 2 de punta a punta: sin modelo funciona por palabras; con él, avisa de duplicados y
+/// encuentra por significado.
+#[test]
+fn modelo_duplicados_y_significado() {
+    let Some(int8) = modelo_int8() else {
+        eprintln!("SALTADO: no está el modelo int8");
+        return;
+    };
+    let e = Entorno::nuevo("modelo");
+    assert!(e.ok(&["model"]).contains("no model installed"));
+    e.ok(&["remember", "-k", "gotcha", "-t", "Bug en auth: el token caduca antes de tiempo", "El middleware compara la hora local con la caducidad del token, que va en UTC."]);
+    // Sin modelo, la consulta sin palabras en común no encuentra nada.
+    assert!(e.json(&["search", "problema de zona horaria con la autenticación"]).as_array().unwrap().is_empty());
+
+    let instalado = e.ok(&["model", "install", "--from", int8.to_str().unwrap()]);
+    assert!(instalado.contains("model ready") && instalado.contains("1 vectors"), "{instalado}");
+    assert!(e.ok(&["model"]).contains("* potion-multilingual-128M-int8-"));
+    let doctor = e.ok(&["doctor"]);
+    assert!(doctor.contains("vectors    1"), "{doctor}");
+
+    // Ahora sí, por significado.
+    let r = e.json(&["search", "problema de zona horaria con la autenticación"]);
+    assert_eq!(r[0]["title"], "Bug en auth: el token caduca antes de tiempo");
+    assert!(r[0]["similarity"].as_f64().unwrap() > 0.28);
+
+    // Casi lo mismo: no se guarda, código 2, y dice cuál es la parecida.
+    let parecida = ["remember", "-k", "gotcha", "-t", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token en UTC."];
+    let o = e.omoi(&parecida);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("not saved"));
+    let mut con_json = parecida.to_vec();
+    con_json.push("--json");
+    let o = e.omoi(&con_json);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["duplicate_of"]["title"], "Bug en auth: el token caduca antes de tiempo");
+    assert_eq!(e.json(&["recent"]).as_array().unwrap().len(), 1);
+    // Con --force, sí.
+    let mut forzada = parecida.to_vec();
+    forzada.push("--force");
+    e.ok(&forzada);
+    assert_eq!(e.json(&["recent"]).as_array().unwrap().len(), 2);
+
+    assert!(e.ok(&["reindex"]).contains("2 memories, 2 vectors"));
+    assert!(e.ok(&["model", "clean"]).contains("0 models deleted"));
 }

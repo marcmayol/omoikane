@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 1;
+pub const VERSION_ESQUEMA: i64 = 2;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -72,6 +72,18 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if v < 1 {
         tx.execute_batch(ESQUEMA_1)?;
     }
+    if v < 2 {
+        tx.execute_batch(ESQUEMA_2)?;
+        // El índice FTS nuevo (con rutas) se rellena desde la tabla.
+        tx.execute(
+            "INSERT INTO memory_fts(rowid, title, content, tags, paths)
+             SELECT n, title, content,
+                    (SELECT COALESCE(group_concat(value, ' '), '') FROM json_each(memory.tags)),
+                    (SELECT COALESCE(group_concat(value, ' '), '') FROM json_each(memory.paths))
+             FROM memory",
+            [],
+        )?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
@@ -129,9 +141,57 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 ";
 
+/// Fase 2: las rutas entran en la búsqueda (FTS5 no deja añadir columnas: se rehace el índice) y
+/// los vectores van en una tabla normal. Un BLOB con `vec_distance_cosine` filtra por proyecto en el
+/// mismo SQL y fue el doble de rápido que `vec0` (que no sabe filtrar dentro del KNN).
+const ESQUEMA_2: &str = "
+DROP TABLE memory_fts;
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+  title, content, tags, paths,
+  content='', contentless_delete=1,
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+-- Vector de title + content, normalizado. El modelo con el que se calcularon va en meta('modelo').
+CREATE TABLE memory_vec (
+  n INTEGER PRIMARY KEY REFERENCES memory(n) ON DELETE CASCADE,
+  e BLOB NOT NULL
+);
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migra_de_1_a_2_y_reindexa() {
+        let dir = std::env::temp_dir().join(format!("omoi-db-migra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("o.db");
+        {
+            // Una base de la fase 1, a mano.
+            let db = Connection::open(&ruta).unwrap();
+            db.execute_batch(ESQUEMA_1).unwrap();
+            db.execute_batch(
+                "INSERT INTO memory(n, id, kind, title, content, paths, tags, created_at, updated_at)
+                 VALUES (7, 'X', 'gotcha', 'Trampa', 'texto', '[\"src/auth.rs\"]', '[\"seguridad\"]', 'a', 'a');
+                 INSERT INTO memory_fts(rowid, title, content, tags) VALUES (7, 'Trampa', 'texto', 'seguridad');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let db = abrir(&ruta).unwrap();
+        assert_eq!(version(&db).unwrap(), 2);
+        let por = |q: &str| -> i64 {
+            db.query_row("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1", [q], |f| f.get(0)).unwrap()
+        };
+        assert_eq!(por("auth"), 1);
+        assert_eq!(por("seguridad"), 1);
+        assert_eq!(por("trampa"), 1);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn crea_y_reabre() {

@@ -1,0 +1,50 @@
+# Pares para calibrar la detección de duplicados (fase 2). Escritos a mano para Omoikane; públicos.
+# clase	a	b
+# dup  = misma memoria dicha de otra forma (debería proponer update)
+# rel  = mismo tema, memoria distinta (NO debería proponer update)
+# otro = sin relación
+dup	El middleware de autenticación no se ejecuta en las rutas /health	Las rutas /health se saltan el middleware de auth
+dup	Usamos ULID en vez de UUID porque se ordenan por fecha	Elegimos ULID y no UUID: los ULID quedan ordenados por tiempo
+dup	El usuario quiere los commits en inglés y de una sola línea	Commits: una línea y en inglés, lo prefiere así
+dup	Los tests de integración necesitan la variable DATABASE_URL	Sin DATABASE_URL fallan los tests de integración
+dup	En Windows hay que usar -creplace porque -replace ignora mayúsculas	-replace de PowerShell no distingue mayúsculas; para eso está -creplace
+dup	La API devuelve 429 si pasas de 100 peticiones por minuto	Límite de la API: 100 peticiones/minuto, después responde 429
+dup	El build falla si la versión de Node es menor que 20	Hace falta Node 20 o más; con versiones anteriores el build no compila
+dup	No hay que borrar la caché a mano, se regenera sola al arrancar	La caché se reconstruye al iniciar: borrarla manualmente no hace falta
+dup	The deploy script must run from the repo root	Run the deployment script from the root of the repository
+dup	Auth tokens expire after 15 minutes, refresh tokens after 7 days	Access tokens last 15 min; refresh tokens last a week
+dup	The CI cache key includes the Cargo.lock hash	We key the CI cache on the hash of Cargo.lock
+dup	Prefer small pull requests, under 300 lines	Keep PRs small: no more than about 300 lines changed
+dup	El servidor escucha en el puerto 8765 por defecto	Puerto por defecto del servidor: 8765
+dup	Las fechas se guardan siempre en UTC y se muestran en hora local	Guardamos en UTC; la hora local solo al mostrarla
+dup	El modelo tarda 1,65 s en cargar por el tokenizer	La carga del modelo son 1,65 segundos, casi todo el tokenizer
+dup	Pi-hole bloqueaba el dominio que usa LinkedIn para subir vídeos	La subida de vídeo a LinkedIn fallaba porque Pi-hole bloqueaba su dominio
+dup	login failure on the sign-in screen	fallo de login en la pantalla de acceso
+dup	La impresora necesita brim para piezas finas	Para piezas finas hay que poner brim en la impresora
+dup	Los ids se pueden escribir solo por el principio	Basta con el principio del id para referirse a una memoria
+dup	The database migration must run before starting the app	Run DB migrations first, then start the application
+rel	El middleware de autenticación no se ejecuta en las rutas /health	El middleware de autenticación valida la firma del token con la clave pública
+rel	Usamos ULID en vez de UUID porque se ordenan por fecha	Los ids de las sesiones son números secuenciales
+rel	El usuario quiere los commits en inglés y de una sola línea	El usuario quiere las respuestas en español
+rel	Los tests de integración necesitan la variable DATABASE_URL	Los tests unitarios no tocan la base de datos
+rel	La API devuelve 429 si pasas de 100 peticiones por minuto	La API devuelve 401 si el token ha caducado
+rel	El build falla si la versión de Node es menor que 20	El build de producción minifica el CSS
+rel	El servidor escucha en el puerto 8765 por defecto	El servidor escribe los logs en /var/log/app
+rel	Las fechas se guardan siempre en UTC y se muestran en hora local	Las fechas de los informes se agrupan por semana
+rel	El modelo tarda 1,65 s en cargar por el tokenizer	El modelo int8 ocupa 130 MB en disco
+rel	Pi-hole bloqueaba el dominio que usa LinkedIn para subir vídeos	Pi-hole es el DNS de toda la red de casa
+rel	Auth tokens expire after 15 minutes, refresh tokens after 7 days	Auth tokens are signed with RS256
+rel	The CI cache key includes the Cargo.lock hash	CI runs on Windows, Linux and macOS
+rel	Prefer small pull requests, under 300 lines	Every pull request needs one approval
+rel	The deploy script must run from the repo root	The deploy script uploads the build to S3
+rel	The database migration must run before starting the app	The database runs on PostgreSQL 16
+rel	La impresora necesita brim para piezas finas	La impresora imprime PLA con la cama a 50 grados
+rel	En Windows hay que usar -creplace porque -replace ignora mayúsculas	En PowerShell Set-Content escribe UTF-8 con BOM
+rel	No hay que borrar la caché a mano, se regenera sola al arrancar	La caché vive en la carpeta .cache del proyecto
+rel	Los ids se pueden escribir solo por el principio	Los ids son ULID de 26 caracteres
+rel	login failure on the sign-in screen	the sign-in screen has a dark mode
+otro	El middleware de autenticación no se ejecuta en las rutas /health	La receta de la tortilla lleva cebolla
+otro	The deploy script must run from the repo root	Bluesky handles are domain names
+otro	Usamos ULID en vez de UUID porque se ordenan por fecha	La impresora necesita brim para piezas finas
+otro	Commits: una línea y en inglés, lo prefiere así	El servidor escucha en el puerto 8765 por defecto
+otro	Auth tokens expire after 15 minutes, refresh tokens after 7 days	La caché se reconstruye al iniciar

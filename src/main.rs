@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use omoikane::buscar::{self, Opciones};
 use omoikane::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo, Version};
-use omoikane::{db, idioma, proyecto, tr};
+use omoikane::embeber::Modelo;
+use omoikane::{db, idioma, modelos, proyecto, tr, vectores};
 use rusqlite::Connection;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -59,6 +60,9 @@ enum Orden {
         /// Who saves it (for example "claude-code:<session>").
         #[arg(long, default_value = "cli")]
         source: String,
+        /// Save it even if a very similar memory already exists.
+        #[arg(short, long)]
+        force: bool,
     },
     /// Search the memories of this project and the global ones.
     Search {
@@ -151,8 +155,29 @@ enum Orden {
         #[arg(long)]
         all: bool,
     },
+    /// The embedding model that enables search by meaning.
+    Model {
+        #[command(subcommand)]
+        accion: Option<AccionModelo>,
+    },
+    /// Rebuild the search indexes (words and vectors) from the memories.
+    Reindex,
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
+}
+
+#[derive(Subcommand)]
+enum AccionModelo {
+    /// Which model is installed and in use (the default).
+    Status,
+    /// Download the model (about 150 MB, once) and compile it.
+    Install {
+        /// Take it from a folder with the int8 model instead of downloading it.
+        #[arg(long, value_name = "DIR")]
+        from: Option<PathBuf>,
+    },
+    /// Delete installed models that are not in use.
+    Clean,
 }
 
 fn main() -> Result<()> {
@@ -160,12 +185,53 @@ fn main() -> Result<()> {
     let c = &cli.comun;
     match cli.orden {
         Orden::Doctor => doctor(c),
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, source } => {
+        Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
+        Orden::Reindex => {
+            let mut db = abrir(c)?;
+            let n = memoria::reindexar_palabras(&mut db)?;
+            let v = match modelos::abrir_actual()? {
+                Some(m) => {
+                    db.execute("DELETE FROM meta WHERE k = 'modelo'", [])?;
+                    vectores::sincronizar(&mut db, &m)?
+                }
+                None => 0,
+            };
+            println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
+            Ok(())
+        }
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, source, force } => {
             let project = if global { String::new() } else { proyecto_de(c)? };
             let content = texto_o_entrada(content)?;
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            if !force
+                && let Some(modelo) = &modelo
+                && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &project, &title, &content)?
+            {
+                if c.json {
+                    #[derive(serde::Serialize)]
+                    struct Parecida<'a> {
+                        duplicate_of: &'a Memoria,
+                        similarity: f32,
+                    }
+                    json(&Parecida { duplicate_of: &existente, similarity: sim })?;
+                } else {
+                    let id = corto(&existente.id);
+                    println!(
+                        "{}",
+                        tr!(
+                            "not saved: it looks like {id} «{}» (similarity {sim:.2})\n  change that one with `omoi update {id}`, or save anyway with --force",
+                            "no guardada: se parece a {id} «{}» (similitud {sim:.2})\n  cambia esa con `omoi update {id}`, o guárdala igualmente con --force",
+                            existente.title
+                        )
+                    );
+                }
+                // Código 2: no es un error, pero quien llame tiene que saber que no se guardó.
+                std::process::exit(2);
+            }
             let m = memoria::guardar(
-                &mut abrir(c)?,
+                &mut db,
                 Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
+                modelo.as_ref(),
             )?;
             if c.json {
                 return json(&m);
@@ -175,7 +241,8 @@ fn main() -> Result<()> {
         }
         Orden::Search { query, kind, tags, limit, all } => {
             let o = Opciones { ambito: ambito(c, all)?, kind, tags, limite: limit };
-            let res = buscar::buscar(&mut abrir(c)?, &query.join(" "), &o)?;
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let res = buscar::buscar(&mut db, &query.join(" "), &o, modelo.as_ref())?;
             if c.json {
                 return json(&res);
             }
@@ -205,7 +272,8 @@ fn main() -> Result<()> {
                 pinned: if pin { Some(true) } else if unpin { Some(false) } else { None },
                 reason,
             };
-            let m = memoria::actualizar(&mut abrir(c)?, &id, cambios)?;
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let m = memoria::actualizar(&mut db, &id, cambios, modelo.as_ref())?;
             if c.json {
                 return json(&m);
             }
@@ -266,6 +334,63 @@ fn main() -> Result<()> {
             let n = memoria::exportar(&abrir(c)?, &ambito(c, all)?, &mut salida)?;
             salida.flush()?;
             eprintln!("{}", tr!("{n} memories exported", "{n} memorias exportadas"));
+            Ok(())
+        }
+    }
+}
+
+/// La base y el modelo, con los vectores al día (si el modelo cambió o faltan, se calculan ahora).
+fn abrir_con_modelo(c: &Comun) -> Result<(Connection, Option<Modelo>)> {
+    let mut db = abrir(c)?;
+    let modelo = modelos::abrir_actual()?;
+    if let Some(m) = &modelo {
+        vectores::sincronizar(&mut db, m)?;
+    }
+    Ok((db, modelo))
+}
+
+fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
+    match accion {
+        AccionModelo::Status => {
+            let v = modelos::instalados();
+            if c.json {
+                return json(&v);
+            }
+            if v.is_empty() {
+                println!(
+                    "{}",
+                    tr!(
+                        "no model installed: search works by words only. Install it with `omoi model install`",
+                        "no hay modelo instalado: la búsqueda va solo por palabras. Instálalo con `omoi model install`"
+                    )
+                );
+            }
+            for (nombre, actual) in v {
+                println!("{} {nombre}", if actual { "*" } else { " " });
+            }
+            println!("{}", modelos::carpeta().display());
+            Ok(())
+        }
+        AccionModelo::Install { from } => {
+            let id = modelos::instalar(from.as_deref(), &mut |linea| eprintln!("{linea}"))?;
+            // Los vectores de la base se calculan ya, para que la primera búsqueda no los espere.
+            let mut db = abrir(c)?;
+            let n = match modelos::abrir_actual()? {
+                Some(m) => vectores::sincronizar(&mut db, &m)?,
+                None => 0,
+            };
+            if c.json {
+                return json(&serde_json::json!({ "model": id, "vectors": n }));
+            }
+            println!("{}", tr!("model ready: {id} ({n} vectors computed)", "modelo listo: {id} ({n} vectores calculados)"));
+            Ok(())
+        }
+        AccionModelo::Clean => {
+            let borrados = modelos::limpiar();
+            if c.json {
+                return json(&borrados);
+            }
+            println!("{}", tr!("{} models deleted", "{} modelos borrados", borrados.len()));
             Ok(())
         }
     }
@@ -400,6 +525,28 @@ fn doctor(c: &Comun) -> Result<()> {
         let r = ruta.display();
         println!("{}", tr!("database   {r} (not created yet: it appears with the first memory)", "base       {r} (todavía no existe: se crea al guardar la primera memoria)"));
     }
+    match modelos::actual() {
+        Some(d) => {
+            let nombre = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            println!("{}{nombre}", tr!("model      ", "modelo     "));
+            if ruta.exists() {
+                let (de, n) = vectores::estado(&db::abrir(&ruta)?)?;
+                let al_dia = de.as_deref() == Some(nombre.as_str());
+                println!(
+                    "{}",
+                    if al_dia {
+                        tr!("vectors    {n}", "vectores   {n}")
+                    } else {
+                        tr!("vectors    {n} (out of date: they are recomputed on the next search)", "vectores   {n} (desfasados: se recalculan en la próxima búsqueda)")
+                    }
+                );
+            }
+        }
+        None => println!(
+            "{}",
+            tr!("model      not installed (`omoi model install`): search by words only", "modelo     no instalado (`omoi model install`): búsqueda solo por palabras")
+        ),
+    }
     if let Ok(p) = proyecto_de(c) {
         println!("{}{p}", tr!("project    ", "proyecto   "));
     }
@@ -429,6 +576,7 @@ fn en_espanol(c: Command) -> Command {
             ("pinned", "Se inyecta siempre en su proyecto."),
             ("global", "Vale para todos los proyectos, no solo para este."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
+            ("force", "Guardarla aunque ya exista una muy parecida."),
         ]),
         ("search", "Busca en las memorias de este proyecto y en las globales.", &[
             ("query", "Lo que buscas, en lenguaje normal."),
@@ -466,6 +614,8 @@ fn en_espanol(c: Command) -> Command {
             "all",
             "De todos los proyectos (por defecto, este y las globales).",
         )]),
+        ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
+        ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
     ];
     let c = textos.iter().fold(c, |c, (orden, about, args)| {
@@ -475,8 +625,22 @@ fn en_espanol(c: Command) -> Command {
         .disable_version_flag(true)
         .arg(Arg::new("version").short('V').long("version").action(ArgAction::Version).help("Muestra la versión."))
         .disable_help_subcommand(true);
+    let c = c.mut_subcommand("model", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("status", |s| s.about("Qué modelo hay instalado y cuál se usa (por defecto)."))
+            .mut_subcommand("install", |s| {
+                s.about("Descarga el modelo (unos 150 MB, una vez) y lo compila.").mut_arg("from", |a| {
+                    a.help("Tomarlo de una carpeta con el modelo int8 en vez de descargarlo.").value_name("CARPETA")
+                })
+            })
+            .mut_subcommand("clean", |s| s.about("Borra los modelos instalados que no se usan."))
+    });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
-    nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es))
+    let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));
+    c.mut_subcommand("model", |m| {
+        let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
+        acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))
+    })
 }
 
 /// Los títulos fijos de la ayuda de clap («Usage», «Commands», «Options»…) en español.

@@ -3,7 +3,8 @@
 //! Toda escritura toca `memory`, `memory_fts` y `memory_path` en una sola transacción `IMMEDIATE`:
 //! nunca queda una memoria sin indexar ni un índice que apunte a una memoria borrada.
 
-use crate::tr;
+use crate::embeber::Modelo;
+use crate::{tr, vectores};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -199,8 +200,8 @@ fn etiquetas(ts: &[String]) -> Vec<String> {
 
 fn indexar(tx: &Transaction, n: i64, m: &Memoria) -> Result<()> {
     tx.execute(
-        "INSERT INTO memory_fts(rowid, title, content, tags) VALUES (?1, ?2, ?3, ?4)",
-        params![n, m.title, m.content, m.tags.join(" ")],
+        "INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![n, m.title, m.content, m.tags.join(" "), m.paths.join(" ")],
     )?;
     tx.execute("DELETE FROM memory_path WHERE memory_id = ?1", [&m.id])?;
     for p in &m.paths {
@@ -216,7 +217,9 @@ fn desindexar(tx: &Transaction, n: i64) -> Result<()> {
 
 // --- Operaciones -----------------------------------------------------------------------------------
 
-pub fn guardar(db: &mut Connection, nueva: Nueva) -> Result<Memoria> {
+/// Guarda sin mirar si ya existe una parecida: eso es `vectores::duplicada`, antes, para que quien
+/// llama decida. Con `modelo`, el vector va en la misma transacción.
+pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Result<Memoria> {
     let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha or preference", "falta el tipo: fact, decision, gotcha o preference"))?;
     let (title, content) = (titulo(&nueva.title)?, contenido(&nueva.content)?);
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
@@ -242,6 +245,9 @@ pub fn guardar(db: &mut Connection, nueva: Nueva) -> Result<Memoria> {
     let n = tx.last_insert_rowid();
     let m = leer(&tx, &id)?;
     indexar(&tx, n, &m)?;
+    if let Some(modelo) = modelo {
+        vectores::guardar(&tx, n, modelo, &m.title, &m.content)?;
+    }
     tx.commit()?;
     Ok(m)
 }
@@ -270,7 +276,7 @@ pub fn obtener(db: &Connection, id: &str) -> Result<Memoria> {
     leer(db, &resolver_id(db, id)?)
 }
 
-pub fn actualizar(db: &mut Connection, id: &str, c: Cambios) -> Result<Memoria> {
+pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
     let antes = leer(&tx, &id)?;
@@ -345,8 +351,36 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios) -> Result<Memoria> 
     desindexar(&tx, n)?;
     let m = leer(&tx, &id)?;
     indexar(&tx, n, &m)?;
+    if despues.title != antes.title || despues.content != antes.content {
+        match modelo {
+            Some(modelo) => vectores::guardar(&tx, n, modelo, &m.title, &m.content)?,
+            // Sin modelo, el vector viejo ya no vale: se borra y `sincronizar` lo rehará.
+            None => {
+                tx.execute("DELETE FROM memory_vec WHERE n = ?1", [n])?;
+            }
+        }
+    }
     tx.commit()?;
     Ok(m)
+}
+
+/// Rehace el índice de palabras desde la tabla. Devuelve cuántas memorias indexó.
+pub fn reindexar_palabras(db: &mut Connection) -> Result<usize> {
+    let tx = escribir_tx(db)?;
+    tx.execute("DELETE FROM memory_fts", [])?;
+    let ids: Vec<(i64, String)> = {
+        let mut q = tx.prepare("SELECT n, id FROM memory")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let todas: Vec<(i64, Memoria)> = ids.into_iter().map(|(n, id)| Ok((n, leer(&tx, &id)?))).collect::<Result<_>>()?;
+    for (n, m) in &todas {
+        tx.execute(
+            "INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![n, m.title, m.content, m.tags.join(" "), m.paths.join(" ")],
+        )?;
+    }
+    tx.commit()?;
+    Ok(todas.len())
 }
 
 /// Borra la memoria con su historial y sus índices. Devuelve lo que se borró.

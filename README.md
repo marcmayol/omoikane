@@ -10,9 +10,7 @@
 
 Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Working today: the memory store and its CLI (phase 1), with keyword search. Coming next: meaning-based search (phase 2), the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS.
-
-The embedding engine for phase 2 is ready too. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1) with hybrid search by words and by meaning, and duplicate detection when saving (phase 2). Coming next: the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
 ## Try it
 
@@ -24,6 +22,7 @@ cd your-project
 omoi remember -k gotcha -t "Token expires early" --path src/auth.rs \
   "Auth middleware compares local time against the token's UTC expiry."
 omoi search "auth token"
+omoi model install     # optional, ~150 MB once: adds search by meaning and duplicate detection
 omoi recent
 omoi --help
 ```

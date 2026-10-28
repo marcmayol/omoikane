@@ -28,6 +28,8 @@ sqlite-vec = "0.1.9"
 tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
 ulid = "3.0.0"
+# Para descargar el modelo; Rust puro con rustls. Fijada a una versión de hace más de un mes.
+ureq = "=3.4.2"
 
 [dev-dependencies]
 model2vec-rs = "0.3.0"
