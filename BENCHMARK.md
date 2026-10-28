@@ -164,6 +164,20 @@ The tuning set, the held-out set and the third set (310 questions, 0.5.1, same c
 
 0.6.0 also searches by a crude root (the word minus its last two letters, from 6 letters up), because Spanish inflects at the end and a prefix alone missed «reinicia» ↔ «reinicios». On this set it adds 2 points at top-3, top-5 and top-10 and costs one paraphrase at top-1.
 
+## A fifth set: 80 paraphrases, run once
+
+Paraphrases were the one place engram stayed close (on the 310 tuning questions it was one question ahead at top-5). A fifth set of **80 paraphrases written blind** (10 in English) was run once against 0.6.0 as published, with no change before or after.
+
+| 80 new paraphrases | Omoikane 0.6.0 | engram |
+|---|---|---|
+| top-1 | **76.2 %** | 65.0 % |
+| top-3 | **87.5 %** | 76.2 % |
+| top-5 | **90.0 %** | 83.8 % |
+| top-10 | **91.2 %** | 90.0 % |
+| MRR | **0.817** | 0.721 |
+
+Over all 190 paraphrases from every set, top-5: Omoikane 176 (92.6 %), engram 169 (88.9 %).
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
