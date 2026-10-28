@@ -66,10 +66,10 @@ fn busqueda(dir: &Path, tsvs: &[String]) -> Result<()> {
         fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f);
     }
     let o = Opciones { ambito: Ambito::Proyecto("/p".into()), kind: None, tags: vec![], limite: 5 };
-    let mut configs: Vec<(String, Fusion)> = vec![("rescate (0.3.1)".into(), Fusion::Rescate)];
-    for desde in [0.20f32, 0.30, 0.40] {
-        for peso in [0.5f64, 1.0, 2.0, 4.0] {
-            configs.push((format!("mezcla {peso} desde {desde}"), Fusion::Mezcla { peso, desde }));
+    let mut configs: Vec<(String, Fusion)> = vec![("rescate (0.5.0)".into(), Fusion::Rescate)];
+    for desde in [0.30f32, 0.40, 0.50, 0.60] {
+        for huecos in [1usize, 2] {
+            configs.push((format!("reserva {huecos} desde {desde}"), Fusion::Reserva { huecos, desde }));
         }
     }
     for tsv in tsvs {
@@ -82,7 +82,7 @@ fn busqueda(dir: &Path, tsvs: &[String]) -> Result<()> {
         }
         println!("{:>14}", "total top1");
         for (nombre, fusion) in &configs {
-            let mut por_tipo: BTreeMap<&str, (usize, usize, f64, usize)> = BTreeMap::new(); // top1, top3, mrr, n
+            let mut por_tipo: BTreeMap<&str, (usize, usize, f64, usize, usize)> = BTreeMap::new(); // top1, top3, mrr, n, top5
             for (tipo, f, q) in &qs {
                 if f == "-" {
                     continue;
@@ -94,13 +94,19 @@ fn busqueda(dir: &Path, tsvs: &[String]) -> Result<()> {
                 e.1 += usize::from(pos.is_some_and(|p| p < 3));
                 e.2 += pos.map_or(0.0, |p| 1.0 / (p as f64 + 1.0));
                 e.3 += 1;
+                e.4 += usize::from(pos.is_some_and(|p| p < 5));
             }
             print!("{nombre:<26}");
             let (mut t1, mut n) = (0, 0);
             for t in &tipos {
                 match por_tipo.get(t.as_str()) {
                     Some(e) => {
-                        print!("{:>9.1}% {:>5.1}% {:.2}", 100.0 * e.0 as f64 / e.3 as f64, 100.0 * e.1 as f64 / e.3 as f64, e.2 / e.3 as f64);
+                        print!(
+                            "{:>7.1}% {:>5.1}% {:>5.1}%",
+                            100.0 * e.0 as f64 / e.3 as f64,
+                            100.0 * e.1 as f64 / e.3 as f64,
+                            100.0 * e.4 as f64 / e.3 as f64
+                        );
                         t1 += e.0;
                         n += e.3;
                     }

@@ -133,6 +133,21 @@ En la 0.5.0 el recall inyecta como mucho 2 memorias, y solo las que llegan al 85
 
 En paráfrasis Omoikane pone la nota buena la primera más veces, pero cuando falla, engram la tiene más a menudo entre las 3-5 primeras.
 
+## Los tres conjuntos juntos: 310 preguntas
+
+El de ajuste, el de comprobación y el tercero (310 preguntas, 0.5.1, las mismas condiciones para los dos: CLI, notas cortadas a 6.000 caracteres):
+
+| Preguntas | Omoikane | engram any, palabras clave |
+|---|---|---|
+| 75 cortas: top-1 / top-5 / MRR | **96,0 % / 98,7 % / 0,97** | 94,7 % / 97,3 % / 0,96 |
+| 15 en inglés sobre notas en español: top-1 / top-5 / MRR | **86,7 % / 100 % / 0,93** | 66,7 % / 86,7 % / 0,75 |
+| 60 naturales: top-1 / top-3 / MRR | **86,7 % / 95,0 % / 0,91** | 85,0 % / 90,0 % / 0,89 |
+| 70 paráfrasis: top-1 / MRR | **84,3 % / 0,88** | 74,3 % / 0,82 |
+| 70 paráfrasis: top-3 / top-5 | 90,0 % / 94,3 % | **91,4 % / 95,7 %** (una pregunta en cada uno) |
+| Tiempo, mediana | **37 ms** | 162 ms |
+
+La 0.5.1 reserva el último de los 5 puestos para una memoria que el vector ve muy parecida (≥ 0,4) cuando las palabras la dejan más abajo: una paráfrasis más de 70 entra en los 5 primeros y no cambia nada más.
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
