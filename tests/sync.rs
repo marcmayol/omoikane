@@ -371,6 +371,21 @@ fn en_segundo_plano_tras_guardar() {
 }
 
 #[test]
+fn unirse_por_otra_url() {
+    let p = Prueba::nueva("otraurl");
+    let a = p.equipo("pc-a");
+    let b = p.equipo("pc-b");
+    a.ok(&["sync", "init", &p.url(), "--yes"]);
+    let id = a.guardar(&a.dir, "fact", "El servidor de pruebas reinicia los lunes", "A las 6:00.", &["--global"]);
+    a.sync();
+    let codigo = a.ok(&["sync", "code"]).trim().to_string();
+    let otra = format!("file:///{}", p.url().trim_start_matches('/'));
+    b.ok(&["sync", "join", &codigo, "--url", &otra, "--yes"]);
+    assert!(b.get(&id).is_some(), "B llega por la otra URL");
+    assert!(b.ok(&["sync", "status"]).contains("file:///"), "y la guarda");
+}
+
+#[test]
 fn lo_de_otra_persona_va_marcado() {
     let p = Prueba::nueva("marcado");
     let (a, b) = dos(&p, &["--author", "Ana"], &["--author", "Marc"]);

@@ -250,6 +250,9 @@ enum AccionSync {
     Join {
         /// The code printed by `omoi sync code`.
         codigo: String,
+        /// Reach the same repository by another URL (for example SSH here and HTTPS on the other computer).
+        #[arg(long)]
+        url: Option<String>,
         #[command(flatten)]
         eleccion: OpcionesSync,
     },
@@ -992,12 +995,13 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 "Sincronización configurada. Para añadir otro equipo: `omoi sync code` aquí y `omoi sync join <código>` allí."
             ))
         }
-        Some(AccionSync::Join { codigo, eleccion }) => {
+        Some(AccionSync::Join { codigo, url: otra_url, eleccion }) => {
             let mut db = abrir(c)?;
             if sync::leer_config(&ruta)?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync off` para empezar de nuevo)"));
             }
             let (url, clave) = sync::leer_codigo(&codigo)?;
+            let url = otra_url.unwrap_or(url);
             let e = elegir(&eleccion)?;
             let config = sync::config_de(&url, &e);
             sync::unirse(&mut db, &ruta, &config, &clave)?;
@@ -1174,6 +1178,7 @@ fn en_espanol(c: Command) -> Command {
             .mut_subcommand("join", |s| {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
                     .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code`.").value_name("CÓDIGO"))
+                    .mut_arg("url", |a| a.help("Llegar al mismo repositorio por otra URL (por ejemplo, SSH aquí y HTTPS en el otro equipo)."))
             })
             .mut_subcommand("code", |s| s.about("Escribe el código para unirse desde otro equipo. Lleva la clave: pásalo por un canal privado."))
             .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última."))
