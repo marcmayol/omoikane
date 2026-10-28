@@ -66,6 +66,9 @@ pub struct Memoria {
     pub updated_at: String,
     pub recalled_at: Option<String>,
     pub recall_count: i64,
+    /// Quién la escribió (el nombre de git), si la sincronización lo apunta.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
 }
 
 /// Lo que decide quien guarda. Lo demás (id, fechas, estadísticas) lo pone Omoikane.
@@ -136,7 +139,7 @@ impl Ambito {
 
 pub(crate) const AHORA: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 pub(crate) const COLUMNAS: &str =
-    "id, project, kind, title, content, paths, tags, pinned, source, created_at, updated_at, recalled_at, recall_count";
+    "id, project, kind, title, content, paths, tags, pinned, source, created_at, updated_at, recalled_at, recall_count, author";
 
 pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
@@ -158,6 +161,7 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         updated_at: f.get(10)?,
         recalled_at: f.get(11)?,
         recall_count: f.get(12)?,
+        author: f.get(13)?,
     })
 }
 
@@ -229,15 +233,53 @@ fn desindexar(tx: &Transaction, n: i64) -> Result<()> {
 /// Guarda sin mirar si ya existe una parecida: eso es `vectores::duplicada`, antes, para que quien
 /// llama decida. Con `modelo`, el vector va en la misma transacción.
 pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Result<Memoria> {
+    insertar(db, &ulid::Ulid::generate().to_string(), nueva, None, modelo)
+}
+
+/// De dónde viene una memoria que llega por la sincronización: su id, fechas, sello y autor de origen.
+pub(crate) struct Origen<'a> {
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+    pub hlc: &'a str,
+    pub author: &'a str,
+}
+
+/// Para la sincronización: la misma memoria, con el mismo id, fechas, sello y autor que en su equipo.
+pub(crate) fn guardar_con_id(db: &mut Connection, id: &str, nueva: Nueva, o: &Origen, modelo: Option<&Modelo>) -> Result<Memoria> {
+    insertar(db, id, nueva, Some(o), modelo)
+}
+
+/// Deja en una memoria las fechas, el sello y el autor que trae de otro equipo (si no, la copia
+/// parecería un cambio de aquí, más nuevo).
+pub(crate) fn fijar_origen(db: &Connection, id: &str, o: &Origen) -> Result<()> {
+    db.execute(
+        "UPDATE memory SET updated_at = ?2, hlc = ?3, author = ?4 WHERE id = ?1",
+        params![id, o.updated_at, o.hlc, o.author],
+    )?;
+    crate::reloj::recibir(db, o.hlc)
+}
+
+/// El autor que se apunta en lo que se guarda aquí (lo configura la sincronización; vacío = ninguno).
+fn autor(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT v FROM meta WHERE k = 'autor'", [], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
     let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha or preference", "falta el tipo: fact, decision, gotcha o preference"))?;
     let (title, content) = (titulo(&nueva.title)?, contenido(&nueva.content)?);
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
-    let id = ulid::Ulid::generate().to_string();
     let tx = escribir_tx(db)?;
+    let (hlc, author) = match origen {
+        Some(o) => {
+            crate::reloj::recibir(&tx, o.hlc)?;
+            (o.hlc.to_string(), o.author.to_string())
+        }
+        None => (crate::reloj::sello(&tx)?, autor(&tx)?),
+    };
     tx.execute(
         &format!(
-            "INSERT INTO memory(id, project, kind, title, content, paths, tags, pinned, source, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, {AHORA}, {AHORA})"
+            "INSERT INTO memory(id, project, kind, title, content, paths, tags, pinned, source, created_at, updated_at, hlc, author)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, {AHORA}), COALESCE(?11, {AHORA}), ?12, ?13)"
         ),
         params![
             id,
@@ -249,10 +291,14 @@ pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Re
             serde_json::to_string(&tags)?,
             nueva.pinned,
             nueva.source,
+            origen.map(|o| o.created_at),
+            origen.map(|o| o.updated_at),
+            hlc,
+            author,
         ],
     )?;
     let n = tx.last_insert_rowid();
-    let m = leer(&tx, &id)?;
+    let m = leer(&tx, id)?;
     indexar(&tx, n, &m)?;
     if let Some(modelo) = modelo {
         vectores::guardar(&tx, n, modelo, &m.title, &m.content)?;
@@ -315,7 +361,11 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
         // Fijar o desfijar no es un cambio de contenido: sin versión nueva y sin tocar updated_at
         // (que da la recencia en la búsqueda).
         if despues.pinned != antes.pinned || despues.project != antes.project {
-            tx.execute("UPDATE memory SET pinned = ?2, project = ?3 WHERE id = ?1", params![id, despues.pinned, despues.project])?;
+            let hlc = crate::reloj::sello(&tx)?;
+            tx.execute(
+                "UPDATE memory SET pinned = ?2, project = ?3, hlc = ?4 WHERE id = ?1",
+                params![id, despues.pinned, despues.project, hlc],
+            )?;
             tx.commit()?;
         }
         return Ok(Memoria { pinned: despues.pinned, project: despues.project, ..antes });
@@ -346,7 +396,7 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
     tx.execute(
         &format!(
             "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project = ?8,
-             updated_at = {AHORA} WHERE id = ?1"
+             updated_at = {AHORA}, hlc = ?9, author = CASE WHEN author = '' THEN ?10 ELSE author END WHERE id = ?1"
         ),
         params![
             id,
@@ -357,6 +407,8 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
             serde_json::to_string(&despues.tags)?,
             despues.pinned,
             despues.project,
+            crate::reloj::sello(&tx)?,
+            autor(&tx)?,
         ],
     )?;
     desindexar(&tx, n)?;
@@ -394,10 +446,34 @@ pub fn reindexar_palabras(db: &mut Connection) -> Result<usize> {
     Ok(todas.len())
 }
 
-/// Borra la memoria con su historial y sus índices. Devuelve lo que se borró.
+/// Borra la memoria con su historial y sus índices, y deja una marca para que la sincronización no la
+/// devuelva desde otro equipo. Devuelve lo que se borró.
 pub fn olvidar(db: &mut Connection, id: &str) -> Result<Memoria> {
+    borrar(db, id, None)
+}
+
+/// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo.
+pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str) -> Result<Memoria> {
+    borrar(db, id, Some((hlc, deleted_at)))
+}
+
+fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str)>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
+    let (hlc, deleted_at): (String, Option<&str>) = match marca {
+        Some((h, d)) => {
+            crate::reloj::recibir(&tx, h)?;
+            (h.to_string(), Some(d))
+        }
+        None => (crate::reloj::sello(&tx)?, None),
+    };
+    tx.execute(
+        &format!(
+            "INSERT INTO tombstone(id, deleted_at, hlc) VALUES (?1, COALESCE(?2, {AHORA}), ?3)
+             ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at, hlc = excluded.hlc WHERE excluded.hlc > tombstone.hlc"
+        ),
+        params![id, deleted_at, hlc],
+    )?;
     let m = leer(&tx, &id)?;
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     desindexar(&tx, n)?;

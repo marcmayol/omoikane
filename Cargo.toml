@@ -33,6 +33,12 @@ ureq = "=3.4.2"
 ratatui = "0.29"
 crossterm = "0.28"
 tiny_http = "0.12"
+# Sincronización: cifrado determinista por línea (AES-SIV, RFC 5297), nombres opacos de carpeta y el
+# código para unirse a otro equipo.
+aes-siv = "=0.8.0"
+sha2 = "=0.11.1"
+base64 = "=0.22.1"
+getrandom = "=0.3.4"
 
 [target.'cfg(unix)'.dependencies]
 # Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».

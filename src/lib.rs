@@ -12,6 +12,8 @@ pub mod memoria;
 pub mod modelos;
 pub mod proyecto;
 pub mod recall;
+pub mod reloj;
 pub mod setup;
+pub mod sync;
 pub mod tui;
 pub mod vectores;

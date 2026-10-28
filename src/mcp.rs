@@ -258,6 +258,9 @@ impl Servidor {
                 Ok(r)
             })
             .await;
+        if r.as_ref().is_ok_and(|v| v["saved"] == true) {
+            crate::sync::programar(&self.db);
+        }
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
@@ -307,12 +310,18 @@ impl Servidor {
                 memoria::actualizar(db, &p.id, c, modelo)
             })
             .await;
+        if r.is_ok() {
+            crate::sync::programar(&self.db);
+        }
         Ok(r.map(|m| json(&compacta(m, false, None))).unwrap_or_else(fallo))
     }
 
     #[tool(description = "Delete a memory and its history. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self.con_base(move |db, _, _| memoria::olvidar(db, &p.id)).await;
+        if r.is_ok() {
+            crate::sync::programar(&self.db);
+        }
         Ok(r.map(|m| json(&serde_json::json!({ "forgotten": m.id, "title": m.title }))).unwrap_or_else(fallo))
     }
 
