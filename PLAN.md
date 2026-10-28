@@ -474,6 +474,12 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - El recall desde una carpeta general marca `[project <nombre>]` en las memorias de un proyecto, y el aviso de inicio explica cómo guardar en un proyecto.
 - Comprobado sobre una copia de la base real: desde el home se recuerda lo mismo que en 0.6.0; dentro de un repositorio ya no se cuela lo de otros proyectos (la ficha del taxi desde Faltis, DracPaste desde Rodet). La búsqueda no cambia: el ranking es el mismo.
 
+### 0.8.0 · la memoria en el navegador (28-oct-2026)
+- `omoi serve` sirve en `/` una página incluida en el binario (`src/web.html`, sin dependencias): todas las memorias, búsqueda (la misma que el agente), filtros por proyecto, tema (etiqueta), tipo y fijadas, historial, y fijar, mover de proyecto y olvidar (con confirmación en la página). `GET /api/memories` da la lista entera.
+- `omoi serve --open` abre el navegador (si ya hay un servidor en ese puerto, solo lo abre). En Claude Code, `/omoikane` lo hace desde el chat: el mod registra la orden y el servidor vive lo que la sesión.
+- Seguridad: solo atiende peticiones con `Host` `127.0.0.1`/`localhost` (contra el DNS rebinding) y rechaza escrituras con un `Origin` ajeno (un formulario de otra web no puede olvidar memorias). Con `OMOIKANE_HTTP_TOKEN`, el token va en `#token=` de la URL y la página lo manda en cada petición.
+- Sirve para todos los agentes (la base es la misma); la orden con barra solo existe en Claude Code.
+
 ### Sincronizar entre equipos · diseñado y aparcado (28-oct-2026)
 Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se llegó a escribir y probar en local; el código se descartó y queda aquí el diseño para retomarlo:
 

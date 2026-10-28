@@ -60,6 +60,8 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 
 `omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it.
 
+`omoi serve --open` (or `/omoikane` in Claude Code) opens the same in your browser at `http://127.0.0.1:7438/`: every memory, searchable, filtered by project, topic (tag) or kind, with its history, and buttons to pin, move to another project or forget it. It only answers on your own computer, and refuses requests from other websites.
+
 `omoi serve` serves the same tools over HTTP on `127.0.0.1:7438` for scripts and apps that don't speak MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `POST /tools/<name>` with the tool's JSON arguments. Set `OMOIKANE_HTTP_TOKEN` to require `Authorization: Bearer <token>`.
 
 ### Other agents
