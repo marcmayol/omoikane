@@ -153,3 +153,30 @@ async fn con_modelo_avisa_de_duplicados() {
     assert!(r[0]["similarity"].is_number());
     c.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn guardar_y_mover_a_otro_proyecto() {
+    let p = Prueba::nueva("proyecto", false).unwrap();
+    let otro = p.dir.join("otro");
+    std::fs::create_dir_all(otro.join(".git")).unwrap();
+    let c = p.cliente().await;
+    let (err, r) = llamar(
+        &c,
+        "remember",
+        json!({"title": "La otra web usa Astro", "content": "Astro 5.", "kind": "fact", "project": otro.to_str().unwrap()}),
+    )
+    .await;
+    assert!(!err, "{r}");
+    assert!(r["project"].as_str().unwrap().ends_with("otro"), "{r}");
+    let id = r["id"].as_str().unwrap().to_string();
+    // Desde este repo no se ve; al moverla aquí, sí.
+    let (_, s) = llamar(&c, "search", json!({"query": "astro"})).await;
+    assert!(s.as_array().unwrap().is_empty(), "{s}");
+    let (err, _) = llamar(&c, "update", json!({"id": id, "project": p.dir.join("repo").to_str().unwrap()})).await;
+    assert!(!err);
+    let (_, s) = llamar(&c, "search", json!({"query": "astro"})).await;
+    assert_eq!(s.as_array().unwrap().len(), 1, "{s}");
+    let (_, g) = llamar(&c, "update", json!({"id": id, "project": ""})).await;
+    assert_eq!(g["global"], true, "{g}");
+    c.cancel().await.unwrap();
+}

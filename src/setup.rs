@@ -62,8 +62,8 @@ pub fn plan() -> Result<Vec<Paso>> {
         }
         pasos.push(Paso {
             que: tr!(
-                "install the plugin {PLUGIN}@{MARKETPLACE} for your user (MCP server + recall hooks)",
-                "instalar el plugin {PLUGIN}@{MARKETPLACE} para tu usuario (servidor MCP + hooks del recall)"
+                "install the plugin {PLUGIN}@{MARKETPLACE} for your user (memory tools + automatic recall)",
+                "instalar el plugin {PLUGIN}@{MARKETPLACE} para tu usuario (herramientas de memoria + recall automático)"
             ),
             args: ["plugin", "install", &format!("{PLUGIN}@{MARKETPLACE}"), "--scope", "user"].map(String::from).to_vec(),
         });

@@ -467,6 +467,13 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - **Cuarto conjunto** de 100 preguntas a ciegas, usado una sola vez después de decidir: Omoikane gana a engram en top-1 (79/76), top-3 (94/86), top-5 (95/88), top-10 (97/89) y MRR (0,859/0,813), también en paráfrasis. La raíz, +2 puntos en top-3/5/10 y −1 paráfrasis en top-1; la cobertura con IDF de la 0.5.2 queda validada aquí con datos limpios.
 - Lo único de engram que no tiene: sincronización y nube (aparcadas por Marc).
 
+### 0.7.0 · sesiones abiertas en la carpeta del usuario (28-oct-2026)
+- El problema: Marc abre casi todas sus sesiones en `C:\Users\marcm` (132 de ~137 en octubre), que no es un repositorio. El proyecto salía de la carpeta de la sesión, así que lo aprendido de cada proyecto acababa en global y, al revés, mover una memoria a su repositorio la habría escondido de esas sesiones.
+- **Carpeta general** (`proyecto::es_general`): la del usuario, una por encima o la raíz de una unidad, sin `.git`. Desde ahí `search`, `recent`, la TUI y el recall miran **todos los proyectos**; una carpeta suelta sin git sigue siendo su propio proyecto.
+- **Al guardar** desde una carpeta general, la memoria va al repositorio al que apuntan sus rutas absolutas (`paths` o el texto) si es uno solo; si no, global. `remember` acepta `project` (carpeta) y `update` puede mover (`project`, o `--project`/`--global` en la CLI) sin crear versión.
+- El recall desde una carpeta general marca `[project <nombre>]` en las memorias de un proyecto, y el aviso de inicio explica cómo guardar en un proyecto.
+- Comprobado sobre una copia de la base real: desde el home se recuerda lo mismo que en 0.6.0; dentro de un repositorio ya no se cuela lo de otros proyectos (la ficha del taxi desde Faltis, DracPaste desde Rodet). La búsqueda no cambia: el ranking es el mismo.
+
 ### Sincronizar entre equipos · diseñado y aparcado (28-oct-2026)
 Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se llegó a escribir y probar en local; el código se descartó y queda aquí el diseño para retomarlo:
 

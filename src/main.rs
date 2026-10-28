@@ -118,6 +118,12 @@ enum Orden {
         /// Unpin it.
         #[arg(long)]
         unpin: bool,
+        /// Move it to the project of this folder.
+        #[arg(long, value_name = "DIR", conflicts_with = "global")]
+        project: Option<PathBuf>,
+        /// Make it global: it applies to every project.
+        #[arg(long)]
+        global: bool,
         /// Why it changes (kept with the previous version).
         #[arg(short, long)]
         reason: Option<String>,
@@ -279,12 +285,17 @@ fn main() -> Result<()> {
             Ok(())
         }
         Orden::Remember { kind, title, content, paths, tags, pinned, global, source, force } => {
-            let project = if global { String::new() } else { proyecto_de(c)? };
             let content = texto_o_entrada(content)?;
+            // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
+            // al que apunten sus rutas, o es global.
+            let actual = proyecto_de(c)?;
+            let project = if global { String::new() } else { proyecto::para_guardar(&actual, &paths, &format!("{title} {content}")) };
+            // Desde una carpeta general se ve todo: ahí se buscan las duplicadas.
+            let busca_en = if !project.is_empty() && proyecto::es_general(&actual) { actual.clone() } else { project.clone() };
             let (mut db, modelo) = abrir_con_modelo(c)?;
             if !force
                 && let Some(modelo) = &modelo
-                && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &project, &title, &content)?
+                && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &busca_en, &title, &content)?
             {
                 if c.json {
                     #[derive(serde::Serialize)]
@@ -312,7 +323,7 @@ fn main() -> Result<()> {
                 Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
                 modelo.as_ref(),
             )?;
-            let rel = vectores::relacionadas(&db, &m.project, &m.title, &m.id, 3)?;
+            let rel = vectores::relacionadas(&db, &busca_en, &m.title, &m.id, 3)?;
             if c.json {
                 #[derive(serde::Serialize)]
                 struct Guardada<'a> {
@@ -362,7 +373,7 @@ fn main() -> Result<()> {
             entera(&m);
             Ok(())
         }
-        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, reason } => {
+        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, reason } => {
             let cambios = Cambios {
                 title,
                 content: content.map(|t| texto_o_entrada(Some(t))).transpose()?,
@@ -370,6 +381,7 @@ fn main() -> Result<()> {
                 paths: if no_paths { Some(Vec::new()) } else { (!paths.is_empty()).then_some(paths) },
                 tags: if no_tags { Some(Vec::new()) } else { (!tags.is_empty()).then_some(tags) },
                 pinned: if pin { Some(true) } else if unpin { Some(false) } else { None },
+                project: if global { Some(String::new()) } else { project.as_deref().map(proyecto::de_carpeta).transpose()? },
                 reason,
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
@@ -432,6 +444,7 @@ fn main() -> Result<()> {
         Orden::Tui { all } => {
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let proyecto = proyecto_de(c)?;
+            let all = all || proyecto::es_general(&proyecto);
             omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
         }
         Orden::Import { fichero, force, dry_run } => {
@@ -465,7 +478,8 @@ fn main() -> Result<()> {
         }
         Orden::Export { all } => {
             let mut salida = std::io::stdout().lock();
-            let n = memoria::exportar(&abrir(c)?, &ambito(c, all)?, &mut salida)?;
+            let ambito = if all { Ambito::Todos } else { Ambito::Proyecto(proyecto_de(c)?) };
+            let n = memoria::exportar(&abrir(c)?, &ambito, &mut salida)?;
             salida.flush()?;
             eprintln!("{}", tr!("{n} memories exported", "{n} memorias exportadas"));
             Ok(())
@@ -610,7 +624,7 @@ fn proyecto_de(c: &Comun) -> Result<String> {
 }
 
 fn ambito(c: &Comun, todos: bool) -> Result<Ambito> {
-    Ok(if todos { Ambito::Todos } else { Ambito::Proyecto(proyecto_de(c)?) })
+    Ok(if todos { Ambito::Todos } else { Ambito::de(&proyecto_de(c)?) })
 }
 
 fn texto_o_entrada(t: Option<String>) -> Result<String> {
@@ -799,6 +813,8 @@ fn en_espanol(c: Command) -> Command {
             ("no_paths", "Quita todas las rutas."),
             ("tags", "Sustituye las etiquetas por estas (se puede repetir)."),
             ("no_tags", "Quita todas las etiquetas."),
+            ("project", "Llevarla al proyecto de esta carpeta."),
+            ("global", "Hacerla global: vale para todos los proyectos."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
         ]),
         ("forget", "Borra una memoria y su historial. No se puede deshacer.", &[

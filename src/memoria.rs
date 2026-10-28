@@ -90,6 +90,8 @@ pub struct Cambios {
     pub paths: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
     pub pinned: Option<bool>,
+    /// Llevarla a otro proyecto (`""` = global). Como fijar, no crea versión.
+    pub project: Option<String>,
     /// Por qué cambia: se guarda con la versión anterior.
     pub reason: Option<String>,
 }
@@ -116,6 +118,13 @@ pub enum Ambito {
 }
 
 impl Ambito {
+    /// Lo que se ve desde un proyecto: él y las globales; desde una carpeta general (la del
+    /// usuario, ver `proyecto::es_general`), todo.
+    pub fn de(project: &str) -> Ambito {
+        if crate::proyecto::es_general(project) { Ambito::Todos } else { Ambito::Proyecto(project.to_string()) }
+    }
+
+
     /// Valor para el parámetro `?` de `(? IS NULL OR project = ? OR project = '')`.
     pub(crate) fn filtro(&self) -> Option<&str> {
         match self {
@@ -294,6 +303,7 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
         paths: c.paths.as_deref().map(rutas).unwrap_or_else(|| antes.paths.clone()),
         tags: c.tags.as_deref().map(etiquetas).unwrap_or_else(|| antes.tags.clone()),
         pinned: c.pinned.unwrap_or(antes.pinned),
+        project: c.project.clone().unwrap_or_else(|| antes.project.clone()),
         ..antes.clone()
     };
     let cambia_texto = despues.title != antes.title
@@ -304,11 +314,11 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
     if !cambia_texto {
         // Fijar o desfijar no es un cambio de contenido: sin versión nueva y sin tocar updated_at
         // (que da la recencia en la búsqueda).
-        if despues.pinned != antes.pinned {
-            tx.execute("UPDATE memory SET pinned = ?2 WHERE id = ?1", params![id, despues.pinned])?;
+        if despues.pinned != antes.pinned || despues.project != antes.project {
+            tx.execute("UPDATE memory SET pinned = ?2, project = ?3 WHERE id = ?1", params![id, despues.pinned, despues.project])?;
             tx.commit()?;
         }
-        return Ok(Memoria { pinned: despues.pinned, ..antes });
+        return Ok(Memoria { pinned: despues.pinned, project: despues.project, ..antes });
     }
     {
         // La foto anterior va al historial.
@@ -335,8 +345,8 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
     }
     tx.execute(
         &format!(
-            "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, updated_at = {AHORA}
-             WHERE id = ?1"
+            "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project = ?8,
+             updated_at = {AHORA} WHERE id = ?1"
         ),
         params![
             id,
@@ -346,6 +356,7 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
             serde_json::to_string(&despues.paths)?,
             serde_json::to_string(&despues.tags)?,
             despues.pinned,
+            despues.project,
         ],
     )?;
     desindexar(&tx, n)?;

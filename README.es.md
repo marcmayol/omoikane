@@ -56,7 +56,7 @@ omoi recent
 OMOIKANE_LANG=es omoi --help
 ```
 
-Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
+Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). Si abres las sesiones en tu carpeta de usuario y no dentro de un repositorio, ves las memorias de todos los proyectos, y una memoria nueva va al repositorio al que apuntan sus rutas absolutas (o es global); `omoi update <id> --project <carpeta>` o `--global` la cambia de sitio después. La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
 `omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
 
