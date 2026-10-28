@@ -457,6 +457,10 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - `Fusion::Reserva { huecos: 1, desde: 0.4 }`: el último de los puestos pedidos es para lo que el vector ve muy parecido aunque las palabras lo dejen más abajo. Paráfrasis en los 5 primeros de 65 a 66 de 70; nada más cambia en 310 preguntas a ciegas.
 - Con los tres conjuntos juntos (310), Omoikane gana a engram en top-1 y MRR de todos los tipos y en velocidad; engram queda una pregunta por delante en paráfrasis en top-3 y top-5. Los fallos que quedan son huecos de vocabulario («auriculares inalámbricos» → Bluetooth, «pantalla azul» → BSOD) que solo cubriría un modelo semántico mejor.
 
+### 0.5.2 · cobertura con IDF en la búsqueda (28-oct-2026)
+- El desempate de la búsqueda pondera cada palabra por su IDF (como el recall): las genéricas ya no suben la nota larga que lo contiene todo. Con las 310 preguntas y las notas completas: paráfrasis en primer puesto 82,9 % → 84,3 %, MRR 0,877 → 0,884; nada empeora.
+- Comparación justa final (notas completas, cada uno con su importador, la misma consulta limpia para los dos, 10 resultados como usan los agentes): Omoikane gana o empata en top-1, top-3, top-10 y MRR de todos los tipos salvo paráfrasis en top-10 (67 frente a 68 de 70).
+
 Después, si los datos lo piden: sincronizar entre equipos, relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas

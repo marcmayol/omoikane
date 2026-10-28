@@ -101,6 +101,51 @@ fn coincidencias(terminos: &[String], m: &Memoria) -> usize {
     vistos.iter().filter(|t| esta(t)).count()
 }
 
+/// Como `cobertura`, pero cada término pesa su IDF en el ámbito (Lucene, como el recall): una palabra
+/// genérica («golpe», «largo») no hace subir a la nota larga que lo contiene todo.
+fn cobertura_idf(terminos: &[String], m: &Memoria, idf: &std::collections::HashMap<String, f64>) -> f64 {
+    let texto = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
+    let palabras: Vec<&str> = texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
+    let mut vistos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
+    vistos.sort();
+    vistos.dedup();
+    let total: f64 = vistos.iter().map(|t| idf.get(t).copied().unwrap_or(0.0)).sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let dentro: f64 = vistos
+        .iter()
+        .filter(|t| if t.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(t.as_str())) } else { palabras.contains(&t.as_str()) })
+        .map(|t| idf.get(t).copied().unwrap_or(0.0))
+        .sum();
+    dentro / total
+}
+
+/// IDF de Lucene de cada término (sin tildes) en el ámbito, contando por el índice como la búsqueda.
+fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<std::collections::HashMap<String, f64>> {
+    let n: f64 = db.query_row(
+        "SELECT count(*) FROM memory WHERE (?1 IS NULL OR project = ?1 OR project = '')",
+        [o.ambito.filtro()],
+        |f| f.get::<_, i64>(0),
+    )? as f64;
+    let mut q = db.prepare(
+        "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
+         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '')",
+    )?;
+    let mut v = std::collections::HashMap::new();
+    for t in terminos {
+        let t = sin_tildes(t);
+        if v.contains_key(&t) {
+            continue;
+        }
+        let consulta = if t.chars().count() >= 3 { format!("\"{t}\"*") } else { format!("\"{t}\"") };
+        let df = q.query_row(params![consulta, o.ambito.filtro()], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
+        let d = df.max(1.0);
+        v.insert(t, (1.0 + (n - d + 0.5) / (d + 0.5)).ln());
+    }
+    Ok(v)
+}
+
 /// Qué parte de los términos aparece en la memoria (0 a 1). Desempata cuando BM25 no distingue, que
 /// es lo normal con pocas memorias (si una palabra está en la mitad de ellas, su IDF es cero).
 fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
@@ -319,8 +364,17 @@ fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, 
             Ok((de_fila(f)?, f.get::<_, f64>(ncol)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (m, r) in &mut v {
-        *r += cobertura(&terminos, m);
+    // Con IDF, una paráfrasis más de 70 en primer puesto y mejor MRR, sin perder nada en 310
+    // preguntas a ciegas; `OMOIKANE_CALIBRAR_COB_IDF=0` vuelve a la cobertura sin pesos.
+    if !std::env::var("OMOIKANE_CALIBRAR_COB_IDF").is_ok_and(|x| x == "0") {
+        let idf = idf_terminos(db, &terminos, o)?;
+        for (m, r) in &mut v {
+            *r += cobertura_idf(&terminos, m, &idf);
+        }
+    } else {
+        for (m, r) in &mut v {
+            *r += cobertura(&terminos, m);
+        }
     }
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
     Ok(v.into_iter().map(|(m, r)| { let n = coincidencias(&terminos, &m); (m, n, r) }).collect())
