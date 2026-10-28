@@ -10,34 +10,44 @@
 
 Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), the MCP server for agents (phase 3), and automatic recall through Claude Code hooks, packaged as a plugin (phase 4). Coming next: prebuilt binaries (phase 5). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), the MCP server for agents (phase 3), and automatic recall through Claude Code hooks, packaged as a plugin (phase 4). Phase 5 adds prebuilt binaries and one-line installers. CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
-## Try it
+## Install
 
-You need [Rust](https://rustup.rs). Then:
+One line installs the `omoi` binary, the embedding model (~150 MB, once) and the Claude Code plugin (MCP server + automatic recall):
+
+**Windows** (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/marcmayol/omoikane/master/install.ps1 | iex
+```
+
+**Linux and macOS**
+```sh
+curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.sh | sh
+```
+
+The installer checks the SHA-256 of the binary before installing it. `OMOIKANE_NO_MODEL=1` skips the model (search by words only) and `OMOIKANE_NO_SETUP=1` leaves Claude Code alone; you can run `omoi setup claude` later. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel. Anything else: `cargo install --git https://github.com/marcmayol/omoikane`.
+
+Already have `omoi`? In Claude Code: `/plugin install omoikane --marketplace marcmayol/drac-plugins`, or `omoi setup claude`.
+
+## Use it
+
+Once the plugin is in, Claude Code does it by itself: it gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). Any other MCP client can use `omoi mcp` directly.
+
+From the terminal:
 
 ```sh
-cargo install --git https://github.com/marcmayol/omoikane
 cd your-project
 omoi remember -k gotcha -t "Token expires early" --path src/auth.rs \
   "Auth middleware compares local time against the token's UTC expiry."
 omoi search "auth token"
-omoi model install     # optional, ~150 MB once: adds search by meaning and duplicate detection
 omoi recent
 omoi --help
 ```
 
-To give Claude Code its memory, install the plugin (it brings the MCP server and the recall hooks; it needs `omoi` on your PATH):
-
-```
-/plugin install omoikane --marketplace marcmayol/drac-plugins
-```
-
-The agent gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). Any other MCP client can use `omoi mcp` directly.
-
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
-## What it will do
+## What it does
 
 Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone.
 

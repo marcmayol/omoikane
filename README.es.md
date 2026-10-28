@@ -10,34 +10,44 @@
 
 En desarrollo. El diseño completo y las fases están en [PLAN.md](PLAN.md).
 
-Funciona ya: el almacén de memorias y su CLI (fase 1), la búsqueda por palabras (y por significado como rescate) con aviso de duplicados al guardar (fase 2) el servidor MCP para agentes (fase 3) y el recall automático con hooks de Claude Code, empaquetado como plugin (fase 4). Lo siguiente: binarios ya compilados (fase 5). La CI corre en Windows, Linux y macOS. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
+Funciona ya: el almacén de memorias y su CLI (fase 1), la búsqueda por palabras (y por significado como rescate) con aviso de duplicados al guardar (fase 2) el servidor MCP para agentes (fase 3) y el recall automático con hooks de Claude Code, empaquetado como plugin (fase 4). La fase 5 añade binarios compilados e instaladores de una línea. La CI corre en Windows, Linux y macOS. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
 
-## Probarlo
+## Instalación
 
-Hace falta [Rust](https://rustup.rs). Después:
+Una línea instala el binario `omoi`, el modelo de embeddings (~150 MB, una vez) y el plugin de Claude Code (servidor MCP + recall automático):
+
+**Windows** (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/marcmayol/omoikane/master/install.ps1 | iex
+```
+
+**Linux y macOS**
+```sh
+curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.sh | sh
+```
+
+El instalador comprueba la suma SHA-256 del binario antes de instalarlo. `OMOIKANE_NO_MODEL=1` se salta el modelo (búsqueda solo por palabras) y `OMOIKANE_NO_SETUP=1` no toca Claude Code; puedes ejecutar `omoi setup claude` después. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel. Para cualquier otro: `cargo install --git https://github.com/marcmayol/omoikane`.
+
+¿Ya tienes `omoi`? En Claude Code: `/plugin install omoikane --marketplace marcmayol/drac-plugins`, o `omoi setup claude`.
+
+## Uso
+
+Con el plugin, Claude Code lo hace solo: recibe 8 herramientas (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) y, en cada mensaje, se le inyectan las memorias que de verdad tienen que ver (o ninguna). Cualquier otro cliente MCP puede usar `omoi mcp` directamente.
+
+Desde la terminal:
 
 ```sh
-cargo install --git https://github.com/marcmayol/omoikane
 cd tu-proyecto
 omoi remember -k gotcha -t "El token caduca antes de tiempo" --path src/auth.rs \
   "El middleware compara la hora local con la caducidad del token, que va en UTC."
 omoi search "token caduca"
-omoi model install     # opcional, ~150 MB una vez: añade búsqueda por significado y aviso de duplicados
 omoi recent
 OMOIKANE_LANG=es omoi --help
 ```
 
-Para darle la memoria a Claude Code, instala el plugin (trae el servidor MCP y los hooks del recall; necesita `omoi` en el PATH):
-
-```
-/plugin install omoikane --marketplace marcmayol/drac-plugins
-```
-
-El agente recibe 8 herramientas (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) y, en cada mensaje, se le inyectan solas las memorias que de verdad tienen que ver (o ninguna). Cualquier otro cliente MCP puede usar `omoi mcp` directamente.
-
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
-## Qué va a hacer
+## Qué hace
 
 Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo.
 
