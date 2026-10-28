@@ -183,6 +183,13 @@ enum Orden {
     },
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
+    /// For clients that don't speak MCP (the Claude Code plugin): runs one of the MCP tools with
+    /// its JSON arguments on stdin and prints its result. Without a name, lists the tools.
+    #[command(hide = true)]
+    Tool {
+        /// The tool: remember, search, get, update, forget, history, context or recent.
+        nombre: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -212,6 +219,17 @@ fn main() -> Result<()> {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
+        Orden::Tool { nombre } => {
+            let mut args = String::new();
+            if nombre.is_some() {
+                std::io::stdin().read_to_string(&mut args)?;
+            }
+            let db = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            let (texto, es_error) = omoikane::mcp::herramienta(db, c.dir.clone(), nombre.as_deref(), &args)?;
+            println!("{texto}");
+            // Exit 1 si la herramienta respondió con isError: el cliente lo marca como error.
+            std::process::exit(if es_error { 1 } else { 0 })
+        }
         Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
         Orden::Recall { session_start } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.

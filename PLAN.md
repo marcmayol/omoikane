@@ -419,6 +419,18 @@ El que falló: el agente **guardaba en inglés** aunque se le hablaba en españo
 
 Idea tomada de engram (que usa sus hooks para que el agente no se olvide de la memoria, no para inyectar memorias relevantes): **recordatorio de guardar**. Si una sesión lleva al menos 15 minutos y 10 mensajes sin que se haya guardado ni cambiado ninguna memoria del proyecto, el hook añade una línea recordándolo; como mucho una vez cada 30 minutos; compactar no reinicia el reloj. Tabla `session` (esquema 4). La captura automática al terminar la sesión de engram no se copia: rompe que sea el agente quien decide qué merece la pena.
 
+### 0.3.0 · el plugin se instala solo (28-oct-2026)
+Marc pidió que instalar el plugin bastara. Probado antes de decidir:
+- Un plugin normal no puede: no ejecuta nada al instalarse, y su servidor MCP arranca **a la vez** que el hook `SessionStart` (medido: el MCP a los 3 s, el hook de 4 a 10 s), así que en la primera sesión no habría binario.
+- `$.mcp.connect` desde un mod tampoco lo arregla: el fallo del primer arranque queda cacheado 15 minutos, **también en las sesiones siguientes**.
+
+Solución: el plugin pasa a ser un **mod** (`hooks/hooks.json` + `hooks/omoikane.ts`), sin MCP ni hooks de shell:
+- En `session.start` (Claude Code lo espera antes del primer mensaje) busca un `omoi` de la versión del plugin: `OMOIKANE_BIN`, `~/.omoikane/bin/omoi`, el del PATH. Si no hay, baja de la Release `v<versión>` el paquete de su sistema con `curl`, lo comprueba contra `SHA256SUMS` (`certutil` en Windows, `sha256sum`/`shasum` en Unix) y lo abre con `tar` (en Windows el de System32, que también abre zip). Después, el modelo en segundo plano.
+- Las 8 herramientas se registran con `$.tool.register` tal como las lista `omoi tool` (nombre, descripción, esquema): una sola fuente. Cada llamada ejecuta `omoi tool <nombre>` con los argumentos en JSON por stdin, que llama a los mismos métodos que el servidor MCP: mismas respuestas.
+- El recall va en `classic.SessionStart` y `classic.UserPromptSubmit` (el mismo `omoi recall` con el JSON del hook), y las instrucciones que antes daba el MCP van en el contexto de inicio.
+- Todo con `$.process.run` (sin shell): igual en Windows, macOS y Linux, tenga o no Git Bash.
+- Requiere Claude Code 2.1.310 o posterior. `omoi mcp`, los instaladores y `cargo install` siguen para otros agentes o para usar la CLI.
+
 Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JSONL/Markdown y convertidor desde otros sistemas), relaciones entre memorias, limpieza asistida de lo que nunca se recupera.
 
 ## 12. Pruebas

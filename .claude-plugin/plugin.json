@@ -1,8 +1,8 @@
 {
   "name": "omoikane",
   "displayName": "Omoikane",
-  "version": "0.2.0",
-  "description": "Long-term memory for Claude Code: what it learns in one session comes back in the next. Local SQLite, search by words and meaning, duplicate detection, and automatic recall of the memories that matter for each prompt. Needs the `omoi` binary (cargo install omoikane).",
+  "version": "0.3.0",
+  "description": "Long-term memory for Claude Code: what it learns in one session comes back in the next. Local SQLite, search by words and meaning, duplicate detection, and automatic recall of the memories that matter for each prompt. Installing the plugin is all: it downloads the `omoi` binary on first use.",
   "author": {
     "name": "Marc Mayol",
     "url": "https://github.com/marcmayol"
@@ -10,36 +10,5 @@
   "homepage": "https://github.com/marcmayol/omoikane",
   "repository": "https://github.com/marcmayol/omoikane",
   "license": "MIT",
-  "keywords": ["memory", "mcp", "recall", "sqlite", "local"],
-  "mcpServers": {
-    "omoikane": {
-      "command": "omoi",
-      "args": ["mcp"]
-    }
-  },
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "omoi recall --session-start",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "omoi recall",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
+  "keywords": ["memory", "recall", "sqlite", "local", "mod"]
 }

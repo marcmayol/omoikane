@@ -1,0 +1,4 @@
+{
+  "description": "Omoikane: installs the omoi binary on first use, serves the memory tools and recalls what matters for each prompt",
+  "modules": ["./omoikane.ts"]
+}
