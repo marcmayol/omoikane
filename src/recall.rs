@@ -125,10 +125,12 @@ pub fn utiles(texto: &str) -> Vec<String> {
 
 /// Cuánto del contenido cuenta para el recall. Una memoria muy larga contiene casi cualquier palabra
 /// y «cubre» cualquier mensaje: con 127 notas reales, una de 87 KB salía en la mitad de las
-/// inyecciones de ruido. Con 3.000 caracteres, las preguntas a ciegas aciertan lo mismo con un 22 %
-/// menos de memorias de más; los resúmenes, del 98 % al 96 % (notas larguísimas cuyo dato está más
-/// allá). Guardar avisa de que una memoria más larga conviene partirla.
-pub const LARGO_PARA_RECALL: usize = 3000;
+/// inyecciones de ruido. Con 6.000 caracteres, los mensajes reales con algo inyectado bajan del 12 %
+/// al 7 % sin perder ningún acierto con preguntas escritas a ciegas. Se probó 3.000, mejor con las
+/// preguntas de ajuste, pero con las de comprobación (que preguntan por detalles del medio y del
+/// final de las notas) perdía 7 de 35 naturales: estaba sobreajustado. Guardar avisa de que una
+/// memoria más larga conviene partirla.
+pub const LARGO_PARA_RECALL: usize = 6000;
 
 fn fichas(m: &Memoria) -> BTreeSet<String> {
     let largo = std::env::var("OMOIKANE_CALIBRAR_LARGO").ok().and_then(|v| v.parse().ok()).unwrap_or(LARGO_PARA_RECALL);

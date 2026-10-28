@@ -25,7 +25,31 @@ pub struct Entrante {
 pub struct Resumen {
     pub guardadas: usize,
     pub duplicadas: usize,
-    pub borradas_en_origen: usize,
+    /// Las que no se pudieron guardar ni arreglando lo arreglable (se dice cuáles por stderr).
+    pub fallidas: usize,
+}
+
+/// Lo que `memoria::guardar` no admite y se puede arreglar sin perder nada: un título de más de 200
+/// caracteres se corta (y el entero pasa al principio del contenido) y un contenido vacío toma el título.
+fn ajustar(mut n: Nueva) -> Nueva {
+    if n.title.chars().count() > 200 {
+        let corto: String = n.title.chars().take(199).collect();
+        n.content = if n.content.trim().is_empty() { n.title.clone() } else { format!("{}\n\n{}", n.title, n.content) };
+        n.title = format!("{corto}…");
+    }
+    if n.content.trim().is_empty() {
+        n.content = n.title.clone();
+    }
+    n
+}
+
+/// ¿Hay ya una memoria con el mismo título y contenido en ese ámbito? Para cuando no hay modelo.
+fn igual(db: &Connection, n: &Nueva) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memory WHERE project = ?1 AND title = ?2 AND content = ?3)",
+        params![n.project, n.title, n.content],
+        |f| f.get(0),
+    )?)
 }
 
 #[derive(Deserialize)]
@@ -108,8 +132,11 @@ fn tipo_de_engram(t: &str) -> Tipo {
 pub fn leer(ruta: &Path, dir: Option<&Path>, actual: &str) -> Result<(Vec<Entrante>, usize)> {
     let texto = std::fs::read_to_string(ruta).with_context(|| format!("{}", ruta.display()))?;
     let forzado = dir.map(proyecto::de).transpose()?;
-    let primero = texto.trim_start().chars().next();
-    if primero == Some('{') && let Ok(e) = serde_json::from_str::<ExportEngram>(&texto) {
+    let texto = texto.strip_prefix('\u{feff}').unwrap_or(&texto);
+    // Un único objeto JSON con `observations` es una exportación de engram; si no se puede leer,
+    // se dice por qué (y no «no es ni una cosa ni otra»).
+    if texto.trim_start().starts_with('{') && texto.contains("\"observations\"") {
+        let e: ExportEngram = serde_json::from_str(texto).with_context(|| format!("{} looks like an engram export but can't be read", ruta.display()))?;
         return Ok(de_engram(e, forzado.as_deref(), actual));
     }
     // Una memoria por línea: la exportación de Omoikane.
@@ -184,14 +211,27 @@ fn de_engram(e: ExportEngram, forzado: Option<&str>, actual: &str) -> (Vec<Entra
 pub fn guardar(db: &mut Connection, modelo: Option<&Modelo>, entrantes: Vec<Entrante>, force: bool) -> Result<Resumen> {
     let mut r = Resumen::default();
     for e in entrantes {
-        if !force
-            && let Some(m) = modelo
-            && vectores::duplicada(db, m, &e.nueva.project, &e.nueva.title, &e.nueva.content)?.is_some()
-        {
+        let nueva = ajustar(e.nueva);
+        // Sin modelo, al menos lo idéntico: reimportar el mismo fichero no debe duplicarlo todo.
+        let repetida = match modelo {
+            _ if force => false,
+            Some(m) => vectores::duplicada(db, m, &nueva.project, &nueva.title, &nueva.content)?.is_some(),
+            None => igual(db, &nueva)?,
+        };
+        if repetida {
             r.duplicadas += 1;
             continue;
         }
-        let id = memoria::guardar(db, e.nueva, modelo)?.id;
+        let titulo = nueva.title.clone();
+        let id = match memoria::guardar(db, nueva, modelo) {
+            Ok(m) => m.id,
+            Err(err) => {
+                // Una entrada rota no para la importación: se cuenta y se sigue.
+                eprintln!("omoikane: «{titulo}»: {err:#}");
+                r.fallidas += 1;
+                continue;
+            }
+        };
         // Las fechas de origen, si se entienden: «2026-10-28 13:28:16» o ya en el formato propio.
         for (columna, valor) in [("created_at", e.creada), ("updated_at", e.cambiada)] {
             if let Some(v) = valor.filter(|v| !v.is_empty()) {

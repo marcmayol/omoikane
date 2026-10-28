@@ -46,15 +46,45 @@ fn binario() -> Result<String> {
     Ok(std::env::current_exe()?.to_string_lossy().replace('\\', "/"))
 }
 
+/// Qué shell ejecuta los hooks del agente en Windows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    /// Gemini CLI y Codex usan PowerShell en Windows.
+    Powershell,
+    /// No documentado (Cursor).
+    Desconocida,
+}
+
+/// El binario al principio de un comando de hook. Sin espacios, tal cual: vale en cualquier shell.
+/// Con espacios hay que entrecomillarlo, y en PowerShell una cadena entre comillas seguida de
+/// argumentos no se ejecuta: hace falta el operador `&` delante (que en bash no vale).
+fn orden(omoi: &str, shell: Shell) -> String {
+    if !omoi.contains(' ') {
+        omoi.to_string()
+    } else if cfg!(windows) && shell == Shell::Powershell {
+        format!("& \"{omoi}\"")
+    } else {
+        format!("\"{omoi}\"")
+    }
+}
+
 fn leer_json(f: &Path) -> Result<Value> {
     if !f.exists() {
         return Ok(json!({}));
     }
     let t = std::fs::read_to_string(f)?;
+    // PowerShell guarda UTF-8 con BOM.
+    let t = t.strip_prefix('\u{feff}').unwrap_or(&t);
     if t.trim().is_empty() {
         return Ok(json!({}));
     }
-    serde_json::from_str(&t).with_context(|| tr!("{} isn't valid JSON: fix it or move it away first", "{} no es JSON válido: arréglalo o apártalo antes", f.display()))
+    serde_json::from_str(t).with_context(|| {
+        tr!(
+            "{} isn't plain JSON (comments aren't supported): fix it or move it away first",
+            "{} no es JSON normal (no se admiten comentarios): arréglalo o apártalo antes",
+            f.display()
+        )
+    })
 }
 
 fn objeto<'a>(v: &'a mut Value, clave: &str) -> Result<&'a mut serde_json::Map<String, Value>> {
@@ -110,15 +140,19 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
         "codex" => {
             let d = h.join(".codex");
             if let Some(c) = json_cambio(d.join("hooks.json"), tr!("recall hooks (approve them once with /hooks)", "hooks del recall (apruébalos una vez con /hooks)"), &|j| {
-                let a = hook_estilo_claude(j, "SessionStart", Some("startup|resume|clear|compact"), &format!("\"{omoi}\" recall --session-start"))?;
-                let b = hook_estilo_claude(j, "UserPromptSubmit", None, &format!("\"{omoi}\" recall"))?;
+                let a = hook_estilo_claude(j, "SessionStart", Some("startup|resume|clear|compact"), &format!("{} recall --session-start", orden(&omoi, Shell::Powershell)))?;
+                let b = hook_estilo_claude(j, "UserPromptSubmit", None, &format!("{} recall", orden(&omoi, Shell::Powershell)))?;
                 Ok(a || b)
             })? {
                 v.push(c);
             }
             let toml = d.join("config.toml");
             let actual = if toml.exists() { std::fs::read_to_string(&toml)? } else { String::new() };
-            if !actual.contains("[mcp_servers.omoikane]") {
+            // También si ya está como tabla en línea (`omoikane = {…}` dentro de `[mcp_servers]`):
+            // repetirla dejaría el fichero sin poder leerse.
+            let ya_esta = actual.contains("[mcp_servers.omoikane]")
+                || actual.lines().any(|l| l.trim_start().starts_with("omoikane") && l.contains('='));
+            if !ya_esta {
                 let sep = if actual.is_empty() || actual.ends_with('\n') { "" } else { "\n" };
                 let contenido = format!("{actual}{sep}\n[mcp_servers.omoikane]\ncommand = {}\nargs = [\"mcp\"]\n", toml_texto(&omoi));
                 v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido });
@@ -135,8 +169,8 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 if a {
                     servidores.insert("omoikane".into(), json!({ "command": omoi, "args": ["mcp"] }));
                 }
-                let b = hook_estilo_claude(j, "SessionStart", Some("*"), &format!("\"{omoi}\" recall --session-start --format gemini"))?;
-                let c = hook_estilo_claude(j, "BeforeAgent", Some("*"), &format!("\"{omoi}\" recall --format gemini"))?;
+                let b = hook_estilo_claude(j, "SessionStart", Some("*"), &format!("{} recall --session-start --format gemini", orden(&omoi, Shell::Powershell)))?;
+                let c = hook_estilo_claude(j, "BeforeAgent", Some("*"), &format!("{} recall --format gemini", orden(&omoi, Shell::Powershell)))?;
                 Ok(a || b || c)
             })? {
                 v.push(c);
@@ -167,7 +201,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 if lista.iter().any(|e| e.to_string().contains("recall")) {
                     return Ok(false);
                 }
-                lista.push(json!({ "command": format!("\"{omoi}\" recall --session-start --format cursor") }));
+                lista.push(json!({ "command": format!("{} recall --session-start --format cursor", orden(&omoi, Shell::Desconocida)) }));
                 Ok(true)
             })? {
                 v.push(c);
@@ -261,4 +295,22 @@ pub fn aplicar(cambios: &[Cambio]) -> Result<()> {
         std::fs::write(&c.fichero, &c.contenido).with_context(|| format!("{}", c.fichero.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orden_segun_la_shell() {
+        assert_eq!(orden("C:/x/omoi.exe", Shell::Powershell), "C:/x/omoi.exe");
+        assert_eq!(orden("/usr/bin/omoi", Shell::Desconocida), "/usr/bin/omoi");
+        let con_espacios = orden("C:/Mis cosas/omoi.exe", Shell::Powershell);
+        if cfg!(windows) {
+            assert_eq!(con_espacios, "& \"C:/Mis cosas/omoi.exe\"");
+        } else {
+            assert_eq!(con_espacios, "\"C:/Mis cosas/omoi.exe\"");
+        }
+        assert_eq!(orden("C:/Mis cosas/omoi.exe", Shell::Desconocida), "\"C:/Mis cosas/omoi.exe\"");
+    }
 }

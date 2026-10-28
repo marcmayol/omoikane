@@ -338,3 +338,33 @@ fn recall_en_formato_de_otros_agentes() {
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
 }
+
+/// Lo que encontró la revisión: una entrada inválida (contenido vacío, título larguísimo) no para la
+/// importación, y sin modelo reimportar el mismo fichero no duplica nada.
+#[test]
+fn importar_entradas_raras_y_sin_modelo() {
+    let e = Entorno::nuevo("import2");
+    let largo = "t".repeat(300);
+    let fichero = e.dir.join("engram.json");
+    std::fs::write(
+        &fichero,
+        format!(
+            r#"{{"sessions":[],"observations":[
+                {{"id":1,"type":"decision","title":"Primera","content":"Uno.","scope":"project"}},
+                {{"id":2,"type":"decision","title":"Sin contenido","content":"","scope":"project"}},
+                {{"id":3,"type":"decision","title":"{largo}","content":"Tres.","scope":"project"}},
+                {{"id":4,"type":"decision","title":"Cuarta","content":"Cuatro.","scope":"project"}}
+            ]}}"#
+        ),
+    )
+    .unwrap();
+    let f = fichero.to_str().unwrap();
+    let s = e.ok(&["import", f]);
+    assert!(s.contains("imported 4") && s.contains("0 failed"), "{s}");
+    let s = e.ok(&["import", f]);
+    assert!(s.contains("imported 0") && s.contains("4 skipped"), "sin modelo, la segunda vez no debe duplicar: {s}");
+    let todas = e.json(&["recent", "-n", "10"]);
+    let larga = todas.as_array().unwrap().iter().find(|m| m["title"].as_str().unwrap().starts_with("ttt")).unwrap();
+    assert!(larga["title"].as_str().unwrap().chars().count() <= 200);
+    assert!(larga["content"].as_str().unwrap().contains(&largo), "el título entero no se pierde");
+}

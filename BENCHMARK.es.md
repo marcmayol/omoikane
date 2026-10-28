@@ -58,6 +58,62 @@ Solo Omoikane: los hooks de engram recuerdan al agente que guarde y cargan el co
 
 Con un agente de por medio los dos funcionan bien: el agente convierte las preguntas en palabras clave para engram. Una pregunta de diferencia sobre 20 no es significativa. La diferencia de coste (+39 % en engram) cuadra con su mayor número de herramientas (27 por defecto) y sus respuestas más largas.
 
+## 0.4.0: una segunda vuelta, con preguntas que no se usaron para ajustar
+
+Las 80 preguntas a ciegas de arriba se usaron después para ajustar la 0.4.0. Para comprobarla, otro agente escribió **130 preguntas nuevas a ciegas** (25 cortas, 35 naturales, 25 paráfrasis, 15 en inglés sobre las notas en español y 30 sin respuesta, preguntando por detalles del medio y del final de las notas), que solo se pasaron al final. Otra IA revisó el código: encontró que los hooks nuevos de Codex y Gemini no se habrían ejecutado en Windows, y se arregló antes de publicar.
+
+### Búsqueda con las preguntas nuevas (127 notas, 5 primeros)
+
+| Preguntas | Omoikane | engram any, palabras clave |
+|---|---|---|
+| 25 cortas: top-1 | 96 % | **100 %** |
+| 35 naturales: top-1 / top-3 | **86 % / 94 %** | 83 % / 89 % |
+| 25 paráfrasis: top-1 / top-3 | **92 % / 96 %** | 84 % / 88 % |
+| 15 en inglés sobre notas en español: top-1 / top-3 | **87 % / 100 %** | 67 % / 80 % |
+| Tiempo, mediana | **34 ms** | 158 ms |
+
+### Recall automático con las preguntas nuevas (Omoikane 0.3.1 frente a 0.4.0)
+
+| | 0.3.1 | 0.4.0 |
+|---|---|---|
+| Nota buena inyectada, de 100 | 51 | **64** |
+| …de ellas paráfrasis, de 25 | 5 | **14** |
+| Algo inyectado, de 30 sin respuesta | **5** | 7 |
+
+La 0.4.0 añade al recall un canal por significado (embeddings estáticos con un mínimo de palabras en común, solo en mensajes cortos) y solo cuenta los primeros 6.000 caracteres de cada memoria. Un tope de 3.000 parecía mejor con las preguntas de ajuste, pero aquí perdía 7 de 35 naturales: era sobreajuste y se descartó.
+
+### Duplicados: el método de engram, sin su ruido
+
+Cuando la comprobación propia de Omoikane no está segura, la 0.4.0 guarda la memoria y devuelve hasta 3 relacionadas (el método de engram, pasado a Rust: BM25 por las palabras del título y al menos dos palabras de título en común).
+
+| | Omoikane 0.4.0 | engram MCP |
+|---|---|---|
+| Notas guardadas otra vez que se señalan o se listan | **100 %** | **100 %** |
+| Relacionadas con 90 frases que no son duplicadas | **14 %** | 49 % |
+| Relacionadas con 127 notas que no son duplicadas | **52 %** | 95 % |
+
+### Escala e inglés: 3.183 memorias
+
+Las 127 notas más 3.055 párrafos de READMEs técnicos en inglés, cargados en los dos con su propio importador; 50 preguntas en inglés escritas a ciegas sobre esos párrafos.
+
+| | Omoikane | engram any, palabras clave |
+|---|---|---|
+| 80 preguntas de ajuste (español): top-1 cortas / naturales / paráfrasis | **90 / 88 / 80 %** | 85 / 80 / 80 % |
+| 50 preguntas en inglés: top-1 cortas / naturales / paráfrasis | 87 / **95** / 47 % | 87 / 85 / 47 % |
+| Buscar, mediana | **50 ms** | 203 ms |
+| Guardar, mediana | **38 ms** | 149 ms |
+| Recall por mensaje, mediana | 46 ms | no tiene |
+
+Los dos flojean con paráfrasis en inglés (47 % de top-1): es el límite de buscar por palabras y de un modelo de embeddings estático.
+
+### De punta a punta con las preguntas nuevas (30, corrección a ciegas)
+
+| | Omoikane | engram |
+|---|---|---|
+| Correctas | 30/30 | 29/30 (un «no lo sé» que añadió datos de un cliente que no venían a cuento) |
+| Tiempo, mediana | 12,4 s | 12,0 s |
+| Coste total | **2,16 $** | 3,03 $ |
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
