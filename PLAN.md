@@ -372,10 +372,17 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] Similitud centrada sin copias: de ~43 a ~38 ms con 2.000 memorias.
 - [x] Criterio de «hecho» final: guardar lo mismo dicho de otra forma propone `update`; la búsqueda con modelo no es peor que sin él en ningún conjunto; y la ruta de un fichero encuentra sus memorias. El de «fallo de login» → «bug en auth» queda descartado: no es posible con un modelo estático.
 
-### Fase 3 · MCP (1 día)
-- `mcp.rs` con las 8 tools, `instructions`, resolución del proyecto por cwd.
-- Probar con Claude Code real (`claude mcp add`) y con el inspector MCP.
-- Hecho cuando: una sesión de Claude Code guarda y recupera memorias en este mismo repo.
+### Fase 3 · MCP ✅ (28-oct-2026)
+- [x] `src/mcp.rs`: `omoi mcp`, servidor stdio con `rmcp` 3.8 y las 8 herramientas de §7 (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) más las `instructions` (cuándo guardar y qué `kind` usar).
+- [x] Cada llamada abre la base en un hilo de bloqueo, con el modelo abierto una vez y compartido, y resuelve el proyecto por la carpeta del proceso (la del proyecto en el que el cliente arranca el servidor; `--dir` para forzar otra).
+- [x] Ante un duplicado, `remember` no guarda y devuelve `saved: false`, `duplicate_of` (compacta), `similarity` y un `hint`: decide el agente, con `update` o con `force: true` (decisión de Marc, 28-oct).
+- [x] `forget` borra sin preguntar: el agente ya lo ha decidido (la CLI sí pregunta).
+- [x] Los fallos de la herramienta (id que no existe, tipo mal escrito) vuelven como resultado con `isError` y un texto legible, no como error de protocolo, para que el agente los corrija.
+- [x] Listas compactas (id, kind, title, 200 caracteres, rutas, etiquetas, fijada, global, similitud): el agente pide `get` si quiere el resto.
+- [x] `memoria::contexto`: preferencias y fijadas del proyecto y globales (la usará también el recall de la fase 4).
+- [x] Tests (`tests/mcp.rs`, 2): un cliente MCP de verdad (el de `rmcp`, con `transport-child-process`) arranca `omoi mcp` y prueba las 8 herramientas, los errores, la ruta y el aviso de duplicado con `force`. En CI en los tres sistemas.
+- [x] **Hecho**, con Claude Code de verdad (2.1.312) y sin tocar su configuración: dos sesiones `claude -p` con `--mcp-config` temporal y `--strict-mcp-config`, en este repo. La primera guardó un `gotcha` sobre `tests/equivalencia.rs` (proyecto `D:\Omoikane`, origen `mcp`); la segunda, sin contexto, lo encontró sola y citó su id.
+- No se usó el inspector MCP: los tests ya hablan el protocolo con el cliente oficial de Rust, y Claude Code es el cliente que importa.
 
 ### Fase 4 · recall automático (1 día)
 - `recall.rs`, `hook.rs`, `setup claude` con confirmación.

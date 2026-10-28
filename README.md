@@ -10,7 +10,7 @@
 
 Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Working today: the memory store and its CLI (phase 1) with search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2). Coming next: the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), and the MCP server for agents (phase 3). Coming next: automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
 ## Try it
 
@@ -26,6 +26,14 @@ omoi model install     # optional, ~150 MB once: adds search by meaning and dupl
 omoi recent
 omoi --help
 ```
+
+To give Claude Code (or any MCP client) its memory:
+
+```sh
+claude mcp add omoikane --scope user -- omoi mcp
+```
+
+The agent gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) and instructions on when to use them.
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 

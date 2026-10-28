@@ -33,6 +33,8 @@ ureq = "=3.4.2"
 
 [dev-dependencies]
 model2vec-rs = "0.3.0"
+# El cliente MCP de los tests habla con `omoi mcp` como lo haría un agente.
+rmcp = { version = "3.8.0", features = ["client", "transport-child-process"] }
 
 [profile.release]
 lto = true

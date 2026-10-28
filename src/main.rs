@@ -162,6 +162,8 @@ enum Orden {
     },
     /// Rebuild the search indexes (words and vectors) from the memories.
     Reindex,
+    /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
+    Mcp,
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
 }
@@ -186,6 +188,7 @@ fn main() -> Result<()> {
     match cli.orden {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
+        Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
         Orden::Reindex => {
             let mut db = abrir(c)?;
             let n = memoria::reindexar_palabras(&mut db)?;
@@ -616,6 +619,7 @@ fn en_espanol(c: Command) -> Command {
         )]),
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
+        ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
     ];
     let c = textos.iter().fold(c, |c, (orden, about, args)| {
