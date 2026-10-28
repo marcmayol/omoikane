@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 4;
+pub const VERSION_ESQUEMA: i64 = 5;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -90,10 +90,33 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if v < 4 {
         tx.execute_batch(ESQUEMA_4)?;
     }
+    if v < 5 {
+        tx.execute_batch(ESQUEMA_5)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
 }
+
+/// Sincronización entre equipos: un reloj lógico híbrido por memoria (`hlc`, ver `reloj`), quién la
+/// escribió (`author`) y las marcas de lo olvidado, para que otro equipo no lo devuelva. Las memorias
+/// que ya había toman su sello de `updated_at`, sin equipo (así cualquier cambio posterior gana).
+const ESQUEMA_5: &str = "
+ALTER TABLE memory ADD COLUMN hlc TEXT NOT NULL DEFAULT '';
+ALTER TABLE memory ADD COLUMN author TEXT NOT NULL DEFAULT '';
+UPDATE memory SET hlc = printf('%013d-0000-', CAST(round((julianday(updated_at) - 2440587.5) * 86400000) AS INTEGER));
+CREATE TABLE tombstone (
+  id         TEXT PRIMARY KEY,
+  deleted_at TEXT NOT NULL,
+  hlc        TEXT NOT NULL
+);
+-- Proyectos que llegaron de otro equipo con una ruta que aquí no existe: en cuanto aparece aquí un
+-- proyecto con la misma clave, sus memorias pasan a esa ruta.
+CREATE TABLE remote_project (
+  path TEXT PRIMARY KEY,
+  key  TEXT NOT NULL
+);
+";
 
 /// `n` es el enlace estable con el índice FTS (y en la fase 2 con el vectorial); `id` es el ULID
 /// que ven el agente y el usuario.
