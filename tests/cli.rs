@@ -360,6 +360,40 @@ fn setup_de_otros_agentes() {
     let kilo = leer(".config/kilo/kilo.jsonc");
     assert_eq!(kilo["mcp"]["omoikane"]["type"], "local");
     assert!(kilo["instructions"][0].as_str().unwrap().ends_with("omoikane.md"));
+    // La orden /omoikane donde el agente admite órdenes de usuario: abre la vista web.
+    for f in [
+        ".codex/prompts/omoikane.md",
+        ".gemini/commands/omoikane.toml",
+        ".cursor/commands/omoikane.md",
+        ".config/opencode/commands/omoikane.md",
+        ".qwen/commands/omoikane.md",
+        ".kiro/prompts/omoikane.md",
+        ".codeium/windsurf/global_workflows/omoikane.md",
+        ".pi/agent/prompts/omoikane.md",
+        ".config/kilo/commands/omoikane.md",
+    ] {
+        let t = std::fs::read_to_string(casa.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
+        assert!(t.contains("serve --open") && t.contains("127.0.0.1:7438"), "{f}: {t}");
+    }
+    let gemini = std::fs::read_to_string(casa.join(".gemini/commands/omoikane.toml")).unwrap();
+    assert!(gemini.starts_with("description = \"") && gemini.contains("\nprompt = \""), "{gemini}");
+    assert!(std::fs::read_to_string(casa.join(".config/opencode/commands/omoikane.md")).unwrap().starts_with("---\ndescription:"));
+}
+
+/// Una orden `/omoikane` propia del usuario no se toca.
+#[test]
+fn setup_respeta_una_orden_existente() {
+    let e = Entorno::nuevo("setup-orden");
+    let casa = e.dir.join("casa");
+    std::fs::create_dir_all(casa.join(".qwen/commands")).unwrap();
+    std::fs::write(casa.join(".qwen/commands/omoikane.md"), "mía").unwrap();
+    let h = casa.to_str().unwrap();
+    let o = e.omoi_con(&["setup", "qwen", "--dry-run"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+    assert!(o.status.success());
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("/omoikane"), "{}", String::from_utf8_lossy(&o.stdout));
+    let o = e.omoi_con(&["setup", "qwen", "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+    assert!(o.status.success());
+    assert_eq!(std::fs::read_to_string(casa.join(".qwen/commands/omoikane.md")).unwrap(), "mía");
 }
 
 /// `omoi recall --format`: Gemini cambia el nombre del evento y Cursor usa `additional_context`;

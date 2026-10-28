@@ -25,6 +25,16 @@
 //!   (`injectSteps`); no tiene evento de mensaje.
 //! - Windsurf (Devin Desktop), Kimi Code, Pi, Amp y Kilo Code: MCP e instrucciones. Sus hooks no
 //!   pueden añadir contexto (o no está documentado), así que sin recall automático.
+//!
+//! La orden `/omoikane` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
+//! (`~/.gemini/commands/*.toml`), Qwen (`~/.qwen/commands/*.md`), Codex (`~/.codex/prompts/*.md`,
+//! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane`), Cursor
+//! (`~/.cursor/commands/*.md`), OpenCode (`~/.config/opencode/commands/*.md`), Kiro
+//! (`~/.kiro/prompts/*.md`), Windsurf (`~/.codeium/windsurf/global_workflows/*.md`), Pi
+//! (`~/.pi/agent/prompts/*.md`) y Kilo (`~/.config/kilo/commands/*.md`). Sin ella: Copilot (no hay
+//! carpeta de usuario documentada), Kimi (solo skills y plugins), Amp (quitó las órdenes en favor de
+//! skills) y Antigravity (sus workflows dejaron de funcionar). En todos es un texto para el modelo,
+//! que arranca `omoi serve --open` con su terminal.
 
 use crate::tr;
 use anyhow::{Context, Result, bail};
@@ -178,6 +188,8 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c });
             }
+            // Codex la enseña como `/prompts:omoikane`.
+            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, true));
         }
         "gemini" => {
             let d = h.join(".gemini");
@@ -196,6 +208,8 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("GEMINI.md"))? {
                 v.push(Cambio { fichero: d.join("GEMINI.md"), que: tr!("instructions", "instrucciones"), contenido: c });
             }
+            let toml = format!("description = {}\nprompt = {}\n", toml_texto(DESCRIPCION_ORDEN), toml_texto(&texto_orden(&omoi)));
+            orden_en(&mut v, d.join("commands").join("omoikane.toml"), toml);
         }
         "cursor" => {
             let d = h.join(".cursor");
@@ -224,6 +238,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
+            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, false));
         }
         "opencode" => {
             let d = match std::env::var_os("XDG_CONFIG_HOME") {
@@ -247,6 +262,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c });
             }
+            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
         }
         "qwen" => {
             let d = h.join(".qwen");
@@ -263,6 +279,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, d.join("QWEN.md"))?;
+            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
         }
         "kiro" => {
             let d = h.join(".kiro");
@@ -274,6 +291,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 { "name": "omoikane-prompt", "trigger": "UserPromptSubmit", "action": { "type": "command", "command": format!("{o} recall --format plain") }, "timeout": 30 },
             ]});
             fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall hooks", "hooks del recall"), bonito(&hooks)?);
+            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, false));
         }
         "copilot" => {
             let d = h.join(".copilot");
@@ -293,6 +311,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             mcp_en(&mut v, config_sistema(&h).join("devin").join("mcp_config.json"), "mcpServers", entrada.clone())?;
             mcp_en(&mut v, h.join(".codeium").join("windsurf").join("mcp_config.json"), "mcpServers", entrada)?;
             instrucciones_en(&mut v, h.join(".codeium").join("windsurf").join("memories").join("global_rules.md"))?;
+            orden_en(&mut v, h.join(".codeium").join("windsurf").join("global_workflows").join("omoikane.md"), orden_md(&omoi, true));
         }
         "antigravity" => {
             let d = h.join(".gemini").join("config");
@@ -319,6 +338,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             let d = h.join(".pi").join("agent");
             mcp_en(&mut v, d.join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
             instrucciones_en(&mut v, d.join("AGENTS.md"))?;
+            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, true));
         }
         "amp" => {
             let d = h.join(".config").join("amp");
@@ -348,6 +368,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, reglas)?;
+            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
         }
         otro => bail!(tr!(
             "unknown agent «{otro}»: claude, {}",
@@ -379,6 +400,28 @@ fn instrucciones_en(v: &mut Vec<Cambio>, fichero: PathBuf) -> Result<()> {
         v.push(Cambio { fichero, que: tr!("instructions", "instrucciones"), contenido: c });
     }
     Ok(())
+}
+
+/// Lo que hace la orden `/omoikane`: en estos agentes una orden es un texto para el modelo, así que le
+/// pide arrancar la vista web con su terminal.
+fn texto_orden(omoi: &str) -> String {
+    let o = if omoi.contains(' ') { format!("\"{omoi}\"") } else { omoi.to_string() };
+    format!(
+        "Open the Omoikane memory view in the browser: run `{o} serve --open` in the background with your shell tool. It keeps serving while the session lasts, so don't wait for it to finish; if a server is already running, it just opens the browser. Then tell the user the view is at http://127.0.0.1:7438/ (all their memories: search, filters, history, pin, move, forget)."
+    )
+}
+
+const DESCRIPCION_ORDEN: &str = "Open the Omoikane memory view in the browser";
+
+/// La orden `/omoikane` como Markdown, con `description` arriba si el agente lo admite.
+fn orden_md(omoi: &str, con_descripcion: bool) -> String {
+    let cuerpo = texto_orden(omoi);
+    if con_descripcion { format!("---\ndescription: {DESCRIPCION_ORDEN}\n---\n\n{cuerpo}\n") } else { format!("{cuerpo}\n") }
+}
+
+/// Añade el fichero de la orden `/omoikane` (si no existe ya).
+fn orden_en(v: &mut Vec<Cambio>, fichero: PathBuf, contenido: String) {
+    fichero_propio(v, fichero, tr!("/omoikane command (opens the web view)", "orden /omoikane (abre la vista web)"), contenido);
 }
 
 /// Un fichero entero que es solo de Omoikane (si no existe ya).
