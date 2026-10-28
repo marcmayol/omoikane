@@ -126,6 +126,11 @@ pub enum Fusion {
     Rrf { peso_vector: f64 },
     /// El orden por palabras manda; el vector solo añade, detrás, lo que las palabras no encontraron.
     Rescate,
+    /// Como el rescate, pero los últimos `huecos` puestos se reservan para lo que solo encuentra el
+    /// vector con al menos `desde` de parecido: con el rescate a secas, las palabras casi siempre
+    /// llenan el límite y una paráfrasis que solo ve el vector no entraba nunca. No cambia los
+    /// primeros puestos.
+    Reserva { huecos: usize, desde: f32 },
     /// Puntuación por palabras (BM25 + cobertura, dividida por la de la mejor) más `peso` por cada
     /// punto de similitud por encima de `desde`: el vector reordena, pero solo cuando se parece de
     /// verdad. Lo que solo trae el vector entra si pasa la similitud mínima, como en el rescate.
@@ -133,8 +138,10 @@ pub enum Fusion {
 }
 
 /// Rescate y no RRF: con 127 notas reales, RRF bajaba el primer acierto del 98 % (solo palabras)
-/// al 84 % (peso 1) o al 90 % (peso 0,5); el rescate lo deja en el 98 %.
-const FUSION: Fusion = Fusion::Rescate;
+/// al 84 % (peso 1) o al 90 % (peso 0,5); el rescate lo deja en el 98 %. Con un hueco reservado al
+/// final para lo que el vector ve muy parecido (desde 0,4), una paráfrasis más de 70 entra en los 5
+/// primeros, sin cambiar nada más en 310 preguntas a ciegas.
+const FUSION: Fusion = Fusion::Reserva { huecos: 1, desde: 0.4 };
 
 /// Solo por palabras y sin contar los resultados como recuperados: para quien filtra después (el
 /// recall), que apunta solo lo que de verdad usa.
@@ -238,13 +245,37 @@ fn buscar_base(
                 }
             }
             Fusion::Mezcla { .. } => unreachable!(),
-            Fusion::Rescate => {
+            Fusion::Rescate | Fusion::Reserva { .. } => {
                 if tambien_por_palabras {
                     sumar(m, 0, Some(*s), 0.0, 0); // solo apunta la similitud, sin mover el orden
                 } else if *s >= similitud_minima {
                     sumar(m, n_palabras + i, Some(*s), 1.0, 0);
                 }
             }
+        }
+    }
+    if let Fusion::Reserva { huecos, desde } = fusion_elegida {
+        // Lo que el vector ve muy parecido (haya salido por palabras más abajo o no), si pasa `desde`.
+        let solo_vector: Vec<Resultado> = fusion.iter().filter(|r| r.similarity.is_some_and(|s| s >= desde)).cloned().collect();
+        if !solo_vector.is_empty() {
+            let mut v = ordenar(db, fusion, &Opciones { limite: usize::MAX, ..o.clone() }, false)?;
+            let corte = o.limite.saturating_sub(huecos.min(solo_vector.len()));
+            let mut arriba: Vec<Resultado> = v.drain(..corte.min(v.len())).collect();
+            let mut extra: Vec<Resultado> = solo_vector.into_iter().filter(|r| !arriba.iter().any(|a| a.memoria.id == r.memoria.id)).collect();
+            extra.sort_by(|a, b| b.similarity.unwrap_or(0.0).total_cmp(&a.similarity.unwrap_or(0.0)));
+            arriba.extend(extra.into_iter().take(o.limite - arriba.len()));
+            for r in v {
+                if arriba.len() >= o.limite {
+                    break;
+                }
+                if !arriba.iter().any(|a| a.memoria.id == r.memoria.id) {
+                    arriba.push(r);
+                }
+            }
+            if apuntar {
+                apuntar_recuperadas(db, arriba.iter().map(|r| r.memoria.id.as_str()))?;
+            }
+            return Ok(arriba);
         }
     }
     ordenar(db, fusion, o, apuntar)

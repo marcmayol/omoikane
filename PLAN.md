@@ -453,6 +453,10 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - Recall: como mucho 2 memorias (antes 3), y solo las que llegan al 85 % de la mejor (antes 70 %). Con las preguntas de ajuste y de comprobación, las mismas notas buenas con un 39 % menos de memorias de más. Validado con un **tercer conjunto** de 100 preguntas a ciegas y otra IA de juez: precisión del 62 % al 68 %, 7 inyecciones de ruido menos, 1 nota buena menos.
 - Comparación final con engram: gana Omoikane en búsqueda con la pregunta tal cual, velocidad, ruido de duplicados, recall automático y coste; empate en preguntas cortas, duplicados cubiertos, aciertos de punta a punta, agentes y visor; engram gana en paráfrasis en top-3/5 y en sincronización, nube y API HTTP.
 
+### 0.5.1 · un hueco para el vector en la búsqueda (28-oct-2026)
+- `Fusion::Reserva { huecos: 1, desde: 0.4 }`: el último de los puestos pedidos es para lo que el vector ve muy parecido aunque las palabras lo dejen más abajo. Paráfrasis en los 5 primeros de 65 a 66 de 70; nada más cambia en 310 preguntas a ciegas.
+- Con los tres conjuntos juntos (310), Omoikane gana a engram en top-1 y MRR de todos los tipos y en velocidad; engram queda una pregunta por delante en paráfrasis en top-3 y top-5. Los fallos que quedan son huecos de vocabulario («auriculares inalámbricos» → Bluetooth, «pantalla azul» → BSOD) que solo cubriría un modelo semántico mejor.
+
 Después, si los datos lo piden: sincronizar entre equipos, relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas

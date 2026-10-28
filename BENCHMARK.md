@@ -133,6 +133,21 @@ For 0.5.0 the recall injects at most 2 memories, only those within 85 % of the b
 
 On paraphrases Omoikane puts the right note first more often, but when it misses, engram more often has it in the top 3-5.
 
+## All three sets together: 310 questions
+
+The tuning set, the held-out set and the third set (310 questions, 0.5.1, same conditions for both: CLI, notes cut to 6,000 characters):
+
+| Questions | Omoikane | engram any, clean keywords |
+|---|---|---|
+| 75 short: top-1 / top-5 / MRR | **96.0 % / 98.7 % / 0.97** | 94.7 % / 97.3 % / 0.96 |
+| 15 English over Spanish notes: top-1 / top-5 / MRR | **86.7 % / 100 % / 0.93** | 66.7 % / 86.7 % / 0.75 |
+| 60 natural: top-1 / top-3 / MRR | **86.7 % / 95.0 % / 0.91** | 85.0 % / 90.0 % / 0.89 |
+| 70 paraphrases: top-1 / MRR | **84.3 % / 0.88** | 74.3 % / 0.82 |
+| 70 paraphrases: top-3 / top-5 | 90.0 % / 94.3 % | **91.4 % / 95.7 %** (one question each) |
+| Median time | **37 ms** | 162 ms |
+
+0.5.1 reserves the last of the 5 places for a memory the embedding finds very close (≥ 0.4) when words rank it lower: one more paraphrase of 70 reaches the top 5, nothing else changes.
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
