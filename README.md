@@ -66,7 +66,12 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 | OpenCode | yes | every prompt (a small plugin) | yes, 1.19.5 |
 | Codex CLI | yes | session start and every prompt (approve the hooks once with `/hooks`) | from its docs |
 | Gemini CLI | yes | session start and every prompt | from its docs |
+| Qwen Code | yes | session start and every prompt | from its docs |
+| Kiro | yes | session start and every prompt | from its docs |
 | Cursor | yes | session start only (its prompt hook can't add context) | from its docs |
+| GitHub Copilot (CLI and VS Code) | yes | session start only (its docs say prompt-hook output is dropped) | from its docs |
+| Antigravity CLI | yes | session start only (no prompt event) | from its docs |
+| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | yes | no (their hooks can't add context, or it isn't documented) | from their docs |
 
 ### Coming from engram
 
@@ -74,7 +79,7 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 
 ## How it compares
 
-Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. engram still wins on short keyword queries (100 % against 96 %) and on features (sync, cloud, more agents). Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
+Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. engram still wins on short keyword queries (100 % against 96 %) and on features (sync, cloud, an HTTP API). Both set up 14 agents. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
 
 ## What it does
 

@@ -448,6 +448,11 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - **`omoi tui`**: visor con ratatui (buscar mientras se escribe, memoria entera, historial, fijar, olvidar con confirmación).
 - **Escala e inglés**: 3.183 memorias (las notas más 3.055 párrafos de READMEs técnicos en inglés del disco) y 50 preguntas en inglés escritas a ciegas. Omoikane no pierde calidad con 25 veces más memorias; buscar 50 ms (engram 203 ms), guardar 38 ms (149 ms), recall 46 ms. En inglés, empate en cortas, 95 % frente a 85 % en naturales, y los dos flojos en paráfrasis (47 % top-1). macOS solo en la CI.
 
+### 0.5.0 · catorce agentes y un recall más preciso (28-oct-2026)
+- `omoi setup` para 13 agentes además de Claude Code (los 14 de engram, con Amp en lugar de CommandCode): Qwen Code y Kiro con recall en cada mensaje; Copilot (CLI y VS Code) y Antigravity solo al empezar; Windsurf/Devin, Kimi Code, Pi, Amp y Kilo Code con MCP e instrucciones. `omoi recall --format copilot|antigravity|plain`, y entradas con `conversationId`, `workspacePaths` y `USER_PROMPT`. Todos según su documentación salvo Claude Code y OpenCode.
+- Recall: como mucho 2 memorias (antes 3), y solo las que llegan al 85 % de la mejor (antes 70 %). Con las preguntas de ajuste y de comprobación, las mismas notas buenas con un 39 % menos de memorias de más. Validado con un **tercer conjunto** de 100 preguntas a ciegas y otra IA de juez: precisión del 62 % al 68 %, 7 inyecciones de ruido menos, 1 nota buena menos.
+- Comparación final con engram: gana Omoikane en búsqueda con la pregunta tal cual, velocidad, ruido de duplicados, recall automático y coste; empate en preguntas cortas, duplicados cubiertos, aciertos de punta a punta, agentes y visor; engram gana en paráfrasis en top-3/5 y en sincronización, nube y API HTTP.
+
 Después, si los datos lo piden: sincronizar entre equipos, relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas

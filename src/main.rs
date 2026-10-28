@@ -181,9 +181,9 @@ enum Orden {
     Reindex,
     /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
     Mcp,
-    /// Set up an agent to use Omoikane: claude, codex, gemini, cursor or opencode.
+    /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
     Setup {
-        /// The agent: claude, codex, gemini, cursor or opencode.
+        /// The agent: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
         agente: String,
         /// Don't ask before changing anything.
         #[arg(short, long)]
@@ -197,7 +197,7 @@ enum Orden {
         /// At session start (or after compacting): preferences and pinned memories.
         #[arg(long)]
         session_start: bool,
-        /// The agent's hook format: claude (also Codex), gemini or cursor.
+        /// The agent's hook format: claude (also Codex and Qwen), gemini, cursor, copilot, antigravity or plain.
         #[arg(long, value_enum, default_value = "claude")]
         format: recall::Formato,
     },
@@ -506,6 +506,11 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     {
         e.cwd = raiz.clone();
     }
+    if e.prompt.is_empty()
+        && let Ok(p) = std::env::var("USER_PROMPT")
+    {
+        e.prompt = p;
+    }
     let project = match (&c.dir, e.cwd.is_empty()) {
         (Some(d), _) => proyecto::de(d)?,
         (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
@@ -813,8 +818,8 @@ fn en_espanol(c: Command) -> Command {
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
-        ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor u opencode.", &[
-            ("agente", "El agente: claude, codex, gemini, cursor u opencode."),
+        ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo.", &[
+            ("agente", "El agente: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo."),
             ("yes", "No preguntar antes de cambiar nada."),
             ("dry_run", "Solo enseñar lo que se haría."),
         ]),
