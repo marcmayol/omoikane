@@ -436,6 +436,18 @@ pub fn recientes(db: &Connection, ambito: &Ambito, kind: Option<Tipo>, limite: u
     Ok(v)
 }
 
+/// Lo que el agente debería saber siempre al empezar en un proyecto: las preferencias y las fijadas,
+/// del proyecto y globales. Primero las fijadas, luego las más recientes.
+pub fn contexto(db: &Connection, project: &str, limite: usize) -> Result<Vec<Memoria>> {
+    let mut q = db.prepare(&format!(
+        "SELECT {COLUMNAS} FROM memory
+         WHERE (project = ?1 OR project = '') AND (kind = 'preference' OR pinned = 1)
+         ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?2"
+    ))?;
+    let v = q.query_map(params![project, limite as i64], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    Ok(v)
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Proyecto {
     /// Vacío = memorias globales.
