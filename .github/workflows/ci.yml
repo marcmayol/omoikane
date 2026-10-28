@@ -48,3 +48,6 @@ jobs:
           ./target/release/omoi doctor
           ./target/release/omoi remember -k gotcha -t "Bug en auth" "Fallo de autenticación: el token caduca."
           ./target/release/omoi search "fallo de autenticación" | grep -q "Bug en auth"
+          export OMOIKANE_MODELS="$RUNNER_TEMP/modelos"
+          ./target/release/omoi model install --from "$OMOI_MODELO_INT8"
+          ./target/release/omoi search "problema de zona horaria con la autenticación" | grep -q "Bug en auth"

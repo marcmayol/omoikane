@@ -5,4 +5,6 @@ pub mod db;
 pub mod embeber;
 pub mod idioma;
 pub mod memoria;
+pub mod modelos;
 pub mod proyecto;
+pub mod vectores;

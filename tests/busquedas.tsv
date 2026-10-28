@@ -1,0 +1,53 @@
+# Evaluación de la búsqueda (fase 2). Escrito a mano para Omoikane; público.
+# m	clave	título	contenido                 → una memoria
+# q	clave	consulta                          → la consulta debería devolver esa memoria (sin compartir siempre palabras)
+# q	-	consulta                          → no hay ninguna memoria relevante: lo ideal es no devolver nada
+m	auth	Bug en auth: el token caduca antes de tiempo	El middleware compara la hora local con la caducidad del token, que va en UTC. Arreglado convirtiendo todo a UTC.
+m	ulid	Usamos ULID en vez de UUID	Los ULID se ordenan por fecha de creación, así que los índices quedan compactos y los listados salen en orden sin ordenar.
+m	commits	Commits cortos y en inglés	El usuario quiere mensajes de commit de una línea, en inglés y en imperativo.
+m	node	El build necesita Node 20	Con Node 18 falla la compilación por el uso de fetch global en los scripts de build.
+m	cache	No borrar la caché a mano	La caché de compilación se regenera sola al arrancar; borrarla a mano solo hace que la primera ejecución vaya lenta.
+m	puerto	El servidor escucha en el 8765	Puerto por defecto del servidor de desarrollo. Se cambia con la variable PORT.
+m	utc	Fechas en UTC	Se guardan siempre en UTC y se convierten a la hora local solo al mostrarlas en la interfaz.
+m	ratelimit	Límite de la API: 100 peticiones por minuto	Al pasarse, la API responde 429 con la cabecera Retry-After. El cliente reintenta con espera exponencial.
+m	tests	Los tests de integración necesitan DATABASE_URL	Sin esa variable de entorno los tests de integración se saltan; en la CI la pone el workflow.
+m	pihole	Pi-hole bloqueaba la subida de vídeos a LinkedIn	La lista HaGeZi bloqueaba el dominio de antibots de LinkedIn y la subida se quedaba colgada. Está en la lista blanca.
+m	tabs	Indentación con cuatro espacios	En todo el proyecto, nunca tabuladores. El formateador lo aplica al guardar.
+m	deploy	The deploy script must run from the repo root	It uses relative paths to the build folder and silently uploads nothing when run from elsewhere.
+m	pr	Keep pull requests small	Prefer PRs under 300 changed lines; big ones get split before review.
+m	migraciones	Las migraciones van antes de arrancar	La aplicación falla al arrancar si el esquema de la base no está al día: primero migrar, luego levantar el servicio.
+m	windows	En PowerShell -replace ignora mayúsculas	Para renombrar paquetes distinguiendo mayúsculas hay que usar -creplace.
+m	brim	Brim para piezas finas en la impresora	Las piezas finas se despegan de la cama sin brim; con 50 grados de cama basta para PLA.
+m	sesion	La sesión expira a los 30 minutos sin actividad	El frontend avisa un minuto antes y renueva si el usuario sigue en la página.
+m	logs	Los logs van a /var/log/app	Rotan cada día y se guardan 14 días. En desarrollo salen por la consola.
+q	auth	fallo de login
+q	auth	el token caduca antes de tiempo
+q	auth	problema de zona horaria con la autenticación
+q	auth	login failure
+q	ulid	por qué no usamos uuid
+q	ulid	identificadores ordenados por fecha
+q	commits	cómo escribir los mensajes de commit
+q	commits	commit message style
+q	node	qué versión de node hace falta
+q	node	falla la compilación de los scripts
+q	cache	se puede borrar la caché
+q	puerto	en qué puerto arranca el servidor
+q	utc	zona horaria de las fechas
+q	ratelimit	demasiadas peticiones error 429
+q	ratelimit	la api me rechaza por exceso de llamadas
+q	tests	variable de entorno para los tests
+q	pihole	no se suben los vídeos a linkedin
+q	tabs	tabuladores o espacios
+q	deploy	where do I run the deployment from
+q	pr	how big should a pull request be
+q	migraciones	la app no arranca por la base de datos
+q	windows	reemplazar distinguiendo mayúsculas en powershell
+q	brim	la pieza se despega de la cama
+q	sesion	cuánto dura la sesión
+q	sesion	me echa de la aplicación al rato
+q	logs	dónde están los logs
+q	-	receta de paella valenciana
+q	-	kubernetes ingress controller
+q	-	horario de la piscina municipal
+q	-	cómo se llama el perro del vecino
+q	-	machine learning model fine-tuning hyperparameters

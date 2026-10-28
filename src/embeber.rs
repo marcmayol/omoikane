@@ -223,6 +223,8 @@ fn construir_trie(mut piezas: Vec<(Vec<u8>, u32)>) -> Vec<Nodo> {
 /// Modelo listo para codificar. Todo lo grande está mapeado, no copiado: el sistema solo lee del
 /// disco las filas que se usan.
 pub struct Modelo {
+    /// Nombre de su carpeta: identifica con qué modelo se calcularon unos vectores.
+    id: String,
     normalizador: Tokenizer,
     trie: Mmap,
     puntuaciones: Mmap,
@@ -258,6 +260,7 @@ impl Modelo {
         );
         let normalizador = Tokenizer::from_file(dir.join(F_NORMALIZADOR)).map_err(|e| anyhow!("normalizador.json: {e}"))?;
         let m = Modelo {
+            id: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             normalizador,
             trie: mapear(&dir.join(F_TRIE))?,
             puntuaciones: mapear(&dir.join(F_PUNTUACIONES))?,
@@ -286,6 +289,10 @@ impl Modelo {
             }
         }
         Ok(m)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn dim(&self) -> usize {

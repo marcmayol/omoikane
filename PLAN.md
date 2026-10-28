@@ -82,7 +82,7 @@ memory_version
 
 Solo se lee con `history`. Búsqueda y recall miran la versión viva. El número de versiones **no** es una señal de ranking.
 
-**Duplicados**: al guardar, si existe una memoria del mismo ámbito con similitud coseno ≥ 0,92 (umbral a calibrar en la fase 2), `save` no crea: devuelve la candidata y propone `update`. El agente decide.
+**Duplicados**: al guardar, si existe una memoria del mismo ámbito (el proyecto y las globales; si la nueva es global, solo las globales) con similitud coseno **≥ 0,65**, no se guarda: se devuelve la candidata y se propone `update` (en la CLI, código de salida 2; `--force` guarda igualmente). El 0,92 del primer borrador era un error: con model2vec los duplicados tienen mediana 0,73 y los temas parecidos llegan a 0,64 (calibrado en la fase 2 con `tests/pares_duplicados.tsv`).
 
 ## 4. Esquema SQL
 
@@ -133,7 +133,20 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 ```
 
-Fase 2 (esquema 2): `memory_vec USING vec0(embedding float[256] distance_metric=cosine)` con `rowid = memory.n`, y en `meta` el modelo con el que se calcularon los vectores.
+**Esquema 2** (fase 2, migración automática):
+
+```sql
+-- FTS5 no deja añadir columnas: se rehace con las rutas y se rellena desde memory.
+CREATE VIRTUAL TABLE memory_fts USING fts5(title, content, tags, paths, content='', contentless_delete=1,
+  tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE memory_vec (
+  n INTEGER PRIMARY KEY REFERENCES memory(n) ON DELETE CASCADE,
+  e BLOB NOT NULL                              -- 256 f32 little-endian, normalizado
+);
+-- meta('modelo') = carpeta del modelo con el que se calcularon los vectores
+```
+
+Se descartó `vec0`: no sabe filtrar por proyecto dentro del KNN, así que había que pedir de más y filtrar después. Un BLOB con `vec_distance_cosine` de sqlite-vec filtra en el mismo SQL, dio los mismos resultados en 30 de 30 consultas y fue el doble de rápido (A/B intercalado: 3,3 frente a 7,1 ms con 5.000 memorias; 15 frente a 26 ms con 20.000).
 
 Notas:
 - **Cambio respecto al primer borrador** (fase 1): en vez de una tabla `memory_rowid` aparte, `memory` lleva su propio `n INTEGER PRIMARY KEY`. Es una tabla menos, y un alias de rowid no cambia con `VACUUM` (el rowid implícito de una tabla con clave `TEXT` sí puede cambiar).
@@ -149,8 +162,9 @@ consulta        = palabras de lo escrito, sin palabras vacías (castellano, ingl
                   cada una entre comillas; desde 3 letras, exacta OR prefijo ("token" OR "token"*)
 candidatos_fts  = top 40 por bm25(memory_fts, 3.0, 1.0, 2.0)   -- título pesa 3, etiquetas 2
 relevancia      = -bm25 + cobertura                            -- cobertura: parte de las palabras presentes (0-1)
-candidatos_vec  = top 40 por distancia coseno en memory_vec                        (fase 2)
-fusion          = RRF con k = 60:  score = Σ 1 / (k + rango_i)                     (fase 2)
+candidatos_vec  = top 40 por coseno en memory_vec, del mismo ámbito y kind
+fusion          = RRF con k = 60:  score = Σ 1 / (k + rango_i)
+                  lo que solo trae el vector entra si coseno ≥ 0,28; lo que sale en las dos listas, siempre
 boosts          = ×1.5 si pinned · ×(1 + 0.3·recencia) con recencia = 1/(1 + días/90)
 resultado       = top N tras filtrar por proyecto (+ globales) / kind / etiquetas
 ```
@@ -158,7 +172,19 @@ resultado       = top N tras filtrar por proyecto (+ globales) / kind / etiqueta
 - **Exacta y prefijo a la vez**: «memoria» encuentra «memorias», pero quien dice «memoria» suma las dos y queda delante. Sin esto, buscar «marca20» sacaba antes «marca200» (lo destapó el test de coherencia).
 - **Cobertura**: con pocas memorias BM25 no distingue (si una palabra está en la mitad de los documentos, su IDF es 0 y todo puntúa casi 0). La parte de las palabras buscadas que aparece en la memoria desempata; con muchas memorias pesa poco al lado de BM25.
 - Ninguna sintaxis FTS5 de lo que escribe la persona llega al índice: todo va entre comillas.
-- Sin embedding disponible, la búsqueda es FTS sola. Nunca falla por falta de modelo.
+- **Calibración** (`tests/busquedas.tsv`: 18 memorias, 26 consultas con respuesta y 5 sin ella; `examples/fase2.rs busqueda`):
+
+  | modo | 1.º acierto | sin respuesta que devuelven algo |
+  |---|---|---|
+  | solo palabras | 85 % | 0 de 5 |
+  | híbrida, RRF sin filtro, ≥ 0,20 | 88 % | 3 de 5 |
+  | híbrida, solo-vector ≥ 0,28 (**la elegida**) | 88 % | 1 de 5 |
+  | híbrida, solo-vector ≥ 0,30 | 85 % | 0 de 5 |
+
+  Con model2vec cualquier texto se parece algo a cualquier otro, sobre todo en el mismo idioma («login failure» se parecía más al script de *deploy*, en inglés, que a la memoria del token). Por eso lo que solo trae el vector necesita una similitud alta. Vectorizar título + contenido es lo mejor (85 % de acierto con el vector solo; solo el título 65 %; solo el contenido 62 %).
+- **Lo que el vector no puede**: «fallo de login» frente a «Bug en auth: el token caduca…» da 0,139, por debajo del ruido. Relacionar *login* con *token/auth* necesita conocimiento del mundo que un modelo estático no tiene. El criterio de «hecho» de la fase 2 se ha cambiado por uno que sí se cumple (ver §11).
+- El recall automático de la fase 4 debería ser más estricto (~0,33): ahí el ruido ensucia el contexto del agente.
+- Sin modelo instalado, la búsqueda es FTS sola. Nunca falla por falta de modelo.
 - Cada resultado devuelto por `search` o `recall` actualiza `recalled_at` y `recall_count`.
 
 ## 6. Recall automático
@@ -231,7 +257,7 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
 - Modelo por defecto: **potion-multilingual-128M** cuantizado a int8 (256 dims, 101 idiomas). Oficial f32: 512 MB de pesos + 18,6 MB de tokenizer. Se descarga una vez a `~/.omoikane/models/`.
   - **Cuantización propia** (decidido en la fase 0). La comunitaria (`alikia2x/…-int8`) no sirve: solo trae int8 en ONNX, su safetensors sigue en f32. La nuestra: int8 con una escala por fila, plegada en el tensor `weights` para que model2vec-rs la aplique sin cambios. **130,1 MB**, fidelidad frente a f32: coseno mínimo **0,99996**.
   - Por qué int8 y no f32 (confirmado 27-oct-2026): cada sesión del agente arranca su propio `omoi mcp` con su copia del modelo. 3 sesiones = ~1,6 GB en f32 frente a ~450 MB en int8, con la misma calidad y velocidad.
-  - Se publicará en Hugging Face bajo `marcmayol/` en la fase 5. Hasta entonces, `omoi model` puede generarla desde el f32 oficial (es el código de `examples/fase0.rs`).
+  - Publicada el 27-oct-2026 en [natzx94/potion-multilingual-128M-int8](https://huggingface.co/natzx94/potion-multilingual-128M-int8) (la cuenta de Hugging Face de Marc).
 - **Carga en 2,7 ms (fase 0.5)**. `tokenizers` gastaba 1,3 s de los 1,78 en construir el vocabulario Unigram (500.353 piezas) en cada arranque. `src/embeber.rs` hace ese trabajo una vez (`compilar`, 2,7 s) y lo deja en ficheros planos que luego solo se mapean (`memmap2`): trie de doble array (18,5 MB), puntuaciones (4 MB), tabla int8 (128 MB), pesos (2 MB), y el `tokenizer.json` **sin vocabulario** (0,3 MB, carga en 3 ms) para normalizar y pre-tokenizar. El troceado (Viterbi) y el trie reproducen los de model2vec-rs (MIT, The Minish Lab).
   - Equivalencia comprobada (`examples/fase05.rs`): 165.282 frases, 3,6 M de tokens, **0 ids distintos** frente a `tokenizers`; coseno mínimo **0,999998** frente a model2vec-rs. Vector medio: 0,027 ms.
   - model2vec-rs pasa a ser solo dependencia de desarrollo (para el test de equivalencia).
@@ -242,7 +268,10 @@ omoi export                JSONL de todo (lo que haga falta para no quedarse atr
   - cada proceso lee `actual` al arrancar, así que las sesiones abiertas siguen con su versión y las nuevas cogen la nueva;
   - `meta.json` guarda el nombre del modelo, y la base guarda en `meta` con qué modelo se calcularon sus vectores: si no coincide con `actual`, `omoi reindex` (o el arranque del servidor MCP) recalcula los vectores;
   - las carpetas viejas se borran con `omoi model --limpiar`; si alguna sigue mapeada, el borrado falla sin ruido y se reintenta otro día.
-- Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB, 256 dims). Se elige con `omoi model`.
+- **Instalación** (fase 2): `omoi model install` descarga el int8 de Hugging Face (150 MB, 8 s en el PC; `ureq` con rustls, Rust puro) y lo compila en local (unos segundos). Se distribuye el int8 y no el formato compilado: así el formato puede cambiar entre versiones de omoi sin volver a publicar nada. `--from <carpeta>` instala sin red (lo usan la CI y los tests). La carpeta del modelo se llama por la huella de su contenido (`potion-multilingual-128M-int8-7af456ef`): la descarga y el int8 local dieron la misma.
+- `omoi model` dice cuál está en uso; `omoi model clean` borra los demás; `omoi reindex` rehace palabras y vectores.
+- Los vectores se mantienen solos: cada orden que los usa (`search`, `remember`, `update`) mira si faltan o si son de otro modelo y los calcula (≈ 0,03 ms por memoria). Guardar sin modelo no rompe nada: el vector llega la próxima vez.
+- Alternativa ligera para quien solo escriba en inglés: `potion-base-8M` (30 MB). Sin hacer: no hay demanda todavía.
 - Vector = `title + "\n" + content`, normalizado (coseno).
 - Si no hay modelo, todo funciona sin vectores. `doctor` lo dice.
 
@@ -318,10 +347,17 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
   - Las rutas entran en el índice de búsqueda en la **fase 2** (ver allí).
 - Medidas en el PC (Windows, release): binario de 2,9 MB; arrancar el proceso (`omoi --version`) 11 ms; `search` con 100 memorias ~20 ms de punta a punta (mediana y p90 en 20-21 ms); `remember` ~21 ms. Queda margen para el hook de la fase 4 (presupuesto de 50 ms, más ~5 ms de abrir el modelo).
 
-### Fase 2 · vectores (1 día)
-- `embeber.rs`, tabla `memory_vec`, RRF, dedupe por similitud, `omoi model`, `omoi reindex`.
-- Calibrar umbral de duplicado con 30 pares reales.
-- Hecho cuando: «fallo de login» encuentra «bug en auth» sin compartir palabras, y guardar dos veces lo mismo con otras palabras propone `update`.
+### Fase 2 · vectores ✅ (28-oct-2026)
+- [x] Esquema 2: rutas en el índice FTS (decisión de Marc del 28-oct) y `memory_vec` como BLOB; migración automática que rehace el índice.
+- [x] `modelos.rs`: carpetas inmutables por huella + fichero `actual` atómico; `omoi model [status|install [--from]|clean]`; descarga desde Hugging Face con `ureq`.
+- [x] `vectores.rs`: guardar en la misma transacción, `sincronizar` (completa los que faltan, rehace si cambió el modelo), `parecidas` y `duplicada`.
+- [x] Búsqueda híbrida con RRF y filtro para lo que solo trae el vector (§5).
+- [x] Duplicados al guardar: umbral 0,65, código 2 y `--force` en la CLI.
+- [x] `omoi reindex`; `doctor` enseña el modelo y si los vectores están al día.
+- [x] Tests (36 en total): 6 de vectores (al día, texto nuevo, duplicados por ámbito, **umbral de duplicados** y **calidad de la búsqueda** como tests de regresión sobre los ficheros de calibración, coherencia) y 1 de CLI de punta a punta.
+- [x] Calibración con datos en vez de umbrales a ojo: `tests/pares_duplicados.tsv` (40 pares) y `tests/busquedas.tsv` (31 consultas), ambos escritos a mano y públicos.
+- Hecho (criterio revisado): «problema de zona horaria con la autenticación» encuentra «Bug en auth: el token caduca…» sin compartir palabras, y guardar lo mismo con otras palabras propone `update`. El criterio original («fallo de login» → «bug en auth») no se cumple con un modelo estático (§5).
+- Medidas en el PC: binario de 8,4 MB (2,9 en la fase 1: TLS para la descarga y `tokenizers`); `search` con modelo y 100 memorias, 19-31 ms por proceso; `remember` con control de duplicados, 19 ms.
 
 ### Fase 3 · MCP (1 día)
 - `mcp.rs` con las 8 tools, `instructions`, resolución del proyecto por cwd.

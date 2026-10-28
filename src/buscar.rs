@@ -1,14 +1,18 @@
-//! Búsqueda. Fase 1: solo palabras (FTS5 con BM25). En la fase 2 se le suma el vector con RRF.
+//! Búsqueda híbrida: palabras (FTS5 con BM25) y significado (vectores), fusionadas con RRF.
 
+use crate::embeber::Modelo;
 use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, Tipo, de_fila};
+use crate::vectores;
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Serialize;
 
-/// Candidatos que se piden al índice antes de filtrar por etiquetas y reordenar.
+/// Candidatos que se piden a cada lista antes de filtrar por etiquetas y fusionar.
 const CANDIDATOS: usize = 40;
-/// Pesos de BM25 por columna: título, contenido, etiquetas.
-const PESOS: &str = "3.0, 1.0, 2.0";
+/// La k de Reciprocal Rank Fusion (la del artículo original).
+const RRF_K: f64 = 60.0;
+/// Pesos de BM25 por columna: título, contenido, etiquetas, rutas.
+const PESOS: &str = "3.0, 1.0, 2.0, 1.5";
 const BOOST_FIJADA: f64 = 1.5;
 const BOOST_RECENCIA: f64 = 0.3;
 const DIAS_RECENCIA: f64 = 90.0;
@@ -27,6 +31,9 @@ pub struct Resultado {
     #[serde(flatten)]
     pub memoria: Memoria,
     pub score: f64,
+    /// Coseno con la consulta, si salió por significado.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f32>,
 }
 
 /// Palabras que casi todo texto contiene y no ayudan a encontrar nada (castellano, inglés, catalán).
@@ -93,13 +100,87 @@ fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
     terminos.iter().filter(|t| esta(t)).count() as f64 / terminos.len() as f64
 }
 
-pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones) -> Result<Vec<Resultado>> {
+/// Búsqueda híbrida: la lista por palabras (BM25) y la lista por significado (vector) se fusionan
+/// por posición con RRF, y después pesan la fijada y la recencia. Sin modelo, solo palabras.
+pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
+    buscar_con(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA)
+}
+
+/// `buscar` con otra similitud mínima para la lista por significado (para calibrarla).
+pub fn buscar_con(
+    db: &mut Connection,
+    texto: &str,
+    o: &Opciones,
+    modelo: Option<&Modelo>,
+    similitud_minima: f32,
+) -> Result<Vec<Resultado>> {
+    let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
+    let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
+
+    let por_palabras: Vec<Memoria> = palabras(db, texto, o)?.into_iter().filter(|m| con_tags(m)).collect();
+    let por_significado: Vec<(Memoria, f32)> = match modelo {
+        Some(modelo) if !texto.trim().is_empty() => vectores::parecidas(
+            db,
+            modelo,
+            texto,
+            o.ambito.filtro(),
+            o.kind,
+            // Se piden todas: el umbral solo se aplica a lo que no sale también por palabras.
+            -1.0,
+            CANDIDATOS.max(o.limite),
+        )?
+        .into_iter()
+        .filter(|(m, _)| con_tags(m))
+        .collect(),
+        _ => Vec::new(),
+    };
+
+    // RRF: cada lista aporta 1 / (k + puesto). Lo que sale en las dos, suma las dos.
+    let mut fusion: Vec<Resultado> = Vec::new();
+    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>| {
+        let aporte = 1.0 / (RRF_K + puesto as f64 + 1.0);
+        match fusion.iter_mut().find(|r| r.memoria.id == m.id) {
+            Some(r) => {
+                r.score += aporte;
+                r.similarity = r.similarity.or(sim);
+            }
+            None => fusion.push(Resultado { memoria: m.clone(), score: aporte, similarity: sim }),
+        }
+    };
+    for (i, m) in por_palabras.iter().enumerate() {
+        sumar(m, i, None);
+    }
+    // Lo que sale por palabras y por significado suma las dos posiciones. Lo que solo trae el vector
+    // entra únicamente si se parece de verdad: con un modelo estático, cualquier texto se parece
+    // algo a cualquier otro (sobre todo en el mismo idioma) y sin este filtro todo devuelve ruido.
+    for (i, (m, s)) in por_significado.iter().enumerate() {
+        if *s >= similitud_minima || por_palabras.iter().any(|p| p.id == m.id) {
+            sumar(m, i, Some(*s));
+        }
+    }
+
+    let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
+    for r in &mut fusion {
+        let d: f64 = dias.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
+        let recencia = 1.0 / (1.0 + d.max(0.0) / DIAS_RECENCIA);
+        let fijada = if r.memoria.pinned { BOOST_FIJADA } else { 1.0 };
+        r.score *= fijada * (1.0 + BOOST_RECENCIA * recencia);
+    }
+    drop(dias);
+    fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
+    fusion.truncate(o.limite);
+    apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()))?;
+    Ok(fusion)
+}
+
+/// Candidatos por palabras, del mejor al peor: BM25 más la cobertura (que desempata cuando BM25
+/// no distingue, como pasa con pocas memorias).
+fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<Memoria>> {
     let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
     let terminos = terminos(texto);
     let columnas = COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
     let mut q = db.prepare(&format!(
-        "SELECT {columnas}, -bm25(memory_fts, {PESOS}) AS relevancia,
-                julianday('now') - julianday(m.updated_at) AS dias
+        "SELECT {columnas}, -bm25(memory_fts, {PESOS}) AS relevancia
          FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1
            AND (?2 IS NULL OR m.project = ?2 OR m.project = '')
@@ -107,27 +188,16 @@ pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones) -> Result<Vec<Resu
          ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?4"
     ))?;
     let ncol = COLUMNAS.split(", ").count();
-    let filas = q.query_map(
-        params![consulta, o.ambito.filtro(), o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64],
-        |f| Ok((de_fila(f)?, f.get::<_, f64>(ncol)?, f.get::<_, f64>(ncol + 1)?)),
-    )?;
-    let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
-    let mut res: Vec<Resultado> = Vec::new();
-    for fila in filas {
-        let (memoria, relevancia, dias) = fila?;
-        if !tags.iter().all(|t| memoria.tags.contains(t)) {
-            continue;
-        }
-        let recencia = 1.0 / (1.0 + dias.max(0.0) / DIAS_RECENCIA);
-        let fijada = if memoria.pinned { BOOST_FIJADA } else { 1.0 };
-        let score = (relevancia + cobertura(&terminos, &memoria)) * fijada * (1.0 + BOOST_RECENCIA * recencia);
-        res.push(Resultado { memoria, score });
+    let mut v: Vec<(Memoria, f64)> = q
+        .query_map(params![consulta, o.ambito.filtro(), o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| {
+            Ok((de_fila(f)?, f.get::<_, f64>(ncol)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (m, r) in &mut v {
+        *r += cobertura(&terminos, m);
     }
-    drop(q);
-    res.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
-    res.truncate(o.limite);
-    apuntar_recuperadas(db, res.iter().map(|r| r.memoria.id.as_str()))?;
-    Ok(res)
+    v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
+    Ok(v.into_iter().map(|(m, _)| m).collect())
 }
 
 /// Lo que devuelven la búsqueda y el recall cuenta como recuperado: sirve para ordenar y, más
