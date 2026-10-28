@@ -114,6 +114,25 @@ Los dos flojean con paráfrasis en inglés (47 % de top-1): es el límite de bus
 | Tiempo, mediana | 12,4 s | 12,0 s |
 | Coste total | **2,16 $** | 3,03 $ |
 
+## 0.5.0: un tercer conjunto, sin tocar
+
+En la 0.5.0 el recall inyecta como mucho 2 memorias, y solo las que llegan al 85 % de la mejor. Lo comprobó un **tercer conjunto de 100 preguntas escritas a ciegas** (30 cortas, 30 paráfrasis y 40 sin respuesta, una cuarta parte con el vocabulario de las notas), con otra IA juzgando, sin saber la versión, si cada memoria inyectada era contexto útil.
+
+| Recall | 0.3.1 | 0.4.0 | 0.5.0 |
+|---|---|---|---|
+| Nota buena inyectada, de 60 | 32 | **37** | 36 |
+| Memorias útiles inyectadas | 38 | **46** | 44 |
+| Ruido inyectado | 23 | 28 | **21** |
+| Precisión | 62 % | 62 % | **68 %** |
+
+| Búsqueda con el tercer conjunto | Omoikane | engram any, palabras clave |
+|---|---|---|
+| 30 cortas: top-1 | 100 % | 100 % |
+| 30 paráfrasis: top-1 / top-3 / top-5 | **80 %** / 83 % / 90 % | 60 % / **93 % / 97 %** |
+| Tiempo, mediana | **35 ms** | 158 ms |
+
+En paráfrasis Omoikane pone la nota buena la primera más veces, pero cuando falla, engram la tiene más a menudo entre las 3-5 primeras.
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.

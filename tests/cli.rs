@@ -298,7 +298,7 @@ fn setup_de_otros_agentes() {
     std::fs::create_dir_all(casa.join(".gemini")).unwrap();
     std::fs::write(casa.join(".gemini/settings.json"), r#"{"theme":"dark","mcpServers":{"otro":{"command":"x"}}}"#).unwrap();
     let h = casa.to_str().unwrap();
-    for a in ["codex", "gemini", "cursor", "opencode"] {
+    for a in omoikane::agentes::AGENTES {
         let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
         assert!(o.status.success(), "{a}: {}", String::from_utf8_lossy(&o.stderr));
         let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
@@ -318,9 +318,25 @@ fn setup_de_otros_agentes() {
     let plugin = std::fs::read_to_string(casa.join(".config/opencode/plugins/omoikane.ts")).unwrap();
     // Ningún salto de línea de verdad dentro de una cadena de JS (rompía el plugin sin avisar).
     assert!(plugin.contains("experimental.chat.system.transform") && !plugin.contains("+= \"\n"));
-    for f in [".codex/AGENTS.md", ".gemini/GEMINI.md", ".config/opencode/AGENTS.md"] {
+    for f in [".codex/AGENTS.md", ".gemini/GEMINI.md", ".config/opencode/AGENTS.md", ".qwen/QWEN.md", ".copilot/copilot-instructions.md", ".pi/agent/AGENTS.md"] {
         assert_eq!(std::fs::read_to_string(casa.join(f)).unwrap().matches("<!-- omoikane -->").count(), 1, "{f}");
     }
+    // Todos los JSON que escribe se pueden leer y tienen el servidor donde toca.
+    assert_eq!(leer(".qwen/settings.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert!(leer(".qwen/settings.json")["hooks"]["UserPromptSubmit"].to_string().contains("recall"));
+    assert_eq!(leer(".kiro/settings/mcp.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert!(leer(".kiro/hooks/omoikane.json")["hooks"].to_string().contains("--format plain"));
+    assert_eq!(leer(".copilot/mcp-config.json")["mcpServers"]["omoikane"]["type"], "local");
+    assert!(leer(".copilot/hooks/omoikane.json")["hooks"]["SessionStart"].to_string().contains("--format copilot"));
+    assert_eq!(leer(".codeium/windsurf/mcp_config.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert_eq!(leer(".gemini/config/mcp_config.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert!(leer(".gemini/config/hooks.json")["omoikane"]["SessionStart"].to_string().contains("--format antigravity"));
+    assert_eq!(leer(".kimi-code/mcp.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert_eq!(leer(".pi/agent/mcp.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert_eq!(leer(".config/amp/settings.json")["amp.mcpServers"]["omoikane"]["args"][0], "mcp");
+    let kilo = leer(".config/kilo/kilo.jsonc");
+    assert_eq!(kilo["mcp"]["omoikane"]["type"], "local");
+    assert!(kilo["instructions"][0].as_str().unwrap().ends_with("omoikane.md"));
 }
 
 /// `omoi recall --format`: Gemini cambia el nombre del evento y Cursor usa `additional_context`;
@@ -337,6 +353,20 @@ fn recall_en_formato_de_otros_agentes() {
     let o = e.omoi_con(&["recall", "--session-start", "--format", "gemini"], Some(r#"{"session_id":"g1","source":"startup"}"#), &[]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    // Copilot: `additionalContext` arriba del todo.
+    let o = e.omoi_con(&["recall", "--session-start", "--format", "copilot"], Some(r#"{"sessionId":"cp1","source":"new"}"#), &[]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["additionalContext"].as_str().unwrap().contains("Commits en inglés"));
+    // Antigravity: `conversationId` y `workspacePaths`, y la respuesta en `injectSteps`.
+    let ag = format!(r#"{{"conversationId":"ag1","workspacePaths":["{raiz}"]}}"#);
+    let o = e.omoi_con(&["recall", "--session-start", "--format", "antigravity"], Some(&ag), &[]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["injectSteps"][0]["systemMessage"]["systemMessage"].as_str().unwrap().contains("Commits en inglés"));
+    // Kiro: texto plano, y el mensaje en USER_PROMPT.
+    e.ok(&["remember", "-k", "gotcha", "-t", "El importe en f32 pierde céntimos", "En src/pago.rs el importe se guarda en f32 y pierde céntimos al redondear."]);
+    let o = e.omoi_con(&["recall", "--format", "plain"], Some(r#"{"session_id":"k1"}"#), &[("USER_PROMPT", "el importe en f32 de src/pago.rs pierde céntimos al redondear")]);
+    let t = String::from_utf8(o.stdout).unwrap();
+    assert!(t.starts_with("<omoikane>") && t.contains("céntimos"), "{t}");
 }
 
 /// Lo que encontró la revisión: una entrada inválida (contenido vacío, título larguísimo) no para la

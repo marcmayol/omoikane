@@ -66,7 +66,12 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 | OpenCode | sí | en cada mensaje (un plugin pequeño) | sí, 1.19.5 |
 | Codex CLI | sí | al empezar y en cada mensaje (aprueba los hooks una vez con `/hooks`) | según su documentación |
 | Gemini CLI | sí | al empezar y en cada mensaje | según su documentación |
+| Qwen Code | sí | al empezar y en cada mensaje | según su documentación |
+| Kiro | sí | al empezar y en cada mensaje | según su documentación |
 | Cursor | sí | solo al empezar (su hook del mensaje no deja añadir contexto) | según su documentación |
+| GitHub Copilot (CLI y VS Code) | sí | solo al empezar (su documentación dice que la salida del hook del mensaje se descarta) | según su documentación |
+| Antigravity CLI | sí | solo al empezar (no tiene evento de mensaje) | según su documentación |
+| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | sí | no (sus hooks no pueden añadir contexto, o no está documentado) | según su documentación |
 
 ### Si vienes de engram
 
@@ -74,7 +79,7 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 
 ## Comparado con engram
 
-Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue ganando con consultas cortas de palabras clave (100 % frente a 96 %) y en funciones (sincronización, nube, más agentes). El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
+Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue ganando con consultas cortas de palabras clave (100 % frente a 96 %) y en funciones (sincronización, nube, API HTTP). Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
 
 ## Qué hace
 

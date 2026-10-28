@@ -12,13 +12,26 @@
 //!   mensaje no, así que el recall solo va al empezar.
 //! - OpenCode: MCP en `opencode.json`; no tiene hooks de comandos, sino plugins en TypeScript: uno
 //!   pequeño pasa cada mensaje por `omoi recall`. Instrucciones en `AGENTS.md`.
+//! - Qwen Code (derivado de Gemini CLI): MCP y hooks como los de Claude Code en `~/.qwen/settings.json`,
+//!   instrucciones en `~/.qwen/QWEN.md`.
+//! - Kiro: MCP en `~/.kiro/settings/mcp.json`, instrucciones en `~/.kiro/steering/`, hooks en
+//!   `~/.kiro/hooks/` (su salida es texto plano y el mensaje llega en `USER_PROMPT`).
+//! - Copilot (CLI y VS Code, que lee los mismos ficheros): MCP en `~/.copilot/mcp-config.json`,
+//!   instrucciones en `~/.copilot/copilot-instructions.md`, hook `SessionStart` en
+//!   `~/.copilot/hooks/` con `additionalContext` arriba del todo. El del mensaje no: su documentación
+//!   dice que esa salida se descarta.
+//! - Antigravity CLI: MCP en `~/.gemini/config/mcp_config.json`, instrucciones en
+//!   `~/.gemini/config/AGENTS.md`, hook `SessionStart` en `~/.gemini/config/hooks.json`
+//!   (`injectSteps`); no tiene evento de mensaje.
+//! - Windsurf (Devin Desktop), Kimi Code, Pi, Amp y Kilo Code: MCP e instrucciones. Sus hooks no
+//!   pueden añadir contexto (o no está documentado), así que sin recall automático.
 
 use crate::tr;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode"];
+pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", "kiro", "copilot", "windsurf", "antigravity", "kimi", "pi", "amp", "kilo"];
 
 const INICIO: &str = "<!-- omoikane -->";
 const FIN: &str = "<!-- /omoikane -->";
@@ -66,6 +79,11 @@ fn orden(omoi: &str, shell: Shell) -> String {
     } else {
         format!("\"{omoi}\"")
     }
+}
+
+/// Para un campo que solo usa PowerShell (Copilot tiene uno para bash y otro para PowerShell).
+fn orden_powershell(omoi: &str) -> String {
+    if omoi.contains(' ') { format!("& \"{omoi}\"") } else { omoi.to_string() }
 }
 
 fn leer_json(f: &Path) -> Result<Value> {
@@ -230,12 +248,155 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c });
             }
         }
+        "qwen" => {
+            let d = h.join(".qwen");
+            if let Some(c) = json_cambio(d.join("settings.json"), tr!("MCP server and recall hooks", "servidor MCP y hooks del recall"), &|j| {
+                let servidores = objeto(j, "mcpServers")?;
+                let a = !servidores.contains_key("omoikane");
+                if a {
+                    servidores.insert("omoikane".into(), json!({ "command": omoi, "args": ["mcp"] }));
+                }
+                let b = hook_estilo_claude(j, "SessionStart", Some("startup|resume|clear|compact"), &format!("{} recall --session-start", orden(&omoi, Shell::Powershell)))?;
+                let c = hook_estilo_claude(j, "UserPromptSubmit", None, &format!("{} recall", orden(&omoi, Shell::Powershell)))?;
+                Ok(a || b || c)
+            })? {
+                v.push(c);
+            }
+            instrucciones_en(&mut v, d.join("QWEN.md"))?;
+        }
+        "kiro" => {
+            let d = h.join(".kiro");
+            mcp_en(&mut v, d.join("settings").join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
+            instrucciones_en(&mut v, d.join("steering").join("omoikane.md"))?;
+            let o = orden(&omoi, Shell::Desconocida);
+            let hooks = json!({ "version": "v1", "hooks": [
+                { "name": "omoikane-session", "trigger": "SessionStart", "action": { "type": "command", "command": format!("{o} recall --session-start --format plain") }, "timeout": 30 },
+                { "name": "omoikane-prompt", "trigger": "UserPromptSubmit", "action": { "type": "command", "command": format!("{o} recall --format plain") }, "timeout": 30 },
+            ]});
+            fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall hooks", "hooks del recall"), bonito(&hooks)?);
+        }
+        "copilot" => {
+            let d = h.join(".copilot");
+            mcp_en(&mut v, d.join("mcp-config.json"), "mcpServers", json!({ "type": "local", "command": omoi, "args": ["mcp"], "tools": ["*"] }))?;
+            instrucciones_en(&mut v, d.join("copilot-instructions.md"))?;
+            let hooks = json!({ "version": 1, "hooks": { "SessionStart": [{
+                "type": "command",
+                "bash": format!("{} recall --session-start --format copilot", orden(&omoi, Shell::Desconocida)),
+                "powershell": format!("{} recall --session-start --format copilot", orden_powershell(&omoi)),
+                "timeoutSec": 30,
+            }]}});
+            fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall at session start", "recall al empezar la sesión"), bonito(&hooks)?);
+        }
+        "windsurf" => {
+            let entrada = json!({ "command": omoi, "args": ["mcp"] });
+            // La documentación actual (Devin Desktop) y la ruta de siempre de Windsurf: las dos.
+            mcp_en(&mut v, config_sistema(&h).join("devin").join("mcp_config.json"), "mcpServers", entrada.clone())?;
+            mcp_en(&mut v, h.join(".codeium").join("windsurf").join("mcp_config.json"), "mcpServers", entrada)?;
+            instrucciones_en(&mut v, h.join(".codeium").join("windsurf").join("memories").join("global_rules.md"))?;
+        }
+        "antigravity" => {
+            let d = h.join(".gemini").join("config");
+            mcp_en(&mut v, d.join("mcp_config.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
+            instrucciones_en(&mut v, d.join("AGENTS.md"))?;
+            if let Some(c) = json_cambio(d.join("hooks.json"), tr!("recall at session start", "recall al empezar la sesión"), &|j| {
+                if j.get("omoikane").is_some() {
+                    return Ok(false);
+                }
+                j["omoikane"] = json!({ "enabled": true, "SessionStart": [{
+                    "command": format!("{} recall --session-start --format antigravity", orden(&omoi, Shell::Desconocida)),
+                    "timeout": 30,
+                }]});
+                Ok(true)
+            })? {
+                v.push(c);
+            }
+        }
+        "kimi" => {
+            mcp_en(&mut v, h.join(".kimi-code").join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
+            instrucciones_en(&mut v, h.join(".kimi-code").join("AGENTS.md"))?;
+        }
+        "pi" => {
+            let d = h.join(".pi").join("agent");
+            mcp_en(&mut v, d.join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
+            instrucciones_en(&mut v, d.join("AGENTS.md"))?;
+        }
+        "amp" => {
+            let d = h.join(".config").join("amp");
+            mcp_en(&mut v, d.join("settings.json"), "amp.mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
+            instrucciones_en(&mut v, d.join("AGENTS.md"))?;
+        }
+        "kilo" => {
+            let d = h.join(".config").join("kilo");
+            let reglas = d.join("omoikane.md");
+            let ruta_reglas = reglas.to_string_lossy().replace('\\', "/");
+            if let Some(c) = json_cambio(d.join("kilo.jsonc"), tr!("MCP server and instructions", "servidor MCP e instrucciones"), &|j| {
+                let servidores = objeto(j, "mcp")?;
+                let a = !servidores.contains_key("omoikane");
+                if a {
+                    servidores.insert("omoikane".into(), json!({ "type": "local", "command": [omoi, "mcp"], "enabled": true }));
+                }
+                if !j.get("instructions").is_some_and(Value::is_array) {
+                    j["instructions"] = json!([]);
+                }
+                let lista = j["instructions"].as_array_mut().context("instructions")?;
+                let b = !lista.iter().any(|x| x.as_str() == Some(ruta_reglas.as_str()));
+                if b {
+                    lista.push(json!(ruta_reglas));
+                }
+                Ok(a || b)
+            })? {
+                v.push(c);
+            }
+            instrucciones_en(&mut v, reglas)?;
+        }
         otro => bail!(tr!(
-            "unknown agent «{otro}»: claude, codex, gemini, cursor or opencode",
-            "agente «{otro}» desconocido: claude, codex, gemini, cursor u opencode"
+            "unknown agent «{otro}»: claude, {}",
+            "agente «{otro}» desconocido: claude, {}",
+            AGENTES.join(", ")
         )),
     }
     Ok(v)
+}
+
+/// Registra el servidor MCP como `entrada` bajo `raiz` (`mcpServers`, `mcp`, `amp.mcpServers`…).
+fn mcp_en(v: &mut Vec<Cambio>, fichero: PathBuf, raiz: &str, entrada: Value) -> Result<()> {
+    let raiz = raiz.to_string();
+    if let Some(c) = json_cambio(fichero, tr!("MCP server", "servidor MCP"), &move |j| {
+        let servidores = objeto(j, &raiz)?;
+        if servidores.contains_key("omoikane") {
+            return Ok(false);
+        }
+        servidores.insert("omoikane".into(), entrada.clone());
+        Ok(true)
+    })? {
+        v.push(c);
+    }
+    Ok(())
+}
+
+fn instrucciones_en(v: &mut Vec<Cambio>, fichero: PathBuf) -> Result<()> {
+    if let Some(c) = con_instrucciones(&fichero)? {
+        v.push(Cambio { fichero, que: tr!("instructions", "instrucciones"), contenido: c });
+    }
+    Ok(())
+}
+
+/// Un fichero entero que es solo de Omoikane (si no existe ya).
+fn fichero_propio(v: &mut Vec<Cambio>, fichero: PathBuf, que: String, contenido: String) {
+    if !fichero.exists() {
+        v.push(Cambio { fichero, que, contenido });
+    }
+}
+
+/// La carpeta de configuración de Windows (`%APPDATA%`), o `~/.config` en los demás.
+fn config_sistema(h: &Path) -> PathBuf {
+    if cfg!(windows)
+        && std::env::var_os("OMOIKANE_SETUP_HOME").is_none()
+        && let Some(a) = std::env::var_os("APPDATA")
+    {
+        return PathBuf::from(a);
+    }
+    h.join(".config")
 }
 
 fn toml_texto(s: &str) -> String {

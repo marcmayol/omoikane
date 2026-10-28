@@ -114,6 +114,25 @@ Both are weak on English paraphrases (47 % top-1); that is the limit of keyword 
 | Median time | 12.4 s | 12.0 s |
 | Total cost | **$2.16** | $3.03 |
 
+## 0.5.0: a third, untouched set
+
+For 0.5.0 the recall injects at most 2 memories, only those within 85 % of the best one. A **third set of 100 questions written blind** (30 short, 30 paraphrases, 40 with no answer, a quarter of them reusing the notes' vocabulary) checked it, with another AI judging, blind to the version, whether each injected memory was useful context.
+
+| Recall | 0.3.1 | 0.4.0 | 0.5.0 |
+|---|---|---|---|
+| Right note injected, of 60 | 32 | **37** | 36 |
+| Useful memories injected | 38 | **46** | 44 |
+| Noise injected | 23 | 28 | **21** |
+| Precision | 62 % | 62 % | **68 %** |
+
+| Search on the third set | Omoikane | engram any, clean keywords |
+|---|---|---|
+| 30 short: top-1 | 100 % | 100 % |
+| 30 paraphrases: top-1 / top-3 / top-5 | **80 %** / 83 % / 90 % | 60 % / **93 % / 97 %** |
+| Median time | **35 ms** | 158 ms |
+
+On paraphrases Omoikane puts the right note first more often, but when it misses, engram more often has it in the top 3-5.
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.

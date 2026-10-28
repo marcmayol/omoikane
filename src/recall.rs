@@ -28,8 +28,10 @@ pub const FRACCION_RARA: f64 = 0.2;
 /// en 8 de 20 preguntas sin respuesta, con 0,50 en 2 (y 36 de 60 con la nota buena frente a 40). Con
 /// los mensajes reales, del 21 % al 11 % con algo inyectado, y los positivos del 99 % al 98 %.
 pub const COBERTURA_MIN: f64 = 0.50;
-/// Solo las que se acercan a la mejor: si una destaca, va sola.
-pub const RELATIVO_A_LA_MEJOR: f64 = 0.7;
+/// Solo las que se acercan a la mejor: si una destaca, va sola. Con 0,85 y como mucho 2 (antes 0,7 y
+/// 3), las mismas notas buenas con un 39 % menos de memorias de más; validado con un tercer conjunto
+/// de preguntas a ciegas y otra IA de juez: precisión del 62 % al 68 %.
+pub const RELATIVO_A_LA_MEJOR: f64 = 0.85;
 /// Canal por significado (paráfrasis que no comparten palabras raras): una memoria entra también si
 /// su parecido (vectores centrados) llega a `SIMILITUD_RECALL` y sus palabras cubren al menos
 /// `COBERTURA_CON_VECTOR` del mensaje. Las dos cosas a la vez: el vector solo mete ruido. Solo en
@@ -42,7 +44,7 @@ pub const SIMILITUD_RECALL: f32 = 0.35;
 pub const COBERTURA_CON_VECTOR: f64 = 0.25;
 pub const LARGO_MAX_CON_VECTOR: usize = 500;
 /// Como mucho, tantas memorias por mensaje.
-pub const MAXIMO: usize = 3;
+pub const MAXIMO: usize = 2;
 /// Desde cuántas letras una palabra cuenta también como prefijo («memoria» → «memorias»). Con menos,
 /// «pon» coincidía con «pone», «ponga»…
 pub const PREFIJO_MIN: usize = 5;
@@ -52,6 +54,15 @@ pub const MENSAJES_ANTES_DE_RECORDAR: i64 = 10;
 pub const MINUTOS_ANTES_DE_RECORDAR: i64 = 15;
 pub const MINUTOS_ENTRE_RECORDATORIOS: i64 = 30;
 pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`. If not, ignore this.";
+
+/// `MAXIMO` y `RELATIVO_A_LA_MEJOR`, salvo al calibrar (`examples`, bancos de pruebas).
+fn maximo() -> usize {
+    std::env::var("OMOIKANE_CALIBRAR_MAXIMO").ok().and_then(|v| v.parse().ok()).unwrap_or(MAXIMO)
+}
+
+fn relativo() -> f64 {
+    std::env::var("OMOIKANE_CALIBRAR_RELATIVO").ok().and_then(|v| v.parse().ok()).unwrap_or(RELATIVO_A_LA_MEJOR)
+}
 
 /// Fragmento de cada memoria inyectada; el agente pide `get` si quiere el resto.
 const FRAGMENTO: usize = 200;
@@ -75,7 +86,7 @@ const CHARLA: &[&str] = &[
 /// estos nombres; Cursor llama `conversation_id` a la sesión y no manda `cwd` sino `workspace_roots`.
 #[derive(Debug, Default, Deserialize)]
 pub struct Entrada {
-    #[serde(default, alias = "conversation_id", alias = "sessionId")]
+    #[serde(default, alias = "conversation_id", alias = "sessionId", alias = "conversationId")]
     pub session_id: String,
     #[serde(default)]
     pub cwd: String,
@@ -83,7 +94,7 @@ pub struct Entrada {
     pub prompt: String,
     #[serde(default)]
     pub source: String,
-    #[serde(default)]
+    #[serde(default, alias = "workspacePaths")]
     pub workspace_roots: Vec<String>,
 }
 
@@ -96,6 +107,12 @@ pub enum Formato {
     Gemini,
     /// Cursor: `additional_context` (solo al empezar la sesión).
     Cursor,
+    /// Copilot (CLI y VS Code): `additionalContext` arriba del todo.
+    Copilot,
+    /// Antigravity: un paso de sistema en `injectSteps`.
+    Antigravity,
+    /// Solo el texto (Kiro, Kimi Code).
+    Plain,
 }
 
 fn sin_tildes(s: &str) -> String {
@@ -223,8 +240,8 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
         .collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)));
     let mejor = v.first().map(|x| x.1).unwrap_or(0.0);
-    v.retain(|x| x.1 >= RELATIVO_A_LA_MEJOR * mejor);
-    v.truncate(MAXIMO);
+    v.retain(|x| x.1 >= relativo() * mejor);
+    v.truncate(maximo());
     Ok(v.into_iter().map(|(m, c, _)| (m, c)).collect())
 }
 
@@ -351,7 +368,7 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
         .chain(relevantes(db, project, &e.prompt)?.into_iter().map(|x| x.0))
         .chain(por_significado)
     {
-        if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && elegidas.len() < MAXIMO {
+        if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && elegidas.len() < maximo() {
             elegidas.push(m);
         }
     }
@@ -430,6 +447,9 @@ pub fn salida_en(formato: Formato, evento: &str, contexto: &str) -> String {
             serde_json::json!({ "hookSpecificOutput": { "hookEventName": evento, "additionalContext": contexto } })
         }
         Formato::Cursor => serde_json::json!({ "additional_context": contexto }),
+        Formato::Copilot => serde_json::json!({ "additionalContext": contexto }),
+        Formato::Antigravity => serde_json::json!({ "injectSteps": [{ "systemMessage": { "systemMessage": contexto } }] }),
+        Formato::Plain => return contexto.to_string(),
     }
     .to_string()
 }
