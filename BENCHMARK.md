@@ -1,0 +1,66 @@
+# Omoikane vs engram
+
+[Español](BENCHMARK.es.md)
+
+A head-to-head with [engram](https://github.com/Gentleman-Programming/engram) (v3.6.0), the Go + SQLite memory for coding agents that Omoikane was compared against from the start. Measured on 28 October 2026 on one Windows 11 PC. **I wrote Omoikane, so read this with that in mind**; the method below is meant to keep that from tilting the numbers, and every result where engram does better is reported.
+
+## Method
+
+- **Data.** 127 real memory notes from one developer's daily work (Android apps, 3D printing, servers, writing), mostly in Spanish. They are private and not published. The same notes go into both systems, content cut to 6,000 characters for both (engram's CLI only takes the content as an argument, and Windows caps a command line at 32 K).
+- **Questions.** 126 one-line summaries of the notes (the developer's own index), plus **80 questions written blind** by a separate agent that only saw the notes, never either system: 20 short keyword-style, 25 natural, 15 paraphrases that avoid the note's own words, and 20 with no answer in the notes.
+- **Fair use of engram.** Its update check (one GitHub call per command) was turned off with its own `ENGRAM_NO_UPDATE_CHECK=1`. Search was run three ways: its default (all words must match), `--match any`, and `--match any` with the query cleaned to keywords (no stopwords or words under 4 letters), which is how a careful agent would query it.
+- **Timing.** A new process per call for both (that is how agents and hooks call them), interleaved A/B so neither always goes first. Medians.
+- **End to end.** 20 of the blind questions answered by Claude with only one memory server available (each system's own MCP server, same instruction, no other tools, plugins and auto-memory off). A second Claude graded every answer against the note **without knowing which system produced it**, in shuffled order.
+
+## Results
+
+### Search (CLI, top 5)
+
+| Questions | Omoikane | engram default | engram `--match any` | engram any, clean keywords |
+|---|---|---|---|---|
+| 126 summaries: top-1 / top-3 | **98.4 % / 100 %** | 4.0 % / 4.8 % (95 % no result) | 3.2 % / 6.3 % | **99.2 % / 100 %** |
+| 20 short: top-1 / top-3 | **90 % / 95 %** | 55 % / 65 % | 30 % / 35 % | 80 % / 85 % |
+| 25 natural: top-1 / top-3 | **88 % / 96 %** | 0 % (no result) | 0 % / 4 % | **88 %** / 92 % |
+| 15 paraphrases: top-1 / top-3 | 80 % / 93 % | 0 % (no result) | 0 % / 7 % | **87 % / 93 %** |
+| 20 with no answer: returns something | 100 % | 0 % | 100 % | 100 % |
+
+engram ranks well once the query is a list of keywords; with the question as a person types it, its default finds nothing and `--match any` falls back (per its docs, short terms switch it to a newest-first LIKE search). Omoikane takes the question as typed. Neither search refuses to answer: both return their closest matches when nothing fits (engram's default returns nothing for most queries, answerable or not).
+
+### Speed (new process per call)
+
+| | Omoikane | engram |
+|---|---|---|
+| Search, median | **34 ms** | 120 ms (default) · 155 ms (`any`) |
+| Save, median | **39 ms** | 135 ms |
+
+### Duplicates: 126 notes saved again as an agent would (another title, the start of the text)
+
+| | Omoikane | engram CLI | engram MCP (`mem_save`) |
+|---|---|---|---|
+| Flags the original | 90 % (114/126) | 0 % | **100 %** among its candidates (first in 97 %) |
+| Flags something for 90 sentences that are not duplicates | **1 %** (1/90) | 0 % | 49 % (44/90) |
+| What happens | Doesn't save; the agent updates or forces | Saves | Saves, then asks the agent to judge each candidate (`mem_judge`) |
+
+Two designs: engram always saves and hands the agent BM25 candidates to judge, catching every duplicate at the cost of asking about half of the time when there is none; Omoikane decides itself (vector plus word coverage) and rarely asks in vain, missing 1 in 10.
+
+### Automatic recall (memories injected on each prompt)
+
+Omoikane only: engram's hooks remind the agent to save and load recent context, but don't inject the memories related to each prompt. With the 80 blind questions: the right note for 15/20 short, 18/25 natural and 3/15 paraphrases; something injected for 2 of the 20 questions with no answer. On 300 real prompts from the same developer, 11 % got an injection.
+
+### End to end: Claude answering with each system (20 questions, blind grading)
+
+| | Omoikane | engram |
+|---|---|---|
+| Correct | 20/20 | 19/20 |
+| Median time per answer | 11.7 s | 12.6 s |
+| Median turns | 4 | 4.5 |
+| Total cost (same model) | **$1.40** | $1.94 |
+
+With an agent in the loop both are good: the agent rewrites questions into keywords for engram. One question apart out of 20 is not a significant difference. The cost gap (+39 % for engram) is consistent with its larger tool surface (27 tools by default) and longer tool results.
+
+## Caveats
+
+- One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
+- 20 end-to-end questions is a small sample; the search and duplicate numbers use more.
+- engram does much more than this measures: TUI, HTTP API, sync and cloud, integrations for 14 agents, conflict review. This compares memory quality and speed, not features.
+- Omoikane's thresholds were recalibrated with these same notes the same day: duplicates with the notes, and the recall threshold with the blind questions (checked against the 300 real prompts too), so those two Omoikane rows are optimistic. Search, which drives the search and end-to-end tables, didn't change.
