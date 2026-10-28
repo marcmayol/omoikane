@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.png" alt="Omoikane" width="100%"></p>
+
 # Omoikane
 
 **Memoria local para agentes de programación. Un binario, un fichero SQLite, y el agente no tiene que acordarse de buscar.**
