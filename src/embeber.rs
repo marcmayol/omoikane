@@ -11,6 +11,7 @@
 //! `tokenizers`: mismos desempates, misma penalización de desconocidos y misma fusión de rachas
 //! desconocidas. La equivalencia se comprueba contra `tokenizers` y contra model2vec-rs.
 
+use crate::tr;
 use anyhow::{Context, Result, anyhow, ensure};
 use memmap2::Mmap;
 use std::fs::File;
@@ -21,7 +22,7 @@ use tokenizers::{Model, OffsetReferential, OffsetType, PreTokenizer, Tokenizer};
 // Los ficheros del modelo se escriben y se leen en little-endian (x86-64 y ARM64, Apple Silicon
 // incluido). En una máquina big-endian saldrían vectores basura sin avisar: mejor no compilar.
 #[cfg(target_endian = "big")]
-compile_error!("omoikane solo funciona en plataformas little-endian");
+compile_error!("omoikane only works on little-endian platforms");
 
 const NONE: u32 = u32::MAX;
 /// `K_UNK_PENALTY` de `tokenizers`: un carácter desconocido puntúa esto por debajo de la peor pieza.
@@ -64,13 +65,16 @@ struct Meta {
 /// que `Modelo::abrir` carga sin construir nada.
 pub fn compilar(origen: &Path, destino: &Path) -> Result<()> {
     let tok_b = std::fs::read(origen.join("tokenizer.json"))?;
-    let tok = Tokenizer::from_bytes(&tok_b).map_err(|e| anyhow!("tokenizer: {e}"))?;
+    let tok = Tokenizer::from_bytes(&tok_b).map_err(|e| anyhow!("tokenizer.json: {e}"))?;
     let ModelWrapper::Unigram(uni) = tok.get_model() else {
-        return Err(anyhow!("solo se admiten tokenizers Unigram"));
+        return Err(anyhow!(tr!("only Unigram tokenizers are supported", "solo se admiten tokenizers Unigram")));
     };
-    ensure!(tok.get_truncation().is_none() && tok.get_padding().is_none(), "truncado o relleno configurados");
+    ensure!(
+        tok.get_truncation().is_none() && tok.get_padding().is_none(),
+        tr!("the tokenizer has truncation or padding configured", "el tokenizer tiene truncado o relleno configurados")
+    );
     let mut json: serde_json::Value = serde_json::from_slice(&tok_b)?;
-    let unk_id = json["model"]["unk_id"].as_u64().context("sin unk_id")? as u32;
+    let unk_id = json["model"]["unk_id"].as_u64().with_context(|| tr!("tokenizer.json has no unk_id", "tokenizer.json no tiene unk_id"))? as u32;
 
     // Puntuaciones por id y piezas para el trie. Una pieza repetida se queda con su último id,
     // como el mapa `token_to_ids` de `tokenizers`.
@@ -78,12 +82,12 @@ pub fn compilar(origen: &Path, destino: &Path) -> Result<()> {
     let mut piezas = Vec::with_capacity(uni.get_vocab_size());
     for (pieza, p) in uni.iter() {
         puntuaciones.push(*p);
-        piezas.push((pieza.as_bytes().to_vec(), uni.token_to_id(pieza).context("pieza sin id")?));
+        piezas.push((pieza.as_bytes().to_vec(), uni.token_to_id(pieza).with_context(|| tr!("piece without id: {pieza}", "pieza sin id: {pieza}"))?));
     }
     let trie = construir_trie(piezas);
 
     // Normalizador y pre-tokenizer sin vocabulario: basta con dejar las piezas hasta el unk.
-    let vocab = json["model"]["vocab"].as_array_mut().context("sin vocab")?;
+    let vocab = json["model"]["vocab"].as_array_mut().with_context(|| tr!("tokenizer.json has no vocab", "tokenizer.json no tiene vocab"))?;
     vocab.truncate((unk_id as usize + 1).max(3));
     std::fs::create_dir_all(destino)?;
     std::fs::write(destino.join(F_NORMALIZADOR), serde_json::to_vec(&json)?)?;
@@ -91,12 +95,16 @@ pub fn compilar(origen: &Path, destino: &Path) -> Result<()> {
     // Tabla int8 y pesos (la escala de cada fila ya va plegada en `weights`).
     let st_b = std::fs::read(origen.join("model.safetensors"))?;
     let st = safetensors::SafeTensors::deserialize(&st_b)?;
-    let emb = st.tensor("embeddings").context("sin embeddings")?;
-    ensure!(emb.dtype() == safetensors::Dtype::I8, "la tabla tiene que ser int8, es {:?}", emb.dtype());
-    ensure!(st.tensor("mapping").is_err(), "los modelos con `mapping` no están soportados");
+    let emb = st.tensor("embeddings").with_context(|| tr!("the model has no embeddings tensor", "el modelo no tiene el tensor embeddings"))?;
+    let tipo = emb.dtype();
+    ensure!(tipo == safetensors::Dtype::I8, tr!("the table must be int8, it is {tipo:?}", "la tabla tiene que ser int8, es {tipo:?}"));
+    ensure!(st.tensor("mapping").is_err(), tr!("models with a `mapping` tensor are not supported", "los modelos con `mapping` no están soportados"));
     let [filas, dim]: [usize; 2] = emb.shape().try_into()?;
-    let pesos = st.tensor("weights").context("sin weights")?;
-    ensure!(pesos.dtype() == safetensors::Dtype::F32 && pesos.shape() == [filas], "weights inesperados");
+    let pesos = st.tensor("weights").with_context(|| tr!("the model has no weights tensor", "el modelo no tiene el tensor weights"))?;
+    ensure!(
+        pesos.dtype() == safetensors::Dtype::F32 && pesos.shape() == [filas],
+        tr!("unexpected weights tensor", "tensor weights inesperado")
+    );
 
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(origen.join("config.json"))?)?;
     let meta = Meta {
@@ -235,16 +243,20 @@ struct Camino {
 const SIN_CAMINO: Camino = Camino { puntuacion: 0.0, empieza: NONE, token: 0 };
 
 fn mapear(ruta: &Path) -> Result<Mmap> {
-    let f = File::open(ruta).with_context(|| format!("abrir {}", ruta.display()))?;
+    let f = File::open(ruta).with_context(|| tr!("can't open {}", "no se puede abrir {}", ruta.display()))?;
     // SAFETY: los ficheros del modelo solo los escribe `compilar`; nadie los cambia mientras se usan.
     Ok(unsafe { Mmap::map(&f)? })
 }
 
 impl Modelo {
     pub fn abrir(dir: &Path) -> Result<Modelo> {
-        let meta: Meta = serde_json::from_slice(&std::fs::read(dir.join(F_META)).context("modelo sin compilar")?)?;
-        ensure!(meta.formato == VERSION_FORMATO, "formato de modelo {} (se esperaba {VERSION_FORMATO})", meta.formato);
-        let normalizador = Tokenizer::from_file(dir.join(F_NORMALIZADOR)).map_err(|e| anyhow!("normalizador: {e}"))?;
+        let meta: Meta = serde_json::from_slice(&std::fs::read(dir.join(F_META)).with_context(|| tr!("the model is not compiled: {}", "el modelo no está compilado: {}", dir.display()))?)?;
+        let formato = meta.formato;
+        ensure!(
+            formato == VERSION_FORMATO,
+            tr!("model format {formato} (expected {VERSION_FORMATO})", "formato de modelo {formato} (se esperaba {VERSION_FORMATO})")
+        );
+        let normalizador = Tokenizer::from_file(dir.join(F_NORMALIZADOR)).map_err(|e| anyhow!("normalizador.json: {e}"))?;
         let m = Modelo {
             normalizador,
             trie: mapear(&dir.join(F_TRIE))?,
@@ -254,10 +266,11 @@ impl Modelo {
             bytes: [NONE; 256],
             meta,
         };
-        ensure!(m.trie.len() % 12 == 0, "trie.bin corrupto");
-        ensure!(m.tabla.len() == m.meta.filas * m.meta.dim, "tabla.i8 no cuadra con meta.json");
-        ensure!(m.pesos.len() == m.meta.filas * 4, "pesos.f32 no cuadra con meta.json");
-        ensure!(m.puntuaciones.len() == m.meta.filas * 8, "puntuaciones.bin no cuadra con meta.json");
+        let corrupto = |f: &str| tr!("{f} doesn't match meta.json: recompile the model", "{f} no cuadra con meta.json: hay que recompilar el modelo");
+        ensure!(m.trie.len().is_multiple_of(12), corrupto(F_TRIE));
+        ensure!(m.tabla.len() == m.meta.filas * m.meta.dim, corrupto(F_TABLA));
+        ensure!(m.pesos.len() == m.meta.filas * 4, corrupto(F_PESOS));
+        ensure!(m.puntuaciones.len() == m.meta.filas * 8, corrupto(F_PUNTUACIONES));
         // Cada token lee una fila suelta de 256 bytes de la tabla: sin este aviso, Linux lee 128 KB
         // alrededor de cada fallo de página. Con la caché fría en un SSD SATA, el primer vector baja
         // de ~50 a ~44 ms y los diez siguientes de ~170 a ~130 ms (A/B intercalado). En el trie no

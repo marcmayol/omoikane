@@ -1,7 +1,7 @@
 //! `omoi`: memoria local para agentes de IA. Un binario, un fichero SQLite.
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use omoikane::buscar::{self, Opciones};
 use omoikane::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo, Version};
 use omoikane::{db, idioma, proyecto, tr};
@@ -65,11 +65,13 @@ enum Orden {
         /// What you are looking for, in plain words.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+        /// Only this kind.
         #[arg(short, long)]
         kind: Option<Tipo>,
         /// Only memories with this tag (repeatable).
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
+        /// How many results.
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
         /// In every project.
@@ -77,15 +79,21 @@ enum Orden {
         all: bool,
     },
     /// Show a whole memory (the start of the id is enough).
-    Get { id: String },
+    Get {
+        /// Memory id (its start is enough).
+        id: String,
+    },
     /// Change a memory. The previous version is kept in its history.
     Update {
+        /// Memory id (its start is enough).
         id: String,
+        /// New title.
         #[arg(short, long)]
         title: Option<String>,
         /// New content ("-" to read it from standard input).
         #[arg(short, long)]
         content: Option<String>,
+        /// New kind.
         #[arg(short, long)]
         kind: Option<Tipo>,
         /// Replace the paths with these (repeatable).
@@ -100,8 +108,10 @@ enum Orden {
         /// Remove all tags.
         #[arg(long, conflicts_with = "tags")]
         no_tags: bool,
+        /// Pin it: always injected in its project.
         #[arg(long, conflicts_with = "unpin")]
         pin: bool,
+        /// Unpin it.
         #[arg(long)]
         unpin: bool,
         /// Why it changes (kept with the previous version).
@@ -109,13 +119,24 @@ enum Orden {
         reason: Option<String>,
     },
     /// Delete a memory and its history. It can't be undone.
-    Forget { id: String },
+    Forget {
+        /// Memory id (its start is enough).
+        id: String,
+        /// Don't ask. Without it, omoi asks in a terminal and refuses elsewhere.
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Previous versions of a memory.
-    History { id: String },
+    History {
+        /// Memory id (its start is enough).
+        id: String,
+    },
     /// The latest saved or changed memories.
     Recent {
+        /// How many.
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+        /// Only this kind.
         #[arg(short, long)]
         kind: Option<Tipo>,
         /// From every project.
@@ -191,8 +212,14 @@ fn main() -> Result<()> {
             println!("{}", tr!("updated {}", "actualizada {}", corto(&m.id)));
             Ok(())
         }
-        Orden::Forget { id } => {
-            let m = memoria::olvidar(&mut abrir(c)?, &id)?;
+        Orden::Forget { id, yes } => {
+            let mut db = abrir(c)?;
+            let m = memoria::obtener(&db, &id)?;
+            if !yes && !confirmar_olvido(&m)? {
+                println!("{}", tr!("nothing deleted", "no se ha borrado nada"));
+                return Ok(());
+            }
+            let m = memoria::olvidar(&mut db, &m.id)?;
             if c.json {
                 return json(&m);
             }
@@ -390,7 +417,9 @@ fn en_espanol(c: Command) -> Command {
         .mut_arg("db", |a| a.help("Base de datos (por defecto OMOIKANE_DB o ~/.omoikane/omoikane.db).").value_name("FICHERO"))
         .mut_arg("dir", |a| a.help("Carpeta cuyo proyecto se usa (por defecto, la actual).").value_name("CARPETA"))
         .mut_arg("json", |a| a.help("Salida en JSON, para otros programas."));
-    let textos: &[(&str, &str, &[(&str, &str)])] = &[
+    // (subcomando, descripción, [(argumento, ayuda)])
+    type Textos = [(&'static str, &'static str, &'static [(&'static str, &'static str)])];
+    let textos: &Textos = &[
         ("remember", "Guarda una memoria. El contenido va como argumento o por la entrada estándar.", &[
             ("kind", "fact, decision, gotcha o preference."),
             ("title", "Una línea que diga de qué va."),
@@ -403,21 +432,35 @@ fn en_espanol(c: Command) -> Command {
         ]),
         ("search", "Busca en las memorias de este proyecto y en las globales.", &[
             ("query", "Lo que buscas, en lenguaje normal."),
+            ("kind", "Solo de este tipo."),
+            ("limit", "Cuántos resultados."),
             ("tags", "Solo las que llevan esta etiqueta (se puede repetir)."),
             ("all", "En todos los proyectos."),
         ]),
-        ("get", "Una memoria entera (basta con el principio del id).", &[]),
+        ("get", "Una memoria entera (basta con el principio del id).", &[("id", "Id de la memoria (basta con el principio).")]),
         ("update", "Cambia una memoria. La versión anterior queda en el historial.", &[
+            ("id", "Id de la memoria (basta con el principio)."),
+            ("title", "Título nuevo."),
             ("content", "Contenido nuevo («-» para leerlo de la entrada estándar)."),
+            ("kind", "Tipo nuevo."),
+            ("pin", "Fijarla: se inyecta siempre en su proyecto."),
+            ("unpin", "Desfijarla."),
             ("paths", "Sustituye las rutas por estas (se puede repetir)."),
             ("no_paths", "Quita todas las rutas."),
             ("tags", "Sustituye las etiquetas por estas (se puede repetir)."),
             ("no_tags", "Quita todas las etiquetas."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
         ]),
-        ("forget", "Borra una memoria y su historial. No se puede deshacer.", &[]),
-        ("history", "Versiones anteriores de una memoria.", &[]),
-        ("recent", "Las últimas memorias guardadas o cambiadas.", &[("all", "De todos los proyectos.")]),
+        ("forget", "Borra una memoria y su historial. No se puede deshacer.", &[
+            ("id", "Id de la memoria (basta con el principio)."),
+            ("yes", "Sin preguntar. Sin él, omoi pregunta en una terminal y se niega en cualquier otro sitio."),
+        ]),
+        ("history", "Versiones anteriores de una memoria.", &[("id", "Id de la memoria (basta con el principio).")]),
+        ("recent", "Las últimas memorias guardadas o cambiadas.", &[
+            ("limit", "Cuántas."),
+            ("kind", "Solo de este tipo."),
+            ("all", "De todos los proyectos."),
+        ]),
         ("projects", "Proyectos con memorias.", &[]),
         ("export", "Todas las memorias con su historial, una por línea en JSON.", &[(
             "all",
@@ -425,7 +468,57 @@ fn en_espanol(c: Command) -> Command {
         )]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
     ];
-    textos.iter().fold(c, |c, (orden, about, args)| {
+    let c = textos.iter().fold(c, |c, (orden, about, args)| {
         c.mut_subcommand(*orden, |s| args.iter().fold(s.about(*about), |s, (arg, ayuda)| s.mut_arg(*arg, |a| a.help(*ayuda))))
-    })
+    });
+    let c = titulos_es(c)
+        .disable_version_flag(true)
+        .arg(Arg::new("version").short('V').long("version").action(ArgAction::Version).help("Muestra la versión."))
+        .disable_help_subcommand(true);
+    let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
+    nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es))
+}
+
+/// Los títulos fijos de la ayuda de clap («Usage», «Commands», «Options»…) en español.
+fn titulos_es(c: Command) -> Command {
+    c.help_template("{about-with-newline}\nUso: {usage}\n\n{all-args}{after-help}")
+        .subcommand_help_heading("Comandos")
+        .mut_args(|a| {
+            let titulo = if a.is_positional() { "Argumentos" } else { "Opciones" };
+            a.help_heading(titulo)
+        })
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::Help)
+                .help("Muestra la ayuda.")
+                .help_heading("Opciones"),
+        )
+}
+
+/// En una terminal, pregunta; en cualquier otro sitio (un agente, un script) se niega sin `--yes`,
+/// para que nadie borre por no haber leído la ayuda.
+fn confirmar_olvido(m: &Memoria) -> Result<bool> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        bail!(tr!(
+            "forget can't be undone: add --yes to delete {} without asking",
+            "forget no se puede deshacer: añade --yes para borrar {} sin preguntar",
+            corto(&m.id)
+        ));
+    }
+    eprint!(
+        "{}",
+        tr!(
+            "Forget «{}» and its history? It can't be undone [y/N] ",
+            "¿Olvidar «{}» y su historial? No se puede deshacer [s/N] ",
+            m.title
+        )
+    );
+    std::io::stderr().flush()?;
+    let mut linea = String::new();
+    std::io::stdin().read_line(&mut linea)?;
+    Ok(matches!(linea.trim().to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí"))
 }

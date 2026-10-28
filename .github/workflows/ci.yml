@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
 
       # El modelo int8 (150 MB) para el test de equivalencia: sin él, el test se salta.
@@ -38,6 +40,7 @@ jobs:
           done
 
       - run: cargo build --release --locked --all-targets
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: cargo test --release --locked -- --nocapture
       - name: Probar el binario
         run: |
