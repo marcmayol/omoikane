@@ -398,3 +398,45 @@ fn importar_entradas_raras_y_sin_modelo() {
     assert!(larga["title"].as_str().unwrap().chars().count() <= 200);
     assert!(larga["content"].as_str().unwrap().contains(&largo), "el título entero no se pierde");
 }
+
+/// `omoi serve`: health sin y con token, y una herramienta por POST, como las del MCP.
+#[test]
+fn servidor_http() {
+    use std::io::{Read, Write};
+    let e = Entorno::nuevo("http");
+    e.ok(&["remember", "-k", "fact", "-t", "Puerto del servidor", "Escucha en el 8010"]);
+    let puerto = 7400 + (std::process::id() % 500) as u16;
+    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi"))
+        .args(["serve", "--port", &puerto.to_string()])
+        .current_dir(e.dir.join("repo").join("src"))
+        .env("OMOIKANE_DB", e.dir.join("o.db"))
+        .env("OMOIKANE_MODELS", e.dir.join("models"))
+        .env("OMOIKANE_HTTP_TOKEN", "secreto")
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pedir = |peticion: &str| -> String {
+        for _ in 0..50 {
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", puerto)) {
+                s.write_all(peticion.as_bytes()).unwrap();
+                let mut r = String::new();
+                s.read_to_string(&mut r).unwrap();
+                return r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("el servidor no arrancó");
+    };
+    let sin = pedir("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(sin.starts_with("HTTP/1.1 401"), "{sin}");
+    let con = pedir("GET /health HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer secreto\r\nConnection: close\r\n\r\n");
+    assert!(con.starts_with("HTTP/1.1 200") && con.contains("\"ok\":true"), "{con}");
+    let cuerpo = r#"{"query":"puerto servidor"}"#;
+    let busca = pedir(&format!(
+        "POST /tools/search HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer secreto\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cuerpo}",
+        cuerpo.len()
+    ));
+    assert!(busca.starts_with("HTTP/1.1 200") && busca.contains("Puerto del servidor"), "{busca}");
+    hijo.kill().unwrap();
+    let _ = hijo.wait();
+}

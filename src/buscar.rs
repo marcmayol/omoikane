@@ -70,10 +70,23 @@ pub fn consulta_fts(texto: &str) -> Option<String> {
     let terminos = terminos(texto);
     let mut q: Vec<String> = terminos
         .iter()
-        .map(|p| if p.chars().count() >= 3 { format!("\"{p}\" OR \"{p}\"*") } else { format!("\"{p}\"") })
+        .map(|p| match raiz(p) {
+            Some(r) => format!("\"{p}\" OR \"{r}\"*"),
+            None if p.chars().count() >= 3 => format!("\"{p}\" OR \"{p}\"*"),
+            None => format!("\"{p}\""),
+        })
         .collect();
     q.dedup();
     (!q.is_empty()).then(|| q.join(" OR "))
+}
+
+/// Raíz para buscar también otras formas de la palabra («reinicia» → «reinici»: «reinicios»,
+/// «reiniciar»): sin las dos últimas letras, en palabras de al menos `LARGO_RAIZ`. El español flexiona
+/// casi siempre al final, y el prefijo solo no cubre «reinicia» ↔ «reinicios».
+pub(crate) fn raiz(p: &str) -> Option<String> {
+    let minimo: usize = std::env::var("OMOIKANE_CALIBRAR_RAIZ").ok().and_then(|v| v.parse().ok()).unwrap_or(LARGO_RAIZ);
+    let n = p.chars().count();
+    (minimo > 0 && n >= minimo && p.chars().all(char::is_alphabetic)).then(|| p.chars().take(n - 2).collect())
 }
 
 /// Las palabras de la consulta que cuentan, en minúsculas.
@@ -93,6 +106,7 @@ fn coincidencias(terminos: &[String], m: &Memoria) -> usize {
     let palabras: Vec<&str> = texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
     let esta = |t: &String| {
         let t = sin_tildes(t);
+        let t = raiz(&t).unwrap_or(t);
         if t.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(&t)) } else { palabras.contains(&t.as_str()) }
     };
     let mut vistos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
@@ -115,7 +129,10 @@ fn cobertura_idf(terminos: &[String], m: &Memoria, idf: &std::collections::HashM
     }
     let dentro: f64 = vistos
         .iter()
-        .filter(|t| if t.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(t.as_str())) } else { palabras.contains(&t.as_str()) })
+        .filter(|t| {
+            let r = raiz(t).unwrap_or_else(|| t.to_string());
+            if r.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(r.as_str())) } else { palabras.contains(&r.as_str()) }
+        })
         .map(|t| idf.get(t).copied().unwrap_or(0.0))
         .sum();
     dentro / total
@@ -138,7 +155,11 @@ fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<st
         if v.contains_key(&t) {
             continue;
         }
-        let consulta = if t.chars().count() >= 3 { format!("\"{t}\"*") } else { format!("\"{t}\"") };
+        let consulta = match raiz(&t) {
+            Some(r) => format!("\"{r}\"*"),
+            None if t.chars().count() >= 3 => format!("\"{t}\"*"),
+            None => format!("\"{t}\""),
+        };
         let df = q.query_row(params![consulta, o.ambito.filtro()], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
         let d = df.max(1.0);
         v.insert(t, (1.0 + (n - d + 0.5) / (d + 0.5)).ln());
@@ -187,6 +208,9 @@ pub enum Fusion {
 /// final para lo que el vector ve muy parecido (desde 0,4), una paráfrasis más de 70 entra en los 5
 /// primeros, sin cambiar nada más en 310 preguntas a ciegas.
 const FUSION: Fusion = Fusion::Reserva { huecos: 1, desde: 0.4 };
+
+/// Desde cuántas letras se busca también por la raíz (ver `raiz`); 0, nunca.
+const LARGO_RAIZ: usize = 6;
 
 /// Solo por palabras y sin contar los resultados como recuperados: para quien filtra después (el
 /// recall), que apunta solo lo que de verdad usa.
@@ -408,7 +432,8 @@ mod tests {
     fn consulta_segura() {
         assert_eq!(
             consulta_fts("fallo de autenticación").unwrap(),
-            r#""fallo" OR "fallo"* OR "autenticación" OR "autenticación"*"#
+            // Desde 6 letras, también la raíz: «autenticaci*» encuentra «autenticaciones».
+            r#""fallo" OR "fallo"* OR "autenticación" OR "autenticaci"*"#
         );
         // La sintaxis de FTS5 no pasa: comillas, NEAR, paréntesis, dos puntos…
         // «or» e «y» son palabras vacías: se quitan.

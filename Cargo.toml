@@ -1,6 +1,6 @@
 [package]
 name = "omoikane"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -32,6 +32,7 @@ ulid = "3.0.0"
 ureq = "=3.4.2"
 ratatui = "0.29"
 crossterm = "0.28"
+tiny_http = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 # Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».

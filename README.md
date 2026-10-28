@@ -21,6 +21,8 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 /plugin install omoikane@drac
 ```
 
+To get updates automatically, turn on auto-update for the marketplace once: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
+
 On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`).
 
 **Without Claude Code**, or to use `omoi` from the terminal or another MCP client, install the binary with one line:
@@ -56,6 +58,8 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 
 `omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it.
 
+`omoi serve` serves the same tools over HTTP on `127.0.0.1:7438` for scripts and apps that don't speak MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `POST /tools/<name>` with the tool's JSON arguments. Set `OMOIKANE_HTTP_TOKEN` to require `Authorization: Bearer <token>`.
+
 ### Other agents
 
 `omoi setup <agent>` registers the MCP server, the automatic recall where the agent allows it, and a short paragraph in its instructions file. It shows what it will change first (`--dry-run` to only look), keeps a copy of every file it touches (`<file>.antes-de-omoikane`) and does nothing twice.
@@ -79,7 +83,7 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 
 ## How it compares
 
-Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. engram still wins on short keyword queries (100 % against 96 %) and on features (sync, cloud, an HTTP API). Both set up 14 agents. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
+Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. engram still has sync and a cloud. Both set up 14 agents. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
 
 ## What it does
 

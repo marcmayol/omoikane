@@ -21,6 +21,8 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 /plugin install omoikane@drac
 ```
 
+Para recibir las actualizaciones solo, activa una vez la actualización automática del marketplace: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
+
 En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`).
 
 **Sin Claude Code**, o para usar `omoi` desde la terminal u otro cliente MCP, instala el binario con una línea:
@@ -56,6 +58,8 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 
 `omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
 
+`omoi serve` sirve las mismas herramientas por HTTP en `127.0.0.1:7438` para scripts y apps que no hablan MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `POST /tools/<nombre>` con los argumentos JSON de la herramienta. Con `OMOIKANE_HTTP_TOKEN`, cada petición tiene que llevar `Authorization: Bearer <token>`.
+
 ### Otros agentes
 
 `omoi setup <agente>` registra el servidor MCP, el recall automático donde el agente lo permite y un párrafo en su fichero de instrucciones. Antes enseña lo que va a cambiar (`--dry-run` para solo mirar), guarda una copia de cada fichero que toca (`<fichero>.antes-de-omoikane`) y no hace nada dos veces.
@@ -79,7 +83,7 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 
 ## Comparado con engram
 
-Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue ganando con consultas cortas de palabras clave (100 % frente a 96 %) y en funciones (sincronización, nube, API HTTP). Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
+Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue teniendo sincronización y nube. Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
 
 ## Qué hace
 
