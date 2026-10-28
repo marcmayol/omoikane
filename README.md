@@ -54,6 +54,10 @@ omoi --help
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
+## How it compares
+
+Against engram, with the same 127 real notes and 80 questions written blind: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, and the duplicate warning is right 99 % of the times it fires; engram catches more duplicates by asking the agent to review half of its saves. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
+
 ## What it does
 
 Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone.

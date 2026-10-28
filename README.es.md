@@ -54,6 +54,10 @@ OMOIKANE_LANG=es omoi --help
 
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
+## Comparado con engram
+
+Con las mismas 127 notas reales y 80 preguntas escritas a ciegas: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, y el aviso de duplicado acierta el 99 % de las veces que salta; engram caza más duplicados a cambio de pedir al agente que revise la mitad de lo que guarda. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
+
 ## Qué hace
 
 Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo.

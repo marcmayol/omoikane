@@ -431,6 +431,11 @@ Solución: el plugin pasa a ser un **mod** (`hooks/hooks.json` + `hooks/omoikane
 - Todo con `$.process.run` (sin shell): igual en Windows, macOS y Linux, tenga o no Git Bash.
 - Requiere Claude Code 2.1.310 o posterior. `omoi mcp`, los instaladores y `cargo install` siguen para otros agentes o para usar la CLI.
 
+### 0.3.1 · recalibrado y comparado con engram (28-oct-2026)
+- **Duplicados**: el vector solo no separaba (con 0,70, 3,9 % de avisos en falso con 127 notas reales y solo el 66 % de las notas guardadas otra vez detectadas). Ahora: coseno ≥ 0,78, o coseno ≥ 0,40 y cobertura IDF de las palabras ≥ 0,60 (la del recall). 0 avisos en falso con las notas, 1 de 90 con frases cortas, 89-90 % detectadas, nunca la memoria equivocada; 7 ms de mediana. `examples/fase2.rs dupcob` (rejilla) y `dupprod` (el código de producción).
+- **Recall**: cobertura 0,40 → 0,50. Con 80 preguntas escritas a ciegas por otro agente (sin ver ningún sistema): algo inyectado en 2 de 20 sin respuesta (antes 8), 36 de 60 con la nota buena (antes 40). Con 300 mensajes reales: del 21 % al 11 % con inyección; positivos 99 % → 98 %. La nota gigante de Building My Future (87 KB) es la que más ruido mete: una memoria larga lo «cubre» todo.
+- **Comparación con engram v3.6.0** ([BENCHMARK.es.md](BENCHMARK.es.md)): mismos datos, mismas preguntas, tiempos intercalados, respuestas de Claude corregidas a ciegas. Búsqueda con la pregunta tal cual: Omoikane 88 % top-1 en naturales, engram 0 % por defecto y 88 % si se le pasan palabras clave (y 87 % frente a 80 % en paráfrasis: ahí gana). 34 ms frente a 120-155 ms. Duplicados: engram por MCP encuentra el 100 % pero pide revisar el 49 % de lo que no lo es. De punta a punta, 20/20 frente a 19/20 (no significativo) y un 39 % más barato.
+
 Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JSONL/Markdown y convertidor desde otros sistemas), relaciones entre memorias, limpieza asistida de lo que nunca se recupera.
 
 ## 12. Pruebas
