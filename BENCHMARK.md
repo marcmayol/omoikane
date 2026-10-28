@@ -178,6 +178,22 @@ Paraphrases were the one place engram stayed close (on the 310 tuning questions 
 
 Over all 190 paraphrases from every set, top-5: Omoikane 176 (92.6 %), engram 169 (88.9 %).
 
+## 0.7.0: every set again, after publishing
+
+0.7.0 changes where memories go when sessions run in the home folder, not how search ranks. To check that, the published 0.7.0, 0.6.0 and engram were run on the same 130 full notes, rotating the order on every question, over all six sets (526 questions with a known answer).
+
+| 526 questions | Omoikane 0.7.0 | Omoikane 0.6.0 | engram |
+|---|---|---|---|
+| top-1 | **87.3 %** | 87.3 % | 82.7 % |
+| top-3 | **95.6 %** | 95.6 % | 91.4 % |
+| top-5 | **96.8 %** | 96.8 % | 94.1 % |
+| top-10 | **97.7 %** | 97.7 % | 96.0 % |
+| MRR | **0.915** | 0.915 | 0.875 |
+| 190 paraphrases, MRR | **0.838** | 0.838 | 0.769 |
+| median search | **45 ms** | 45 ms | 178 ms |
+
+0.7.0 and 0.6.0 give the same answer to every question. engram is ahead only on the summaries (top-1 98.4 % vs 97.6 %, one question) and on top-3 of the third set (96.7 % vs 93.3 %, two questions).
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.

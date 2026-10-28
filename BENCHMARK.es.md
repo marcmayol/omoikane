@@ -178,6 +178,22 @@ Las paráfrasis eran lo único en lo que engram seguía cerca (con las 310 pregu
 
 Con las 190 paráfrasis de todos los conjuntos, en top-5: Omoikane 176 (92,6 %), engram 169 (88,9 %).
 
+## 0.7.0: todos los conjuntos otra vez, ya publicada
+
+La 0.7.0 cambia adónde van las memorias cuando las sesiones se abren en la carpeta del usuario, no cómo ordena la búsqueda. Para comprobarlo se pasaron la 0.7.0 publicada, la 0.6.0 y engram sobre las mismas 130 notas completas, rotando el orden en cada pregunta, con los seis conjuntos (526 preguntas con respuesta conocida).
+
+| 526 preguntas | Omoikane 0.7.0 | Omoikane 0.6.0 | engram |
+|---|---|---|---|
+| top-1 | **87,3 %** | 87,3 % | 82,7 % |
+| top-3 | **95,6 %** | 95,6 % | 91,4 % |
+| top-5 | **96,8 %** | 96,8 % | 94,1 % |
+| top-10 | **97,7 %** | 97,7 % | 96,0 % |
+| MRR | **0,915** | 0,915 | 0,875 |
+| 190 paráfrasis, MRR | **0,838** | 0,838 | 0,769 |
+| búsqueda, mediana | **45 ms** | 45 ms | 178 ms |
+
+La 0.7.0 y la 0.6.0 dan la misma respuesta a todas las preguntas. engram solo va por delante en los resúmenes (top-1 98,4 % frente a 97,6 %, una pregunta) y en el top-3 del tercer conjunto (96,7 % frente a 93,3 %, dos preguntas).
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
