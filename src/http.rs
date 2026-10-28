@@ -158,7 +158,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                 }
                 (Method::Get, "/health") => Ok(json(200, serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }).to_string())),
                 (Method::Get, "/tools") => {
-                    let (texto, _) = mcp::herramienta(db.clone(), dir_peticion, None, "")?;
+                    let (texto, _) = mcp::herramienta(db.clone(), dir_peticion, None, "", "http")?;
                     Ok(json(200, texto))
                 }
                 (Method::Get, "/search") => {
@@ -167,14 +167,14 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     if let Some(n) = param("limit").and_then(|n| n.parse::<u64>().ok()) {
                         args["limit"] = n.into();
                     }
-                    let (texto, es_error) = mcp::herramienta(db.clone(), dir_peticion, Some("search"), &args.to_string())?;
+                    let (texto, es_error) = mcp::herramienta(db.clone(), dir_peticion, Some("search"), &args.to_string(), "http")?;
                     Ok(json(if es_error { 400 } else { 200 }, texto))
                 }
                 (Method::Post, r) if r.starts_with("/tools/") => {
                     let nombre = &r["/tools/".len()..];
                     let mut cuerpo = String::new();
                     peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    match mcp::herramienta(db.clone(), dir_peticion, Some(nombre), &cuerpo) {
+                    match mcp::herramienta(db.clone(), dir_peticion, Some(nombre), &cuerpo, "http") {
                         Ok((texto, es_error)) => Ok(json(if es_error { 400 } else { 200 }, texto)),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }

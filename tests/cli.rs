@@ -259,10 +259,16 @@ fn herramientas_sin_mcp() {
     }
     assert!(lista["instructions"].as_str().unwrap().contains("long-term memory"));
 
-    let o = e.omoi_con(&["tool", "remember"], Some(r#"{"title":"Puerto del servidor","content":"Escucha en el 8010","kind":"fact"}"#), &[]);
+    let o = e.omoi_con(
+        &["tool", "remember"],
+        Some(r#"{"title":"Puerto del servidor","content":"Escucha en el 8010","kind":"fact"}"#),
+        &[("OMOIKANE_SOURCE", "mcp:claude-code")],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let guardada: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(guardada["saved"], true);
+    let entera = e.json(&["get", guardada["id"].as_str().unwrap()]);
+    assert_eq!(entera["source"], "mcp:claude-code", "quien llama a `omoi tool` dice quién es");
 
     let o = e.omoi_con(&["tool", "search"], Some(r#"{"query":"puerto servidor"}"#), &[]);
     let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();

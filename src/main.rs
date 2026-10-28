@@ -262,7 +262,9 @@ fn main() -> Result<()> {
                 std::io::stdin().read_to_string(&mut args)?;
             }
             let db = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
-            let (texto, es_error) = omoikane::mcp::herramienta(db, c.dir.clone(), nombre.as_deref(), &args)?;
+            // Quien llama dice quién es (el mod de Claude Code pone mcp:claude-code).
+            let origen = std::env::var("OMOIKANE_SOURCE").ok().filter(|o| !o.trim().is_empty()).unwrap_or_else(|| "mcp".into());
+            let (texto, es_error) = omoikane::mcp::herramienta(db, c.dir.clone(), nombre.as_deref(), &args, &origen)?;
             println!("{texto}");
             // Exit 1 si la herramienta respondió con isError: el cliente lo marca como error.
             std::process::exit(if es_error { 1 } else { 0 })
@@ -293,7 +295,8 @@ fn main() -> Result<()> {
             // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
             // al que apunten sus rutas, o es global.
             let actual = proyecto_de(c)?;
-            let project = if global { String::new() } else { proyecto::para_guardar(&actual, &paths, &format!("{title} {content}")) };
+            let (project, paths) =
+                if global { (String::new(), paths) } else { proyecto::para_guardar(&actual, &paths, &format!("{title} {content}")) };
             // Desde una carpeta general se ve todo: ahí se buscan las duplicadas.
             let busca_en = if !project.is_empty() && proyecto::es_general(&actual) { actual.clone() } else { project.clone() };
             let (mut db, modelo) = abrir_con_modelo(c)?;

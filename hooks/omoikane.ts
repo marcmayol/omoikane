@@ -221,7 +221,7 @@ async function runTool($: any, nombre: string, e: any) {
   const l = await ready($)
   if (l === undefined) return { deny: 'Omoikane is not ready: its binary could not be installed. See the toast at session start.' }
   const { tool, tool_use_id, agentId, ...args } = e
-  const r = await $.process.run([l.omoi, 'tool', nombre], { stdin: JSON.stringify(args) })
+  const r = await $.process.run([l.omoi, 'tool', nombre], { stdin: JSON.stringify(args), env: { OMOIKANE_SOURCE: 'mcp:claude-code' } })
   const texto = (r.stdout.trim() || r.stderr.trim() || '(no output)') as string
   return r.exitCode === 0 ? { result: texto } : { deny: texto }
 }

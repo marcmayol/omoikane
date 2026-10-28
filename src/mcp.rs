@@ -11,7 +11,7 @@ use crate::{db, modelos, proyecto, vectores};
 use anyhow::Result;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
-use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use rusqlite::Connection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -207,21 +207,18 @@ impl Servidor {
         })
         .await?
     }
-}
 
-#[tool_router(router = tool_router)]
-impl Servidor {
-    #[tool(description = "Save a memory for future sessions. If a very similar memory already exists in this project, nothing is saved and you get duplicate_of: update that one instead, or call again with force=true if it really is different.")]
-    async fn remember(&self, Parameters(p): Parameters<Remember>) -> Result<CallToolResult, ErrorData> {
+    /// `remember`, con quién la guarda (`source`): `mcp:<cliente>` por MCP, lo que diga quien llama
+    /// por `omoi tool` o HTTP.
+    async fn guardar(&self, p: Remember, origen: String) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, modelo, proyecto| {
                 let kind = Some(p.kind.parse::<Tipo>()?);
-                let paths = p.paths.unwrap_or_default();
-                let project = match p.project.as_deref().map(str::trim) {
-                    _ if p.global.unwrap_or(false) => String::new(),
-                    Some("") => String::new(),
-                    Some(d) => proyecto::de_carpeta(std::path::Path::new(d))?,
-                    None => proyecto::para_guardar(proyecto, &paths, &format!("{} {}", p.title, p.content)),
+                let (project, paths) = match p.project.as_deref().map(str::trim) {
+                    _ if p.global.unwrap_or(false) => (String::new(), p.paths.unwrap_or_default()),
+                    Some("") => (String::new(), p.paths.unwrap_or_default()),
+                    Some(d) => (proyecto::de_carpeta(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
+                    None => proyecto::para_guardar(proyecto, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
                 };
                 let busca_en = if !project.is_empty() && proyecto::es_general(proyecto) { proyecto.to_string() } else { project.clone() };
                 if !p.force.unwrap_or(false)
@@ -243,7 +240,7 @@ impl Servidor {
                     paths,
                     tags: p.tags.unwrap_or_default(),
                     pinned: p.pinned.unwrap_or(false),
-                    source: "mcp".into(),
+                    source: origen,
                 };
                 let m = memoria::guardar(db, nueva, modelo)?;
                 let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": if m.project.is_empty() { "(global)" } else { m.project.as_str() } });
@@ -259,6 +256,21 @@ impl Servidor {
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+    }
+}
+
+/// `mcp:<nombre del cliente>` según lo que el cliente dijo al conectarse (`clientInfo`); `mcp` si no
+/// lo dijo.
+fn origen_de(peer: &Peer<RoleServer>) -> String {
+    let nombre = peer.peer_info().map(|i| i.client_info.name.trim().to_lowercase()).unwrap_or_default();
+    if nombre.is_empty() { "mcp".into() } else { format!("mcp:{nombre}") }
+}
+
+#[tool_router(router = tool_router)]
+impl Servidor {
+    #[tool(description = "Save a memory for future sessions. If a very similar memory already exists in this project, nothing is saved and you get duplicate_of: update that one instead, or call again with force=true if it really is different.")]
+    async fn remember(&self, peer: Peer<RoleServer>, Parameters(p): Parameters<Remember>) -> Result<CallToolResult, ErrorData> {
+        self.guardar(p, origen_de(&peer)).await
     }
 
     #[tool(description = "Search the memories of this project and the global ones (or every project with all_projects; from a folder that is not a project, such as the home folder, every project). Returns compact results; use `get` for the whole memory.")]
@@ -359,7 +371,8 @@ impl ServerHandler for Servidor {
 /// Una herramienta sin servidor, para los clientes que no hablan MCP (el mod del plugin de Claude
 /// Code): las mismas herramientas y las mismas respuestas. Sin nombre, la lista de herramientas con
 /// sus esquemas y las instrucciones. Devuelve el texto y si la herramienta respondió con error.
-pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args: &str) -> Result<(String, bool)> {
+/// `origen` es el `source` de lo que se guarde con `remember`.
+pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args: &str, origen: &str) -> Result<(String, bool)> {
     let s = Servidor::new(db, dir);
     let Some(nombre) = nombre else {
         let lista = serde_json::json!({ "instructions": INSTRUCCIONES, "tools": s.tool_router.list_all() });
@@ -369,7 +382,7 @@ pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let r = rt.block_on(async {
         Ok::<_, anyhow::Error>(match nombre {
-            "remember" => s.remember(Parameters(serde_json::from_value(v)?)).await,
+            "remember" => s.guardar(serde_json::from_value(v)?, origen.to_string()).await,
             "search" => s.search(Parameters(serde_json::from_value(v)?)).await,
             "get" => s.get(Parameters(serde_json::from_value(v)?)).await,
             "update" => s.update(Parameters(serde_json::from_value(v)?)).await,
