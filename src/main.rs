@@ -164,6 +164,17 @@ enum Orden {
     Reindex,
     /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
     Mcp,
+    /// Set up an agent to use Omoikane. Today: `claude` (Claude Code).
+    Setup {
+        /// The agent: claude.
+        agente: String,
+        /// Don't ask before changing anything.
+        #[arg(short, long)]
+        yes: bool,
+        /// Only show what would be done.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// For Claude Code hooks: reads the hook's JSON on stdin and prints the memories to inject.
     Recall {
         /// At session start (or after compacting): preferences and pinned memories.
@@ -195,6 +206,7 @@ fn main() -> Result<()> {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
+        Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
         Orden::Recall { session_start } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
             if let Err(e) = recall(c, session_start) {
@@ -353,6 +365,47 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
+    if agente != "claude" {
+        bail!(tr!("unknown agent «{agente}»: for now, only claude", "agente «{agente}» desconocido: de momento, solo claude"));
+    }
+    let pasos = omoikane::setup::plan()?;
+    if pasos.is_empty() {
+        println!("{}", tr!("Claude Code already has Omoikane: nothing to do.", "Claude Code ya tiene Omoikane: nada que hacer."));
+        return Ok(());
+    }
+    println!("{}", tr!("To set up Claude Code, omoi will:", "Para preparar Claude Code, omoi va a:"));
+    for p in &pasos {
+        println!("  - {}   (claude {})", p.que, p.args.join(" "));
+    }
+    if simulacro {
+        return Ok(());
+    }
+    if !si {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            bail!(tr!("add --yes to do it without asking", "añade --yes para hacerlo sin preguntar"));
+        }
+        eprint!("{}", tr!("Go ahead? [y/N] ", "¿Sigo? [s/N] "));
+        std::io::stderr().flush()?;
+        let mut linea = String::new();
+        std::io::stdin().read_line(&mut linea)?;
+        if !matches!(linea.trim().to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí") {
+            println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+            return Ok(());
+        }
+    }
+    omoikane::setup::ejecutar(&pasos)?;
+    println!(
+        "{}",
+        tr!(
+            "Done. Open a new Claude Code session: the memory tools and the automatic recall are there.",
+            "Hecho. Abre una sesión nueva de Claude Code: ahí están las herramientas de memoria y el recall automático."
+        )
+    );
+    Ok(())
 }
 
 fn recall(c: &Comun, al_empezar: bool) -> Result<()> {
@@ -658,6 +711,11 @@ fn en_espanol(c: Command) -> Command {
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
+        ("setup", "Prepara un agente para usar Omoikane. De momento: `claude` (Claude Code).", &[
+            ("agente", "El agente: claude."),
+            ("yes", "No preguntar antes de cambiar nada."),
+            ("dry_run", "Solo enseñar lo que se haría."),
+        ]),
         ("recall", "Para los hooks de Claude Code: lee el JSON del hook y escribe las memorias que hay que inyectar.", &[(
             "session_start",
             "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas.",
