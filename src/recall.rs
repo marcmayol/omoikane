@@ -23,7 +23,7 @@ pub const TERMINOS_MIN: usize = 3;
 pub const RAROS_MIN: usize = 2;
 pub const FRACCION_RARA: f64 = 0.2;
 /// Parte del peso IDF del mensaje que tiene que estar en la memoria.
-pub const COBERTURA_MIN: f64 = 0.35;
+pub const COBERTURA_MIN: f64 = 0.40;
 /// Solo las que se acercan a la mejor: si una destaca, va sola.
 pub const RELATIVO_A_LA_MEJOR: f64 = 0.7;
 /// Como mucho, tantas memorias por mensaje.
@@ -43,7 +43,10 @@ const CHARLA: &[&str] = &[
     "cuando", "donde", "cual", "igual", "menos", "mas", "nada", "sin", "entonces", "creo", "hecho", "dime", "dame",
     "sigue", "seguimos", "listo", "perfecto", "gracias", "favor", "vamos", "ves", "voy", "van", "ido", "ese", "esa",
     "esos", "esas", "aun", "repite", "repito", "prueba", "mismo", "misma", "cada", "pero", "the", "this", "that", "with",
-    "please", "now", "can", "you", "it", "let", "lets", "ok",
+    "please", "now", "can", "you", "it", "let", "lets", "ok", "sabes", "sabe", "saber", "tengas", "tienes", "tenemos",
+    "puedes", "podemos", "quieres", "necesito", "necesitas", "explica", "explicame", "ayuda", "ayudame", "hazme",
+    "dimelo", "mirar", "revisa", "revisar", "estoy", "estas", "estamos", "pensando", "parece",
+    "know", "want", "need", "tell", "explain", "help", "check", "look", "think",
 ];
 
 /// Lo que Claude Code manda al hook por la entrada estándar.
@@ -117,12 +120,20 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     let (n, df) = frecuencias(db, project, &terminos)?;
     // IDF de Lucene, siempre positivo: con la de BM25 clásica, en una base de una o dos memorias todo
     // pesa cero y no se inyectaría nada justo cuando alguien empieza.
-    let idf: Vec<f64> = df.iter().map(|d| (1.0 + (n - d + 0.5) / (d + 0.5)).ln()).collect();
+    // Una palabra que no está en ninguna memoria pesa como una que estuviera en una sola, no más: con
+    // el IDF entero, en una base pequeña hundía la cobertura de la memoria que sí es del tema («estoy
+    // pensando en cambiar la pasarela de pago a Stripe» no traía la decisión sobre la pasarela). Sin
+    // contarlas en absoluto, los mensajes largos traían algo casi siempre (53 % de los reales).
+    let idf: Vec<f64> = df.iter().map(|d| (1.0 + (n - d.max(1.0) + 0.5) / (d.max(1.0) + 0.5)).ln()).collect();
     let total: f64 = idf.iter().sum();
     if total <= 0.0 {
         return Ok(Vec::new());
     }
     let raro = (FRACCION_RARA * n).max(1.0);
+    // Solo para calibrar (`examples/fase4.rs`): sin estas variables valen las constantes.
+    let leer = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    let cobertura_min = leer("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(COBERTURA_MIN);
+    let raros_min = leer("OMOIKANE_CALIBRAR_RAROS").map_or(RAROS_MIN, |v| v as usize);
     // 30 candidatas: una nota larga que es justo la del tema puede quedar lejos en BM25.
     let o = Opciones { ambito: Ambito::Proyecto(project.to_string()), kind: None, tags: vec![], limite: 30 };
     // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
@@ -144,7 +155,7 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
             // Cuántas palabras del mensaje están en el título: desempata a favor de la memoria que es
             // justo del tema («building my future» → la nota de Building My Future).
             let en_titulo = terminos.iter().filter(|t| esta(t, &titulo)).count();
-            (raros >= RAROS_MIN && cobertura >= COBERTURA_MIN).then_some((r.memoria, cobertura, en_titulo))
+            (raros >= raros_min && cobertura >= cobertura_min).then_some((r.memoria, cobertura, en_titulo))
         })
         .collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)));

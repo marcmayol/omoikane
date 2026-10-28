@@ -202,9 +202,9 @@ Es la pieza que justifica el proyecto. Va en el **plugin** de Claude Code (el pr
 Formato: JSON con `hookSpecificOutput.additionalContext`, dentro de `<omoikane>…</omoikane>`, una línea por memoria (tipo, rutas, título, 200 caracteres e id). El proyecto sale del `cwd` que manda Claude Code. Un fallo nunca molesta: se escribe en stderr y no se inyecta nada (código 0).
 
 **Cuándo inyectar en cada mensaje** (calibrado el 28-oct-2026 con 127 notas reales y 300 mensajes reales de Marc, en local, `examples/fase4.rs`). Inyectar de más ensucia el contexto del agente; el criterio:
-1. el mensaje tiene al menos **3 palabras útiles** (≥ 3 letras, no solo cifras, sin palabras vacías ni muletillas de charla como *pues*, *dale*, *vale*, *mira*);
+1. el mensaje tiene al menos **3 palabras útiles** (≥ 3 letras, no solo cifras, sin palabras vacías ni muletillas de charla como *pues*, *dale*, *vale*, *mira*, *sabes*, *estoy pensando*: una coletilla de relleno diluía la cobertura y en la prueba con Claude Code ocultó la memoria que sí era del tema);
 2. la memoria comparte al menos **2 palabras raras** (presentes en ≤ 20 % de las memorias del ámbito);
-3. esas palabras pesan, por IDF, al menos **el 35 %** de lo que pesa el mensaje (IDF de Lucene, siempre positivo: con la clásica, una base de 1-2 memorias no inyectaba nunca);
+3. esas palabras pesan, por IDF, al menos **el 40 %** de lo que pesa el mensaje. IDF de Lucene, siempre positivo (con la clásica, una base de 1-2 memorias no inyectaba nunca), y una palabra que no está en ninguna memoria pesa como si estuviera en una (con todo su IDF, en una base pequeña hundía la memoria que sí era del tema; sin contarla, los mensajes largos traían algo el 53 % de las veces);
 4. solo las que se acercan (≥ 70 %) a la mejor, como mucho 3; empate → la que tiene más palabras del mensaje en el título;
 5. prefijo solo desde 5 letras («pon» coincidía con «pone»).
 
@@ -213,7 +213,7 @@ Formato: JSON con `hookSpecificOutput.additionalContext`, dentro de `<omoikane>�
 | cualquier palabra en común (top 3) | 100 % | 97 % (2,9 memorias por mensaje) |
 | ≥ 3 palabras en común | 100 % | 66 % |
 | cobertura IDF ≥ 0,35 | 100 % | 24 % |
-| **el criterio completo** | **99 %** (1,5 por mensaje) | **15 %** (0,23 por mensaje) |
+| **el criterio completo** | **99 %** (1,5 por mensaje) | **20 %** (0,29 por mensaje) |
 
 En la muestra revisada a mano casi todo lo inyectado es pertinente (la app del gimnasio → su nota; «PETG» y «riser» → la K2; «carteles KISS» → posters); queda algo de ruido en mensajes de charla con alguna palabra rara. El vector no se usa en el recall: no mejoró la búsqueda de forma medible (§5) y así el hook ni abre el modelo.
 
@@ -396,12 +396,12 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 ### Fase 4 · recall automático y plugin ✅ (28-oct-2026)
 - [x] **Plugin** (decisión de Marc del 28-oct): `.claude-plugin/plugin.json` en la raíz del repo, con el servidor MCP (`omoi mcp`) y los dos hooks dentro, sin scripts. Enlazado desde su marketplace `drac` con `source: github`. El binario `omoi` va aparte (por ahora `cargo install`; en la fase 5, binarios en las Releases). `claude plugin validate .` pasa.
 - [x] `src/recall.rs` + `omoi recall [--session-start]`: lee el JSON del hook, saca el proyecto de su `cwd`, escribe `hookSpecificOutput.additionalContext` o nada.
-- [x] Criterio de inyección calibrado con datos reales (§6): 99 % de positivos con su nota, 15 % de los mensajes reales con algo inyectado. Antes de calibrar, el primer criterio inyectaba en el 97 %.
+- [x] Criterio de inyección calibrado con datos reales (§6): 99 % de positivos con su nota, 20 % de los mensajes reales con algo inyectado. Antes de calibrar, el primer criterio inyectaba en el 97 %. La prueba con Claude Code destapó que en una base de 3 memorias «cambiar la pasarela de pago a Stripe» no traía la decisión sobre la pasarela (las palabras que no estaban en ninguna memoria pesaban demasiado): corregido y con test.
 - [x] Una vez por sesión (`recall_log`, esquema 3); tras compactar se vuelve a poder.
 - [x] Rutas nombradas en el mensaje (también con `\` de Windows) traen sus memorias.
-- [x] Tests (`tests/recall.rs`, 5): contexto al empezar, relevancia y charla, una vez por sesión, rutas, ámbito, y el hook de punta a punta con el JSON de Claude Code (incluida una entrada rota, que no debe dar error).
+- [x] Tests (`tests/recall.rs`, 6): contexto al empezar, relevancia y charla, una vez por sesión, rutas, ámbito, y el hook de punta a punta con el JSON de Claude Code (incluida una entrada rota, que no debe dar error).
 - [x] Latencia del hook: 15-26 ms (§6).
-- Hecho cuando: abrir Claude Code en un proyecto inyecta preferencias y fijadas, y al mencionar un tema o un fichero salen sus memorias, sin pedirlo. Probado con Claude Code de verdad (ver el commit).
+- **Hecho**, con Claude Code de verdad y el plugin instalado (`omoikane@drac`), sin herramientas para que no pudiera buscar por su cuenta: al nombrar `src/pago.rs` contestó con el aviso guardado de ese fichero; al hablar de «cambiar la pasarela de pago a Stripe», con la decisión de usar Redsys y sus motivos; la preferencia global llegó al empezar. Cada memoria se inyectó una vez por sesión.
 
 ### Fase 5 · publicar (½ día)
 - `publicar_release.py` (árbol limpio, tag, binarios Windows/Linux/macOS por GitHub Actions).
