@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 3;
+pub const VERSION_ESQUEMA: i64 = 4;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -87,6 +87,9 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if v < 3 {
         tx.execute_batch(ESQUEMA_3)?;
     }
+    if v < 4 {
+        tx.execute_batch(ESQUEMA_4)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
@@ -142,6 +145,18 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 );
 
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+";
+
+/// Cuándo empezó cada sesión y cuántos mensajes lleva, para recordar al agente que guarde lo que
+/// aprende si en una sesión larga no ha guardado nada (la idea es de engram).
+const ESQUEMA_4: &str = "
+CREATE TABLE session (
+  session     TEXT PRIMARY KEY,
+  project     TEXT NOT NULL,
+  started_at  TEXT NOT NULL,
+  prompts     INTEGER NOT NULL DEFAULT 0,
+  reminded_at TEXT
+);
 ";
 
 /// Fase 4: qué memorias se han inyectado ya en cada sesión, para no repetirlas en cada mensaje.

@@ -31,6 +31,13 @@ pub const MAXIMO: usize = 3;
 /// Desde cuántas letras una palabra cuenta también como prefijo («memoria» → «memorias»). Con menos,
 /// «pon» coincidía con «pone», «ponga»…
 pub const PREFIJO_MIN: usize = 5;
+/// Recordatorio de guardar: a partir de estos mensajes y minutos de sesión sin que se haya guardado
+/// ni cambiado ninguna memoria del proyecto, y como mucho una vez cada `MINUTOS_ENTRE_RECORDATORIOS`.
+pub const MENSAJES_ANTES_DE_RECORDAR: i64 = 10;
+pub const MINUTOS_ANTES_DE_RECORDAR: i64 = 15;
+pub const MINUTOS_ENTRE_RECORDATORIOS: i64 = 30;
+pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`. If not, ignore this.";
+
 /// Fragmento de cada memoria inyectada; el agente pide `get` si quiere el resto.
 const FRAGMENTO: usize = 200;
 
@@ -229,12 +236,24 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     let total: i64 =
         db.query_row("SELECT count(*) FROM memory WHERE project = ?1 OR project = ''", [project], |f| f.get(0))?;
     let contexto = memoria::contexto(db, project, 30)?;
+    // Tras compactar sigue siendo la misma sesión: no se reinicia el reloj del recordatorio.
+    db.execute(
+        &format!(
+            "INSERT INTO session(session, project, started_at) VALUES (?1, ?2, {ahora})
+             ON CONFLICT(session) DO UPDATE SET project = excluded.project,
+               started_at = CASE WHEN ?3 = 'compact' THEN session.started_at ELSE excluded.started_at END,
+               prompts = CASE WHEN ?3 = 'compact' THEN session.prompts ELSE 0 END,
+               reminded_at = CASE WHEN ?3 = 'compact' THEN session.reminded_at ELSE NULL END",
+            ahora = memoria::AHORA
+        ),
+        params![e.session_id, project, e.source],
+    )?;
     let mut s = String::from("<omoikane>\n");
     s.push_str(&format!(
         "Long-term memory (Omoikane) holds {total} memories for this project and globally. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\n"
     ));
     if !contexto.is_empty() {
-        s.push_str("Preferences and pinned memories:\n");
+        s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
             s.push_str(&linea(m));
             s.push('\n');
@@ -255,18 +274,64 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada) -> Result<O
             elegidas.push(m);
         }
     }
-    if elegidas.is_empty() {
+    let recordar = toca_recordar(db, project, &e.session_id)?;
+    if elegidas.is_empty() && !recordar {
         return Ok(None);
     }
-    let mut s = String::from("<omoikane>\nMemories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
-    for m in &elegidas {
-        s.push_str(&linea(m));
+    let mut s = String::from("<omoikane>\n");
+    if !elegidas.is_empty() {
+        s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
+        for m in &elegidas {
+            s.push_str(&linea(m));
+            s.push('\n');
+        }
+    }
+    if recordar {
+        s.push_str(RECORDATORIO);
         s.push('\n');
     }
     s.push_str("</omoikane>");
     let ids: Vec<String> = elegidas.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids)?;
     Ok(Some(s))
+}
+
+/// Cuenta el mensaje y dice si toca recordar al agente que guarde: sesión de al menos
+/// `MINUTOS_ANTES_DE_RECORDAR` y `MENSAJES_ANTES_DE_RECORDAR` mensajes, ninguna memoria del proyecto
+/// (ni global) guardada o cambiada desde que empezó, y sin otro recordatorio en los últimos
+/// `MINUTOS_ENTRE_RECORDATORIOS`. Una sesión que no pasó por `SessionStart` (hooks añadidos a
+/// medias) empieza a contar aquí.
+fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
+    if sesion.is_empty() {
+        return Ok(false);
+    }
+    let ahora = memoria::AHORA;
+    db.execute(
+        &format!(
+            "INSERT INTO session(session, project, started_at, prompts) VALUES (?1, ?2, {ahora}, 1)
+             ON CONFLICT(session) DO UPDATE SET prompts = session.prompts + 1"
+        ),
+        params![sesion, project],
+    )?;
+    let toca: bool = db.query_row(
+        "SELECT s.prompts >= ?2
+                AND s.started_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)
+                AND (s.reminded_at IS NULL OR s.reminded_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
+                AND NOT EXISTS (SELECT 1 FROM memory m
+                                WHERE (m.project = s.project OR m.project = '') AND m.updated_at >= s.started_at)
+             FROM session s WHERE s.session = ?1",
+        params![
+            sesion,
+            MENSAJES_ANTES_DE_RECORDAR,
+            format!("-{MINUTOS_ANTES_DE_RECORDAR} minutes"),
+            format!("-{MINUTOS_ENTRE_RECORDATORIOS} minutes"),
+        ],
+        |f| f.get(0),
+    )?;
+    if toca {
+        db.execute(&format!("UPDATE session SET reminded_at = {ahora} WHERE session = ?1"), [sesion])?;
+    }
+    Ok(toca)
 }
 
 /// La respuesta del hook para Claude Code.
