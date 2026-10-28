@@ -4,6 +4,7 @@ pub mod agentes;
 pub mod buscar;
 pub mod db;
 pub mod embeber;
+pub mod http;
 pub mod idioma;
 pub mod importar;
 pub mod mcp;

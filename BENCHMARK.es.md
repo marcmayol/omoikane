@@ -148,6 +148,22 @@ El de ajuste, el de comprobación y el tercero (310 preguntas, 0.5.1, las mismas
 
 La 0.5.1 reserva el último de los 5 puestos para una memoria que el vector ve muy parecida (≥ 0,4) cuando las palabras la dejan más abajo: una paráfrasis más de 70 entra en los 5 primeros y no cambia nada más.
 
+## 0.6.0: un cuarto conjunto, sin usar para nada
+
+100 preguntas más escritas a ciegas (40 paráfrasis, 25 naturales, 20 cortas, 15 en inglés), pasadas una sola vez, después de todas las decisiones. Notas completas en los dos (cada uno con su importador), la misma consulta limpia de palabras clave para engram, 10 resultados como los reciben los agentes.
+
+| 100 preguntas nuevas | Omoikane 0.6.0 | engram |
+|---|---|---|
+| top-1 | **79 %** | 76 % |
+| top-3 | **94 %** | 86 % |
+| top-5 | **95 %** | 88 % |
+| top-10 | **97 %** | 89 % |
+| MRR | **0,859** | 0,813 |
+| 40 paráfrasis: top-1 / top-3 / top-10 | **72,5 % / 92,5 % / 92,5 %** | 67,5 % / 85 % / 87,5 % |
+| 15 en inglés: top-3 / top-10 | **80 % / 100 %** | 53 % / 60 % |
+
+La 0.6.0 también busca por una raíz sencilla (la palabra sin sus dos últimas letras, desde 6 letras), porque el español flexiona al final y el prefijo solo no cubría «reinicia» ↔ «reinicios». Con este conjunto suma 2 puntos en top-3, top-5 y top-10 y cuesta una paráfrasis en top-1.
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.

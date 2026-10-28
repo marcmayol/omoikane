@@ -40,9 +40,9 @@ fn encuentra_con_y_sin_tildes() {
     let p = || Ambito::Proyecto("/p".into());
     assert_eq!(buscar(&mut db, p(), "fallo de autenticación"), ["Bug en auth"]);
     assert_eq!(buscar(&mut db, p(), "AUTENTICACION"), ["Bug en auth"]);
-    // Prefijo: «tokens» no está, «token» sí; «autentica» encuentra «autenticación».
+    // Prefijo: «autentica» encuentra «autenticación». Raíz (desde 6 letras): «tokens» encuentra «token».
     assert_eq!(buscar(&mut db, p(), "autentica"), ["Bug en auth"]);
-    assert!(buscar(&mut db, p(), "tokens").is_empty());
+    assert_eq!(buscar(&mut db, p(), "tokens"), ["Bug en auth"]);
     assert!(buscar(&mut db, p(), "kubernetes").is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

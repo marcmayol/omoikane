@@ -461,6 +461,12 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - El desempate de la búsqueda pondera cada palabra por su IDF (como el recall): las genéricas ya no suben la nota larga que lo contiene todo. Con las 310 preguntas y las notas completas: paráfrasis en primer puesto 82,9 % → 84,3 %, MRR 0,877 → 0,884; nada empeora.
 - Comparación justa final (notas completas, cada uno con su importador, la misma consulta limpia para los dos, 10 resultados como usan los agentes): Omoikane gana o empata en top-1, top-3, top-10 y MRR de todos los tipos salvo paráfrasis en top-10 (67 frente a 68 de 70).
 
+### 0.6.0 · raíz en la búsqueda, `omoi serve` y un cuarto conjunto (28-oct-2026)
+- Búsqueda también por raíz (sin las dos últimas letras, desde 6): «reinicia» encuentra «reinicios», «tokens» encuentra «token».
+- `omoi serve`: las herramientas por HTTP en 127.0.0.1:7438 (token opcional), como la API de engram.
+- **Cuarto conjunto** de 100 preguntas a ciegas, usado una sola vez después de decidir: Omoikane gana a engram en top-1 (79/76), top-3 (94/86), top-5 (95/88), top-10 (97/89) y MRR (0,859/0,813), también en paráfrasis. La raíz, +2 puntos en top-3/5/10 y −1 paráfrasis en top-1; la cobertura con IDF de la 0.5.2 queda validada aquí con datos limpios.
+- Lo único de engram que no tiene: sincronización y nube (aparcadas por Marc).
+
 Después, si los datos lo piden: sincronizar entre equipos, relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas

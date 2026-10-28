@@ -148,6 +148,22 @@ The tuning set, the held-out set and the third set (310 questions, 0.5.1, same c
 
 0.5.1 reserves the last of the 5 places for a memory the embedding finds very close (≥ 0.4) when words rank it lower: one more paraphrase of 70 reaches the top 5, nothing else changes.
 
+## 0.6.0: a fourth set, never used for anything
+
+100 more questions written blind (40 paraphrases, 25 natural, 20 short, 15 in English), run once, after every decision. Full notes in both (each loaded with its own importer), the same cleaned keyword query for engram, 10 results as agents get them.
+
+| 100 new questions | Omoikane 0.6.0 | engram |
+|---|---|---|
+| top-1 | **79 %** | 76 % |
+| top-3 | **94 %** | 86 % |
+| top-5 | **95 %** | 88 % |
+| top-10 | **97 %** | 89 % |
+| MRR | **0.859** | 0.813 |
+| 40 paraphrases: top-1 / top-3 / top-10 | **72.5 % / 92.5 % / 92.5 %** | 67.5 % / 85 % / 87.5 % |
+| 15 English: top-3 / top-10 | **80 % / 100 %** | 53 % / 60 % |
+
+0.6.0 also searches by a crude root (the word minus its last two letters, from 6 letters up), because Spanish inflects at the end and a prefix alone missed «reinicia» ↔ «reinicios». On this set it adds 2 points at top-3, top-5 and top-10 and costs one paraphrase at top-1.
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
