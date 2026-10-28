@@ -480,6 +480,13 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - Seguridad: solo atiende peticiones con `Host` `127.0.0.1`/`localhost` (contra el DNS rebinding) y rechaza escrituras con un `Origin` ajeno (un formulario de otra web no puede olvidar memorias). Con `OMOIKANE_HTTP_TOKEN`, el token va en `#token=` de la URL y la página lo manda en cada petición.
 - Sirve para todos los agentes (la base es la misma); la orden con barra solo existe en Claude Code.
 
+### Siguiente fase · `/omoikane` en los demás agentes (anotado 28-oct-2026)
+- Hoy `omoi setup <agente>` pone MCP, hooks del recall e instrucciones, pero ninguna orden: `/omoikane` solo existe en Claude Code (la registra el mod).
+- Que `setup` cree también una orden `omoikane` en cada agente que las admita, con su formato. **Comprobar cada ruta y formato en la documentación de cada agente antes de escribirlo**; los candidatos: Gemini (`~/.gemini/commands/omoikane.toml`), Qwen (`~/.qwen/commands/omoikane.toml`), Codex (`~/.codex/prompts/omoikane.md`), Cursor (`.cursor/commands/omoikane.md`), OpenCode (`~/.config/opencode/command/omoikane.md`); Copilot, Windsurf, Kiro y los demás tienen prompt files, workflows o steering, cada uno a su manera.
+- En casi todos, una orden es un texto para el modelo, no un comando: la orden le pediría al agente ejecutar `omoi serve --open` con su herramienta de terminal (puede pedir permiso). Menos directo que el mod de Claude Code.
+- Mismas reglas que el resto de `setup`: idempotente, copia `.antes-de-omoikane`, `--dry-run`, y un test por agente con `OMOIKANE_SETUP_HOME`.
+- De paso: el campo «Origen» de la web dice `mcp` para todo lo que llega por MCP; estaría bien saber qué agente lo guardó (`clientInfo` del MCP).
+
 ### Sincronizar entre equipos · diseñado y aparcado (28-oct-2026)
 Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se llegó a escribir y probar en local; el código se descartó y queda aquí el diseño para retomarlo:
 
