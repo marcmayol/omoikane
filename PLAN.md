@@ -410,7 +410,7 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] `release.yml`: con un tag `v*`, binarios para Windows x64, Linux x64 y ARM64 (compilados en Ubuntu 22.04: glibc 2.35) y macOS ARM e Intel; cada uno arranca y pasa `doctor` en su runner; `SHA256SUMS`. A mano (`workflow_dispatch`) solo compila. Paquetes de 4,1-4,6 MB.
 - [x] `omoi … | head` ya no revienta en Unix (SIGPIPE).
 - Sin hacer, a propósito: publicar en crates.io (el instalador y `cargo install --git` cubren lo mismo; se decide aparte) y el GIF del README.
-- Hecho cuando: el instalador deja `omoi`, el modelo y el plugin en una máquina sin Rust. Ver la Release `v0.1.0` y las pruebas del commit.
+- **Hecho**: Release [`v0.1.0`](https://github.com/marcmayol/omoikane/releases/tag/v0.1.0) publicada con los cinco binarios. Probado ejecutando los instaladores desde la URL pública de GitHub, en carpetas temporales: Windows, 17 s (binario con su suma, modelo y `setup`, que vio que el plugin ya estaba); Ubuntu 24.04, 25 s (binario, modelo, guardar y buscar). macOS solo en la CI (el binario arranca y pasa `doctor`): no hay un Mac a mano para probar el instalador.
 
 Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JSONL/Markdown y convertidor desde otros sistemas), relaciones entre memorias, limpieza asistida de lo que nunca se recupera.
 
