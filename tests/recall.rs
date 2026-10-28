@@ -92,6 +92,37 @@ fn base_pequena_y_palabras_que_no_estan() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// El recordatorio de guardar: solo en sesiones largas sin nada guardado, y no en cada mensaje.
+#[test]
+fn recordatorio_de_guardar() {
+    let (mut db, dir) = base("recordatorio");
+    con_memorias(&mut db);
+    recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "startup".into(), ..Default::default() }).unwrap();
+    let charla = |db: &mut Connection| recall::al_preguntar(db, "/p", &entrada("s", "vale, sigue")).unwrap();
+    // Recién empezada: nada, aunque haya muchos mensajes.
+    for _ in 0..12 {
+        assert!(charla(&mut db).is_none());
+    }
+    // Una sesión de hace 20 minutos sin nada guardado: toca, una sola vez.
+    // (las memorias de ejemplo se crearon «ahora»: se retrasan para que sean de antes de la sesión)
+    db.execute("UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours')", []).unwrap();
+    db.execute("UPDATE session SET started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes')", []).unwrap();
+    let t = charla(&mut db).expect("debería recordar");
+    assert!(t.contains("nothing has been saved"), "{t}");
+    assert!(charla(&mut db).is_none(), "solo una vez cada 30 minutos");
+    // Con algo guardado durante la sesión, ya no.
+    db.execute("UPDATE session SET reminded_at = NULL", []).unwrap();
+    memoria::guardar(&mut db, Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Nueva".into(), content: "algo aprendido".into(), ..Default::default() }, None).unwrap();
+    assert!(charla(&mut db).is_none());
+    // Compactar no reinicia el reloj; una sesión nueva, sí.
+    let antes: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
+    recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "compact".into(), ..Default::default() }).unwrap();
+    let despues: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
+    assert_eq!(antes, despues);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn nombrar_un_fichero_trae_sus_memorias() {
     let (mut db, dir) = base("rutas");

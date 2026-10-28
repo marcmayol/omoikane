@@ -412,6 +412,13 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - Sin hacer, a propósito: publicar en crates.io (el instalador y `cargo install --git` cubren lo mismo; se decide aparte) y el GIF del README.
 - **Hecho**: Release [`v0.1.0`](https://github.com/marcmayol/omoikane/releases/tag/v0.1.0) publicada con los cinco binarios. Probado ejecutando los instaladores desde la URL pública de GitHub, en carpetas temporales: Windows, 17 s (binario con su suma, modelo y `setup`, que vio que el plugin ya estaba); Ubuntu 24.04, 25 s (binario, modelo, guardar y buscar). macOS solo en la CI (el binario arranca y pasa `doctor`): no hay un Mac a mano para probar el instalador.
 
+### Pruebas a fondo en el PC y versión 0.2.0 (28-oct-2026)
+Diez escenarios con Claude Code de verdad y el plugin instalado (base temporal; los de recall, sin herramientas para que no pudiera buscar por su cuenta): guardar tres memorias de tipos distintos (preferencia global, gotcha con ruta, decisión), recall al nombrar un fichero, preferencia global al empezar, no duplicar (el agente vio la memoria inyectada y no la volvió a guardar), cambiar una decisión (`update` con motivo, versión anterior en el historial), aislamiento entre proyectos, buscar en inglés lo guardado en español, olvidar, y dos sesiones guardando a la vez. **9 de 10 bien a la primera.**
+
+El que falló: el agente **guardaba en inglés** aunque se le hablaba en español (las instrucciones del MCP están en inglés) y el recall por palabras no encontraba la memoria al preguntar en español. Arreglo: las instrucciones le piden guardar en el idioma en que le escribe el usuario. Repetido: guarda en español y el recall por tema funciona.
+
+Idea tomada de engram (que usa sus hooks para que el agente no se olvide de la memoria, no para inyectar memorias relevantes): **recordatorio de guardar**. Si una sesión lleva al menos 15 minutos y 10 mensajes sin que se haya guardado ni cambiado ninguna memoria del proyecto, el hook añade una línea recordándolo; como mucho una vez cada 30 minutos; compactar no reinicia el reloj. Tabla `session` (esquema 4). La captura automática al terminar la sesión de engram no se copia: rompe que sea el agente quien decide qué merece la pena.
+
 Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JSONL/Markdown y convertidor desde otros sistemas), relaciones entre memorias, limpieza asistida de lo que nunca se recupera.
 
 ## 12. Pruebas

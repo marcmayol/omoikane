@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 const INSTRUCCIONES: &str = "Omoikane is this user's long-term memory across sessions, scoped to the current project (plus global memories).
 Save a memory with `remember` when you learn something worth knowing next time: a non-obvious bug or trap (kind gotcha, with the file paths it affects), a decision and its reasons (decision), how something in the project works (fact), or how the user wants things done (preference).
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
+Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
