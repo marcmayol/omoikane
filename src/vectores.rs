@@ -185,6 +185,34 @@ pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, c
     Ok(mejor.map(|i| v.swap_remove(i)))
 }
 
+/// Memorias que pueden tratar de lo mismo que una recién guardada sin llegar a duplicadas: las que
+/// mejor puntúan por BM25 con cualquier palabra del título y comparten al menos dos palabras de
+/// título con ella (o la única, si los dos títulos tienen una). No bloquea nada: se devuelven para
+/// que el agente decida si fusionarlas. Así cae también el 10 % de duplicadas que `duplicada` deja
+/// pasar, sin avisar en falso de entrada.
+pub fn relacionadas(db: &Connection, project: &str, title: &str, excluir: &str, limite: usize) -> Result<Vec<Memoria>> {
+    let Some(consulta) = crate::buscar::consulta_fts(title) else { return Ok(Vec::new()) };
+    let propias: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
+    let mut q = db.prepare(&format!(
+        "SELECT {} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
+         WHERE memory_fts MATCH ?1 AND (m.project = ?2 OR m.project = '') AND m.id != ?3
+         ORDER BY bm25(memory_fts) LIMIT 30",
+        COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ")
+    ))?;
+    let candidatas: Vec<Memoria> = q.query_map(params![consulta, project, excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    // Probado también exigir un parecido mínimo por vector: cada punto de ruido menos costaba
+    // duplicadas sin cubrir (con 0,15, del 100 % al 98 %), así que no se exige.
+    Ok(candidatas
+        .into_iter()
+        .filter(|m| {
+            let suyas: std::collections::BTreeSet<String> = crate::recall::utiles(&m.title).into_iter().collect();
+            let comunes = propias.intersection(&suyas).count();
+            comunes >= 2 || (comunes == 1 && propias.len() == 1 && suyas.len() == 1)
+        })
+        .take(limite)
+        .collect())
+}
+
 /// Para `doctor`: con qué modelo están calculados los vectores y cuántos hay.
 pub fn estado(db: &Connection) -> Result<(Option<String>, i64)> {
     let modelo = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;

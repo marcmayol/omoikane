@@ -849,7 +849,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
 /// vez: debe avisar, y de la suya) y frases cortas de los pares contra las notas (todo aviso es falso).
 fn dupprod(dir: &std::path::Path) -> Result<()> {
     use omoikane::memoria::{self, Nueva, Tipo};
-    use omoikane::vectores::duplicada;
+    use omoikane::vectores::{duplicada, relacionadas};
     use std::collections::HashMap;
     use std::time::Instant;
     let m = modelo()?;
@@ -880,17 +880,19 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
     let _ = std::fs::remove_dir_all(&tmp);
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut fichero_de = HashMap::new();
-    let (mut falsos, mut tiempos) = (Vec::new(), Vec::new());
+    let (mut falsos, mut tiempos, mut distintas_con_rel) = (Vec::new(), Vec::new(), 0);
     for (f, t, c) in &notas {
         let ahora = Instant::now();
         if let Some((otra, s)) = duplicada(&db, &m, "/p", t, c)? {
             falsos.push(format!("{s:.3} {f} ~ {}", otra.title.chars().take(50).collect::<String>()));
+        } else if !relacionadas(&db, "/p", t, "", 3)?.is_empty() {
+            distintas_con_rel += 1;
         }
         tiempos.push(ahora.elapsed().as_secs_f64() * 1000.0);
         let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
         fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
     }
-    let (mut suya, mut otra, mut total) = (0, 0, 0);
+    let (mut suya, mut otra, mut total, mut en_rel) = (0, 0, 0, 0);
     for (f, _, c) in &notas {
         let Some(titulo) = resumen_de.get(f) else { continue };
         total += 1;
@@ -898,15 +900,19 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
         match duplicada(&db, &m, "/p", titulo, &principio)? {
             Some((x, _)) if &fichero_de[&x.id] == f => suya += 1,
             Some(_) => otra += 1,
-            None => {}
+            None => {
+                en_rel += usize::from(relacionadas(&db, "/p", titulo, "", 3)?.iter().any(|x| &fichero_de[&x.id] == f));
+            }
         }
     }
-    let (mut cortas, mut falsas_cortas) = (0, Vec::new());
+    let (mut cortas, mut falsas_cortas, mut cortas_con_rel) = (0, Vec::new(), 0);
     for l in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         for frase in l.split('\t').skip(1) {
             cortas += 1;
             if let Some((x, s)) = duplicada(&db, &m, "/p", frase, frase)? {
                 falsas_cortas.push(format!("{s:.3} «{frase}» ~ {}", x.title.chars().take(40).collect::<String>()));
+            } else if !relacionadas(&db, "/p", frase, "", 3)?.is_empty() {
+                cortas_con_rel += 1;
             }
         }
     }
@@ -916,7 +922,9 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
         println!("  {x}");
     }
     println!("reguardadas: {suya} de {total} avisan de la suya ({:.1} %), {otra} de otra", 100.0 * suya as f64 / total as f64);
-    println!("cortas: {} avisos en falso de {cortas}", falsas_cortas.len());
+    println!("  de las que no avisan, la suya sale entre las relacionadas en {en_rel}: cubiertas {} de {total} ({:.1} %)", suya + en_rel, 100.0 * (suya + en_rel) as f64 / total as f64);
+    println!("distintas con relacionadas (no bloquea): {distintas_con_rel} de {}", notas.len());
+    println!("cortas: {} avisos en falso de {cortas}; con relacionadas (no bloquea): {cortas_con_rel}", falsas_cortas.len());
     for x in &falsas_cortas {
         println!("  {x}");
     }

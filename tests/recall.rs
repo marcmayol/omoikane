@@ -55,21 +55,21 @@ fn cada_mensaje_trae_lo_que_toca_o_nada() {
     let (mut db, dir) = base("mensaje");
     con_memorias(&mut db);
     // Relevante: comparte palabras poco frecuentes con una memoria.
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC")).unwrap();
+    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap();
     let t = t.expect("debería inyectar la del token");
     assert!(t.contains("Bug en auth"), "{t}");
     // Charla y mensajes cortos: nada.
     for p in ["vale, sigue", "como ha ido todo?", "1 ok 2 ok 3 ok", "perfecto gracias, dale"] {
-        assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", p)).unwrap().is_none(), "«{p}» no debería inyectar nada");
+        assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", p), None).unwrap().is_none(), "«{p}» no debería inyectar nada");
     }
     // Sin relación con ninguna memoria: nada.
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "receta de paella valenciana con conejo y garrofó")).unwrap().is_none());
+    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "receta de paella valenciana con conejo y garrofó"), None).unwrap().is_none());
     // La misma memoria no se repite en la misma sesión…
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "otra vez el middleware de autenticación y la caducidad del token UTC")).unwrap().is_none());
+    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "otra vez el middleware de autenticación y la caducidad del token UTC"), None).unwrap().is_none());
     // …pero sí en otra sesión, y en la misma después de compactar.
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s2", "el middleware de autenticación compara mal la caducidad del token en UTC")).unwrap().is_some());
+    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s2", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
     recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap();
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC")).unwrap().is_some());
+    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -86,7 +86,7 @@ fn base_pequena_y_palabras_que_no_estan() {
     ] {
         memoria::guardar(&mut db, Nueva { project: p.into(), kind: Some(k), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
     }
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s", "Estoy pensando en cambiar la pasarela de pago a Stripe")).unwrap();
+    let t = recall::al_preguntar(&mut db, "/p", &entrada("s", "Estoy pensando en cambiar la pasarela de pago a Stripe"), None).unwrap();
     assert!(t.expect("debería traer la decisión").contains("Redsys"));
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
@@ -98,7 +98,7 @@ fn recordatorio_de_guardar() {
     let (mut db, dir) = base("recordatorio");
     con_memorias(&mut db);
     recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "startup".into(), ..Default::default() }).unwrap();
-    let charla = |db: &mut Connection| recall::al_preguntar(db, "/p", &entrada("s", "vale, sigue")).unwrap();
+    let charla = |db: &mut Connection| recall::al_preguntar(db, "/p", &entrada("s", "vale, sigue"), None).unwrap();
     // Recién empezada: nada, aunque haya muchos mensajes.
     for _ in 0..12 {
         assert!(charla(&mut db).is_none());
@@ -127,10 +127,10 @@ fn recordatorio_de_guardar() {
 fn nombrar_un_fichero_trae_sus_memorias() {
     let (mut db, dir) = base("rutas");
     con_memorias(&mut db);
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "revisa src/middleware/auth.rs por favor")).unwrap().unwrap();
+    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "revisa src/middleware/auth.rs por favor"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth") && t.contains("src/middleware/auth.rs"), "{t}");
     // Con el nombre del fichero basta, y en Windows con barras al revés también.
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s2", r"mira src\middleware\auth.rs")).unwrap().unwrap();
+    let t = recall::al_preguntar(&mut db, "/p", &entrada("s2", r"mira src\middleware\auth.rs"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth"));
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
@@ -140,7 +140,7 @@ fn nombrar_un_fichero_trae_sus_memorias() {
 fn otro_proyecto_no_ve_las_memorias() {
     let (mut db, dir) = base("proyecto");
     con_memorias(&mut db);
-    assert!(recall::al_preguntar(&mut db, "/otro", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC")).unwrap().is_none());
+    assert!(recall::al_preguntar(&mut db, "/otro", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_none());
     let t = recall::al_empezar(&mut db, "/otro", &entrada("s1", "")).unwrap().unwrap();
     assert!(t.contains("Respuestas en español") && !t.contains("Base de datos única"), "{t}");
     drop(db);

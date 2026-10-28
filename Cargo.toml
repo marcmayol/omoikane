@@ -23,13 +23,15 @@ safetensors = "0.5.3"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sqlite-vec = "0.1.9"
 tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
 ulid = "3.0.0"
 # Para descargar el modelo; Rust puro con rustls. Fijada a una versión de hace más de un mes.
 ureq = "=3.4.2"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [target.'cfg(unix)'.dependencies]
 # Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».

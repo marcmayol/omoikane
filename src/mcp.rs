@@ -232,7 +232,16 @@ impl Servidor {
                     source: "mcp".into(),
                 };
                 let m = memoria::guardar(db, nueva, modelo)?;
-                Ok(serde_json::json!({ "saved": true, "id": m.id }))
+                let mut r = serde_json::json!({ "saved": true, "id": m.id });
+                let rel = vectores::relacionadas(db, &m.project, &m.title, &m.id, 3)?;
+                if !rel.is_empty() {
+                    r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
+                    r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
+                }
+                if m.content.chars().count() > crate::recall::LARGO_PARA_RECALL {
+                    r["length_hint"] = serde_json::json!(format!("Long memory: only its first {} characters count for automatic recall. Consider splitting it into shorter memories, one fact each.", crate::recall::LARGO_PARA_RECALL));
+                }
+                Ok(r)
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
