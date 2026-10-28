@@ -10,7 +10,7 @@
 
 Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
 
-Working today: the memory store and its CLI (phase 1) with hybrid search by words and by meaning, and duplicate detection when saving (phase 2). Coming next: the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Working today: the memory store and its CLI (phase 1) with search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2). Coming next: the MCP server (phase 3) and automatic recall through hooks (phase 4). CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
 
 ## Try it
 
@@ -35,7 +35,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 Omoikane keeps those as short, typed memories in a local SQLite file and gives them back:
 
-- **Hybrid search built in.** Keywords (FTS5) and meaning (local static embeddings) fused with reciprocal rank fusion. Works in Spanish and 100 other languages, not just English.
+- **Search that works in your language.** Keywords (FTS5, accent-insensitive, file paths included) rank the results; a local static embedding model adds very close matches that share no words, and spots duplicates when you save. Measured on real notes, words alone find the right memory first 98 % of the time; the embeddings are there to catch duplicates, not to replace that.
 - **Automatic recall.** A Claude Code hook runs `omoi recall` on every prompt. It is a compiled subcommand, no bash, no curl, no server, and it answers in milliseconds with the 3-5 memories that matter for what you just typed, plus any *gotcha* attached to the files you mentioned.
 - **Small on purpose.** 8 MCP tools. No daemon, no port, no cloud, no sync. One `~/.omoikane/omoikane.db`.
 - **History with reasons.** Updating a memory keeps the previous version and, if the agent says so, why it changed.

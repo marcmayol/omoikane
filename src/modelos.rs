@@ -13,8 +13,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const NOMBRE: &str = "potion-multilingual-128M-int8";
-/// La versión int8 de potion-multilingual-128M (The Minish Lab), cuantizada para Omoikane.
-pub const ORIGEN: &str = "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main";
+/// De dónde se descarga la versión int8 de potion-multilingual-128M (The Minish Lab), en orden:
+/// Hugging Face y, si falla, la Release de Omoikane en GitHub con los mismos ficheros.
+/// `OMOIKANE_MODEL_SOURCE` las sustituye (una o varias separadas por comas: un espejo propio, o
+/// para probar una en concreto).
+pub const ORIGENES: [&str; 2] = [
+    "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main",
+    "https://github.com/marcmayol/omoikane/releases/download/modelo-potion-int8-v1",
+];
 const FICHEROS: [&str; 3] = ["model.safetensors", "tokenizer.json", "config.json"];
 const ACTUAL: &str = "actual";
 
@@ -60,17 +66,45 @@ fn huella(ficheros: &[PathBuf]) -> Result<String> {
     Ok(format!("{:08x}", h >> 32))
 }
 
-/// Descarga los ficheros del modelo int8 a `destino`. `aviso` recibe una línea por fichero.
+fn origenes() -> Vec<String> {
+    match std::env::var("OMOIKANE_MODEL_SOURCE") {
+        Ok(o) if !o.trim().is_empty() => {
+            o.split(',').map(|x| x.trim().trim_end_matches('/').to_string()).filter(|x| !x.is_empty()).collect()
+        }
+        _ => ORIGENES.iter().map(|o| o.to_string()).collect(),
+    }
+}
+
+/// Descarga los ficheros del modelo int8 a `destino`, probando las fuentes en orden.
 fn descargar(destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
+    let mut fallos = Vec::new();
+    for origen in origenes() {
+        match descargar_de(&origen, destino, aviso) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                aviso(&tr!("failed: {e:#}", "falló: {e:#}"));
+                fallos.push(format!("{origen}: {e:#}"));
+            }
+        }
+    }
+    bail!(tr!("couldn't download the model from any source:
+{}", "no se pudo descargar el modelo de ninguna fuente:
+{}", fallos.join("
+")))
+}
+
+/// `aviso` recibe una línea por fichero.
+fn descargar_de(origen: &str, destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
     std::fs::create_dir_all(destino)?;
+    let host = origen.split('/').nth(2).unwrap_or(origen);
     for f in FICHEROS {
-        let url = format!("{ORIGEN}/{f}");
+        let url = format!("{origen}/{f}");
         let resp = ureq::get(&url).call().with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
         let total: Option<u64> =
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
         aviso(&match total {
-            Some(t) => tr!("downloading {f} ({:.1} MB)", "descargando {f} ({:.1} MB)", t as f64 / 1e6),
-            None => tr!("downloading {f}", "descargando {f}"),
+            Some(t) => tr!("downloading {f} ({:.1} MB) from {host}", "descargando {f} ({:.1} MB) de {host}", t as f64 / 1e6),
+            None => tr!("downloading {f} from {host}", "descargando {f} de {host}"),
         });
         let parte = destino.join(format!("{f}.part"));
         let mut salida = std::fs::File::create(&parte)?;
