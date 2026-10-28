@@ -403,11 +403,14 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
 - [x] Latencia del hook: 15-26 ms (§6).
 - **Hecho**, con Claude Code de verdad y el plugin instalado (`omoikane@drac`), sin herramientas para que no pudiera buscar por su cuenta: al nombrar `src/pago.rs` contestó con el aviso guardado de ese fichero; al hablar de «cambiar la pasarela de pago a Stripe», con la decisión de usar Redsys y sus motivos; la preferencia global llegó al empezar. Cada memoria se inyectó una vez por sesión.
 
-### Fase 5 · publicar (½ día)
-- `publicar_release.py` (árbol limpio, tag, binarios Windows/Linux/macOS por GitHub Actions).
-- `cargo publish` en crates.io.
-- README final con GIF del recall funcionando.
-- Hecho cuando: `cargo install omoikane` + `omoi setup claude` funciona en una máquina limpia.
+### Fase 5 · publicar ✅ (28-oct-2026)
+- [x] **Instalación en una línea** (decisión de Marc del 28-oct): un plugin de Claude Code no puede ejecutar nada al instalarse (el hook `Setup` solo corre con `--init`/`--maintenance`) ni elegir binario por sistema, así que se invierte: el instalador trae el binario y el binario instala el plugin.
+  - `install.ps1` (Windows) e `install.sh` (Linux, macOS): bajan el binario de la última Release, comprueban su SHA-256, lo dejan en `%LOCALAPPDATA%\Programs\omoikane` (y en el PATH del usuario) o en `~/.local/bin`, instalan el modelo y ejecutan `omoi setup claude --yes`. `OMOIKANE_NO_MODEL`, `OMOIKANE_NO_SETUP`, `OMOIKANE_NO_PATH`, `OMOIKANE_INSTALL_DIR`, `OMOIKANE_VERSION`.
+  - `omoi setup claude [--yes] [--dry-run]`: añade el marketplace `drac` (o lo actualiza si ya estaba, por si es una copia anterior al plugin) e instala `omoikane@drac`; si ya está, no hace nada. Pregunta en una terminal; fuera de ella, exige `--yes`.
+- [x] `release.yml`: con un tag `v*`, binarios para Windows x64, Linux x64 y ARM64 (compilados en Ubuntu 22.04: glibc 2.35) y macOS ARM e Intel; cada uno arranca y pasa `doctor` en su runner; `SHA256SUMS`. A mano (`workflow_dispatch`) solo compila. Paquetes de 4,1-4,6 MB.
+- [x] `omoi … | head` ya no revienta en Unix (SIGPIPE).
+- Sin hacer, a propósito: publicar en crates.io (el instalador y `cargo install --git` cubren lo mismo; se decide aparte) y el GIF del README.
+- Hecho cuando: el instalador deja `omoi`, el modelo y el plugin en una máquina sin Rust. Ver la Release `v0.1.0` y las pruebas del commit.
 
 Después, si los datos lo piden: hooks para otros agentes, importación (JSON/JSONL/Markdown y convertidor desde otros sistemas), relaciones entre memorias, limpieza asistida de lo que nunca se recupera.
 

@@ -53,6 +53,13 @@ pub fn plan() -> Result<Vec<Paso>> {
     }
     let plugins = texto(&claude(&["plugin", "list"])?);
     if !plugins.contains(&format!("{PLUGIN}@")) {
+        if tiene_marketplace {
+            // Un marketplace `drac` ya añadido puede ser una copia de antes de que existiera el plugin.
+            pasos.push(Paso {
+                que: tr!("update the marketplace {MARKETPLACE}", "actualizar el marketplace {MARKETPLACE}"),
+                args: ["plugin", "marketplace", "update", MARKETPLACE].map(String::from).to_vec(),
+            });
+        }
         pasos.push(Paso {
             que: tr!(
                 "install the plugin {PLUGIN}@{MARKETPLACE} for your user (MCP server + recall hooks)",

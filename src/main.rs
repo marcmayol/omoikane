@@ -200,6 +200,12 @@ enum AccionModelo {
 }
 
 fn main() -> Result<()> {
+    // Rust ignora SIGPIPE y entonces `println!` revienta si se cierra la salida (`omoi … | head`).
+    // Lo normal en Unix es terminar sin decir nada.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::from_arg_matches(&en_espanol(Cli::command()).get_matches()).unwrap_or_else(|e| e.exit());
     let c = &cli.comun;
     match cli.orden {

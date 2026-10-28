@@ -31,6 +31,10 @@ ulid = "3.0.0"
 # Para descargar el modelo; Rust puro con rustls. Fijada a una versión de hace más de un mes.
 ureq = "=3.4.2"
 
+[target.'cfg(unix)'.dependencies]
+# Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».
+libc = "0.2"
+
 [dev-dependencies]
 model2vec-rs = "0.3.0"
 # El cliente MCP de los tests habla con `omoi mcp` como lo haría un agente.
