@@ -467,7 +467,19 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - **Cuarto conjunto** de 100 preguntas a ciegas, usado una sola vez después de decidir: Omoikane gana a engram en top-1 (79/76), top-3 (94/86), top-5 (95/88), top-10 (97/89) y MRR (0,859/0,813), también en paráfrasis. La raíz, +2 puntos en top-3/5/10 y −1 paráfrasis en top-1; la cobertura con IDF de la 0.5.2 queda validada aquí con datos limpios.
 - Lo único de engram que no tiene: sincronización y nube (aparcadas por Marc).
 
-Después, si los datos lo piden: sincronizar entre equipos, relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
+### Sincronizar entre equipos · diseñado y aparcado (28-oct-2026)
+Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se llegó a escribir y probar en local; el código se descartó y queda aquí el diseño para retomarlo:
+
+- **Sin servicio propio.** Cada equipo escribe su copia completa en `<carpeta>/<equipo>.jsonl` (una línea por memoria, más las marcas de borrado) y lee las de los demás. La carpeta puede ser un repositorio git (`omoi sync <carpeta> --git`: pull, juntar, commit y push; un repositorio privado hace de «nube»), Syncthing o una unidad de red. Como cada equipo solo escribe su fichero, nunca hay conflictos de edición en la carpeta.
+- **Nombre del equipo:** el del sistema más un sufijo fijo, guardado en `meta`.
+- **Juntar:** gana la versión cambiada más tarde (`updated_at`); si viene de fuera, la anterior queda en el historial con el motivo `sync: <equipo>` y se conserva la fecha de origen para que no rebote. Hace falta guardar con el id y las fechas de origen (la misma memoria tiene el mismo ULID en todos los equipos).
+- **Olvidos:** `olvidar` deja una marca (`tombstone(id, deleted_at)`, esquema 5); las marcas viajan y se aplican antes que las memorias, así lo olvidado no resucita desde otro equipo. Si aquí se cambió después de que allí se olvidara, se queda.
+- **Proyectos:** se reconocen por el remoto `origin` de git normalizado (`git:github.com/dueño/repo`) o, si no hay, por el nombre de la carpeta: `D:\Omoikane` y `~/omoikane` son el mismo proyecto. También cuenta el proyecto de la carpeta desde la que se sincroniza, aunque aún no tenga memorias.
+- **Límites conocidos:** depende de que los relojes estén razonablemente en hora; si dos equipos cambian la misma memoria entre dos sincronizaciones, gana el más reciente y el otro cambio solo queda en el historial si era el local.
+- **Probado:** un test con dos bases en el mismo PC (nuevas con el mismo id y en la ruta propia del proyecto, cambio con historial, nada rebota, olvido que no resucita en ningún orden, un fichero por equipo) pasó a la primera. Faltaba la prueba real entre dos equipos, que es lo que se paró.
+- El plugin podría sincronizar solo al empezar cada sesión si se define `OMOIKANE_SYNC_DIR`.
+
+Después, si los datos lo piden: sincronizar entre equipos (el diseño de arriba), relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas
 
