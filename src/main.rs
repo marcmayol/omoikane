@@ -155,6 +155,23 @@ enum Orden {
         #[arg(long)]
         all: bool,
     },
+    /// Browse, search, pin and forget memories in the terminal.
+    Tui {
+        /// Start with every project (default: this one and the global ones).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Import memories from an engram export (`engram export`) or an `omoi export` file.
+    Import {
+        /// The export file.
+        fichero: PathBuf,
+        /// Import even what looks like a memory already saved.
+        #[arg(short, long)]
+        force: bool,
+        /// Only say what would be imported.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// The embedding model that enables search by meaning.
     Model {
         #[command(subcommand)]
@@ -164,9 +181,9 @@ enum Orden {
     Reindex,
     /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
     Mcp,
-    /// Set up an agent to use Omoikane. Today: `claude` (Claude Code).
+    /// Set up an agent to use Omoikane: claude, codex, gemini, cursor or opencode.
     Setup {
-        /// The agent: claude.
+        /// The agent: claude, codex, gemini, cursor or opencode.
         agente: String,
         /// Don't ask before changing anything.
         #[arg(short, long)]
@@ -180,6 +197,9 @@ enum Orden {
         /// At session start (or after compacting): preferences and pinned memories.
         #[arg(long)]
         session_start: bool,
+        /// The agent's hook format: claude (also Codex), gemini or cursor.
+        #[arg(long, value_enum, default_value = "claude")]
+        format: recall::Formato,
     },
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
@@ -231,9 +251,9 @@ fn main() -> Result<()> {
             std::process::exit(if es_error { 1 } else { 0 })
         }
         Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
-        Orden::Recall { session_start } => {
+        Orden::Recall { session_start, format } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
-            if let Err(e) = recall(c, session_start) {
+            if let Err(e) = recall(c, session_start, format) {
                 eprintln!("omoikane: {e:#}");
             }
             Ok(())
@@ -285,10 +305,31 @@ fn main() -> Result<()> {
                 Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
                 modelo.as_ref(),
             )?;
+            let rel = vectores::relacionadas(&db, &m.project, &m.title, &m.id, 3)?;
             if c.json {
-                return json(&m);
+                #[derive(serde::Serialize)]
+                struct Guardada<'a> {
+                    #[serde(flatten)]
+                    memoria: &'a Memoria,
+                    #[serde(skip_serializing_if = "<[Memoria]>::is_empty")]
+                    related: &'a [Memoria],
+                }
+                return json(&Guardada { memoria: &m, related: &rel });
             }
             println!("{}", tr!("saved {}", "guardada {}", corto(&m.id)));
+            for r in &rel {
+                println!("{}", tr!("  related: {} «{}»", "  relacionada: {} «{}»", corto(&r.id), r.title));
+            }
+            if m.content.chars().count() > recall::LARGO_PARA_RECALL {
+                println!(
+                    "{}",
+                    tr!(
+                        "  long memory: only its first {} characters count for recall; consider splitting it",
+                        "  memoria larga: para el recall solo cuentan sus primeros {} caracteres; mejor partirla",
+                        recall::LARGO_PARA_RECALL
+                    )
+                );
+            }
             Ok(())
         }
         Orden::Search { query, kind, tags, limit, all } => {
@@ -381,6 +422,39 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Orden::Tui { all } => {
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let proyecto = proyecto_de(c)?;
+            omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
+        }
+        Orden::Import { fichero, force, dry_run } => {
+            let actual = proyecto_de(c)?;
+            let (entrantes, borradas) = omoikane::importar::leer(&fichero, c.dir.as_deref(), &actual)?;
+            if dry_run {
+                let mut por_proyecto: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                for e in &entrantes {
+                    *por_proyecto.entry(if e.nueva.project.is_empty() { "(global)".into() } else { e.nueva.project.clone() }).or_default() += 1;
+                }
+                println!("{}", tr!("{} memories to import ({borradas} deleted at the source, skipped):", "{} memorias para importar ({borradas} borradas en el origen, saltadas):", entrantes.len()));
+                for (p, n) in por_proyecto {
+                    println!("  {n:>5}  {p}");
+                }
+                return Ok(());
+            }
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let r = omoikane::importar::guardar(&mut db, modelo.as_ref(), entrantes, force)?;
+            println!(
+                "{}",
+                tr!(
+                    "imported {}; {} skipped because they were already saved (--force to import them anyway); {} deleted at the source",
+                    "importadas {}; {} saltadas porque ya estaban (--force para importarlas igualmente); {} borradas en el origen",
+                    r.guardadas,
+                    r.duplicadas,
+                    borradas
+                )
+            );
+            Ok(())
+        }
         Orden::Export { all } => {
             let mut salida = std::io::stdout().lock();
             let n = memoria::exportar(&abrir(c)?, &ambito(c, all)?, &mut salida)?;
@@ -393,7 +467,7 @@ fn main() -> Result<()> {
 
 fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
     if agente != "claude" {
-        bail!(tr!("unknown agent «{agente}»: for now, only claude", "agente «{agente}» desconocido: de momento, solo claude"));
+        return setup_otro(agente, si, simulacro);
     }
     let pasos = omoikane::setup::plan()?;
     if pasos.is_empty() {
@@ -407,19 +481,9 @@ fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
     if simulacro {
         return Ok(());
     }
-    if !si {
-        use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() {
-            bail!(tr!("add --yes to do it without asking", "añade --yes para hacerlo sin preguntar"));
-        }
-        eprint!("{}", tr!("Go ahead? [y/N] ", "¿Sigo? [s/N] "));
-        std::io::stderr().flush()?;
-        let mut linea = String::new();
-        std::io::stdin().read_line(&mut linea)?;
-        if !matches!(linea.trim().to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí") {
-            println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
-            return Ok(());
-        }
+    if !si && !preguntar()? {
+        println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+        return Ok(());
     }
     omoikane::setup::ejecutar(&pasos)?;
     println!(
@@ -432,10 +496,15 @@ fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
     Ok(())
 }
 
-fn recall(c: &Comun, al_empezar: bool) -> Result<()> {
+fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     let mut entrada = String::new();
     std::io::stdin().read_to_string(&mut entrada)?;
-    let e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
+    let mut e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
+    if e.cwd.is_empty()
+        && let Some(raiz) = e.workspace_roots.first()
+    {
+        e.cwd = raiz.clone();
+    }
     let project = match (&c.dir, e.cwd.is_empty()) {
         (Some(d), _) => proyecto::de(d)?,
         (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
@@ -449,10 +518,12 @@ fn recall(c: &Comun, al_empezar: bool) -> Result<()> {
     let (evento, texto) = if al_empezar {
         ("SessionStart", recall::al_empezar(&mut db, &project, &e)?)
     } else {
-        ("UserPromptSubmit", recall::al_preguntar(&mut db, &project, &e)?)
+        // El modelo abre en milisegundos (mapeado); sin él, el recall va solo por palabras.
+        let modelo = modelos::abrir_actual().ok().flatten();
+        ("UserPromptSubmit", recall::al_preguntar(&mut db, &project, &e, modelo.as_ref())?)
     };
     if let Some(t) = texto {
-        println!("{}", recall::salida(evento, &t));
+        println!("{}", recall::salida_en(formato, evento, &t));
     }
     Ok(())
 }
@@ -732,11 +803,17 @@ fn en_espanol(c: Command) -> Command {
             "all",
             "De todos los proyectos (por defecto, este y las globales).",
         )]),
+        ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),
+        ("import", "Importa memorias de una exportación de engram (`engram export`) o de `omoi export`.", &[
+            ("fichero", "El fichero exportado."),
+            ("force", "Importar también lo que parece una memoria ya guardada."),
+            ("dry_run", "Solo decir qué se importaría."),
+        ]),
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
-        ("setup", "Prepara un agente para usar Omoikane. De momento: `claude` (Claude Code).", &[
-            ("agente", "El agente: claude."),
+        ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor u opencode.", &[
+            ("agente", "El agente: claude, codex, gemini, cursor u opencode."),
             ("yes", "No preguntar antes de cambiar nada."),
             ("dry_run", "Solo enseñar lo que se haría."),
         ]),
@@ -788,6 +865,43 @@ fn titulos_es(c: Command) -> Command {
                 .help("Muestra la ayuda.")
                 .help_heading("Opciones"),
         )
+}
+
+/// `omoi setup codex|gemini|cursor|opencode`: cambia los ficheros de configuración del agente.
+fn setup_otro(agente: &str, si: bool, simulacro: bool) -> Result<()> {
+    let cambios = omoikane::agentes::plan(agente)?;
+    if cambios.is_empty() {
+        println!("{}", tr!("{agente} already has Omoikane: nothing to do.", "{agente} ya tiene Omoikane: nada que hacer."));
+        return Ok(());
+    }
+    println!("{}", tr!("To set up {agente}, omoi will change:", "Para preparar {agente}, omoi va a cambiar:"));
+    for c in &cambios {
+        println!("  - {}   ({})", c.fichero.display(), c.que);
+    }
+    println!("{}", tr!("  (a copy of each file is kept as <file>.antes-de-omoikane)", "  (se guarda una copia de cada fichero como <fichero>.antes-de-omoikane)"));
+    if simulacro {
+        return Ok(());
+    }
+    if !si && !preguntar()? {
+        println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+        return Ok(());
+    }
+    omoikane::agentes::aplicar(&cambios)?;
+    println!("{}", tr!("Done. Start a new {agente} session.", "Hecho. Abre una sesión nueva de {agente}."));
+    Ok(())
+}
+
+/// «¿Sigo?» en una terminal; fuera de ella hace falta --yes.
+fn preguntar() -> Result<bool> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        bail!(tr!("add --yes to do it without asking", "añade --yes para hacerlo sin preguntar"));
+    }
+    eprint!("{}", tr!("Go ahead? [y/N] ", "¿Sigo? [s/N] "));
+    std::io::stderr().flush()?;
+    let mut linea = String::new();
+    std::io::stdin().read_line(&mut linea)?;
+    Ok(matches!(linea.trim().to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí"))
 }
 
 /// En una terminal, pregunta; en cualquier otro sitio (un agente, un script) se niega sin `--yes`,

@@ -11,6 +11,7 @@
 //! Cada memoria se inyecta una vez por sesión (tabla `recall_log`), salvo tras compactar.
 
 use crate::buscar::{self, Opciones};
+use crate::embeber::Modelo;
 use crate::memoria::{self, Ambito, Memoria};
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -29,6 +30,17 @@ pub const FRACCION_RARA: f64 = 0.2;
 pub const COBERTURA_MIN: f64 = 0.50;
 /// Solo las que se acercan a la mejor: si una destaca, va sola.
 pub const RELATIVO_A_LA_MEJOR: f64 = 0.7;
+/// Canal por significado (paráfrasis que no comparten palabras raras): una memoria entra también si
+/// su parecido (vectores centrados) llega a `SIMILITUD_RECALL` y sus palabras cubren al menos
+/// `COBERTURA_CON_VECTOR` del mensaje. Las dos cosas a la vez: el vector solo mete ruido. Solo en
+/// mensajes de hasta `LARGO_MAX_CON_VECTOR` caracteres: el vector de un texto largo (un resumen de
+/// sesión, un encargo automático) es la media de todo y se parece a cualquier cosa.
+/// Calibrado el 28-oct-2026 con 80 preguntas a ciegas: paráfrasis con la nota buena de 3 a 7 de 15,
+/// el mismo ruido en las preguntas sin respuesta (2 de 20); con mensajes reales, de 7 % a 12 % con
+/// algo inyectado, casi todo útil al revisarlo a mano.
+pub const SIMILITUD_RECALL: f32 = 0.35;
+pub const COBERTURA_CON_VECTOR: f64 = 0.25;
+pub const LARGO_MAX_CON_VECTOR: usize = 500;
 /// Como mucho, tantas memorias por mensaje.
 pub const MAXIMO: usize = 3;
 /// Desde cuántas letras una palabra cuenta también como prefijo («memoria» → «memorias»). Con menos,
@@ -59,10 +71,11 @@ const CHARLA: &[&str] = &[
     "know", "want", "need", "tell", "explain", "help", "check", "look", "think",
 ];
 
-/// Lo que Claude Code manda al hook por la entrada estándar.
+/// Lo que el agente manda al hook por la entrada estándar. Claude Code, Codex y Gemini CLI usan
+/// estos nombres; Cursor llama `conversation_id` a la sesión y no manda `cwd` sino `workspace_roots`.
 #[derive(Debug, Default, Deserialize)]
 pub struct Entrada {
-    #[serde(default)]
+    #[serde(default, alias = "conversation_id", alias = "sessionId")]
     pub session_id: String,
     #[serde(default)]
     pub cwd: String,
@@ -70,6 +83,19 @@ pub struct Entrada {
     pub prompt: String,
     #[serde(default)]
     pub source: String,
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+}
+
+/// En qué formato responde el hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Formato {
+    /// Claude Code y Codex: `hookSpecificOutput.additionalContext`.
+    Claude,
+    /// Gemini CLI: lo mismo, con `BeforeAgent` como evento del mensaje.
+    Gemini,
+    /// Cursor: `additional_context` (solo al empezar la sesión).
+    Cursor,
 }
 
 fn sin_tildes(s: &str) -> String {
@@ -97,8 +123,17 @@ pub fn utiles(texto: &str) -> Vec<String> {
         .collect()
 }
 
+/// Cuánto del contenido cuenta para el recall. Una memoria muy larga contiene casi cualquier palabra
+/// y «cubre» cualquier mensaje: con 127 notas reales, una de 87 KB salía en la mitad de las
+/// inyecciones de ruido. Con 3.000 caracteres, las preguntas a ciegas aciertan lo mismo con un 22 %
+/// menos de memorias de más; los resúmenes, del 98 % al 96 % (notas larguísimas cuyo dato está más
+/// allá). Guardar avisa de que una memoria más larga conviene partirla.
+pub const LARGO_PARA_RECALL: usize = 3000;
+
 fn fichas(m: &Memoria) -> BTreeSet<String> {
-    let texto = format!("{} {} {} {}", m.title, m.content, m.tags.join(" "), m.paths.join(" "));
+    let largo = std::env::var("OMOIKANE_CALIBRAR_LARGO").ok().and_then(|v| v.parse().ok()).unwrap_or(LARGO_PARA_RECALL);
+    let contenido: String = m.content.chars().take(largo).collect();
+    let texto = format!("{} {} {} {}", m.title, contenido, m.tags.join(" "), m.paths.join(" "));
     sin_tildes(&texto.to_lowercase()).split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).map(String::from).collect()
 }
 
@@ -189,6 +224,23 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     v.retain(|x| x.1 >= RELATIVO_A_LA_MEJOR * mejor);
     v.truncate(MAXIMO);
     Ok(v.into_iter().map(|(m, c, _)| (m, c)).collect())
+}
+
+/// Las que se parecen al mensaje por significado y comparten parte de sus palabras (ver
+/// `SIMILITUD_RECALL`), de la más a la menos parecida.
+pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Modelo) -> Result<Vec<Memoria>> {
+    let leer = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    let sim_min = leer("OMOIKANE_CALIBRAR_SIM_RECALL").map_or(SIMILITUD_RECALL, |v| v as f32);
+    let cob_min = leer("OMOIKANE_CALIBRAR_COB_VECTOR").unwrap_or(COBERTURA_CON_VECTOR);
+    if sim_min > 1.0 || prompt.chars().count() > LARGO_MAX_CON_VECTOR || utiles(prompt).len() < TERMINOS_MIN {
+        return Ok(Vec::new());
+    }
+    let v = crate::vectores::parecidas(db, modelo, prompt, Some(project), None, sim_min, MAXIMO)?;
+    if v.is_empty() {
+        return Ok(Vec::new());
+    }
+    let c = cobertura(db, project, prompt, v.iter().map(|x| &x.0))?;
+    Ok(v.into_iter().zip(c).filter(|(_, c)| *c >= cob_min).map(|((m, _), _)| m).collect())
 }
 
 /// Memorias del ámbito con alguna ruta que aparece en el mensaje (la ruta entera, o el nombre del
@@ -285,10 +337,18 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
 }
 
 /// En cada mensaje: lo que tiene que ver con él y no se ha inyectado ya en esta sesión, o nada.
-pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
+pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
-    for m in por_rutas(db, project, &e.prompt)?.into_iter().chain(relevantes(db, project, &e.prompt)?.into_iter().map(|x| x.0)) {
+    let por_significado = match modelo {
+        Some(m) => por_significado(db, project, &e.prompt, m)?,
+        None => Vec::new(),
+    };
+    for m in por_rutas(db, project, &e.prompt)?
+        .into_iter()
+        .chain(relevantes(db, project, &e.prompt)?.into_iter().map(|x| x.0))
+        .chain(por_significado)
+    {
         if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && elegidas.len() < MAXIMO {
             elegidas.push(m);
         }
@@ -355,7 +415,21 @@ fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
 
 /// La respuesta del hook para Claude Code.
 pub fn salida(evento: &str, contexto: &str) -> String {
-    serde_json::json!({ "hookSpecificOutput": { "hookEventName": evento, "additionalContext": contexto } }).to_string()
+    salida_en(Formato::Claude, evento, contexto)
+}
+
+/// La respuesta del hook en el formato del agente. `evento` es el de Claude Code
+/// (`SessionStart` o `UserPromptSubmit`).
+pub fn salida_en(formato: Formato, evento: &str, contexto: &str) -> String {
+    match formato {
+        Formato::Claude => serde_json::json!({ "hookSpecificOutput": { "hookEventName": evento, "additionalContext": contexto } }),
+        Formato::Gemini => {
+            let evento = if evento == "UserPromptSubmit" { "BeforeAgent" } else { evento };
+            serde_json::json!({ "hookSpecificOutput": { "hookEventName": evento, "additionalContext": contexto } })
+        }
+        Formato::Cursor => serde_json::json!({ "additional_context": contexto }),
+    }
+    .to_string()
 }
 
 /// Cuántas memorias se han inyectado ya en una sesión.

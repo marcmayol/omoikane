@@ -126,6 +126,10 @@ pub enum Fusion {
     Rrf { peso_vector: f64 },
     /// El orden por palabras manda; el vector solo añade, detrás, lo que las palabras no encontraron.
     Rescate,
+    /// Puntuación por palabras (BM25 + cobertura, dividida por la de la mejor) más `peso` por cada
+    /// punto de similitud por encima de `desde`: el vector reordena, pero solo cuando se parece de
+    /// verdad. Lo que solo trae el vector entra si pasa la similitud mínima, como en el rescate.
+    Mezcla { peso: f64, desde: f32 },
 }
 
 /// Rescate y no RRF: con 127 notas reales, RRF bajaba el primer acierto del 98 % (solo palabras)
@@ -139,6 +143,11 @@ pub fn buscar_sin_apuntar(db: &mut Connection, texto: &str, o: &Opciones) -> Res
 }
 
 /// `buscar` con otra similitud mínima y otra fusión (para calibrarlas).
+/// Como `buscar`, sin contar los resultados como recuperados: para mirar (el visor).
+pub fn buscar_sin_apuntar_con(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
+    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, false)
+}
+
 pub fn buscar_con(
     db: &mut Connection,
     texto: &str,
@@ -162,7 +171,7 @@ fn buscar_base(
     let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
     let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
 
-    let por_palabras: Vec<(Memoria, usize)> = palabras(db, texto, o)?.into_iter().filter(|(m, _)| con_tags(m)).collect();
+    let por_palabras: Vec<(Memoria, usize, f64)> = palabras(db, texto, o)?.into_iter().filter(|(m, _, _)| con_tags(m)).collect();
     let por_significado: Vec<(Memoria, f32)> = match modelo {
         Some(modelo) if !texto.trim().is_empty() => vectores::parecidas(
             db,
@@ -192,7 +201,28 @@ fn buscar_base(
             None => fusion.push(Resultado { memoria: m.clone(), score: aporte, similarity: sim, matched_words: n }),
         }
     };
-    for (i, (m, n)) in por_palabras.iter().enumerate() {
+    if let Fusion::Mezcla { peso, desde } = fusion_elegida {
+        let mejor = por_palabras.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
+        let mut v: Vec<Resultado> = por_palabras
+            .iter()
+            .map(|(m, n, r)| Resultado { memoria: m.clone(), score: r / mejor, similarity: None, matched_words: *n })
+            .collect();
+        for (m, s) in &por_significado {
+            let extra = peso * f64::from((*s - desde).max(0.0));
+            match v.iter_mut().find(|r| r.memoria.id == m.id) {
+                Some(r) => {
+                    r.score += extra;
+                    r.similarity = Some(*s);
+                }
+                None if *s >= similitud_minima => {
+                    v.push(Resultado { memoria: m.clone(), score: extra, similarity: Some(*s), matched_words: 0 })
+                }
+                None => {}
+            }
+        }
+        return ordenar(db, v, o, apuntar);
+    }
+    for (i, (m, n, _)) in por_palabras.iter().enumerate() {
         sumar(m, i, None, 1.0, *n);
     }
     // Lo que sale por palabras y por significado suma las dos posiciones. Lo que solo trae el vector
@@ -200,13 +230,14 @@ fn buscar_base(
     // algo a cualquier otro (sobre todo en el mismo idioma) y sin este filtro todo devuelve ruido.
     let n_palabras = por_palabras.len();
     for (i, (m, s)) in por_significado.iter().enumerate() {
-        let tambien_por_palabras = por_palabras.iter().any(|(p, _)| p.id == m.id);
+        let tambien_por_palabras = por_palabras.iter().any(|(p, _, _)| p.id == m.id);
         match fusion_elegida {
             Fusion::Rrf { peso_vector } => {
                 if *s >= similitud_minima || tambien_por_palabras {
                     sumar(m, i, Some(*s), peso_vector, 0);
                 }
             }
+            Fusion::Mezcla { .. } => unreachable!(),
             Fusion::Rescate => {
                 if tambien_por_palabras {
                     sumar(m, 0, Some(*s), 0.0, 0); // solo apunta la similitud, sin mover el orden
@@ -216,7 +247,11 @@ fn buscar_base(
             }
         }
     }
+    ordenar(db, fusion, o, apuntar)
+}
 
+/// Recencia y fijadas, orden final, límite y, si toca, apuntarlas como recuperadas.
+fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apuntar: bool) -> Result<Vec<Resultado>> {
     let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
     for r in &mut fusion {
         let d: f64 = dias.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
@@ -235,7 +270,7 @@ fn buscar_base(
 
 /// Candidatos por palabras, del mejor al peor (BM25 más la cobertura, que desempata cuando BM25 no
 /// distingue, como pasa con pocas memorias), con cuántas palabras de la consulta tiene cada uno.
-fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize)>> {
+fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize, f64)>> {
     let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
     let terminos = terminos(texto);
     let columnas = COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
@@ -257,7 +292,7 @@ fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, 
         *r += cobertura(&terminos, m);
     }
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
-    Ok(v.into_iter().map(|(m, _)| { let n = coincidencias(&terminos, &m); (m, n) }).collect())
+    Ok(v.into_iter().map(|(m, r)| { let n = coincidencias(&terminos, &m); (m, n, r) }).collect())
 }
 
 /// Lo que devuelven la búsqueda y el recall cuenta como recuperado: sirve para ordenar y, más

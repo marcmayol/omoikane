@@ -294,3 +294,61 @@ fn escrituras_concurrentes() {
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// El visor (`omoi tui`) dibujado en memoria: lista, búsqueda, fijar, historial y olvidar.
+#[test]
+fn visor() {
+    use omoikane::tui::{Estado, Vista, dibujar};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    let (mut db, dir) = base_visor();
+    for (t, c) in [("Puerto del servidor", "Escucha en el 8010"), ("Pasarela de pago", "Redsys y no Stripe")] {
+        omoikane::memoria::guardar(&mut db, omoikane::memoria::Nueva { project: "/p".into(), kind: Some(omoikane::memoria::Tipo::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+    }
+    let mut e = Estado::nuevo("/p".into());
+    e.cargar(&mut db, None).unwrap();
+    assert_eq!(e.memorias.len(), 2);
+    let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let pantalla = |t: &mut Terminal<TestBackend>, e: &mut Estado| {
+        t.draw(|f| dibujar(f, e)).unwrap();
+        t.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>()
+    };
+    assert!(pantalla(&mut t, &mut e).contains("Pasarela de pago"));
+    let tecla = |e: &mut Estado, db: &mut rusqlite::Connection, c: KeyCode| {
+        if e.tecla(KeyEvent::new(c, KeyModifiers::NONE), db).unwrap() {
+            e.cargar(db, None).unwrap();
+        }
+    };
+    // Buscar: solo queda la del puerto.
+    tecla(&mut e, &mut db, KeyCode::Char('/'));
+    for c in "puerto".chars() {
+        tecla(&mut e, &mut db, KeyCode::Char(c));
+    }
+    assert_eq!(e.memorias.len(), 1);
+    assert_eq!(e.memorias[0].title, "Puerto del servidor");
+    // Fijar y ver que queda fijada. Fijar no es un cambio de contenido: no deja versión anterior.
+    tecla(&mut e, &mut db, KeyCode::Enter);
+    tecla(&mut e, &mut db, KeyCode::Char('p'));
+    assert!(e.memorias[0].pinned);
+    tecla(&mut e, &mut db, KeyCode::Char('h'));
+    assert_eq!(e.vista, Vista::Historial);
+    assert!(e.historial.is_empty());
+    assert!(pantalla(&mut t, &mut e).contains("Sin versiones anteriores") || pantalla(&mut t, &mut e).contains("No previous versions"));
+    tecla(&mut e, &mut db, KeyCode::Esc);
+    // Olvidar pide confirmación: «n» no borra, «s» sí.
+    tecla(&mut e, &mut db, KeyCode::Char('d'));
+    tecla(&mut e, &mut db, KeyCode::Char('n'));
+    assert_eq!(e.memorias.len(), 1);
+    tecla(&mut e, &mut db, KeyCode::Char('d'));
+    tecla(&mut e, &mut db, KeyCode::Char('s'));
+    assert!(e.memorias.is_empty());
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn base_visor() -> (rusqlite::Connection, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("omoi-visor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    (omoikane::db::abrir(&dir.join("o.db")).unwrap(), dir)
+}

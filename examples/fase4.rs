@@ -370,10 +370,23 @@ fn produccion(dir_notas: &Path, dir_trans: &Path) -> Result<()> {
     let _ = std::fs::remove_dir_all(&tmp);
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut fichero_de = HashMap::new();
+    // Con modelo, también el canal por significado del recall (como en el hook).
+    let modelo = omoikane::modelos::abrir_actual()?;
     for (f, t, c) in &notas {
         let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        fichero_de.insert(memoria::guardar(&mut db, n, None)?.id, f.clone());
+        fichero_de.insert(memoria::guardar(&mut db, n, modelo.as_ref())?.id, f.clone());
     }
+    let todas = |db: &mut rusqlite::Connection, q: &str| -> Result<Vec<(omoikane::memoria::Memoria, f64)>> {
+        let mut r = omoikane::recall::relevantes(db, "/p", q)?;
+        if let Some(m) = &modelo {
+            for x in omoikane::recall::por_significado(db, "/p", q, m)? {
+                if !r.iter().any(|(y, _)| y.id == x.id) && r.len() < omoikane::recall::MAXIMO {
+                    r.push((x, 0.0));
+                }
+            }
+        }
+        Ok(r)
+    };
     let indice = std::fs::read_to_string(dir_notas.join("MEMORY.md"))?;
     let positivos: Vec<(String, String)> = indice
         .lines()
@@ -391,14 +404,14 @@ fn produccion(dir_notas: &Path, dir_trans: &Path) -> Result<()> {
     let t = std::time::Instant::now();
     let (mut ok, mut iny) = (0, 0);
     for (f, q) in &positivos {
-        let r = omoikane::recall::relevantes(&mut db, "/p", q)?;
+        let r = todas(&mut db, q)?;
         ok += usize::from(r.iter().any(|(m, _)| &fichero_de[&m.id] == f));
         iny += r.len();
     }
     let (mut con, mut iny_r) = (0, 0);
     let mut muestra = Vec::new();
     for q in &reales {
-        let r = omoikane::recall::relevantes(&mut db, "/p", q)?;
+        let r = todas(&mut db, q)?;
         con += usize::from(!r.is_empty());
         iny_r += r.len();
         if !r.is_empty() {

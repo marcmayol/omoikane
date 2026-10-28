@@ -255,3 +255,86 @@ fn herramientas_sin_mcp() {
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stdout).contains("ZZZZZZ"));
 }
+
+/// `omoi import` con una exportación de engram: tipos, ámbito personal → global, borradas fuera,
+/// fechas conservadas, y una segunda importación no duplica.
+#[test]
+fn importar_de_engram() {
+    let e = Entorno::nuevo("import");
+    let fichero = e.dir.join("engram.json");
+    std::fs::write(
+        &fichero,
+        r#"{"version":"0.2.0","sessions":[{"id":"s1","project":"tienda","directory":"/no/existe"}],
+           "observations":[
+             {"id":1,"session_id":"s1","type":"bugfix","title":"El importe en f32 pierde céntimos","content":"Guardar el dinero en céntimos enteros.","project":"tienda","scope":"project","topic_key":"pagos/importe","pinned":false,"created_at":"2025-03-01 10:00:00","updated_at":"2025-03-02 11:00:00"},
+             {"id":2,"session_id":"s1","type":"preference","title":"Commits en inglés","content":"Una sola línea.","project":"tienda","scope":"personal","pinned":"true","created_at":"2025-03-01 10:00:00","updated_at":"2025-03-01 10:00:00"},
+             {"id":3,"session_id":"s1","type":"architecture","title":"Hexagonal","content":"Puertos y adaptadores.","project":"tienda","scope":"project","created_at":"2025-03-01 10:00:00","updated_at":"2025-03-01 10:00:00"},
+             {"id":4,"session_id":"s1","type":"decision","title":"Borrada","content":"x","project":"tienda","scope":"project","deleted_at":"2025-04-01 00:00:00"}
+           ]}"#,
+    )
+    .unwrap();
+    let f = fichero.to_str().unwrap();
+    let salida = e.ok(&["import", f]);
+    assert!(salida.contains("imported 3") && salida.contains("1 deleted"), "{salida}");
+    let todas = e.json(&["recent", "--all", "-n", "10"]);
+    let por_titulo = |t: &str| todas.as_array().unwrap().iter().find(|m| m["title"] == t).unwrap().clone();
+    let bug = por_titulo("El importe en f32 pierde céntimos");
+    assert_eq!(bug["kind"], "gotcha");
+    assert!(bug["created_at"].as_str().unwrap().starts_with("2025-03-01T10:00:00"));
+    assert!(bug["tags"].as_array().unwrap().iter().any(|t| t == "topic:pagos/importe"));
+    let pref = por_titulo("Commits en inglés");
+    assert_eq!(pref["project"], "");
+    assert_eq!(pref["pinned"], true);
+    assert!(por_titulo("Hexagonal")["tags"].as_array().unwrap().iter().any(|t| t == "architecture"));
+    assert!(todas.as_array().unwrap().iter().all(|m| m["title"] != "Borrada"));
+}
+
+/// `omoi setup <agente>` en una carpeta personal de prueba: escribe lo que toca, respeta lo que ya
+/// había, guarda copia del original y una segunda vez no cambia nada.
+#[test]
+fn setup_de_otros_agentes() {
+    let e = Entorno::nuevo("setup");
+    let casa = e.dir.join("casa");
+    std::fs::create_dir_all(casa.join(".gemini")).unwrap();
+    std::fs::write(casa.join(".gemini/settings.json"), r#"{"theme":"dark","mcpServers":{"otro":{"command":"x"}}}"#).unwrap();
+    let h = casa.to_str().unwrap();
+    for a in ["codex", "gemini", "cursor", "opencode"] {
+        let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+        assert!(o.status.success(), "{a}: {}", String::from_utf8_lossy(&o.stderr));
+        let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+        assert!(String::from_utf8_lossy(&o.stdout).contains("nothing to do"), "{a} la segunda vez");
+    }
+    let leer = |f: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(casa.join(f)).unwrap()).unwrap();
+    let g = leer(".gemini/settings.json");
+    assert_eq!(g["theme"], "dark");
+    assert_eq!(g["mcpServers"]["otro"]["command"], "x");
+    assert_eq!(g["mcpServers"]["omoikane"]["args"][0], "mcp");
+    assert!(g["hooks"]["BeforeAgent"].to_string().contains("--format gemini"));
+    assert!(casa.join(".gemini/settings.json.antes-de-omoikane").exists());
+    assert!(leer(".codex/hooks.json")["hooks"]["UserPromptSubmit"].to_string().contains("recall"));
+    assert!(std::fs::read_to_string(casa.join(".codex/config.toml")).unwrap().contains("[mcp_servers.omoikane]"));
+    assert!(leer(".cursor/hooks.json")["hooks"]["sessionStart"].to_string().contains("--format cursor"));
+    assert_eq!(leer(".config/opencode/opencode.json")["mcp"]["omoikane"]["type"], "local");
+    let plugin = std::fs::read_to_string(casa.join(".config/opencode/plugins/omoikane.ts")).unwrap();
+    // Ningún salto de línea de verdad dentro de una cadena de JS (rompía el plugin sin avisar).
+    assert!(plugin.contains("experimental.chat.system.transform") && !plugin.contains("+= \"\n"));
+    for f in [".codex/AGENTS.md", ".gemini/GEMINI.md", ".config/opencode/AGENTS.md"] {
+        assert_eq!(std::fs::read_to_string(casa.join(f)).unwrap().matches("<!-- omoikane -->").count(), 1, "{f}");
+    }
+}
+
+/// `omoi recall --format`: Gemini cambia el nombre del evento y Cursor usa `additional_context`;
+/// la entrada de Cursor trae `conversation_id` y `workspace_roots` en vez de `session_id` y `cwd`.
+#[test]
+fn recall_en_formato_de_otros_agentes() {
+    let e = Entorno::nuevo("formatos");
+    e.ok(&["remember", "-k", "preference", "--global", "-t", "Commits en inglés", "Una sola línea."]);
+    let raiz = e.dir.join("repo").to_string_lossy().replace('\\', "/");
+    let cursor = format!(r#"{{"conversation_id":"c1","workspace_roots":["{raiz}"],"hook_event_name":"sessionStart"}}"#);
+    let o = e.omoi_con(&["recall", "--session-start", "--format", "cursor"], Some(&cursor), &[]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["additional_context"].as_str().unwrap().contains("Commits en inglés"));
+    let o = e.omoi_con(&["recall", "--session-start", "--format", "gemini"], Some(r#"{"session_id":"g1","source":"startup"}"#), &[]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+}
