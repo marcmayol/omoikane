@@ -181,11 +181,15 @@ enum Orden {
     Reindex,
     /// Serve the memory to an AI agent over MCP (stdio). Agents launch it themselves.
     Mcp,
-    /// Serve the same tools over HTTP on 127.0.0.1 (for scripts and apps that don't speak MCP).
+    /// Serve the same tools over HTTP on 127.0.0.1 (for scripts and apps that don't speak MCP), and a web
+    /// view of every memory at http://127.0.0.1:7438/.
     Serve {
         /// The port.
         #[arg(long, default_value_t = omoikane::http::PUERTO)]
         port: u16,
+        /// Open the web view in the browser (if a server is already running, just open it).
+        #[arg(long)]
+        open: bool,
     },
     /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
     Setup {
@@ -245,7 +249,7 @@ fn main() -> Result<()> {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
-        Orden::Serve { port } => omoikane::http::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone(), port),
+        Orden::Serve { port, open } => omoikane::http::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone(), port, open),
         Orden::Tool { nombre } => {
             let mut args = String::new();
             if nombre.is_some() {
@@ -825,7 +829,10 @@ fn en_espanol(c: Command) -> Command {
         ("model", "El modelo de embeddings que permite buscar por significado.", &[]),
         ("reindex", "Rehace los índices de búsqueda (palabras y vectores) a partir de las memorias.", &[]),
         ("mcp", "Sirve la memoria a un agente de IA por MCP (stdio). Lo arrancan los propios agentes.", &[]),
-        ("serve", "Sirve las mismas herramientas por HTTP en 127.0.0.1 (para scripts y apps que no hablan MCP).", &[("port", "El puerto.")]),
+        ("serve", "Sirve las mismas herramientas por HTTP en 127.0.0.1 (para scripts y apps que no hablan MCP) y una vista web de todas las memorias en http://127.0.0.1:7438/.", &[
+            ("port", "El puerto."),
+            ("open", "Abrir la vista web en el navegador (si ya hay un servidor en marcha, solo la abre)."),
+        ]),
         ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo.", &[
             ("agente", "El agente: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo."),
             ("yes", "No preguntar antes de cambiar nada."),

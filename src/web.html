@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omoikane</title>
+<style>
+:root {
+  --bg: #f7f6f3; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6862; --line: #e3e0da;
+  --accent: #b4432f; --accent-ink: #ffffff; --chip: #efece6; --sel: #fbeee9;
+  --fact: #3d6fb0; --decision: #7a52a8; --gotcha: #b4432f; --preference: #2f8a5b;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151412; --panel: #1e1d1a; --ink: #ebe8e2; --muted: #9a958c; --line: #33312d;
+    --accent: #e0745d; --accent-ink: #151412; --chip: #2a2825; --sel: #3a2a25;
+    --fact: #7fa7dd; --decision: #b597da; --gotcha: #e0745d; --preference: #6cc596;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+h1 { margin: 0 8px 0 0; font-size: 18px; font-weight: 650; letter-spacing: .01em; }
+h1 span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+input, select, button, textarea { font: inherit; color: inherit; }
+input[type=search], select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+input[type=search] { flex: 1 1 260px; min-width: 0; }
+button { background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--accent); }
+.kinds { display: flex; gap: 6px; flex-wrap: wrap; }
+.kinds button[aria-pressed=true] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+main { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 0; height: calc(100vh - 62px); }
+#lista { overflow-y: auto; border-right: 1px solid var(--line); }
+#lista .vacio { padding: 24px 16px; color: var(--muted); }
+.item { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.item:hover { background: var(--panel); }
+.item[aria-selected=true] { background: var(--sel); }
+.item .t { font-weight: 560; overflow-wrap: anywhere; }
+.item .m { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; }
+.tipo { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.tipo.fact { color: var(--fact); } .tipo.decision { color: var(--decision); } .tipo.gotcha { color: var(--gotcha); } .tipo.preference { color: var(--preference); }
+#detalle { overflow-y: auto; padding: 20px 24px 40px; }
+#detalle .vacio { color: var(--muted); }
+#detalle h2 { margin: 6px 0 10px; font-size: 20px; line-height: 1.3; overflow-wrap: anywhere; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+.meta b { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+.contenido { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.acciones { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; align-items: center; }
+button.chip { border: 0; cursor: pointer; padding: 0 8px; }
+.chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 0 8px; font-size: 12px; margin: 0 4px 4px 0; }
+.version { border-left: 3px solid var(--line); padding: 4px 0 4px 12px; margin: 12px 0; }
+.version .cuando { color: var(--muted); font-size: 12px; }
+#aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; }
+.fijada::before { content: "📌 "; }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; height: auto; }
+  #lista { border-right: 0; max-height: 50vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Omoikane<span id="cuenta"></span></h1>
+  <input id="q" type="search" autocomplete="off">
+  <select id="proyecto"></select>
+  <select id="tema"></select>
+  <div class="kinds" id="tipos"></div>
+</header>
+<main>
+  <section id="lista" aria-label="memories"></section>
+  <section id="detalle"></section>
+</main>
+<div id="aviso" hidden></div>
+<script>
+const ES = (navigator.language || '').toLowerCase().startsWith('es');
+const T = ES ? {
+  buscar: 'Buscar como lo haría el agente…', todos: 'Todos los proyectos', global: 'Globales', todosTipos: 'Todo',
+  nada: 'No hay memorias con estos filtros.', elige: 'Elige una memoria de la lista.', proyecto: 'Proyecto', rutas: 'Rutas',
+  etiquetas: 'Etiquetas', creada: 'Creada', cambiada: 'Cambiada', origen: 'Origen', usada: 'Recordada', veces: 'veces',
+  fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial', mover: 'Mover a…', moverBtn: 'Mover', olvidar: 'Olvidar',
+  seguro: '¿Olvidarla para siempre? No se puede deshacer.', si: 'Sí, olvidar', no: 'Cancelar', sinHist: 'Sin cambios anteriores.',
+  hecho: 'Hecho', error: 'Error', memorias: 'memorias', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
+  fijadas: 'Fijadas', temas: 'Todos los temas'
+} : {
+  buscar: 'Search the way the agent does…', todos: 'All projects', global: 'Global', todosTipos: 'All',
+  nada: 'No memories match these filters.', elige: 'Pick a memory from the list.', proyecto: 'Project', rutas: 'Paths',
+  etiquetas: 'Tags', creada: 'Created', cambiada: 'Changed', origen: 'Source', usada: 'Recalled', veces: 'times',
+  fijar: 'Pin', desfijar: 'Unpin', historial: 'History', mover: 'Move to…', moverBtn: 'Move', olvidar: 'Forget',
+  seguro: 'Forget it for good? This can\'t be undone.', si: 'Yes, forget', no: 'Cancel', sinHist: 'No earlier versions.',
+  hecho: 'Done', error: 'Error', memorias: 'memories', otra: 'Another folder…', carpeta: 'Path of the project folder:',
+  fijadas: 'Pinned', temas: 'All topics'
+};
+const TIPOS = ['fact', 'decision', 'gotcha', 'preference'];
+const token = new URLSearchParams(location.hash.slice(1)).get('token');
+if (token) { try { sessionStorage.setItem('omoi-token', token); } catch (e) {} history.replaceState(null, '', location.pathname); }
+const clave = token || (() => { try { return sessionStorage.getItem('omoi-token'); } catch (e) { return null; } })();
+const cab = clave ? { Authorization: 'Bearer ' + clave } : {};
+
+let todas = [], visibles = [], elegida = null, tipo = null, encontrados = null;
+const $ = id => document.getElementById(id);
+const nombre = p => p ? p.split(/[\\/]/).filter(Boolean).pop() : T.global;
+const fecha = s => s ? new Date(s).toLocaleString(ES ? 'es-ES' : undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function aviso(texto) {
+  const a = $('aviso'); a.textContent = texto; a.hidden = false;
+  clearTimeout(aviso.t); aviso.t = setTimeout(() => a.hidden = true, 2200);
+}
+
+async function herramienta(nombre, args) {
+  const r = await fetch('/tools/' + nombre, { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify(args) });
+  const t = await r.text();
+  let v; try { v = JSON.parse(t); } catch (e) { v = t; }
+  if (!r.ok) throw new Error(typeof v === 'string' ? v : (v.error || t));
+  return v;
+}
+
+async function cargar() {
+  const r = await fetch('/api/memories', { headers: cab });
+  if (!r.ok) { $('lista').innerHTML = `<div class="vacio">${esc(T.error)}: ${r.status}</div>`; return; }
+  todas = await r.json();
+  const proyectos = {};
+  for (const m of todas) proyectos[m.project] = (proyectos[m.project] || 0) + 1;
+  const sel = $('proyecto'), antes = sel.options.length ? sel.value : '*';
+  sel.innerHTML = `<option value="*">${esc(T.todos)} (${todas.length})</option>` +
+    (proyectos[''] ? `<option value="">${esc(T.global)} (${proyectos['']})</option>` : '') +
+    Object.keys(proyectos).filter(p => p).sort((a, b) => nombre(a).localeCompare(nombre(b)))
+      .map(p => `<option value="${esc(p)}" title="${esc(p)}">${esc(nombre(p))} (${proyectos[p]})</option>`).join('');
+  sel.value = [...sel.options].some(o => o.value === antes) ? antes : '*';
+  $('cuenta').textContent = `${todas.length} ${T.memorias}`;
+  temas();
+  pintar();
+}
+
+function temas() {
+  const p = $('proyecto').value, sel = $('tema'), antes = sel.value, n = {};
+  for (const m of todas) if (p === '*' || m.project === p) for (const t of m.tags) n[t] = (n[t] || 0) + 1;
+  sel.innerHTML = `<option value="">${esc(T.temas)}</option>` +
+    Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}">#${esc(t)} (${n[t]})</option>`).join('');
+  sel.value = n[antes] ? antes : '';
+}
+
+function pintar() {
+  const p = $('proyecto').value, tema = $('tema').value;
+  let v = encontrados ? encontrados.map(id => todas.find(m => m.id === id)).filter(Boolean) : todas;
+  v = v.filter(m => (p === '*' || m.project === p) && (!tema || m.tags.includes(tema)) && (!tipo || (tipo === 'pinned' ? m.pinned : m.kind === tipo)));
+  visibles = v;
+  const l = $('lista');
+  if (!v.length) { l.innerHTML = `<div class="vacio">${esc(T.nada)}</div>`; detalle(null); return; }
+  l.innerHTML = v.map(m => `<div class="item" role="option" data-id="${m.id}" aria-selected="${elegida === m.id}">
+    <div class="t${m.pinned ? ' fijada' : ''}">${esc(m.title)}</div>
+    <div class="m"><span class="tipo ${m.kind}">${m.kind}</span><span>${esc(nombre(m.project))}</span><span>${esc(fecha(m.updated_at))}</span></div></div>`).join('');
+  if (!v.some(m => m.id === elegida)) detalle(null);
+}
+
+function detalle(id) {
+  elegida = id;
+  for (const e of document.querySelectorAll('.item')) e.setAttribute('aria-selected', e.dataset.id === id);
+  const d = $('detalle'), m = todas.find(x => x.id === id);
+  if (!m) { d.innerHTML = `<p class="vacio">${esc(T.elige)}</p>`; return; }
+  const proyectos = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
+  d.innerHTML = `<span class="tipo ${m.kind}">${m.kind}</span>
+    <h2 class="${m.pinned ? 'fijada' : ''}">${esc(m.title)}</h2>
+    <div class="meta">
+      <span>${T.proyecto}</span><b title="${esc(m.project)}">${esc(m.project || T.global)}</b>
+      ${m.paths.length ? `<span>${T.rutas}</span><b>${m.paths.map(esc).join('<br>')}</b>` : ''}
+      ${m.tags.length ? `<span>${T.etiquetas}</span><b>${m.tags.map(t => `<button class="chip" data-tema="${esc(t)}">#${esc(t)}</button>`).join('')}</b>` : ''}
+      <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
+      <span>${T.cambiada}</span><b>${esc(fecha(m.updated_at))}</b>
+      <span>${T.usada}</span><b>${m.recall_count} ${T.veces}${m.recalled_at ? ' · ' + esc(fecha(m.recalled_at)) : ''}</b>
+      <span>${T.origen}</span><b>${esc(m.source)} · ${m.id}</b>
+    </div>
+    <div class="contenido">${esc(m.content)}</div>
+    <div class="acciones">
+      <button id="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
+      <button id="hist">${T.historial}</button>
+      <select id="destino"><option value="">${T.mover}</option><option value="@global">${T.global}</option>
+        ${proyectos.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(nombre(p))}</option>`).join('')}
+        <option value="@otra">${T.otra}</option></select>
+      <button id="mover">${T.moverBtn}</button>
+      <span id="olvido"><button id="olvidar" class="danger">${T.olvidar}</button></span>
+    </div>
+    <div id="versiones"></div>`;
+  for (const b of d.querySelectorAll('[data-tema]')) b.onclick = () => {
+    $('proyecto').value = '*'; temas(); $('tema').value = b.dataset.tema; pintar();
+  };
+  $('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
+  $('hist').onclick = async () => {
+    try {
+      const v = await herramienta('history', { id: m.id });
+      const lista = Array.isArray(v) ? v : (v.versions || []);
+      $('versiones').innerHTML = lista.length ? lista.map(x => `<div class="version"><div class="cuando">v${x.version} · ${esc(fecha(x.changed_at))}${x.reason ? ' · ' + esc(x.reason) : ''}</div>
+        <b>${esc(x.title)}</b><div class="contenido">${esc(x.content)}</div></div>`).join('') : `<p class="vacio">${T.sinHist}</p>`;
+    } catch (e) { aviso(T.error + ': ' + e.message); }
+  };
+  $('mover').onclick = () => {
+    let p = $('destino').value;
+    if (!p) return;
+    if (p === '@otra') { p = prompt(T.carpeta); if (!p) return; }
+    accion(() => herramienta('update', { id: m.id, project: p === '@global' ? '' : p, reason: 'moved from the web view' }));
+  };
+  $('olvidar').onclick = () => {
+    $('olvido').innerHTML = `${esc(T.seguro)} <button id="si" class="primary">${T.si}</button> <button id="no">${T.no}</button>`;
+    $('no').onclick = () => detalle(m.id);
+    $('si').onclick = () => accion(() => herramienta('forget', { id: m.id }));
+  };
+}
+
+async function accion(f) {
+  try { await f(); aviso(T.hecho); await cargar(); detalle(todas.some(m => m.id === elegida) ? elegida : null); }
+  catch (e) { aviso(T.error + ': ' + e.message); }
+}
+
+let espera;
+$('q').placeholder = T.buscar;
+$('q').oninput = () => {
+  clearTimeout(espera);
+  espera = setTimeout(async () => {
+    const q = $('q').value.trim();
+    if (!q) { encontrados = null; pintar(); return; }
+    try {
+      const r = await herramienta('search', { query: q, limit: 50, all_projects: true });
+      encontrados = r.map(x => x.id);
+    } catch (e) { aviso(T.error + ': ' + e.message); encontrados = []; }
+    pintar();
+  }, 180);
+};
+$('proyecto').onchange = () => { temas(); pintar(); };
+$('tema').onchange = pintar;
+$('tipos').innerHTML = [[null, T.todosTipos], ...TIPOS.map(t => [t, t]), ['pinned', T.fijadas]]
+  .map(([v, t]) => `<button data-t="${v || ''}" aria-pressed="${v === tipo}">${esc(t)}</button>`).join('');
+$('tipos').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  tipo = b.dataset.t || null;
+  for (const x of $('tipos').children) x.setAttribute('aria-pressed', (x.dataset.t || null) === tipo);
+  pintar();
+};
+$('lista').onclick = e => { const i = e.target.closest('.item'); if (i) detalle(i.dataset.id); };
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
+  if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
+    e.preventDefault();
+    const i = visibles.findIndex(m => m.id === elegida), n = (e.key === 'ArrowDown' || e.key === 'j') ? 1 : -1;
+    const sig = visibles[Math.max(0, Math.min(visibles.length - 1, i + n))];
+    if (sig) { detalle(sig.id); document.querySelector(`.item[data-id="${sig.id}"]`)?.scrollIntoView({ block: 'nearest' }); }
+  }
+});
+document.documentElement.lang = ES ? 'es' : 'en';
+detalle(null);
+cargar();
+</script>
+</body>
+</html>

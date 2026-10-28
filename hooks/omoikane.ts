@@ -2,8 +2,9 @@
 // module downloads the `omoi` binary that matches the plugin's version (checking its SHA-256) into
 // ~/.omoikane/bin, then the model in the background. It serves the memory tools by running
 // `omoi tool <name>`, which answers exactly as the MCP server does, and injects the recall on
-// session start and on each prompt through `omoi recall`. No shell is involved anywhere, so it
-// works the same on Windows, macOS and Linux.
+// session start and on each prompt through `omoi recall`. `/omoikane` opens every memory in the
+// browser (`omoi serve --open`). No shell is involved anywhere, so it works the same on Windows,
+// macOS and Linux.
 import type { Register } from 'claude-code'
 
 const REPO = 'marcmayol/omoikane'
@@ -17,7 +18,25 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const l = await ready($)
     if (l !== undefined) await registerTools($, l)
+    await $.command.register({ name: 'omoikane', description: 'Open your memories in the browser: search, filter by project or topic, pin, move, forget', immediate: true })
     return next(e)
+  })
+
+  // The web view: `omoi serve --open` starts the local server and opens the browser, or just opens it
+  // when a server is already running. The server lives as long as this session.
+  on('command.run', { command: 'omoikane' }, async ($, e) => {
+    const l = await ready($)
+    if (l === undefined) return { text: 'Omoikane is not ready: its binary could not be installed. See the toast at session start.' }
+    void (async () => {
+      try {
+        for await (const _ of $.process.spawn({ argv: [l.omoi, 'serve', '--open'] })) {
+          // Nothing to read: the loop keeps the server alive.
+        }
+      } catch {
+        // It could not start (the port is taken by something else): `omoi serve` already said why.
+      }
+    })()
+    return { text: 'Omoikane: opening http://127.0.0.1:7438/ in your browser. It stays up while this session is open.' }
   })
 
   on('classic.SessionStart', async ($, e, next) => {
