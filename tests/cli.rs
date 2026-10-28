@@ -229,3 +229,29 @@ fn modelo_duplicados_y_significado() {
     assert!(e.ok(&["reindex"]).contains("2 memories, 2 vectors"));
     assert!(e.ok(&["model", "clean"]).contains("0 models deleted"));
 }
+
+/// `omoi tool`, lo que usa el mod del plugin: la lista de herramientas y una llamada de cada tipo,
+/// con las mismas respuestas que el servidor MCP (y exit 1 cuando la herramienta responde error).
+#[test]
+fn herramientas_sin_mcp() {
+    let e = Entorno::nuevo("tool");
+    let lista: serde_json::Value = serde_json::from_str(&e.ok(&["tool"])).unwrap();
+    let nombres: Vec<&str> = lista["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for n in ["remember", "search", "get", "update", "forget", "history", "context", "recent"] {
+        assert!(nombres.contains(&n), "falta {n} en {nombres:?}");
+    }
+    assert!(lista["instructions"].as_str().unwrap().contains("long-term memory"));
+
+    let o = e.omoi_con(&["tool", "remember"], Some(r#"{"title":"Puerto del servidor","content":"Escucha en el 8010","kind":"fact"}"#), &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let guardada: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(guardada["saved"], true);
+
+    let o = e.omoi_con(&["tool", "search"], Some(r#"{"query":"puerto servidor"}"#), &[]);
+    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(r[0]["id"], guardada["id"]);
+
+    let o = e.omoi_con(&["tool", "get"], Some(r#"{"id":"ZZZZZZ"}"#), &[]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("ZZZZZZ"));
+}

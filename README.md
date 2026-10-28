@@ -14,7 +14,16 @@ Working today: the memory store and its CLI (phase 1), search by words (plus mea
 
 ## Install
 
-One line installs the `omoi` binary, the embedding model (~150 MB, once) and the Claude Code plugin (MCP server + automatic recall):
+In Claude Code (2.1.310 or newer), two commands and nothing else:
+
+```text
+/plugin marketplace add marcmayol/drac-plugins
+/plugin install omoikane@drac
+```
+
+On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`).
+
+**Without Claude Code**, or to use `omoi` from the terminal or another MCP client, install the binary with one line:
 
 **Windows** (PowerShell)
 ```powershell
@@ -26,13 +35,11 @@ irm https://raw.githubusercontent.com/marcmayol/omoikane/master/install.ps1 | ie
 curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.sh | sh
 ```
 
-The installer checks the SHA-256 of the binary before installing it. `OMOIKANE_NO_MODEL=1` skips the model (search by words only) and `OMOIKANE_NO_SETUP=1` leaves Claude Code alone; you can run `omoi setup claude` later. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel. Anything else: `cargo install omoikane`.
-
-Already have `omoi`? In Claude Code: `/plugin marketplace add marcmayol/drac-plugins` and then `/plugin install omoikane@drac`, or `omoi setup claude`.
+Or `cargo install omoikane`. The installers also add the Claude Code plugin if Claude Code is there (`OMOIKANE_NO_SETUP=1` to skip it, `OMOIKANE_NO_MODEL=1` to skip the model).
 
 ## Use it
 
-Once the plugin is in, Claude Code does it by itself: it gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). Any other MCP client can use `omoi mcp` directly.
+Once the plugin is in, Claude Code does it by itself: it gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). The plugin is a Claude Code mod: it runs the binary directly, with no MCP server and no shell scripts, the same on Windows, macOS and Linux. Any other MCP client can use `omoi mcp` directly.
 
 From the terminal:
 
@@ -54,7 +61,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 Omoikane keeps those as short, typed memories in a local SQLite file and gives them back:
 
 - **Search that works in your language.** Keywords (FTS5, accent-insensitive, file paths included) rank the results; a local static embedding model adds very close matches that share no words, and spots duplicates when you save. Measured on real notes, words alone find the right memory first 98 % of the time; the embeddings are there to catch duplicates, not to replace that.
-- **Automatic recall.** A Claude Code hook runs `omoi recall` on every prompt. It is a compiled subcommand, no bash, no curl, no server, and it answers in milliseconds with the 3-5 memories that matter for what you just typed, plus any *gotcha* attached to the files you mentioned.
+- **Automatic recall.** On every prompt the plugin runs `omoi recall`. It is a compiled subcommand, no bash, no curl, no server, and it answers in milliseconds with the 3-5 memories that matter for what you just typed, plus any *gotcha* attached to the files you mentioned.
 - **Small on purpose.** 8 MCP tools. No daemon, no port, no cloud, no sync. One `~/.omoikane/omoikane.db`.
 - **History with reasons.** Updating a memory keeps the previous version and, if the agent says so, why it changed.
 

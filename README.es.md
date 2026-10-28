@@ -14,7 +14,16 @@ Funciona ya: el almacén de memorias y su CLI (fase 1), la búsqueda por palabra
 
 ## Instalación
 
-Una línea instala el binario `omoi`, el modelo de embeddings (~150 MB, una vez) y el plugin de Claude Code (servidor MCP + recall automático):
+En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
+
+```text
+/plugin marketplace add marcmayol/drac-plugins
+/plugin install omoikane@drac
+```
+
+En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`).
+
+**Sin Claude Code**, o para usar `omoi` desde la terminal u otro cliente MCP, instala el binario con una línea:
 
 **Windows** (PowerShell)
 ```powershell
@@ -26,13 +35,11 @@ irm https://raw.githubusercontent.com/marcmayol/omoikane/master/install.ps1 | ie
 curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.sh | sh
 ```
 
-El instalador comprueba la suma SHA-256 del binario antes de instalarlo. `OMOIKANE_NO_MODEL=1` se salta el modelo (búsqueda solo por palabras) y `OMOIKANE_NO_SETUP=1` no toca Claude Code; puedes ejecutar `omoi setup claude` después. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel. Para cualquier otro: `cargo install omoikane`.
-
-¿Ya tienes `omoi`? En Claude Code: `/plugin marketplace add marcmayol/drac-plugins` y después `/plugin install omoikane@drac`, o `omoi setup claude`.
+O `cargo install omoikane`. Los instaladores también añaden el plugin si Claude Code está instalado (`OMOIKANE_NO_SETUP=1` para no hacerlo, `OMOIKANE_NO_MODEL=1` para no bajar el modelo).
 
 ## Uso
 
-Con el plugin, Claude Code lo hace solo: recibe 8 herramientas (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) y, en cada mensaje, se le inyectan las memorias que de verdad tienen que ver (o ninguna). Cualquier otro cliente MCP puede usar `omoi mcp` directamente.
+Con el plugin, Claude Code lo hace solo: recibe 8 herramientas (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) y, en cada mensaje, se le inyectan las memorias que de verdad tienen que ver (o ninguna). El plugin es un mod de Claude Code: ejecuta el binario directamente, sin servidor MCP ni scripts de shell, igual en Windows, macOS y Linux. Cualquier otro cliente MCP puede usar `omoi mcp` directamente.
 
 Desde la terminal:
 
@@ -54,7 +61,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 Omoikane guarda eso como memorias cortas y tipadas en un SQLite local, y las devuelve:
 
 - **Búsqueda que funciona en tu idioma.** Las palabras (FTS5, sin importar las tildes, rutas de fichero incluidas) ordenan los resultados; un modelo de embeddings estático y local añade lo muy parecido que no comparte palabras y detecta duplicados al guardar. Medido con notas reales, las palabras solas sacan primero la memoria correcta el 98 % de las veces; los embeddings están para pillar duplicados, no para sustituir eso.
-- **Recall automático.** Un hook de Claude Code ejecuta `omoi recall` en cada mensaje. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
+- **Recall automático.** En cada mensaje el plugin ejecuta `omoi recall`. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
 - **Pequeño a propósito.** 8 herramientas MCP. Sin demonio, sin puerto, sin nube, sin sincronización. Un `~/.omoikane/omoikane.db`.
 - **Historial con motivo.** Actualizar una memoria conserva la versión anterior y, si el agente lo dice, por qué cambió.
 

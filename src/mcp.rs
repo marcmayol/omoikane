@@ -325,6 +325,35 @@ impl ServerHandler for Servidor {
     }
 }
 
+/// Una herramienta sin servidor, para los clientes que no hablan MCP (el mod del plugin de Claude
+/// Code): las mismas herramientas y las mismas respuestas. Sin nombre, la lista de herramientas con
+/// sus esquemas y las instrucciones. Devuelve el texto y si la herramienta respondió con error.
+pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args: &str) -> Result<(String, bool)> {
+    let s = Servidor::new(db, dir);
+    let Some(nombre) = nombre else {
+        let lista = serde_json::json!({ "instructions": INSTRUCCIONES, "tools": s.tool_router.list_all() });
+        return Ok((serde_json::to_string(&lista)?, false));
+    };
+    let v: serde_json::Value = if args.trim().is_empty() { serde_json::json!({}) } else { serde_json::from_str(args)? };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let r = rt.block_on(async {
+        Ok::<_, anyhow::Error>(match nombre {
+            "remember" => s.remember(Parameters(serde_json::from_value(v)?)).await,
+            "search" => s.search(Parameters(serde_json::from_value(v)?)).await,
+            "get" => s.get(Parameters(serde_json::from_value(v)?)).await,
+            "update" => s.update(Parameters(serde_json::from_value(v)?)).await,
+            "forget" => s.forget(Parameters(serde_json::from_value(v)?)).await,
+            "history" => s.history(Parameters(serde_json::from_value(v)?)).await,
+            "context" => s.context().await,
+            "recent" => s.recent(Parameters(serde_json::from_value(v)?)).await,
+            otro => anyhow::bail!("unknown tool: {otro}"),
+        })
+    })?;
+    let r = r.map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    let texto = r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect::<Vec<_>>().join("\n");
+    Ok((texto, r.is_error.unwrap_or(false)))
+}
+
 /// Sirve por stdin/stdout hasta que el cliente cierre. Nada más puede escribir en stdout.
 pub fn servir(db: PathBuf, dir: Option<PathBuf>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
