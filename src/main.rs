@@ -197,6 +197,15 @@ enum Orden {
         #[arg(long)]
         open: bool,
     },
+    /// Share memories between your computers (or with a team) through a private git repository of
+    /// yours. Without an action, sync now.
+    Sync {
+        #[command(subcommand)]
+        accion: Option<AccionSync>,
+        /// Run in the background after a change (Omoikane launches it itself).
+        #[arg(long, hide = true)]
+        background: bool,
+    },
     /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
     Setup {
         /// The agent: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
@@ -229,6 +238,56 @@ enum Orden {
 }
 
 #[derive(Subcommand)]
+enum AccionSync {
+    /// Set up a new shared repository (empty, or without memories yet): any git URL you can push to.
+    Init {
+        /// The repository: git@github.com:you/memory.git, https://…, a folder…
+        url: String,
+        #[command(flatten)]
+        eleccion: OpcionesSync,
+    },
+    /// Join a repository another computer already syncs with, with the code from `omoi sync code`.
+    Join {
+        /// The code printed by `omoi sync code`.
+        codigo: String,
+        #[command(flatten)]
+        eleccion: OpcionesSync,
+    },
+    /// Print the code to join from another computer. It carries the key: share it privately.
+    Code,
+    /// How sync is set up and how the last one went.
+    Status,
+    /// Stop syncing on this computer (its memories stay).
+    Off {
+        /// Don't ask.
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(Args)]
+struct OpcionesSync {
+    /// Don't ask: use these options and the defaults.
+    #[arg(short, long)]
+    yes: bool,
+    /// Also share preferences (by default they stay on this computer).
+    #[arg(long)]
+    share_preferences: bool,
+    /// Don't share global memories.
+    #[arg(long)]
+    no_global: bool,
+    /// Share only this project (repeatable; by default, every project).
+    #[arg(long, value_name = "DIR")]
+    project: Vec<PathBuf>,
+    /// Don't write an author on each memory.
+    #[arg(long, conflicts_with = "author")]
+    no_author: bool,
+    /// The author written on each memory (by default, git's user.name).
+    #[arg(long)]
+    author: Option<String>,
+}
+
+#[derive(Subcommand)]
 enum AccionModelo {
     /// Which model is installed and in use (the default).
     Status,
@@ -251,7 +310,20 @@ fn main() -> Result<()> {
     }
     let cli = Cli::from_arg_matches(&en_espanol(Cli::command()).get_matches()).unwrap_or_else(|e| e.exit());
     let c = &cli.comun;
-    match cli.orden {
+    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    let r = ejecutar(c, cli.orden);
+    if escribe && r.is_ok() {
+        omoikane::sync::programar(&ruta_db(c));
+    }
+    r
+}
+
+fn ruta_db(c: &Comun) -> PathBuf {
+    c.db.clone().unwrap_or_else(db::ruta_por_defecto)
+}
+
+fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
+    match orden {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
@@ -270,6 +342,7 @@ fn main() -> Result<()> {
             std::process::exit(if es_error { 1 } else { 0 })
         }
         Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
+        Orden::Sync { accion, background } => sync(c, accion, background),
         Orden::Recall { session_start, format } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
             if let Err(e) = recall(c, session_start, format) {
@@ -550,7 +623,15 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     }
     let mut db = db::abrir(&ruta)?;
     let (evento, texto) = if al_empezar {
-        ("SessionStart", recall::al_empezar(&mut db, &project, &e)?)
+        if let Ok(Some(config)) = omoikane::sync::leer_config(&ruta) {
+            let _ = omoikane::sync::adoptar(&db, &project, &config.person);
+            omoikane::sync::programar(&ruta);
+        }
+        let texto = recall::al_empezar(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&ruta) {
+            Some(a) => t.replacen("</omoikane>", &format!("{a}\n</omoikane>"), 1),
+            None => t,
+        });
+        ("SessionStart", texto)
     } else {
         // El modelo abre en milisegundos (mapeado); sin él, el recall va solo por palabras.
         let modelo = modelos::abrir_actual().ok().flatten();
@@ -773,8 +854,203 @@ fn doctor(c: &Comun) -> Result<()> {
     if let Ok(p) = proyecto_de(c) {
         println!("{}{p}", tr!("project    ", "proyecto   "));
     }
+    println!("{}{}", tr!("sync       ", "sincroniz. "), estado_sync(&ruta_db(c)));
     println!("{}", tr!("language   en (OMOIKANE_LANG=es for Spanish)", "idioma     es (OMOIKANE_LANG)"));
     Ok(())
+}
+
+/// Una línea con el estado de la sincronización (para `doctor` y `sync status`).
+fn estado_sync(ruta: &std::path::Path) -> String {
+    use omoikane::sync;
+    let Ok(Some(config)) = sync::leer_config(ruta) else {
+        return tr!("off (`omoi sync init <git url>` to share memories between computers)", "apagada (`omoi sync init <url de git>` para compartir memorias entre equipos)");
+    };
+    let e = sync::leer_estado(ruta);
+    let hace = |s: &str| {
+        let t = s.parse::<u64>().unwrap_or(0);
+        let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let m = ahora.saturating_sub(t) / 60;
+        if m < 60 { tr!("{m} min ago", "hace {m} min") } else { tr!("{} h ago", "hace {} h", m / 60) }
+    };
+    let mut l = config.url.clone();
+    match (&e.ultimo_error, &e.ultimo_ok) {
+        (Some(err), _) => l.push_str(&tr!(" · FAILING: {}", " · FALLA: {}", err.lines().next().unwrap_or_default())),
+        (None, Some(ok)) => l.push_str(&tr!(" · last ok {}", " · última bien {}", hace(ok))),
+        (None, None) => l.push_str(&tr!(" · not synced yet", " · aún sin sincronizar")),
+    }
+    if sync::pendiente(ruta) {
+        l.push_str(&tr!(" · changes pending", " · cambios pendientes"));
+    }
+    l
+}
+
+fn preguntar_si(texto: &str, defecto: bool) -> Result<bool> {
+    let opciones = if defecto { tr!("[Y/n]", "[S/n]") } else { tr!("[y/N]", "[s/N]") };
+    print!("{texto} {opciones} ");
+    std::io::stdout().flush()?;
+    let mut l = String::new();
+    std::io::stdin().read_line(&mut l)?;
+    let l = l.trim().to_lowercase();
+    Ok(if l.is_empty() { defecto } else { matches!(l.as_str(), "s" | "si" | "sí" | "y" | "yes") })
+}
+
+/// Qué compartir: lo de las opciones y, en una terminal sin `--yes`, lo que conteste el usuario.
+fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
+    use std::io::IsTerminal;
+    let proyectos = o.project.iter().map(|p| proyecto::de(p)).collect::<Result<Vec<_>>>()?;
+    let mut e = omoikane::sync::Eleccion {
+        preferencias: o.share_preferences,
+        global: !o.no_global,
+        proyectos,
+        autor: if o.no_author { None } else { o.author.clone().or_else(omoikane::sync::nombre_git) },
+    };
+    if o.yes || !std::io::stdin().is_terminal() {
+        return Ok(e);
+    }
+    e.preferencias = preguntar_si(&tr!("Share your preferences too? They are usually personal.", "¿Compartir también tus preferencias? Suelen ser personales."), e.preferencias)?;
+    e.global = preguntar_si(&tr!("Share your global memories?", "¿Compartir tus memorias globales?"), e.global)?;
+    if e.proyectos.is_empty() {
+        print!("{} ", tr!("Projects to share (Enter = all; or folders separated by commas):", "Proyectos que compartir (Intro = todos; o carpetas separadas por comas):"));
+        std::io::stdout().flush()?;
+        let mut l = String::new();
+        std::io::stdin().read_line(&mut l)?;
+        e.proyectos = l.split(',').map(str::trim).filter(|x| !x.is_empty()).map(|x| proyecto::de(std::path::Path::new(x))).collect::<Result<_>>()?;
+    }
+    if let Some(a) = e.autor.clone()
+        && !preguntar_si(&tr!("Write «{a}» as the author of each memory?", "¿Apuntar «{a}» como autor de cada memoria?"), true)?
+    {
+        e.autor = None;
+    }
+    Ok(e)
+}
+
+fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
+    use omoikane::sync;
+    use std::io::IsTerminal;
+    let ruta = ruta_db(c);
+    if background {
+        return sync::en_segundo_plano(&ruta, || abrir_con_modelo(c));
+    }
+    let primera = |aviso: &str| -> Result<()> {
+        let (mut db, modelo) = abrir_con_modelo(c)?;
+        let actual = proyecto_de(c).ok();
+        let r = sync::ahora_mismo(&mut db, &ruta, actual.as_deref(), modelo.as_ref())?;
+        if c.json {
+            return json(&r);
+        }
+        println!("{aviso}");
+        println!("{}", tr!("  {} memories shared; {} received", "  {} memorias compartidas; {} recibidas", r.exportadas, r.nuevas));
+        Ok(())
+    };
+    match accion {
+        None => {
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let actual = proyecto_de(c).ok();
+            let r = sync::ahora_mismo(&mut db, &ruta, actual.as_deref(), modelo.as_ref())?;
+            if c.json {
+                return json(&r);
+            }
+            println!(
+                "{}",
+                tr!(
+                    "{}: {} new, {} updated, {} forgotten from {} file(s); {} memories shared",
+                    "{}: {} nuevas, {} actualizadas, {} olvidadas de {} fichero(s); {} memorias compartidas",
+                    r.equipo,
+                    r.nuevas,
+                    r.actualizadas,
+                    r.olvidadas,
+                    r.leidos,
+                    r.exportadas
+                )
+            );
+            Ok(())
+        }
+        Some(AccionSync::Init { url, eleccion }) => {
+            let mut db = abrir(c)?;
+            if sync::leer_config(&ruta)?.is_some() {
+                bail!(tr!("sync is already set up here (`omoi sync status`; `omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"));
+            }
+            let e = elegir(&eleccion)?;
+            let config = sync::config_de(&url, &e);
+            let (g, p, np) = sync::resumen_de_subida(&db, &config)?;
+            println!(
+                "{}",
+                tr!(
+                    "Will upload {g} global memories and {p} from {np} project(s), encrypted (preferences: {}). Everything stays on this computer too.",
+                    "Se subirán {g} memorias globales y {p} de {np} proyecto(s), cifradas (preferencias: {}). Todo sigue también en este equipo.",
+                    if e.preferencias { tr!("yes", "sí") } else { "no".into() }
+                )
+            );
+            if !eleccion.yes && std::io::stdin().is_terminal() && !preguntar_si(&tr!("Continue?", "¿Seguir?"), true)? {
+                println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+                return Ok(());
+            }
+            sync::iniciar(&mut db, &ruta, &config)?;
+            drop(db);
+            primera(&tr!(
+                "Sync set up. To add another computer, run `omoi sync code` here and `omoi sync join <code>` there.",
+                "Sincronización configurada. Para añadir otro equipo: `omoi sync code` aquí y `omoi sync join <código>` allí."
+            ))
+        }
+        Some(AccionSync::Join { codigo, eleccion }) => {
+            let mut db = abrir(c)?;
+            if sync::leer_config(&ruta)?.is_some() {
+                bail!(tr!("sync is already set up here (`omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync off` para empezar de nuevo)"));
+            }
+            let (url, clave) = sync::leer_codigo(&codigo)?;
+            let e = elegir(&eleccion)?;
+            let config = sync::config_de(&url, &e);
+            sync::unirse(&mut db, &ruta, &config, &clave)?;
+            drop(db);
+            primera(&tr!("Joined {}.", "Unido a {}.", url))
+        }
+        Some(AccionSync::Code) => {
+            println!("{}", sync::codigo(&ruta)?);
+            eprintln!("{}", tr!("It carries the key to your memories: share it only through a private channel.", "Lleva la clave de tus memorias: pásalo solo por un canal privado."));
+            Ok(())
+        }
+        Some(AccionSync::Status) => {
+            let config = sync::leer_config(&ruta)?;
+            if c.json {
+                return json(&serde_json::json!({
+                    "config": config,
+                    "state": sync::leer_estado(&ruta),
+                    "pending": sync::pendiente(&ruta),
+                }));
+            }
+            println!("{}", estado_sync(&ruta));
+            if let Some(cf) = config {
+                let tipos: Vec<&str> = cf.kinds.iter().map(|k| k.as_str()).collect();
+                println!("{}{}", tr!("shares     ", "comparte   "), tipos.join(", "));
+                println!("{}{}", tr!("global     ", "globales   "), if cf.global { tr!("yes", "sí") } else { "no".into() });
+                match &cf.projects {
+                    None => println!("{}", tr!("projects   all", "proyectos  todos")),
+                    Some(p) => println!("{}{}", tr!("projects   ", "proyectos  "), p.join(", ")),
+                }
+                println!("{}{}", tr!("author     ", "autor      "), cf.author.as_deref().unwrap_or("-"));
+                if let Some(err) = sync::leer_estado(&ruta).ultimo_error {
+                    println!("{}{err}", tr!("last error ", "último error "));
+                }
+            }
+            Ok(())
+        }
+        Some(AccionSync::Off { yes }) => {
+            let db = abrir(c)?;
+            if sync::leer_config(&ruta)?.is_none() {
+                println!("{}", tr!("sync is not set up", "la sincronización no está configurada"));
+                return Ok(());
+            }
+            if !yes {
+                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to stop syncing", "añade --yes para dejar de sincronizar"));
+                if !preguntar_si(&tr!("Stop syncing on this computer? Its memories stay; the key is deleted here.", "¿Dejar de sincronizar en este equipo? Sus memorias se quedan; la clave se borra de aquí."), false)? {
+                    return Ok(());
+                }
+            }
+            sync::desactivar(&db, &ruta)?;
+            println!("{}", tr!("sync is off on this computer", "sincronización apagada en este equipo"));
+            Ok(())
+        }
+    }
 }
 
 /// Con `OMOIKANE_LANG=es`, la ayuda en español. Los textos en inglés son los comentarios de clap.
@@ -862,6 +1138,7 @@ fn en_espanol(c: Command) -> Command {
             "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas.",
         )]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
+        ("sync", "Comparte las memorias entre tus equipos (o con un equipo de personas) por un repositorio git privado tuyo. Sin acción, sincroniza ahora.", &[]),
     ];
     let c = textos.iter().fold(c, |c, (orden, about, args)| {
         c.mut_subcommand(*orden, |s| args.iter().fold(s.about(*about), |s, (arg, ayuda)| s.mut_arg(*arg, |a| a.help(*ayuda))))
@@ -880,11 +1157,35 @@ fn en_espanol(c: Command) -> Command {
             })
             .mut_subcommand("clean", |s| s.about("Borra los modelos instalados que no se usan."))
     });
+    let opciones_sync = |s: Command| {
+        s.mut_arg("yes", |a| a.help("No preguntar: usar estas opciones y las de por defecto."))
+            .mut_arg("share_preferences", |a| a.help("Compartir también las preferencias (por defecto se quedan en este equipo)."))
+            .mut_arg("no_global", |a| a.help("No compartir las memorias globales."))
+            .mut_arg("project", |a| a.help("Compartir solo este proyecto (se puede repetir; por defecto, todos).").value_name("CARPETA"))
+            .mut_arg("no_author", |a| a.help("No apuntar autor en cada memoria."))
+            .mut_arg("author", |a| a.help("El autor que se apunta en cada memoria (por defecto, el user.name de git)."))
+    };
+    let c = c.mut_subcommand("sync", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("init", |s| {
+                opciones_sync(s.about("Configura un repositorio compartido nuevo (vacío o aún sin memorias): cualquier URL de git en la que puedas subir."))
+                    .mut_arg("url", |a| a.help("El repositorio: git@github.com:tú/memoria.git, https://…, una carpeta…"))
+            })
+            .mut_subcommand("join", |s| {
+                opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
+                    .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code`.").value_name("CÓDIGO"))
+            })
+            .mut_subcommand("code", |s| s.about("Escribe el código para unirse desde otro equipo. Lleva la clave: pásalo por un canal privado."))
+            .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última."))
+            .mut_subcommand("off", |s| s.about("Deja de sincronizar en este equipo (sus memorias se quedan).").mut_arg("yes", |a| a.help("No preguntar.")))
+    });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
     let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));
-    c.mut_subcommand("model", |m| {
-        let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
-        acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))
+    ["model", "sync"].iter().fold(c, |c, sub| {
+        c.mut_subcommand(*sub, |m| {
+            let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
+            acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))
+        })
     })
 }
 
