@@ -81,13 +81,35 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 | Antigravity CLI | sí | solo al empezar (no tiene evento de mensaje) | según su documentación |
 | Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | sí | no (sus hooks no pueden añadir contexto, o no está documentado) | según su documentación |
 
+`omoi setup` añade también una orden `/omoikane` que abre la vista web, en los agentes que admiten órdenes de usuario: Gemini CLI, Qwen Code, Codex (`/prompts:omoikane`), Cursor, OpenCode, Kiro, Windsurf, Pi y Kilo Code. En esos agentes una orden es un texto para el modelo, así que es el agente quien ejecuta `omoi serve --open` y puede pedir permiso antes.
+
+### Compartir la memoria entre equipos (y con compañeros)
+
+Omoikane no aloja nada: sincroniza a través de un repositorio git tuyo, dedicado solo a este conocimiento (nunca el repositorio del código). Vale cualquier remoto: un repositorio privado en GitHub, GitLab o Codeberg, el Gitea de tu empresa o una carpeta compartida. Usa tus propias credenciales de git.
+
+```
+omoi sync init git@github.com:tu-usuario/mi-memoria.git   # en el primer equipo: pregunta qué compartir
+omoi sync code                                            # escribe un código que lleva la clave
+omoi sync join <código>                                   # en otro equipo (o `--url` para llegar por otra vía)
+```
+
+Desde entonces funciona solo y con todos los agentes: después de guardar, cambiar u olvidar una memoria, `omoi` sincroniza en segundo plano (espera 3 segundos y junta en un commit lo que llegue mientras), y baja lo nuevo al empezar cada sesión. `omoi sync status` y `omoi doctor` dicen cómo fue la última sincronización, la vista web también lo enseña, y si lleva más de una hora fallando, la sesión lo avisa al empezar.
+
+- **Qué viaja:** texto, nunca la base de datos. Una línea cifrada por memoria, en un fichero por proyecto y por equipo, así que un cambio es una línea en el diff y el fichero de nadie choca con el de otro. Los vectores y los índices se rehacen en cada equipo.
+- **Cifrado en el remoto:** cada línea se cifra (AES-SIV) antes de salir de tu equipo; el repositorio solo guarda texto cifrado y nombres de carpeta opacos. La clave la crea `init` y viaja dentro del código para unirse, así que **pasa el código solo por un canal privado**. Si pierdes todas las copias de la clave, lo del remoto no se puede leer, aunque cada equipo conserva sus memorias.
+- **Qué se comparte** se elige en `init`/`join`: los tipos (las preferencias se quedan en tu equipo salvo que digas lo contrario), las globales, qué proyectos y si cada memoria lleva su autor (tu nombre de git, sí por defecto). Con compañeros, sus memorias aparecen marcadas `[by Ana]` para que el agente las trate con cuidado.
+- **Qué versión gana:** el cambio más nuevo según un reloj lógico híbrido, así que un equipo con la hora mal no pisa trabajo más reciente. La versión local anterior queda en el historial de la memoria. Lo olvidado no vuelve desde otro equipo.
+- **Los proyectos** se reconocen por su remoto `origin` de git: el mismo repositorio en carpetas distintas de equipos distintos es el mismo proyecto. Los que no tienen remoto se reconocen por el nombre de la carpeta, y solo entre los equipos de una misma persona.
+
+`omoi sync off` deja de sincronizar en un equipo; sus memorias se quedan.
+
 ### Si vienes de engram
 
 `engram export` y después `omoi import engram-export.json`. Los tipos pasan a los de Omoikane (bugfix → gotcha, decision, preference; el resto, facts con su tipo de engram como etiqueta), `topic_key` pasa a una etiqueta `topic:`, el ámbito personal pasa a global, se conservan las fechas, se saltan las observaciones borradas y lo que ya estaba guardado no se importa dos veces. `--dry-run` enseña adónde iría cada memoria. `omoi import` también lee los ficheros de `omoi export`.
 
 ## Comparado con engram
 
-Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue teniendo sincronización y nube. Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
+Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. Los dos sincronizan entre equipos: engram con su nube, Omoikane con un repositorio git tuyo, cifrado. Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
 
 ## Qué hace
 
@@ -97,7 +119,7 @@ Omoikane guarda eso como memorias cortas y tipadas en un SQLite local, y las dev
 
 - **Búsqueda que funciona en tu idioma.** Las palabras (FTS5, sin importar las tildes, rutas de fichero incluidas) ordenan los resultados; un modelo de embeddings estático y local añade lo muy parecido que no comparte palabras y detecta duplicados al guardar. Medido con notas reales, las palabras solas sacan primero la memoria correcta el 98 % de las veces; los embeddings están para pillar duplicados, no para sustituir eso.
 - **Recall automático.** En cada mensaje el plugin ejecuta `omoi recall`. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
-- **Pequeño a propósito.** 8 herramientas MCP. Sin demonio, sin puerto, sin nube, sin sincronización. Un `~/.omoikane/omoikane.db`.
+- **Pequeño a propósito.** 8 herramientas MCP. Sin demonio ni servidor propio. Un `~/.omoikane/omoikane.db`; la sincronización, opcional, va por un repositorio git tuyo.
 - **Historial con motivo.** Actualizar una memoria conserva la versión anterior y, si el agente lo dice, por qué cambió.
 
 ## Modelo de memoria
