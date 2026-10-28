@@ -160,12 +160,21 @@ fn esta(t: &str, fichas: &BTreeSet<String>) -> bool {
     if t.chars().count() >= PREFIJO_MIN { fichas.iter().any(|p| p.starts_with(t)) } else { fichas.contains(t) }
 }
 
+/// El proyecto para los filtros `(?1 IS NULL OR project = ?1 OR project = '')`: ninguno (todos) desde
+/// una carpeta general.
+fn filtro(project: &str) -> Option<&str> {
+    (!crate::proyecto::es_general(project)).then_some(project)
+}
+
 /// Memorias del ámbito (el proyecto y las globales) y en cuántas aparece cada término.
 fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f64, Vec<f64>)> {
-    let n: i64 = db.query_row("SELECT count(*) FROM memory WHERE project = ?1 OR project = ''", [project], |f| f.get(0))?;
+    let project = filtro(project);
+    let n: i64 = db.query_row("SELECT count(*) FROM memory WHERE ?1 IS NULL OR project = ?1 OR project = ''", [project], |f| {
+        f.get(0)
+    })?;
     let mut q = db.prepare(
         "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND (m.project = ?2 OR m.project = '')",
+         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '')",
     )?;
     let mut df = Vec::with_capacity(terminos.len());
     for t in terminos {
@@ -215,7 +224,7 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     let cobertura_min = leer("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(COBERTURA_MIN);
     let raros_min = leer("OMOIKANE_CALIBRAR_RAROS").map_or(RAROS_MIN, |v| v as usize);
     // 30 candidatas: una nota larga que es justo la del tema puede quedar lejos en BM25.
-    let o = Opciones { ambito: Ambito::Proyecto(project.to_string()), kind: None, tags: vec![], limite: 30 };
+    let o = Opciones { ambito: Ambito::de(project), kind: None, tags: vec![], limite: 30 };
     // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
     // cuesta más. Así el hook tampoco abre el modelo.
     let candidatos = buscar::buscar_sin_apuntar(db, &terminos.join(" "), &o)?;
@@ -254,7 +263,7 @@ pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Mo
     if sim_min > 1.0 || prompt.chars().count() > LARGO_MAX_CON_VECTOR || utiles(prompt).len() < TERMINOS_MIN {
         return Ok(Vec::new());
     }
-    let v = crate::vectores::parecidas(db, modelo, prompt, Some(project), None, sim_min, MAXIMO)?;
+    let v = crate::vectores::parecidas(db, modelo, prompt, filtro(project), None, sim_min, MAXIMO)?;
     if v.is_empty() {
         return Ok(Vec::new());
     }
@@ -268,9 +277,9 @@ pub fn por_rutas(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Mem
     let texto = prompt.to_lowercase().replace('\\', "/");
     let mut q = db.prepare(
         "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id
-         WHERE m.project = ?1 OR m.project = ''",
+         WHERE ?1 IS NULL OR m.project = ?1 OR m.project = ''",
     )?;
-    let rutas: Vec<(String, String)> = q.query_map([project], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let rutas: Vec<(String, String)> = q.query_map([filtro(project)], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut ids: Vec<String> = Vec::new();
     for (id, ruta) in rutas {
         let ruta = ruta.to_lowercase();
@@ -304,7 +313,9 @@ fn apuntar(db: &mut Connection, sesion: &str, ids: &[String]) -> Result<()> {
     buscar::apuntar_recuperadas(db, ids.iter().map(String::as_str))
 }
 
-fn linea(m: &Memoria) -> String {
+/// `project` es el de la sesión: una memoria de otro proyecto (vista desde una carpeta general) dice
+/// de cuál es.
+fn linea(m: &Memoria, project: &str) -> String {
     let plano = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
     let fragmento = if plano.chars().count() > FRAGMENTO {
         format!("{}…", plano.chars().take(FRAGMENTO).collect::<String>())
@@ -312,7 +323,14 @@ fn linea(m: &Memoria) -> String {
         plano
     };
     let rutas = if m.paths.is_empty() { String::new() } else { format!(" ({})", m.paths.join(", ")) };
-    let global = if m.project.is_empty() { " [global]" } else { "" };
+    let global = if m.project.is_empty() {
+        " [global]".to_string()
+    } else if m.project != project {
+        let nombre = std::path::Path::new(&m.project).file_name().map_or(m.project.clone(), |n| n.to_string_lossy().into_owned());
+        format!(" [project {nombre}]")
+    } else {
+        String::new()
+    };
     format!("- [{}]{global}{rutas} {}: {fragmento} (id {})", m.kind, m.title, &m.id[..12])
 }
 
@@ -323,8 +341,11 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         "DELETE FROM recall_log WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
         [&e.session_id],
     )?;
-    let total: i64 =
-        db.query_row("SELECT count(*) FROM memory WHERE project = ?1 OR project = ''", [project], |f| f.get(0))?;
+    let total: i64 = db.query_row(
+        "SELECT count(*) FROM memory WHERE ?1 IS NULL OR project = ?1 OR project = ''",
+        [filtro(project)],
+        |f| f.get(0),
+    )?;
     let contexto = memoria::contexto(db, project, 30)?;
     // Tras compactar sigue siendo la misma sesión: no se reinicia el reloj del recordatorio.
     db.execute(
@@ -339,13 +360,19 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         params![e.session_id, project, e.source],
     )?;
     let mut s = String::from("<omoikane>\n");
-    s.push_str(&format!(
-        "Long-term memory (Omoikane) holds {total} memories for this project and globally. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\n"
-    ));
+    if crate::proyecto::es_general(project) {
+        s.push_str(&format!(
+            "Long-term memory (Omoikane) holds {total} memories across all projects. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\nThis folder is not a project, so search covers every project. When a memory is about one project, pass its folder as `project` (or put its absolute paths in `paths`); otherwise it is saved as global.\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "Long-term memory (Omoikane) holds {total} memories for this project and globally. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\n"
+        ));
+    }
     if !contexto.is_empty() {
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
-            s.push_str(&linea(m));
+            s.push_str(&linea(m, project));
             s.push('\n');
         }
     }
@@ -380,7 +407,7 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
     if !elegidas.is_empty() {
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &elegidas {
-            s.push_str(&linea(m));
+            s.push_str(&linea(m, project));
             s.push('\n');
         }
     }
@@ -416,13 +443,14 @@ fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
                 AND s.started_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)
                 AND (s.reminded_at IS NULL OR s.reminded_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
                 AND NOT EXISTS (SELECT 1 FROM memory m
-                                WHERE (m.project = s.project OR m.project = '') AND m.updated_at >= s.started_at)
+                                WHERE (?5 OR m.project = s.project OR m.project = '') AND m.updated_at >= s.started_at)
              FROM session s WHERE s.session = ?1",
         params![
             sesion,
             MENSAJES_ANTES_DE_RECORDAR,
             format!("-{MINUTOS_ANTES_DE_RECORDAR} minutes"),
             format!("-{MINUTOS_ENTRE_RECORDATORIOS} minutes"),
+            crate::proyecto::es_general(project),
         ],
         |f| f.get(0),
     )?;

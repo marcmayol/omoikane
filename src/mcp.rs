@@ -23,6 +23,7 @@ Save a memory with `remember` when you learn something worth knowing next time: 
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
+If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 
@@ -44,7 +45,7 @@ pub struct Remember {
     content: String,
     /// fact, decision, gotcha or preference.
     kind: String,
-    /// Project files or folders it refers to (relative to the repo root).
+    /// Project files or folders it refers to (relative to the repo root, or absolute).
     paths: Option<Vec<String>>,
     /// Free tags.
     tags: Option<Vec<String>>,
@@ -52,6 +53,10 @@ pub struct Remember {
     pinned: Option<bool>,
     /// Applies to every project, not just this one (typical for user preferences).
     global: Option<bool>,
+    /// Folder of the project it belongs to, when it is not the current one (for example, the session
+    /// runs in the home folder). By default, the current project; from a folder that is not a project,
+    /// the repository its absolute paths point to, or global.
+    project: Option<String>,
     /// Save it even if a very similar memory exists.
     force: Option<bool>,
 }
@@ -89,6 +94,8 @@ pub struct Update {
     /// Replaces the tags (an empty list removes them).
     tags: Option<Vec<String>>,
     pinned: Option<bool>,
+    /// Move it to the project of this folder ("" makes it global).
+    project: Option<String>,
     /// Why it changes; kept with the previous version.
     reason: Option<String>,
 }
@@ -209,10 +216,17 @@ impl Servidor {
         let r = self
             .con_base(move |db, modelo, proyecto| {
                 let kind = Some(p.kind.parse::<Tipo>()?);
-                let project = if p.global.unwrap_or(false) { String::new() } else { proyecto.to_string() };
+                let paths = p.paths.unwrap_or_default();
+                let project = match p.project.as_deref().map(str::trim) {
+                    _ if p.global.unwrap_or(false) => String::new(),
+                    Some("") => String::new(),
+                    Some(d) => proyecto::de_carpeta(std::path::Path::new(d))?,
+                    None => proyecto::para_guardar(proyecto, &paths, &format!("{} {}", p.title, p.content)),
+                };
+                let busca_en = if !project.is_empty() && proyecto::es_general(proyecto) { proyecto.to_string() } else { project.clone() };
                 if !p.force.unwrap_or(false)
                     && let Some(m) = modelo
-                    && let Some((existente, sim)) = vectores::duplicada(db, m, &project, &p.title, &p.content)?
+                    && let Some((existente, sim)) = vectores::duplicada(db, m, &busca_en, &p.title, &p.content)?
                 {
                     return Ok(serde_json::json!({
                         "saved": false,
@@ -226,14 +240,14 @@ impl Servidor {
                     kind,
                     title: p.title,
                     content: p.content,
-                    paths: p.paths.unwrap_or_default(),
+                    paths,
                     tags: p.tags.unwrap_or_default(),
                     pinned: p.pinned.unwrap_or(false),
                     source: "mcp".into(),
                 };
                 let m = memoria::guardar(db, nueva, modelo)?;
-                let mut r = serde_json::json!({ "saved": true, "id": m.id });
-                let rel = vectores::relacionadas(db, &m.project, &m.title, &m.id, 3)?;
+                let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": if m.project.is_empty() { "(global)" } else { m.project.as_str() } });
+                let rel = vectores::relacionadas(db, &busca_en, &m.title, &m.id, 3)?;
                 if !rel.is_empty() {
                     r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
@@ -247,13 +261,14 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "Search the memories of this project and the global ones (or every project with all_projects). Returns compact results; use `get` for the whole memory.")]
+    #[tool(description = "Search the memories of this project and the global ones (or every project with all_projects; from a folder that is not a project, such as the home folder, every project). Returns compact results; use `get` for the whole memory.")]
     async fn search(&self, Parameters(p): Parameters<Search>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, modelo, proyecto| {
-                let todos = p.all_projects.unwrap_or(false);
+                let ambito = if p.all_projects.unwrap_or(false) { Ambito::Todos } else { Ambito::de(proyecto) };
+                let todos = matches!(ambito, Ambito::Todos);
                 let o = Opciones {
-                    ambito: if todos { Ambito::Todos } else { Ambito::Proyecto(proyecto.to_string()) },
+                    ambito,
                     kind: tipo(p.kind)?,
                     tags: p.tags.unwrap_or_default(),
                     limite: limite(p.limit),
@@ -282,6 +297,11 @@ impl Servidor {
                     paths: p.paths,
                     tags: p.tags,
                     pinned: p.pinned,
+                    project: match p.project.as_deref().map(str::trim) {
+                        None => None,
+                        Some("") => Some(String::new()),
+                        Some(d) => Some(proyecto::de_carpeta(std::path::Path::new(d))?),
+                    },
                     reason: p.reason,
                 };
                 memoria::actualizar(db, &p.id, c, modelo)
@@ -317,8 +337,10 @@ impl Servidor {
     async fn recent(&self, Parameters(p): Parameters<Recent>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, proyecto| {
-                let v = memoria::recientes(db, &Ambito::Proyecto(proyecto.to_string()), tipo(p.kind)?, limite(p.limit))?;
-                Ok(v.into_iter().map(|m| compacta(m, false, None)).collect::<Vec<_>>())
+                let ambito = Ambito::de(proyecto);
+                let todos = matches!(ambito, Ambito::Todos);
+                let v = memoria::recientes(db, &ambito, tipo(p.kind)?, limite(p.limit))?;
+                Ok(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))

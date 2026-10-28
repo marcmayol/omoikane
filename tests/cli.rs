@@ -126,6 +126,23 @@ fn update_history_y_forget() {
 }
 
 #[test]
+fn mover_de_proyecto() {
+    let e = Entorno::nuevo("mover");
+    let otro = e.dir.join("otro");
+    std::fs::create_dir_all(otro.join(".git")).unwrap();
+    let id = e.json(&["remember", "-k", "fact", "-t", "La web usa Astro", "Astro 5 con Tailwind."])["id"].as_str().unwrap().to_string();
+    let v = e.json(&["update", &id, "--project", otro.join(".").to_str().unwrap()]);
+    assert!(v["project"].as_str().unwrap().ends_with("otro"), "{v}");
+    assert!(e.json(&["history", &id]).as_array().unwrap().is_empty(), "mover no crea versión");
+    // Desde el repo de antes ya no se ve; desde el nuevo, sí.
+    assert!(e.json(&["search", "astro"]).as_array().unwrap().is_empty());
+    assert_eq!(e.json(&["--dir", otro.to_str().unwrap(), "search", "astro"]).as_array().unwrap().len(), 1);
+    let g = e.json(&["update", &id, "--global"]);
+    assert_eq!(g["project"], "");
+    assert_eq!(e.json(&["search", "astro"]).as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn global_se_ve_desde_cualquier_proyecto() {
     let e = Entorno::nuevo("global");
     e.ok(&["remember", "-k", "preference", "-t", "Commits en inglés", "--global", "Una línea, en inglés."]);

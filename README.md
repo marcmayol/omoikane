@@ -56,7 +56,7 @@ omoi recent
 omoi --help
 ```
 
-Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
+Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). If you open your sessions in your home folder instead of inside a repository, you see the memories of every project, and a new memory goes to the repository its absolute paths point to (or is global); `omoi update <id> --project <folder>` or `--global` moves one later. The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
 `omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it.
 

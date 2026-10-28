@@ -170,10 +170,12 @@ pub fn parecidas(
 }
 
 /// Si ya hay una memoria casi igual en el mismo ámbito (el proyecto y las globales, o solo las
-/// globales si la nueva es global), la devuelve con su similitud.
+/// globales si la nueva es global; todas si `project` es una carpeta general), la devuelve con su
+/// similitud.
 pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
     let nueva = texto(title, content);
-    let mut v = parecidas(db, modelo, &nueva, Some(project), None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    let filtro = (!crate::proyecto::es_general(project)).then_some(project);
+    let mut v = parecidas(db, modelo, &nueva, filtro, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
@@ -195,11 +197,11 @@ pub fn relacionadas(db: &Connection, project: &str, title: &str, excluir: &str, 
     let propias: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
     let mut q = db.prepare(&format!(
         "SELECT {} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND (m.project = ?2 OR m.project = '') AND m.id != ?3
+         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '') AND m.id != ?3
          ORDER BY bm25(memory_fts) LIMIT 30",
         COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ")
     ))?;
-    let candidatas: Vec<Memoria> = q.query_map(params![consulta, project, excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let candidatas: Vec<Memoria> = q.query_map(params![consulta, (!crate::proyecto::es_general(project)).then_some(project), excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
     // Probado también exigir un parecido mínimo por vector: cada punto de ruido menos costaba
     // duplicadas sin cubrir (con 0,15, del 100 % al 98 %), así que no se exige.
     Ok(candidatas
