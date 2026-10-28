@@ -480,15 +480,39 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 - Seguridad: solo atiende peticiones con `Host` `127.0.0.1`/`localhost` (contra el DNS rebinding) y rechaza escrituras con un `Origin` ajeno (un formulario de otra web no puede olvidar memorias). Con `OMOIKANE_HTTP_TOKEN`, el token va en `#token=` de la URL y la página lo manda en cada petición.
 - Sirve para todos los agentes (la base es la misma); la orden con barra solo existe en Claude Code.
 
-### Siguiente fase · `/omoikane` en los demás agentes (anotado 28-oct-2026)
+## Fase 6 · memoria compartida por git, y `/omoikane` en todos los agentes (diseño, 28-oct-2026)
+
+Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el git del usuario. Coste 0.
+
+### Memoria compartida por git (decisiones de Marc, 28-oct-2026)
+- **Un repositorio solo para el conocimiento**, nunca el del código. Cualquier remoto git (GitHub, GitLab, Codeberg, un Gitea de empresa, una carpeta). Credenciales: las de git del usuario (SSH o credential helper); Omoikane no guarda tokens.
+- **Configurar:** `omoi sync init <url>` (o `--create` con `gh`/`glab` si están). La configuración **pregunta**: qué se comparte (por tipo y proyecto; las preferencias, personales salvo que se diga), si cada línea lleva autor (**sí por defecto**) y qué se sube de lo que ya existe (con un resumen: «102 globales y 29 de proyectos»). Apagado hasta hacer `init`. Un segundo equipo o un compañero: `omoi sync join <url> <código>`.
+- **Automático y asíncrono:** después de cada `remember`/`update`/`forget`, el propio `omoi` lanza en segundo plano pull, juntar, commit y push; la consulta no espera. Al empezar sesión, un pull en segundo plano. **Omoikane hace los commits solo** (el repositorio es suyo, no el del código). Agrupados: un commit cada pocos segundos, no uno por memoria, y un solo proceso por equipo (fichero de bloqueo). Lo lanza `omoi`, no el plugin, así que vale para **todos los agentes**.
+- **Nunca se sube el SQLite.** Se sube texto: JSONL, una línea por memoria y ordenado, **partido por proyecto y por equipo**: `<clave del proyecto>/<equipo>.jsonl` y `global/<equipo>.jsonl`. Cada equipo solo escribe los suyos (sin conflictos de git); al bajar se leen solo los ficheros que cambiaron (`git diff --name-only`). Vectores e índice se recalculan en cada equipo; la base local se puede reconstruir entera desde el repositorio.
+- **Cifrado solo en el remoto:** cada línea se cifra antes de subir y se descifra al bajar; en local todo sigue en claro. Algoritmo estándar (nada propio). Clave generada en `init`; otro equipo o compañero la recibe con un código de invitación. Si se pierde, lo del remoto no se lee, pero cada equipo conserva su copia local. Si alguien sale del grupo, se cambia la clave para lo que venga (lo ya leído no se puede retirar).
+- **Autor por línea** (si está activado): el nombre de `git config user.name`, sin correo. No es una firma: la misma confianza que el autor de un commit. La auditoría completa es el `git log` del repositorio.
+- **Lo de otros, marcado:** el recall y la web dicen de quién es una memoria que no es tuya («de Ana»), para que el agente la trate con cuidado.
+- **Orden de los cambios: relojes lógicos** (no la hora del sistema), para que un reloj mal puesto no decida qué versión gana.
+- **Avisa:** si no puede sincronizar, aviso al empezar sesión, y el estado (última sincronización, cambios pendientes, error) en `omoi doctor` y en la web.
+- **Proyectos sin remoto git:** no se mezclan entre personas (dos carpetas `web` de dos personas no son el mismo proyecto); entre los equipos de una misma persona, por el nombre de la carpeta.
+- **Pruebas:** entre dos equipos de verdad, y en la CI con repositorios desnudos locales en Windows, Linux y macOS. **Documentación** y aviso de privacidad al activarlo.
+- **Más adelante, cuando merezca la pena un cloud:** límites de tamaño y repositorios de cientos de personas.
+- **Base técnica:** el prototipo de abajo (rama local `prueba-sync`), con sus tres pendientes.
+
+### `/omoikane` en los demás agentes
 - Hoy `omoi setup <agente>` pone MCP, hooks del recall e instrucciones, pero ninguna orden: `/omoikane` solo existe en Claude Code (la registra el mod).
 - Que `setup` cree también una orden `omoikane` en cada agente que las admita, con su formato. **Comprobar cada ruta y formato en la documentación de cada agente antes de escribirlo**; los candidatos: Gemini (`~/.gemini/commands/omoikane.toml`), Qwen (`~/.qwen/commands/omoikane.toml`), Codex (`~/.codex/prompts/omoikane.md`), Cursor (`.cursor/commands/omoikane.md`), OpenCode (`~/.config/opencode/command/omoikane.md`); Copilot, Windsurf, Kiro y los demás tienen prompt files, workflows o steering, cada uno a su manera.
 - En casi todos, una orden es un texto para el modelo, no un comando: la orden le pediría al agente ejecutar `omoi serve --open` con su herramienta de terminal (puede pedir permiso). Menos directo que el mod de Claude Code.
 - Mismas reglas que el resto de `setup`: idempotente, copia `.antes-de-omoikane`, `--dry-run`, y un test por agente con `OMOIKANE_SETUP_HOME`.
 - De paso: el campo «Origen» de la web dice `mcp` para todo lo que llega por MCP; estaría bien saber qué agente lo guardó (`clientInfo` del MCP).
 
-### Sincronizar entre equipos · diseñado y aparcado (28-oct-2026)
-Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se llegó a escribir y probar en local; el código se descartó y queda aquí el diseño para retomarlo:
+### Otros pendientes de la Fase 6
+- Rutas con espacios en el texto de una memoria: hoy no se reconoce su proyecto y se guarda como global.
+- Al deducir el proyecto por una ruta absoluta, guardarla relativa al repositorio.
+- Ver la web en modo claro (solo se comprobó en oscuro).
+
+### Sincronizar entre equipos · primer prototipo (28-oct-2026, base de la Fase 6)
+Se escribió y probó antes de la Fase 6; el código está en la rama local `prueba-sync` y no en `master`. Su diseño:
 
 - **Sin servicio propio.** Cada equipo escribe su copia completa en `<carpeta>/<equipo>.jsonl` (una línea por memoria, más las marcas de borrado) y lee las de los demás. La carpeta puede ser un repositorio git (`omoi sync <carpeta> --git`: pull, juntar, commit y push; un repositorio privado hace de «nube»), Syncthing o una unidad de red. Como cada equipo solo escribe su fichero, nunca hay conflictos de edición en la carpeta.
 - **Nombre del equipo:** el del sistema más un sufijo fijo, guardado en `meta`.
@@ -500,7 +524,7 @@ Por ahora Omoikane es conocimiento local de cada equipo (decisión de Marc). Se 
 - **Pendiente si se retoma:** (1) si git no tiene identidad (`user.name`/`user.email`), el commit falla y no se sube nada: avisar claro o firmar con una identidad propia de Omoikane; (2) con el repositorio vacío, el primer `pull` falla si la rama del clon no coincide con la del remoto: saltarse el pull cuando el remoto no tiene ramas; (3) recrear `tests/sync.rs`.
 - El plugin podría sincronizar solo al empezar cada sesión si se define `OMOIKANE_SYNC_DIR`.
 
-Después, si los datos lo piden: sincronizar entre equipos (el diseño de arriba), relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
+Después, si los datos lo piden: relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
 
 ## 12. Pruebas
 
