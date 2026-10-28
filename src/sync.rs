@@ -350,10 +350,7 @@ fn claves_locales(db: &Connection, persona: &str) -> Result<HashMap<String, Stri
         q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
     for p in proyectos {
-        if !m.contains_key(&p) {
-            let k = clave(&p, persona);
-            m.insert(p, k);
-        }
+        m.entry(p).or_insert_with_key(|p| clave(p, persona));
     }
     Ok(m)
 }
@@ -606,11 +603,15 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
     for intento in 0..4 {
         if remoto_tiene_rama(&r.clon)? {
             git(&r.clon, &["fetch", "--quiet", "origin", RAMA])?;
-            // Cada equipo solo toca sus ficheros: el rebase no choca nunca.
-            git(&r.clon, &["rebase", "--quiet", &format!("origin/{RAMA}")]).or_else(|e| {
-                let _ = git(&r.clon, &["rebase", "--abort"]);
-                Err(e)
-            })?;
+            if git(&r.clon, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+                // Este clon aún no tiene commits (se unió con el repositorio vacío): toma la rama tal cual.
+                git(&r.clon, &["checkout", "--quiet", "-B", RAMA, &format!("origin/{RAMA}")])?;
+            } else {
+                // Cada equipo solo toca sus ficheros: el rebase no choca nunca.
+                git(&r.clon, &["rebase", "--quiet", &format!("origin/{RAMA}")]).inspect_err(|_| {
+                    let _ = git(&r.clon, &["rebase", "--abort"]);
+                })?;
+            }
         }
         let ficheros = por_leer(db, &r.clon, &equipo)?;
         importar(db, &ficheros, &config, &cifra, actual, modelo, &mut res)?;
@@ -825,10 +826,11 @@ pub fn aviso(ruta_db: &Path) -> Option<String> {
 /// `omoi sync --background` aparte, sin esperar. No falla nunca (lo peor es no sincronizar ahora).
 pub fn programar(ruta_db: &Path) {
     let r = rutas(ruta_db);
-    if !r.config.exists() {
+    // `OMOIKANE_SYNC_AUTO=0`: solo a mano (`omoi sync`).
+    if !r.config.exists() || std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") {
         return;
     }
-    let marca = format!("{}\n{}", ahora(), ulid::Ulid::generate());
+    let marca =format!("{}\n{}", ahora(), ulid::Ulid::generate());
     if std::fs::write(&r.pendiente, marca).is_err() {
         return;
     }
@@ -845,8 +847,32 @@ pub fn programar(ruta_db: &Path) {
         // CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: sin consola y sin morir con
         // quien lo lanza.
         c.creation_flags(0x0800_0000 | 0x0000_0008 | 0x0000_0200);
+        no_heredar_salidas();
     }
     let _ = c.spawn();
+}
+
+/// En Windows un proceso hijo hereda todos los handles heredables, también la entrada y las salidas
+/// de este proceso aunque al hijo se le den otras. Si quien llamó a `omoi` (un hook, un agente) lee
+/// esas salidas, esperaría a que acabe la sincronización en segundo plano. Este proceso termina
+/// enseguida, así que se marcan como no heredables antes de lanzarla.
+#[cfg(windows)]
+fn no_heredar_salidas() {
+    unsafe extern "system" {
+        fn GetStdHandle(n: u32) -> isize;
+        fn SetHandleInformation(h: isize, mascara: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE y STD_ERROR_HANDLE (-10, -11, -12).
+    for n in [-10i32, -11, -12] {
+        // SAFETY: llamadas de la API de Windows con un handle que devuelve el propio sistema.
+        unsafe {
+            let h = GetStdHandle(n as u32);
+            if h != 0 && h != -1 {
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }
 
 /// Un cerrojo por equipo: un fichero creado en exclusiva. Uno de más de 10 minutos se da por
