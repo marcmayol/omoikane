@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.s
 
 The installer checks the SHA-256 of the binary before installing it. `OMOIKANE_NO_MODEL=1` skips the model (search by words only) and `OMOIKANE_NO_SETUP=1` leaves Claude Code alone; you can run `omoi setup claude` later. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel. Anything else: `cargo install --git https://github.com/marcmayol/omoikane`.
 
-Already have `omoi`? In Claude Code: `/plugin install omoikane --marketplace marcmayol/drac-plugins`, or `omoi setup claude`.
+Already have `omoi`? In Claude Code: `/plugin marketplace add marcmayol/drac-plugins` and then `/plugin install omoikane@drac`, or `omoi setup claude`.
 
 ## Use it
 
