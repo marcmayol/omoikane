@@ -54,9 +54,27 @@ omoi --help
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
+`omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it.
+
+### Other agents
+
+`omoi setup <agent>` registers the MCP server, the automatic recall where the agent allows it, and a short paragraph in its instructions file. It shows what it will change first (`--dry-run` to only look), keeps a copy of every file it touches (`<file>.antes-de-omoikane`) and does nothing twice.
+
+| Agent | Tools (MCP) | Automatic recall | Tested |
+|---|---|---|---|
+| Claude Code | yes (the plugin) | session start and every prompt | yes |
+| OpenCode | yes | every prompt (a small plugin) | yes, 1.19.5 |
+| Codex CLI | yes | session start and every prompt (approve the hooks once with `/hooks`) | from its docs |
+| Gemini CLI | yes | session start and every prompt | from its docs |
+| Cursor | yes | session start only (its prompt hook can't add context) | from its docs |
+
+### Coming from engram
+
+`engram export` and then `omoi import engram-export.json`. Types map to Omoikane's (bugfix → gotcha, decision, preference; the rest become facts tagged with their engram type), `topic_key` becomes a `topic:` tag, personal scope becomes global, dates are kept, deleted observations are skipped and anything already saved is not imported twice. `--dry-run` shows where each memory would go. `omoi import` also reads `omoi export` files.
+
 ## How it compares
 
-Against engram, with the same 127 real notes and 80 questions written blind: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, and the duplicate warning is right 99 % of the times it fires; engram catches more duplicates by asking the agent to review half of its saves. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
+Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. engram still wins on short keyword queries (100 % against 96 %) and on features (sync, cloud, more agents). Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
 
 ## What it does
 

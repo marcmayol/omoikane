@@ -446,11 +446,12 @@ fn main() -> Result<()> {
             println!(
                 "{}",
                 tr!(
-                    "imported {}; {} skipped because they were already saved (--force to import them anyway); {} deleted at the source",
-                    "importadas {}; {} saltadas porque ya estaban (--force para importarlas igualmente); {} borradas en el origen",
+                    "imported {}; {} skipped because they were already saved (--force to import them anyway); {} deleted at the source; {} failed",
+                    "importadas {}; {} saltadas porque ya estaban (--force para importarlas igualmente); {} borradas en el origen; {} fallidas",
                     r.guardadas,
                     r.duplicadas,
-                    borradas
+                    borradas,
+                    r.fallidas
                 )
             );
             Ok(())

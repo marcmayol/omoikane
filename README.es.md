@@ -54,9 +54,27 @@ OMOIKANE_LANG=es omoi --help
 
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
+`omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
+
+### Otros agentes
+
+`omoi setup <agente>` registra el servidor MCP, el recall automático donde el agente lo permite y un párrafo en su fichero de instrucciones. Antes enseña lo que va a cambiar (`--dry-run` para solo mirar), guarda una copia de cada fichero que toca (`<fichero>.antes-de-omoikane`) y no hace nada dos veces.
+
+| Agente | Herramientas (MCP) | Recall automático | Probado |
+|---|---|---|---|
+| Claude Code | sí (el plugin) | al empezar y en cada mensaje | sí |
+| OpenCode | sí | en cada mensaje (un plugin pequeño) | sí, 1.19.5 |
+| Codex CLI | sí | al empezar y en cada mensaje (aprueba los hooks una vez con `/hooks`) | según su documentación |
+| Gemini CLI | sí | al empezar y en cada mensaje | según su documentación |
+| Cursor | sí | solo al empezar (su hook del mensaje no deja añadir contexto) | según su documentación |
+
+### Si vienes de engram
+
+`engram export` y después `omoi import engram-export.json`. Los tipos pasan a los de Omoikane (bugfix → gotcha, decision, preference; el resto, facts con su tipo de engram como etiqueta), `topic_key` pasa a una etiqueta `topic:`, el ámbito personal pasa a global, se conservan las fechas, se saltan las observaciones borradas y lo que ya estaba guardado no se importa dos veces. `--dry-run` enseña adónde iría cada memoria. `omoi import` también lee los ficheros de `omoi export`.
+
 ## Comparado con engram
 
-Con las mismas 127 notas reales y 80 preguntas escritas a ciegas: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, y el aviso de duplicado acierta el 99 % de las veces que salta; engram caza más duplicados a cambio de pedir al agente que revise la mitad de lo que guarda. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
+Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. engram sigue ganando con consultas cortas de palabras clave (100 % frente a 96 %) y en funciones (sincronización, nube, más agentes). El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
 
 ## Qué hace
 

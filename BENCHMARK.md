@@ -58,6 +58,62 @@ Omoikane only: engram's hooks remind the agent to save and load recent context, 
 
 With an agent in the loop both are good: the agent rewrites questions into keywords for engram. One question apart out of 20 is not a significant difference. The cost gap (+39 % for engram) is consistent with its larger tool surface (27 tools by default) and longer tool results.
 
+## 0.4.0: a second round, on questions never used for tuning
+
+The 80 blind questions above were then used to tune 0.4.0. To check it, another agent wrote **130 new questions blind** (25 short, 35 natural, 25 paraphrases, 15 in English over the Spanish notes, 30 with no answer, asking about details from the middle and end of the notes), which were only run at the end. Another AI reviewed the code; it found that the new hooks for Codex and Gemini wouldn't have run on Windows, which was fixed before release.
+
+### Search on the new questions (127 notes, top 5)
+
+| Questions | Omoikane | engram any, clean keywords |
+|---|---|---|
+| 25 short: top-1 | 96 % | **100 %** |
+| 35 natural: top-1 / top-3 | **86 % / 94 %** | 83 % / 89 % |
+| 25 paraphrases: top-1 / top-3 | **92 % / 96 %** | 84 % / 88 % |
+| 15 English over Spanish notes: top-1 / top-3 | **87 % / 100 %** | 67 % / 80 % |
+| Median time | **34 ms** | 158 ms |
+
+### Automatic recall on the new questions (Omoikane 0.3.1 vs 0.4.0)
+
+| | 0.3.1 | 0.4.0 |
+|---|---|---|
+| Right note injected, of 100 | 51 | **64** |
+| ...of them paraphrases, of 25 | 5 | **14** |
+| Something injected, of 30 with no answer | **5** | 7 |
+
+0.4.0 adds a meaning channel to the recall (static embeddings plus a word-coverage floor, short prompts only) and counts only the first 6,000 characters of a memory. A 3,000-character cap looked better on the tuning questions but lost 7 of 35 natural questions here, so it was dropped as overfitting.
+
+### Duplicates: engram's method, without its noise
+
+When Omoikane's own check isn't sure, 0.4.0 saves the memory and returns up to 3 related ones (engram's method, ported: BM25 on the title's words and at least two title words in common).
+
+| | Omoikane 0.4.0 | engram MCP |
+|---|---|---|
+| Notes saved again that get flagged or listed | **100 %** | **100 %** |
+| Related listed for 90 sentences that are not duplicates | **14 %** | 49 % |
+| Related listed for 127 notes that are not duplicates | **52 %** | 95 % |
+
+### Scale and English: 3,183 memories
+
+The 127 notes plus 3,055 paragraphs from technical READMEs in English, loaded into both with their own importers; 50 English questions written blind about those paragraphs.
+
+| | Omoikane | engram any, clean keywords |
+|---|---|---|
+| 80 tuning questions (Spanish): top-1 short / natural / paraphrase | **90 / 88 / 80 %** | 85 / 80 / 80 % |
+| 50 English questions: top-1 short / natural / paraphrase | 87 / **95** / 47 % | 87 / 85 / 47 % |
+| Search, median | **50 ms** | 203 ms |
+| Save, median | **38 ms** | 149 ms |
+| Recall per prompt, median | 46 ms | n/a |
+
+Both are weak on English paraphrases (47 % top-1); that is the limit of keyword search and of a static embedding model.
+
+### End to end on the new questions (30, blind grading)
+
+| | Omoikane | engram |
+|---|---|---|
+| Correct | 30/30 | 29/30 (one "don't know" that added unrelated client details) |
+| Median time | 12.4 s | 12.0 s |
+| Total cost | **$2.16** | $3.03 |
+
 ## Caveats
 
 - One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
