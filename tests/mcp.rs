@@ -86,6 +86,9 @@ async fn las_herramientas_de_punta_a_punta() {
     assert!(!err, "{r}");
     assert_eq!(r["saved"], true);
     let id = r["id"].as_str().unwrap().to_string();
+    // El origen dice qué cliente MCP la guardó (el de los tests se presenta como «rmcp»).
+    let (_, entera) = llamar(&c, "get", json!({"id": id})).await;
+    assert_eq!(entera["source"], "mcp:rmcp", "{entera}");
 
     // Un tipo mal escrito vuelve como error de la herramienta, legible para el agente.
     let (err, r) = llamar(&c, "remember", json!({"title": "X", "content": "y", "kind": "bugfix"})).await;

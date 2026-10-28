@@ -42,40 +42,98 @@ pub fn de_carpeta(dir: &Path) -> Result<String> {
 
 /// Dónde guardar una memoria que no dice su proyecto: el actual si es un proyecto de verdad; si es
 /// una carpeta general, el repositorio al que apunten sus rutas absolutas (las de `paths` y las que
-/// cite el texto) cuando es uno solo, y si no, ninguno: global.
-pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> String {
+/// cite el texto) cuando es uno solo, y si no, ninguno: global. Devuelve también las rutas: si el
+/// proyecto salió de ellas, las que caen dentro de ese repositorio pasan a relativas a su raíz.
+pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> (String, Vec<String>) {
     if !es_general(actual) {
-        return actual.to_string();
+        return (actual.to_string(), paths.to_vec());
     }
     let home = dirs::home_dir().and_then(|h| de(&h).ok()).unwrap_or_default();
+    let home = Path::new(&home);
     let mut repos: Vec<String> = paths
         .iter()
-        .map(String::as_str)
-        .chain(texto.split(|c: char| c.is_whitespace() || "`\"'«»()[]<>,;*".contains(c)))
-        .filter_map(|r| repo_de_ruta(r, Path::new(&home)))
+        .cloned()
+        .chain(rutas_en(texto))
+        .filter_map(|r| repo_de_ruta(&r, home))
         .collect();
     repos.sort();
     repos.dedup();
     match repos.as_slice() {
-        [uno] => uno.clone(),
-        _ => String::new(),
+        [uno] => (uno.clone(), paths.iter().map(|r| relativa_a(r, uno, home)).collect()),
+        _ => (String::new(), paths.to_vec()),
+    }
+}
+
+/// Palabras con pinta de ruta absoluta que cita un texto. Una ruta con espacios
+/// (`C:\Users\marcm\the codex\app\x.kt`) llega partida en palabras: se va alargando con las
+/// siguientes (como mucho `PALABRAS_MAX`) y se queda la que llega más hondo en el disco.
+fn rutas_en(texto: &str) -> Vec<String> {
+    const PALABRAS_MAX: usize = 6;
+    let mut v = Vec::new();
+    for trozo in texto.split(|c: char| c == '\n' || "`\"'«»()[]<>,;*".contains(c)) {
+        let palabras: Vec<&str> = trozo.split(' ').filter(|p| !p.is_empty()).collect();
+        for (i, p) in palabras.iter().enumerate() {
+            if expandir(p, Path::new("")).is_none() {
+                continue;
+            }
+            let mut mejor = (*p).to_string();
+            let mut hondo = profundidad(&mejor);
+            let mut candidata = mejor.clone();
+            for siguiente in palabras.iter().skip(i + 1).take(PALABRAS_MAX) {
+                candidata = format!("{candidata} {siguiente}");
+                let h = profundidad(&candidata);
+                if h > hondo {
+                    (mejor, hondo) = (candidata.clone(), h);
+                }
+            }
+            v.push(mejor.trim_end_matches(['.', ':', '?', '!']).to_string());
+        }
+    }
+    v
+}
+
+/// Cuántos componentes de la ruta existen en el disco (la del antepasado existente más hondo).
+fn profundidad(ruta: &str) -> usize {
+    let r = PathBuf::from(ruta.trim_end_matches(['.', ':', '?', '!']));
+    r.ancestors().find(|a| a.exists()).map_or(0, |a| a.components().count())
+}
+
+/// Una ruta absoluta (o con `~`), sin la puntuación del final; `None` si no lo es.
+fn expandir(ruta: &str, home: &Path) -> Option<PathBuf> {
+    let ruta = ruta.trim_end_matches(['.', ':', '?', '!']);
+    let b = ruta.as_bytes();
+    let absoluta = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        || (cfg!(unix) && ruta.len() > 1 && ruta.starts_with('/'));
+    if let Some(resto) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
+        Some(home.join(resto))
+    } else if absoluta {
+        Some(PathBuf::from(ruta))
+    } else {
+        None
+    }
+}
+
+/// La ruta en forma canónica aunque el final aún no exista: el antepasado existente más hondo,
+/// canónico, más el resto tal cual.
+fn canonica_parcial(ruta: &Path) -> Option<PathBuf> {
+    let existe = ruta.ancestors().find(|a| a.exists())?;
+    let resto = ruta.strip_prefix(existe).ok()?;
+    Some(PathBuf::from(texto(&canonica(existe).ok()?)).join(resto))
+}
+
+/// `ruta` relativa a `repo` si cae dentro; si no (o no es absoluta), tal cual.
+fn relativa_a(ruta: &str, repo: &str, home: &Path) -> String {
+    let Some(abs) = expandir(ruta, home).and_then(|p| canonica_parcial(&p)) else { return ruta.to_string() };
+    match abs.strip_prefix(repo) {
+        Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),
+        _ => ruta.to_string(),
     }
 }
 
 /// El repositorio git que contiene una ruta absoluta (aunque el fichero ya no exista), si lo hay y no
 /// es la carpeta del usuario.
 fn repo_de_ruta(ruta: &str, home: &Path) -> Option<String> {
-    let ruta = ruta.trim_end_matches(['.', ':', '?', '!']);
-    let b = ruta.as_bytes();
-    let absoluta = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
-        || (cfg!(unix) && ruta.len() > 1 && ruta.starts_with('/'));
-    let ruta = if let Some(resto) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
-        home.join(resto)
-    } else if absoluta {
-        PathBuf::from(ruta)
-    } else {
-        return None;
-    };
+    let ruta = expandir(ruta, home)?;
     let existe = ruta.ancestors().find(|a| a.exists())?;
     let raiz = existe.ancestors().find(|d| d.join(".git").exists())?;
     let raiz = de(raiz).ok()?;
@@ -176,6 +234,44 @@ mod tests {
         let clon = base.join(".claude").join("plugins").join("x");
         std::fs::create_dir_all(clon.join(".git")).unwrap();
         assert_eq!(r(&clon.display().to_string()), None, "un clon en una carpeta oculta no es un proyecto");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn rutas_con_espacios() {
+        let base = std::env::temp_dir().join(format!("omoi-espacios-{}", std::process::id()));
+        let repo = base.join("the codex");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("app")).unwrap();
+        let fichero = repo.join("app").join("x.kt");
+        let texto = format!("El fallo está en `{}` y en {}. Lo vi ayer.", fichero.display(), repo.join("app").display());
+        let v = rutas_en(&texto);
+        assert!(v.contains(&fichero.display().to_string()), "{v:?}");
+        assert!(v.contains(&repo.join("app").display().to_string()), "{v:?}");
+        let home = PathBuf::from(de(&base).unwrap());
+        let esperado = de(&repo).unwrap();
+        assert!(v.iter().all(|r| repo_de_ruta(r, &home) == Some(esperado.clone())), "{v:?}");
+        // Sin el repositorio, la palabra suelta no basta.
+        assert_eq!(repo_de_ruta(&base.join("the").display().to_string(), &home), None);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn rutas_relativas_al_repo() {
+        let base = std::env::temp_dir().join(format!("omoi-relativas-{}", std::process::id()));
+        let repo = base.join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(base.join("fuera")).unwrap();
+        let home = PathBuf::from(de(&base).unwrap());
+        let raiz = de(&repo).unwrap();
+        let r = |s: &Path| relativa_a(&s.display().to_string(), &raiz, &home);
+        assert_eq!(r(&repo.join("src").join("pages").join("index.astro")), "src/pages/index.astro", "aunque aún no exista");
+        assert_eq!(r(&repo.join("src")), "src");
+        let fuera = base.join("fuera").join("a.txt").display().to_string();
+        assert_eq!(relativa_a(&fuera, &raiz, &home), fuera, "fuera del repo, tal cual");
+        assert_eq!(relativa_a("src/main.rs", &raiz, &home), "src/main.rs");
+        assert_eq!(relativa_a("~/web/src/a.rs", &raiz, &home), "src/a.rs");
         let _ = std::fs::remove_dir_all(base);
     }
 
