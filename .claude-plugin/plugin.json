@@ -10,5 +10,6 @@
   "homepage": "https://github.com/marcmayol/omoikane",
   "repository": "https://github.com/marcmayol/omoikane",
   "license": "MIT",
+  "icon": "assets/icon-512.png",
   "keywords": ["memory", "recall", "sqlite", "local", "mod"]
 }

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.png" alt="Omoikane" width="100%"></p>
+
 # Omoikane
 
 **Local memory for AI coding agents. One binary, one SQLite file, and the agent doesn't have to remember to look things up.**
