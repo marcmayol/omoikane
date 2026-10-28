@@ -23,7 +23,7 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target=aarch64-apple-darwin ;;
   Darwin-x86_64) target=x86_64-apple-darwin ;;
   *)
-    echo "omoikane: no prebuilt binary for $(uname -s) $(uname -m); build it with: cargo install --git https://github.com/$repo" >&2
+    echo "omoikane: no prebuilt binary for $(uname -s) $(uname -m); build it with: cargo install omoikane" >&2
     exit 1
     ;;
 esac
