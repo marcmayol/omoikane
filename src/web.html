@@ -64,7 +64,7 @@ button.chip { border: 0; cursor: pointer; padding: 0 8px; }
 </head>
 <body>
 <header>
-  <h1>Omoikane<span id="cuenta"></span></h1>
+  <h1>Omoikane<span id="cuenta"></span><span id="sync"></span></h1>
   <input id="q" type="search" autocomplete="off">
   <select id="proyecto"></select>
   <select id="tema"></select>
@@ -80,7 +80,8 @@ const ES = (navigator.language || '').toLowerCase().startsWith('es');
 const T = ES ? {
   buscar: 'Buscar como lo haría el agente…', todos: 'Todos los proyectos', global: 'Globales', todosTipos: 'Todo',
   nada: 'No hay memorias con estos filtros.', elige: 'Elige una memoria de la lista.', proyecto: 'Proyecto', rutas: 'Rutas',
-  etiquetas: 'Etiquetas', creada: 'Creada', cambiada: 'Cambiada', origen: 'Origen', usada: 'Recordada', veces: 'veces',
+  etiquetas: 'Etiquetas', creada: 'Creada', cambiada: 'Cambiada', origen: 'Origen', autor: 'Autor',
+  sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla', hace: 'hace', usada: 'Recordada', veces: 'veces',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial', mover: 'Mover a…', moverBtn: 'Mover', olvidar: 'Olvidar',
   seguro: '¿Olvidarla para siempre? No se puede deshacer.', si: 'Sí, olvidar', no: 'Cancelar', sinHist: 'Sin cambios anteriores.',
   hecho: 'Hecho', error: 'Error', memorias: 'memorias', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
@@ -88,7 +89,8 @@ const T = ES ? {
 } : {
   buscar: 'Search the way the agent does…', todos: 'All projects', global: 'Global', todosTipos: 'All',
   nada: 'No memories match these filters.', elige: 'Pick a memory from the list.', proyecto: 'Project', rutas: 'Paths',
-  etiquetas: 'Tags', creada: 'Created', cambiada: 'Changed', origen: 'Source', usada: 'Recalled', veces: 'times',
+  etiquetas: 'Tags', creada: 'Created', cambiada: 'Changed', origen: 'Source', autor: 'Author',
+  sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing', hace: '', usada: 'Recalled', veces: 'times',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'History', mover: 'Move to…', moverBtn: 'Move', olvidar: 'Forget',
   seguro: 'Forget it for good? This can\'t be undone.', si: 'Yes, forget', no: 'Cancel', sinHist: 'No earlier versions.',
   hecho: 'Done', error: 'Error', memorias: 'memories', otra: 'Another folder…', carpeta: 'Path of the project folder:',
@@ -119,7 +121,26 @@ async function herramienta(nombre, args) {
   return v;
 }
 
+// Estado de la sincronización, en la cabecera (nada si no está configurada).
+async function sincro() {
+  try {
+    const r = await fetch('/api/sync', { headers: cab });
+    if (!r.ok) return;
+    const s = await r.json(), el = $('sync');
+    if (!s.configured) { el.textContent = ''; return; }
+    if (s.last_error) {
+      el.textContent = ' · ⚠ ' + T.sincroFalla; el.title = s.last_error; el.style.color = 'var(--accent)';
+    } else if (s.last_ok) {
+      el.textContent = ' · ' + T.sincro + ' ' + new Date(+s.last_ok * 1000).toLocaleTimeString(ES ? 'es-ES' : undefined, { timeStyle: 'short' });
+      el.title = s.url || ''; el.style.color = '';
+    } else {
+      el.textContent = ' · ' + T.sincroNo; el.title = s.url || ''; el.style.color = '';
+    }
+  } catch (e) { /* sin servidor: nada que enseñar */ }
+}
+
 async function cargar() {
+  sincro();
   const r = await fetch('/api/memories', { headers: cab });
   if (!r.ok) { $('lista').innerHTML = `<div class="vacio">${esc(T.error)}: ${r.status}</div>`; return; }
   todas = await r.json();
@@ -172,6 +193,7 @@ function detalle(id) {
       <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
       <span>${T.cambiada}</span><b>${esc(fecha(m.updated_at))}</b>
       <span>${T.usada}</span><b>${m.recall_count} ${T.veces}${m.recalled_at ? ' · ' + esc(fecha(m.recalled_at)) : ''}</b>
+      ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
       <span>${T.origen}</span><b>${esc(m.source)} · ${m.id}</b>
     </div>
     <div class="contenido">${esc(m.content)}</div>

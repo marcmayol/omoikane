@@ -500,6 +500,8 @@ fn servidor_http() {
     assert!(pagina.starts_with("HTTP/1.1 200") && pagina.contains("<title>Omoikane</title>"), "{}", &pagina[..200.min(pagina.len())]);
     let lista = pedir(&format!("GET /api/memories HTTP/1.1\r\n{h}\r\nAuthorization: Bearer secreto\r\nConnection: close\r\n\r\n"));
     assert!(lista.starts_with("HTTP/1.1 200") && lista.contains("Escucha en el 8010"), "{lista}");
+    let sync = pedir(&format!("GET /api/sync HTTP/1.1\r\n{h}\r\nAuthorization: Bearer secreto\r\nConnection: close\r\n\r\n"));
+    assert!(sync.starts_with("HTTP/1.1 200") && sync.contains("\"configured\":false"), "{sync}");
     // Una web que apunta su dominio a 127.0.0.1 llega con su Host; otra web que manda un POST, con su Origin.
     let rebinding = pedir(&format!("GET /api/memories HTTP/1.1\r\nHost: malo.example:{puerto}\r\nAuthorization: Bearer secreto\r\nConnection: close\r\n\r\n"));
     assert!(rebinding.starts_with("HTTP/1.1 403"), "{rebinding}");

@@ -371,6 +371,20 @@ fn en_segundo_plano_tras_guardar() {
 }
 
 #[test]
+fn lo_de_otra_persona_va_marcado() {
+    let p = Prueba::nueva("marcado");
+    let (a, b) = dos(&p, &["--author", "Ana"], &["--author", "Marc"]);
+    a.guardar(&a.dir, "gotcha", "Las facturas redondean por línea", "El IVA se redondea en cada línea.", &["--global", "--path", "facturas.rs"]);
+    a.sync();
+    b.sync();
+    let pregunta = [("USER_PROMPT", "revisa facturas.rs, el total no cuadra")];
+    let en_b = b.ok_en(&b.dir, &["recall", "--format", "plain"], &pregunta);
+    assert!(en_b.contains("[by Ana]"), "{en_b}");
+    let en_a = a.ok_en(&a.dir, &["recall", "--format", "plain"], &pregunta);
+    assert!(en_a.contains("Las facturas") && !en_a.contains("[by "), "lo propio no se marca: {en_a}");
+}
+
+#[test]
 fn avisa_si_lleva_tiempo_fallando() {
     let p = Prueba::nueva("aviso");
     let (a, _b) = dos(&p, &[], &[]);
