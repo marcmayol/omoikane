@@ -22,8 +22,11 @@ pub const TERMINOS_MIN: usize = 3;
 /// Palabras raras (en ≤ `FRACCION_RARA` de las memorias) que tienen que coincidir.
 pub const RAROS_MIN: usize = 2;
 pub const FRACCION_RARA: f64 = 0.2;
-/// Parte del peso IDF del mensaje que tiene que estar en la memoria.
-pub const COBERTURA_MIN: f64 = 0.40;
+/// Parte del peso IDF del mensaje que tiene que estar en la memoria. Era 0,40; recalibrado el
+/// 28-oct-2026 con 80 preguntas escritas a ciegas sobre 127 notas reales: con 0,40 se inyectaba algo
+/// en 8 de 20 preguntas sin respuesta, con 0,50 en 2 (y 36 de 60 con la nota buena frente a 40). Con
+/// los mensajes reales, del 21 % al 11 % con algo inyectado, y los positivos del 99 % al 98 %.
+pub const COBERTURA_MIN: f64 = 0.50;
 /// Solo las que se acercan a la mejor: si una destaca, va sola.
 pub const RELATIVO_A_LA_MEJOR: f64 = 0.7;
 /// Como mucho, tantas memorias por mensaje.
