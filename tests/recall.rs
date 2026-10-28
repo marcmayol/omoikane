@@ -74,6 +74,24 @@ fn cada_mensaje_trae_lo_que_toca_o_nada() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Con muy pocas memorias, las palabras del mensaje que no están en ninguna no deben hundir la
+/// cobertura de la que sí es del tema (caso real de la prueba con Claude Code).
+#[test]
+fn base_pequena_y_palabras_que_no_estan() {
+    let (mut db, dir) = base("pequena");
+    for (k, t, c, p) in [
+        (Tipo::Preference, "Respuestas cortas y en español", "Como mucho tres frases.", ""),
+        (Tipo::Gotcha, "El cobro con tarjeta redondea mal los céntimos", "En src/pago.rs el importe va en f32 y pierde céntimos.", "/p"),
+        (Tipo::Decision, "Pasarela de pago: Redsys", "Se eligió Redsys y no Stripe porque el banco lo exige y la comisión es menor.", "/p"),
+    ] {
+        memoria::guardar(&mut db, Nueva { project: p.into(), kind: Some(k), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+    }
+    let t = recall::al_preguntar(&mut db, "/p", &entrada("s", "Estoy pensando en cambiar la pasarela de pago a Stripe")).unwrap();
+    assert!(t.expect("debería traer la decisión").contains("Redsys"));
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn nombrar_un_fichero_trae_sus_memorias() {
     let (mut db, dir) = base("rutas");
