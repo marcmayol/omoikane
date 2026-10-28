@@ -164,6 +164,20 @@ La 0.5.1 reserva el último de los 5 puestos para una memoria que el vector ve m
 
 La 0.6.0 también busca por una raíz sencilla (la palabra sin sus dos últimas letras, desde 6 letras), porque el español flexiona al final y el prefijo solo no cubría «reinicia» ↔ «reinicios». Con este conjunto suma 2 puntos en top-3, top-5 y top-10 y cuesta una paráfrasis en top-1.
 
+## Un quinto conjunto: 80 paráfrasis, pasadas una vez
+
+Las paráfrasis eran lo único en lo que engram seguía cerca (con las 310 preguntas de ajuste iba una pregunta por delante en top-5). Un quinto conjunto de **80 paráfrasis escritas a ciegas** (10 en inglés) se pasó una sola vez contra la 0.6.0 tal como está publicada, sin cambiar nada antes ni después.
+
+| 80 paráfrasis nuevas | Omoikane 0.6.0 | engram |
+|---|---|---|
+| top-1 | **76,2 %** | 65,0 % |
+| top-3 | **87,5 %** | 76,2 % |
+| top-5 | **90,0 %** | 83,8 % |
+| top-10 | **91,2 %** | 90,0 % |
+| MRR | **0,817** | 0,721 |
+
+Con las 190 paráfrasis de todos los conjuntos, en top-5: Omoikane 176 (92,6 %), engram 169 (88,9 %).
+
 ## Límites
 
 - Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
