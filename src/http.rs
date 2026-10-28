@@ -156,6 +156,22 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     let v = memoria::recientes(&db, &Ambito::Todos, None, usize::MAX >> 1)?;
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
+                (Method::Get, "/api/sync") => {
+                    let config = crate::sync::leer_config(&db)?;
+                    let e = crate::sync::leer_estado(&db);
+                    Ok(json(
+                        200,
+                        serde_json::json!({
+                            "configured": config.is_some(),
+                            "url": config.as_ref().map(|c| c.url.clone()),
+                            "author": config.and_then(|c| c.author),
+                            "last_ok": e.ultimo_ok,
+                            "last_error": e.ultimo_error,
+                            "failing_since": e.error_desde,
+                        })
+                        .to_string(),
+                    ))
+                }
                 (Method::Get, "/health") => Ok(json(200, serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }).to_string())),
                 (Method::Get, "/tools") => {
                     let (texto, _) = mcp::herramienta(db.clone(), dir_peticion, None, "", "http")?;
@@ -179,7 +195,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

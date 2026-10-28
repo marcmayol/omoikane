@@ -314,8 +314,9 @@ fn apuntar(db: &mut Connection, sesion: &str, ids: &[String]) -> Result<()> {
 }
 
 /// `project` es el de la sesión: una memoria de otro proyecto (vista desde una carpeta general) dice
-/// de cuál es.
-fn linea(m: &Memoria, project: &str) -> String {
+/// de cuál es. `propio` es el autor de este equipo: una memoria de otra persona dice de quién es, para
+/// que el agente la trate con cuidado.
+fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
     let plano = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
     let fragmento = if plano.chars().count() > FRAGMENTO {
         format!("{}…", plano.chars().take(FRAGMENTO).collect::<String>())
@@ -331,11 +332,22 @@ fn linea(m: &Memoria, project: &str) -> String {
     } else {
         String::new()
     };
-    format!("- [{}]{global}{rutas} {}: {fragmento} (id {})", m.kind, m.title, &m.id[..12])
+    let de = match propio {
+        Some(yo) if !m.author.is_empty() && m.author != yo => format!(" [by {}]", m.author),
+        _ => String::new(),
+    };
+    format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, &m.id[..12])
 }
 
 /// Al empezar la sesión (o tras compactar): el contexto que el agente debe tener siempre.
+/// El autor de este equipo, si la sincronización lo apunta: con él se distingue lo de otras personas.
+fn autor_propio(db: &Connection) -> Option<String> {
+    let ruta = db.path().filter(|p| !p.is_empty())?;
+    crate::sync::leer_config(std::path::Path::new(ruta)).ok().flatten().and_then(|c| c.author)
+}
+
 pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
+    let propio = autor_propio(db);
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes.
     db.execute(
         "DELETE FROM recall_log WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
@@ -372,7 +384,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     if !contexto.is_empty() {
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
-            s.push_str(&linea(m, project));
+            s.push_str(&linea(m, project, propio.as_deref()));
             s.push('\n');
         }
     }
@@ -384,6 +396,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
 
 /// En cada mensaje: lo que tiene que ver con él y no se ha inyectado ya en esta sesión, o nada.
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
+    let propio = autor_propio(db);
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
     let por_significado = match modelo {
@@ -407,7 +420,7 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
     if !elegidas.is_empty() {
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &elegidas {
-            s.push_str(&linea(m, project));
+            s.push_str(&linea(m, project, propio.as_deref()));
             s.push('\n');
         }
     }
