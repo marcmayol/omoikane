@@ -26,9 +26,9 @@
 //! - Windsurf (Devin Desktop), Kimi Code, Pi, Amp y Kilo Code: MCP e instrucciones. Sus hooks no
 //!   pueden añadir contexto (o no está documentado), así que sin recall automático.
 //!
-//! La orden `/omoikane` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
+//! La orden `/omoikane-web` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
 //! (`~/.gemini/commands/*.toml`), Qwen (`~/.qwen/commands/*.md`), Codex (`~/.codex/prompts/*.md`,
-//! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane`), Cursor
+//! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane-web`), Cursor
 //! (`~/.cursor/commands/*.md`), OpenCode (`~/.config/opencode/commands/*.md`), Kiro
 //! (`~/.kiro/prompts/*.md`), Windsurf (`~/.codeium/windsurf/global_workflows/*.md`), Pi
 //! (`~/.pi/agent/prompts/*.md`) y Kilo (`~/.config/kilo/commands/*.md`). Sin ella: Copilot (no hay
@@ -53,6 +53,8 @@ pub struct Cambio {
     pub fichero: PathBuf,
     pub que: String,
     pub contenido: String,
+    /// Borrar el fichero en vez de escribirlo (la orden con su nombre viejo).
+    pub borrar: bool,
 }
 
 /// La carpeta personal; `OMOIKANE_SETUP_HOME` la cambia (para los tests).
@@ -142,7 +144,7 @@ fn hook_estilo_claude(raiz: &mut Value, evento: &str, matcher: Option<&str>, com
 /// El cambio de un fichero JSON, si `f` cambia algo.
 fn json_cambio(fichero: PathBuf, que: String, f: &dyn Fn(&mut Value) -> Result<bool>) -> Result<Option<Cambio>> {
     let mut j = leer_json(&fichero)?;
-    Ok(if f(&mut j)? { Some(Cambio { contenido: bonito(&j)?, fichero, que }) } else { None })
+    Ok(if f(&mut j)? { Some(Cambio { contenido: bonito(&j)?, fichero, que, borrar: false }) } else { None })
 }
 
 fn bonito(v: &Value) -> Result<String> {
@@ -183,13 +185,13 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if !ya_esta {
                 let sep = if actual.is_empty() || actual.ends_with('\n') { "" } else { "\n" };
                 let contenido = format!("{actual}{sep}\n[mcp_servers.omoikane]\ncommand = {}\nargs = [\"mcp\"]\n", toml_texto(&omoi));
-                v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido });
+                v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido, borrar: false });
             }
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
-                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c });
+                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
-            // Codex la enseña como `/prompts:omoikane`.
-            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, true));
+            // Codex la enseña como `/prompts:omoikane-web`.
+            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, true));
         }
         "gemini" => {
             let d = h.join(".gemini");
@@ -206,10 +208,10 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             if let Some(c) = con_instrucciones(&d.join("GEMINI.md"))? {
-                v.push(Cambio { fichero: d.join("GEMINI.md"), que: tr!("instructions", "instrucciones"), contenido: c });
+                v.push(Cambio { fichero: d.join("GEMINI.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
             let toml = format!("description = {}\nprompt = {}\n", toml_texto(DESCRIPCION_ORDEN), toml_texto(&texto_orden(&omoi)));
-            orden_en(&mut v, d.join("commands").join("omoikane.toml"), toml);
+            orden_en(&mut v, d.join("commands").join(format!("{ORDEN}.toml")), toml);
         }
         "cursor" => {
             let d = h.join(".cursor");
@@ -238,7 +240,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
-            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, false));
+            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, false));
         }
         "opencode" => {
             let d = match std::env::var_os("XDG_CONFIG_HOME") {
@@ -257,12 +259,12 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             }
             let plugin = d.join("plugins").join("omoikane.ts");
             if !plugin.exists() {
-                v.push(Cambio { fichero: plugin, que: tr!("recall plugin (each prompt)", "plugin del recall (cada mensaje)"), contenido: plugin_opencode(&omoi) });
+                v.push(Cambio { fichero: plugin, que: tr!("recall plugin (each prompt)", "plugin del recall (cada mensaje)"), contenido: plugin_opencode(&omoi), borrar: false });
             }
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
-                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c });
+                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
-            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
+            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
         }
         "qwen" => {
             let d = h.join(".qwen");
@@ -279,7 +281,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, d.join("QWEN.md"))?;
-            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
+            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
         }
         "kiro" => {
             let d = h.join(".kiro");
@@ -291,7 +293,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 { "name": "omoikane-prompt", "trigger": "UserPromptSubmit", "action": { "type": "command", "command": format!("{o} recall --format plain") }, "timeout": 30 },
             ]});
             fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall hooks", "hooks del recall"), bonito(&hooks)?);
-            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, false));
+            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, false));
         }
         "copilot" => {
             let d = h.join(".copilot");
@@ -311,7 +313,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             mcp_en(&mut v, config_sistema(&h).join("devin").join("mcp_config.json"), "mcpServers", entrada.clone())?;
             mcp_en(&mut v, h.join(".codeium").join("windsurf").join("mcp_config.json"), "mcpServers", entrada)?;
             instrucciones_en(&mut v, h.join(".codeium").join("windsurf").join("memories").join("global_rules.md"))?;
-            orden_en(&mut v, h.join(".codeium").join("windsurf").join("global_workflows").join("omoikane.md"), orden_md(&omoi, true));
+            orden_en(&mut v, h.join(".codeium").join("windsurf").join("global_workflows").join(ORDEN_MD), orden_md(&omoi, true));
         }
         "antigravity" => {
             let d = h.join(".gemini").join("config");
@@ -338,7 +340,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             let d = h.join(".pi").join("agent");
             mcp_en(&mut v, d.join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
             instrucciones_en(&mut v, d.join("AGENTS.md"))?;
-            orden_en(&mut v, d.join("prompts").join("omoikane.md"), orden_md(&omoi, true));
+            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, true));
         }
         "amp" => {
             let d = h.join(".config").join("amp");
@@ -368,7 +370,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, reglas)?;
-            orden_en(&mut v, d.join("commands").join("omoikane.md"), orden_md(&omoi, true));
+            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
         }
         otro => bail!(tr!(
             "unknown agent «{otro}»: claude, {}",
@@ -397,12 +399,17 @@ fn mcp_en(v: &mut Vec<Cambio>, fichero: PathBuf, raiz: &str, entrada: Value) -> 
 
 fn instrucciones_en(v: &mut Vec<Cambio>, fichero: PathBuf) -> Result<()> {
     if let Some(c) = con_instrucciones(&fichero)? {
-        v.push(Cambio { fichero, que: tr!("instructions", "instrucciones"), contenido: c });
+        v.push(Cambio { fichero, que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
     }
     Ok(())
 }
 
-/// Lo que hace la orden `/omoikane`: en estos agentes una orden es un texto para el modelo, así que le
+/// El nombre de la orden que abre la vista web. Antes era `/omoikane`, que sonaba a «Omoikane,
+/// apunta esto»; `omoi setup` borra la vieja si la había escrito él.
+pub const ORDEN: &str = "omoikane-web";
+const ORDEN_MD: &str = "omoikane-web.md";
+
+/// Lo que hace la orden `/omoikane-web`: en estos agentes una orden es un texto para el modelo, así que le
 /// pide arrancar la vista web con su terminal.
 fn texto_orden(omoi: &str) -> String {
     let o = if omoi.contains(' ') { format!("\"{omoi}\"") } else { omoi.to_string() };
@@ -413,21 +420,27 @@ fn texto_orden(omoi: &str) -> String {
 
 const DESCRIPCION_ORDEN: &str = "Open the Omoikane memory view in the browser";
 
-/// La orden `/omoikane` como Markdown, con `description` arriba si el agente lo admite.
+/// La orden `/omoikane-web` como Markdown, con `description` arriba si el agente lo admite.
 fn orden_md(omoi: &str, con_descripcion: bool) -> String {
     let cuerpo = texto_orden(omoi);
     if con_descripcion { format!("---\ndescription: {DESCRIPCION_ORDEN}\n---\n\n{cuerpo}\n") } else { format!("{cuerpo}\n") }
 }
 
-/// Añade el fichero de la orden `/omoikane` (si no existe ya).
+/// Añade el fichero de la orden `/omoikane-web` (si no existe ya) y borra la del nombre viejo,
+/// `omoikane.md`/`.toml`, solo si es la que escribió Omoikane.
 fn orden_en(v: &mut Vec<Cambio>, fichero: PathBuf, contenido: String) {
-    fichero_propio(v, fichero, tr!("/omoikane command (opens the web view)", "orden /omoikane (abre la vista web)"), contenido);
+    let vieja = fichero.with_file_name(format!("omoikane.{}", fichero.extension().unwrap_or_default().to_string_lossy()));
+    if std::fs::read_to_string(&vieja).is_ok_and(|t| t.contains("Open the Omoikane memory view in the browser")) {
+        let que = tr!("old /omoikane command (removed)", "orden /omoikane vieja (se borra)");
+        v.push(Cambio { fichero: vieja, que, contenido: String::new(), borrar: true });
+    }
+    fichero_propio(v, fichero, tr!("/omoikane-web command (opens the web view)", "orden /omoikane-web (abre la vista web)"), contenido);
 }
 
 /// Un fichero entero que es solo de Omoikane (si no existe ya).
 fn fichero_propio(v: &mut Vec<Cambio>, fichero: PathBuf, que: String, contenido: String) {
     if !fichero.exists() {
-        v.push(Cambio { fichero, que, contenido });
+        v.push(Cambio { fichero, que, contenido, borrar: false });
     }
 }
 
@@ -487,6 +500,10 @@ export const Omoikane = async ({{ $, directory }}) => ({{
 /// Escribe los cambios, con una copia del original la primera vez.
 pub fn aplicar(cambios: &[Cambio]) -> Result<()> {
     for c in cambios {
+        if c.borrar {
+            std::fs::remove_file(&c.fichero).with_context(|| format!("{}", c.fichero.display()))?;
+            continue;
+        }
         if let Some(d) = c.fichero.parent() {
             std::fs::create_dir_all(d)?;
         }
