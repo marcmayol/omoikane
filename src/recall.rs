@@ -332,9 +332,11 @@ fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
     } else {
         String::new()
     };
+    // Sin autor propio (este equipo no apunta el suyo), lo que lleva autor viene de otro equipo.
     let de = match propio {
-        Some(yo) if !m.author.is_empty() && m.author != yo => format!(" [by {}]", m.author),
-        _ => String::new(),
+        _ if m.author.is_empty() => String::new(),
+        Some(yo) if m.author == yo => String::new(),
+        _ => format!(" [by {}]", m.author),
     };
     format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, &m.id[..12])
 }

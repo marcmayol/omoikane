@@ -116,6 +116,15 @@ CREATE TABLE remote_project (
   path TEXT PRIMARY KEY,
   key  TEXT NOT NULL
 );
+-- Lo que olvidó otro equipo (quizá otra persona): una copia con su historial, para `omoi sync restore`.
+CREATE TABLE forgotten (
+  id         TEXT PRIMARY KEY,
+  memory     TEXT NOT NULL,
+  versions   TEXT NOT NULL DEFAULT '[]',
+  hlc        TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL,
+  by         TEXT NOT NULL DEFAULT ''
+);
 ";
 
 /// `n` es el enlace estable con el índice FTS (y en la fase 2 con el vectorial); `id` es el ULID

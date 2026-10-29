@@ -251,7 +251,7 @@ fn cifrado_determinista_y_clave_equivocada() {
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("key"), "{err}");
-    assert!(!c.dir.join("sync.json").exists());
+    assert!(!c.dir.join("o.sync.json").exists());
 }
 
 /// El mismo código con otra clave (cambia el primer byte).
@@ -347,7 +347,7 @@ fn dos_sincronizaciones_a_la_vez() {
         let o = h.wait_with_output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     }
-    assert!(!a.dir.join("sync.lock").exists());
+    assert!(!a.dir.join("o.sync.lock").exists());
 }
 
 #[test]
@@ -405,8 +405,171 @@ fn avisa_si_lleva_tiempo_fallando() {
     let (a, _b) = dos(&p, &[], &[]);
     let hace_dos_horas = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 7200;
     let estado = serde_json::json!({ "ultimo_ok": null, "ultimo_error": "git push: could not read from remote", "error_desde": hace_dos_horas.to_string() });
-    std::fs::write(a.dir.join("sync-estado.json"), estado.to_string()).unwrap();
+    std::fs::write(a.dir.join("o.sync-estado.json"), estado.to_string()).unwrap();
     let o = a.ok_en(&a.dir, &["recall", "--session-start", "--format", "plain"], &[]);
     assert!(o.contains("sync has been failing for 2 h"), "{o}");
     assert!(a.ok(&["doctor"]).contains("FAILING"));
+}
+
+impl Prueba {
+    /// Sube al repositorio compartido un fichero escrito a mano (lo que haría otro programa o un equipo
+    /// con otra clave).
+    fn subir_a_mano(&self, ruta: &str, texto: &str) {
+        let clon = self.dir.join(format!("mano-{}", ulid::Ulid::generate()));
+        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", &self.url(), clon.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let f = clon.join(ruta);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, texto).unwrap();
+        for args in [vec!["add", "-A"], vec!["-c", "user.name=x", "-c", "user.email=x@x", "commit", "--quiet", "-m", "a mano"], vec!["push", "--quiet", "origin", "HEAD:main"]] {
+            let o = self.git(&clon, &args);
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        }
+    }
+}
+
+#[test]
+fn init_en_un_repositorio_ya_usado_pide_join() {
+    let p = Prueba::nueva("yausado");
+    let a = p.equipo("pc-a");
+    a.ok(&["sync", "init", &p.url(), "--yes"]);
+    // Aunque A aún no tenga memorias, el repositorio ya lleva su comprobación de la clave.
+    a.sync();
+    let c = p.equipo("pc-c");
+    let o = c.omoi_en(&c.dir, &["sync", "init", &p.url(), "--yes"], &[]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("join"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!c.dir.join("o.sync.json").exists());
+}
+
+#[test]
+fn una_linea_ilegible_se_salta_sin_parar() {
+    let p = Prueba::nueva("ilegible");
+    let (a, b) = dos(&p, &[], &[]);
+    p.subir_a_mano("global/intruso.jsonl", "esto-no-es-una-linea-cifrada\n");
+    let id = b.guardar(&b.dir, "fact", "El backup corre a las cuatro", "Cada noche.", &["--global"]);
+    b.sync();
+    let r = a.sync();
+    assert_eq!(r["ilegibles"], 1, "{r}");
+    assert!(a.get(&id).is_some(), "lo demás llega igual");
+    assert!(a.ok(&["sync", "status"]).contains("couldn't be decrypted"));
+    // Y A sigue subiendo lo suyo.
+    let de_a = a.guardar(&a.dir, "fact", "La VPN cambia de puerto", "Ahora el 51820.", &["--global"]);
+    a.sync();
+    b.sync();
+    assert!(b.get(&de_a).is_some());
+}
+
+#[test]
+fn un_clon_a_medias_no_atasca() {
+    let p = Prueba::nueva("amedias");
+    let (a, b) = dos(&p, &[], &[]);
+    a.guardar(&a.dir, "fact", "Primero", "Algo.", &["--global"]);
+    a.sync();
+    // Como si un proceso hubiera muerto entre `add` y `commit`: el índice del clon con cambios.
+    let clon = a.dir.join("o.sync");
+    std::fs::write(clon.join("global").join("basura.jsonl"), "x\n").unwrap();
+    assert!(p.git(&clon, &["add", "-A"]).status.success());
+    let id = b.guardar(&b.dir, "fact", "Segundo", "Desde B.", &["--global"]);
+    b.sync();
+    a.sync();
+    assert!(a.get(&id).is_some(), "A sigue sincronizando");
+    assert!(!p.ficheros_compartidos().iter().any(|(f, _)| f.contains("basura")), "lo que quedó a medias no se sube");
+}
+
+#[test]
+fn lo_que_olvida_otro_se_puede_recuperar() {
+    let p = Prueba::nueva("recuperar");
+    let (a, b) = dos(&p, &["--author", "Ana"], &["--author", "Marc"]);
+    let id = b.guardar(&b.dir, "decision", "Los precios van en céntimos", "Para no redondear.", &["--global"]);
+    b.ok(&["update", &id, "-c", "Todo en céntimos, IVA al final.", "-r", "aclarar"]);
+    b.sync();
+    a.sync();
+    a.ok(&["forget", &id, "--yes"]);
+    a.sync();
+    b.sync();
+    assert!(b.get(&id).is_none(), "el olvido de A llega a B");
+    let lista = b.ok(&["sync", "restore"]);
+    assert!(lista.contains("Los precios van en céntimos"), "{lista}");
+    b.ok(&["sync", "restore", &id]);
+    let m = b.get(&id).unwrap();
+    assert_eq!(m["content"], "Todo en céntimos, IVA al final.");
+    let h = b.json_en(&b.dir, &["history", &id]);
+    assert_eq!(h.as_array().unwrap().len(), 1, "vuelve con su historial: {h}");
+    // Y vuelve también a A.
+    b.sync();
+    a.sync();
+    assert!(a.get(&id).is_some(), "la recuperada gana al olvido");
+}
+
+#[test]
+fn lo_que_aqui_no_se_comparte_tampoco_se_acepta() {
+    let p = Prueba::nueva("filtro");
+    let (a, b) = dos(&p, &["--share-preferences"], &[]);
+    let pref = a.guardar(&a.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
+    let hecho = a.guardar(&a.dir, "fact", "El servidor se llama tierra", "En el armario.", &["--global"]);
+    a.sync();
+    b.sync();
+    assert!(b.get(&hecho).is_some());
+    assert!(b.get(&pref).is_none(), "B no comparte preferencias: las de A no entran");
+}
+
+#[test]
+fn el_codigo_por_la_entrada_estandar() {
+    let p = Prueba::nueva("entrada");
+    let a = p.equipo("pc-a");
+    a.ok(&["sync", "init", &p.url(), "--yes"]);
+    let id = a.guardar(&a.dir, "fact", "El NAS duerme a las dos", "Y despierta a las siete.", &["--global"]);
+    a.sync();
+    let codigo = a.ok(&["sync", "code"]).trim().to_string();
+    let b = p.equipo("pc-b");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
+    c.args(["sync", "join", "-", "--yes"])
+        .current_dir(&b.dir)
+        .env("OMOIKANE_DB", b.dir.join("o.db"))
+        .env("OMOIKANE_MODELS", b.dir.join("models"))
+        .env("OMOIKANE_EQUIPO", &b.nombre)
+        .env("OMOIKANE_SYNC_AUTO", "0")
+        .env("GIT_CONFIG_GLOBAL", p.dir.join("gitconfig-vacio"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut h = c.spawn().unwrap();
+    {
+        use std::io::Write;
+        h.stdin.take().unwrap().write_all(format!("{codigo}\n").as_bytes()).unwrap();
+    }
+    let o = h.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(b.get(&id).is_some());
+    // Sin terminal y sin --yes, no se une a ciegas.
+    let c2 = p.equipo("pc-c");
+    let o = c2.omoi_en(&c2.dir, &["sync", "join", &codigo], &[]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--yes"));
+}
+
+#[test]
+fn un_cerrojo_de_un_proceso_muerto_no_bloquea() {
+    let p = Prueba::nueva("muerto");
+    let (a, _b) = dos(&p, &[], &[]);
+    let mut h = Command::new("git").arg("--version").stdout(Stdio::null()).spawn().unwrap();
+    let pid = h.id();
+    h.wait().unwrap();
+    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    std::fs::write(a.dir.join("o.sync.lock"), format!("{pid}\n{ahora}\nficha\n")).unwrap();
+    let inicio = std::time::Instant::now();
+    a.sync();
+    assert!(inicio.elapsed() < std::time::Duration::from_secs(30), "no espera al cerrojo de un proceso que ya no existe");
+    assert!(!a.dir.join("o.sync.lock").exists());
+}
+
+#[test]
+fn ficheros_con_el_nombre_de_la_base() {
+    let p = Prueba::nueva("nombres");
+    let (a, _b) = dos(&p, &[], &[]);
+    for f in ["o.sync.json", "o.sync.key", "o.sync"] {
+        assert!(a.dir.join(f).exists(), "{f}");
+    }
+    assert!(!a.dir.join("sync.json").exists() && !a.dir.join("sync").exists());
 }
