@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 6;
+pub const VERSION_ESQUEMA: i64 = 7;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -96,10 +96,34 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if v < 6 {
         tx.execute_batch(ESQUEMA_6)?;
     }
+    if v < 7 {
+        tx.execute_batch(ESQUEMA_7)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
 }
+
+/// Candidatas sacadas de las conversaciones (Fase 7.2, `candidatas`), que el agente de la sesión
+/// siguiente guarda o deja; y los enlaces `[[nombre]]` entre memorias (Fase 7.4, `enlaces`).
+const ESQUEMA_7: &str = "
+CREATE TABLE candidate (
+  id         INTEGER PRIMARY KEY,
+  project    TEXT NOT NULL,
+  session    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  shown_at   TEXT,
+  UNIQUE (session, text)
+);
+CREATE TABLE memory_link (
+  from_id TEXT NOT NULL,
+  to_id   TEXT NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+) WITHOUT ROWID;
+CREATE INDEX memory_link_to ON memory_link(to_id);
+";
 
 /// Revisión (Fase 7.1, `revisar`): las memorias que otra más nueva contradice, y lo que el usuario
 /// dio por bueno («está bien así», `dismissed_at`), que vale hasta que la memoria vuelva a cambiar.

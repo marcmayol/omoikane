@@ -2,6 +2,7 @@
 
 pub mod agentes;
 pub mod buscar;
+pub mod candidatas;
 pub mod db;
 pub mod embeber;
 pub mod http;

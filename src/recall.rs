@@ -100,6 +100,9 @@ pub struct Entrada {
     pub source: String,
     #[serde(default, alias = "workspacePaths")]
     pub workspace_roots: Vec<String>,
+    /// La conversación (Claude Code: un `.jsonl`), para sacar candidatas al cerrar.
+    #[serde(default)]
+    pub transcript_path: String,
 }
 
 /// En qué formato responde el hook.
@@ -435,6 +438,14 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push_str(&linea_corta(m, project, propio.as_deref()));
             s.push_str(&nota(&notas, m));
             s.push('\n');
+        }
+    }
+    // Lo que quizá valía la pena guardar de sesiones anteriores (7.2): el agente decide.
+    let cs = crate::candidatas::para_empezar(db, project, &e.session_id)?;
+    if !cs.is_empty() {
+        s.push_str("From your previous sessions here, possibly worth keeping (Omoikane picked them without understanding them: save the ones that are worth it with `remember`, in the user's own words and language, merging into existing memories where they fit; ask the user if unsure; ignore the rest, they won't come back):\n");
+        for c in &cs {
+            s.push_str(&format!("- [{}] {} ({})\n", c.kind, c.text.chars().take(400).collect::<String>(), c.created_at.get(..10).unwrap_or("")));
         }
     }
     s.push_str(CONTINUAR);

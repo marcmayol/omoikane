@@ -48,6 +48,21 @@ export const register: Register = on => {
     return { ...r, additionalContext: [...(r.additionalContext ?? []), ...textos] }
   })
 
+  // When the session ends or compacts, set aside from the conversation what may be worth saving; the
+  // agent of the next session decides. SessionEnd gets 1.5 s, so it is bounded; it never gets in the way.
+  on('classic.SessionEnd', async ($, e, next) => {
+    const r = await next(e)
+    const l = await ready($)
+    if (l !== undefined) await setAside($, l.omoi, JSON.stringify(e))
+    return r
+  })
+  on('classic.PreCompact', async ($, e, next) => {
+    const r = await next(e)
+    const l = await ready($)
+    if (l !== undefined) await setAside($, l.omoi, JSON.stringify(e))
+    return r
+  })
+
   on('classic.UserPromptSubmit', async ($, e, next) => {
     const r = await next(e)
     const l = await ready($)
@@ -224,6 +239,14 @@ async function runTool($: any, nombre: string, e: any) {
   const r = await $.process.run([l.omoi, 'tool', nombre], { stdin: JSON.stringify(args), env: { OMOIKANE_SOURCE: 'mcp:claude-code' } })
   const texto = (r.stdout.trim() || r.stderr.trim() || '(no output)') as string
   return r.exitCode === 0 ? { result: texto } : { deny: texto }
+}
+
+async function setAside($: any, omoi: string, entrada: string): Promise<void> {
+  try {
+    await $.process.run([omoi, 'recall', '--session-end'], { stdin: entrada, timeoutMs: 1200 })
+  } catch {
+    // Nothing set aside this time; the session still ends normally.
+  }
 }
 
 async function recall($: any, omoi: string, argv: string[], entrada: string): Promise<string | undefined> {

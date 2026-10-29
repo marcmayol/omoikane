@@ -587,7 +587,14 @@ Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikan
 
 **Hecho cuando:** con sus 136 memorias reales, Marc revisa la lista y al menos 7 de cada 10 avisos le parecen útiles; con el corpus público de los tests, cero avisos en memorias que no se contradicen; y el recall sigue por debajo de 30 ms.
 
-### 7.2 · 0.12.0 · guardar aunque el agente no lo haga
+### 7.2 · guardar aunque el agente no lo haga ✅ (29-oct-2026, sale con 7.3 y 7.4)
+**Hecho así** (`src/candidatas.rs`, esquema 7 con `candidate`, `tests/candidatas.rs`):
+- Tres prototipos en Python sobre sus conversaciones reales. Las palabras de decisión («me quedo con…») perdían casi todas las decisiones, que son **respuestas cortas a una pregunta del agente** («¿Cuál te gusta? → Me gusta mucho la 1C, pero no la veo como portada…»), y lo que pillaban no se entendía sin la pregunta. Los «error y luego arreglo» eran casi todos fallos de scripts de un solo uso: fuera. Queda: respuesta a pregunta (con la pregunta), respuestas de `AskUserQuestion`, frases de preferencia o corrección, y el último commit y publicación como hitos.
+- Puntúa: preferencia 3, `AskUserQuestion` 2,5, respuesta con opinión («gusta», «pero», «mejor», «veo»…) +1 y por largo, encargos («dame…», «publica…») −1,5; se quedan 5 más los hitos. Fuera lo trivial («vale», «sí»), lo que mete el sistema y **lo que parezca un secreto** (formatos conocidos o un trozo de ≥ 20 caracteres sin separadores con minúsculas, mayúsculas y cifras: en sus conversaciones había un token dentro de un `ssh … echo`, y el primer filtro lo dejó pasar). Lo ya cubierto por una memoria (cobertura ≥ 0,6) no se propone.
+- Hooks del mod `classic.SessionEnd` y `classic.PreCompact` → `omoi recall --session-end` (tope 1,2 s; con los 20 MB de una sesión larga tarda 214 ms). Repetir no duplica (`UNIQUE(session, text)`).
+- Al empezar sesión en el mismo proyecto (otra sesión), una vez: «From your previous sessions here, possibly worth keeping…»; caducan a los 7 días. Visor: grupo **De tus últimas sesiones** en Revisar con *Guardar como memoria* y *Descartar*; `omoi review` las lista; `GET /api/candidates`, `POST /api/candidates/dismiss`.
+- Con esta misma sesión, las 5 propuestas incluyen la decisión de diseño de la ronda 1 y «me gustan todas, haz un plan…»; se escapan las que no responden a una pregunta (el `/btw` sobre el nombre de la orden). El agente siguiente filtra el resto; el criterio de «6 de cada 10 útiles» queda para que Marc lo juzgue con el uso.
+
 **Al cerrar** (hook `SessionEnd` y también `PreCompact`, que es cuando se pierde contexto), Omoikane lee la conversación (`transcript_path` del hook) y saca **candidatas** sin modelo, por señales:
 - Frases del usuario que suenan a preferencia o corrección: «prefiero», «no quiero», «siempre», «nunca», «no me gusta», «hazlo así», «te he dicho».
 - Decisiones: «vamos con», «me quedo con», «elijo», y la respuesta a una pregunta del agente con opciones (la opción elegida y su motivo).

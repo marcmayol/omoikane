@@ -237,6 +237,10 @@ enum Orden {
         /// At session start (or after compacting): preferences and pinned memories.
         #[arg(long)]
         session_start: bool,
+        /// When a session ends or compacts: set aside what may be worth saving from the conversation
+        /// (`transcript_path`), for the agent of the next session. Prints nothing.
+        #[arg(long, conflicts_with = "session_start")]
+        session_end: bool,
         /// The agent's hook format: claude (also Codex and Qwen), gemini, cursor, copilot, antigravity or plain.
         #[arg(long, value_enum, default_value = "claude")]
         format: recall::Formato,
@@ -380,7 +384,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
         Orden::Sync { accion, background } => sync(c, accion, background),
-        Orden::Recall { session_start, format } => {
+        Orden::Recall { session_end: true, .. } => recall_al_cerrar(c),
+        Orden::Recall { session_start, format, .. } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
             if let Err(e) = recall(c, session_start, format) {
                 eprintln!("omoikane: {e:#}");
@@ -562,8 +567,16 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             if c.json {
                 return json(&v);
             }
-            if v.is_empty() {
+            let cs = omoikane::candidatas::todas(&db)?;
+            if v.is_empty() && cs.is_empty() {
                 println!("{}", tr!("nothing to review", "nada que revisar"));
+            }
+            if !cs.is_empty() {
+                println!("{}", tr!("From your recent sessions, possibly worth keeping:", "De tus últimas sesiones, quizá valga la pena guardar:"));
+                for x in &cs {
+                    println!("  [{}] {}", x.kind, x.text.chars().take(160).collect::<String>());
+                }
+                println!();
             }
             for a in &v {
                 let id: String = a.memory_id.chars().take(12).collect();
@@ -661,6 +674,27 @@ fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
             "Hecho. Abre una sesión nueva de Claude Code: ahí están las herramientas de memoria y el recall automático."
         )
     );
+    Ok(())
+}
+
+/// `omoi recall --session-end`: aparta candidatas de la conversación. Un fallo nunca molesta.
+fn recall_al_cerrar(c: &Comun) -> Result<()> {
+    let mut entrada = String::new();
+    std::io::stdin().read_to_string(&mut entrada)?;
+    let e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
+    let ruta_db = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    if e.transcript_path.is_empty() || !std::path::Path::new(&e.transcript_path).exists() || !ruta_db.exists() {
+        return Ok(());
+    }
+    let project = match (&c.dir, e.cwd.is_empty()) {
+        (Some(d), _) => proyecto::de(d)?,
+        (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
+        (None, true) => proyecto::actual()?,
+    };
+    let db = db::abrir(&ruta_db)?;
+    if let Err(err) = omoikane::candidatas::apartar(&db, &project, &e.session_id, std::path::Path::new(&e.transcript_path)) {
+        eprintln!("omoikane: {err:#}");
+    }
     Ok(())
 }
 
@@ -1298,10 +1332,13 @@ fn en_espanol(c: Command) -> Command {
             ("yes", "No preguntar antes de cambiar nada."),
             ("dry_run", "Solo enseñar lo que se haría."),
         ]),
-        ("recall", "Para los hooks de Claude Code: lee el JSON del hook y escribe las memorias que hay que inyectar.", &[(
-            "session_start",
-            "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas.",
-        )]),
+        ("recall", "Para los hooks de Claude Code: lee el JSON del hook y escribe las memorias que hay que inyectar.", &[
+            ("session_start", "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas."),
+            (
+                "session_end",
+                "Al cerrar o compactar una sesión: aparta lo que quizá valga la pena guardar de la conversación (`transcript_path`) para el agente de la sesión siguiente. No escribe nada.",
+            ),
+        ]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
         ("sync", "Comparte las memorias entre tus equipos (o con un equipo de personas) por un repositorio git privado tuyo. Sin acción, sincroniza ahora.", &[]),
     ];

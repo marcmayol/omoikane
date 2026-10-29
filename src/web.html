@@ -280,6 +280,8 @@ const T = ES ? {
   revisar: 'Revisar', revTitulo: 'Qué conviene revisar', revSub: 'Lo que Omoikane ha visto en la memoria. El agente también recibe estos avisos cuando le llega una de estas memorias.',
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva',
+  sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias e hitos. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
+  guardarComo: 'Guardar como memoria', dejar: 'Descartar', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito' },
   tipos: { outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
   detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
@@ -297,6 +299,8 @@ const T = ES ? {
   revisar: 'Review', revTitulo: 'What is worth reviewing', revSub: 'What Omoikane has noticed in the memory. The agent gets these warnings too whenever one of these memories reaches it.',
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one',
+  sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences and milestones. The agent of the next session gets them once; here you can save them yourself or drop them.',
+  guardarComo: 'Save as a memory', dejar: 'Drop', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone' },
   tipos: { outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
   detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.detail
 };
@@ -325,7 +329,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
-let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {};
+let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, candidatas = [];
 const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
@@ -469,9 +473,11 @@ async function cargar() {
   try {
     const rv = await fetch('/api/review', { headers: cab });
     avisos = rv.ok ? await rv.json() : [];
-  } catch (e) { avisos = []; }
-  const c = $('nav-rev').querySelector('.cuenta');
-  c.textContent = avisos.length; c.hidden = !avisos.length;
+    const rc = await fetch('/api/candidates', { headers: cab });
+    candidatas = rc.ok ? await rc.json() : [];
+  } catch (e) { avisos = []; candidatas = []; }
+  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length;
+  c.textContent = n; c.hidden = !n;
   pintar();
 }
 
@@ -661,7 +667,15 @@ function pintarRevisar() {
   const grupos = {};
   for (const a of avisos) (grupos[a.kind] = grupos[a.kind] || []).push(a);
   const orden = ['outdated', 'stale_status', 'broken_path', 'unused', 'too_long'];
-  const cuerpo = !avisos.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : orden.filter(k => grupos[k]).map(k => `
+  const sesiones = !candidatas.length ? '' : `
+    <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidatas.length}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${esc(T.sesionesSub)}</p>
+    ${candidatas.map(c => `<div class="av cand" data-c="${c.id}">
+      <div class="cab"><span class="kt ${c.kind === 'preference' ? 'preference' : c.kind === 'decision' ? 'decision' : 'fact'}">${esc(T.kindCand[c.kind] || c.kind)}</span><a class="proj" href="${enlaceProyecto(c.project)}">${esc(nombre(c.project))}</a><span class="what">${esc(corta(c.created_at))}</span></div>
+      <div class="t">${esc(c.text)}</div>
+      <div class="acts"><button class="btn" data-r="guardar">${esc(T.guardarComo)}</button><button class="btn" data-r="dejar">${esc(T.dejar)}</button></div>
+    </div>`).join('')}`;
+  const cuerpo = !avisos.length && !candidatas.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
     ${grupos[k].map(avisoHTML).join('')}`).join('');
@@ -670,7 +684,22 @@ function pintarRevisar() {
     ${cuerpo}
   </div>`;
   const v = $('vista');
-  for (const el of v.querySelectorAll('.av')) {
+  for (const el of v.querySelectorAll('.av.cand')) {
+    const c = candidatas.find(x => String(x.id) === el.dataset.c);
+    const dejar = async () => {
+      const r = await fetch('/api/candidates/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: c.id }) });
+      if (!r.ok) throw new Error(await r.text());
+    };
+    el.querySelector('[data-r="dejar"]').onclick = () => accion(dejar);
+    el.querySelector('[data-r="guardar"]').onclick = () => accion(async () => {
+      const respuesta = c.text.split(' → ').pop();
+      const args = { title: respuesta.slice(0, 90), content: c.text, kind: c.kind === 'milestone' ? 'fact' : c.kind, force: true };
+      if (c.project) args.project = c.project; else args.global = true;
+      await herramienta('remember', args);
+      await dejar();
+    });
+  }
+  for (const el of v.querySelectorAll('.av:not(.cand)')) {
     const a = avisos.find(x => claveAv(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
     q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };
