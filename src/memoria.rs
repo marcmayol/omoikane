@@ -50,7 +50,7 @@ impl std::fmt::Display for Tipo {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Memoria {
     pub id: String,
     /// Raíz del proyecto; vacío = global.
@@ -100,7 +100,7 @@ pub struct Cambios {
 }
 
 /// Una versión anterior de una memoria.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Version {
     pub version: i64,
     pub kind: String,
@@ -249,14 +249,21 @@ pub(crate) fn guardar_con_id(db: &mut Connection, id: &str, nueva: Nueva, o: &Or
     insertar(db, id, nueva, Some(o), modelo)
 }
 
-/// Deja en una memoria las fechas, el sello y el autor que trae de otro equipo (si no, la copia
-/// parecería un cambio de aquí, más nuevo).
-pub(crate) fn fijar_origen(db: &Connection, id: &str, o: &Origen) -> Result<()> {
-    db.execute(
-        "UPDATE memory SET updated_at = ?2, hlc = ?3, author = ?4 WHERE id = ?1",
-        params![id, o.updated_at, o.hlc, o.author],
-    )?;
-    crate::reloj::recibir(db, o.hlc)
+/// El sello de una memoria (vacío si no existe).
+fn hlc_de(db: &Connection, id: &str) -> Result<String> {
+    Ok(db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+/// Apunta una marca de olvido, salvo que ya haya una posterior.
+pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str) -> Result<()> {
+    let actual: Option<String> = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+    if actual.is_none_or(|a| crate::reloj::mayor(hlc, &a)) {
+        db.execute(
+            &format!("INSERT OR REPLACE INTO tombstone(id, deleted_at, hlc) VALUES (?1, COALESCE(?2, {AHORA}), ?3)"),
+            params![id, deleted_at, hlc],
+        )?;
+    }
+    Ok(())
 }
 
 /// El autor que se apunta en lo que se guarda aquí (lo configura la sincronización; vacío = ninguno).
@@ -332,9 +339,28 @@ pub fn obtener(db: &Connection, id: &str) -> Result<Memoria> {
 }
 
 pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<Memoria> {
+    actualizar_desde(db, id, c, None, modelo)
+}
+
+/// Para la sincronización: el cambio que llega de otro equipo, con sus fechas, sello y autor, todo en
+/// la misma transacción (la versión de aquí queda en el historial).
+pub(crate) fn actualizar_con_origen(db: &mut Connection, id: &str, c: Cambios, o: &Origen, modelo: Option<&Modelo>) -> Result<Memoria> {
+    actualizar_desde(db, id, c, Some(o), modelo)
+}
+
+fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
     let antes = leer(&tx, &id)?;
+    let hlc_antes = hlc_de(&tx, &id)?;
+    // El sello del cambio: el de origen, o uno de aquí posterior al de la versión que se cambia.
+    let hlc = match origen {
+        Some(o) => {
+            crate::reloj::recibir(&tx, o.hlc)?;
+            o.hlc.to_string()
+        }
+        None => crate::reloj::sello_tras(&tx, &hlc_antes)?,
+    };
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     let despues = Memoria {
         title: match &c.title {
@@ -360,12 +386,14 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
     if !cambia_texto {
         // Fijar o desfijar no es un cambio de contenido: sin versión nueva y sin tocar updated_at
         // (que da la recencia en la búsqueda).
-        if despues.pinned != antes.pinned || despues.project != antes.project {
-            let hlc = crate::reloj::sello(&tx)?;
+        if despues.pinned != antes.pinned || despues.project != antes.project || origen.is_some() {
             tx.execute(
                 "UPDATE memory SET pinned = ?2, project = ?3, hlc = ?4 WHERE id = ?1",
                 params![id, despues.pinned, despues.project, hlc],
             )?;
+            if let Some(o) = origen {
+                tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
+            }
             tx.commit()?;
         }
         return Ok(Memoria { pinned: despues.pinned, project: despues.project, ..antes });
@@ -407,10 +435,13 @@ pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Mod
             serde_json::to_string(&despues.tags)?,
             despues.pinned,
             despues.project,
-            crate::reloj::sello(&tx)?,
+            hlc,
             autor(&tx)?,
         ],
     )?;
+    if let Some(o) = origen {
+        tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
+    }
     desindexar(&tx, n)?;
     let m = leer(&tx, &id)?;
     indexar(&tx, n, &m)?;
@@ -452,29 +483,74 @@ pub fn olvidar(db: &mut Connection, id: &str) -> Result<Memoria> {
     borrar(db, id, None)
 }
 
-/// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo.
-pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str) -> Result<Memoria> {
-    borrar(db, id, Some((hlc, deleted_at)))
+/// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo. La memoria se
+/// guarda aparte por si hay que devolverla (`restaurar`).
+pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str, equipo: &str) -> Result<Memoria> {
+    borrar(db, id, Some((hlc, deleted_at, equipo)))
 }
 
-fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str)>) -> Result<Memoria> {
+/// Lo que otros equipos olvidaron y aquí se guardó: (id, título, quién, cuándo).
+pub fn olvidadas_fuera(db: &Connection) -> Result<Vec<(String, String, String, String)>> {
+    let mut q = db.prepare("SELECT id, memory, by, deleted_at FROM forgotten ORDER BY deleted_at DESC")?;
+    let v = q
+        .query_map([], |f| {
+            let m: String = f.get(1)?;
+            let titulo = serde_json::from_str::<serde_json::Value>(&m).ok().and_then(|v| v["title"].as_str().map(String::from)).unwrap_or_default();
+            Ok((f.get(0)?, titulo, f.get(2)?, f.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(v)
+}
+
+/// Devuelve una memoria que olvidó otro equipo, con un sello posterior al olvido (así vuelve también a
+/// los demás equipos en la próxima sincronización). Su historial anterior se conserva.
+pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
+    let fila: Option<(String, String, String)> = db
+        .query_row("SELECT id, memory, versions FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 1", [id], |f| {
+            Ok((f.get(0)?, f.get(1)?, f.get(2)?))
+        })
+        .optional()?;
+    let (id, m, versiones) = fila.with_context(|| tr!("nothing forgotten elsewhere with id {id}", "no hay nada olvidado en otro equipo con id {id}"))?;
+    let m: Memoria = serde_json::from_str(&m)?;
+    let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
+    let marca: String = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
+    let hlc = crate::reloj::sello_tras(db, &marca)?;
+    let nueva = Nueva { project: m.project.clone(), kind: Some(m.kind), title: m.title.clone(), content: m.content.clone(), paths: m.paths.clone(), tags: m.tags.clone(), pinned: m.pinned, source: m.source.clone() };
+    let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, author: &m.author };
+    db.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
+    let r = insertar(db, &id, nueva, Some(&o), modelo)?;
+    for v in versiones {
+        db.execute(
+            "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason],
+        )?;
+    }
+    db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
+    Ok(r)
+}
+
+fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str, &str)>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
     let (hlc, deleted_at): (String, Option<&str>) = match marca {
-        Some((h, d)) => {
+        Some((h, d, _)) => {
             crate::reloj::recibir(&tx, h)?;
             (h.to_string(), Some(d))
         }
-        None => (crate::reloj::sello(&tx)?, None),
+        None => (crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?, None),
     };
-    tx.execute(
-        &format!(
-            "INSERT INTO tombstone(id, deleted_at, hlc) VALUES (?1, COALESCE(?2, {AHORA}), ?3)
-             ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at, hlc = excluded.hlc WHERE excluded.hlc > tombstone.hlc"
-        ),
-        params![id, deleted_at, hlc],
-    )?;
+    marcar_olvido(&tx, &id, deleted_at, &hlc)?;
     let m = leer(&tx, &id)?;
+    if let Some((_, _, equipo)) = marca {
+        // Lo olvidó otro equipo (quizá otra persona): aquí queda una copia, con su historial, que
+        // `omoi sync restore <id>` devuelve.
+        let versiones = historial(&tx, &id)?;
+        let hlc_m = hlc_de(&tx, &id)?;
+        tx.execute(
+            &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
+            params![id, serde_json::to_string(&m)?, serde_json::to_string(&versiones)?, hlc_m, deleted_at, equipo],
+        )?;
+    }
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     desindexar(&tx, n)?;
     // memory_version y memory_path caen con ON DELETE CASCADE.
