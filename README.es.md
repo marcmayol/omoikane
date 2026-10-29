@@ -132,7 +132,7 @@ Una memoria es un párrafo que el agente querría leer antes de volver a tocar a
 | `paths`, `tags`, `pinned` | el agente, si quiere |
 | `project`, `source`, fechas, estadísticas de recall, historial de versiones | Omoikane |
 
-Cada `kind` cambia cómo se recupera: las preferencias y lo fijado se inyectan siempre; los gotcha salen cuando el prompt o los ficheros coinciden; hechos y decisiones, por relevancia.
+Cada `kind` cambia cómo se recupera: las preferencias y lo fijado se inyectan siempre; los gotcha salen cuando el prompt o los ficheros coinciden; hechos y decisiones, por relevancia. Una memoria con la etiqueta `status` dice en qué punto se quedó el trabajo de un proyecto: al empezar sesión sale la última de cada proyecto con parte de su contenido, para que «sigamos con X» no obligue a buscar.
 
 ## Stack
 

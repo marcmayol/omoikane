@@ -484,6 +484,12 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 
 Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el git del usuario. Coste 0.
 
+### 0.9.2 · en qué punto se quedó cada proyecto (29-oct-2026)
+- El caso: «vamos a seguir con Omoikane» desde la carpeta del usuario. Con la 0.9.1 el agente hizo una búsqueda, dos `get` y dos comandos de git, y propuso como pendientes cosas ya hechas: la única nota con el estado del proyecto se había quedado en la 0.2.0, y «Last worked on» solo enseñaba títulos.
+- Las memorias con la etiqueta **`status`** dicen dónde se quedó el trabajo. Al empezar sesión sale **«Where work was left»**: la más reciente de cada proyecto del ámbito (como mucho 5, la de la sesión y las globales si se está en un proyecto), con fecha, título y 400 caracteres de contenido. No cuentan como inyectadas.
+- Los estados viejos (no son el último de su proyecto) ya no salen en «Last worked on»: llevarían a retomar desde lo desfasado.
+- Las instrucciones (inicio de sesión, MCP y el recordatorio de guardar) piden guardar el punto en que se quedó con la etiqueta `status` y uno por proyecto: si ya hay uno, `update`.
+
 ### 0.9.1 · retomar sin explorar (29-oct-2026)
 - El caso: en una sesión nueva, «vamos a seguir con el tema de la impresión 3D»; el agente lanzó `recent`, búsquedas, leyó carpetas y consultó la impresora para acabar preguntando qué proyecto. No había ninguna nota del DXC2 y el inicio de sesión no decía en qué se había trabajado.
 - Al empezar sesión se inyecta **«Last worked on»**: las 5 memorias cambiadas más recientemente en el ámbito (todos los proyectos desde la carpeta del usuario), una línea cada una con fecha, tipo, proyecto y título, sin contenido; no cuentan como inyectadas, así que su contenido aún puede llegar con el recall.

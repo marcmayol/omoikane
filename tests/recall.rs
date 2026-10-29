@@ -58,6 +58,41 @@ fn al_empezar_da_preferencias_y_fijadas() {
 }
 
 #[test]
+fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
+    let (mut db, dir) = base("estado");
+    con_memorias(&mut db);
+    let estado = |project: &str, title: &str, content: &str| Nueva {
+        project: project.into(),
+        kind: Some(Tipo::Fact),
+        title: title.into(),
+        content: content.into(),
+        tags: vec!["Status".into()],
+        ..Default::default()
+    };
+    memoria::guardar(&mut db, estado("/p", "Estado viejo de p", "Fase 1 a medias."), None).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let largo = format!("Fase 2 hecha; siguiente: la web. {}", "detalle ".repeat(100));
+    let nuevo = memoria::guardar(&mut db, estado("/p", "Estado de p", &largo), None).unwrap();
+    memoria::guardar(&mut db, estado("/otro", "Estado de otro", "No debería salir desde /p."), None).unwrap();
+    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
+    let (_, estados) = t.split_once("Where work was left").expect("sección de estado");
+    let lineas: Vec<&str> = estados.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    // Solo la más reciente de cada proyecto del ámbito, con un trozo largo del contenido pero cortado.
+    assert_eq!(lineas.len(), 1, "{t}");
+    assert!(lineas[0].contains("Estado de p") && lineas[0].contains("siguiente: la web") && lineas[0].ends_with('…'), "{t}");
+    assert!(!t.contains("Estado viejo de p") && !t.contains("Estado de otro"), "{t}");
+    // No se repite en «Last worked on», que sigue con sus 5, ni cuenta como inyectada.
+    let (_, ultimas) = t.split_once("Last worked on").unwrap();
+    let ultimas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(ultimas.len(), recall::RECIENTES, "{t}");
+    assert!(!ultimas.iter().any(|l| l.contains(&nuevo.id[..12])), "{t}");
+    assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
+    assert!(t.contains("tag `status`"), "{t}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn cada_mensaje_trae_lo_que_toca_o_nada() {
     let (mut db, dir) = base("mensaje");
     con_memorias(&mut db);

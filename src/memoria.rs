@@ -613,6 +613,28 @@ pub fn recientes(db: &Connection, ambito: &Ambito, kind: Option<Tipo>, limite: u
     Ok(v)
 }
 
+/// La etiqueta de las memorias que dicen en qué punto se quedó el trabajo de un proyecto.
+pub const ESTADO: &str = "status";
+
+/// En qué punto se quedó cada proyecto: la memoria más reciente con la etiqueta [`ESTADO`] de cada
+/// uno (las globales cuentan como un proyecto más), de la más nueva a la más vieja.
+pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
+    let mut q = db.prepare(&format!(
+        "SELECT {COLUMNAS} FROM memory
+         WHERE (?1 IS NULL OR project = ?1 OR project = '')
+           AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
+         ORDER BY updated_at DESC, id DESC"
+    ))?;
+    let todas: Vec<Memoria> = q.query_map(params![ambito.filtro(), ESTADO], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let mut v: Vec<Memoria> = Vec::new();
+    for m in todas {
+        if v.len() < limite && !v.iter().any(|x| x.project == m.project) {
+            v.push(m);
+        }
+    }
+    Ok(v)
+}
+
 /// Lo que el agente debería saber siempre al empezar en un proyecto: las preferencias y las fijadas,
 /// del proyecto y globales. Primero las fijadas, luego las más recientes.
 pub fn contexto(db: &Connection, project: &str, limite: usize) -> Result<Vec<Memoria>> {

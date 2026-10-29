@@ -134,7 +134,7 @@ A memory is one paragraph the agent would want to read before touching something
 | `paths`, `tags`, `pinned` | the agent, optionally |
 | `project`, `source`, timestamps, recall stats, version history | Omoikane |
 
-Each `kind` changes how it is recalled: preferences and pinned memories are always injected; gotchas come up when the prompt or the files match; facts and decisions by relevance.
+Each `kind` changes how it is recalled: preferences and pinned memories are always injected; gotchas come up when the prompt or the files match; facts and decisions by relevance. A memory tagged `status` says where the work on a project was left: at session start the latest one of each project comes with part of its content, so "let's carry on with X" needs no searching.
 
 ## Stack
 
