@@ -155,6 +155,21 @@ enum Orden {
     },
     /// Projects that have memories.
     Projects,
+    /// What is worth reviewing: memories a newer one contradicts, stale status, broken paths, unused and too long.
+    Review {
+        /// From every project.
+        #[arg(long)]
+        all: bool,
+        /// "It's fine as it is": stop warning about this memory (until it changes). Give its id.
+        #[arg(long, value_name = "ID")]
+        dismiss: Option<String>,
+        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long).
+        #[arg(long, requires = "dismiss")]
+        kind: Option<String>,
+        /// With --dismiss on an outdated warning: the id of the newer memory.
+        #[arg(long, requires = "dismiss")]
+        other: Option<String>,
+    },
     /// Every memory with its history, one JSON object per line.
     Export {
         /// From every project (default: this one and the global ones).
@@ -331,6 +346,10 @@ fn main() -> Result<()> {
     let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Import { .. } | Orden::Tui { .. });
     let r = ejecutar(c, cli.orden);
     if escribe && r.is_ok() {
+        // Lo que haya que revisar queda al día para el recall, que solo lee (ver `revisar`).
+        if let Ok(db) = abrir(c) {
+            let _ = omoikane::revisar::al_dia(&db);
+        }
         omoikane::sync::programar(&ruta_db(c));
     }
     r
@@ -524,6 +543,35 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             for m in &v {
                 lista(m, all);
+            }
+            Ok(())
+        }
+        Orden::Review { all, dismiss, kind, other } => {
+            let db = abrir(c)?;
+            if let Some(id) = dismiss {
+                let otra = match other {
+                    Some(o) => memoria::resolver_id(&db, &o)?,
+                    None => String::new(),
+                };
+                let kind = kind.unwrap_or_else(|| if otra.is_empty() { omoikane::revisar::LARGA.into() } else { omoikane::revisar::DESFASADA.into() });
+                omoikane::revisar::descartar(&db, &id, &kind, &otra)?;
+                println!("{}", tr!("ok: it won't warn about it again until the memory changes", "hecho: no volverá a avisar hasta que la memoria cambie"));
+                return Ok(());
+            }
+            let v = omoikane::revisar::avisos(&db, &ambito(c, all)?)?;
+            if c.json {
+                return json(&v);
+            }
+            if v.is_empty() {
+                println!("{}", tr!("nothing to review", "nada que revisar"));
+            }
+            for a in &v {
+                let id: String = a.memory_id.chars().take(12).collect();
+                println!("{:<12}  {id}  {}", a.kind, a.title.chars().take(90).collect::<String>());
+                if let Some(t) = &a.other_title {
+                    println!("{:<12}  {} {}  {}", "", tr!("newer:", "nueva:"), a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>());
+                }
+                println!("{:<12}  {}", "", a.detail);
             }
             Ok(())
         }
@@ -1216,6 +1264,12 @@ fn en_espanol(c: Command) -> Command {
             ("yes", "Sin preguntar. Sin él, omoi pregunta en una terminal y se niega en cualquier otro sitio."),
         ]),
         ("history", "Versiones anteriores de una memoria.", &[("id", "Id de la memoria (basta con el principio).")]),
+        ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
+            ("all", "De todos los proyectos."),
+            ("dismiss", "«Está bien así»: deja de avisar de esta memoria (hasta que cambie). Su id."),
+            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, broken_path, unused, too_long)."),
+            ("other", "Con --dismiss en un aviso outdated: el id de la memoria más nueva."),
+        ]),
         ("recent", "Las últimas memorias guardadas o cambiadas.", &[
             ("limit", "Cuántas."),
             ("kind", "Solo de este tipo."),

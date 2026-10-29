@@ -340,6 +340,11 @@ fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
     format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
 }
 
+/// La advertencia de `revisar` sobre una memoria, para el final de su línea (o nada).
+fn nota(notas: &std::collections::HashMap<String, String>, m: &Memoria) -> String {
+    notas.get(&m.id).map(|n| format!(" ⚠ {n}")).unwrap_or_default()
+}
+
 /// El contenido en una línea y cortado a `n` caracteres.
 fn fragmento(texto: &str, n: usize) -> String {
     let plano = texto.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -393,9 +398,11 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         ));
     }
     if !contexto.is_empty() {
+        let notas = crate::revisar::notas(db, &contexto.iter().collect::<Vec<_>>())?;
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
             s.push_str(&linea(m, project, propio.as_deref()));
+            s.push_str(&nota(&notas, m));
             s.push('\n');
         }
     }
@@ -406,10 +413,11 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
         .collect();
     if !estados.is_empty() {
+        let notas = crate::revisar::notas(db, &estados.iter().collect::<Vec<_>>())?;
         s.push_str("Where work was left (the latest `status` memory of each project, newest first):\n");
         for m in &estados {
             let linea = linea_corta(m, project, propio.as_deref());
-            s.push_str(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ESTADO)));
+            s.push_str(&format!("{linea}{}: {}\n", nota(&notas, m), fragmento(&m.content, FRAGMENTO_ESTADO)));
         }
     }
     // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
@@ -422,8 +430,10 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         .collect();
     if !ultimas.is_empty() {
         s.push_str("Last worked on (newest first; `get` an id for the whole memory):\n");
+        let notas = crate::revisar::notas(db, &ultimas.iter().collect::<Vec<_>>())?;
         for m in &ultimas {
             s.push_str(&linea_corta(m, project, propio.as_deref()));
+            s.push_str(&nota(&notas, m));
             s.push('\n');
         }
     }
@@ -482,9 +492,11 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
     }
     let mut s = String::from("<omoikane>\n");
     if !elegidas.is_empty() {
+        let notas = crate::revisar::notas(db, &elegidas.iter().collect::<Vec<_>>())?;
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &elegidas {
             s.push_str(&linea(m, project, propio.as_deref()));
+            s.push_str(&nota(&notas, m));
             s.push('\n');
         }
     }

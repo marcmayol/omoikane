@@ -216,6 +216,25 @@ button.chip:hover { border-color: var(--accent); }
 .panel .cerrar { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 13px; }
 .panel .cerrar:hover { color: var(--ink); }
 
+/* Revisar */
+.nav .cuenta { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 600 11px/18px var(--sans); text-align: center; }
+.rev { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
+.rev .grupo { margin: 22px 0 10px; display: flex; align-items: center; gap: 10px; }
+.rev .grupo h2 { margin: 0; font: 600 18px var(--serif); }
+.rev .grupo .n { color: var(--faint); font-size: 12px; }
+.rev .grupo p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.av { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+.av .cab { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.av .t { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+.av .det2 { color: var(--muted); font-size: 12.5px; }
+.av .det2 b { color: var(--glow); font-weight: 600; font-family: var(--mono); font-size: 12px; }
+.par { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
+.par > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.par .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.par .lb.nueva { color: var(--accent); }
+.par .md { max-height: 320px; overflow-y: auto; font-size: 13px; }
+@media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
+
 #aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 9; }
 
 @media (max-width: 900px) {
@@ -238,7 +257,7 @@ button.chip:hover { border-color: var(--accent); }
 <body>
 <header class="bar">
   <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
-  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a></nav>
+  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a></nav>
   <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
   <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
 </header>
@@ -257,7 +276,12 @@ const T = ES ? {
   hecho: 'Hecho', error: 'Error', sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla',
   dondeTitulo: 'Dónde se quedó cada cosa', dondeSub: 'La última memoria <code>status</code> de cada proyecto: la misma que recibe el agente al empezar sesión.',
   memoriasN: n => `${n} memoria${n === 1 ? '' : 's'}`, conEstado: 'con estado', donde: 'Dónde se quedó', sinEstado: 'Sin memoria de estado todavía.', globalPath: 'vale para todos los proyectos',
-  masN: n => `+ ${n} más`, menos: 'Ver menos', cerrar: 'Cerrar', titulo: 'Título'
+  masN: n => `+ ${n} más`, menos: 'Ver menos', cerrar: 'Cerrar', titulo: 'Título',
+  revisar: 'Revisar', revTitulo: 'Qué conviene revisar', revSub: 'Lo que Omoikane ha visto en la memoria. El agente también recibe estos avisos cuando le llega una de estas memorias.',
+  nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
+  vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva',
+  tipos: { outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
+  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
@@ -269,7 +293,12 @@ const T = ES ? {
   hecho: 'Done', error: 'Error', sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing',
   dondeTitulo: 'Where everything was left', dondeSub: 'The latest <code>status</code> memory of each project: the same one the agent gets when a session starts.',
   memoriasN: n => `${n} memor${n === 1 ? 'y' : 'ies'}`, conEstado: 'with status', donde: 'Where it was left', sinEstado: 'No status memory yet.', globalPath: 'applies to every project',
-  masN: n => `+ ${n} more`, menos: 'Show less', cerrar: 'Close', titulo: 'Title'
+  masN: n => `+ ${n} more`, menos: 'Show less', cerrar: 'Close', titulo: 'Title',
+  revisar: 'Review', revTitulo: 'What is worth reviewing', revSub: 'What Omoikane has noticed in the memory. The agent gets these warnings too whenever one of these memories reaches it.',
+  nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
+  vieja: 'The one that may be outdated', nuevaEt: 'The newer one',
+  tipos: { outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
+  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.detail
 };
 const TIPOS = ['fact', 'decision', 'gotcha', 'preference'];
 const ESTADO = 'status';
@@ -296,7 +325,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
-let todas = [], encontrados = null, consulta = '';
+let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {};
 const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
@@ -437,6 +466,12 @@ async function cargar() {
   if (!r.ok) { $('vista').innerHTML = `<p class="vacio" style="padding:24px">${esc(T.error)}: ${r.status}</p>`; return; }
   todas = await r.json();
   historias = {};
+  try {
+    const rv = await fetch('/api/review', { headers: cab });
+    avisos = rv.ok ? await rv.json() : [];
+  } catch (e) { avisos = []; }
+  const c = $('nav-rev').querySelector('.cuenta');
+  c.textContent = avisos.length; c.hidden = !avisos.length;
   pintar();
 }
 
@@ -455,6 +490,7 @@ async function sincro() {
 function ruta() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   if (h === 'proyectos') return { vista: 'proyectos' };
+  if (h === 'revisar') return { vista: 'revisar' };
   if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
   return { vista: 'memorias' };
 }
@@ -463,9 +499,11 @@ const enlaceProyecto = p => '#/proyecto/' + encodeURIComponent(p || '@global');
 function pintar() {
   const r = ruta();
   $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
-  $('nav-pj').setAttribute('aria-current', r.vista !== 'memorias' ? 'page' : 'false');
+  $('nav-pj').setAttribute('aria-current', r.vista === 'proyectos' || r.vista === 'proyecto' ? 'page' : 'false');
+  $('nav-rev').setAttribute('aria-current', r.vista === 'revisar' ? 'page' : 'false');
   $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
-  if (r.vista === 'proyectos') pintarProyectos();
+  if (r.vista === 'revisar') pintarRevisar();
+  else if (r.vista === 'proyectos') pintarProyectos();
   else if (r.vista === 'proyecto') pintarProyecto(r.p);
   else pintarMemorias();
 }
@@ -617,6 +655,60 @@ async function accion(f) {
   catch (e) { aviso(T.error + ': ' + e.message); }
 }
 
+/* ---------- Revisar ---------- */
+const claveAv = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
+function pintarRevisar() {
+  const grupos = {};
+  for (const a of avisos) (grupos[a.kind] = grupos[a.kind] || []).push(a);
+  const orden = ['outdated', 'stale_status', 'broken_path', 'unused', 'too_long'];
+  const cuerpo = !avisos.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : orden.filter(k => grupos[k]).map(k => `
+    <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
+    ${grupos[k].map(avisoHTML).join('')}`).join('');
+  $('vista').innerHTML = `<div class="rev">
+    <div class="hero"><div><h1>${esc(T.revTitulo)}</h1><p>${esc(T.revSub)}</p></div></div>
+    ${cuerpo}
+  </div>`;
+  const v = $('vista');
+  for (const el of v.querySelectorAll('.av')) {
+    const a = avisos.find(x => claveAv(x) === el.dataset.k);
+    const q = n => el.querySelector(`[data-r="${n}"]`);
+    q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };
+    q('bien').onclick = () => accion(async () => {
+      const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
+      if (!r.ok) throw new Error(await r.text());
+    });
+    if (q('olvidar')) q('olvidar').onclick = () => {
+      q('olvido').innerHTML = `${esc(T.seguro)} <button class="btn pri" data-r="si">${T.si}</button> <button class="btn" data-r="no">${T.no}</button>`;
+      q('no').onclick = () => pintar();
+      q('si').onclick = () => accion(() => herramienta('forget', { id: a.memory_id }));
+    };
+  }
+}
+function avisoHTML(a) {
+  const m = todas.find(x => x.id === a.memory_id), o = a.other_id && todas.find(x => x.id === a.other_id), abierto = revAbiertos[claveAv(a)];
+  if (!m) return '';
+  const fila = x => `<a class="proj" href="${enlaceProyecto(x.project)}">${esc(nombre(x.project))}</a> <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span>`;
+  let cont = '';
+  if (abierto && o) cont = `<div class="par">
+      <div><span class="lb">${esc(T.vieja)}</span><span class="t">${esc(m.title)}</span><div class="md">${md(m.content)}</div></div>
+      <div><span class="lb nueva">${esc(T.nuevaEt)}</span><span class="t">${esc(o.title)}</span><div class="md">${md(o.content)}</div></div>
+    </div>`;
+  else if (abierto) cont = `<div class="md" style="max-height:360px;overflow-y:auto">${md(m.content)}</div>`;
+  return `<div class="av" data-k="${esc(claveAv(a))}">
+    <div class="cab"><span class="t">${esc(m.title)}</span></div>
+    <div class="cab">${fila(m)}</div>
+    ${o ? `<div class="det2">→ ${esc(o.title)} · <b>${esc(T.detalle(a))}</b></div>` : `<div class="det2"><b>${esc(T.detalle(a))}</b></div>`}
+    ${cont}
+    <div class="acts">
+      <button class="btn" data-r="ver">${abierto ? T.ocultar : (o ? T.verDos : T.ver)}</button>
+      <button class="btn" data-r="bien">${esc(T.bien)}</button>
+      <span class="sp"></span>
+      ${a.kind === 'outdated' || a.kind === 'unused' ? `<span data-r="olvido"><button class="btn danger" data-r="olvidar">${a.kind === 'outdated' ? T.olvidarVieja : T.olvidar}</button></span>` : ''}
+    </div>
+  </div>`;
+}
+
 /* ---------- Proyectos ---------- */
 function mezcla(ms) {
   const c = {}; for (const t of TIPOS) c[t] = 0;
@@ -720,6 +812,7 @@ document.addEventListener('keydown', e => {
 document.documentElement.lang = ES ? 'es' : 'en';
 $('nav-mem').textContent = T.memorias;
 $('nav-pj').textContent = T.proyectos;
+$('nav-rev').firstElementChild.textContent = T.revisar;
 cargar();
 </script>
 </body>

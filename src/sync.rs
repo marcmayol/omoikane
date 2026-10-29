@@ -903,6 +903,8 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
                     let head = git(&r.clon, &["rev-parse", "HEAD"])?;
                     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('sync_commit', ?1)", [head.trim()])?;
                 }
+                // Lo que llegó de otros equipos puede dejar anticuadas memorias de aquí (o al revés).
+                let _ = crate::revisar::al_dia(db);
                 return Ok(res);
             }
             // Otro equipo subió entre medias: se baja lo suyo y se vuelve a intentar.

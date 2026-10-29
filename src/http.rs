@@ -5,6 +5,8 @@
 //!   `/fuentes/*.woff2`, que la página carga del binario)
 //! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua, con
 //!   `versions` (cuántas versiones anteriores guarda su historial)
+//! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
+//!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → nombres, descripciones y esquemas de las herramientas
 //! - `POST /tools/<nombre>` con los argumentos en JSON → la respuesta de la herramienta (400 si es un error)
@@ -193,6 +195,21 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         .collect();
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
+                (Method::Get, "/api/review") => {
+                    let db = db::abrir(&db)?;
+                    Ok(json(200, serde_json::to_string(&crate::revisar::avisos(&db, &Ambito::Todos)?)?))
+                }
+                (Method::Post, "/api/review/dismiss") => {
+                    let mut cuerpo = String::new();
+                    peticion.as_reader().read_to_string(&mut cuerpo)?;
+                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
+                    let campo = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                    let db = db::abrir(&db)?;
+                    match crate::revisar::descartar(&db, &campo("memory_id"), &campo("kind"), &campo("other_id")) {
+                        Ok(()) => Ok(json(200, serde_json::json!({ "dismissed": true }).to_string())),
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
                 (Method::Get, "/api/sync") => {
                     let config = crate::sync::leer_config(&db)?;
                     let e = crate::sync::leer_estado(&db);
@@ -233,7 +250,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));
