@@ -163,10 +163,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         200,
                         serde_json::json!({
                             "configured": config.is_some(),
-                            "url": config.as_ref().map(|c| c.url.clone()),
+                            "url": config.as_ref().map(|c| crate::sync::sin_credenciales(&c.url)),
                             "author": config.and_then(|c| c.author),
                             "last_ok": e.ultimo_ok,
-                            "last_error": e.ultimo_error,
+                            "last_error": e.ultimo_error.as_deref().map(crate::sync::sin_credenciales),
+                            "warning": e.aviso,
                             "failing_since": e.error_desde,
                         })
                         .to_string(),
