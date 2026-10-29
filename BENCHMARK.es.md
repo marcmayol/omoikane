@@ -192,6 +192,8 @@ La 0.7.0 cambia adónde van las memorias cuando las sesiones se abren en la carp
 | 190 paráfrasis, MRR | **0,838** | 0,838 | 0,769 |
 | búsqueda, mediana | **45 ms** | 45 ms | 178 ms |
 
+La 0.9.0, que añade la sincronización entre equipos, se volvió a pasar igual después de publicarla: las mismas cifras en las 526 preguntas (top-1 87,3 % frente a 82,7 %, MRR 0,915 frente a 0,875) y una búsqueda mediana de 43 ms frente a 173 ms.
+
 La 0.7.0 y la 0.6.0 dan la misma respuesta a todas las preguntas. engram solo va por delante en los resúmenes (top-1 98,4 % frente a 97,6 %, una pregunta) y en el top-3 del tercer conjunto (96,7 % frente a 93,3 %, dos preguntas).
 
 ## Límites
