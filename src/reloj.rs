@@ -16,14 +16,42 @@ use std::cmp::Ordering;
 /// Lo que un sello remoto puede ir por delante de la hora de aquí para adelantar el reloj.
 const FUTURO_MAX_MS: u64 = 3_600_000;
 
-/// El nombre del sistema (para el nombre del equipo).
+/// El nombre del sistema (para el nombre del equipo), preguntado al sistema operativo: en macOS no hay
+/// `/etc/hostname` ni `HOSTNAME` exportado, y sin él todos los Mac se llamarían igual.
 fn sistema() -> String {
     std::env::var("OMOIKANE_EQUIPO")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
+        .filter(|n| !n.trim().is_empty())
+        .or_else(nombre_del_sistema)
+        .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "equipo".into())
+}
+
+#[cfg(unix)]
+fn nombre_del_sistema() -> Option<String> {
+    let mut b = [0u8; 256];
+    // SAFETY: gethostname escribe como mucho `b.len()` bytes en el búfer que se le da.
+    let r = unsafe { libc::gethostname(b.as_mut_ptr().cast::<libc::c_char>(), b.len()) };
+    if r != 0 {
+        return None;
+    }
+    let fin = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    let n = String::from_utf8_lossy(&b[..fin]).trim().to_string();
+    (!n.is_empty()).then_some(n)
+}
+
+#[cfg(windows)]
+fn nombre_del_sistema() -> Option<String> {
+    // Windows siempre la define, con el nombre NetBIOS del equipo.
+    std::env::var("COMPUTERNAME").ok().filter(|n| !n.trim().is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn nombre_del_sistema() -> Option<String> {
+    None
 }
 
 /// El nombre de este equipo: el del sistema y un sufijo fijo, guardado en la base. Si la base se copió
