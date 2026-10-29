@@ -7,6 +7,8 @@
 //!   `versions` (cuántas versiones anteriores guarda su historial)
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
+//! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
+//!   `POST /api/candidates/dismiss` con `{id}` para dejarlo
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → nombres, descripciones y esquemas de las herramientas
 //! - `POST /tools/<nombre>` con los argumentos en JSON → la respuesta de la herramienta (400 si es un error)
@@ -210,6 +212,18 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
+                (Method::Get, "/api/candidates") => {
+                    let db = db::abrir(&db)?;
+                    Ok(json(200, serde_json::to_string(&crate::candidatas::todas(&db)?)?))
+                }
+                (Method::Post, "/api/candidates/dismiss") => {
+                    let mut cuerpo = String::new();
+                    peticion.as_reader().read_to_string(&mut cuerpo)?;
+                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
+                    let db = db::abrir(&db)?;
+                    crate::candidatas::descartar(&db, v["id"].as_i64().unwrap_or_default())?;
+                    Ok(json(200, serde_json::json!({ "dismissed": true }).to_string()))
+                }
                 (Method::Get, "/api/sync") => {
                     let config = crate::sync::leer_config(&db)?;
                     let e = crate::sync::leer_estado(&db);
@@ -250,7 +264,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));
