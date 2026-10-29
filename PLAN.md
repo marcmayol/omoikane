@@ -554,7 +554,64 @@ Se escribió y probó antes de la Fase 6 en una rama local, `prueba-sync` (últi
 - **Pendientes del prototipo, resueltos en la 0.9.0:** (1) si git no tiene identidad (`user.name`/`user.email`), el commit falla y no se sube nada: avisar claro o firmar con una identidad propia de Omoikane; (2) con el repositorio vacío, el primer `pull` falla si la rama del clon no coincide con la del remoto: saltarse el pull cuando el remoto no tiene ramas; (3) recrear `tests/sync.rs`.
 - El plugin podría sincronizar solo al empezar cada sesión si se define `OMOIKANE_SYNC_DIR`.
 
-Después, si los datos lo piden: relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
+Después, si los datos lo piden: relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis. (Las dos primeras pasan a la Fase 7.)
+
+## Fase 7 · una memoria que se mantiene viva (diseño, 29-oct-2026)
+
+Hasta la 0.10.0, Omoikane hace mejor lo que hace engram: buscar, recordar sin que el agente lo pida y en Windows. Marc quiere que haga **algo que engram no intenta**. Las cuatro ideas salen de fallos reales del 29-oct: una nota de estado que se quedó en la 0.2.0 me hizo proponer como pendientes cosas ya hechas; el recordatorio de «no has guardado nada» saltó varias veces en una sesión larga; la publicación (tag, crates.io, Release, plugin, exe bloqueado) se repitió de memoria tres veces; y las notas importadas ya se enlazan con `[[...]]` sin que nadie lo aproveche. Marc las quiere todas; van en este orden porque cada una se apoya en la anterior.
+
+Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikane** (lo que necesite entender texto lo hace el agente, que ya es un modelo), **8 herramientas MCP** (lo nuevo entra en las que hay), todo opcional y explicable, y cada cosa se mide con datos reales antes de darla por buena.
+
+### 7.1 · 0.11.0 · memoria que se cuida sola
+**Qué detecta** (en `src/revisar.rs`, sin modelo salvo el vector que ya hay):
+- **Desfasada:** dos memorias del mismo proyecto que hablan de lo mismo (parecido por vector ≥ 0,55 o títulos con ≥ 2 palabras raras en común) y se contradicen en algo comprobable: versiones distintas (`\d+\.\d+\.\d+`), cifras con la misma unidad, o «pendiente / sin hacer / falta» frente a «hecho / publicado / ya». La más vieja queda marcada como posiblemente superada por la nueva. Es el caso real de la nota de la 0.2.0.
+- **Estado viejo:** una memoria `status` con cambios posteriores en su proyecto (otras memorias guardadas o cambiadas después, o un commit más nuevo en el repo si es git) y más de 7 días sin tocar.
+- **Rutas rotas:** `paths` que ya no existen en disco (comprobación barata y que no falla).
+- **Sin uso:** creada hace más de 30 días y nunca recordada ni consultada.
+- **Demasiado larga:** más de 6.000 caracteres (el recall ya solo mira esos); se propone partirla.
+
+**Dónde se ve:**
+- **En el recall:** una memoria marcada sale con una línea delante: `[may be outdated: <id> «título» says …]`. El agente decide y, si procede, la actualiza. Es lo que habría evitado el fallo del 29-oct.
+- **Visor:** pestaña **Revisar** con cada aviso y su arreglo a un clic: juntar dos memorias (la nueva absorbe a la vieja y la vieja queda en el historial), actualizar, olvidar o «está bien así» (se apunta y no vuelve a avisar hasta que cambie algo).
+- **CLI:** `omoi review [--json]`. En MCP, `context` devuelve también los avisos del proyecto; no hay herramienta nueva.
+
+**Esquema 6:** tabla `review(memory_id, kind, other_id, detail, found_at, dismissed_at)`, recalculada al guardar o cambiar y con `omoi review --all`. Viaja por la sincronización solo lo que se descarta.
+
+**Hecho cuando:** con sus 136 memorias reales, Marc revisa la lista y al menos 7 de cada 10 avisos le parecen útiles; con el corpus público de los tests, cero avisos en memorias que no se contradicen; y el recall sigue por debajo de 30 ms.
+
+### 7.2 · 0.12.0 · guardar aunque el agente no lo haga
+**Al cerrar** (hook `SessionEnd` y también `PreCompact`, que es cuando se pierde contexto), Omoikane lee la conversación (`transcript_path` del hook) y saca **candidatas** sin modelo, por señales:
+- Frases del usuario que suenan a preferencia o corrección: «prefiero», «no quiero», «siempre», «nunca», «no me gusta», «hazlo así», «te he dicho».
+- Decisiones: «vamos con», «me quedo con», «elijo», y la respuesta a una pregunta del agente con opciones (la opción elegida y su motivo).
+- Trampas: un error en la salida de una herramienta seguido de un arreglo que funciona (mismo comando que pasa a dar código 0).
+- Hitos: commits, tags y publicaciones hechos en la sesión, como estado del proyecto.
+- Lo que ya está guardado, o se parece mucho a algo guardado, no cuenta.
+
+**Al empezar la sesión siguiente** en ese proyecto se inyecta, como mucho, 5 candidatas: «From your last session, maybe worth keeping: …». El agente las convierte en memorias de verdad (con `remember`, en el idioma del usuario y con sus palabras) o las descarta, preguntando al usuario si hay duda. Las que no se usan caducan a los 7 días. En el visor se ven en **Revisar**.
+
+**Esquema 6:** tabla `candidate(id, project, session, kind, text, evidence, created_at, shown_at)`. No se sincroniza: es de este equipo.
+
+**Agentes:** primero Claude Code, porque su `.jsonl` lo conocemos. Después los que dan la ruta de la conversación en sus hooks (Codex, Gemini, Qwen), cada uno comprobado en su documentación.
+
+**Hecho cuando:** con las 30 últimas conversaciones reales de Marc (sus `.jsonl`), una media de 5 candidatas o menos por sesión, al menos 6 de cada 10 que Marc guardaría, y ninguna con datos sensibles (contraseñas o tokens: se filtran con los mismos patrones que ya usa la sincronización para las URL).
+
+### 7.3 · 0.13.0 · recetas: memorias que se ejecutan
+- **Tipo nuevo `procedure`**: título («Publicar una versión de Omoikane») y pasos numerados en el contenido; opcionalmente, una línea `when:` con las palabras que lo disparan («publica», «release», «sacar versión»). Es el único cambio en el modelo de memoria (§3): cinco tipos en lugar de cuatro.
+- **Recall:** cuando el mensaje coincide con su `when:` o su título, sale **entera**, no un fragmento de 200 caracteres, con la instrucción de seguirla como lista de comprobación.
+- **Aprende:** si un paso falla o cambia, el agente actualiza la receta con `update` y el motivo (por ejemplo, «en Windows renombrar antes omoi.exe, está bloqueado»). El historial guarda cada versión, y el visor la enseña como lista con lo que cambió la última vez.
+- **Primera receta, de verdad:** la publicación de Omoikane tal como se hizo con la 0.9.2 y la 0.10.0.
+
+**Hecho cuando:** «publica la 0.10.1» en una sesión nueva trae la receta y el agente la sigue sin explorar; «qué tal la publicación de ayer» no la trae (no es una petición de hacerlo).
+
+### 7.4 · 0.14.0 · memorias conectadas
+- **Enlaces:** los `[[nombre]]` del contenido, resueltos contra las etiquetas y los títulos (las notas importadas usan su nombre de fichero como etiqueta), en una tabla `memory_link(from_id, to_id)` que se actualiza al guardar. Los enlaces rotos salen en **Revisar**.
+- **Recall:** cuando se inyecta una memoria, puede llegar también una vecina, solo si es `gotcha` o `preference` y supera el mismo listón de relevancia; nunca más de una por mensaje.
+- **Visor:** en el detalle, «Enlaza con» y «La enlazan»; en la página del proyecto, un grafo sencillo (SVG propio, sin librerías).
+
+**Hecho cuando:** un 8.º conjunto de preguntas a ciegas (escrito por otro agente sin ver nada) no empeora en top-1 ni en inyecciones de más frente a la 0.13.0, y en los mensajes reales de Marc la vecina aporta algo en al menos la mitad de las veces que sale.
+
+### Para cada versión
+Probar en el PC y en marc-server; el visor, con capturas en oscuro, en claro y a 400 px; tests y clippy en los tres sistemas; publicar con la receta de 7.3 en cuanto exista; PLAN y README al día.
 
 ## 12. Pruebas
 
@@ -571,6 +628,7 @@ Después, si los datos lo piden: relaciones entre memorias, limpieza asistida de
 | Nuestro troceado deja de coincidir con `tokenizers` si cambia el `tokenizer.json` del modelo | `cargo test` (`tests/equivalencia.rs`) en CI y antes de publicar cualquier modelo nuevo; `fase05 equivalencia` para pasarlo con un corpus grande |
 | sqlite-vec sin índice ANN: fuerza bruta, ~1 µs por vector | 5k memorias (uso intenso real) = 6 ms, bien. A partir de 20k (24 ms) probar `int8[256]` en vec0 (4× menos datos) o prefiltrar por proyecto con una columna de partición de vec0 |
 | Calidad de model2vec por debajo de MiniLM/E5 | va fusionado con BM25; la palabra exacta siempre cuenta. Backend intercambiable si hace falta ONNX |
-| El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar. Medir con `recent` cuántas memorias salen por sesión real |
+| El agente no guarda nada | `SessionStart` le recuerda que existe; `instructions` del MCP dicen cuándo guardar; recordatorio a los 15 min y 10 mensajes. Fase 7.2: candidatas sacadas de la conversación al cerrar |
+| Memorias que se quedan viejas y llevan al agente a lo que ya no es | Fase 7.1: avisos de desfase en el recall y pestaña Revisar en el visor |
 | Windows (MSVC, rutas, hooks) | se desarrolla en Windows desde el día 1; Linux en el servidor casero; macOS por CI |
 | Deriva de alcance (nube, sync, TUI…) | este documento. Lo que no está en §11 no se hace en v1 |
