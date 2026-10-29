@@ -44,7 +44,14 @@ fn al_empezar_da_preferencias_y_fijadas() {
     assert!(t.contains("20 memories"), "{t}");
     assert!(t.contains("Respuestas en español") && t.contains("[global]"));
     assert!(t.contains("Base de datos única"));
-    assert!(!t.contains("ULID"), "solo preferencias y fijadas: {t}");
+    // Lo último en lo que se trabajó: 5 títulos con fecha, sin su contenido, y sin repetir lo fijado.
+    let (_, ultimas) = t.split_once("Last worked on").expect("lista de lo último");
+    let lineas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(lineas.len(), recall::RECIENTES, "{t}");
+    assert!(lineas.iter().all(|l| l.starts_with("- 20") && l.contains("(id ") && !l.contains("Base de datos única")), "{t}");
+    assert!(!t.contains("/var/log/app:"), "sin el contenido: {t}");
+    assert!(t.contains("ask the user right away"), "{t}");
+    // Solo las preferencias y las fijadas cuentan como inyectadas: lo reciente aún puede llegar entero.
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
     drop(db);
     let _ = std::fs::remove_dir_all(dir);

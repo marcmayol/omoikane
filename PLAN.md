@@ -484,6 +484,11 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 
 Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el git del usuario. Coste 0.
 
+### 0.9.1 · retomar sin explorar (29-oct-2026)
+- El caso: en una sesión nueva, «vamos a seguir con el tema de la impresión 3D»; el agente lanzó `recent`, búsquedas, leyó carpetas y consultó la impresora para acabar preguntando qué proyecto. No había ninguna nota del DXC2 y el inicio de sesión no decía en qué se había trabajado.
+- Al empezar sesión se inyecta **«Last worked on»**: las 5 memorias cambiadas más recientemente en el ámbito (todos los proyectos desde la carpeta del usuario), una línea cada una con fecha, tipo, proyecto y título, sin contenido; no cuentan como inyectadas, así que su contenido aún puede llegar con el recall.
+- Instrucción nueva (inicio de sesión y MCP): si la petición de continuar es ambigua, como mucho una búsqueda y, si no lo aclara, preguntar en vez de explorar; al terminar un trabajo o al cerrar la sesión, guardar en qué punto se quedó (hecho y siguiente paso). El recordatorio de «guarda algo» lo pide también.
+
 ### 0.9.0 · Fase 6 hecha (29-oct-2026)
 - **Sincronización por git** (`src/sync.rs`, `src/reloj.rs`, esquema 5): `omoi sync init <url>` o `--create <nombre>` (repositorio privado con `gh`/`glab`), `join <código>` (o `join -` por la entrada estándar, `--url` para llegar por otra vía), `code`, `status`, `restore`, `off`; estado también en `doctor` y en la web (`/api/sync`). Preguntas en `init`/`join` con resumen de lo que se sube; sin terminal exigen `--yes`.
 - **En el repositorio:** `.gitattributes`, `omoikane.check` (comprueba la clave; `init` se niega en un repositorio ya usado), `global/`, `p-<hash>/` por proyecto y `olvidos/`, un fichero por equipo, líneas ordenadas y **cifradas con AES-SIV** (deterministas: una línea que no cambia queda igual). Nombres de carpeta opacos.
