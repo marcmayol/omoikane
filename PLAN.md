@@ -484,6 +484,13 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 
 Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el git del usuario. Coste 0.
 
+### 0.10.0 · la vista web, rediseñada (29-oct-2026)
+- Diseñada con Claude Design (proyecto «Omoikane · visor web», dos rondas) a partir del banner: negro cálido, cobre y ámbar, crema; en claro, papel cálido y cobre oscuro (sigue `prefers-color-scheme`). Marc eligió: Memorias como cronología por días (2b) de entrada, Proyectos como pestaña con tarjetas «dónde se quedó» (1c) que llevan a la página del proyecto (2a), y el modo claro. Descartados: la portada de proyectos como entrada y las tres columnas (1b, «lo mismo con más decoración»).
+- **Memorias:** eventos por día (nueva, cambiada · vN y, si se pide, recordada); la memoria se abre en su sitio con Markdown (renderizador propio que escapa todo y solo enlaza http/https), su último cambio como diff por líneas (LCS, una línea de contexto) y el historial completo. Teclado: `/`, `j`/`k`, Esc.
+- **Proyectos:** la última memoria `status` de cada uno, cuántas tiene y la mezcla de tipos; la página del proyecto muestra su estado entero y las memorias en cuatro columnas por tipo, con el detalle en un panel lateral.
+- `/api/memories` añade `versions` por memoria. Fuentes e icono servidos desde el binario (`/fuentes/*.woff2`, `/icono.png`, unos 105 KB, OFL en `assets/fuentes`), porque la vista funciona sin internet.
+- Probado con Playwright contra una copia de la base real: oscuro, claro, 400 px de ancho, búsqueda, fijar, historial completo, olvidar con confirmación y teclado, sin errores de consola.
+
 ### 0.9.2 · en qué punto se quedó cada proyecto (29-oct-2026)
 - El caso: «vamos a seguir con Omoikane» desde la carpeta del usuario. Con la 0.9.1 el agente hizo una búsqueda, dos `get` y dos comandos de git, y propuso como pendientes cosas ya hechas: la única nota con el estado del proyecto se había quedado en la 0.2.0, y «Last worked on» solo enseñaba títulos.
 - Las memorias con la etiqueta **`status`** dicen dónde se quedó el trabajo. Al empezar sesión sale **«Where work was left»**: la más reciente de cada proyecto del ámbito (como mucho 5, la de la sesión y las globales si se está en un proyecto), con fecha, título y 400 caracteres de contenido. No cuentan como inyectadas.
