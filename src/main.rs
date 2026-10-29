@@ -37,7 +37,7 @@ struct Comun {
 enum Orden {
     /// Save a memory. The content goes as an argument or through standard input.
     Remember {
-        /// fact, decision, gotcha or preference.
+        /// fact, decision, gotcha, preference or procedure.
         #[arg(short, long)]
         kind: Tipo,
         /// One line saying what it is about.
@@ -1260,7 +1260,7 @@ fn en_espanol(c: Command) -> Command {
     type Textos = [(&'static str, &'static str, &'static [(&'static str, &'static str)])];
     let textos: &Textos = &[
         ("remember", "Guarda una memoria. El contenido va como argumento o por la entrada estándar.", &[
-            ("kind", "fact, decision, gotcha o preference."),
+            ("kind", "fact, decision, gotcha, preference o procedure."),
             ("title", "Una línea que diga de qué va."),
             ("content", "Qué, por qué y dónde. Sin él (o con «-»), se lee de la entrada estándar."),
             ("paths", "Fichero o carpeta del proyecto al que se refiere (se puede repetir)."),

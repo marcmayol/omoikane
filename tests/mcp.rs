@@ -93,7 +93,7 @@ async fn las_herramientas_de_punta_a_punta() {
     // Un tipo mal escrito vuelve como error de la herramienta, legible para el agente.
     let (err, r) = llamar(&c, "remember", json!({"title": "X", "content": "y", "kind": "bugfix"})).await;
     assert!(err);
-    assert!(r.as_str().unwrap().contains("fact, decision, gotcha or preference"));
+    assert!(r.as_str().unwrap().contains("fact, decision, gotcha, preference or procedure"));
 
     // Buscar por palabras y por la ruta.
     let (_, r) = llamar(&c, "search", json!({"query": "token caduca"})).await;

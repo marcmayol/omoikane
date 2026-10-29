@@ -19,10 +19,13 @@ pub enum Tipo {
     Decision,
     Gotcha,
     Preference,
+    /// Una receta: pasos que se siguen (publicar una versión, desplegar…), con una línea `when:` de
+    /// las palabras que la traen entera (Fase 7.3).
+    Procedure,
 }
 
 impl Tipo {
-    pub const TODOS: [Tipo; 4] = [Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Preference];
+    pub const TODOS: [Tipo; 5] = [Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Preference, Tipo::Procedure];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -30,6 +33,7 @@ impl Tipo {
             Tipo::Decision => "decision",
             Tipo::Gotcha => "gotcha",
             Tipo::Preference => "preference",
+            Tipo::Procedure => "procedure",
         }
     }
 }
@@ -40,7 +44,7 @@ impl FromStr for Tipo {
         Tipo::TODOS
             .into_iter()
             .find(|t| t.as_str() == s.trim().to_lowercase())
-            .ok_or_else(|| anyhow!(tr!("unknown kind «{s}»: use fact, decision, gotcha or preference", "tipo «{s}» desconocido: usa fact, decision, gotcha o preference")))
+            .ok_or_else(|| anyhow!(tr!("unknown kind «{s}»: use fact, decision, gotcha, preference or procedure", "tipo «{s}» desconocido: usa fact, decision, gotcha, preference o procedure")))
     }
 }
 
@@ -280,7 +284,7 @@ fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>
 
 /// `insertar` dentro de una transacción que ya está abierta (quien llama hace el commit).
 fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
-    let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha or preference", "falta el tipo: fact, decision, gotcha o preference"))?;
+    let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha, preference or procedure", "falta el tipo: fact, decision, gotcha, preference o procedure"))?;
     let (title, content) = (titulo(&nueva.title)?, contenido(&nueva.content)?);
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
     let (hlc, author) = match origen {

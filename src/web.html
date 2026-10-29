@@ -18,7 +18,7 @@
   --bg: #0d0a08; --bg2: #120e0b; --panel: #18120e; --panel2: #201812; --line: #2f241b; --line2: #3d2f23;
   --ink: #f2e3cc; --ink2: #d9c6aa; --muted: #a8937b; --faint: #93806a;
   --accent: #e2894a; --glow: #f4b878; --accent-ink: #1a0f07; --sel: rgba(226,137,74,.13);
-  --fact: oklch(0.78 0.09 235); --decision: oklch(0.78 0.09 305); --gotcha: oklch(0.78 0.09 35); --preference: oklch(0.78 0.09 150);
+  --fact: oklch(0.78 0.09 235); --decision: oklch(0.78 0.09 305); --gotcha: oklch(0.78 0.09 35); --preference: oklch(0.78 0.09 150); --procedure: oklch(0.78 0.09 85);
   --add: rgba(110,190,130,.16); --addink: oklch(0.82 0.11 150); --del: rgba(226,96,74,.16); --delink: oklch(0.78 0.12 30);
   --shadow: 0 12px 32px rgba(0,0,0,.35); --halo: rgba(244,184,120,.25);
   --sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
@@ -30,7 +30,7 @@
     --bg: #f5eee3; --bg2: #efe6d8; --panel: #fbf7f0; --panel2: #f4ecdf; --line: #e2d5c1; --line2: #d3c2a9;
     --ink: #23180f; --ink2: #3b2c1f; --muted: #6e5b47; --faint: #7a6652;
     --accent: #a4481c; --glow: #b0541c; --accent-ink: #fff8ef; --sel: rgba(164,72,28,.09);
-    --fact: oklch(0.50 0.10 235); --decision: oklch(0.50 0.10 305); --gotcha: oklch(0.50 0.10 35); --preference: oklch(0.50 0.10 150);
+    --fact: oklch(0.50 0.10 235); --decision: oklch(0.50 0.10 305); --gotcha: oklch(0.50 0.10 35); --preference: oklch(0.50 0.10 150); --procedure: oklch(0.50 0.10 85);
     --add: rgba(40,140,80,.12); --addink: oklch(0.45 0.11 150); --del: rgba(190,60,30,.11); --delink: oklch(0.48 0.13 30);
     --shadow: 0 1px 2px rgba(60,30,10,.06), 0 8px 24px rgba(60,30,10,.07); --halo: rgba(176,84,28,.12);
     color-scheme: light;
@@ -68,10 +68,10 @@ main { flex: 1; min-height: 0; position: relative; }
 
 /* Tipos */
 .k { width: 8px; height: 8px; border-radius: 2px; flex: none; transform: rotate(45deg); display: inline-block; background: var(--faint); }
-.k.fact { background: var(--fact); } .k.decision { background: var(--decision); } .k.gotcha { background: var(--gotcha); } .k.preference { background: var(--preference); }
+.k.fact { background: var(--fact); } .k.decision { background: var(--decision); } .k.gotcha { background: var(--gotcha); } .k.preference { background: var(--preference); } .k.procedure { background: var(--procedure); }
 .k.pin { background: var(--glow); border-radius: 50%; transform: none; }
 .kt { font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.kt.fact { color: var(--fact); } .kt.decision { color: var(--decision); } .kt.gotcha { color: var(--gotcha); } .kt.preference { color: var(--preference); }
+.kt.fact { color: var(--fact); } .kt.decision { color: var(--decision); } .kt.gotcha { color: var(--gotcha); } .kt.preference { color: var(--preference); } .kt.procedure { color: var(--procedure); }
 .stl { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 .chip { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; line-height: 20px; }
 button.chip:hover { border-color: var(--accent); }
@@ -99,7 +99,7 @@ button.chip:hover { border-color: var(--accent); }
 .row:hover { background: var(--panel); }
 .row::before { content: ""; position: absolute; left: -28px; top: 15px; width: 9px; height: 9px; border-radius: 50%; background: var(--bg); border: 2px solid var(--line2); }
 .plano .row::before { display: none; }
-.row.fact::before { border-color: var(--fact); } .row.decision::before { border-color: var(--decision); } .row.gotcha::before { border-color: var(--gotcha); } .row.preference::before { border-color: var(--preference); }
+.row.fact::before { border-color: var(--fact); } .row.decision::before { border-color: var(--decision); } .row.gotcha::before { border-color: var(--gotcha); } .row.preference::before { border-color: var(--preference); } .row.procedure::before { border-color: var(--procedure); }
 .row .t { font-weight: 500; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
 .row .x { grid-column: 1; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .r { grid-row: 1 / span 2; grid-column: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
@@ -176,7 +176,7 @@ button.chip:hover { border-color: var(--accent); }
 .path { font: 11.5px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; }
 .mix i { display: block; height: 100%; }
-.mix .fact { background: var(--fact); } .mix .decision { background: var(--decision); } .mix .gotcha { background: var(--gotcha); } .mix .preference { background: var(--preference); }
+.mix .fact { background: var(--fact); } .mix .decision { background: var(--decision); } .mix .gotcha { background: var(--gotcha); } .mix .preference { background: var(--preference); } .mix .procedure { background: var(--procedure); }
 .where { border-top: 1px solid var(--line); padding-top: 10px; color: var(--ink2); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .where .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; display: flex; gap: 8px; }
 .where .lb span { color: var(--faint); letter-spacing: 0; text-transform: none; font-weight: 400; }
@@ -196,11 +196,11 @@ button.chip:hover { border-color: var(--accent); }
 .head h1 { margin: 0 0 6px; font: 600 30px/1.1 var(--serif); overflow-wrap: anywhere; }
 .head .where { border-top: 0; padding-top: 0; font-size: 13.5px; }
 .head .where .md { margin-top: 4px; max-height: 220px; overflow-y: auto; }
-.nums { display: grid; grid-template-columns: repeat(4, minmax(78px, auto)); gap: 8px; }
+.nums { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(78px, auto); gap: 8px; }
 .num { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
 .num b { display: block; font-size: 20px; font-weight: 600; line-height: 1.1; }
 .num span { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; }
-.cols { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; align-items: start; }
+.cols { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0,1fr); gap: 12px; align-items: start; }
 .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .ch { display: flex; align-items: center; gap: 7px; padding: 0 2px 6px; border-bottom: 1px solid var(--line); }
 .ch .n { margin-left: auto; color: var(--faint); font-size: 11.5px; }
@@ -215,6 +215,17 @@ button.chip:hover { border-color: var(--accent); }
 .panel h2 { margin: 8px 0 10px; font: 600 22px/1.25 var(--serif); overflow-wrap: anywhere; }
 .panel .cerrar { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 13px; }
 .panel .cerrar:hover { color: var(--ink); }
+
+/* Conexiones (7.4) */
+.grafo { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.grafo .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.grafo svg { display: block; width: 100%; height: auto; max-height: 380px; }
+.grafo line { stroke: var(--line2); stroke-width: 1.2; }
+.grafo circle { stroke: var(--bg); stroke-width: 2; cursor: pointer; }
+.grafo circle.fuera { opacity: .55; }
+.grafo circle:hover { stroke: var(--accent); }
+.grafo text { font: 10.5px var(--sans); fill: var(--muted); pointer-events: none; }
+.grafo .fact { fill: var(--fact); } .grafo .decision { fill: var(--decision); } .grafo .gotcha { fill: var(--gotcha); } .grafo .preference { fill: var(--preference); } .grafo .procedure { fill: var(--procedure); }
 
 /* Revisar */
 .nav .cuenta { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 600 11px/18px var(--sans); text-align: center; }
@@ -248,7 +259,8 @@ button.chip:hover { border-color: var(--accent); }
   .row::before { display: none; }
   .fhd, .mas { margin-left: 0; }
   .det { grid-template-columns: 1fr; }
-  .cols { grid-template-columns: 1fr 1fr; }
+  .cols { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
+  .nums { grid-auto-flow: row; grid-template-columns: repeat(3, 1fr); }
   .head { grid-template-columns: 1fr; }
   .panel { border-left: 0; border-top: 1px solid var(--line); }
 }
@@ -281,9 +293,9 @@ const T = ES ? {
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias e hitos. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
-  guardarComo: 'Guardar como memoria', dejar: 'Descartar', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito' },
-  tipos: { outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
-  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
+  guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito' },
+  tipos: { outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
+  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
@@ -300,11 +312,13 @@ const T = ES ? {
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences and milestones. The agent of the next session gets them once; here you can save them yourself or drop them.',
-  guardarComo: 'Save as a memory', dejar: 'Drop', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone' },
-  tipos: { outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
+  guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone' },
+  tipos: { outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
   detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.detail
 };
-const TIPOS = ['fact', 'decision', 'gotcha', 'preference'];
+const TIPOS = ['fact', 'decision', 'gotcha', 'preference', 'procedure'];
+// En la página de un proyecto, las recetas solo tienen columna si hay alguna.
+const tiposDe = ms => TIPOS.filter(t => t !== 'procedure' || ms.some(m => m.kind === t));
 const ESTADO = 'status';
 const POR_PAGINA = 150, POR_COLUMNA = 12;
 
@@ -601,6 +615,20 @@ function abrir(k) {
 }
 
 /* ---------- Detalle compartido (fila abierta y panel del proyecto) ---------- */
+const enlazan = m => todas.filter(x => (x.links || []).includes(m.id));
+function enlacesHTML(m) {
+  const boton = x => `<button class="chip" data-ir="${x.id}" title="${esc(nombre(x.project))}">${esc(x.title.slice(0, 60))}</button>`;
+  const salen = (m.links || []).map(id => todas.find(x => x.id === id)).filter(Boolean), entran = enlazan(m);
+  return (salen.length ? `<span>${T.enlaza}</span><b>${salen.map(boton).join(' ')}</b>` : '') + (entran.length ? `<span>${T.laEnlazan}</span><b>${entran.map(boton).join(' ')}</b>` : '');
+}
+// Ir a una memoria: su proyecto, con ella abierta en el panel.
+let irPendiente = null;
+function irA(id) {
+  const x = todas.find(m => m.id === id);
+  if (!x) return;
+  const destino = enlaceProyecto(x.project);
+  if (location.hash === destino) { elegidaPanel = id; pintar(); } else { irPendiente = id; location.hash = destino; }
+}
 function detalleHTML(m, vertical) {
   const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
   return `<div class="det${vertical ? ' vertical' : ''}">
@@ -615,6 +643,7 @@ function detalleHTML(m, vertical) {
         ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
         <span>${T.id}</span><b class="mono">${m.id}</b>
+        ${enlacesHTML(m)}
       </div>
     </div>
     <div class="ultimo">${m.versions ? `<p class="vacio" style="padding:0">${T.cargando}</p>` : ''}</div>
@@ -633,6 +662,7 @@ function detalleHTML(m, vertical) {
 async function conectar(el, m) {
   if (!m) return;
   const q = a => el.querySelector(`[data-a="${a}"]`);
+  for (const b of el.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
   for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filtro.tema = b.dataset.tag; filtro.proyecto = '*'; pagina = 1; location.hash = '#/'; pintar(); };
   q('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
   q('mover').onclick = () => {
@@ -666,7 +696,7 @@ const claveAv = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
 function pintarRevisar() {
   const grupos = {};
   for (const a of avisos) (grupos[a.kind] = grupos[a.kind] || []).push(a);
-  const orden = ['outdated', 'stale_status', 'broken_path', 'unused', 'too_long'];
+  const orden = ['outdated', 'broken_link', 'stale_status', 'broken_path', 'unused', 'too_long'];
   const sesiones = !candidatas.length ? '' : `
     <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidatas.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.sesionesSub)}</p>
@@ -769,11 +799,34 @@ function pintarProyectos() {
 }
 
 let elegidaPanel = null;
+// Las memorias del proyecto en un anillo y las que enlazan de fuera (globales u otros proyectos) en
+// otro, con una línea por enlace. Sin librerías; solo si hay algún enlace.
+function grafoHTML(ms) {
+  // Solo las que tienen algún enlace; con muchas, las etiquetas salen al pasar el ratón.
+  const conEnlace = m => (m.links || []).length || enlazan(m).length;
+  const dentro = ms.filter(conEnlace).slice(0, 24), ids = new Set(dentro.map(m => m.id)), fuera = new Map(), aristas = [];
+  for (const m of dentro) {
+    for (const id of m.links || []) { aristas.push([m.id, id]); if (!ids.has(id)) fuera.set(id, true); }
+    for (const x of enlazan(m)) { if (!ids.has(x.id)) { aristas.push([x.id, m.id]); fuera.set(x.id, true); } }
+  }
+  if (!aristas.length) return '';
+  const externas = [...fuera.keys()].slice(0, 20).map(id => todas.find(x => x.id === id)).filter(Boolean);
+  const total = dentro.length + externas.length, etiquetas = total <= 14;
+  const W = 760, H = total > 20 ? 420 : 320, cx = W / 2, cy = H / 2, pos = new Map();
+  const anillo = (lista, rx, ry) => lista.forEach((m, i) => { const a = -Math.PI / 2 + 2 * Math.PI * i / Math.max(1, lista.length); pos.set(m.id, [cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); });
+  const r1 = dentro.length > 1 ? Math.min(150, 40 + dentro.length * 6) : 0;
+  anillo(dentro, r1 * 1.6, r1 * 0.8);
+  anillo(externas, Math.min(W / 2 - 40, r1 * 1.6 + 120), Math.min(H / 2 - 24, r1 * 0.8 + 70));
+  const lineas = aristas.filter(([a, b]) => pos.has(a) && pos.has(b)).map(([a, b]) => { const [x1, y1] = pos.get(a), [x2, y2] = pos.get(b); return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"></line>`; }).join('');
+  const nodo = (m, de) => { const [x, y] = pos.get(m.id); return `<circle class="${m.kind}${de ? '' : ' fuera'}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${de ? 8 : 6}" data-ir="${m.id}"><title>${esc(m.title)}</title></circle>` + (etiquetas ? `<text x="${(x + 11).toFixed(1)}" y="${(y + 4).toFixed(1)}">${esc(m.title.slice(0, 28))}</text>` : ''); };
+  return `<div class="grafo"><div class="lb">${T.conexiones} · ${dentro.length + externas.length}</div><svg viewBox="0 0 ${W} ${H}" role="img">${lineas}${dentro.map(m => nodo(m, true)).join('')}${externas.map(m => nodo(m, false)).join('')}</svg></div>`;
+}
+
 function pintarProyecto(p) {
   const ms = delProyecto(p).filter(m => !encontrados || encontrados.includes(m.id)), e = estados()[p];
   const ordenadas = encontrados ? encontrados.map(id => ms.find(m => m.id === id)).filter(Boolean) : ms;
   const m = elegidaPanel && todas.find(x => x.id === elegidaPanel && x.project === p);
-  const cols = TIPOS.map(t => {
+  const cols = tiposDe(ms).map(t => {
     const v = ordenadas.filter(x => x.kind === t), todasCol = columnasAbiertas[p + t], vis = todasCol ? v : v.slice(0, POR_COLUMNA);
     return `<div class="col">
       <div class="ch"><i class="k ${t}"></i><span class="kt ${t}">${t}</span><span class="n">${v.length}</span></div>
@@ -789,8 +842,9 @@ function pintarProyecto(p) {
           <h1>${esc(nombre(p))}</h1>
           ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="md">${md(e.content)}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
         </div>
-        <div class="nums">${TIPOS.map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
+        <div class="nums">${tiposDe(ms).map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
       </div>
+      ${grafoHTML(ms)}
       ${ms.length ? `<div class="cols">${cols}</div>` : `<p class="vacio">${T.nada}</p>`}
     </div>
     ${m ? `<aside class="panel" id="panel">
@@ -802,6 +856,7 @@ function pintarProyecto(p) {
   const v = $('vista');
   for (const b of v.querySelectorAll('.mc')) b.onclick = () => { elegidaPanel = elegidaPanel === b.dataset.id ? null : b.dataset.id; pintar(); };
   for (const b of v.querySelectorAll('[data-col]')) b.onclick = () => { columnasAbiertas[p + b.dataset.col] = !columnasAbiertas[p + b.dataset.col]; pintar(); };
+  for (const c of v.querySelectorAll('.grafo [data-ir]')) c.onclick = () => irA(c.dataset.ir);
   if (m) { $('cerrar').onclick = () => { elegidaPanel = null; pintar(); }; conectar($('panel'), m); }
 }
 
@@ -821,7 +876,7 @@ $('q').oninput = () => {
     abierta = null; pagina = 1; pintar();
   }, 180);
 };
-window.addEventListener('hashchange', () => { elegidaPanel = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs')?.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { elegidaPanel = irPendiente; irPendiente = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs')?.scrollTo(0, 0); });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }

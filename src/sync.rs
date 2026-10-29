@@ -107,7 +107,7 @@ pub struct Config {
 
 impl Config {
     fn acepta(&self, kind: Tipo, clave: &str) -> bool {
-        if !self.kinds.contains(&kind) {
+        if !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
             return false;
         }
         if clave.is_empty() {
@@ -942,7 +942,7 @@ pub fn config_de(url: &str, e: &Eleccion) -> Config {
 /// proyectos sin remoto de una misma persona se juntan entre sus equipos aunque cada uno lleve otro
 /// nombre de autor).
 pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config {
-    let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha];
+    let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Procedure];
     if e.preferencias {
         kinds.push(Tipo::Preference);
     }
