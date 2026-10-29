@@ -27,6 +27,8 @@ impl Entorno {
             .current_dir(self.dir.join("repo").join("src"))
             .env("OMOIKANE_DB", self.dir.join("o.db"))
             .env("OMOIKANE_MODELS", self.dir.join("models"))
+            .env("OMOIKANE_AUTO_UPDATE", "0")
+            .env("OMOIKANE_HOME", self.dir.join("home-omoikane"))
             .env_remove("OMOIKANE_LANG")
             .stdin(if entrada.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())

@@ -1,6 +1,6 @@
 [package]
 name = "omoikane"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -39,6 +39,8 @@ aes-siv = "=0.8.0"
 sha2 = "=0.11.1"
 base64 = "=0.22.1"
 getrandom = "=0.3.4"
+# Comprobar la firma Ed25519 de las Releases al actualizarse solo (ya venía con rustls).
+ring = "0.17.14"
 
 [target.'cfg(unix)'.dependencies]
 # Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».

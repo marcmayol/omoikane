@@ -155,6 +155,24 @@ enum Orden {
     },
     /// Projects that have memories.
     Projects,
+    /// Omoikane's own update: check now, or turn the daily automatic update on or off.
+    Upgrade {
+        /// Only say whether there is a newer version.
+        #[arg(long)]
+        check: bool,
+        /// Turn the daily automatic update on.
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn it off.
+        #[arg(long)]
+        off: bool,
+        /// What the daily check runs on its own (silent).
+        #[arg(long, hide = true)]
+        background: bool,
+        /// What the new binary runs after replacing the old one (the old version).
+        #[arg(long, hide = true, value_name = "VERSION")]
+        after: Option<String>,
+    },
     /// What is worth reviewing: memories a newer one contradicts, stale status, broken paths, unused and too long.
     Review {
         /// From every project.
@@ -231,6 +249,9 @@ enum Orden {
         /// Only show what would be done.
         #[arg(long)]
         dry_run: bool,
+        /// Claude Code: don't turn on the automatic update (Omoikane's daily one and the plugin's).
+        #[arg(long)]
+        no_auto_update: bool,
     },
     /// For Claude Code hooks: reads the hook's JSON on stdin and prints the memories to inject.
     Recall {
@@ -347,6 +368,9 @@ fn main() -> Result<()> {
     }
     let cli = Cli::from_arg_matches(&en_espanol(Cli::command()).get_matches()).unwrap_or_else(|e| e.exit());
     let c = &cli.comun;
+    if !matches!(cli.orden, Orden::Upgrade { .. }) {
+        omoikane::actualizar::quizas_en_segundo_plano();
+    }
     let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Import { .. } | Orden::Tui { .. });
     let r = ejecutar(c, cli.orden);
     if escribe && r.is_ok() {
@@ -382,7 +406,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             // Exit 1 si la herramienta respondió con isError: el cliente lo marca como error.
             std::process::exit(if es_error { 1 } else { 0 })
         }
-        Orden::Setup { agente, yes, dry_run } => setup(&agente, yes, dry_run),
+        Orden::Setup { agente, yes, dry_run, no_auto_update } => setup(&agente, yes, dry_run, no_auto_update),
+        Orden::Upgrade { check, on, off, background, after } => upgrade(check, on, off, background, after),
         Orden::Sync { accion, background } => sync(c, accion, background),
         Orden::Recall { session_end: true, .. } => recall_al_cerrar(c),
         Orden::Recall { session_start, format, .. } => {
@@ -646,13 +671,87 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
     }
 }
 
-fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
+/// `omoi upgrade`.
+fn upgrade(solo_mirar: bool, on: bool, off: bool, segundo_plano: bool, despues: Option<String>) -> Result<()> {
+    use omoikane::actualizar::{self, Resultado};
+    if let Some(anterior) = despues {
+        actualizar::despues(&anterior)?;
+        return Ok(());
+    }
+    if on || off {
+        actualizar::fijar(on)?;
+        if omoikane::setup::instalado() {
+            let _ = omoikane::setup::auto_update(on);
+        }
+        println!(
+            "{}",
+            if on {
+                tr!("Automatic update on: once a day omoi checks for a newer signed release and installs it.", "Actualización automática encendida: una vez al día omoi mira si hay una Release firmada más nueva y la instala.")
+            } else {
+                tr!("Automatic update off. `omoi upgrade` updates by hand.", "Actualización automática apagada. `omoi upgrade` actualiza a mano.")
+            }
+        );
+        return Ok(());
+    }
+    let exe = std::env::current_exe()?;
+    let r = actualizar::comprobar(&exe, !solo_mirar);
+    if segundo_plano {
+        return Ok(()); // nadie lo lee: lo que pase se ve en la sesión siguiente
+    }
+    match r? {
+        Resultado::AlDia(v) => println!("{}", tr!("omoi {v} is the latest version.", "omoi {v} es la última versión.")),
+        Resultado::NoSeInstala(v, por_que) if por_que.is_empty() => println!("{}", tr!("omoi {v} is available: `omoi upgrade` installs it.", "Hay omoi {v}: `omoi upgrade` la instala.")),
+        Resultado::NoSeInstala(v, por_que) => println!("{}", tr!("omoi {v} is available, but not installed automatically: {por_que}", "Hay omoi {v}, pero no se instala sola: {por_que}")),
+        Resultado::Actualizado(v) => println!("{}", tr!("Updated to omoi {v}.", "Actualizado a omoi {v}.")),
+    }
+    Ok(())
+}
+
+/// Lo que se pregunta al preparar Claude Code: si Omoikane se actualiza solo (el binario una vez al día
+/// y el plugin con la actualización automática del marketplace). Sin terminal o con `--yes`, sí.
+fn preguntar_auto_update(si: bool, no: bool, simulacro: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    if simulacro {
+        return Ok(());
+    }
+    let on = if no {
+        false
+    } else if let Some(ya) = omoikane::actualizar::preferencia().filter(|_| si || !std::io::stdin().is_terminal()) {
+        ya
+    } else if si || !std::io::stdin().is_terminal() {
+        true
+    } else {
+        preguntar_si(
+            &tr!(
+                "Keep Omoikane up to date by itself? (once a day it installs a newer signed release, and Claude Code updates the plugin)",
+                "¿Quieres que Omoikane se actualice solo? (una vez al día instala una Release firmada más nueva, y Claude Code actualiza el plugin)"
+            ),
+            true,
+        )?
+    };
+    omoikane::actualizar::fijar(on)?;
+    omoikane::setup::auto_update(on)?;
+    println!(
+        "{}",
+        if on {
+            tr!("Automatic update: on (`omoi upgrade --off` turns it off).", "Actualización automática: encendida (`omoi upgrade --off` la apaga).")
+        } else {
+            tr!("Automatic update: off (`omoi upgrade --on` turns it on).", "Actualización automática: apagada (`omoi upgrade --on` la enciende).")
+        }
+    );
+    Ok(())
+}
+
+fn setup(agente: &str, si: bool, simulacro: bool, sin_auto_update: bool) -> Result<()> {
     if agente != "claude" {
         return setup_otro(agente, si, simulacro);
     }
     let pasos = omoikane::setup::plan()?;
     if pasos.is_empty() {
         println!("{}", tr!("Claude Code already has Omoikane: nothing to do.", "Claude Code ya tiene Omoikane: nada que hacer."));
+        if omoikane::actualizar::preferencia().is_none() || sin_auto_update {
+            preguntar_auto_update(si, sin_auto_update, simulacro)?;
+        }
         return Ok(());
     }
     println!("{}", tr!("To set up Claude Code, omoi will:", "Para preparar Claude Code, omoi va a:"));
@@ -667,6 +766,7 @@ fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
         return Ok(());
     }
     omoikane::setup::ejecutar(&pasos)?;
+    preguntar_auto_update(si, sin_auto_update, simulacro)?;
     println!(
         "{}",
         tr!(
@@ -1342,6 +1442,12 @@ fn en_espanol(c: Command) -> Command {
             ("agente", "El agente: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo."),
             ("yes", "No preguntar antes de cambiar nada."),
             ("dry_run", "Solo enseñar lo que se haría."),
+            ("no_auto_update", "Claude Code: no encender la actualización automática (la diaria de Omoikane y la del plugin)."),
+        ]),
+        ("upgrade", "Actualizar Omoikane: mirar ahora, o encender o apagar la actualización automática diaria.", &[
+            ("check", "Solo decir si hay una versión más nueva."),
+            ("on", "Encender la actualización automática diaria."),
+            ("off", "Apagarla."),
         ]),
         ("recall", "Para los hooks de Claude Code: lee el JSON del hook y escribe las memorias que hay que inyectar.", &[
             ("session_start", "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas."),

@@ -369,6 +369,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     let propio = autor_propio(db);
     // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
     crate::revisar::al_dia(db)?;
+    let actualizado = crate::actualizar::aviso();
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes.
     db.execute(
         "DELETE FROM recall_log WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
@@ -449,6 +450,10 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         for c in &cs {
             s.push_str(&format!("- [{}] {} ({})\n", c.kind, c.text.chars().take(400).collect::<String>(), c.created_at.get(..10).unwrap_or("")));
         }
+    }
+    if let Some(a) = &actualizado {
+        s.push_str(a);
+        s.push('\n');
     }
     s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
