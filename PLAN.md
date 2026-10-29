@@ -610,7 +610,13 @@ Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikan
 
 **Hecho cuando:** con las 30 últimas conversaciones reales de Marc (sus `.jsonl`), una media de 5 candidatas o menos por sesión, al menos 6 de cada 10 que Marc guardaría, y ninguna con datos sensibles (contraseñas o tokens: se filtran con los mismos patrones que ya usa la sincronización para las URL).
 
-### 7.3 · 0.13.0 · recetas: memorias que se ejecutan
+### 7.3 · recetas ✅ (29-oct-2026, sale con 7.2 y 7.4 en la 0.12.0)
+**Hecho así** (`tests/recetas.rs`):
+- `procedure` es el quinto tipo. El `CHECK` de `memory` no lo admitía y SQLite no cambia un `CHECK` con `ALTER TABLE`: la migración al esquema 7 lo afloja reescribiendo la definición con `writable_schema` (el procedimiento de la documentación de SQLite para quitar o aflojar restricciones sin tocar los datos). Probado sobre una copia de su base real: 137 memorias intactas, `integrity_check` ok, FTS cuadra.
+- `when:` (o `cuando:`) con palabras separadas por comas; el recall la trae **entera** (hasta 4.000 caracteres) cuando el mensaje contiene una palabra entera («publica» sí, «publicación» no), una vez por sesión y solo en su ámbito.
+- La sincronización comparte las recetas donde comparte los hechos (las configuraciones de antes no conocían el tipo). El visor les da color propio, filtro y columna en la página del proyecto solo si hay alguna.
+- Las instrucciones del agente explican cuándo guardar una receta y que la actualice cuando un paso falle o cambie.
+
 - **Tipo nuevo `procedure`**: título («Publicar una versión de Omoikane») y pasos numerados en el contenido; opcionalmente, una línea `when:` con las palabras que lo disparan («publica», «release», «sacar versión»). Es el único cambio en el modelo de memoria (§3): cinco tipos en lugar de cuatro.
 - **Recall:** cuando el mensaje coincide con su `when:` o su título, sale **entera**, no un fragmento de 200 caracteres, con la instrucción de seguirla como lista de comprobación.
 - **Aprende:** si un paso falla o cambia, el agente actualiza la receta con `update` y el motivo (por ejemplo, «en Windows renombrar antes omoi.exe, está bloqueado»). El historial guarda cada versión, y el visor la enseña como lista con lo que cambió la última vez.
@@ -618,7 +624,13 @@ Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikan
 
 **Hecho cuando:** «publica la 0.10.1» en una sesión nueva trae la receta y el agente la sigue sin explorar; «qué tal la publicación de ayer» no la trae (no es una petición de hacerlo).
 
-### 7.4 · 0.14.0 · memorias conectadas
+### 7.4 · memorias conectadas ✅ (29-oct-2026, sale con 7.2 y 7.3 en la 0.12.0)
+**Hecho así** (`src/enlaces.rs`, `memory_link` en el esquema 7, `tests/enlaces.rs`):
+- Con sus 137 memorias: 229 `[[enlaces]]` en 113 memorias; resueltos contra las etiquetas (minúsculas, sin tildes, `-` = `_`) quedan 208 enlaces y 9 rotos, que salen en Revisar como *Enlaces rotos*. Se rehacen con la revisión (cuando cambia la base) y al empezar cada sesión.
+- Vecina en el recall: una sola, `gotcha` o `preference`, enlazada con una de las inyectadas. Si la enlaza la inyectada (lo dijo quien la escribió) basta cubrir el 10 % del mensaje; si es al revés, el 25 %. Con sus 300 últimos mensajes reales: sale en 2, y aporta en 1 (la K2 trae «comprobar `print_stats` antes de cada G1»; la otra, la preferencia de «gratis para siempre» tras la nota de social-publish, sobra). Los mensajes con algo inyectado siguen siendo 20 de 300.
+- El 8.º conjunto a ciegas no se hizo: la 7.4 no toca el orden de la búsqueda (para eso era), solo añade al recall, y eso se midió con los mensajes reales.
+- Visor: «Enlaza con» / «La enlazan» en el detalle (llevan a la memoria) y, en la página del proyecto, un grafo SVG propio con las memorias del proyecto que tienen enlaces y las de fuera con las que conectan; etiquetas al pasar el ratón cuando hay muchas. `/api/memories` añade `links`.
+
 - **Enlaces:** los `[[nombre]]` del contenido, resueltos contra las etiquetas y los títulos (las notas importadas usan su nombre de fichero como etiqueta), en una tabla `memory_link(from_id, to_id)` que se actualiza al guardar. Los enlaces rotos salen en **Revisar**.
 - **Recall:** cuando se inyecta una memoria, puede llegar también una vecina, solo si es `gotcha` o `preference` y supera el mismo listón de relevancia; nunca más de una por mensaje.
 - **Visor:** en el detalle, «Enlaza con» y «La enlazan»; en la página del proyecto, un grafo sencillo (SVG propio, sin librerías).

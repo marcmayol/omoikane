@@ -1,4 +1,4 @@
-//! Lo que conviene revisar en la memoria (Fase 7.1): memorias que otra más nueva contradice, estados
+//! Lo que conviene revisar en la memoria (Fase 7.1, y los enlaces rotos de la 7.4): memorias que otra más nueva contradice, estados
 //! que se han quedado atrás, rutas que ya no existen, memorias que nunca se usan y notas demasiado
 //! largas para el recall. Sin modelo: palabras, fechas y versiones.
 //!
@@ -24,6 +24,8 @@ pub const ESTADO_VIEJO: &str = "stale_status";
 pub const RUTA_ROTA: &str = "broken_path";
 pub const SIN_USO: &str = "unused";
 pub const LARGA: &str = "too_long";
+pub const ENLACE_ROTO: &str = "broken_link";
+const TIPOS: [&str; 6] = [DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
@@ -66,11 +68,22 @@ pub fn al_dia(db: &Connection) -> Result<()> {
     tx.execute("DELETE FROM review WHERE kind = ?1 AND dismissed_at IS NULL", [DESFASADA])?;
     // Pero solo mientras ninguna de las dos cambie: si una cambia, el aviso puede volver.
     tx.execute(
-        "DELETE FROM review WHERE kind = ?1 AND dismissed_at IS NOT NULL AND (
+        "DELETE FROM review WHERE kind IN (?1, ?2) AND dismissed_at IS NOT NULL AND (
            EXISTS (SELECT 1 FROM memory m WHERE m.id = review.memory_id AND m.updated_at > review.dismissed_at)
            OR EXISTS (SELECT 1 FROM memory m WHERE m.id = review.other_id AND m.updated_at > review.dismissed_at))",
-        [DESFASADA],
+        [DESFASADA, ENLACE_ROTO],
     )?;
+    tx.execute("DELETE FROM review WHERE kind = ?1 AND dismissed_at IS NULL", [ENLACE_ROTO])?;
+    let mut rotos: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (m, e) in crate::enlaces::recalcular(&tx)? {
+        rotos.entry(m).or_default().push(format!("[[{e}]]"));
+    }
+    for (m, es) in rotos {
+        tx.execute(
+            &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, '', ?3, {AHORA})"),
+            params![m, ENLACE_ROTO, format!("links to nothing: {}", es.join(", "))],
+        )?;
+    }
     for (vieja, nueva, detalle) in nuevas {
         tx.execute(
             &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"),
@@ -399,6 +412,17 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
             }
         }
     }
+    {
+        let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY memory_id")?;
+        let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (id, detalle) in filas {
+            if let Some(m) = por_id.get(id.as_str())
+                && !fuera.contains(&(id.clone(), ENLACE_ROTO.to_string(), String::new()))
+            {
+                r.push(aviso(m, ENLACE_ROTO, None, detalle));
+            }
+        }
+    }
     let ahora = chrono_ahora(db)?;
     let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
     for m in &todas {
@@ -423,7 +447,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
             r.push(aviso(m, LARGA, None, format!("{largo} characters; recall only reads the first {LARGO_PARA_RECALL}: consider splitting it")));
         }
     }
-    let orden = |k: &str| [DESFASADA, ESTADO_VIEJO, RUTA_ROTA, SIN_USO, LARGA].iter().position(|x| *x == k).unwrap_or(9);
+    let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(9);
     r.sort_by_key(|a| orden(&a.kind));
     Ok(r)
 }
@@ -454,7 +478,7 @@ fn dias_entre(desde: &str, hasta: &str) -> f64 {
 /// «Está bien así»: no vuelve a avisar de esto hasta que la memoria cambie.
 pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -> Result<()> {
     let id = crate::memoria::resolver_id(db, memory_id)?;
-    anyhow::ensure!([DESFASADA, ESTADO_VIEJO, RUTA_ROTA, SIN_USO, LARGA].contains(&kind), "unknown review kind «{kind}»");
+    anyhow::ensure!(TIPOS.contains(&kind), "unknown review kind «{kind}»");
     db.execute(
         &format!(
             "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, ?2, ?3, '', {AHORA}, {AHORA})

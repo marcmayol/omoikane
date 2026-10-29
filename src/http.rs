@@ -4,7 +4,7 @@
 //! - `GET /` → la vista web: la cronología de memorias y los proyectos con su estado (y `/icono.png`,
 //!   `/fuentes/*.woff2`, que la página carga del binario)
 //! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua, con
-//!   `versions` (cuántas versiones anteriores guarda su historial)
+//!   `versions` (cuántas versiones anteriores guarda su historial) y `links` (las que enlaza con `[[…]]`)
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
@@ -186,12 +186,16 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     let mut q = db.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
                     let versiones: std::collections::HashMap<String, i64> =
                         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+                    crate::revisar::al_dia(&db)?;
+                    let enlaces = crate::enlaces::todos(&db)?;
                     let v: Vec<serde_json::Value> = v
                         .into_iter()
                         .map(|m| {
                             let n = versiones.get(&m.id).copied().unwrap_or(0);
+                            let links = enlaces.get(&m.id).cloned().unwrap_or_default();
                             let mut j = serde_json::to_value(m).unwrap_or_default();
                             j["versions"] = n.into();
+                            j["links"] = links.into();
                             j
                         })
                         .collect();

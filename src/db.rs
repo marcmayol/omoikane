@@ -98,9 +98,27 @@ fn migrar(db: &mut Connection) -> Result<()> {
     }
     if v < 7 {
         tx.execute_batch(ESQUEMA_7)?;
+        aflojar_tipos(&tx)?;
     }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// El tipo `procedure` (Fase 7.3) no cabía en el `CHECK` de `memory`. SQLite no cambia un `CHECK`
+/// con `ALTER TABLE`; para aflojarlo sin tocar los datos, su documentación (lang_altertable.html,
+/// «otros cambios de esquema») reescribe la definición con `writable_schema` y sube `schema_version`.
+fn aflojar_tipos(tx: &Connection) -> Result<()> {
+    let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'memory'", [], |f| f.get(0))?;
+    let viejo = "CHECK (kind IN ('fact','decision','gotcha','preference'))";
+    if !sql.contains(viejo) {
+        return Ok(());
+    }
+    let nuevo = sql.replace(viejo, "CHECK (kind IN ('fact','decision','gotcha','preference','procedure'))");
+    let version: i64 = tx.query_row("PRAGMA schema_version", [], |f| f.get(0))?;
+    tx.execute_batch("PRAGMA writable_schema = ON")?;
+    tx.execute("UPDATE sqlite_schema SET sql = ?1 WHERE type = 'table' AND name = 'memory'", [&nuevo])?;
+    tx.execute_batch(&format!("PRAGMA schema_version = {}; PRAGMA writable_schema = OFF", version + 1))?;
     Ok(())
 }
 

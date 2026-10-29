@@ -367,6 +367,8 @@ fn autor_propio(db: &Connection) -> Option<String> {
 
 pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
     let propio = autor_propio(db);
+    // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
+    crate::revisar::al_dia(db)?;
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes.
     db.execute(
         "DELETE FROM recall_log WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
@@ -480,10 +482,47 @@ fn linea_corta(m: &Memoria, project: &str, propio: Option<&str>) -> String {
 }
 
 /// En cada mensaje: lo que tiene que ver con él y no se ha inyectado ya en esta sesión, o nada.
+/// Lo que tiene que cubrir del mensaje una memoria enlazada para traerla con la que la enlaza: la mitad
+/// del listón del recall, porque el enlace ya dice que tiene que ver.
+pub const LISTON_VECINA: f64 = 0.25;
+/// Y si es la memoria inyectada la que la enlaza: quien la escribió ya dijo que van juntas.
+pub const LISTON_ENLAZADA: f64 = 0.10;
+
+/// Cuánto de una receta se inyecta (los pasos enteros, no un fragmento).
+const LARGO_RECETA: usize = 4000;
+
+/// Las palabras de la línea `when:` de una receta (separadas por comas), en minúsculas y sin tildes.
+pub fn disparadores(m: &Memoria) -> Vec<String> {
+    m.content
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim().trim_start_matches(['-', '*', ' ']);
+            let n = sin_tildes(&l.to_lowercase());
+            n.strip_prefix("when:").or_else(|| n.strip_prefix("cuando:")).map(|r| r.to_string())
+        })
+        .flat_map(|r| r.split(',').map(|w| w.trim().trim_matches(['"', '\'', '«', '»', '`', '.']).to_string()).collect::<Vec<_>>())
+        .filter(|w| w.chars().count() >= 3)
+        .collect()
+}
+
+/// La receta que pide el mensaje: una `procedure` del ámbito con una palabra de su `when:` en él (palabra
+/// entera: «publica» no es «publicación»).
+fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria>> {
+    let n = sin_tildes(&prompt.to_lowercase());
+    let tiene = |w: &str| {
+        n.match_indices(w).any(|(i, _)| {
+            n[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric()) && n[i + w.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric())
+        })
+    };
+    let recetas = memoria::recientes(db, &Ambito::de(project), Some(memoria::Tipo::Procedure), 200)?;
+    Ok(recetas.into_iter().find(|m| disparadores(m).iter().any(|w| tiene(w))))
+}
+
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
     let propio = autor_propio(db);
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
+    let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id));
     let por_significado = match modelo {
         Some(m) => por_significado(db, project, &e.prompt, m)?,
         None => Vec::new(),
@@ -493,15 +532,25 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
         .chain(relevantes(db, project, &e.prompt)?.into_iter().map(|x| x.0))
         .chain(por_significado)
     {
-        if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && elegidas.len() < maximo() {
+        if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && la_receta.as_ref().is_none_or(|r| r.id != m.id) && elegidas.len() < maximo() {
             elegidas.push(m);
         }
     }
+    // Una memoria enlazada con las elegidas, si es una trampa o una preferencia y tiene que ver (7.4).
+    let vecina = if elegidas.is_empty() { None } else { crate::enlaces::vecina_para(db, project, &e.prompt, &elegidas, &vistas, LISTON_ENLAZADA, LISTON_VECINA)? };
     let recordar = toca_recordar(db, project, &e.session_id)?;
-    if elegidas.is_empty() && !recordar {
+    if elegidas.is_empty() && !recordar && la_receta.is_none() {
         return Ok(None);
     }
     let mut s = String::from("<omoikane>\n");
+    if let Some(r) = &la_receta {
+        let pasos: String = r.content.chars().take(LARGO_RECETA).collect();
+        s.push_str(&format!(
+            "A saved procedure for this (id {}): follow it step by step as a checklist; if a step fails or has changed, `update` the procedure with what you learned.\n### {}\n{pasos}\n",
+            r.id.chars().take(12).collect::<String>(),
+            r.title
+        ));
+    }
     if !elegidas.is_empty() {
         let notas = crate::revisar::notas(db, &elegidas.iter().collect::<Vec<_>>())?;
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
@@ -510,13 +559,16 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
             s.push_str(&nota(&notas, m));
             s.push('\n');
         }
+        if let Some((v, de)) = &vecina {
+            s.push_str(&format!("{} (linked from {})\n", linea(v, project, propio.as_deref()), de.chars().take(12).collect::<String>()));
+        }
     }
     if recordar {
         s.push_str(RECORDATORIO);
         s.push('\n');
     }
     s.push_str("</omoikane>");
-    let ids: Vec<String> = elegidas.iter().map(|m| m.id.clone()).collect();
+    let ids: Vec<String> = elegidas.iter().chain(&la_receta).chain(vecina.iter().map(|(v, _)| v)).map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids)?;
     Ok(Some(s))
 }

@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const INSTRUCCIONES: &str = "Omoikane is this user's long-term memory across sessions, scoped to the current project (plus global memories).
-Save a memory with `remember` when you learn something worth knowing next time: a non-obvious bug or trap (kind gotcha, with the file paths it affects), a decision and its reasons (decision), how something in the project works (fact), or how the user wants things done (preference).
+Save a memory with `remember` when you learn something worth knowing next time: a non-obvious bug or trap (kind gotcha, with the file paths it affects), a decision and its reasons (decision), how something in the project works (fact), how the user wants things done (preference), or a procedure that gets repeated, like publishing a release (procedure: numbered steps, plus a line `when: words, that, trigger it`; it comes back whole when the user asks for it).
+When you follow a procedure and a step fails or has changed, `update` the procedure with what you learned (and why), so it is right next time.
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
@@ -46,7 +47,7 @@ pub struct Remember {
     title: String,
     /// What, why and where, in a few lines.
     content: String,
-    /// fact, decision, gotcha or preference.
+    /// fact, decision, gotcha, preference or procedure.
     kind: String,
     /// Project files or folders it refers to (relative to the repo root, or absolute).
     paths: Option<Vec<String>>,
@@ -68,7 +69,7 @@ pub struct Remember {
 pub struct Search {
     /// What to look for, in plain words (any language).
     query: String,
-    /// Only this kind: fact, decision, gotcha or preference.
+    /// Only this kind: fact, decision, gotcha, preference or procedure.
     kind: Option<String>,
     /// Only memories with all these tags.
     tags: Option<Vec<String>>,
@@ -90,7 +91,7 @@ pub struct Update {
     id: String,
     title: Option<String>,
     content: Option<String>,
-    /// fact, decision, gotcha or preference.
+    /// fact, decision, gotcha, preference or procedure.
     kind: Option<String>,
     /// Replaces the paths (an empty list removes them).
     paths: Option<Vec<String>>,
@@ -107,7 +108,7 @@ pub struct Update {
 pub struct Recent {
     /// How many (1-50, default 10).
     limit: Option<usize>,
-    /// Only this kind: fact, decision, gotcha or preference.
+    /// Only this kind: fact, decision, gotcha, preference or procedure.
     kind: Option<String>,
 }
 
