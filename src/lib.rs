@@ -13,6 +13,7 @@ pub mod modelos;
 pub mod proyecto;
 pub mod recall;
 pub mod reloj;
+pub mod revisar;
 pub mod setup;
 pub mod sync;
 pub mod tui;

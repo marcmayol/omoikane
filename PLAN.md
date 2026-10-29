@@ -562,7 +562,15 @@ Hasta la 0.10.0, Omoikane hace mejor lo que hace engram: buscar, recordar sin qu
 
 Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikane** (lo que necesite entender texto lo hace el agente, que ya es un modelo), **8 herramientas MCP** (lo nuevo entra en las que hay), todo opcional y explicable, y cada cosa se mide con datos reales antes de darla por buena.
 
-### 7.1 · 0.11.0 · memoria que se cuida sola
+### 7.1 · 0.11.0 · memoria que se cuida sola ✅ (29-oct-2026)
+**Hecho así** (`src/revisar.rs`, esquema 6, `tests/revisar.rs`):
+- Calibrado con un prototipo en Python sobre sus 137 memorias reales antes de escribirlo en Rust. Primera versión: 5 avisos, 4 falsos («pendiente» en una y «hecho» en otra hablando de cosas distintas) y sin el caso que lo motivó (las importadas tienen todas la misma fecha). Tres cambios lo dejaron en **1 aviso, el bueno** («version 0.2.0 → 0.14.0» en la nota de Omoikane): la frase pendiente y la hecha tienen que compartir dos palabras raras; la fecha que cuenta es la más reciente que menciona el texto (`29-oct-2026`, `2026-10-29`) y no `updated_at`; y una versión solo se compara con otra de la misma cosa (la palabra de delante dentro de la frase: «rusqlite 0.41.0» no es «omoi 0.9.2»).
+- **Sin vector**: con palabras raras (df ≤ 5 %), fechas y versiones bastó; dentro de un proyecto se comparan todas las parejas, entre las globales solo las que comparten una palabra rara (índice invertido).
+- Las desfasadas se guardan en `review` y se recalculan cuando cambia la huella de `memory`, desde las escrituras (MCP, CLI, fin de cada sync, la vista). **El recall solo lee** lo guardado: recalcular cuesta ~47 ms con 137 memorias y el recall sigue igual que en la 0.10.0 (56-57 ms el proceso entero, medido intercalado). Estado viejo, rutas rotas, sin uso y largas se miran al leer (dependen de la hora o del disco).
+- Al guardar, si la nueva deja anticuada a otra, `remember` devuelve `supersedes` con el porqué. `context` pasa a `{memories, review}`. `omoi review [--all] [--dismiss <id> --kind … --other …]`, `GET /api/review`, `POST /api/review/dismiss` y la pestaña **Revisar** con las dos memorias lado a lado.
+- «Está bien así» vale hasta que cambie cualquiera de las dos memorias.
+- **Pendiente respecto al diseño:** que lo descartado viaje por la sincronización (de momento es de cada equipo), y el criterio de «7 de cada 10 avisos útiles», que necesita que Marc revise la lista (hoy: 1 desfasada, verdadera, y 20 notas largas, verdaderas por definición; estado viejo y sin uso no pueden salir aún porque todas sus memorias son del 28-29 oct).
+
 **Qué detecta** (en `src/revisar.rs`, sin modelo salvo el vector que ya hay):
 - **Desfasada:** dos memorias del mismo proyecto que hablan de lo mismo (parecido por vector ≥ 0,55 o títulos con ≥ 2 palabras raras en común) y se contradicen en algo comprobable: versiones distintas (`\d+\.\d+\.\d+`), cifras con la misma unidad, o «pendiente / sin hacer / falta» frente a «hecho / publicado / ya». La más vieja queda marcada como posiblemente superada por la nueva. Es el caso real de la nota de la 0.2.0.
 - **Estado viejo:** una memoria `status` con cambios posteriores en su proyecto (otras memorias guardadas o cambiadas después, o un commit más nuevo en el repo si es git) y más de 7 días sin tocar.

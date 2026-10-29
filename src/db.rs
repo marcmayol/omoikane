@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 5;
+pub const VERSION_ESQUEMA: i64 = 6;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -93,10 +93,27 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if v < 5 {
         tx.execute_batch(ESQUEMA_5)?;
     }
+    if v < 6 {
+        tx.execute_batch(ESQUEMA_6)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
 }
+
+/// Revisión (Fase 7.1, `revisar`): las memorias que otra más nueva contradice, y lo que el usuario
+/// dio por bueno («está bien así», `dismissed_at`), que vale hasta que la memoria vuelva a cambiar.
+const ESQUEMA_6: &str = "
+CREATE TABLE review (
+  memory_id    TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  other_id     TEXT NOT NULL DEFAULT '',
+  detail       TEXT NOT NULL DEFAULT '',
+  found_at     TEXT NOT NULL,
+  dismissed_at TEXT,
+  PRIMARY KEY (memory_id, kind, other_id)
+) WITHOUT ROWID;
+";
 
 /// Sincronización entre equipos: un reloj lógico híbrido por memoria (`hlc`, ver `reloj`), quién la
 /// escribió (`author`) y las marcas de lo olvidado, para que otro equipo no lo devuelva. Las memorias

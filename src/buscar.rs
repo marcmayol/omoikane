@@ -48,7 +48,7 @@ const VACIAS: &[&str] = &[
     "this", "to", "was", "what", "when", "why", "with", "amb", "els", "per", "dels", "aixo", "pel",
 ];
 
-fn sin_tildes(s: &str) -> String {
+pub(crate) fn sin_tildes(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             'á' | 'à' | 'ä' | 'â' => 'a',

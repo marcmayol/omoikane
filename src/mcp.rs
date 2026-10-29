@@ -27,6 +27,7 @@ If the session runs in a folder that is not a project (such as the home folder),
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
+A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 
 #[derive(Clone)]
@@ -251,6 +252,13 @@ impl Servidor {
                     r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
                 }
+                // Si deja anticuada a otra (versión más alta, o hecho lo que allí estaba pendiente), se dice ya.
+                crate::revisar::al_dia(db)?;
+                let viejas = crate::revisar::superadas_por(db, &m.id)?;
+                if !viejas.is_empty() {
+                    r["supersedes"] = serde_json::json!(viejas.iter().map(|(id, titulo, detalle)| serde_json::json!({ "id": id, "title": titulo, "why": detalle })).collect::<Vec<_>>());
+                    r["supersedes_hint"] = serde_json::json!("Saved. It looks newer than these memories, which may now be outdated: update them (or forget them if this one replaces them).");
+                }
                 if m.content.chars().count() > crate::recall::LARGO_PARA_RECALL {
                     r["length_hint"] = serde_json::json!(format!("Long memory: only its first {} characters count for automatic recall. Consider splitting it into shorter memories, one fact each.", crate::recall::LARGO_PARA_RECALL));
                 }
@@ -321,7 +329,9 @@ impl Servidor {
                     },
                     reason: p.reason,
                 };
-                memoria::actualizar(db, &p.id, c, modelo)
+                let m = memoria::actualizar(db, &p.id, c, modelo)?;
+                crate::revisar::al_dia(db)?;
+                Ok(m)
             })
             .await;
         if r.is_ok() {
@@ -332,7 +342,13 @@ impl Servidor {
 
     #[tool(description = "Delete a memory and its history. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, _| memoria::olvidar(db, &p.id)).await;
+        let r = self
+            .con_base(move |db, _, _| {
+                let m = memoria::olvidar(db, &p.id)?;
+                crate::revisar::al_dia(db)?;
+                Ok(m)
+            })
+            .await;
         if r.is_ok() {
             crate::sync::programar(&self.db);
         }
@@ -345,12 +361,14 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "The user's preferences and the pinned memories for this project (and the global ones). Call it at the start of a session.")]
+    #[tool(description = "The user's preferences and the pinned memories for this project (and the global ones), and what is worth reviewing in its memory (memories a newer one contradicts, stale status, broken paths…). Call it at the start of a session.")]
     async fn context(&self) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(|db, _, proyecto| {
                 let v = memoria::contexto(db, proyecto, 30)?;
-                Ok(v.into_iter().map(|m| compacta(m, false, None)).collect::<Vec<_>>())
+                let memorias: Vec<_> = v.into_iter().map(|m| compacta(m, false, None)).collect();
+                let review = crate::revisar::avisos(db, &Ambito::de(proyecto))?;
+                Ok(serde_json::json!({ "memories": memorias, "review": review }))
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))

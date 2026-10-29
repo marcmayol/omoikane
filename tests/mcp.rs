@@ -114,8 +114,11 @@ async fn las_herramientas_de_punta_a_punta() {
     // Una preferencia global sale en context y en recent.
     llamar(&c, "remember", json!({"title": "Commits en inglés", "content": "Una línea, en imperativo.", "kind": "preference", "global": true})).await;
     let (_, r) = llamar(&c, "context", json!({})).await;
-    assert_eq!(r.as_array().unwrap().len(), 1);
-    assert_eq!(r[0]["global"], true);
+    assert_eq!(r["memories"].as_array().unwrap().len(), 1);
+    assert_eq!(r["memories"][0]["global"], true);
+    // Y lo que conviene revisar: la trampa apunta a `src/auth.rs`, que no existe en este repositorio.
+    assert_eq!(r["review"][0]["kind"], "broken_path", "{r}");
+    assert!(r["review"][0]["detail"].as_str().unwrap().contains("src/auth.rs"), "{r}");
     let (_, r) = llamar(&c, "recent", json!({})).await;
     assert_eq!(r.as_array().unwrap().len(), 2);
 
