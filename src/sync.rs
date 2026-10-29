@@ -4,8 +4,10 @@
 //!
 //! - **Qué se sube:** texto, nunca el SQLite. Una línea por memoria (y por cada olvido), ordenadas y
 //!   partidas por proyecto y por equipo: `<proyecto>/<equipo>.jsonl`, `global/<equipo>.jsonl` y
-//!   `olvidos/<equipo>.jsonl`. Cada equipo solo escribe sus ficheros, así que git nunca tiene
-//!   conflictos; al bajar se leen solo los ficheros que cambiaron desde la última vez.
+//!   `olvidos/<equipo>.jsonl`, donde `<equipo>` es un nombre opaco derivado de la clave (el nombre del
+//!   equipo, que lleva el del sistema, solo va dentro de las líneas cifradas). Cada equipo solo
+//!   escribe sus ficheros, así que git nunca tiene conflictos; al bajar se leen solo los ficheros que
+//!   cambiaron desde la última vez. Los commits van firmados como «omoikane», sin nombres.
 //! - **Cifrado solo en el remoto:** cada línea va cifrada con AES-SIV (RFC 5297), que es determinista:
 //!   una línea que no cambia queda igual byte a byte y el diff de git sigue siendo de una línea. Las
 //!   carpetas de proyecto tienen un nombre opaco derivado de la clave. En el equipo todo está en claro.
@@ -36,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Cabecera asociada al cifrado: una línea de otro formato o versión no se descifra por accidente.
@@ -219,6 +221,17 @@ impl Cifra {
         format!("p-{}", &a_hex(&h.finalize())[..16])
     }
 
+    /// Nombre opaco del fichero de un equipo: el nombre del equipo (con el del sistema) no queda a la
+    /// vista en el repositorio.
+    fn fichero(&self, equipo: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&self.clave);
+        h.update(b"equipo:");
+        h.update(equipo.as_bytes());
+        format!("m-{}.jsonl", &a_hex(&h.finalize())[..16])
+    }
+
     /// Si `omoikane.check` del clon se abre con esta clave. `None` si el repositorio no lo tiene.
     fn comprueba(&self, clon: &Path) -> Option<bool> {
         let t = std::fs::read_to_string(clon.join(CHEQUEO)).ok()?;
@@ -258,12 +271,23 @@ enum Linea {
         hlc: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         author: String,
+        /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        machine: String,
     },
     Tombstone {
         id: String,
         deleted_at: String,
         hlc: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        machine: String,
     },
+}
+
+/// Un id como los que escribe Omoikane (ULID: 26 letras y números en mayúsculas). Una línea con otro
+/// id no se acepta.
+fn id_valido(id: &str) -> bool {
+    id.len() == 26 && id.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
 }
 
 // --- Proyectos ---------------------------------------------------------------------------------------
@@ -359,9 +383,79 @@ const NULO: &str = "NUL";
 #[cfg(not(windows))]
 const NULO: &str = "/dev/null";
 
+/// Sin ventanas en Windows (en segundo plano no hay consola; cada orden abriría una).
+fn sin_ventana(c: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = c;
+}
+
+/// Si el usuario ya dice cómo usar ssh (`GIT_SSH_COMMAND`, `GIT_SSH` o `core.sshCommand`: plink, una
+/// clave concreta…). Entonces se respeta; si no, ssh va en modo sin preguntas.
+fn ssh_propio() -> bool {
+    static PROPIO: OnceLock<bool> = OnceLock::new();
+    *PROPIO.get_or_init(|| {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return true;
+        }
+        let mut c = std::process::Command::new("git");
+        c.args(["config", "--get", "core.sshCommand"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        sin_ventana(&mut c);
+        c.output().is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    })
+}
+
+/// Mata git y lo que haya lanzado (git-remote-https, ssh…), no solo el proceso git.
+fn matar_arbol(h: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        let mut k = std::process::Command::new("taskkill");
+        k.args(["/T", "/F", "/PID", &h.id().to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        sin_ventana(&mut k);
+        let _ = k.status();
+    }
+    #[cfg(unix)]
+    {
+        // git va en su propio grupo de procesos: se mata el grupo entero.
+        // SAFETY: kill con un pid de grupo negativo solo manda la señal a ese grupo.
+        unsafe {
+            libc::kill(-(h.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let _ = h.kill();
+    let _ = h.wait();
+}
+
+/// Lee una salida en un hilo, guardando lo que llega a medida que llega: si un nieto de git (un ssh
+/// con `ControlPersist`) la deja abierta, se puede seguir sin esperar a que la cierre.
+fn lector(mut r: Box<dyn Read + Send>) -> (Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+    let datos = Arc::new(Mutex::new(Vec::new()));
+    let fin = Arc::new(AtomicBool::new(false));
+    let (d, f) = (datos.clone(), fin.clone());
+    std::thread::spawn(move || {
+        let mut b = [0u8; 8192];
+        loop {
+            match r.read(&mut b) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => d.lock().map(|mut v| v.extend_from_slice(&b[..n])).unwrap_or(()),
+            }
+        }
+        f.store(true, Ordering::Relaxed);
+    });
+    (datos, fin)
+}
+
 /// Ejecuta git en el clon. Sin preguntas ni ventanas (en segundo plano no hay nadie para contestar),
 /// sin los hooks ni las conversiones de fin de línea de la configuración del usuario (el clon es de
-/// Omoikane, y un hook que rechace texto cifrado lo atascaría), y con un límite de tiempo.
+/// Omoikane, y un hook que rechace texto cifrado lo atascaría), y con un límite de tiempo para toda la
+/// orden, también para leer lo que escribe.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let mut c = std::process::Command::new("git");
     c.arg("-c")
@@ -371,39 +465,41 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
-        .env("GIT_SSH_COMMAND", std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes".into()))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
+    if !ssh_propio() {
+        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    sin_ventana(&mut c);
+    #[cfg(unix)]
     {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(CREATE_NO_WINDOW);
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
     }
     let mut h = c.spawn().with_context(|| tr!("can't run git: is it installed?", "no se puede ejecutar git: ¿está instalado?"))?;
-    let leer = |mut r: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut v = Vec::new();
-            let _ = r.read_to_end(&mut v);
-            v
-        })
-    };
-    let salida = leer(Box::new(h.stdout.take().expect("stdout")));
-    let errores = leer(Box::new(h.stderr.take().expect("stderr")));
+    let (salida, fin_salida) = lector(Box::new(h.stdout.take().expect("stdout")));
+    let (errores, fin_errores) = lector(Box::new(h.stderr.take().expect("stderr")));
     let limite = Instant::now() + LIMITE_GIT;
+    let colgado = || anyhow!("git {}: {}", args.first().unwrap_or(&""), tr!("no answer after {} s", "sin respuesta tras {} s", LIMITE_GIT.as_secs()));
     let estado = loop {
         if let Some(e) = h.try_wait()? {
             break e;
         }
         if Instant::now() > limite {
-            let _ = h.kill();
-            let _ = h.wait();
-            bail!("git {}: {}", args.first().unwrap_or(&""), tr!("no answer after {} s", "sin respuesta tras {} s", LIMITE_GIT.as_secs()));
+            matar_arbol(&mut h);
+            return Err(colgado());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let out = salida.join().unwrap_or_default();
-    let err = errores.join().unwrap_or_default();
+    // Lo que quede por leer: hasta que se cierren las salidas, con un margen corto (un nieto que las
+    // deja abiertas no debe colgar la sincronización) y nunca más allá del límite.
+    let margen = (Instant::now() + Duration::from_secs(2)).min(limite);
+    while !(fin_salida.load(Ordering::Relaxed) && fin_errores.load(Ordering::Relaxed)) && Instant::now() < margen {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let out = salida.lock().map(|v| v.clone()).unwrap_or_default();
+    let err = errores.lock().map(|v| v.clone()).unwrap_or_default();
     if estado.success() {
         Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
@@ -422,9 +518,9 @@ fn hay_head(clon: &Path) -> bool {
     git(clon, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok()
 }
 
-/// Clona el repositorio (vacío o no), deja la rama `main` y una identidad propia en el clon, para que
-/// los commits no dependan de que el usuario tenga git configurado.
-fn clonar(url: &str, clon: &Path, autor: Option<&str>) -> Result<()> {
+/// Clona el repositorio (vacío o no), deja la rama `main` y una identidad propia y neutra en el clon:
+/// los commits no dependen de que el usuario tenga git configurado ni dejan su nombre a la vista.
+fn clonar(url: &str, clon: &Path) -> Result<()> {
     if clon.exists() {
         std::fs::remove_dir_all(clon).with_context(|| format!("{}", clon.display()))?;
     }
@@ -437,7 +533,7 @@ fn clonar(url: &str, clon: &Path, autor: Option<&str>) -> Result<()> {
     } else {
         git(clon, &["symbolic-ref", "HEAD", &format!("refs/heads/{RAMA}")])?;
     }
-    git(clon, &["config", "user.name", autor.unwrap_or("Omoikane")])?;
+    git(clon, &["config", "user.name", "omoikane"])?;
     git(clon, &["config", "user.email", "omoikane@localhost"])?;
     git(clon, &["config", "commit.gpgsign", "false"])?;
     Ok(())
@@ -541,6 +637,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
             updated_at: m.updated_at,
             hlc,
             author: m.author,
+            machine: equipo.to_string(),
         };
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
@@ -549,11 +646,11 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let mut q = db.prepare("SELECT id, deleted_at, hlc FROM tombstone ORDER BY id")?;
         let marcas: Vec<(String, String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
         for (id, deleted_at, hlc) in marcas {
-            let l = Linea::Tombstone { id, deleted_at, hlc };
+            let l = Linea::Tombstone { id, deleted_at, hlc, machine: equipo.to_string() };
             ficheros.entry("olvidos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
-    let nombre = format!("{equipo}.jsonl");
+    let nombre = cifra.fichero(equipo);
     // Los ficheros de este equipo que ya no tienen nada se borran.
     for e in std::fs::read_dir(clon)?.flatten() {
         let carpeta = e.file_name().to_string_lossy().into_owned();
@@ -583,8 +680,8 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
 
 /// Qué ficheros de otros equipos hay que leer: los que cambiaron desde la última sincronización, o
 /// todos si es la primera (o si la base no recuerda por dónde iba).
-fn por_leer(db: &Connection, clon: &Path, equipo: &str) -> Result<Vec<PathBuf>> {
-    let propio = format!("{equipo}.jsonl");
+fn por_leer(db: &Connection, clon: &Path, equipo: &str, cifra: &Cifra) -> Result<Vec<PathBuf>> {
+    let propio = cifra.fichero(equipo);
     let ultimo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'sync_commit'", [], |f| f.get(0)).optional()?;
     let cambiados: Option<Vec<String>> = match ultimo {
         Some(u) => git(clon, &["diff", "--name-only", &u, "HEAD"]).ok().map(|s| s.lines().map(String::from).collect()),
@@ -618,8 +715,11 @@ pub struct Resumen {
     pub nuevas: usize,
     pub actualizadas: usize,
     pub olvidadas: usize,
-    /// Líneas de otros equipos que no se pudieron descifrar (se saltan).
+    /// Líneas de otros equipos que no se pudieron descifrar o no son válidas (se saltan).
     pub ilegibles: usize,
+    /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
+    #[serde(skip)]
+    pub malos: BTreeMap<String, usize>,
 }
 
 fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
@@ -637,7 +737,8 @@ fn no_menor(a: &str, b: &str) -> bool {
 
 /// Lee los ficheros de otros equipos y los junta con la base. Una línea que no se descifra (de otra
 /// clave, o dañada) se salta y se cuenta, sin parar la sincronización.
-fn importar(db: &mut Connection, ficheros: &[PathBuf], config: &Config, cifra: &Cifra, actual: Option<&str>, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Config, cifra: &Cifra, actual: Option<&str>, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
     // Clave → proyecto de aquí: los que ya tienen memorias (o se adoptaron) y el de la carpeta actual.
     let mut locales: HashMap<String, String> = HashMap::new();
     for (p, k) in claves_locales(db, &config.person)? {
@@ -646,47 +747,66 @@ fn importar(db: &mut Connection, ficheros: &[PathBuf], config: &Config, cifra: &
     if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
         locales.insert(clave(a, &config.person), a.to_string());
     }
-    let mut lineas: Vec<(String, Linea)> = Vec::new();
+    // (equipo de origen, fichero, línea)
+    let mut lineas: Vec<(String, String, Linea)> = Vec::new();
     for f in ficheros {
-        let origen = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let relativo = f.strip_prefix(clon).unwrap_or(f).to_string_lossy().replace('\\', "/");
         let texto = std::fs::read_to_string(f).with_context(|| format!("{}", f.display()))?;
+        r.malos.insert(relativo.clone(), 0);
         for l in texto.lines().filter(|l| !l.trim().is_empty()) {
             let Ok(claro) = cifra.descifrar(l) else {
-                r.ilegibles += 1;
+                *r.malos.entry(relativo.clone()).or_default() += 1;
                 continue;
             };
-            match serde_json::from_str::<Linea>(&claro) {
-                Ok(x) => lineas.push((origen.clone(), x)),
+            let x = match serde_json::from_str::<Linea>(&claro) {
+                Ok(x) => x,
                 Err(_) => continue, // una línea de una versión futura: se ignora
+            };
+            let (id, machine) = match &x {
+                Linea::Memory { id, machine, .. } | Linea::Tombstone { id, machine, .. } => (id, machine),
+            };
+            if !id_valido(id) {
+                *r.malos.entry(relativo.clone()).or_default() += 1;
+                continue;
             }
+            let origen = if machine.is_empty() { f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { machine.clone() };
+            lineas.push((origen, relativo.clone(), x));
         }
         r.leidos += 1;
     }
-    // Primero los olvidos, para no traer algo que se va a borrar.
-    for (origen, l) in &lineas {
-        let Linea::Tombstone { id, deleted_at, hlc } = l else { continue };
-        if hlc_olvido(db, id)?.is_some_and(|h| no_menor(&h, hlc)) {
-            continue;
-        }
-        match hlc_local(db, id)? {
-            Some(local) if reloj::mayor(&local, hlc) => {
-                // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
-                memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
-                reloj::recibir(db, hlc)?;
+    // Primero los olvidos, para no traer algo que se va a borrar. Uno que falla se salta y se cuenta.
+    for (origen, fichero, l) in &lineas {
+        let Linea::Tombstone { id, deleted_at, hlc, .. } = l else { continue };
+        let aplicado = (|| -> Result<()> {
+            if hlc_olvido(db, id)?.is_some_and(|h| no_menor(&h, hlc)) {
+                return Ok(());
             }
-            Some(_) => {
-                memoria::olvidar_con(db, id, hlc, deleted_at, origen)?;
-                r.olvidadas += 1;
+            match hlc_local(db, id)? {
+                Some(local) if reloj::mayor(&local, hlc) => {
+                    // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
+                    memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
+                    reloj::recibir(db, hlc)?;
+                }
+                Some(_) => {
+                    memoria::olvidar_con(db, id, hlc, deleted_at, origen)?;
+                    r.olvidadas += 1;
+                }
+                None => {
+                    memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
+                    reloj::recibir(db, hlc)?;
+                }
             }
-            None => {
-                memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
-                reloj::recibir(db, hlc)?;
-            }
+            Ok(())
+        })();
+        if aplicado.is_err() {
+            *r.malos.entry(fichero.clone()).or_default() += 1;
         }
     }
-    let rutas_locales: HashSet<String> = locales.values().cloned().collect();
-    for (origen, l) in lineas {
-        let Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author } = l else {
+    // Las rutas que ya son proyectos aquí, y las que se van asignando en esta misma pasada: dos claves
+    // desconocidas con la misma ruta de origen no acaban en el mismo proyecto.
+    let mut rutas_locales: HashSet<String> = locales.values().cloned().collect();
+    for (origen, fichero, l) in lineas {
+        let Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author, .. } = l else {
             continue;
         };
         // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra persona).
@@ -708,14 +828,23 @@ fn importar(db: &mut Connection, ficheros: &[PathBuf], config: &Config, cifra: &
             // Aquí aún no hay ningún proyecto con esa clave: la ruta de origen, apuntada para adoptarla.
             // Si esa ruta ya es aquí otro proyecto (dos repositorios distintos en `/workspace`), una
             // ruta propia que no se confunda con él.
-            let ocupada = rutas_locales.contains(&project_path) || (Path::new(&project_path).exists() && clave(&project_path, &config.person) != project_key);
-            let ruta = if ocupada { format!("{project_path} [{project_key}]") } else { project_path };
+            let ocupada = |r: &str| rutas_locales.contains(r) || (Path::new(r).exists() && clave(r, &config.person) != project_key);
+            let mut ruta = if ocupada(&project_path) { format!("{project_path} [{project_key}]") } else { project_path };
+            let base = ruta.clone();
+            let mut n = 2;
+            while rutas_locales.contains(&ruta) {
+                ruta = format!("{base} ({n})");
+                n += 1;
+            }
             db.execute("INSERT OR REPLACE INTO remote_project(path, key) VALUES (?1, ?2)", params![ruta, project_key])?;
             locales.insert(project_key.clone(), ruta.clone());
+            rutas_locales.insert(ruta.clone());
             ruta
         };
         let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, author: &author };
-        if local.is_some() {
+        // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se salta y
+        // se cuenta: nunca para la sincronización.
+        let hecho = if local.is_some() {
             let c = Cambios {
                 title: Some(title),
                 content: Some(content),
@@ -726,14 +855,16 @@ fn importar(db: &mut Connection, ficheros: &[PathBuf], config: &Config, cifra: &
                 project: Some(project),
                 reason: Some(format!("sync: {origen}")),
             };
-            memoria::actualizar_con_origen(db, &id, c, &o, modelo)?;
-            r.actualizadas += 1;
+            memoria::actualizar_con_origen(db, &id, c, &o, modelo).map(|_| r.actualizadas += 1)
         } else {
             let nueva = Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source: format!("sync:{origen}") };
-            memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
-            r.nuevas += 1;
+            memoria::guardar_con_id(db, &id, nueva, &o, modelo).map(|_| r.nuevas += 1)
+        };
+        if hecho.is_err() {
+            *r.malos.entry(fichero).or_default() += 1;
         }
     }
+    r.ilegibles = r.malos.values().sum();
     Ok(())
 }
 
@@ -752,16 +883,17 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
         adoptar(db, a, &config.person)?;
     }
     let equipo = reloj::equipo(db)?;
-    let mut res = Resumen { equipo: equipo.clone(), ..Default::default() };
     for intento in 0..4 {
+        // Las cuentas, de cada intento: un reintento vuelve a leer los mismos ficheros.
+        let mut res = Resumen { equipo: equipo.clone(), ..Default::default() };
         limpiar(&r.clon)?;
         ficheros_fijos(&r.clon, &cifra)?;
-        let ficheros = por_leer(db, &r.clon, &equipo)?;
-        importar(db, &ficheros, &config, &cifra, actual, modelo, &mut res)?;
+        let ficheros = por_leer(db, &r.clon, &equipo, &cifra)?;
+        importar(db, &r.clon, &ficheros, &config, &cifra, actual, modelo, &mut res)?;
         res.exportadas = exportar(db, &r.clon, &equipo, &config, &cifra)?;
         git(&r.clon, &["add", "-A"])?;
         if !git(&r.clon, &["status", "--porcelain"])?.trim().is_empty() {
-            git(&r.clon, &["commit", "--quiet", "--no-verify", "-m", &format!("omoikane: {equipo}")])?;
+            git(&r.clon, &["commit", "--quiet", "--no-verify", "-m", "omoikane"])?;
         }
         let hay_commits = hay_head(&r.clon);
         let subir = if hay_commits { git(&r.clon, &["push", "--quiet", "origin", &format!("HEAD:{RAMA}")]) } else { Ok(String::new()) };
@@ -801,18 +933,23 @@ pub fn nombre_git() -> Option<String> {
 }
 
 pub fn config_de(url: &str, e: &Eleccion) -> Config {
+    config_con_persona(url, e, None)
+}
+
+/// Como `config_de`, pero con la persona ya decidida (`join` usa la del equipo que invita: así los
+/// proyectos sin remoto de una misma persona se juntan entre sus equipos aunque cada uno lleve otro
+/// nombre de autor).
+pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config {
     let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha];
     if e.preferencias {
         kinds.push(Tipo::Preference);
     }
-    // La persona sale del nombre; sin nombre, un identificador fijo al azar (guardado en la
-    // configuración), nunca uno común a todos.
-    let person = e
-        .autor
-        .clone()
-        .or_else(nombre_git)
-        .map(|n| persona(&n))
+    // La persona: la que se da; si no, la del nombre; sin nombre, un identificador fijo al azar
+    // (guardado en la configuración y pasado en el código para unirse), nunca uno común a todos.
+    let person = fija
+        .map(persona)
         .filter(|p| !p.is_empty())
+        .or_else(|| e.autor.clone().or_else(nombre_git).map(|n| persona(&n)).filter(|p| !p.is_empty()))
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.proyectos.is_empty()).then(|| e.proyectos.iter().map(|p| clave(p, &person)).collect());
     Config { url: url.to_string(), kinds, global: e.global, projects, author: e.autor.clone(), person }
@@ -848,7 +985,7 @@ fn ya_en_uso() -> String {
 pub fn iniciar(db: &mut Connection, ruta_db: &Path, config: &Config) -> Result<()> {
     let r = rutas(ruta_db);
     let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    clonar(&config.url, &r.clon, config.author.as_deref())?;
+    clonar(&config.url, &r.clon)?;
     if r.clon.join(CHEQUEO).exists() || hay_memorias_en(&r.clon) {
         let _ = std::fs::remove_dir_all(&r.clon);
         bail!(ya_en_uso());
@@ -863,12 +1000,21 @@ pub fn codigo(ruta_db: &Path) -> Result<String> {
     let r = rutas(ruta_db);
     let config = leer_config(ruta_db)?.context(tr!("sync is not set up", "la sincronización no está configurada"))?;
     let k = leer_clave(&r)?;
-    let json = serde_json::json!({ "url": config.url, "key": a_hex(&k) });
+    let json = serde_json::json!({ "url": config.url, "key": a_hex(&k), "person": config.person });
     Ok(format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string())))
 }
 
-/// URL y clave de un código de `omoi sync code`.
-pub fn leer_codigo(codigo: &str) -> Result<(String, Vec<u8>)> {
+/// Lo que lleva un código de `omoi sync code`.
+#[derive(Debug, PartialEq)]
+pub struct Codigo {
+    pub url: String,
+    pub clave: Vec<u8>,
+    /// La persona del equipo que invita (los códigos de antes no la llevan).
+    pub persona: Option<String>,
+}
+
+/// URL, clave y persona de un código de `omoi sync code`.
+pub fn leer_codigo(codigo: &str) -> Result<Codigo> {
     let mal = || anyhow!(tr!("that is not an Omoikane sync code", "eso no es un código de sincronización de Omoikane"));
     let resto = codigo.trim().strip_prefix(PREFIJO_CODIGO).ok_or_else(mal)?;
     let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(resto).map_err(|_| mal())?;
@@ -876,7 +1022,7 @@ pub fn leer_codigo(codigo: &str) -> Result<(String, Vec<u8>)> {
     let url = v["url"].as_str().ok_or_else(mal)?.to_string();
     let k = desde_hex(v["key"].as_str().ok_or_else(mal)?).ok_or_else(mal)?;
     ensure!(k.len() == 64, mal());
-    Ok((url, k))
+    Ok(Codigo { url, clave: k, persona: v["person"].as_str().filter(|p| !p.is_empty()).map(String::from) })
 }
 
 /// `omoi sync join <código>`: el repositorio y la clave de otro equipo. Comprueba que la clave abre
@@ -884,7 +1030,7 @@ pub fn leer_codigo(codigo: &str) -> Result<(String, Vec<u8>)> {
 pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, clave: &[u8]) -> Result<()> {
     let r = rutas(ruta_db);
     let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    clonar(&config.url, &r.clon, config.author.as_deref())?;
+    clonar(&config.url, &r.clon)?;
     let cifra = Cifra { clave: clave.to_vec() };
     let vale = match cifra.comprueba(&r.clon) {
         Some(v) => v,
@@ -932,9 +1078,13 @@ pub struct Estado {
     pub ultimo_error: Option<String>,
     /// Desde cuándo falla (la primera vez seguida).
     pub error_desde: Option<String>,
-    /// Algo que conviene saber aunque haya ido bien (líneas que no se pudieron descifrar).
+    /// Algo que conviene saber aunque haya ido bien (líneas que no se pudieron leer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aviso: Option<String>,
+    /// Ficheros del repositorio con líneas que no se pudieron leer, y cuántas: se quedan hasta que una
+    /// sincronización vuelva a leer el fichero y esté bien.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ficheros_malos: BTreeMap<String, usize>,
 }
 
 pub fn leer_estado(ruta_db: &Path) -> Estado {
@@ -957,11 +1107,19 @@ fn apuntar(ruta_db: &Path, resultado: &Result<Resumen>) {
             e.ultimo_ok = Some(ahora());
             e.ultimo_error = None;
             e.error_desde = None;
-            e.aviso = (r.ilegibles > 0).then(|| {
+            for (f, n) in &r.malos {
+                if *n == 0 {
+                    e.ficheros_malos.remove(f);
+                } else {
+                    e.ficheros_malos.insert(f.clone(), *n);
+                }
+            }
+            let malas: usize = e.ficheros_malos.values().sum();
+            e.aviso = (malas > 0).then(|| {
                 tr!(
-                    "{} shared line(s) couldn't be decrypted and were skipped (written with another key?)",
-                    "{} línea(s) compartidas no se pudieron descifrar y se saltaron (¿escritas con otra clave?)",
-                    r.ilegibles
+                    "{} shared line(s) couldn't be read and were skipped (another key, or not valid)",
+                    "{} línea(s) compartidas no se pudieron leer y se saltaron (otra clave, o no válidas)",
+                    malas
                 )
             });
         }
@@ -1167,11 +1325,22 @@ impl Cerrojo {
                     return Some(Cerrojo { ruta: p, ficha, parar, hilo: Some(hilo) });
                 }
                 Err(_) => {
-                    if Cerrojo::abandonado(&p) {
-                        let _ = std::fs::remove_file(&p);
-                    } else {
+                    let visto = std::fs::read_to_string(&p).ok();
+                    if !Cerrojo::abandonado(&p) {
                         return None;
                     }
+                    // Se aparta con un nombre propio (renombrar es atómico: si dos lo ven abandonado,
+                    // solo uno lo consigue) y se comprueba que lo apartado es lo que se juzgó abandonado.
+                    let aparte = p.with_extension(format!("lock.{ficha}"));
+                    if std::fs::rename(&p, &aparte).is_err() {
+                        return None;
+                    }
+                    if std::fs::read_to_string(&aparte).ok() != visto {
+                        // Otro ya lo había tomado entre medias: se le devuelve.
+                        let _ = std::fs::rename(&aparte, &p);
+                        return None;
+                    }
+                    let _ = std::fs::remove_file(&aparte);
                 }
             }
         }
@@ -1242,13 +1411,20 @@ pub fn en_segundo_plano(ruta_db: &Path, abrir: impl Fn() -> Result<(Connection, 
 pub fn ahora_mismo(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<Resumen> {
     let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
     let r = rutas(ruta_db);
-    let marca = std::fs::read_to_string(&r.pendiente).ok();
-    let res = sincronizar(db, ruta_db, actual, modelo);
-    apuntar(ruta_db, &res);
-    if res.is_ok() {
+    // Un cambio hecho mientras tanto lanza una sincronización de fondo que se va enseguida (este tiene
+    // el cerrojo): se repite aquí mientras la marca de pendiente avance.
+    let mut vueltas = 0;
+    loop {
+        let marca = std::fs::read_to_string(&r.pendiente).ok();
+        let res = sincronizar(db, ruta_db, actual, modelo);
+        apuntar(ruta_db, &res);
+        let res = res?;
         hecho(&r, marca.as_deref());
+        vueltas += 1;
+        if !pendiente(ruta_db) || vueltas >= 5 {
+            return Ok(res);
+        }
     }
-    res
 }
 
 #[cfg(test)]
@@ -1273,6 +1449,8 @@ mod tests {
         let otra = Cifra { clave: (1..65).collect() };
         assert!(otra.descifrar(&x).is_err());
         assert_ne!(c.carpeta("git:a/b"), otra.carpeta("git:a/b"));
+        assert!(c.fichero("marc-pc-abc").starts_with("m-") && !c.fichero("marc-pc-abc").contains("marc"));
+        assert_ne!(c.fichero("a"), c.fichero("b"));
         assert!(c.carpeta("git:a/b").starts_with("p-"));
     }
 
@@ -1281,7 +1459,10 @@ mod tests {
         let k: Vec<u8> = (0..64).collect();
         let json = serde_json::json!({ "url": "git@x:y/z.git", "key": a_hex(&k) });
         let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
-        assert_eq!(leer_codigo(&c).unwrap(), ("git@x:y/z.git".to_string(), k));
+        assert_eq!(leer_codigo(&c).unwrap(), Codigo { url: "git@x:y/z.git".to_string(), clave: k.clone(), persona: None });
+        let json = serde_json::json!({ "url": "u", "key": a_hex(&k), "person": "marc" });
+        let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
+        assert_eq!(leer_codigo(&c).unwrap().persona.as_deref(), Some("marc"));
         assert!(leer_codigo("hola").is_err());
     }
 
@@ -1292,6 +1473,9 @@ mod tests {
         let e = Eleccion { preferencias: false, global: true, proyectos: vec![], autor: Some(" ".into()) };
         let c = config_de("x", &e);
         assert!(c.person.starts_with("u-") || !c.person.is_empty(), "nunca vacía: {}", c.person);
+        assert_eq!(config_con_persona("x", &e, Some("Ana López")).person, "ana-lópez");
+        assert!(id_valido("01M62EWVHRXM0000000000ABCD"));
+        assert!(!id_valido("01m62ewvhrxm0000000000abcd") && !id_valido("CORTO") && !id_valido("01M62EWVHRXM0000000000ABCÑ"));
     }
 
     #[test]
