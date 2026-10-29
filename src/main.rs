@@ -242,7 +242,12 @@ enum AccionSync {
     /// Set up a new shared repository (empty, or without memories yet): any git URL you can push to.
     Init {
         /// The repository: git@github.com:you/memory.git, https://…, a folder…
-        url: String,
+        #[arg(required_unless_present = "create")]
+        url: Option<String>,
+        /// Create it first as a private repository with this name, with the GitHub (`gh`) or GitLab
+        /// (`glab`) command line if one is installed and signed in.
+        #[arg(long, value_name = "NAME", conflicts_with = "url")]
+        create: Option<String>,
         #[command(flatten)]
         eleccion: OpcionesSync,
     },
@@ -908,6 +913,34 @@ fn preguntar_si(texto: &str, defecto: bool) -> Result<bool> {
 
 /// Enseña qué se subirá y, en una terminal, pide confirmación. Sin terminal hace falta `--yes` (un
 /// agente que lo lanza no debe subir memorias sin que nadie lo haya decidido).
+/// `omoi sync init --create <nombre>`: crea el repositorio privado con `gh` o, si no está, con `glab`,
+/// y devuelve su URL. Usa la sesión que ya tenga el usuario en esa herramienta.
+fn crear_repositorio(nombre: &str) -> Result<String> {
+    let probar = |cmd: &str| std::process::Command::new(cmd).arg("--version").output().is_ok_and(|o| o.status.success());
+    let (cmd, args): (&str, Vec<&str>) = if probar("gh") {
+        ("gh", vec!["repo", "create", nombre, "--private", "--description", "Omoikane: shared memory (encrypted)"])
+    } else if probar("glab") {
+        ("glab", vec!["repo", "create", nombre, "--private", "--description", "Omoikane: shared memory (encrypted)"])
+    } else {
+        bail!(tr!(
+            "--create needs the GitHub (`gh`) or GitLab (`glab`) command line; create a private repository yourself and pass its URL",
+            "--create necesita la línea de órdenes de GitHub (`gh`) o de GitLab (`glab`); crea tú un repositorio privado y pasa su URL"
+        ));
+    };
+    let o = std::process::Command::new(cmd).args(&args).stdin(std::process::Stdio::null()).output()?;
+    let texto = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    if !o.status.success() {
+        bail!("{cmd} repo create: {}", texto.trim());
+    }
+    let url = texto
+        .split_whitespace()
+        .find(|p| p.starts_with("https://"))
+        .map(|u| format!("{}.git", u.trim_end_matches(['/', '.'])))
+        .ok_or_else(|| anyhow::anyhow!("{cmd} repo create: no URL in its output: {}", texto.trim()))?;
+    eprintln!("{}", tr!("Created the private repository {url}", "Creado el repositorio privado {url}"));
+    Ok(url)
+}
+
 fn confirmar_subida(db: &Connection, config: &omoikane::sync::Config, e: &omoikane::sync::Eleccion, si: bool) -> Result<bool> {
     use std::io::IsTerminal;
     let (g, p, np) = omoikane::sync::resumen_de_subida(db, config)?;
@@ -1005,11 +1038,16 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             );
             Ok(())
         }
-        Some(AccionSync::Init { url, eleccion }) => {
+        Some(AccionSync::Init { url, create, eleccion }) => {
             let mut db = abrir(c)?;
             if sync::leer_config(&ruta)?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync status`; `omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"));
             }
+            let url = match (url, create) {
+                (Some(u), _) => u,
+                (None, Some(nombre)) => crear_repositorio(&nombre)?,
+                (None, None) => unreachable!("clap exige url o --create"),
+            };
             let e = elegir(&eleccion)?;
             let config = sync::config_de(&url, &e);
             if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
@@ -1237,6 +1275,10 @@ fn en_espanol(c: Command) -> Command {
             .mut_subcommand("init", |s| {
                 opciones_sync(s.about("Configura un repositorio compartido nuevo (vacío o aún sin memorias): cualquier URL de git en la que puedas subir."))
                     .mut_arg("url", |a| a.help("El repositorio: git@github.com:tú/memoria.git, https://…, una carpeta…"))
+                    .mut_arg("create", |a| {
+                        a.help("Crearlo antes como repositorio privado con este nombre, con la línea de órdenes de GitHub (`gh`) o de GitLab (`glab`) si hay una instalada y con sesión iniciada.")
+                            .value_name("NOMBRE")
+                    })
             })
             .mut_subcommand("join", |s| {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
