@@ -4,109 +4,301 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Omoikane</title>
+<link rel="icon" href="/icono.png">
 <style>
+/* Fuentes dentro del binario (OFL, assets/fuentes): la vista funciona sin internet. */
+@font-face { font-family: "IBM Plex Sans"; font-weight: 100 700; font-display: swap; src: url(/fuentes/plex-sans.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(/fuentes/plex-mono-400.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url(/fuentes/plex-mono-600.woff2) format("woff2"); }
+@font-face { font-family: "Shippori Mincho"; font-weight: 600; font-display: swap; src: url(/fuentes/shippori-600.woff2) format("woff2"); }
+@font-face { font-family: "Shippori Mincho"; font-weight: 600; font-display: swap; src: url(/fuentes/shippori-600-omoikane.woff2) format("woff2"); unicode-range: U+517C, U+601D; }
+
+/* Paleta del banner: negro cálido, cobre y ámbar, crema. En claro, papel cálido y cobre oscuro. */
 :root {
-  --bg: #f7f6f3; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6862; --line: #e3e0da;
-  --accent: #b4432f; --accent-ink: #ffffff; --chip: #efece6; --sel: #fbeee9;
-  --fact: #3d6fb0; --decision: #7a52a8; --gotcha: #b4432f; --preference: #23704a;
-  color-scheme: light;
+  --bg: #0d0a08; --bg2: #120e0b; --panel: #18120e; --panel2: #201812; --line: #2f241b; --line2: #3d2f23;
+  --ink: #f2e3cc; --ink2: #d9c6aa; --muted: #a8937b; --faint: #93806a;
+  --accent: #e2894a; --glow: #f4b878; --accent-ink: #1a0f07; --sel: rgba(226,137,74,.13);
+  --fact: oklch(0.78 0.09 235); --decision: oklch(0.78 0.09 305); --gotcha: oklch(0.78 0.09 35); --preference: oklch(0.78 0.09 150);
+  --add: rgba(110,190,130,.16); --addink: oklch(0.82 0.11 150); --del: rgba(226,96,74,.16); --delink: oklch(0.78 0.12 30);
+  --shadow: 0 12px 32px rgba(0,0,0,.35); --halo: rgba(244,184,120,.25);
+  --sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  --serif: "Shippori Mincho", "Yu Mincho", Georgia, serif;
+  color-scheme: dark;
 }
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #151412; --panel: #1e1d1a; --ink: #ebe8e2; --muted: #9a958c; --line: #33312d;
-    --accent: #e0745d; --accent-ink: #151412; --chip: #2a2825; --sel: #3a2a25;
-    --fact: #7fa7dd; --decision: #b597da; --gotcha: #e0745d; --preference: #6cc596;
-    color-scheme: dark;
+    --bg: #f5eee3; --bg2: #efe6d8; --panel: #fbf7f0; --panel2: #f4ecdf; --line: #e2d5c1; --line2: #d3c2a9;
+    --ink: #23180f; --ink2: #3b2c1f; --muted: #6e5b47; --faint: #7a6652;
+    --accent: #a4481c; --glow: #b0541c; --accent-ink: #fff8ef; --sel: rgba(164,72,28,.09);
+    --fact: oklch(0.50 0.10 235); --decision: oklch(0.50 0.10 305); --gotcha: oklch(0.50 0.10 35); --preference: oklch(0.50 0.10 150);
+    --add: rgba(40,140,80,.12); --addink: oklch(0.45 0.11 150); --del: rgba(190,60,30,.11); --delink: oklch(0.48 0.13 30);
+    --shadow: 0 1px 2px rgba(60,30,10,.06), 0 8px 24px rgba(60,30,10,.07); --halo: rgba(176,84,28,.12);
+    color-scheme: light;
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-h1 { margin: 0 8px 0 0; font-size: 18px; font-weight: 650; letter-spacing: .01em; }
-h1 span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans); display: flex; flex-direction: column; overflow: hidden; }
 input, select, button, textarea { font: inherit; color: inherit; }
-input[type=search], select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
-input[type=search] { flex: 1 1 260px; min-width: 0; }
-button { background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
-button:hover { border-color: var(--muted); }
-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-button.danger { color: var(--accent); }
-.kinds { display: flex; gap: 6px; flex-wrap: wrap; }
-.kinds button[aria-pressed=true] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-main { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 0; height: calc(100vh - 62px); }
-#lista { overflow-y: auto; border-right: 1px solid var(--line); }
-#lista .vacio { padding: 24px 16px; color: var(--muted); }
-.item { padding: 10px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
-.item:hover { background: var(--panel); }
-.item[aria-selected=true] { background: var(--sel); }
-.item .t { font-weight: 560; overflow-wrap: anywhere; }
-.item .m { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; }
-.tipo { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
-.tipo.fact { color: var(--fact); } .tipo.decision { color: var(--decision); } .tipo.gotcha { color: var(--gotcha); } .tipo.preference { color: var(--preference); }
-#detalle { overflow-y: auto; padding: 20px 24px 40px; }
-#detalle .vacio { color: var(--muted); }
-#detalle h2 { margin: 6px 0 10px; font-size: 20px; line-height: 1.3; overflow-wrap: anywhere; }
-.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; color: var(--muted); font-size: 13px; margin-bottom: 16px; }
-.meta b { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
-.contenido { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
-.acciones { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; align-items: center; }
-button.chip { border: 0; cursor: pointer; padding: 0 8px; }
-.chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 0 8px; font-size: 12px; margin: 0 4px 4px 0; }
-.version { border-left: 3px solid var(--line); padding: 4px 0 4px 12px; margin: 12px 0; }
-.version .cuando { color: var(--muted); font-size: 12px; }
-#aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; }
-.fijada::before { content: "📌 "; }
-@media (max-width: 760px) {
-  main { grid-template-columns: 1fr; height: auto; }
-  #lista { border-right: 0; max-height: 50vh; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+a:hover { color: var(--glow); }
+code, .mono { font-family: var(--mono); }
+.serif { font-family: var(--serif); font-weight: 600; }
+[hidden] { display: none !important; }
+
+/* Cabecera */
+.bar { display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--bg2); flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
+.brand img { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 0 0 1px var(--line2), 0 0 18px var(--halo); }
+.word { font: 600 19px/1 var(--serif); letter-spacing: .01em; }
+.word .kj { color: var(--glow); margin-right: 6px; }
+.nav { display: flex; gap: 2px; }
+.nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13.5px; }
+.nav a[aria-current=page] { background: var(--panel2); color: var(--ink); box-shadow: 0 0 0 1px var(--line2); }
+.search { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
+.search:focus-within { border-color: var(--accent); }
+.search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; padding: 8px 2px; }
+.search input::placeholder { color: var(--muted); }
+.kbd { font: 500 11px var(--mono); color: var(--muted); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--preference); }
+.pill.mal { color: var(--delink); } .pill.mal .dot { background: var(--delink); }
+main { flex: 1; min-height: 0; position: relative; }
+
+/* Tipos */
+.k { width: 8px; height: 8px; border-radius: 2px; flex: none; transform: rotate(45deg); display: inline-block; background: var(--faint); }
+.k.fact { background: var(--fact); } .k.decision { background: var(--decision); } .k.gotcha { background: var(--gotcha); } .k.preference { background: var(--preference); }
+.k.pin { background: var(--glow); border-radius: 50%; transform: none; }
+.kt { font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.kt.fact { color: var(--fact); } .kt.decision { color: var(--decision); } .kt.gotcha { color: var(--gotcha); } .kt.preference { color: var(--preference); }
+.stl { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; line-height: 16px; }
+.chip { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; line-height: 20px; }
+button.chip:hover { border-color: var(--accent); }
+.sh { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 10px 8px 6px; }
+.vacio { color: var(--faint); padding: 24px 0; }
+
+/* Memorias: cronología */
+.mem { display: grid; grid-template-columns: 230px minmax(0,1fr); height: 100%; }
+.rail { border-right: 1px solid var(--line); background: var(--bg2); padding: 8px 10px 20px; overflow-y: auto; }
+.ro { display: flex; width: 100%; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; color: var(--ink2); font-size: 13px; background: none; border: 0; text-align: left; }
+.ro:hover { background: var(--panel); }
+.ro[aria-pressed=true] { background: var(--sel); color: var(--ink); }
+.ro .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ro .n { margin-left: auto; color: var(--faint); font-size: 11.5px; }
+.rail select { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+.feed { overflow-y: auto; padding: 18px 40px 40px 30px; }
+.fhd { color: var(--muted); font-size: 12.5px; margin: 0 0 10px 110px; }
+.day { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 0 18px; }
+.dl2 { padding-top: 10px; text-align: right; }
+.dl2 b { display: block; font: 600 17px var(--serif); color: var(--ink); }
+.dl2 span { color: var(--faint); font-size: 11.5px; }
+.ev { border-left: 1px solid var(--line2); padding: 0 0 8px 22px; display: flex; flex-direction: column; gap: 6px; }
+.plano .ev { border-left: 0; padding-left: 0; }
+.row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 2px 14px; padding: 9px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+.row:hover { background: var(--panel); }
+.row::before { content: ""; position: absolute; left: -28px; top: 15px; width: 9px; height: 9px; border-radius: 50%; background: var(--bg); border: 2px solid var(--line2); }
+.plano .row::before { display: none; }
+.row.fact::before { border-color: var(--fact); } .row.decision::before { border-color: var(--decision); } .row.gotcha::before { border-color: var(--gotcha); } .row.preference::before { border-color: var(--preference); }
+.row .t { font-weight: 500; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
+.row .x { grid-column: 1; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .r { grid-row: 1 / span 2; grid-column: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.proj { font-size: 11.5px; color: var(--ink2); border: 1px solid var(--line2); border-radius: 999px; padding: 0 8px; line-height: 19px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.what { font: 500 10.5px var(--mono); color: var(--faint); }
+.what.cambio { color: var(--glow); }
+.row.open { cursor: default; background: var(--panel); border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 30px color-mix(in srgb, var(--accent) 12%, transparent); padding: 14px 16px 12px; }
+.row.open .t { font: 600 19px/1.3 var(--serif); }
+.row.open .x { white-space: normal; }
+.row.open .det { grid-column: 1 / span 2; }
+.mas { margin: 12px 0 0 110px; }
+
+/* Detalle (en la cronología y en el panel del proyecto) */
+.det { margin-top: 8px; display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 16px; }
+.det.vertical { grid-template-columns: minmax(0,1fr); }
+.facts { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 3px 12px; font-size: 12.5px; color: var(--muted); align-content: start; }
+.facts b { color: var(--ink2); font-weight: 500; overflow-wrap: anywhere; }
+.acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink2); background: var(--panel); border: 1px solid var(--line2); border-radius: 9px; padding: 5px 12px; }
+.btn:hover { border-color: var(--accent); }
+.btn.pri { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.danger { color: var(--delink); border-color: transparent; background: transparent; }
+.acts select { background: var(--panel); border: 1px solid var(--line2); border-radius: 9px; padding: 5px 8px; font-size: 13px; max-width: 200px; }
+.sp { flex: 1; }
+.lado { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.versiones, .ultimo { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+.ultimo:empty { display: none; }
+
+/* Markdown */
+.md { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; color: var(--ink2); overflow-wrap: anywhere; min-width: 0; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: 0 0 10px; }
+.md h1, .md h2, .md h3, .md h4 { font: 600 15px/1.3 var(--sans); color: var(--ink); margin: 14px 0 6px; }
+.md h1, .md h2 { font: 600 17px/1.3 var(--serif); }
+.md strong { color: var(--ink); font-weight: 600; }
+.md ul, .md ol { padding-left: 20px; }
+.md li { margin: 2px 0; }
+.md li::marker { color: var(--accent); }
+.md code { font-size: 12.5px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; color: var(--glow); }
+.md pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.md pre code { background: none; border: 0; padding: 0; color: var(--ink2); }
+.md .tabla { overflow-x: auto; }
+.md table { border-collapse: collapse; font-size: 13px; }
+.md th, .md td { border-bottom: 1px solid var(--line); padding: 4px 14px 4px 0; text-align: left; vertical-align: top; }
+.md th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.md blockquote { border-left: 2px solid var(--accent); padding-left: 12px; color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--line); }
+.md .wl { color: var(--glow); }
+
+/* Diff */
+.ver { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; flex-wrap: wrap; }
+.ver b { color: var(--ink2); font-weight: 600; }
+.diff { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; font: 12px/1.6 var(--mono); background: var(--panel); }
+.dl { display: grid; grid-template-columns: 20px minmax(0,1fr); padding: 1px 10px 1px 4px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dl .s { color: var(--faint); text-align: center; }
+.dl.add { background: var(--add); color: var(--ink); } .dl.add .s { color: var(--addink); }
+.dl.del { background: var(--del); color: var(--ink2); } .dl.del .s { color: var(--delink); }
+.dl.salto { color: var(--faint); }
+
+/* Proyectos */
+.pjs { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
+.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; margin-bottom: 18px; }
+.hero h1 { margin: 0; font: 600 30px/1.15 var(--serif); }
+.hero p { margin: 6px 0 0; color: var(--muted); max-width: 64ch; }
+.stats { display: flex; gap: 28px; }
+.stat b { display: block; font-size: 24px; font-weight: 600; line-height: 1.1; }
+.stat span { color: var(--faint); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; min-width: 0; text-decoration: none; color: inherit; }
+.card:hover { border-color: var(--accent); }
+.card .hd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.card .nm { font: 600 17px var(--serif); color: var(--ink); overflow-wrap: anywhere; }
+.card .n { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.path { font: 11.5px var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; }
+.mix i { display: block; height: 100%; }
+.mix .fact { background: var(--fact); } .mix .decision { background: var(--decision); } .mix .gotcha { background: var(--gotcha); } .mix .preference { background: var(--preference); }
+.where { border-top: 1px solid var(--line); padding-top: 10px; color: var(--ink2); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.where .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; display: flex; gap: 8px; }
+.where .lb span { color: var(--faint); letter-spacing: 0; text-transform: none; font-weight: 400; }
+.where.nada { color: var(--faint); font-style: italic; }
+.card .where .txt { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.leyenda { display: flex; gap: 14px; color: var(--faint); font-size: 11.5px; flex-wrap: wrap; margin-top: 16px; }
+.leyenda span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Página de un proyecto */
+.pp { display: grid; grid-template-columns: minmax(0,1fr); height: 100%; }
+.pp.con-panel { grid-template-columns: minmax(0,1fr) minmax(360px, 34%); }
+.work { overflow-y: auto; padding: 18px 24px 40px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.crumb { color: var(--faint); font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.crumb a { color: var(--muted); text-decoration: none; } .crumb a:hover { color: var(--accent); }
+.crumb b { color: var(--ink2); font-weight: 500; }
+.head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 22px; align-items: start; }
+.head h1 { margin: 0 0 6px; font: 600 30px/1.1 var(--serif); overflow-wrap: anywhere; }
+.head .where { border-top: 0; padding-top: 0; font-size: 13.5px; }
+.head .where .md { margin-top: 4px; max-height: 220px; overflow-y: auto; }
+.nums { display: grid; grid-template-columns: repeat(4, minmax(78px, auto)); gap: 8px; }
+.num { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.num b { display: block; font-size: 20px; font-weight: 600; line-height: 1.1; }
+.num span { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; }
+.cols { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ch { display: flex; align-items: center; gap: 7px; padding: 0 2px 6px; border-bottom: 1px solid var(--line); }
+.ch .n { margin-left: auto; color: var(--faint); font-size: 11.5px; }
+.mc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.mc:hover { border-color: var(--line2); background: var(--panel2); }
+.mc[aria-current=true] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 18%, transparent); }
+.mc .t { font-size: 13px; font-weight: 500; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
+.mc .m { display: flex; gap: 8px; align-items: center; color: var(--faint); font-size: 11.5px; }
+.col .ver-mas { background: none; border: 0; color: var(--muted); font-size: 12px; text-align: left; padding: 2px 4px; }
+.col .ver-mas:hover { color: var(--accent); }
+.panel { border-left: 1px solid var(--line); background: var(--bg2); padding: 18px 22px 30px; overflow-y: auto; min-width: 0; }
+.panel h2 { margin: 8px 0 10px; font: 600 22px/1.25 var(--serif); overflow-wrap: anywhere; }
+.panel .cerrar { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 13px; }
+.panel .cerrar:hover { color: var(--ink); }
+
+#aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 9; }
+
+@media (max-width: 900px) {
+  body { overflow: auto; height: auto; }
+  .mem, .pp, .pp.con-panel { grid-template-columns: 1fr; height: auto; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
+  .feed { padding: 14px 14px 30px; overflow: visible; }
+  .day { grid-template-columns: 1fr; }
+  .dl2 { text-align: left; display: flex; gap: 8px; align-items: baseline; padding: 6px 0; }
+  .ev { border-left: 0; padding-left: 0; }
+  .row::before { display: none; }
+  .fhd, .mas { margin-left: 0; }
+  .det { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr 1fr; }
+  .head { grid-template-columns: 1fr; }
+  .panel { border-left: 0; border-top: 1px solid var(--line); }
 }
 </style>
 </head>
 <body>
-<header>
-  <h1>Omoikane<span id="cuenta"></span><span id="sync"></span></h1>
-  <input id="q" type="search" autocomplete="off">
-  <select id="proyecto"></select>
-  <select id="tema"></select>
-  <div class="kinds" id="tipos"></div>
+<header class="bar">
+  <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
+  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a></nav>
+  <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
+  <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
 </header>
-<main>
-  <section id="lista" aria-label="memories"></section>
-  <section id="detalle"></section>
-</main>
+<main id="vista"></main>
 <div id="aviso" hidden></div>
 <script>
 const ES = (navigator.language || '').toLowerCase().startsWith('es');
 const T = ES ? {
-  buscar: 'Buscar como lo haría el agente…', todos: 'Todos los proyectos', global: 'Globales', todosTipos: 'Todo',
-  nada: 'No hay memorias con estos filtros.', elige: 'Elige una memoria de la lista.', proyecto: 'Proyecto', rutas: 'Rutas',
-  etiquetas: 'Etiquetas', creada: 'Creada', cambiada: 'Cambiada', origen: 'Origen', autor: 'Autor',
-  sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla', hace: 'hace', usada: 'Recordada', veces: 'veces',
-  fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial', mover: 'Mover a…', moverBtn: 'Mover', olvidar: 'Olvidar',
-  seguro: '¿Olvidarla para siempre? No se puede deshacer.', si: 'Sí, olvidar', no: 'Cancelar', sinHist: 'Sin cambios anteriores.',
-  hecho: 'Hecho', error: 'Error', memorias: 'memorias', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
-  fijadas: 'Fijadas', temas: 'Todos los temas'
+  memorias: 'Memorias', proyectos: 'Proyectos', buscar: 'Buscar como lo haría el agente…', buscarEn: p => `Buscar en ${p}…`,
+  tipo: 'Tipo', todo: 'Todo', fijadas: 'Fijadas', proyecto: 'Proyecto', todos: 'Todos', global: 'Global', etiqueta: 'Etiqueta', todasEt: 'Todas',
+  mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
+  resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
+  creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
+  fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
+  olvidar: 'Olvidar', seguro: '¿Olvidarla para siempre?', si: 'Sí, olvidar', no: 'Cancelar', ultimoCambio: 'Último cambio', sinHist: 'Sin cambios anteriores.', cargando: 'Cargando…',
+  hecho: 'Hecho', error: 'Error', sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla',
+  dondeTitulo: 'Dónde se quedó cada cosa', dondeSub: 'La última memoria <code>status</code> de cada proyecto: la misma que recibe el agente al empezar sesión.',
+  memoriasN: n => `${n} memoria${n === 1 ? '' : 's'}`, conEstado: 'con estado', donde: 'Dónde se quedó', sinEstado: 'Sin memoria de estado todavía.', globalPath: 'vale para todos los proyectos',
+  masN: n => `+ ${n} más`, menos: 'Ver menos', cerrar: 'Cerrar', titulo: 'Título'
 } : {
-  buscar: 'Search the way the agent does…', todos: 'All projects', global: 'Global', todosTipos: 'All',
-  nada: 'No memories match these filters.', elige: 'Pick a memory from the list.', proyecto: 'Project', rutas: 'Paths',
-  etiquetas: 'Tags', creada: 'Created', cambiada: 'Changed', origen: 'Source', autor: 'Author',
-  sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing', hace: '', usada: 'Recalled', veces: 'times',
-  fijar: 'Pin', desfijar: 'Unpin', historial: 'History', mover: 'Move to…', moverBtn: 'Move', olvidar: 'Forget',
-  seguro: 'Forget it for good? This can\'t be undone.', si: 'Yes, forget', no: 'Cancel', sinHist: 'No earlier versions.',
-  hecho: 'Done', error: 'Error', memorias: 'memories', otra: 'Another folder…', carpeta: 'Path of the project folder:',
-  fijadas: 'Pinned', temas: 'All topics'
+  memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
+  tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
+  mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
+  resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
+  creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
+  fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
+  olvidar: 'Forget', seguro: 'Forget it for good?', si: 'Yes, forget', no: 'Cancel', ultimoCambio: 'Last change', sinHist: 'No earlier versions.', cargando: 'Loading…',
+  hecho: 'Done', error: 'Error', sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing',
+  dondeTitulo: 'Where everything was left', dondeSub: 'The latest <code>status</code> memory of each project: the same one the agent gets when a session starts.',
+  memoriasN: n => `${n} memor${n === 1 ? 'y' : 'ies'}`, conEstado: 'with status', donde: 'Where it was left', sinEstado: 'No status memory yet.', globalPath: 'applies to every project',
+  masN: n => `+ ${n} more`, menos: 'Show less', cerrar: 'Close', titulo: 'Title'
 };
 const TIPOS = ['fact', 'decision', 'gotcha', 'preference'];
+const ESTADO = 'status';
+const POR_PAGINA = 150, POR_COLUMNA = 12;
+
+// El token llega una vez en el hash (#token=…) y se guarda para esta pestaña.
 const token = new URLSearchParams(location.hash.slice(1)).get('token');
-if (token) { try { sessionStorage.setItem('omoi-token', token); } catch (e) {} history.replaceState(null, '', location.pathname); }
+if (token) { try { sessionStorage.setItem('omoi-token', token); } catch (e) {} history.replaceState(null, '', location.pathname + '#/'); }
 const clave = token || (() => { try { return sessionStorage.getItem('omoi-token'); } catch (e) { return null; } })();
 const cab = clave ? { Authorization: 'Bearer ' + clave } : {};
 
-let todas = [], visibles = [], elegida = null, tipo = null, encontrados = null;
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nombre = p => p ? p.split(/[\\/]/).filter(Boolean).pop() : T.global;
-const fecha = s => s ? new Date(s).toLocaleString(ES ? 'es-ES' : undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const loc = ES ? 'es-ES' : undefined;
+const fecha = s => s ? new Date(s).toLocaleString(loc, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const hora = s => new Date(s).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
+const diaClave = s => { const d = new Date(s); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+function corta(s) {
+  const d = new Date(s), hoy = new Date(), ayer = new Date(Date.now() - 864e5);
+  if (diaClave(d) === diaClave(hoy)) return `${T.hoy.toLowerCase()} ${hora(s)}`;
+  if (diaClave(d) === diaClave(ayer)) return `${T.ayer.toLowerCase()} ${hora(s)}`;
+  return d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== hoy.getFullYear() ? { year: 'numeric' } : {}) });
+}
+
+// Estado de la vista.
+let todas = [], encontrados = null, consulta = '';
+const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
+let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
 function aviso(texto) {
   const a = $('aviso'); a.textContent = texto; a.hidden = false;
@@ -121,159 +313,413 @@ async function herramienta(nombre, args) {
   return v;
 }
 
-// Estado de la sincronización, en la cabecera (nada si no está configurada).
-async function sincro() {
-  try {
-    const r = await fetch('/api/sync', { headers: cab });
-    if (!r.ok) return;
-    const s = await r.json(), el = $('sync');
-    if (!s.configured) { el.textContent = ''; return; }
-    if (s.last_error) {
-      el.textContent = ' · ⚠ ' + T.sincroFalla; el.title = s.last_error; el.style.color = 'var(--accent)';
-    } else if (s.last_ok) {
-      el.textContent = ' · ' + T.sincro + ' ' + new Date(+s.last_ok * 1000).toLocaleTimeString(ES ? 'es-ES' : undefined, { timeStyle: 'short' });
-      el.title = s.url || ''; el.style.color = '';
-    } else {
-      el.textContent = ' · ' + T.sincroNo; el.title = s.url || ''; el.style.color = '';
-    }
-  } catch (e) { /* sin servidor: nada que enseñar */ }
+/* ---------- Markdown: se escapa todo y luego se da formato; los enlaces solo http(s). ---------- */
+function enLinea(s) {
+  const codigos = [];
+  s = s.replace(/`([^`]+)`/g, (_, c) => { codigos.push(c); return `\u0000${codigos.length - 1}\u0000`; });
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+       .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+       .replace(/\[\[([^\]]+)\]\]/g, '<span class="wl">$1</span>')
+       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+       .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codigos[i]}</code>`);
 }
+function md(texto) {
+  const l = esc(texto).replace(/\r/g, '').split('\n'), out = [];
+  let i = 0;
+  const celdas = f => f.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  while (i < l.length) {
+    const x = l[i];
+    if (/^\s*```/.test(x)) {
+      const b = []; i++;
+      while (i < l.length && !/^\s*```/.test(l[i])) b.push(l[i++]);
+      i++; out.push(`<pre><code>${b.join('\n')}</code></pre>`); continue;
+    }
+    if (!x.trim()) { i++; continue; }
+    let h = x.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { const n = Math.min(h[1].length, 4); out.push(`<h${n}>${enLinea(h[2])}</h${n}>`); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(x)) { out.push('<hr>'); i++; continue; }
+    if (/^\s*\|/.test(x) && i + 1 < l.length && /^\s*\|?\s*:?-{2,}/.test(l[i + 1])) {
+      const cab = celdas(x); i += 2; const filas = [];
+      while (i < l.length && /^\s*\|/.test(l[i])) filas.push(celdas(l[i++]));
+      out.push(`<div class="tabla"><table><thead><tr>${cab.map(c => `<th>${enLinea(c)}</th>`).join('')}</tr></thead><tbody>${filas.map(f => `<tr>${f.map(c => `<td>${enLinea(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      continue;
+    }
+    if (/^&gt;\s?/.test(x)) {
+      const b = [];
+      while (i < l.length && /^&gt;\s?/.test(l[i])) b.push(l[i++].replace(/^&gt;\s?/, ''));
+      out.push(`<blockquote>${md(b.join('\n').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'))}</blockquote>`); continue;
+    }
+    const lista = x.match(/^\s*([-*+]|\d+[.)])\s+/);
+    if (lista) {
+      const ord = /\d/.test(lista[1]), items = [];
+      while (i < l.length && /^\s*([-*+]|\d+[.)])\s+/.test(l[i])) {
+        let it = l[i++].replace(/^\s*([-*+]|\d+[.)])\s+/, '');
+        while (i < l.length && /^\s{2,}\S/.test(l[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(l[i])) it += ' ' + l[i++].trim();
+        items.push(`<li>${enLinea(it)}</li>`);
+      }
+      out.push(ord ? `<ol>${items.join('')}</ol>` : `<ul>${items.join('')}</ul>`); continue;
+    }
+    const p = [];
+    while (i < l.length && l[i].trim() && !/^\s*(```|#{1,6}\s|\||&gt;|([-*+]|\d+[.)])\s+)/.test(l[i])) p.push(enLinea(l[i++]));
+    if (p.length) out.push(`<p>${p.join('<br>')}</p>`); else out.push(`<p>${enLinea(l[i++])}</p>`);
+  }
+  return out.join('');
+}
+const extracto = s => String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/[#>*`|_\[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, 220);
+
+/* ---------- Diff por líneas (LCS), con una línea de contexto. ---------- */
+function diff(a, b) {
+  const x = a.split('\n'), y = b.split('\n'), n = x.length, m = y.length;
+  if (n * m > 4e6) return [...x.map(t => ['del', t]), ...y.map(t => ['add', t])];
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const ops = []; let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (x[i] === y[j]) { ops.push(['', x[i]]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) ops.push(['del', x[i++]]);
+    else ops.push(['add', y[j++]]);
+  }
+  while (i < n) ops.push(['del', x[i++]]);
+  while (j < m) ops.push(['add', y[j++]]);
+  // Se quedan los cambios y una línea a cada lado; cada tramo igual que sobra se resume en «⋯».
+  const cerca = k => [k - 1, k, k + 1].some(q => ops[q] && ops[q][0]);
+  const r = [];
+  ops.forEach((o, k) => {
+    if (cerca(k)) r.push(o);
+    else if (!r.length || r[r.length - 1][0] !== 'salto') r.push(['salto', '']);
+  });
+  return r;
+}
+function diffHTML(antes, despues) {
+  const ops = [];
+  if (antes.title !== despues.title) ops.push(['del', `# ${antes.title}`], ['add', `# ${despues.title}`], ['salto', '']);
+  for (const o of diff(antes.content || '', despues.content || '')) if (o[0] !== 'salto' || !ops.length || ops[ops.length - 1][0] !== 'salto') ops.push(o);
+  const s = { add: '+', del: '−', salto: '⋯', '': ' ' };
+  return `<div class="diff">${ops.map(([c, t]) => `<div class="dl ${c}"><span class="s">${s[c]}</span><span>${c === 'salto' ? '' : esc(t) || ' '}</span></div>`).join('')}</div>`;
+}
+// Los cambios de una memoria, del más reciente al más antiguo: [{antes, despues, cuando, motivo, de, a}].
+function cambios(m, versiones) {
+  const v = [...versiones].sort((p, q) => p.version - q.version), r = [];
+  for (let k = 0; k < v.length; k++) {
+    const despues = k + 1 < v.length ? v[k + 1] : m;
+    r.push({ antes: v[k], despues, cuando: v[k].changed_at, motivo: v[k].reason, de: v[k].version, a: v[k].version + 1 });
+  }
+  return r.reverse();
+}
+async function historia(id) {
+  if (!historias[id]) {
+    const v = await herramienta('history', { id });
+    historias[id] = Array.isArray(v) ? v : (v.versions || []);
+  }
+  return historias[id];
+}
+
+/* ---------- Datos ---------- */
+const delProyecto = p => todas.filter(m => m.project === p);
+// La memoria `status` más reciente de cada proyecto (la lista viene de la más nueva a la más vieja).
+function estados() {
+  const r = {};
+  for (const m of todas) if (m.tags.includes(ESTADO) && !(m.project in r)) r[m.project] = m;
+  return r;
+}
+function proyectos() {
+  const n = {};
+  for (const m of todas) n[m.project] = (n[m.project] || 0) + 1;
+  return Object.keys(n).sort((a, b) => (a === '') - (b === '') || n[b] - n[a] || nombre(a).localeCompare(nombre(b))).map(p => ({ p, n: n[p] }));
+}
+const pasa = m => (filtro.proyecto === '*' || m.project === filtro.proyecto) && (!filtro.tema || m.tags.includes(filtro.tema))
+  && (!filtro.tipo || (filtro.tipo === 'pinned' ? m.pinned : m.kind === filtro.tipo));
 
 async function cargar() {
   sincro();
   const r = await fetch('/api/memories', { headers: cab });
-  if (!r.ok) { $('lista').innerHTML = `<div class="vacio">${esc(T.error)}: ${r.status}</div>`; return; }
+  if (!r.ok) { $('vista').innerHTML = `<p class="vacio" style="padding:24px">${esc(T.error)}: ${r.status}</p>`; return; }
   todas = await r.json();
-  const proyectos = {};
-  for (const m of todas) proyectos[m.project] = (proyectos[m.project] || 0) + 1;
-  const sel = $('proyecto'), antes = sel.options.length ? sel.value : '*';
-  sel.innerHTML = `<option value="*">${esc(T.todos)} (${todas.length})</option>` +
-    (proyectos[''] ? `<option value="">${esc(T.global)} (${proyectos['']})</option>` : '') +
-    Object.keys(proyectos).filter(p => p).sort((a, b) => nombre(a).localeCompare(nombre(b)))
-      .map(p => `<option value="${esc(p)}" title="${esc(p)}">${esc(nombre(p))} (${proyectos[p]})</option>`).join('');
-  sel.value = [...sel.options].some(o => o.value === antes) ? antes : '*';
-  $('cuenta').textContent = `${todas.length} ${T.memorias}`;
-  temas();
+  historias = {};
   pintar();
 }
 
-function temas() {
-  const p = $('proyecto').value, sel = $('tema'), antes = sel.value, n = {};
-  for (const m of todas) if (p === '*' || m.project === p) for (const t of m.tags) n[t] = (n[t] || 0) + 1;
-  sel.innerHTML = `<option value="">${esc(T.temas)}</option>` +
-    Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}">#${esc(t)} (${n[t]})</option>`).join('');
-  sel.value = n[antes] ? antes : '';
+async function sincro() {
+  try {
+    const r = await fetch('/api/sync', { headers: cab });
+    if (!r.ok) return;
+    const s = await r.json(), el = $('sync'), txt = el.lastElementChild;
+    if (!s.configured) { el.hidden = true; return; }
+    el.hidden = false; el.classList.toggle('mal', !!s.last_error); el.title = s.last_error || s.url || '';
+    txt.textContent = s.last_error ? T.sincroFalla : s.last_ok ? `${T.sincro} ${new Date(+s.last_ok * 1000).toLocaleTimeString(loc, { timeStyle: 'short' })}` : T.sincroNo;
+  } catch (e) { /* sin servidor: nada que enseñar */ }
 }
+
+/* ---------- Rutas: #/ (memorias), #/proyectos, #/proyecto/<carpeta> ---------- */
+function ruta() {
+  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (h === 'proyectos') return { vista: 'proyectos' };
+  if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
+  return { vista: 'memorias' };
+}
+const enlaceProyecto = p => '#/proyecto/' + encodeURIComponent(p || '@global');
 
 function pintar() {
-  const p = $('proyecto').value, tema = $('tema').value;
-  let v = encontrados ? encontrados.map(id => todas.find(m => m.id === id)).filter(Boolean) : todas;
-  v = v.filter(m => (p === '*' || m.project === p) && (!tema || m.tags.includes(tema)) && (!tipo || (tipo === 'pinned' ? m.pinned : m.kind === tipo)));
-  visibles = v;
-  const l = $('lista');
-  if (!v.length) { l.innerHTML = `<div class="vacio">${esc(T.nada)}</div>`; detalle(null); return; }
-  l.innerHTML = v.map(m => `<div class="item" role="option" data-id="${m.id}" aria-selected="${elegida === m.id}">
-    <div class="t${m.pinned ? ' fijada' : ''}">${esc(m.title)}</div>
-    <div class="m"><span class="tipo ${m.kind}">${m.kind}</span><span>${esc(nombre(m.project))}</span><span>${esc(fecha(m.updated_at))}</span></div></div>`).join('');
-  if (!v.some(m => m.id === elegida)) detalle(null);
+  const r = ruta();
+  $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
+  $('nav-pj').setAttribute('aria-current', r.vista !== 'memorias' ? 'page' : 'false');
+  $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
+  if (r.vista === 'proyectos') pintarProyectos();
+  else if (r.vista === 'proyecto') pintarProyecto(r.p);
+  else pintarMemorias();
 }
 
-function detalle(id) {
-  elegida = id;
-  for (const e of document.querySelectorAll('.item')) e.setAttribute('aria-selected', e.dataset.id === id);
-  const d = $('detalle'), m = todas.find(x => x.id === id);
-  if (!m) { d.innerHTML = `<p class="vacio">${esc(T.elige)}</p>`; return; }
-  const proyectos = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
-  d.innerHTML = `<span class="tipo ${m.kind}">${m.kind}</span>
-    <h2 class="${m.pinned ? 'fijada' : ''}">${esc(m.title)}</h2>
-    <div class="meta">
-      <span>${T.proyecto}</span><b title="${esc(m.project)}">${esc(m.project || T.global)}</b>
-      ${m.paths.length ? `<span>${T.rutas}</span><b>${m.paths.map(esc).join('<br>')}</b>` : ''}
-      ${m.tags.length ? `<span>${T.etiquetas}</span><b>${m.tags.map(t => `<button class="chip" data-tema="${esc(t)}">#${esc(t)}</button>`).join('')}</b>` : ''}
-      <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
-      <span>${T.cambiada}</span><b>${esc(fecha(m.updated_at))}</b>
-      <span>${T.usada}</span><b>${m.recall_count} ${T.veces}${m.recalled_at ? ' · ' + esc(fecha(m.recalled_at)) : ''}</b>
-      ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
-      <span>${T.origen}</span><b>${esc(m.source)} · ${m.id}</b>
-    </div>
-    <div class="contenido">${esc(m.content)}</div>
-    <div class="acciones">
-      <button id="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
-      <button id="hist">${T.historial}</button>
-      <select id="destino"><option value="">${T.mover}</option><option value="@global">${T.global}</option>
-        ${proyectos.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(nombre(p))}</option>`).join('')}
-        <option value="@otra">${T.otra}</option></select>
-      <button id="mover">${T.moverBtn}</button>
-      <span id="olvido"><button id="olvidar" class="danger">${T.olvidar}</button></span>
-    </div>
-    <div id="versiones"></div>`;
-  for (const b of d.querySelectorAll('[data-tema]')) b.onclick = () => {
-    $('proyecto').value = '*'; temas(); $('tema').value = b.dataset.tema; pintar();
+/* ---------- Memorias: cronología por días ---------- */
+function eventos() {
+  if (encontrados) return encontrados.map(id => todas.find(m => m.id === id)).filter(m => m && pasa(m))
+    .map(m => ({ m, at: m.updated_at, que: queFue(m) }));
+  const ev = [];
+  for (const m of todas) {
+    if (!pasa(m)) continue;
+    ev.push({ m, at: m.updated_at, que: queFue(m) });
+    if (filtro.recordado && m.recalled_at) ev.push({ m, at: m.recalled_at, que: { txt: T.recordadaEv, cls: '' }, rec: true });
+  }
+  return ev.sort((a, b) => b.at.localeCompare(a.at));
+}
+function queFue(m) {
+  if (!m.versions && m.created_at === m.updated_at) return { txt: T.nueva, cls: '' };
+  return { txt: `${T.cambiada}${m.versions ? ' · v' + (m.versions + 1) : ''}`, cls: 'cambio' };
+}
+const claveEv = e => e.m.id + (e.rec ? ':r' : '');
+
+function pintarMemorias() {
+  const pjs = proyectos(), n = t => todas.filter(m => (filtro.proyecto === '*' || m.project === filtro.proyecto) && (t === 'pinned' ? m.pinned : !t || m.kind === t)).length;
+  const temas = {};
+  for (const m of todas) if (filtro.proyecto === '*' || m.project === filtro.proyecto) for (const t of m.tags) temas[t] = (temas[t] || 0) + 1;
+  const boton = (attr, v, actual, html, cuenta) => `<button class="ro" data-${attr}="${esc(v ?? '')}" aria-pressed="${v === actual}">${html}<span class="n">${cuenta}</span></button>`;
+  const ev = eventos(), visibles = ev.slice(0, pagina * POR_PAGINA);
+  let feed;
+  if (!ev.length) feed = `<p class="vacio">${esc(T.nada)}</p>`;
+  else if (encontrados) feed = `<p class="fhd" style="margin-left:0">${esc(T.resultados(ev.length, consulta))}</p><div class="plano"><div class="ev">${visibles.map(filaHTML).join('')}</div></div>`;
+  else {
+    const dias = [];
+    for (const e of visibles) { const k = diaClave(e.at); if (!dias.length || dias[dias.length - 1].k !== k) dias.push({ k, at: e.at, ev: [] }); dias[dias.length - 1].ev.push(e); }
+    feed = dias.map(d => `<div class="day"><div class="dl2">${etiquetaDia(d.at)}</div><div class="ev">${d.ev.map(filaHTML).join('')}</div></div>`).join('');
+  }
+  if (ev.length > visibles.length) feed += `<div class="mas"><button class="btn" id="mas">${esc(T.mas)} (${ev.length - visibles.length})</button></div>`;
+  $('vista').innerHTML = `<div class="mem">
+    <aside class="rail">
+      <div class="sh">${T.tipo}</div>
+      ${boton('tipo', null, filtro.tipo, esc(T.todo), n(null))}
+      ${TIPOS.map(t => boton('tipo', t, filtro.tipo, `<i class="k ${t}"></i>${t}`, n(t))).join('')}
+      ${boton('tipo', 'pinned', filtro.tipo, `<i class="k pin"></i>${esc(T.fijadas)}`, n('pinned'))}
+      <div class="sh">${T.proyecto}</div>
+      ${boton('proyecto', '*', filtro.proyecto, esc(T.todos), todas.length)}
+      ${pjs.map(x => boton('proyecto', x.p, filtro.proyecto, `<span class="nm" title="${esc(x.p)}">${esc(nombre(x.p))}</span>`, x.n)).join('')}
+      <div class="sh">${T.etiqueta}</div>
+      <select id="tema"><option value="">${esc(T.todasEt)}</option>${Object.keys(temas).sort((a, b) => temas[b] - temas[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}"${t === filtro.tema ? ' selected' : ''}>#${esc(t)} (${temas[t]})</option>`).join('')}</select>
+      <div class="sh">${T.mostrar}</div>
+      <button class="ro" id="recordado" aria-pressed="${filtro.recordado}">${esc(T.recordado)}</button>
+    </aside>
+    <section class="feed" id="feed">${feed}</section>
+  </div>`;
+  const v = $('vista');
+  for (const b of v.querySelectorAll('[data-tipo]')) b.onclick = () => { filtro.tipo = b.dataset.tipo || null; pagina = 1; pintar(); };
+  for (const b of v.querySelectorAll('[data-proyecto]')) b.onclick = () => { filtro.proyecto = b.dataset.proyecto; filtro.tema = ''; pagina = 1; pintar(); };
+  $('tema').onchange = e => { filtro.tema = e.target.value; pagina = 1; pintar(); };
+  $('recordado').onclick = () => { filtro.recordado = !filtro.recordado; pagina = 1; pintar(); };
+  if ($('mas')) $('mas').onclick = () => { pagina++; pintar(); };
+  for (const f of v.querySelectorAll('.row')) f.onclick = e => {
+    if (f.classList.contains('open') || e.target.closest('a,button,select')) return;
+    abrir(f.dataset.ev);
   };
-  $('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
-  $('hist').onclick = async () => {
-    try {
-      const v = await herramienta('history', { id: m.id });
-      const lista = Array.isArray(v) ? v : (v.versions || []);
-      $('versiones').innerHTML = lista.length ? lista.map(x => `<div class="version"><div class="cuando">v${x.version} · ${esc(fecha(x.changed_at))}${x.reason ? ' · ' + esc(x.reason) : ''}</div>
-        <b>${esc(x.title)}</b><div class="contenido">${esc(x.content)}</div></div>`).join('') : `<p class="vacio">${T.sinHist}</p>`;
-    } catch (e) { aviso(T.error + ': ' + e.message); }
-  };
-  $('mover').onclick = () => {
-    let p = $('destino').value;
+  const ab = v.querySelector('.row.open');
+  if (ab) conectar(ab, todas.find(m => m.id === ab.dataset.id));
+}
+function etiquetaDia(s) {
+  const d = new Date(s), hoy = new Date(), ayer = new Date(Date.now() - 864e5);
+  const fechaCorta = d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== hoy.getFullYear() ? { year: 'numeric' } : {}) });
+  if (diaClave(d) === diaClave(hoy)) return `<b>${T.hoy}</b><span>${fechaCorta}</span>`;
+  if (diaClave(d) === diaClave(ayer)) return `<b>${T.ayer}</b><span>${fechaCorta}</span>`;
+  return `<b>${esc(fechaCorta)}</b><span>${esc(d.toLocaleDateString(loc, { weekday: 'long' }))}</span>`;
+}
+function filaHTML(e) {
+  const m = e.m, k = claveEv(e), open = abierta === k;
+  const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
+  return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
+    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}</div>
+    <div class="r"><a class="proj" href="${enlaceProyecto(m.project)}" title="${esc(m.project)}">${esc(nombre(m.project))}</a><span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
+    <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
+    ${open ? detalleHTML(m, false) : ''}
+  </div>`;
+}
+function abrir(k) {
+  abierta = abierta === k ? null : k;
+  pintar();
+  const f = document.querySelector(`.row[data-ev="${CSS.escape(k)}"]`);
+  if (f) { const c = $('feed'), r = f.getBoundingClientRect(), cr = c.getBoundingClientRect(); if (r.top < cr.top || r.bottom > cr.bottom) c.scrollTop += r.top - cr.top - 60; }
+}
+
+/* ---------- Detalle compartido (fila abierta y panel del proyecto) ---------- */
+function detalleHTML(m, vertical) {
+  const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
+  return `<div class="det${vertical ? ' vertical' : ''}">
+    <div class="md">${md(m.content)}</div>
+    <div class="lado">
+      <div class="facts">
+        <span>${T.proyecto}</span><b title="${esc(m.project)}">${esc(m.project || T.global)}</b>
+        ${m.paths.length ? `<span>${T.rutas}</span><b class="mono">${m.paths.map(esc).join('<br>')}</b>` : ''}
+        <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
+        <span>${T.cambiadaF}</span><b>${esc(fecha(m.updated_at))}</b>
+        <span>${T.recordadaF}</span><b>${esc(T.veces(m.recall_count))}${m.recalled_at ? ' · ' + esc(corta(m.recalled_at)) : ''}</b>
+        ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
+        <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
+        <span>${T.id}</span><b class="mono">${m.id}</b>
+      </div>
+    </div>
+    <div class="ultimo">${m.versions ? `<p class="vacio" style="padding:0">${T.cargando}</p>` : ''}</div>
+    <div class="acts">
+      <button class="btn" data-a="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
+      ${m.versions ? `<button class="btn" data-a="hist">${histAbierta[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
+      <select data-a="destino"><option value="">${T.mover}</option>${m.project ? `<option value="@global">${T.global}</option>` : ''}
+        ${pjs.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(nombre(p))}</option>`).join('')}<option value="@otra">${T.otra}</option></select>
+      <button class="btn" data-a="mover">${T.moverBtn}</button>
+      <span class="sp"></span>
+      <span data-a="olvido"><button class="btn danger" data-a="olvidar">${T.olvidar}</button></span>
+    </div>
+    <div class="versiones"></div>
+  </div>`;
+}
+async function conectar(el, m) {
+  if (!m) return;
+  const q = a => el.querySelector(`[data-a="${a}"]`);
+  for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filtro.tema = b.dataset.tag; filtro.proyecto = '*'; pagina = 1; location.hash = '#/'; pintar(); };
+  q('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
+  q('mover').onclick = () => {
+    let p = q('destino').value;
     if (!p) return;
     if (p === '@otra') { p = prompt(T.carpeta); if (!p) return; }
     accion(() => herramienta('update', { id: m.id, project: p === '@global' ? '' : p, reason: 'moved from the web view' }));
   };
-  $('olvidar').onclick = () => {
-    $('olvido').innerHTML = `${esc(T.seguro)} <button id="si" class="primary">${T.si}</button> <button id="no">${T.no}</button>`;
-    $('no').onclick = () => detalle(m.id);
-    $('si').onclick = () => accion(() => herramienta('forget', { id: m.id }));
+  q('olvidar').onclick = () => {
+    q('olvido').innerHTML = `${esc(T.seguro)} <button class="btn pri" data-a="si">${T.si}</button> <button class="btn" data-a="no">${T.no}</button>`;
+    q('no').onclick = () => pintar();
+    q('si').onclick = () => accion(async () => { await herramienta('forget', { id: m.id }); abierta = null; elegidaPanel = null; });
   };
+  if (!m.versions) return;
+  if (q('hist')) q('hist').onclick = () => { histAbierta[m.id] = !histAbierta[m.id]; pintar(); };
+  try {
+    const cs = cambios(m, await historia(m.id));
+    const ver = c => `<div><div class="ver"><b>v${c.de} → v${c.a}</b><span>${esc(corta(c.cuando))}</span>${c.motivo ? `<span>· ${esc(c.motivo)}</span>` : ''}</div>${diffHTML(c.antes, c.despues)}</div>`;
+    const u = el.querySelector('.ultimo');
+    if (u) u.innerHTML = cs.length ? `<div><div class="sh" style="padding:0 0 6px">${T.ultimoCambio}</div>${ver(cs[0])}</div>` : '';
+    if (histAbierta[m.id]) el.querySelector('.versiones').innerHTML = cs.slice(1).map(ver).join('') || `<p class="vacio">${T.sinHist}</p>`;
+  } catch (e) { aviso(T.error + ': ' + e.message); }
 }
-
 async function accion(f) {
-  try { await f(); aviso(T.hecho); await cargar(); detalle(todas.some(m => m.id === elegida) ? elegida : null); }
+  try { await f(); aviso(T.hecho); await cargar(); }
   catch (e) { aviso(T.error + ': ' + e.message); }
 }
 
+/* ---------- Proyectos ---------- */
+function mezcla(ms) {
+  const c = {}; for (const t of TIPOS) c[t] = 0;
+  for (const m of ms) c[m.kind] = (c[m.kind] || 0) + 1;
+  return `<div class="mix">${TIPOS.filter(t => c[t]).map(t => `<i class="${t}" style="flex:${c[t]}" title="${t}: ${c[t]}"></i>`).join('')}</div>`;
+}
+function pintarProyectos() {
+  const es = estados(), pjs = proyectos();
+  $('vista').innerHTML = `<div class="pjs">
+    <div class="hero">
+      <div><h1>${T.dondeTitulo}</h1><p>${T.dondeSub}</p></div>
+      <div class="stats">
+        <div class="stat"><b>${todas.length}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
+        <div class="stat"><b>${pjs.filter(x => x.p).length}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        <div class="stat"><b>${Object.keys(es).length}</b><span>${esc(T.conEstado)}</span></div>
+      </div>
+    </div>
+    <div class="grid">${pjs.map(({ p, n }) => {
+      const e = es[p], ms = delProyecto(p);
+      return `<a class="card" href="${enlaceProyecto(p)}">
+        <div class="hd"><span class="nm">${esc(nombre(p))}</span><span class="n">${esc(T.memoriasN(n))}</span></div>
+        <div class="path" title="${esc(p)}">${esc(p || T.globalPath)}</div>
+        ${mezcla(ms)}
+        ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="txt">${esc(extracto(e.content))}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
+      </a>`;
+    }).join('')}</div>
+    <div class="leyenda">${TIPOS.map(t => `<span><i class="k ${t}"></i>${t}</span>`).join('')}</div>
+  </div>`;
+}
+
+let elegidaPanel = null;
+function pintarProyecto(p) {
+  const ms = delProyecto(p).filter(m => !encontrados || encontrados.includes(m.id)), e = estados()[p];
+  const ordenadas = encontrados ? encontrados.map(id => ms.find(m => m.id === id)).filter(Boolean) : ms;
+  const m = elegidaPanel && todas.find(x => x.id === elegidaPanel && x.project === p);
+  const cols = TIPOS.map(t => {
+    const v = ordenadas.filter(x => x.kind === t), todasCol = columnasAbiertas[p + t], vis = todasCol ? v : v.slice(0, POR_COLUMNA);
+    return `<div class="col">
+      <div class="ch"><i class="k ${t}"></i><span class="kt ${t}">${t}</span><span class="n">${v.length}</span></div>
+      ${vis.map(x => `<button class="mc" data-id="${x.id}" aria-current="${m && m.id === x.id}"><span class="t">${x.pinned ? '◆ ' : ''}${esc(x.title)}</span><span class="m">${esc(corta(x.updated_at))}${x.tags.includes(ESTADO) ? ' <span class="stl">status</span>' : ''}</span></button>`).join('')}
+      ${v.length > POR_COLUMNA ? `<button class="ver-mas" data-col="${t}">${todasCol ? T.menos : T.masN(v.length - POR_COLUMNA)}</button>` : ''}
+    </div>`;
+  }).join('');
+  $('vista').innerHTML = `<div class="pp${m ? ' con-panel' : ''}">
+    <div class="work">
+      <div class="crumb"><a href="#/proyectos">${T.proyectos}</a><span>›</span><b>${esc(nombre(p))}</b><span class="mono">${esc(p)}</span></div>
+      <div class="head">
+        <div>
+          <h1>${esc(nombre(p))}</h1>
+          ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="md">${md(e.content)}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
+        </div>
+        <div class="nums">${TIPOS.map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
+      </div>
+      ${ms.length ? `<div class="cols">${cols}</div>` : `<p class="vacio">${T.nada}</p>`}
+    </div>
+    ${m ? `<aside class="panel" id="panel">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="kt ${m.kind}">${m.kind}</span>${m.tags.map(t => `<span class="chip">#${esc(t)}</span>`).join('')}<button class="cerrar" id="cerrar">Esc ✕</button></div>
+      <h2>${m.pinned ? '◆ ' : ''}${esc(m.title)}</h2>
+      ${detalleHTML(m, true)}
+    </aside>` : ''}
+  </div>`;
+  const v = $('vista');
+  for (const b of v.querySelectorAll('.mc')) b.onclick = () => { elegidaPanel = elegidaPanel === b.dataset.id ? null : b.dataset.id; pintar(); };
+  for (const b of v.querySelectorAll('[data-col]')) b.onclick = () => { columnasAbiertas[p + b.dataset.col] = !columnasAbiertas[p + b.dataset.col]; pintar(); };
+  if (m) { $('cerrar').onclick = () => { elegidaPanel = null; pintar(); }; conectar($('panel'), m); }
+}
+
+/* ---------- Búsqueda, rutas y teclado ---------- */
 let espera;
-$('q').placeholder = T.buscar;
 $('q').oninput = () => {
   clearTimeout(espera);
   espera = setTimeout(async () => {
-    const q = $('q').value.trim();
-    if (!q) { encontrados = null; pintar(); return; }
+    consulta = $('q').value.trim();
+    if (!consulta) { encontrados = null; pintar(); return; }
+    const r = ruta();
+    if (r.vista === 'proyectos') location.hash = '#/';
     try {
-      const r = await herramienta('search', { query: q, limit: 50, all_projects: true });
-      encontrados = r.map(x => x.id);
+      const v = await herramienta('search', { query: consulta, limit: 50, all_projects: true });
+      encontrados = v.map(x => x.id);
     } catch (e) { aviso(T.error + ': ' + e.message); encontrados = []; }
-    pintar();
+    abierta = null; pagina = 1; pintar();
   }, 180);
 };
-$('proyecto').onchange = () => { temas(); pintar(); };
-$('tema').onchange = pintar;
-$('tipos').innerHTML = [[null, T.todosTipos], ...TIPOS.map(t => [t, t]), ['pinned', T.fijadas]]
-  .map(([v, t]) => `<button data-t="${v || ''}" aria-pressed="${v === tipo}">${esc(t)}</button>`).join('');
-$('tipos').onclick = e => {
-  const b = e.target.closest('button'); if (!b) return;
-  tipo = b.dataset.t || null;
-  for (const x of $('tipos').children) x.setAttribute('aria-pressed', (x.dataset.t || null) === tipo);
-  pintar();
-};
-$('lista').onclick = e => { const i = e.target.closest('.item'); if (i) detalle(i.dataset.id); };
+window.addEventListener('hashchange', () => { elegidaPanel = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs')?.scrollTo(0, 0); });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
+  const r = ruta();
+  if (e.key === 'Escape') {
+    if (r.vista === 'proyecto' && elegidaPanel) { elegidaPanel = null; pintar(); }
+    else if (r.vista === 'memorias' && abierta) { abierta = null; pintar(); }
+    return;
+  }
+  if (r.vista === 'memorias' && ['j', 'k', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
     e.preventDefault();
-    const i = visibles.findIndex(m => m.id === elegida), n = (e.key === 'ArrowDown' || e.key === 'j') ? 1 : -1;
-    const sig = visibles[Math.max(0, Math.min(visibles.length - 1, i + n))];
-    if (sig) { detalle(sig.id); document.querySelector(`.item[data-id="${sig.id}"]`)?.scrollIntoView({ block: 'nearest' }); }
+    const filas = [...document.querySelectorAll('.row')], i = filas.findIndex(f => f.dataset.ev === abierta);
+    const sig = filas[Math.max(0, Math.min(filas.length - 1, i + ((e.key === 'j' || e.key === 'ArrowDown') ? 1 : -1)))];
+    if (sig) abrir(sig.dataset.ev);
   }
 });
 document.documentElement.lang = ES ? 'es' : 'en';
-detalle(null);
+$('nav-mem').textContent = T.memorias;
+$('nav-pj').textContent = T.proyectos;
 cargar();
 </script>
 </body>

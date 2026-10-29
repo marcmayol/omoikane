@@ -1,8 +1,10 @@
 //! `omoi serve`: la memoria por HTTP en local, para lo que no habla MCP (scripts, otras apps). Las
 //! mismas herramientas que el servidor MCP y con las mismas respuestas:
 //!
-//! - `GET /` → la vista web: todas las memorias, con búsqueda, filtros, historial, fijar, mover y olvidar
-//! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua
+//! - `GET /` → la vista web: la cronología de memorias y los proyectos con su estado (y `/icono.png`,
+//!   `/fuentes/*.woff2`, que la página carga del binario)
+//! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua, con
+//!   `versions` (cuántas versiones anteriores guarda su historial)
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → nombres, descripciones y esquemas de las herramientas
 //! - `POST /tools/<nombre>` con los argumentos en JSON → la respuesta de la herramienta (400 si es un error)
@@ -28,6 +30,23 @@ fn json(estado: u16, cuerpo: String) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 const PAGINA: &str = include_str!("web.html");
+
+/// Lo que la página carga aparte: el icono y sus fuentes (OFL, en `assets/fuentes`), dentro del binario
+/// porque la vista tiene que funcionar sin internet.
+const FICHEROS: &[(&str, &str, &[u8])] = &[
+    ("/icono.png", "image/png", include_bytes!("../assets/icon-64.png")),
+    ("/fuentes/plex-sans.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-sans.woff2")),
+    ("/fuentes/plex-mono-400.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-mono-400.woff2")),
+    ("/fuentes/plex-mono-600.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-mono-600.woff2")),
+    ("/fuentes/shippori-600.woff2", "font/woff2", include_bytes!("../assets/fuentes/shippori-600.woff2")),
+    ("/fuentes/shippori-600-omoikane.woff2", "font/woff2", include_bytes!("../assets/fuentes/shippori-600-omoikane.woff2")),
+];
+
+fn fichero(tipo: &str, datos: &'static [u8]) -> Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_data(datos.to_vec())
+        .with_header(Header::from_bytes("Content-Type", tipo).expect("cabecera"))
+        .with_header(Header::from_bytes("Cache-Control", "max-age=86400").expect("cabecera"))
+}
 
 fn html() -> Response<std::io::Cursor<Vec<u8>>> {
     let cabecera = Header::from_bytes("Content-Type", "text/html; charset=utf-8").expect("cabecera");
@@ -137,6 +156,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
             if *peticion.method() == Method::Get && ruta == "/" {
                 return Ok(html());
             }
+            if *peticion.method() == Method::Get
+                && let Some((_, tipo, datos)) = FICHEROS.iter().find(|(r, _, _)| *r == ruta)
+            {
+                return Ok(fichero(tipo, datos));
+            }
             if let Some(t) = &token {
                 let esperado = format!("Bearer {t}");
                 let vale = peticion.headers().iter().any(|h| h.field.equiv("Authorization") && h.value.as_str() == esperado);
@@ -154,6 +178,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                 (Method::Get, "/api/memories") => {
                     let db = db::abrir(&db)?;
                     let v = memoria::recientes(&db, &Ambito::Todos, None, usize::MAX >> 1)?;
+                    // Con cuántas versiones anteriores tiene cada una, para la cronología de la vista.
+                    let mut q = db.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
+                    let versiones: std::collections::HashMap<String, i64> =
+                        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+                    let v: Vec<serde_json::Value> = v
+                        .into_iter()
+                        .map(|m| {
+                            let n = versiones.get(&m.id).copied().unwrap_or(0);
+                            let mut j = serde_json::to_value(m).unwrap_or_default();
+                            j["versions"] = n.into();
+                            j
+                        })
+                        .collect();
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Get, "/api/sync") => {
