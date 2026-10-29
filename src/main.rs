@@ -681,8 +681,19 @@ fn setup(agente: &str, si: bool, simulacro: bool) -> Result<()> {
 fn recall_al_cerrar(c: &Comun) -> Result<()> {
     let mut entrada = String::new();
     std::io::stdin().read_to_string(&mut entrada)?;
-    let e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
+    let mut e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
     let ruta_db = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    // Cursor da la carpeta en `workspace_roots`; Copilot y Kiro no dan la ruta de la conversación.
+    if e.cwd.is_empty()
+        && let Some(raiz) = e.workspace_roots.first()
+    {
+        e.cwd = raiz.clone();
+    }
+    if e.transcript_path.is_empty()
+        && let Some(p) = omoikane::candidatas::buscar_conversacion(&e.session_id)
+    {
+        e.transcript_path = p.to_string_lossy().into_owned();
+    }
     if e.transcript_path.is_empty() || !std::path::Path::new(&e.transcript_path).exists() || !ruta_db.exists() {
         return Ok(());
     }

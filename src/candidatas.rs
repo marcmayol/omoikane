@@ -11,13 +11,13 @@
 //! respuestas a `AskUserQuestion`; las frases de preferencia o corrección; y los hitos (commit, tag,
 //! publicación). Nada que parezca un secreto, nada que ya esté guardado, como mucho 5 (más los hitos).
 //!
-//! Solo Claude Code por ahora: su conversación es un `.jsonl` que el hook da en `transcript_path`.
+//! Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI y Cursor, y un JSONL
+//! genérico (Kiro, el plugin de OpenCode): ver `turnos` y la Fase 7.5 del PLAN.
 
 use crate::memoria::{AHORA, Ambito};
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use std::io::BufRead;
 use std::path::Path;
 
 pub const DECISION: &str = "decision";
@@ -126,14 +126,6 @@ fn respuestas(salida: &str) -> Vec<(String, String)> {
     r
 }
 
-fn texto_de(contenido: &serde_json::Value) -> Vec<String> {
-    match contenido {
-        serde_json::Value::String(s) => vec![s.clone()],
-        serde_json::Value::Array(v) => v.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str().map(String::from)).collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// Lo que el sistema mete como si fuera del usuario (recordatorios, órdenes, resultados de comandos).
 fn es_ruido(t: &str) -> bool {
     let t = t.trim();
@@ -144,92 +136,289 @@ fn una_linea(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Las candidatas de una conversación de Claude Code, de la más a la menos prometedora.
-pub fn de_conversacion(ruta: &Path) -> Result<Vec<Candidata>> {
-    let f = std::io::BufReader::new(std::fs::File::open(ruta)?);
-    let mut r: Vec<Candidata> = Vec::new();
-    let mut herramientas: std::collections::HashMap<String, (String, serde_json::Value)> = std::collections::HashMap::new();
-    let mut ultimo_texto = String::new();
-    let mut commit = None;
-    let mut publicado = None;
-    for linea in f.lines() {
-        let Ok(linea) = linea else { continue };
-        // Solo los mensajes (la conversación trae también instantáneas, peticiones, títulos…).
-        if !(linea.contains("\"type\":\"user\"") || linea.contains("\"type\":\"assistant\"")) {
-            continue;
+/// Un turno de la conversación, sea del agente que sea.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Turno {
+    Usuario(String),
+    Agente(String),
+    /// Una pregunta con opciones y lo que respondió el usuario (`AskUserQuestion` de Claude Code).
+    Respuesta(String, String),
+    /// Un comando que se ejecutó bien (para los hitos: commit, tag, publicación).
+    Comando(String),
+}
+
+fn texto_partes(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(xs) => xs
+            .iter()
+            .filter(|b| b["thought"] != true && (b["type"].is_null() || b["type"] == "text" || b["type"] == "input_text" || b["type"] == "output_text"))
+            .filter_map(|b| b["text"].as_str().or_else(|| b.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// El comando de una llamada a herramienta: `command` como texto o como lista, o dentro de `arguments`
+/// (que en Codex es JSON en un texto).
+fn comando_de(v: &serde_json::Value) -> Option<String> {
+    let v = match v.as_str() {
+        Some(s) => serde_json::from_str::<serde_json::Value>(s).unwrap_or(serde_json::Value::String(s.to_string())),
+        None => v.clone(),
+    };
+    for k in ["command", "cmd"] {
+        match &v[k] {
+            serde_json::Value::String(s) => return Some(s.clone()),
+            serde_json::Value::Array(xs) => return Some(xs.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")),
+            _ => {}
         }
-        let Ok(d) = serde_json::from_str::<serde_json::Value>(&linea) else { continue };
+    }
+    None
+}
+
+fn de_rol(rol: &str) -> Option<bool> {
+    match rol {
+        "user" | "human" => Some(true),
+        "assistant" | "gemini" | "model" | "qwen" | "agent" | "ai" => Some(false),
+        _ => None,
+    }
+}
+
+/// Lo que dice el usuario dentro de `<user_query>` (Cursor); sin ella, la línea la metió el agente.
+fn consulta_de_cursor(t: &str) -> Option<String> {
+    let i = t.find("<user_query>")? + "<user_query>".len();
+    let f = t[i..].find("</user_query>").map(|f| i + f).unwrap_or(t.len());
+    Some(t[i..f].trim().to_string())
+}
+
+/// Los turnos de una conversación de cualquiera de los agentes que se conocen (Claude Code, Codex,
+/// Gemini CLI, Qwen Code, Copilot CLI, Cursor), o de un JSONL genérico con `role`/`type` y
+/// `text`/`content`/`parts` (Kiro, el que escribe el plugin de OpenCode, formatos nuevos).
+pub fn turnos(ruta: &Path) -> Result<Vec<Turno>> {
+    let texto = std::fs::read_to_string(ruta)?;
+    // Gemini CLI antes de junio de 2026: un JSON entero con `messages`.
+    if let Ok(todo) = serde_json::from_str::<serde_json::Value>(&texto)
+        && let Some(ms) = todo["messages"].as_array()
+    {
+        let mut r = Vec::new();
+        for m in ms {
+            turno_generico(m, &mut r);
+        }
+        return Ok(r);
+    }
+    // (id, turno): Gemini repite el mismo mensaje con el mismo id mientras crece; vale el último.
+    let mut r: Vec<(Option<String>, Turno)> = Vec::new();
+    let mut herramientas: std::collections::HashMap<String, (String, serde_json::Value)> = std::collections::HashMap::new();
+    let poner = |r: &mut Vec<(Option<String>, Turno)>, id: Option<String>, t: Turno| {
+        if let Some(id) = &id
+            && let Some(sitio) = r.iter_mut().find(|(x, _)| x.as_deref() == Some(id.as_str()))
+        {
+            sitio.1 = t;
+            return;
+        }
+        r.push((id, t));
+    };
+    for linea in texto.lines() {
+        let Ok(d) = serde_json::from_str::<serde_json::Value>(linea) else { continue };
+        let tipo = d["type"].as_str().unwrap_or_default();
         if d["isSidechain"] == true || d["isMeta"] == true {
             continue;
         }
-        let m = &d["message"];
-        if d["type"] == "assistant" {
-            for b in m["content"].as_array().into_iter().flatten() {
-                if b["type"] == "tool_use" {
-                    herramientas.insert(b["id"].as_str().unwrap_or_default().to_string(), (b["name"].as_str().unwrap_or_default().to_string(), b["input"].clone()));
-                } else if b["type"] == "text" && b["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
-                    ultimo_texto = b["text"].as_str().unwrap_or_default().to_string();
-                }
-            }
-            continue;
-        }
-        if let Some(bloques) = m["content"].as_array()
-            && bloques.iter().any(|b| b["type"] == "tool_result")
-        {
-            for b in bloques.iter().filter(|b| b["type"] == "tool_result") {
-                let Some((nombre, entrada)) = herramientas.get(b["tool_use_id"].as_str().unwrap_or_default()) else { continue };
-                let salida = match &b["content"] {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Array(v) => v.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join(" "),
-                    _ => String::new(),
-                };
-                if nombre == "AskUserQuestion" {
-                    for (p, resp) in respuestas(&salida) {
-                        r.push(Candidata { kind: DECISION, text: una_linea(&format!("{p} → {resp}")), puntos: 2.5 });
+        // Claude Code.
+        if (tipo == "user" || tipo == "assistant") && d["message"]["content"].is_array() || (tipo == "user" && d["message"]["content"].is_string()) {
+            let m = &d["message"];
+            if tipo == "assistant" {
+                for b in m["content"].as_array().into_iter().flatten() {
+                    if b["type"] == "tool_use" {
+                        herramientas.insert(b["id"].as_str().unwrap_or_default().to_string(), (b["name"].as_str().unwrap_or_default().to_string(), b["input"].clone()));
+                    } else if let Some(t) = b["text"].as_str().filter(|t| b["type"] == "text" && !t.trim().is_empty()) {
+                        poner(&mut r, None, Turno::Agente(t.to_string()));
                     }
                 }
-                let fallo = b["is_error"] == true || salida.contains("Exit code ") && !salida.contains("Exit code 0");
-                if nombre == "Bash" && !fallo {
-                    let cmd = entrada["command"].as_str().unwrap_or_default();
-                    if let Some(i) = cmd.find("git commit") {
-                        let resto = &cmd[i..];
-                        if let Some(j) = resto.find("-m \"") {
-                            let msg: String = resto[j + 4..].split(['"', '\n']).next().unwrap_or_default().to_string();
-                            if !msg.is_empty() {
-                                commit = Some(msg);
-                            }
-                        }
-                    }
-                    if let Some(i) = cmd.find("git tag -a ") {
-                        publicado = cmd[i + 11..].split_whitespace().next().map(|t| format!("tag {t}"));
-                    } else if cmd.contains("cargo publish") && publicado.is_none() {
-                        publicado = Some("cargo publish".into());
-                    }
-                }
-            }
-            continue;
-        }
-        for t in texto_de(&m["content"]) {
-            if es_ruido(&t) {
                 continue;
             }
-            let t = t.trim();
-            let n = normal(t);
-            let pregunta = (!ultimo_texto.is_empty()).then(|| ultima_pregunta(&ultimo_texto)).flatten();
-            let con = |p: &Option<String>| p.as_ref().map(|q| format!("{q} → {t}")).unwrap_or_else(|| t.to_string());
-            if tiene(&n, PREFERENCIAS) {
-                r.push(Candidata { kind: PREFERENCIA, text: una_linea(&con(&pregunta)), puntos: 3.0 });
-            } else if let Some(q) = &pregunta {
-                let trivial = TRIVIALES.contains(&n.trim_matches(|c: char| !c.is_alphanumeric()));
-                if !trivial && t.chars().count() < 600 {
-                    let primera = n.split(|c: char| !c.is_alphanumeric()).find(|w| !w.is_empty()).unwrap_or("");
-                    let encargo = if ENCARGOS.contains(&primera) { -1.5 } else { 0.0 };
-                    let opinion = if tiene(&n, OPINION) { 1.0 } else { 0.0 } + encargo;
-                    let largo = (t.chars().count() as f64 / 200.0).min(1.0);
-                    r.push(Candidata { kind: DECISION, text: una_linea(&format!("{q} → {t}")), puntos: 1.0 + opinion + largo });
+            if let Some(bloques) = m["content"].as_array()
+                && bloques.iter().any(|b| b["type"] == "tool_result")
+            {
+                for b in bloques.iter().filter(|b| b["type"] == "tool_result") {
+                    let Some((nombre, entrada)) = herramientas.get(b["tool_use_id"].as_str().unwrap_or_default()) else { continue };
+                    let salida = texto_partes(&b["content"]);
+                    if nombre == "AskUserQuestion" {
+                        for (p, resp) in respuestas(&salida) {
+                            poner(&mut r, None, Turno::Respuesta(p, resp));
+                        }
+                    }
+                    let fallo = b["is_error"] == true || salida.contains("Exit code ") && !salida.contains("Exit code 0");
+                    if !fallo && let Some(c) = comando_de(entrada) {
+                        poner(&mut r, None, Turno::Comando(c));
+                    }
+                }
+                continue;
+            }
+            poner(&mut r, None, Turno::Usuario(texto_partes(&m["content"])));
+            continue;
+        }
+        // Codex: `response_item` con el mensaje o la llamada dentro de `payload`.
+        if tipo == "response_item" {
+            let p = &d["payload"];
+            match p["type"].as_str().unwrap_or_default() {
+                "message" => match p["role"].as_str() {
+                    Some("user") => poner(&mut r, None, Turno::Usuario(texto_partes(&p["content"]))),
+                    Some("assistant") => poner(&mut r, None, Turno::Agente(texto_partes(&p["content"]))),
+                    _ => {}
+                },
+                "function_call" | "custom_tool_call" | "local_shell_call" => {
+                    if let Some(c) = comando_de(&p["arguments"]).or_else(|| comando_de(&p["input"])).or_else(|| comando_de(&p["action"])) {
+                        poner(&mut r, None, Turno::Comando(c));
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        // Copilot CLI: `events.jsonl`.
+        if tipo == "user.message" {
+            if !d["data"]["source"].as_str().is_some_and(|s| s.starts_with("skill-")) {
+                poner(&mut r, None, Turno::Usuario(d["data"]["content"].as_str().unwrap_or_default().to_string()));
+            }
+            continue;
+        }
+        if tipo == "assistant.message" {
+            if d["data"]["parentToolCallId"].is_null() {
+                poner(&mut r, None, Turno::Agente(d["data"]["content"].as_str().unwrap_or_default().to_string()));
+            }
+            continue;
+        }
+        if tipo == "tool.execution_start" {
+            if let Some(c) = comando_de(&d["data"]["arguments"]) {
+                poner(&mut r, None, Turno::Comando(c));
+            }
+            continue;
+        }
+        // Gemini CLI (JSONL desde junio de 2026): `$set` rehace la lista; cada mensaje lleva su id.
+        if let Some(ms) = d["$set"]["messages"].as_array() {
+            for m in ms {
+                let mut t = Vec::new();
+                turno_generico(m, &mut t);
+                for x in t {
+                    poner(&mut r, m["id"].as_str().map(String::from), x);
                 }
             }
-            ultimo_texto.clear();
+            continue;
+        }
+        // Cursor: estilo Anthropic, y lo que escribe el usuario va dentro de `<user_query>`.
+        if let Some(rol) = d["role"].as_str()
+            && d["message"]["content"].is_array()
+        {
+            for b in d["message"]["content"].as_array().into_iter().flatten() {
+                if b["type"] == "tool_use" {
+                    if let Some(c) = comando_de(&b["input"]) {
+                        poner(&mut r, None, Turno::Comando(c));
+                    }
+                } else if let Some(t) = b["text"].as_str() {
+                    match rol {
+                        "user" => {
+                            if let Some(q) = consulta_de_cursor(t) {
+                                poner(&mut r, None, Turno::Usuario(q));
+                            }
+                        }
+                        "assistant" => poner(&mut r, None, Turno::Agente(t.to_string())),
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+        // Gemini, Qwen y el genérico (Kiro, OpenCode, otros).
+        let mut t = Vec::new();
+        turno_generico(&d, &mut t);
+        for x in t {
+            poner(&mut r, d["id"].as_str().filter(|_| d["type"] == "gemini" || d["type"] == "user").map(String::from), x);
+        }
+    }
+    Ok(r.into_iter().map(|(_, t)| t).collect())
+}
+
+/// Un registro con rol (`role`, `type`, `author` o `sender`) y texto (`text`, `content`, `message`
+/// o `parts[].text`), o un comando (`command`).
+fn turno_generico(d: &serde_json::Value, r: &mut Vec<Turno>) {
+    let rol = ["role", "type", "author", "sender"].iter().find_map(|k| d[k].as_str()).unwrap_or_default();
+    if let Some(c) = comando_de(d).filter(|_| matches!(rol, "tool" | "command" | "shell")) {
+        r.push(Turno::Comando(c));
+        return;
+    }
+    let Some(es_usuario) = de_rol(rol) else { return };
+    let mut t = String::new();
+    for v in [&d["text"], &d["content"], &d["message"]["parts"], &d["parts"], &d["message"]["content"], &d["message"]] {
+        t = texto_partes(v);
+        if !t.trim().is_empty() {
+            break;
+        }
+    }
+    // Qwen: las llamadas a herramientas van en `message.parts[].functionCall`.
+    for p in d["message"]["parts"].as_array().into_iter().flatten() {
+        if let Some(c) = comando_de(&p["functionCall"]["args"]) {
+            r.push(Turno::Comando(c));
+        }
+    }
+    if !t.trim().is_empty() {
+        r.push(if es_usuario { Turno::Usuario(t) } else { Turno::Agente(t) });
+    }
+}
+
+/// Las candidatas de una conversación, de la más a la menos prometedora.
+pub fn de_conversacion(ruta: &Path) -> Result<Vec<Candidata>> {
+    let mut r: Vec<Candidata> = Vec::new();
+    let mut ultimo_texto = String::new();
+    let mut commit = None;
+    let mut publicado = None;
+    for turno in turnos(ruta)? {
+        match turno {
+            Turno::Agente(t) => {
+                if !t.trim().is_empty() {
+                    ultimo_texto = t;
+                }
+            }
+            Turno::Respuesta(p, resp) => r.push(Candidata { kind: DECISION, text: una_linea(&format!("{p} → {resp}")), puntos: 2.5 }),
+            Turno::Comando(cmd) => {
+                if let Some(i) = cmd.find("git commit") {
+                    let resto = &cmd[i..];
+                    if let Some(j) = resto.find("-m \"").or_else(|| resto.find("-m '")) {
+                        let msg: String = resto[j + 4..].split(['"', '\'', '\n']).next().unwrap_or_default().to_string();
+                        if !msg.is_empty() {
+                            commit = Some(msg);
+                        }
+                    }
+                }
+                if let Some(i) = cmd.find("git tag -a ") {
+                    publicado = cmd[i + 11..].split_whitespace().next().map(|t| format!("tag {t}"));
+                } else if cmd.contains("cargo publish") && publicado.is_none() {
+                    publicado = Some("cargo publish".into());
+                }
+            }
+            Turno::Usuario(t) => {
+                if es_ruido(&t) {
+                    continue;
+                }
+                let t = t.trim();
+                let n = normal(t);
+                let pregunta = (!ultimo_texto.is_empty()).then(|| ultima_pregunta(&ultimo_texto)).flatten();
+                let con = |p: &Option<String>| p.as_ref().map(|q| format!("{q} → {t}")).unwrap_or_else(|| t.to_string());
+                if tiene(&n, PREFERENCIAS) {
+                    r.push(Candidata { kind: PREFERENCIA, text: una_linea(&con(&pregunta)), puntos: 3.0 });
+                } else if let Some(q) = &pregunta {
+                    let trivial = TRIVIALES.contains(&n.trim_matches(|c: char| !c.is_alphanumeric()));
+                    if !trivial && t.chars().count() < 600 {
+                        let primera = n.split(|c: char| !c.is_alphanumeric()).find(|w| !w.is_empty()).unwrap_or("");
+                        let encargo = if ENCARGOS.contains(&primera) { -1.5 } else { 0.0 };
+                        let opinion = if tiene(&n, OPINION) { 1.0 } else { 0.0 } + encargo;
+                        let largo = (t.chars().count() as f64 / 200.0).min(1.0);
+                        r.push(Candidata { kind: DECISION, text: una_linea(&format!("{q} → {t}")), puntos: 1.0 + opinion + largo });
+                    }
+                }
+                ultimo_texto.clear();
+            }
         }
     }
     let mut vistas = std::collections::BTreeSet::new();
@@ -246,6 +435,24 @@ pub fn de_conversacion(ruta: &Path) -> Result<Vec<Candidata>> {
         }
     }
     Ok(salida)
+}
+
+/// Dónde está la conversación de una sesión cuando el hook no da la ruta (Copilot en `sessionEnd`,
+/// Kiro en `Stop`): por su id, en las carpetas que usa cada uno.
+pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
+    let id = session_id.trim();
+    if id.is_empty() || id.contains(['/', '\\', '.']) {
+        return None;
+    }
+    let casa = dirs::home_dir()?;
+    let copilot = std::env::var_os("COPILOT_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| casa.join(".copilot"));
+    [
+        copilot.join("session-state").join(id).join("events.jsonl"),
+        copilot.join("session-state").join(format!("{id}.jsonl")),
+        casa.join(".kiro").join("sessions").join("cli").join(format!("{id}.jsonl")),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
 }
 
 /// Al cerrar o compactar: aparta las candidatas de la conversación que no estén ya guardadas.

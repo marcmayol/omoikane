@@ -637,6 +637,31 @@ Reglas que no cambian: cero dependencias nuevas, **ningún LLM dentro de Omoikan
 
 **Hecho cuando:** un 8.º conjunto de preguntas a ciegas (escrito por otro agente sin ver nada) no empeora en top-1 ni en inyecciones de más frente a la 0.13.0, y en los mensajes reales de Marc la vecina aporta algo en al menos la mitad de las veces que sale.
 
+### 7.5 · 0.13.0 · guardar al cerrar también en los demás agentes ✅ (29-oct-2026)
+**Hecho así:** `candidatas::turnos` normaliza la conversación de cada formato en turnos (usuario, agente, pregunta → respuesta, comando) y la puntuación de la 7.2 no cambia. `tests/candidatas.rs` pasa la misma conversación con la forma de Codex, Gemini (JSONL con ids repetidos y el JSON de antes), Qwen, Copilot, Cursor y el genérico, y comprueba que sale la misma decisión y que lo que mete el agente (`<environment_context>`, skills, `<git_status>`) no. `tests/cli.rs`: los hooks de cierre de los siete agentes, también sobre lo que dejó un `setup` de la 0.12 (Kiro y Copilot completados, el plugin viejo de OpenCode rehecho, uno ajeno intacto), y la conversación de Copilot encontrada por su id. Con la conversación real de esta sesión (24 MB, Claude Code) saca lo mismo que la 0.12 en ~240 ms. Sin conversaciones reales de los otros agentes en el PC: las muestras siguen su documentación; si alguno cambia de formato, el lector genérico recoge lo que tenga `role`/`type` y texto.
+
+Lo investigado:
+La 7.2 solo lee la conversación de Claude Code. Lo que ofrece cada agente según su documentación (y, donde faltaba, proyectos que leen sus ficheros):
+
+| Agente | Al cerrar | Conversación | Formato |
+|---|---|---|---|
+| Codex | `SessionEnd` (1 s por defecto, máx. 3 s) y `PreCompact` | `transcript_path` | JSONL `{type:"response_item", payload:{type:"message", role, content:[{type:"input_text"\|"output_text", text}]}}`; comandos en `payload.type:"function_call"` con `arguments` en JSON; el contexto inyectado empieza por `<environment_context>` |
+| Gemini CLI | `SessionEnd` (no espera) y `PreCompress` | `transcript_path` (vacío hasta dic. 2025, issue #14715) | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` desde junio de 2026 (antes un `.json` con `messages[]`): `{id, type:"user"\|"gemini", content}`, el mismo `id` se repite mientras crece (vale el último) y líneas `$set` |
+| Qwen Code | `SessionEnd` y `PreCompact` | `transcript_path` (`~/.qwen/projects/<slug>/chats/<id>.jsonl`) | registros `type:"user"\|"assistant"` con `message.parts[].text` (estilo Gemini) |
+| Copilot CLI | `sessionEnd` **sin** ruta (`agentStop` sí la trae) | `~/.copilot/session-state/<sessionId>/events.jsonl` (antes `<id>.jsonl`) | `{type:"user.message"\|"assistant.message", data:{content}}`; fuera los `source:"skill-…"` y los de subagente (`parentToolCallId`) |
+| Cursor | `sessionEnd` y `preCompact` | `transcript_path` (y `CURSOR_TRANSCRIPT_PATH`) | JSONL estilo Anthropic `{role, message:{content:[{type:"text"\|"tool_use"}]}}`; el mensaje real va dentro de `<user_query>…</user_query>`, lo demás lo mete el agente |
+| Kiro CLI | `Stop` (solo `session_id`, `cwd`) | `~/.kiro/sessions/cli/<session_id>.jsonl` (lo usa aidlc-workflows; no documentado) | sin documentar: lector genérico |
+| OpenCode | plugin: eventos `session.idle` y `session.compacted` | en SQLite (`opencode.db`); el plugin pide los mensajes con `client.session.messages` | `{info:{role}, parts:[{type:"text", text}]}` |
+| Antigravity | — | `~/.gemini/antigravity/conversations/*.pb` (protobuf sin esquema público) | **no se puede** |
+| Windsurf, Kimi, Pi, Amp, Kilo | sin hooks que sirvan | — | **no** (como el recall automático) |
+
+**Plan:**
+- `candidatas` lee una conversación **normalizada en turnos** (usuario, agente, pregunta → respuesta, comando): un lector por formato (Claude Code, Codex, Gemini/Qwen, Copilot, Cursor) que se elige solo por la forma de las líneas, y uno **genérico** (`role`/`type` + `text`/`content`/`parts`) para Kiro, para formatos nuevos y para el JSONL neutro que escribe el plugin de OpenCode (`{"role":"user","text":"…"}`). El resto de la 7.2 (puntuar, secretos, ya guardado, tope) no cambia.
+- `omoi recall --session-end` acepta `transcriptPath` y `workspace_roots` (Cursor), y si no llega ruta la busca por el id de sesión: Copilot (`$COPILOT_HOME` o `~/.copilot`) y Kiro.
+- `omoi setup` añade los hooks de cierre a Codex (con `timeout: 3`), Gemini, Qwen, Cursor, Copilot y Kiro, y el plugin de OpenCode los eventos (una vez cada 10 min por sesión con `session.idle`, y siempre con `session.compacted`). Para quien ya lo hizo, `setup` los añade a lo que hay; el plugin de OpenCode y los hooks de Kiro y Copilot (que son ficheros solo de Omoikane) se rehacen si son una versión anterior nuestra.
+- Pruebas: una conversación de muestra por formato, construida con la forma documentada (en este PC no hay conversaciones reales de estos agentes: los JSONL de `~/.gemini` son de una extensión de VS Code y solo tienen la cabecera), y tests de `setup` para cada agente.
+- Fuera: Antigravity (protobuf), y los agentes sin hooks.
+
 ### Para cada versión
 Probar en el PC y en marc-server; el visor, con capturas en oscuro, en claro y a 400 px; tests y clippy en los tres sistemas; publicar con la receta de 7.3 en cuanto exista; PLAN y README al día.
 

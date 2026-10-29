@@ -100,8 +100,8 @@ pub struct Entrada {
     pub source: String,
     #[serde(default, alias = "workspacePaths")]
     pub workspace_roots: Vec<String>,
-    /// La conversación (Claude Code: un `.jsonl`), para sacar candidatas al cerrar.
-    #[serde(default)]
+    /// La conversación (Claude Code y la mayoría: un `.jsonl`), para sacar candidatas al cerrar.
+    #[serde(default, alias = "transcriptPath")]
     pub transcript_path: String,
 }
 

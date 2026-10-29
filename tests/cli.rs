@@ -380,6 +380,74 @@ fn setup_de_otros_agentes() {
     assert!(std::fs::read_to_string(casa.join(".config/opencode/commands/omoikane-web.md")).unwrap().starts_with("---\ndescription:"));
 }
 
+/// 7.5: los hooks de cierre de cada agente, también sobre lo que dejó un `setup` anterior.
+#[test]
+fn setup_aparta_al_cerrar_en_los_demas_agentes() {
+    let e = Entorno::nuevo("setup-cierre");
+    let casa = e.dir.join("casa");
+    // Lo que dejaba la 0.12: los hooks de Kiro y Copilot sin el de cierre, y el plugin de OpenCode viejo.
+    std::fs::create_dir_all(casa.join(".kiro/hooks")).unwrap();
+    std::fs::write(casa.join(".kiro/hooks/omoikane.json"), r#"{"version":"v1","hooks":[{"name":"omoikane-session","trigger":"SessionStart","action":{"type":"command","command":"omoi recall --session-start --format plain"},"timeout":30}]}"#).unwrap();
+    std::fs::create_dir_all(casa.join(".copilot/hooks")).unwrap();
+    std::fs::write(casa.join(".copilot/hooks/omoikane.json"), r#"{"version":1,"hooks":{"SessionStart":[{"type":"command","bash":"omoi recall --session-start --format copilot"}]}}"#).unwrap();
+    std::fs::create_dir_all(casa.join(".config/opencode/plugins")).unwrap();
+    std::fs::write(casa.join(".config/opencode/plugins/omoikane.ts"), "// Omoikane: recall automático en OpenCode. Lo creó `omoi setup opencode`; bórralo para quitarlo.\nviejo\n").unwrap();
+    let h = casa.to_str().unwrap();
+    for a in ["codex", "gemini", "qwen", "cursor", "kiro", "copilot", "opencode"] {
+        let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+        assert!(o.status.success(), "{a}: {}", String::from_utf8_lossy(&o.stderr));
+        let o = e.omoi_con(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+        assert!(String::from_utf8_lossy(&o.stdout).contains("nothing to do"), "{a} la segunda vez: {}", String::from_utf8_lossy(&o.stdout));
+    }
+    let leer = |f: &str| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(casa.join(f)).unwrap()).unwrap();
+    let codex = leer(".codex/hooks.json");
+    assert!(codex["hooks"]["SessionEnd"].to_string().contains("--session-end"), "{codex}");
+    assert_eq!(codex["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 3);
+    assert!(codex["hooks"]["PreCompact"].to_string().contains("--session-end"));
+    let gemini = leer(".gemini/settings.json");
+    assert!(gemini["hooks"]["SessionEnd"].to_string().contains("--session-end") && gemini["hooks"]["PreCompress"].to_string().contains("--session-end"));
+    let qwen = leer(".qwen/settings.json");
+    assert!(qwen["hooks"]["SessionEnd"].to_string().contains("--session-end") && qwen["hooks"]["PreCompact"].to_string().contains("--session-end"));
+    let cursor = leer(".cursor/hooks.json");
+    assert!(cursor["hooks"]["sessionEnd"].to_string().contains("--session-end") && cursor["hooks"]["preCompact"].to_string().contains("--session-end"));
+    let kiro = leer(".kiro/hooks/omoikane.json");
+    assert_eq!(kiro["hooks"].as_array().unwrap().len(), 3, "{kiro}");
+    assert!(kiro["hooks"].to_string().contains("\"trigger\":\"Stop\""));
+    let copilot = leer(".copilot/hooks/omoikane.json");
+    assert!(copilot["hooks"]["SessionEnd"].to_string().contains("--session-end") && copilot["hooks"]["SessionStart"].to_string().contains("--session-start"));
+    let plugin = std::fs::read_to_string(casa.join(".config/opencode/plugins/omoikane.ts")).unwrap();
+    assert!(plugin.contains("session.compacted") && plugin.contains("--session-end") && !plugin.contains("viejo"), "el plugin viejo se rehace");
+    // Un plugin que no es de Omoikane no se toca.
+    std::fs::write(casa.join(".config/opencode/plugins/omoikane.ts"), "// mío\n").unwrap();
+    let o = e.omoi_con(&["setup", "opencode", "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+    assert!(o.status.success());
+    assert_eq!(std::fs::read_to_string(casa.join(".config/opencode/plugins/omoikane.ts")).unwrap(), "// mío\n");
+}
+
+/// 7.5: Copilot no da la ruta en `sessionEnd`: `omoi` la busca por el id de sesión.
+#[test]
+fn al_cerrar_busca_la_conversacion_de_copilot_por_su_id() {
+    let e = Entorno::nuevo("cierre-copilot");
+    let copilot = e.dir.join("copilot");
+    let sesion = copilot.join("session-state").join("abc123");
+    std::fs::create_dir_all(&sesion).unwrap();
+    let lineas = [
+        r#"{"type":"session.start","data":{"sessionId":"abc123"}}"#,
+        r#"{"type":"user.message","data":{"content":"vamos a montar la web"}}"#,
+        r#"{"type":"assistant.message","data":{"content":"Tengo dos opciones de plantilla. ¿Cuál prefieres?"}}"#,
+        r#"{"type":"user.message","data":{"content":"la segunda, pero con la letra más grande que la veo pequeña"}}"#,
+    ];
+    std::fs::write(sesion.join("events.jsonl"), lineas.join("\n")).unwrap();
+    // La base tiene que existir (si no, no hay nada a lo que apartar).
+    assert!(e.omoi_con(&["remember", "--kind", "fact", "--title", "Una", "algo"], None, &[]).status.success());
+    let entrada = format!(r#"{{"sessionId":"abc123","cwd":{},"reason":"user_exit"}}"#, serde_json::to_string(&e.dir.join("repo").to_string_lossy()).unwrap());
+    let o = e.omoi_con(&["recall", "--session-end"], Some(&entrada), &[("COPILOT_HOME", copilot.to_str().unwrap())]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.omoi_con(&["review", "--all"], None, &[]);
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(t.contains("¿Cuál prefieres? → la segunda, pero con la letra más grande"), "{t}");
+}
+
 /// Una orden `/omoikane-web` propia del usuario no se toca, ni una `/omoikane` que no escribió Omoikane.
 #[test]
 fn setup_respeta_una_orden_existente() {
