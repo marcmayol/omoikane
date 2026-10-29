@@ -192,6 +192,8 @@ Over all 190 paraphrases from every set, top-5: Omoikane 176 (92.6 %), engram 16
 | 190 paraphrases, MRR | **0.838** | 0.838 | 0.769 |
 | median search | **45 ms** | 45 ms | 178 ms |
 
+0.9.0, which adds sync between computers, was run again the same way after publishing: the same numbers on all 526 questions (top-1 87.3 % vs 82.7 %, MRR 0.915 vs 0.875) and a median search of 43 ms against 173 ms.
+
 0.7.0 and 0.6.0 give the same answer to every question. engram is ahead only on the summaries (top-1 98.4 % vs 97.6 %, one question) and on top-3 of the third set (96.7 % vs 93.3 %, two questions).
 
 ## Caveats
