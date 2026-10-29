@@ -26,6 +26,13 @@
 //! - Windsurf (Devin Desktop), Kimi Code, Pi, Amp y Kilo Code: MCP e instrucciones. Sus hooks no
 //!   pueden añadir contexto (o no está documentado), así que sin recall automático.
 //!
+//! Al cerrar o compactar la sesión (Fase 7.5), `omoi recall --session-end` aparta candidatas de la
+//! conversación: Codex (`SessionEnd` con `timeout: 3`, que por defecto es 1 s, y `PreCompact`), Gemini
+//! (`SessionEnd`, `PreCompress`), Qwen (`SessionEnd`, `PreCompact`), Cursor (`sessionEnd`,
+//! `preCompact`), Copilot (`SessionEnd`, sin ruta: `omoi` la busca por el id) y Kiro (`Stop`, solo
+//! con el id). En OpenCode, el plugin (con `session.idle` cada 10 min y `session.compacted`).
+//! Antigravity no: guarda las conversaciones en protobuf.
+//!
 //! La orden `/omoikane-web` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
 //! (`~/.gemini/commands/*.toml`), Qwen (`~/.qwen/commands/*.md`), Codex (`~/.codex/prompts/*.md`,
 //! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane-web`), Cursor
@@ -141,6 +148,15 @@ fn hook_estilo_claude(raiz: &mut Value, evento: &str, matcher: Option<&str>, com
     Ok(true)
 }
 
+/// Como `hook_estilo_claude`, con un tiempo máximo en segundos.
+fn hook_con_tiempo(raiz: &mut Value, evento: &str, matcher: Option<&str>, comando: &str, segundos: u64) -> Result<bool> {
+    let nuevo = hook_estilo_claude(raiz, evento, matcher, comando)?;
+    if nuevo && let Some(e) = raiz["hooks"][evento].as_array_mut().and_then(|l| l.last_mut()) {
+        e["hooks"][0]["timeout"] = json!(segundos);
+    }
+    Ok(nuevo)
+}
+
 /// El cambio de un fichero JSON, si `f` cambia algo.
 fn json_cambio(fichero: PathBuf, que: String, f: &dyn Fn(&mut Value) -> Result<bool>) -> Result<Option<Cambio>> {
     let mut j = leer_json(&fichero)?;
@@ -172,7 +188,11 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = json_cambio(d.join("hooks.json"), tr!("recall hooks (approve them once with /hooks)", "hooks del recall (apruébalos una vez con /hooks)"), &|j| {
                 let a = hook_estilo_claude(j, "SessionStart", Some("startup|resume|clear|compact"), &format!("{} recall --session-start", orden(&omoi, Shell::Powershell)))?;
                 let b = hook_estilo_claude(j, "UserPromptSubmit", None, &format!("{} recall", orden(&omoi, Shell::Powershell)))?;
-                Ok(a || b)
+                // Al cerrar (1 s por defecto en Codex: se pide el máximo, 3) y al compactar (7.5).
+                let cierre = format!("{} recall --session-end", orden(&omoi, Shell::Powershell));
+                let c = hook_con_tiempo(j, "SessionEnd", None, &cierre, 3)?;
+                let e = hook_con_tiempo(j, "PreCompact", None, &cierre, 10)?;
+                Ok(a || b || c || e)
             })? {
                 v.push(c);
             }
@@ -203,7 +223,10 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 }
                 let b = hook_estilo_claude(j, "SessionStart", Some("*"), &format!("{} recall --session-start --format gemini", orden(&omoi, Shell::Powershell)))?;
                 let c = hook_estilo_claude(j, "BeforeAgent", Some("*"), &format!("{} recall --format gemini", orden(&omoi, Shell::Powershell)))?;
-                Ok(a || b || c)
+                let cierre = format!("{} recall --session-end", orden(&omoi, Shell::Powershell));
+                let e = hook_estilo_claude(j, "SessionEnd", Some("*"), &cierre)?;
+                let f = hook_estilo_claude(j, "PreCompress", Some("*"), &cierre)?;
+                Ok(a || b || c || e || f)
             })? {
                 v.push(c);
             }
@@ -225,18 +248,26 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
-            if let Some(c) = json_cambio(d.join("hooks.json"), tr!("recall at session start (Cursor can't add context per prompt)", "recall al empezar la sesión (Cursor no deja añadir contexto en cada mensaje)"), &|j| {
+            if let Some(c) = json_cambio(d.join("hooks.json"), tr!("recall at session start (Cursor can't add context per prompt), and setting aside at the end", "recall al empezar la sesión (Cursor no deja añadir contexto en cada mensaje) y apartar al cerrar"), &|j| {
                 if j.get("version").is_none() {
                     j["version"] = json!(1);
                 }
                 let hooks = objeto(j, "hooks")?;
-                let lista = hooks.entry("sessionStart").or_insert_with(|| json!([]));
-                let Some(lista) = lista.as_array_mut() else { bail!("hooks.sessionStart isn't a list") };
-                if lista.iter().any(|e| e.to_string().contains("recall")) {
-                    return Ok(false);
+                let o = orden(&omoi, Shell::Desconocida);
+                let mut cambia = false;
+                for (evento, comando) in [
+                    ("sessionStart", format!("{o} recall --session-start --format cursor")),
+                    ("sessionEnd", format!("{o} recall --session-end")),
+                    ("preCompact", format!("{o} recall --session-end")),
+                ] {
+                    let lista = hooks.entry(evento).or_insert_with(|| json!([]));
+                    let Some(lista) = lista.as_array_mut() else { bail!("hooks.{evento} isn't a list") };
+                    if !lista.iter().any(|e| e.to_string().contains("recall")) {
+                        lista.push(json!({ "command": comando }));
+                        cambia = true;
+                    }
                 }
-                lista.push(json!({ "command": format!("{} recall --session-start --format cursor", orden(&omoi, Shell::Desconocida)) }));
-                Ok(true)
+                Ok(cambia)
             })? {
                 v.push(c);
             }
@@ -258,8 +289,11 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             let plugin = d.join("plugins").join("omoikane.ts");
-            if !plugin.exists() {
-                v.push(Cambio { fichero: plugin, que: tr!("recall plugin (each prompt)", "plugin del recall (cada mensaje)"), contenido: plugin_opencode(&omoi), borrar: false });
+            let nuevo = plugin_opencode(&omoi);
+            let actual = std::fs::read_to_string(&plugin).ok();
+            // Solo si no hay ninguno o es uno anterior de Omoikane (lleva su cabecera): uno ajeno no se toca.
+            if actual.as_deref().is_none_or(|t| t.starts_with("// Omoikane: recall automático en OpenCode") && t != nuevo) {
+                v.push(Cambio { fichero: plugin, que: tr!("plugin: recall on each prompt and setting aside at the end", "plugin: recall en cada mensaje y apartar al cerrar"), contenido: nuevo, borrar: false });
             }
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
@@ -276,7 +310,10 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 }
                 let b = hook_estilo_claude(j, "SessionStart", Some("startup|resume|clear|compact"), &format!("{} recall --session-start", orden(&omoi, Shell::Powershell)))?;
                 let c = hook_estilo_claude(j, "UserPromptSubmit", None, &format!("{} recall", orden(&omoi, Shell::Powershell)))?;
-                Ok(a || b || c)
+                let cierre = format!("{} recall --session-end", orden(&omoi, Shell::Powershell));
+                let e = hook_estilo_claude(j, "SessionEnd", None, &cierre)?;
+                let f = hook_estilo_claude(j, "PreCompact", None, &cierre)?;
+                Ok(a || b || c || e || f)
             })? {
                 v.push(c);
             }
@@ -288,24 +325,62 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             mcp_en(&mut v, d.join("settings").join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
             instrucciones_en(&mut v, d.join("steering").join("omoikane.md"))?;
             let o = orden(&omoi, Shell::Desconocida);
-            let hooks = json!({ "version": "v1", "hooks": [
-                { "name": "omoikane-session", "trigger": "SessionStart", "action": { "type": "command", "command": format!("{o} recall --session-start --format plain") }, "timeout": 30 },
-                { "name": "omoikane-prompt", "trigger": "UserPromptSubmit", "action": { "type": "command", "command": format!("{o} recall --format plain") }, "timeout": 30 },
-            ]});
-            fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall hooks", "hooks del recall"), bonito(&hooks)?);
+            let todos = [
+                json!({ "name": "omoikane-session", "trigger": "SessionStart", "action": { "type": "command", "command": format!("{o} recall --session-start --format plain") }, "timeout": 30 }),
+                json!({ "name": "omoikane-prompt", "trigger": "UserPromptSubmit", "action": { "type": "command", "command": format!("{o} recall --format plain") }, "timeout": 30 }),
+                // Kiro solo da `session_id`: `omoi` busca la conversación en ~/.kiro/sessions/cli (7.5).
+                json!({ "name": "omoikane-end", "trigger": "Stop", "action": { "type": "command", "command": format!("{o} recall --session-end") }, "timeout": 30 }),
+            ];
+            if let Some(c) = json_cambio(d.join("hooks").join("omoikane.json"), tr!("recall hooks and setting aside at the end", "hooks del recall y apartar al cerrar"), &|j| {
+                if j.get("version").is_none() {
+                    j["version"] = json!("v1");
+                }
+                if !j.get("hooks").is_some_and(Value::is_array) {
+                    j["hooks"] = json!([]);
+                }
+                let lista = j["hooks"].as_array_mut().context("hooks")?;
+                let mut cambia = false;
+                for h in &todos {
+                    if !lista.iter().any(|x| x["name"] == h["name"]) {
+                        lista.push(h.clone());
+                        cambia = true;
+                    }
+                }
+                Ok(cambia)
+            })? {
+                v.push(c);
+            }
             orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, false));
         }
         "copilot" => {
             let d = h.join(".copilot");
             mcp_en(&mut v, d.join("mcp-config.json"), "mcpServers", json!({ "type": "local", "command": omoi, "args": ["mcp"], "tools": ["*"] }))?;
             instrucciones_en(&mut v, d.join("copilot-instructions.md"))?;
-            let hooks = json!({ "version": 1, "hooks": { "SessionStart": [{
-                "type": "command",
-                "bash": format!("{} recall --session-start --format copilot", orden(&omoi, Shell::Desconocida)),
-                "powershell": format!("{} recall --session-start --format copilot", orden_powershell(&omoi)),
-                "timeoutSec": 30,
-            }]}});
-            fichero_propio(&mut v, d.join("hooks").join("omoikane.json"), tr!("recall at session start", "recall al empezar la sesión"), bonito(&hooks)?);
+            let hook = |args: &str| {
+                json!([{
+                    "type": "command",
+                    "bash": format!("{} {args}", orden(&omoi, Shell::Desconocida)),
+                    "powershell": format!("{} {args}", orden_powershell(&omoi)),
+                    "timeoutSec": 30,
+                }])
+            };
+            let (inicio, fin) = (hook("recall --session-start --format copilot"), hook("recall --session-end"));
+            if let Some(c) = json_cambio(d.join("hooks").join("omoikane.json"), tr!("recall at session start and setting aside at the end", "recall al empezar la sesión y apartar al cerrar"), &|j| {
+                if j.get("version").is_none() {
+                    j["version"] = json!(1);
+                }
+                let hooks = objeto(j, "hooks")?;
+                let mut cambia = false;
+                for (evento, h) in [("SessionStart", &inicio), ("SessionEnd", &fin)] {
+                    if !hooks.contains_key(evento) {
+                        hooks.insert(evento.into(), h.clone());
+                        cambia = true;
+                    }
+                }
+                Ok(cambia)
+            })? {
+                v.push(c);
+            }
         }
         "windsurf" => {
             let entrada = json!({ "command": omoi, "args": ["mcp"] });
@@ -469,7 +544,36 @@ fn plugin_opencode(omoi: &str) -> String {
 const OMOI = {omoi:?}
 const pendiente = new Map()
 
-export const Omoikane = async ({{ $, directory }}) => ({{
+// 7.5: al quedarse la sesión parada (como mucho una vez cada 10 min) y al compactar, la conversación
+// pasa a `omoi recall --session-end` como JSONL neutro ({{role, text}}), para apartar lo que valga.
+const apartadas = new Map()
+async function apartar($, client, directory, id) {{
+  try {{
+    const r = await client.session.messages({{ path: {{ id }} }})
+    const mensajes = Array.isArray(r) ? r : (r?.data ?? [])
+    const lineas = mensajes.map((m) => JSON.stringify({{
+      role: m.info?.role,
+      text: (m.parts ?? []).filter((p) => p.type === "text" && !p.synthetic).map((p) => p.text).join("\n"),
+    }}))
+    const fichero = `${{process.env.TEMP || process.env.TMPDIR || "/tmp"}}/omoikane-opencode-${{id}}.jsonl`
+    await Bun.write(fichero, lineas.join("\n"))
+    const evento = JSON.stringify({{ session_id: id, cwd: directory, transcript_path: fichero }})
+    await $`${{OMOI}} recall --session-end < ${{new Response(evento)}}`.quiet().nothrow()
+  }} catch {{
+    // Lo peor es no apartar nada esta vez.
+  }}
+}}
+
+export const Omoikane = async ({{ $, client, directory }}) => ({{
+  event: async ({{ event }}) => {{
+    const id = event?.properties?.sessionID ?? event?.properties?.info?.id
+    if (!id) return
+    const ahora = Date.now()
+    if (event.type === "session.compacted" || (event.type === "session.idle" && ahora - (apartadas.get(id) ?? 0) > 10 * 60 * 1000)) {{
+      apartadas.set(id, ahora)
+      await apartar($, client, directory, id)
+    }}
+  }},
   "chat.message": async (input, output) => {{
     const prompt = output.parts.filter((p) => p.type === "text" && !p.synthetic).map((p) => p.text).join(" ")
     if (!prompt.trim()) return
