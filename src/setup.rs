@@ -71,6 +71,46 @@ pub fn plan() -> Result<Vec<Paso>> {
     Ok(pasos)
 }
 
+/// `~/.claude/settings.json` (o `CLAUDE_CONFIG_DIR`).
+fn ajustes_claude() -> Option<std::path::PathBuf> {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).or_else(|| dirs::home_dir().map(|h| h.join(".claude")))?;
+    Some(dir.join("settings.json"))
+}
+
+/// Enciende o apaga la actualización automática del marketplace en Claude Code: `autoUpdate` en su
+/// entrada de `extraKnownMarketplaces` (Claude Code la deja apagada por defecto para los marketplaces
+/// que no son de Anthropic). Si no está la entrada, la crea con el repositorio de GitHub.
+pub fn auto_update(on: bool) -> Result<bool> {
+    let Some(f) = ajustes_claude() else { return Ok(false) };
+    let texto = std::fs::read_to_string(&f).unwrap_or_else(|_| "{}".into());
+    let mut j: serde_json::Value = serde_json::from_str(texto.trim_start_matches('\u{feff}')).with_context(|| f.display().to_string())?;
+    if !j["extraKnownMarketplaces"].is_object() {
+        j["extraKnownMarketplaces"] = serde_json::json!({});
+    }
+    let m = &mut j["extraKnownMarketplaces"][MARKETPLACE];
+    if !m.is_object() {
+        *m = serde_json::json!({ "source": { "source": "github", "repo": MARKETPLACE_REPO } });
+    }
+    if m["autoUpdate"] == on {
+        return Ok(false);
+    }
+    m["autoUpdate"] = serde_json::json!(on);
+    let copia = f.with_file_name("settings.json.antes-de-omoikane");
+    if f.exists() && !copia.exists() {
+        std::fs::copy(&f, &copia)?;
+    }
+    if let Some(d) = f.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(&f, serde_json::to_string_pretty(&j)? + "\n")?;
+    Ok(true)
+}
+
+/// Si el plugin de Omoikane está instalado en Claude Code.
+pub fn instalado() -> bool {
+    claude(&["plugin", "list"]).is_ok_and(|o| texto(&o).contains(&format!("{PLUGIN}@")))
+}
+
 pub fn ejecutar(pasos: &[Paso]) -> Result<()> {
     for p in pasos {
         let args: Vec<&str> = p.args.iter().map(String::as_str).collect();

@@ -1211,6 +1211,30 @@ pub fn programar(ruta_db: &Path) {
     }
 }
 
+/// Lanza `omoi <args>` aparte, sin ventana, sin esperarlo y sin que se quede con las salidas de quien
+/// llama (un hook las lee hasta el final). Lo usa la actualización diaria (`actualizar`).
+pub(crate) fn lanzar_aparte(args: &[&str]) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut c = std::process::Command::new(exe);
+    c.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(CREATE_NO_WINDOW | 0x0000_0200);
+        no_heredar_salidas();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    if let Ok(mut hijo) = c.spawn() {
+        std::thread::spawn(move || {
+            let _ = hijo.wait();
+        });
+    }
+}
+
 /// En Windows un proceso hijo hereda todos los handles heredables, también la entrada y las salidas
 /// de este proceso aunque al hijo se le den otras. Si quien llamó a `omoi` (un hook, un agente) lee
 /// esas salidas, esperaría a que acabe la sincronización en segundo plano. Este proceso termina

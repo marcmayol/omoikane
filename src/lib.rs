@@ -1,5 +1,6 @@
 //! Omoikane: memoria local para agentes de IA.
 
+pub mod actualizar;
 pub mod agentes;
 pub mod buscar;
 pub mod candidatas;

@@ -662,6 +662,20 @@ La 7.2 solo lee la conversación de Claude Code. Lo que ofrece cada agente segú
 - Pruebas: una conversación de muestra por formato, construida con la forma documentada (en este PC no hay conversaciones reales de estos agentes: los JSONL de `~/.gemini` son de una extensión de VS Code y solo tienen la cabecera), y tests de `setup` para cada agente.
 - Fuera: Antigravity (protobuf), y los agentes sin hooks.
 
+### 7.6 · 0.14.0 · se actualiza solo ✅ (29-oct-2026)
+El caso: al publicar, nadie que ya tenga Omoikane recibe la versión nueva. Claude Code deja apagada la actualización automática de los marketplaces que no son de Anthropic, y los demás agentes usan el binario que dejó `omoi setup`, que no se actualiza solo (y las funciones con hooks nuevos, como la 7.5, piden además volver a hacer `setup`).
+
+**Hecho así** (`src/actualizar.rs`, `omoi upgrade`):
+- La primera ejecución de `omoi` cada día (hook, MCP, CLI) lanza aparte `omoi upgrade --background` (sin ventana, sin quedarse con las salidas del hook) y no espera. Pregunta a GitHub la última Release; si es más nueva **y de la misma versión mayor**, baja `SHA256SUMS`, `SHA256SUMS.sig` y el paquete de su sistema.
+- **Firma:** la Release firma `SHA256SUMS` con una clave Ed25519 propia (secreto `OMOIKANE_FIRMA` en GitHub; la privada fuera del repositorio, en el PC de Marc); la pública va dentro de `omoi` y se comprueba con `ring`, que ya venía con rustls (ninguna dependencia nueva). Sin firma o con una firma que no cuadra, no se instala; sin el secreto, el flujo de la Release falla en vez de publicar sin firmar.
+- Desempaqueta con el `tar` del sistema (en Windows el de System32, que abre zip), comprueba que el nuevo dice ser la versión esperada y lo pone en su sitio: en Windows renombrando el que está en uso (`omoi.viejo-<versión>-<hora>.exe`, que se borra en una ejecución posterior) y volviendo atrás si falla.
+- Luego ejecuta el **nuevo** (`omoi upgrade --after <anterior>`), que añade lo que traiga a los agentes que ya tenían Omoikane (`agentes::configurados`: su fichero de MCP lo nombra) y, si el usuario dijo que sí, la actualización automática del plugin en Claude Code. La sesión siguiente lo avisa una vez.
+- **No se toca:** si se apaga (`omoi upgrade --off`, o `OMOIKANE_AUTO_UPDATE=0`), si lo gestiona otro (cargo, Homebrew, Scoop, Nix, snap, `/usr/bin`, o un `target/` de `cargo build`), ni en las compilaciones de depuración (salvo contra el servidor de las pruebas).
+- **Antes de migrar** una base con datos a un esquema nuevo se guarda una copia (`<base>.antes-del-esquema-N`, con `VACUUM INTO`): una versión vieja no abre la nueva.
+- `omoi setup claude` **pregunta** si se quiere que Omoikane se actualice solo (Intro = sí; `--yes` o sin terminal, sí; `--no-auto-update`, no; en los instaladores, `OMOIKANE_NO_AUTO_UPDATE=1`). La respuesta vale para el binario y para el plugin (`"autoUpdate": true` en la entrada `drac` de `extraKnownMarketplaces` de `~/.claude/settings.json`). El plugin acepta un `omoi` igual o más nuevo que él (antes, uno más nuevo lo cambiaba por el suyo y deshacía la actualización).
+- **Probado de punta a punta** con la clave real y un servidor local que hacía de GitHub: un 0.13.0 instalado fuera de `target/` vio la 0.13.1, se negó con la firma manipulada, se actualizó con la buena y, por el camino diario en segundo plano, lo hizo en 2 s y añadió a Codex los hooks de cierre apuntando al binario nuevo. La copia antes de migrar, probada con una base suya en el esquema 5. Un primer intento tocó los ajustes reales de Claude Code (no aislaba `CLAUDE_CONFIG_DIR`): se deshizo y desde entonces solo se tocan con un sí explícito.
+- Las versiones hasta la 0.13.0 no tienen firma ni actualización: quien las tenga actualiza a mano una vez, y desde la 0.14.0 ya va solo.
+
 ### Para cada versión
 Probar en el PC y en marc-server; el visor, con capturas en oscuro, en claro y a 400 px; tests y clippy en los tres sistemas; publicar con la receta de 7.3 en cuanto exista; PLAN y README al día.
 

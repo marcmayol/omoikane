@@ -100,12 +100,13 @@ async function prepare($: any): Promise<Listo | undefined> {
     const carpeta = home + '/.omoikane/bin'
     const propio = carpeta + (windows ? '/omoi.exe' : '/omoi')
 
-    // OMOIKANE_BIN wins; then our own copy, or an `omoi` on the PATH, if it's this version.
+    // OMOIKANE_BIN wins; then our own copy, or an `omoi` on the PATH, if it's this version or newer
+    // (omoi updates itself once a day: an older plugin must not put the old binary back).
     const elegido = (await $.env.get('OMOIKANE_BIN')) ?? undefined
     let omoi: string | undefined = elegido
     if (omoi === undefined) {
       for (const c of [propio, 'omoi']) {
-        if ((await versionOf($, c)) === version) {
+        if (notOlder(await versionOf($, c), version)) {
           omoi = c
           break
         }
@@ -114,7 +115,7 @@ async function prepare($: any): Promise<Listo | undefined> {
     if (omoi === undefined) {
       $.ui.toast(`Omoikane: installing omoi ${version}…`)
       await install($, version, windows, carpeta)
-      if ((await versionOf($, propio)) !== version) throw new Error(`the installed omoi isn't ${version}`)
+      if (!notOlder(await versionOf($, propio), version)) throw new Error(`the installed omoi isn't ${version}`)
       omoi = propio
       $.ui.toast(`Omoikane: omoi ${version} installed`)
     }
@@ -138,6 +139,14 @@ async function prepare($: any): Promise<Listo | undefined> {
     $.ui.toast(`Omoikane couldn't start: ${String((err as Error)?.message ?? err).slice(0, 200)}`, { timeoutMs: 15_000 })
     return undefined
   }
+}
+
+// Whether `v` is `version` or newer within the same major version (`X.Y.Z`).
+function notOlder(v: string | undefined, version: string): boolean {
+  if (v === undefined) return false
+  const a = v.split('.').map(Number), b = version.split('.').map(Number)
+  if (a.length !== 3 || b.length !== 3 || a.some(isNaN) || b.some(isNaN) || a[0] !== b[0]) return v === version
+  return a[1] > b[1] || (a[1] === b[1] && a[2] >= b[2])
 }
 
 async function versionOf($: any, omoi: string): Promise<string | undefined> {

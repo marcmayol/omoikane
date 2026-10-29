@@ -67,13 +67,23 @@ jobs:
         with:
           path: paquetes
           merge-multiple: true
-      - name: Sumas y Release
+      - name: Sumas, firma y Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # La clave privada Ed25519 (PEM) con la que omoi comprueba lo que instala al actualizarse solo.
+          OMOIKANE_FIRMA: ${{ secrets.OMOIKANE_FIRMA }}
         run: |
           cd paquetes
           sha256sum omoi-* > SHA256SUMS
           cat SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" omoi-* SHA256SUMS \
+          # Sin firma no hay Release: omoi se niega a instalar una que no la tenga.
+          test -n "$OMOIKANE_FIRMA" || { echo "falta el secreto OMOIKANE_FIRMA"; exit 1; }
+          umask 077
+          printf '%s\n' "$OMOIKANE_FIRMA" > "$RUNNER_TEMP/firma.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/firma.pem" -rawin -in SHA256SUMS -out SHA256SUMS.sig
+          openssl pkey -in "$RUNNER_TEMP/firma.pem" -pubout -out "$RUNNER_TEMP/publica.pem"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/publica.pem" -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+          rm -f "$RUNNER_TEMP/firma.pem"
+          gh release create "$GITHUB_REF_NAME" omoi-* SHA256SUMS SHA256SUMS.sig \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "Omoikane $GITHUB_REF_NAME" \
             --notes "Install: see the README (one line on Windows, Linux and macOS). Binaries for Windows x64, Linux x64/ARM64 (glibc ≥ 2.35) and macOS Apple Silicon/Intel, with SHA256SUMS."

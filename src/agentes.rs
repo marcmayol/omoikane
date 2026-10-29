@@ -456,6 +456,36 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
     Ok(v)
 }
 
+/// Los agentes que ya tienen Omoikane en este equipo: su fichero de MCP lo nombra. La actualización
+/// automática les añade lo que traiga la versión nueva (7.6).
+pub fn configurados() -> Vec<&'static str> {
+    let Ok(h) = casa() else { return Vec::new() };
+    let opencode = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(x) if std::env::var_os("OMOIKANE_SETUP_HOME").is_none() => PathBuf::from(x).join("opencode"),
+        _ => h.join(".config").join("opencode"),
+    };
+    let ficheros: [(&str, Vec<PathBuf>); 13] = [
+        ("codex", vec![h.join(".codex").join("config.toml")]),
+        ("gemini", vec![h.join(".gemini").join("settings.json")]),
+        ("cursor", vec![h.join(".cursor").join("mcp.json")]),
+        ("opencode", vec![opencode.join("opencode.json")]),
+        ("qwen", vec![h.join(".qwen").join("settings.json")]),
+        ("kiro", vec![h.join(".kiro").join("settings").join("mcp.json")]),
+        ("copilot", vec![h.join(".copilot").join("mcp-config.json")]),
+        ("windsurf", vec![h.join(".codeium").join("windsurf").join("mcp_config.json"), config_sistema(&h).join("devin").join("mcp_config.json")]),
+        ("antigravity", vec![h.join(".gemini").join("config").join("mcp_config.json")]),
+        ("kimi", vec![h.join(".kimi-code").join("mcp.json")]),
+        ("pi", vec![h.join(".pi").join("agent").join("mcp.json")]),
+        ("amp", vec![h.join(".config").join("amp").join("settings.json")]),
+        ("kilo", vec![h.join(".config").join("kilo").join("kilo.jsonc")]),
+    ];
+    ficheros
+        .into_iter()
+        .filter(|(_, fs)| fs.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("omoikane"))))
+        .map(|(a, _)| a)
+        .collect()
+}
+
 /// Registra el servidor MCP como `entrada` bajo `raiz` (`mcpServers`, `mcp`, `amp.mcpServers`…).
 fn mcp_en(v: &mut Vec<Cambio>, fichero: PathBuf, raiz: &str, entrada: Value) -> Result<()> {
     let raiz = raiz.to_string();

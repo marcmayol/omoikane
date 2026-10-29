@@ -7,6 +7,7 @@
 #   OMOIKANE_VERSION       a specific version, e.g. v0.1.0 (default: the latest)
 #   OMOIKANE_NO_MODEL=1    don't download the model (~150 MB; without it, search by words only)
 #   OMOIKANE_NO_SETUP=1    don't touch Claude Code
+#   OMOIKANE_NO_AUTO_UPDATE=1  don't turn on the automatic update (omoi's daily one and the plugin's)
 set -eu
 
 repo="marcmayol/omoikane"
@@ -61,5 +62,6 @@ if [ -z "${OMOIKANE_NO_MODEL:-}" ]; then
   "$dir/omoi" model install || echo "omoikane: couldn't install the model; try again with: omoi model install" >&2
 fi
 if [ -z "${OMOIKANE_NO_SETUP:-}" ]; then
-  "$dir/omoi" setup claude --yes || echo "omoikane: Claude Code isn't set up yet; once you have it, run: omoi setup claude" >&2
+  if [ -n "${OMOIKANE_NO_AUTO_UPDATE:-}" ]; then sin="--no-auto-update"; else sin=""; fi
+  "$dir/omoi" setup claude --yes $sin || echo "omoikane: Claude Code isn't set up yet; once you have it, run: omoi setup claude" >&2
 fi

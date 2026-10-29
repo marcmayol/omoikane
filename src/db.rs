@@ -59,6 +59,17 @@ fn migrar(db: &mut Connection) -> Result<()> {
     if version(db)? == VERSION_ESQUEMA {
         return Ok(());
     }
+    // Antes de migrar una base que ya tenía datos, una copia: una versión vieja no abre la nueva.
+    let antes = version(db)?;
+    if antes > 0
+        && antes < VERSION_ESQUEMA
+        && let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(String::from)
+    {
+        let copia = format!("{ruta}.antes-del-esquema-{VERSION_ESQUEMA}");
+        if !std::path::Path::new(&copia).exists() {
+            let _ = db.execute("VACUUM INTO ?1", [&copia]);
+        }
+    }
     // IMMEDIATE: si dos procesos abren una base nueva a la vez, solo uno crea el esquema.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let v = version(&tx)?;
