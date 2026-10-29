@@ -484,6 +484,16 @@ Las mejoras que salieron de la comparación, salvo sincronizar entre equipos (ap
 
 Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el git del usuario. Coste 0.
 
+### 0.9.0 · Fase 6 hecha (29-oct-2026)
+- **Sincronización por git** (`src/sync.rs`, `src/reloj.rs`, esquema 5): `omoi sync init <url>` o `--create <nombre>` (repositorio privado con `gh`/`glab`), `join <código>` (o `join -` por la entrada estándar, `--url` para llegar por otra vía), `code`, `status`, `restore`, `off`; estado también en `doctor` y en la web (`/api/sync`). Preguntas en `init`/`join` con resumen de lo que se sube; sin terminal exigen `--yes`.
+- **En el repositorio:** `.gitattributes`, `omoikane.check` (comprueba la clave; `init` se niega en un repositorio ya usado), `global/`, `p-<hash>/` por proyecto y `olvidos/`, un fichero por equipo, líneas ordenadas y **cifradas con AES-SIV** (deterministas: una línea que no cambia queda igual). Nombres de carpeta opacos.
+- **Juntar:** reloj lógico híbrido comparado por partes (los sellos remotos de más de 1 h en el futuro no adelantan el reloj); la versión local anterior queda en el historial `sync: <equipo>`; olvidos con marca que no resucitan, y lo que olvida otro equipo se puede recuperar (`omoi sync restore`). Líneas ilegibles o inválidas se saltan y se avisan, sin parar la sincronización. El filtro de qué se comparte vale también para lo que llega.
+- **Automático para todos los agentes:** tras cada escritura (CLI, MCP, `omoi tool`, HTTP, TUI) `omoi` lanza la sincronización en segundo plano (3 s para juntar cambios, un proceso por equipo con cerrojo, sin ventanas en Windows, git sin hooks del usuario y con límite de tiempo); al empezar sesión, una bajada en segundo plano; aviso si lleva más de 1 h fallando. Guardar con la sincronización activa: 33 ms (28 sin ella).
+- **Autor** por memoria (sí por defecto); lo de otra persona sale `[by Ana]` en el recall y con su autor en la web.
+- **`/omoikane` en 9 agentes más** (Gemini, Qwen, Codex, Cursor, OpenCode, Kiro, Windsurf, Pi, Kilo; comprobado en la documentación de cada uno); Copilot, Kimi, Amp y Antigravity no tienen órdenes de usuario documentadas.
+- **Pequeños:** rutas con espacios, rutas relativas al repositorio deducido, el agente en «Origen» (`mcp:<cliente>`), verde de «preference» con contraste AA en modo claro.
+- **Revisado dos veces por otra IA** (9 problemas en la primera pasada, 10 en la segunda; arreglados) y probado de verdad entre el PC (Windows, HTTPS) y marc-server (Ubuntu, SSH con clave de despliegue) a través de un repositorio privado de GitHub.
+
 ### Memoria compartida por git (decisiones de Marc, 28-oct-2026)
 - **Un repositorio solo para el conocimiento**, nunca el del código. Cualquier remoto git (GitHub, GitLab, Codeberg, un Gitea de empresa, una carpeta). Credenciales: las de git del usuario (SSH o credential helper); Omoikane no guarda tokens.
 - **Configurar:** `omoi sync init <url>` (o `--create` con `gh`/`glab` si están). La configuración **pregunta**: qué se comparte (por tipo y proyecto; las preferencias, personales salvo que se diga), si cada línea lleva autor (**sí por defecto**) y qué se sube de lo que ya existe (con un resumen: «102 globales y 29 de proyectos»). Apagado hasta hacer `init`. Un segundo equipo o un compañero: `omoi sync join <url> <código>`.
@@ -506,10 +516,10 @@ Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el 
 - Mismas reglas que el resto de `setup`: idempotente, copia `.antes-de-omoikane`, `--dry-run`, y un test por agente con `OMOIKANE_SETUP_HOME`.
 - De paso: el campo «Origen» de la web dice `mcp` para todo lo que llega por MCP; estaría bien saber qué agente lo guardó (`clientInfo` del MCP).
 
-### Otros pendientes de la Fase 6
-- Rutas con espacios en el texto de una memoria: hoy no se reconoce su proyecto y se guarda como global.
+### Otros pendientes de la Fase 6 (hechos en la 0.9.0)
+- Rutas con espacios en el texto de una memoria.
 - Al deducir el proyecto por una ruta absoluta, guardarla relativa al repositorio.
-- Ver la web en modo claro (solo se comprobó en oscuro).
+- Ver la web en modo claro.
 
 ### Sincronizar entre equipos · primer prototipo (28-oct-2026, base de la Fase 6)
 Se escribió y probó antes de la Fase 6; el código está en la rama local `prueba-sync` y no en `master`. Su diseño:
