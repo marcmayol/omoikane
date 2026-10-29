@@ -409,7 +409,7 @@ Similitud semántica de muestra (int8), con «fallo de login en la pantalla de a
   - `omoi setup claude [--yes] [--dry-run]`: añade el marketplace `drac` (o lo actualiza si ya estaba, por si es una copia anterior al plugin) e instala `omoikane@drac`; si ya está, no hace nada. Pregunta en una terminal; fuera de ella, exige `--yes`.
 - [x] `release.yml`: con un tag `v*`, binarios para Windows x64, Linux x64 y ARM64 (compilados en Ubuntu 22.04: glibc 2.35) y macOS ARM e Intel; cada uno arranca y pasa `doctor` en su runner; `SHA256SUMS`. A mano (`workflow_dispatch`) solo compila. Paquetes de 4,1-4,6 MB.
 - [x] `omoi … | head` ya no revienta en Unix (SIGPIPE).
-- Sin hacer, a propósito: publicar en crates.io (el instalador y `cargo install --git` cubren lo mismo; se decide aparte) y el GIF del README.
+- Sin hacer, a propósito: el GIF del README. Publicar en crates.io se decidió después: está desde la 0.2.0 (`cargo install omoikane`).
 - **Hecho**: Release [`v0.1.0`](https://github.com/marcmayol/omoikane/releases/tag/v0.1.0) publicada con los cinco binarios. Probado ejecutando los instaladores desde la URL pública de GitHub, en carpetas temporales: Windows, 17 s (binario con su suma, modelo y `setup`, que vio que el plugin ya estaba); Ubuntu 24.04, 25 s (binario, modelo, guardar y buscar). macOS solo en la CI (el binario arranca y pasa `doctor`): no hay un Mac a mano para probar el instalador.
 
 ### Pruebas a fondo en el PC y versión 0.2.0 (28-oct-2026)
@@ -488,6 +488,7 @@ Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el 
 - El caso: en una sesión nueva, «vamos a seguir con el tema de la impresión 3D»; el agente lanzó `recent`, búsquedas, leyó carpetas y consultó la impresora para acabar preguntando qué proyecto. No había ninguna nota del DXC2 y el inicio de sesión no decía en qué se había trabajado.
 - Al empezar sesión se inyecta **«Last worked on»**: las 5 memorias cambiadas más recientemente en el ámbito (todos los proyectos desde la carpeta del usuario), una línea cada una con fecha, tipo, proyecto y título, sin contenido; no cuentan como inyectadas, así que su contenido aún puede llegar con el recall.
 - Instrucción nueva (inicio de sesión y MCP): si la petición de continuar es ambigua, como mucho una búsqueda y, si no lo aclara, preguntar en vez de explorar; al terminar un trabajo o al cerrar la sesión, guardar en qué punto se quedó (hecho y siguiente paso). El recordatorio de «guarda algo» lo pide también.
+- **7.º conjunto a ciegas (29-oct-2026), solo para comprobar:** 100 preguntas nuevas (60 paráfrasis, 40 de un dato del medio o del final de la nota) sobre 97 de las 130 notas, escritas por otro agente sin ver ningún buscador ni los conjuntos anteriores. Nada se ajustó con ellas. Omoikane 0.9.1: top-1 90 %, top-3 97 %, top-10 99 %, MRR 0,934; engram: 75 / 87 / 96 %, MRR 0,820. Paráfrasis 86,7 % frente a 70 % en top-1. Mediana 43 ms frente a 173. Con las 526 de ajuste la 0.9.0 daba 87,3 % en top-1, así que no hay sobreajuste. La única que no sale en el top-10 («comparar dos versiones para saber cuál es más rápida sin engañarnos» → la nota de medir intercalado) es otro hueco de vocabulario; las demás que no quedan primeras están en 2.º o 3.er puesto, menos dos de detalle (4.º y 6.º).
 
 ### 0.9.0 · Fase 6 hecha (29-oct-2026)
 - **Sincronización por git** (`src/sync.rs`, `src/reloj.rs`, esquema 5): `omoi sync init <url>` o `--create <nombre>` (repositorio privado con `gh`/`glab`), `join <código>` (o `join -` por la entrada estándar, `--url` para llegar por otra vía), `code`, `status`, `restore`, `off`; estado también en `doctor` y en la web (`/api/sync`). Preguntas en `init`/`join` con resumen de lo que se sube; sin terminal exigen `--yes`.
@@ -512,14 +513,14 @@ Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el 
 - **Proyectos sin remoto git:** no se mezclan entre personas (dos carpetas `web` de dos personas no son el mismo proyecto); entre los equipos de una misma persona, por el nombre de la carpeta.
 - **Pruebas:** entre dos equipos de verdad, y en la CI con repositorios desnudos locales en Windows, Linux y macOS. **Documentación** y aviso de privacidad al activarlo.
 - **Más adelante, cuando merezca la pena un cloud:** límites de tamaño y repositorios de cientos de personas.
-- **Base técnica:** el prototipo de abajo (rama local `prueba-sync`), con sus tres pendientes.
+- **Base técnica:** el prototipo de abajo, con sus tres pendientes (resueltos en la 0.9.0).
 
-### `/omoikane` en los demás agentes
-- Hoy `omoi setup <agente>` pone MCP, hooks del recall e instrucciones, pero ninguna orden: `/omoikane` solo existe en Claude Code (la registra el mod).
+### `/omoikane` en los demás agentes (hecho en la 0.9.0, ver arriba)
+- Antes de la 0.9.0 `omoi setup <agente>` pone MCP, hooks del recall e instrucciones, pero ninguna orden: `/omoikane` solo existe en Claude Code (la registra el mod).
 - Que `setup` cree también una orden `omoikane` en cada agente que las admita, con su formato. **Comprobar cada ruta y formato en la documentación de cada agente antes de escribirlo**; los candidatos: Gemini (`~/.gemini/commands/omoikane.toml`), Qwen (`~/.qwen/commands/omoikane.toml`), Codex (`~/.codex/prompts/omoikane.md`), Cursor (`.cursor/commands/omoikane.md`), OpenCode (`~/.config/opencode/command/omoikane.md`); Copilot, Windsurf, Kiro y los demás tienen prompt files, workflows o steering, cada uno a su manera.
 - En casi todos, una orden es un texto para el modelo, no un comando: la orden le pediría al agente ejecutar `omoi serve --open` con su herramienta de terminal (puede pedir permiso). Menos directo que el mod de Claude Code.
 - Mismas reglas que el resto de `setup`: idempotente, copia `.antes-de-omoikane`, `--dry-run`, y un test por agente con `OMOIKANE_SETUP_HOME`.
-- De paso: el campo «Origen» de la web dice `mcp` para todo lo que llega por MCP; estaría bien saber qué agente lo guardó (`clientInfo` del MCP).
+- De paso: el campo «Origen» de la web decía `mcp` para todo lo que llega por MCP; desde la 0.9.0 dice qué agente lo guardó (`mcp:<cliente>`, del `clientInfo` del MCP).
 
 ### Otros pendientes de la Fase 6 (hechos en la 0.9.0)
 - Rutas con espacios en el texto de una memoria.
@@ -527,7 +528,7 @@ Producto global: Omoikane no aloja nada y no depende de la red de nadie; usa el 
 - Ver la web en modo claro.
 
 ### Sincronizar entre equipos · primer prototipo (28-oct-2026, base de la Fase 6)
-Se escribió y probó antes de la Fase 6; el código está en la rama local `prueba-sync` y no en `master`. Su diseño:
+Se escribió y probó antes de la Fase 6 en una rama local, `prueba-sync` (último commit 6dc09ef), que se borró el 29-oct-2026: la Fase 6 lo rehízo en `master`. Su diseño:
 
 - **Sin servicio propio.** Cada equipo escribe su copia completa en `<carpeta>/<equipo>.jsonl` (una línea por memoria, más las marcas de borrado) y lee las de los demás. La carpeta puede ser un repositorio git (`omoi sync <carpeta> --git`: pull, juntar, commit y push; un repositorio privado hace de «nube»), Syncthing o una unidad de red. Como cada equipo solo escribe su fichero, nunca hay conflictos de edición en la carpeta.
 - **Nombre del equipo:** el del sistema más un sufijo fijo, guardado en `meta`.
@@ -535,8 +536,8 @@ Se escribió y probó antes de la Fase 6; el código está en la rama local `pru
 - **Olvidos:** `olvidar` deja una marca (`tombstone(id, deleted_at)`, esquema 5); las marcas viajan y se aplican antes que las memorias, así lo olvidado no resucita desde otro equipo. Si aquí se cambió después de que allí se olvidara, se queda.
 - **Proyectos:** se reconocen por el remoto `origin` de git normalizado (`git:github.com/dueño/repo`) o, si no hay, por el nombre de la carpeta: `D:\Omoikane` y `~/omoikane` son el mismo proyecto. También cuenta el proyecto de la carpeta desde la que se sincroniza, aunque aún no tenga memorias.
 - **Límites conocidos:** depende de que los relojes estén razonablemente en hora; si dos equipos cambian la misma memoria entre dos sincronizaciones, gana el más reciente y el otro cambio solo queda en el historial si era el local.
-- **Probado:** un test con dos bases en el mismo PC (nuevas con el mismo id y en la ruta propia del proyecto, cambio con historial, nada rebota, olvido que no resucita en ningún orden, un fichero por equipo) pasó a la primera. La prueba real PC (Windows) ↔ marc-server (Ubuntu), con bases temporales y un repositorio git desnudo en el servidor, también pasó: las 2 memorias llegaron con el mismo id, la del proyecto en la ruta del servidor (remoto por SSH en un lado y HTTPS en el otro), el cambio volvió con historial `sync: <equipo>` y el olvido viajó sin resucitar en varias pasadas. El código está en la rama local `prueba-sync`.
-- **Pendiente si se retoma:** (1) si git no tiene identidad (`user.name`/`user.email`), el commit falla y no se sube nada: avisar claro o firmar con una identidad propia de Omoikane; (2) con el repositorio vacío, el primer `pull` falla si la rama del clon no coincide con la del remoto: saltarse el pull cuando el remoto no tiene ramas; (3) recrear `tests/sync.rs`.
+- **Probado:** un test con dos bases en el mismo PC (nuevas con el mismo id y en la ruta propia del proyecto, cambio con historial, nada rebota, olvido que no resucita en ningún orden, un fichero por equipo) pasó a la primera. La prueba real PC (Windows) ↔ marc-server (Ubuntu), con bases temporales y un repositorio git desnudo en el servidor, también pasó: las 2 memorias llegaron con el mismo id, la del proyecto en la ruta del servidor (remoto por SSH en un lado y HTTPS en el otro), el cambio volvió con historial `sync: <equipo>` y el olvido viajó sin resucitar en varias pasadas.
+- **Pendientes del prototipo, resueltos en la 0.9.0:** (1) si git no tiene identidad (`user.name`/`user.email`), el commit falla y no se sube nada: avisar claro o firmar con una identidad propia de Omoikane; (2) con el repositorio vacío, el primer `pull` falla si la rama del clon no coincide con la del remoto: saltarse el pull cuando el remoto no tiene ramas; (3) recrear `tests/sync.rs`.
 - El plugin podría sincronizar solo al empezar cada sesión si se define `OMOIKANE_SYNC_DIR`.
 
 Después, si los datos lo piden: relaciones entre memorias, limpieza asistida de lo que nunca se recupera, un modelo de embeddings mejor para las paráfrasis.
