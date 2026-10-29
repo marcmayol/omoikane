@@ -24,6 +24,8 @@ Keep each memory short: one-line title, then what, why and where. Don't save wha
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
 If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
+If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
+When you finish a piece of work or the session winds down, save where it was left (what is done, what is next), so the next session can pick it up.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 

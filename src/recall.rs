@@ -53,7 +53,7 @@ pub const PREFIJO_MIN: usize = 5;
 pub const MENSAJES_ANTES_DE_RECORDAR: i64 = 10;
 pub const MINUTOS_ANTES_DE_RECORDAR: i64 = 15;
 pub const MINUTOS_ENTRE_RECORDATORIOS: i64 = 30;
-pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`. If not, ignore this.";
+pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, including where unfinished work was left (what is done, what is next). If not, ignore this.";
 
 /// `MAXIMO` y `RELATIVO_A_LA_MEJOR`, salvo al calibrar (`examples`, bancos de pruebas).
 fn maximo() -> usize {
@@ -390,10 +390,49 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push('\n');
         }
     }
+    // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
+    // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
+    let ultimas: Vec<Memoria> = memoria::recientes(db, &Ambito::de(project), None, RECIENTES + contexto.len())?
+        .into_iter()
+        .filter(|m| !contexto.iter().any(|c| c.id == m.id))
+        .take(RECIENTES)
+        .collect();
+    if !ultimas.is_empty() {
+        s.push_str("Last worked on (newest first; `get` an id for the whole memory):\n");
+        for m in &ultimas {
+            s.push_str(&linea_corta(m, project, propio.as_deref()));
+            s.push('\n');
+        }
+    }
+    s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids)?;
     Ok(Some(s))
+}
+
+/// Cuántas memorias recientes se enseñan al empezar la sesión.
+pub const RECIENTES: usize = 5;
+
+/// Qué hacer con una petición ambigua y cuándo dejar dicho en qué punto se quedó algo.
+const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember`.\n";
+
+/// Una memoria en una línea, sin contenido: fecha, tipo, proyecto si no es el de la sesión, título e id.
+fn linea_corta(m: &Memoria, project: &str, propio: Option<&str>) -> String {
+    let donde = if m.project.is_empty() {
+        " [global]".to_string()
+    } else if m.project != project {
+        let nombre = std::path::Path::new(&m.project).file_name().map_or(m.project.clone(), |n| n.to_string_lossy().into_owned());
+        format!(" [project {nombre}]")
+    } else {
+        String::new()
+    };
+    let de = match propio {
+        Some(yo) if !m.author.is_empty() && m.author != yo => format!(" [by {}]", m.author),
+        _ => String::new(),
+    };
+    let fecha = m.updated_at.get(..10).unwrap_or(&m.updated_at);
+    format!("- {fecha} [{}]{donde}{de} {} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
 }
 
 /// En cada mensaje: lo que tiene que ver con él y no se ha inyectado ya en esta sesión, o nada.
