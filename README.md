@@ -2,6 +2,8 @@
 
 # Omoikane
 
+*Your agent's eternal memory. It recalls on its own, in 20 ms.*
+
 **Local memory for AI coding agents. One binary, one SQLite file, and the agent doesn't have to remember to look things up.**
 
 [Español](README.es.md)
