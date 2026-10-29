@@ -236,6 +236,10 @@ fn cifrado_determinista_y_clave_equivocada() {
     let antes = p.ficheros_compartidos();
     let todo: String = antes.iter().map(|(_, t)| t.as_str()).collect();
     assert!(!todo.contains("wifi") && !todo.contains("cajón"), "en el remoto no hay nada en claro");
+    assert!(!antes.iter().any(|(f, _)| f.contains("pc-a") || f.contains("pc-b")), "ni el nombre de los equipos: {antes:?}");
+    let autores = p.git(&p.dir.join("compartida.git"), &["log", "--all", "--format=%an %s"]);
+    let autores = String::from_utf8_lossy(&autores.stdout);
+    assert!(autores.lines().all(|l| l == "omoikane omoikane"), "commits sin nombres: {autores}");
     // Otro cambio no toca la línea de la memoria anterior.
     a.guardar(&a.dir, "fact", "La impresora está en la planta 2", "Junto a la máquina de café.", &["--global"]);
     a.sync();
@@ -318,7 +322,7 @@ fn proyectos_sin_remoto_se_juntan_por_persona() {
     // Ana, con su propia carpeta `web`: no es el suyo.
     let c = p.equipo("pc-ana");
     let web_c = c.proyecto("web", None);
-    c.ok_en(&web_c, &["sync", "join", &codigo, "--yes", "--author", "Ana"], &[]);
+    c.ok_en(&web_c, &["sync", "join", &codigo, "--yes", "--author", "Ana", "--another-person"], &[]);
     let en_c = c.get(&id).unwrap();
     assert!(!en_c["project"].as_str().unwrap().contains("pc-ana"), "{en_c}");
 }
@@ -452,7 +456,7 @@ fn una_linea_ilegible_se_salta_sin_parar() {
     let r = a.sync();
     assert_eq!(r["ilegibles"], 1, "{r}");
     assert!(a.get(&id).is_some(), "lo demás llega igual");
-    assert!(a.ok(&["sync", "status"]).contains("couldn't be decrypted"));
+    assert!(a.ok(&["sync", "status"]).contains("couldn't be read"));
     // Y A sigue subiendo lo suyo.
     let de_a = a.guardar(&a.dir, "fact", "La VPN cambia de puerto", "Ahora el 51820.", &["--global"]);
     a.sync();
@@ -572,4 +576,94 @@ fn ficheros_con_el_nombre_de_la_base() {
         assert!(a.dir.join(f).exists(), "{f}");
     }
     assert!(!a.dir.join("sync.json").exists() && !a.dir.join("sync").exists());
+}
+
+/// La clave de un código de `omoi sync code`.
+fn clave_del_codigo(codigo: &str) -> Vec<u8> {
+    use base64::Engine;
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(codigo.trim().strip_prefix("omoi1.").unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    let h = v["key"].as_str().unwrap();
+    (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
+}
+
+/// Una línea cifrada como las de Omoikane, con lo que se quiera dentro.
+fn cifrar_linea(clave: &[u8], json: &serde_json::Value) -> String {
+    use aes_siv::KeyInit;
+    use base64::Engine;
+    let c = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().encrypt([b"omoikane-sync-v1".as_slice()], json.to_string().as_bytes()).unwrap();
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)
+}
+
+#[test]
+fn una_linea_no_valida_se_salta_y_el_aviso_dura_hasta_que_se_arregla() {
+    let p = Prueba::nueva("novalida");
+    let (a, b) = dos(&p, &[], &[]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    let memoria = |id: &str, titulo: &str| {
+        serde_json::json!({
+            "type": "memory", "id": id, "project_key": "", "project_path": "", "kind": "fact",
+            "title": titulo, "content": "algo", "created_at": "2026-10-29T00:00:00.000Z",
+            "updated_at": "2026-10-29T00:00:00.000Z", "hlc": "1761696000000-0000000000-x"
+        })
+    };
+    let malas = [cifrar_linea(&clave, &memoria("01M62EWVHRXM0000000000ABCD", "")), cifrar_linea(&clave, &memoria("AB", "Id corto"))];
+    p.subir_a_mano("global/intruso.jsonl", &(malas.join("\n") + "\n"));
+    let id = b.guardar(&b.dir, "fact", "El backup corre a las cuatro", "Cada noche.", &["--global"]);
+    b.sync();
+    let r = a.sync();
+    assert_eq!(r["ilegibles"], 2, "{r}");
+    assert!(a.get(&id).is_some(), "lo demás llega igual");
+    // La siguiente no vuelve a leer ese fichero (el punto de lectura avanzó), pero el aviso sigue.
+    let r = a.sync();
+    assert_eq!(r["ilegibles"], 0, "{r}");
+    assert!(a.ok(&["sync", "status"]).contains("couldn't be read"));
+    // Cuando el fichero se arregla y se vuelve a leer, el aviso se va.
+    p.subir_a_mano("global/intruso.jsonl", "");
+    a.sync();
+    assert!(!a.ok(&["sync", "status"]).contains("couldn't be read"), "{}", a.ok(&["sync", "status"]));
+}
+
+#[test]
+fn dos_proyectos_desconocidos_con_la_misma_ruta_no_se_mezclan() {
+    let p = Prueba::nueva("misma-ruta");
+    let a = p.equipo("pc-a");
+    let c = p.equipo("pc-c");
+    a.ok(&["sync", "init", &p.url(), "--yes"]);
+    let codigo = a.ok(&["sync", "code"]).trim().to_string();
+    c.ok(&["sync", "join", &codigo, "--yes"]);
+    // La misma carpeta (como `/workspace` en dos contenedores) con dos repositorios distintos.
+    let ws = p.dir.join("workspace");
+    std::fs::create_dir_all(ws.join(".git")).unwrap();
+    let remoto = |r: &str| std::fs::write(ws.join(".git").join("config"), format!("[remote \"origin\"]\n\turl = {r}\n")).unwrap();
+    remoto("git@github.com:a/uno.git");
+    let de_uno = a.guardar(&ws, "fact", "Uno usa Postgres", "Postgres 16.", &[]);
+    a.sync();
+    remoto("git@github.com:a/dos.git");
+    let de_dos = c.guardar(&ws, "fact", "Dos usa SQLite", "SQLite 3.46.", &[]);
+    c.sync();
+    // B no tiene esa carpeta: las dos claves llegan con la misma ruta de origen.
+    std::fs::remove_dir_all(&ws).unwrap();
+    let b = p.equipo("pc-b");
+    b.ok(&["sync", "join", &codigo, "--yes"]);
+    let (pu, pd) = (b.get(&de_uno).unwrap()["project"].clone(), b.get(&de_dos).unwrap()["project"].clone());
+    assert_ne!(pu, pd, "cada repositorio en su proyecto");
+    // Y al volver a sincronizar (B sube las dos con su clave), siguen separadas.
+    b.sync();
+    b.sync();
+    assert_ne!(b.get(&de_uno).unwrap()["project"], b.get(&de_dos).unwrap()["project"]);
+}
+
+#[test]
+fn los_equipos_de_una_persona_sin_nombre_juntan_sus_proyectos_sin_remoto() {
+    let p = Prueba::nueva("sin-nombre");
+    // Sin autor y sin `git user.name` (la configuración global de git de la prueba está vacía).
+    let (a, b) = dos(&p, &["--no-author"], &["--no-author"]);
+    let web_a = a.proyecto("web", None);
+    let id = a.guardar(&web_a, "fact", "La web usa Astro", "Astro 5.", &[]);
+    a.sync();
+    let web_b = b.proyecto("web", None);
+    b.ok_en(&web_b, &["sync"], &[]);
+    let en_b = b.get(&id).unwrap();
+    assert_eq!(en_b["project"].as_str().unwrap(), web_b.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\"), "{en_b}");
 }

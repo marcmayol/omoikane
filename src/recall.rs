@@ -338,7 +338,7 @@ fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
         Some(yo) if m.author == yo => String::new(),
         _ => format!(" [by {}]", m.author),
     };
-    format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, &m.id[..12])
+    format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
 }
 
 /// Al empezar la sesión (o tras compactar): el contexto que el agente debe tener siempre.
