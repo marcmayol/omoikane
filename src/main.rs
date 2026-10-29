@@ -259,6 +259,10 @@ enum AccionSync {
         /// Reach the same repository by another URL (for example SSH here and HTTPS on the other computer).
         #[arg(long)]
         url: Option<String>,
+        /// This computer belongs to another person (a teammate): their projects without a git remote
+        /// stay separate from the inviter's. By default a joining computer is the inviter's own.
+        #[arg(long)]
+        another_person: bool,
         #[command(flatten)]
         eleccion: OpcionesSync,
     },
@@ -757,7 +761,7 @@ fn json(v: &impl serde::Serialize) -> Result<()> {
 
 /// Lo que enseña la CLI del id: 10 caracteres de tiempo y 2 aleatorios. `get` acepta este principio.
 fn corto(id: &str) -> &str {
-    &id[..id.len().min(12)]
+    id.char_indices().nth(12).map_or(id, |(i, _)| &id[..i])
 }
 
 fn una_linea(s: &str, max: usize) -> String {
@@ -1060,7 +1064,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 "Sincronización configurada. Para añadir otro equipo: `omoi sync code` aquí y `omoi sync join <código>` allí."
             ))
         }
-        Some(AccionSync::Join { codigo, url: otra_url, eleccion }) => {
+        Some(AccionSync::Join { codigo, url: otra_url, another_person, eleccion }) => {
             let mut db = abrir(c)?;
             if sync::leer_config(&ruta)?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync off` para empezar de nuevo)"));
@@ -1072,10 +1076,12 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             } else {
                 codigo
             };
-            let (url, clave) = sync::leer_codigo(&codigo)?;
+            let sync::Codigo { url, clave, persona } = sync::leer_codigo(&codigo)?;
             let url = otra_url.unwrap_or(url);
             let e = elegir(&eleccion)?;
-            let config = sync::config_de(&url, &e);
+            // Por defecto, otro equipo de la misma persona: su persona, para que los proyectos sin
+            // remoto git se junten aunque cada equipo lleve otro nombre de autor.
+            let config = sync::config_con_persona(&url, &e, if another_person { None } else { persona.as_deref() });
             if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
                 return Ok(());
             }
@@ -1284,6 +1290,9 @@ fn en_espanol(c: Command) -> Command {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
                     .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code` («-» lo lee de la entrada estándar, para que no quede en el historial de la terminal).").value_name("CÓDIGO"))
                     .mut_arg("url", |a| a.help("Llegar al mismo repositorio por otra URL (por ejemplo, SSH aquí y HTTPS en el otro equipo)."))
+                    .mut_arg("another_person", |a| {
+                        a.help("Este equipo es de otra persona (un compañero): sus proyectos sin remoto git no se juntan con los de quien invita. Por defecto, un equipo que se une es de la misma persona.")
+                    })
             })
             .mut_subcommand("code", |s| s.about("Escribe el código para unirse desde otro equipo. Lleva la clave: pásalo por un canal privado."))
             .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última."))

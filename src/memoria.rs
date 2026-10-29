@@ -272,16 +272,23 @@ fn autor(db: &Connection) -> Result<String> {
 }
 
 fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
+    let tx = escribir_tx(db)?;
+    let m = insertar_en(&tx, id, nueva, origen, modelo)?;
+    tx.commit()?;
+    Ok(m)
+}
+
+/// `insertar` dentro de una transacción que ya está abierta (quien llama hace el commit).
+fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
     let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha or preference", "falta el tipo: fact, decision, gotcha o preference"))?;
     let (title, content) = (titulo(&nueva.title)?, contenido(&nueva.content)?);
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
-    let tx = escribir_tx(db)?;
     let (hlc, author) = match origen {
         Some(o) => {
-            crate::reloj::recibir(&tx, o.hlc)?;
+            crate::reloj::recibir(tx, o.hlc)?;
             (o.hlc.to_string(), o.author.to_string())
         }
-        None => (crate::reloj::sello(&tx)?, autor(&tx)?),
+        None => (crate::reloj::sello(tx)?, autor(tx)?),
     };
     tx.execute(
         &format!(
@@ -305,12 +312,11 @@ fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>
         ],
     )?;
     let n = tx.last_insert_rowid();
-    let m = leer(&tx, id)?;
-    indexar(&tx, n, &m)?;
+    let m = leer(tx, id)?;
+    indexar(tx, n, &m)?;
     if let Some(modelo) = modelo {
-        vectores::guardar(&tx, n, modelo, &m.title, &m.content)?;
+        vectores::guardar(tx, n, modelo, &m.title, &m.content)?;
     }
-    tx.commit()?;
     Ok(m)
 }
 
@@ -505,27 +511,35 @@ pub fn olvidadas_fuera(db: &Connection) -> Result<Vec<(String, String, String, S
 /// Devuelve una memoria que olvidó otro equipo, con un sello posterior al olvido (así vuelve también a
 /// los demás equipos en la próxima sincronización). Su historial anterior se conserva.
 pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
-    let fila: Option<(String, String, String)> = db
-        .query_row("SELECT id, memory, versions FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 1", [id], |f| {
-            Ok((f.get(0)?, f.get(1)?, f.get(2)?))
-        })
-        .optional()?;
-    let (id, m, versiones) = fila.with_context(|| tr!("nothing forgotten elsewhere with id {id}", "no hay nada olvidado en otro equipo con id {id}"))?;
+    // El id como en las demás órdenes: en mayúsculas, y un principio que valga para varias es un error.
+    let id = id.trim().to_uppercase();
+    ensure!(!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()), tr!("invalid id: «{id}»", "id no válido: «{id}»"));
+    let tx = escribir_tx(db)?;
+    let filas: Vec<(String, String, String)> = {
+        let mut q = tx.prepare("SELECT id, memory, versions FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
+        q.query_map([&id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let (id, m, versiones) = match <[_; 1]>::try_from(filas) {
+        Ok([una]) => una,
+        Err(v) if v.is_empty() => bail!(tr!("nothing forgotten elsewhere with id {id}", "no hay nada olvidado en otro equipo con id {id}")),
+        Err(_) => bail!(tr!("several forgotten memories start with {id}: type more characters", "hay varias memorias olvidadas que empiezan por {id}: escribe más caracteres")),
+    };
     let m: Memoria = serde_json::from_str(&m)?;
     let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
-    let marca: String = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
-    let hlc = crate::reloj::sello_tras(db, &marca)?;
+    let marca: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
+    let hlc = crate::reloj::sello_tras(&tx, &marca)?;
     let nueva = Nueva { project: m.project.clone(), kind: Some(m.kind), title: m.title.clone(), content: m.content.clone(), paths: m.paths.clone(), tags: m.tags.clone(), pinned: m.pinned, source: m.source.clone() };
     let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, author: &m.author };
-    db.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
-    let r = insertar(db, &id, nueva, Some(&o), modelo)?;
+    tx.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
+    let r = insertar_en(&tx, &id, nueva, Some(&o), modelo)?;
     for v in versiones {
-        db.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason],
         )?;
     }
-    db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
+    tx.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
+    tx.commit()?;
     Ok(r)
 }
 
