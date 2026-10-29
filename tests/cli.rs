@@ -360,40 +360,57 @@ fn setup_de_otros_agentes() {
     let kilo = leer(".config/kilo/kilo.jsonc");
     assert_eq!(kilo["mcp"]["omoikane"]["type"], "local");
     assert!(kilo["instructions"][0].as_str().unwrap().ends_with("omoikane.md"));
-    // La orden /omoikane donde el agente admite órdenes de usuario: abre la vista web.
+    // La orden /omoikane-web donde el agente admite órdenes de usuario: abre la vista web.
     for f in [
-        ".codex/prompts/omoikane.md",
-        ".gemini/commands/omoikane.toml",
-        ".cursor/commands/omoikane.md",
-        ".config/opencode/commands/omoikane.md",
-        ".qwen/commands/omoikane.md",
-        ".kiro/prompts/omoikane.md",
-        ".codeium/windsurf/global_workflows/omoikane.md",
-        ".pi/agent/prompts/omoikane.md",
-        ".config/kilo/commands/omoikane.md",
+        ".codex/prompts/omoikane-web.md",
+        ".gemini/commands/omoikane-web.toml",
+        ".cursor/commands/omoikane-web.md",
+        ".config/opencode/commands/omoikane-web.md",
+        ".qwen/commands/omoikane-web.md",
+        ".kiro/prompts/omoikane-web.md",
+        ".codeium/windsurf/global_workflows/omoikane-web.md",
+        ".pi/agent/prompts/omoikane-web.md",
+        ".config/kilo/commands/omoikane-web.md",
     ] {
         let t = std::fs::read_to_string(casa.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
         assert!(t.contains("serve --open") && t.contains("127.0.0.1:7438"), "{f}: {t}");
     }
-    let gemini = std::fs::read_to_string(casa.join(".gemini/commands/omoikane.toml")).unwrap();
+    let gemini = std::fs::read_to_string(casa.join(".gemini/commands/omoikane-web.toml")).unwrap();
     assert!(gemini.starts_with("description = \"") && gemini.contains("\nprompt = \""), "{gemini}");
-    assert!(std::fs::read_to_string(casa.join(".config/opencode/commands/omoikane.md")).unwrap().starts_with("---\ndescription:"));
+    assert!(std::fs::read_to_string(casa.join(".config/opencode/commands/omoikane-web.md")).unwrap().starts_with("---\ndescription:"));
 }
 
-/// Una orden `/omoikane` propia del usuario no se toca.
+/// Una orden `/omoikane-web` propia del usuario no se toca, ni una `/omoikane` que no escribió Omoikane.
 #[test]
 fn setup_respeta_una_orden_existente() {
     let e = Entorno::nuevo("setup-orden");
     let casa = e.dir.join("casa");
     std::fs::create_dir_all(casa.join(".qwen/commands")).unwrap();
-    std::fs::write(casa.join(".qwen/commands/omoikane.md"), "mía").unwrap();
+    std::fs::write(casa.join(".qwen/commands/omoikane-web.md"), "mía").unwrap();
+    std::fs::write(casa.join(".qwen/commands/omoikane.md"), "también mía").unwrap();
     let h = casa.to_str().unwrap();
     let o = e.omoi_con(&["setup", "qwen", "--dry-run"], None, &[("OMOIKANE_SETUP_HOME", h)]);
     assert!(o.status.success());
     assert!(!String::from_utf8_lossy(&o.stdout).contains("/omoikane"), "{}", String::from_utf8_lossy(&o.stdout));
     let o = e.omoi_con(&["setup", "qwen", "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
     assert!(o.status.success());
-    assert_eq!(std::fs::read_to_string(casa.join(".qwen/commands/omoikane.md")).unwrap(), "mía");
+    assert_eq!(std::fs::read_to_string(casa.join(".qwen/commands/omoikane-web.md")).unwrap(), "mía");
+    assert_eq!(std::fs::read_to_string(casa.join(".qwen/commands/omoikane.md")).unwrap(), "también mía");
+}
+
+/// La orden con su nombre viejo, `/omoikane`, se cambia por `/omoikane-web` si la había escrito Omoikane.
+#[test]
+fn setup_cambia_la_orden_vieja() {
+    let e = Entorno::nuevo("setup-orden-vieja");
+    let casa = e.dir.join("casa");
+    std::fs::create_dir_all(casa.join(".gemini/commands")).unwrap();
+    let vieja = casa.join(".gemini/commands/omoikane.toml");
+    std::fs::write(&vieja, "description = \"Open the Omoikane memory view in the browser\"\nprompt = \"…\"\n").unwrap();
+    let h = casa.to_str().unwrap();
+    let o = e.omoi_con(&["setup", "gemini", "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!vieja.exists(), "la orden vieja sigue ahí");
+    assert!(std::fs::read_to_string(casa.join(".gemini/commands/omoikane-web.toml")).unwrap().contains("serve --open"));
 }
 
 /// `omoi recall --format`: Gemini cambia el nombre del evento y Cursor usa `additional_context`;
