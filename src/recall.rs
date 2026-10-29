@@ -53,7 +53,7 @@ pub const PREFIJO_MIN: usize = 5;
 pub const MENSAJES_ANTES_DE_RECORDAR: i64 = 10;
 pub const MINUTOS_ANTES_DE_RECORDAR: i64 = 15;
 pub const MINUTOS_ENTRE_RECORDATORIOS: i64 = 30;
-pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, including where unfinished work was left (what is done, what is next). If not, ignore this.";
+pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, including where unfinished work was left (what is done, what is next; tag `status`, and `update` the project's existing one). If not, ignore this.";
 
 /// `MAXIMO` y `RELATIVO_A_LA_MEJOR`, salvo al calibrar (`examples`, bancos de pruebas).
 fn maximo() -> usize {
@@ -66,6 +66,10 @@ fn relativo() -> f64 {
 
 /// Fragmento de cada memoria inyectada; el agente pide `get` si quiere el resto.
 const FRAGMENTO: usize = 200;
+/// Fragmento de cada memoria de estado al empezar sesión: más largo, para que retomar no pida `get`.
+const FRAGMENTO_ESTADO: usize = 400;
+/// Cuántos proyectos con estado se enseñan al empezar sesión (desde una carpeta general salen varios).
+pub const ESTADOS: usize = 5;
 
 /// Muletillas de conversación que no dicen de qué va el mensaje (además de las palabras vacías de
 /// la búsqueda). Ya sin tildes.
@@ -317,12 +321,7 @@ fn apuntar(db: &mut Connection, sesion: &str, ids: &[String]) -> Result<()> {
 /// de cuál es. `propio` es el autor de este equipo: una memoria de otra persona dice de quién es, para
 /// que el agente la trate con cuidado.
 fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
-    let plano = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fragmento = if plano.chars().count() > FRAGMENTO {
-        format!("{}…", plano.chars().take(FRAGMENTO).collect::<String>())
-    } else {
-        plano
-    };
+    let fragmento = fragmento(&m.content, FRAGMENTO);
     let rutas = if m.paths.is_empty() { String::new() } else { format!(" ({})", m.paths.join(", ")) };
     let global = if m.project.is_empty() {
         " [global]".to_string()
@@ -339,6 +338,16 @@ fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
         _ => format!(" [by {}]", m.author),
     };
     format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
+}
+
+/// El contenido en una línea y cortado a `n` caracteres.
+fn fragmento(texto: &str, n: usize) -> String {
+    let plano = texto.split_whitespace().collect::<Vec<_>>().join(" ");
+    if plano.chars().count() > n {
+        format!("{}…", plano.chars().take(n).collect::<String>())
+    } else {
+        plano
+    }
 }
 
 /// Al empezar la sesión (o tras compactar): el contexto que el agente debe tener siempre.
@@ -390,11 +399,25 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push('\n');
         }
     }
-    // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
-    // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
-    let ultimas: Vec<Memoria> = memoria::recientes(db, &Ambito::de(project), None, RECIENTES + contexto.len())?
+    // En qué punto se quedó cada proyecto (la memoria `status` más reciente de cada uno), con un buen
+    // trozo del contenido: «sigamos con X» se responde sin buscar. Tampoco cuentan como inyectadas.
+    let estados: Vec<Memoria> = memoria::estados(db, &Ambito::de(project), ESTADOS)?
         .into_iter()
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
+        .collect();
+    if !estados.is_empty() {
+        s.push_str("Where work was left (the latest `status` memory of each project, newest first):\n");
+        for m in &estados {
+            let linea = linea_corta(m, project, propio.as_deref());
+            s.push_str(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ESTADO)));
+        }
+    }
+    // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
+    // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
+    // Un estado que ya no es el último de su proyecto tampoco sale: llevaría a retomar desde lo viejo.
+    let ultimas: Vec<Memoria> = memoria::recientes(db, &Ambito::de(project), None, 50)?
+        .into_iter()
+        .filter(|m| !contexto.iter().any(|c| c.id == m.id) && !m.tags.iter().any(|t| t == memoria::ESTADO))
         .take(RECIENTES)
         .collect();
     if !ultimas.is_empty() {
@@ -415,7 +438,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
 pub const RECIENTES: usize = 5;
 
 /// Qué hacer con una petición ambigua y cuándo dejar dicho en qué punto se quedó algo.
-const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember`.\n";
+const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another.\n";
 
 /// Una memoria en una línea, sin contenido: fecha, tipo, proyecto si no es el de la sesión, título e id.
 fn linea_corta(m: &Memoria, project: &str, propio: Option<&str>) -> String {
