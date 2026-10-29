@@ -248,7 +248,8 @@ enum AccionSync {
     },
     /// Join a repository another computer already syncs with, with the code from `omoi sync code`.
     Join {
-        /// The code printed by `omoi sync code`.
+        /// The code printed by `omoi sync code` (`-` reads it from standard input, so it doesn't stay in
+        /// the shell history).
         codigo: String,
         /// Reach the same repository by another URL (for example SSH here and HTTPS on the other computer).
         #[arg(long)]
@@ -260,6 +261,11 @@ enum AccionSync {
     Code,
     /// How sync is set up and how the last one went.
     Status,
+    /// Bring back a memory another computer forgot (without an id, list them). Its history comes back too.
+    Restore {
+        /// The memory id (its first characters are enough).
+        id: Option<String>,
+    },
     /// Stop syncing on this computer (its memories stay).
     Off {
         /// Don't ask.
@@ -875,14 +881,17 @@ fn estado_sync(ruta: &std::path::Path) -> String {
         let m = ahora.saturating_sub(t) / 60;
         if m < 60 { tr!("{m} min ago", "hace {m} min") } else { tr!("{} h ago", "hace {} h", m / 60) }
     };
-    let mut l = config.url.clone();
+    let mut l = sync::sin_credenciales(&config.url);
     match (&e.ultimo_error, &e.ultimo_ok) {
-        (Some(err), _) => l.push_str(&tr!(" · FAILING: {}", " · FALLA: {}", err.lines().next().unwrap_or_default())),
+        (Some(err), _) => l.push_str(&tr!(" · FAILING: {}", " · FALLA: {}", sync::sin_credenciales(err.lines().next().unwrap_or_default()))),
         (None, Some(ok)) => l.push_str(&tr!(" · last ok {}", " · última bien {}", hace(ok))),
         (None, None) => l.push_str(&tr!(" · not synced yet", " · aún sin sincronizar")),
     }
     if sync::pendiente(ruta) {
         l.push_str(&tr!(" · changes pending", " · cambios pendientes"));
+    }
+    if let Some(a) = e.aviso {
+        l.push_str(&format!(" · {a}"));
     }
     l
 }
@@ -895,6 +904,33 @@ fn preguntar_si(texto: &str, defecto: bool) -> Result<bool> {
     std::io::stdin().read_line(&mut l)?;
     let l = l.trim().to_lowercase();
     Ok(if l.is_empty() { defecto } else { matches!(l.as_str(), "s" | "si" | "sí" | "y" | "yes") })
+}
+
+/// Enseña qué se subirá y, en una terminal, pide confirmación. Sin terminal hace falta `--yes` (un
+/// agente que lo lanza no debe subir memorias sin que nadie lo haya decidido).
+fn confirmar_subida(db: &Connection, config: &omoikane::sync::Config, e: &omoikane::sync::Eleccion, si: bool) -> Result<bool> {
+    use std::io::IsTerminal;
+    let (g, p, np) = omoikane::sync::resumen_de_subida(db, config)?;
+    println!(
+        "{}",
+        tr!(
+            "Will upload {g} global memories and {p} from {np} project(s), encrypted (preferences: {}). Everything stays on this computer too.",
+            "Se subirán {g} memorias globales y {p} de {np} proyecto(s), cifradas (preferencias: {}). Todo sigue también en este equipo.",
+            if e.preferencias { tr!("yes", "sí") } else { "no".into() }
+        )
+    );
+    if si {
+        return Ok(true);
+    }
+    anyhow::ensure!(
+        std::io::stdin().is_terminal(),
+        tr!("add --yes to confirm (or run it in a terminal to choose what to share)", "añade --yes para confirmarlo (o ejecútalo en una terminal para elegir qué compartir)")
+    );
+    if !preguntar_si(&tr!("Continue?", "¿Seguir?"), true)? {
+        println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Qué compartir: lo de las opciones y, en una terminal sin `--yes`, lo que conteste el usuario.
@@ -932,7 +968,8 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
     use std::io::IsTerminal;
     let ruta = ruta_db(c);
     if background {
-        return sync::en_segundo_plano(&ruta, || abrir_con_modelo(c));
+        // Sin el modelo: lo que llegue sin vector lo completa la siguiente orden que lo abra.
+        return sync::en_segundo_plano(&ruta, || Ok((abrir(c)?, None)));
     }
     let primera = |aviso: &str| -> Result<()> {
         let (mut db, modelo) = abrir_con_modelo(c)?;
@@ -975,17 +1012,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             }
             let e = elegir(&eleccion)?;
             let config = sync::config_de(&url, &e);
-            let (g, p, np) = sync::resumen_de_subida(&db, &config)?;
-            println!(
-                "{}",
-                tr!(
-                    "Will upload {g} global memories and {p} from {np} project(s), encrypted (preferences: {}). Everything stays on this computer too.",
-                    "Se subirán {g} memorias globales y {p} de {np} proyecto(s), cifradas (preferencias: {}). Todo sigue también en este equipo.",
-                    if e.preferencias { tr!("yes", "sí") } else { "no".into() }
-                )
-            );
-            if !eleccion.yes && std::io::stdin().is_terminal() && !preguntar_si(&tr!("Continue?", "¿Seguir?"), true)? {
-                println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+            if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
                 return Ok(());
             }
             sync::iniciar(&mut db, &ruta, &config)?;
@@ -1000,13 +1027,23 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             if sync::leer_config(&ruta)?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync off` para empezar de nuevo)"));
             }
+            let codigo = if codigo == "-" {
+                let mut l = String::new();
+                std::io::stdin().read_line(&mut l)?;
+                l
+            } else {
+                codigo
+            };
             let (url, clave) = sync::leer_codigo(&codigo)?;
             let url = otra_url.unwrap_or(url);
             let e = elegir(&eleccion)?;
             let config = sync::config_de(&url, &e);
+            if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
+                return Ok(());
+            }
             sync::unirse(&mut db, &ruta, &config, &clave)?;
             drop(db);
-            primera(&tr!("Joined {}.", "Unido a {}.", url))
+            primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))
         }
         Some(AccionSync::Code) => {
             println!("{}", sync::codigo(&ruta)?);
@@ -1014,7 +1051,10 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             Ok(())
         }
         Some(AccionSync::Status) => {
-            let config = sync::leer_config(&ruta)?;
+            let config = sync::leer_config(&ruta)?.map(|mut cf| {
+                cf.url = sync::sin_credenciales(&cf.url);
+                cf
+            });
             if c.json {
                 return json(&serde_json::json!({
                     "config": config,
@@ -1036,6 +1076,29 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                     println!("{}{err}", tr!("last error ", "último error "));
                 }
             }
+            Ok(())
+        }
+        Some(AccionSync::Restore { id }) => {
+            let Some(id) = id else {
+                let v = omoikane::memoria::olvidadas_fuera(&abrir(c)?)?;
+                if c.json {
+                    return json(&v.iter().map(|(id, t, by, cuando)| serde_json::json!({ "id": id, "title": t, "by": by, "forgotten_at": cuando })).collect::<Vec<_>>());
+                }
+                if v.is_empty() {
+                    println!("{}", tr!("nothing forgotten by other computers", "nada olvidado por otros equipos"));
+                }
+                for (id, t, by, cuando) in v {
+                    println!("{}  {t}  ({by}, {cuando})", corto(&id));
+                }
+                return Ok(());
+            };
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let m = omoikane::memoria::restaurar(&mut db, &id, modelo.as_ref())?;
+            sync::programar(&ruta);
+            if c.json {
+                return json(&m);
+            }
+            println!("{}", tr!("restored {}: {}", "recuperada {}: {}", corto(&m.id), m.title));
             Ok(())
         }
         Some(AccionSync::Off { yes }) => {
@@ -1177,11 +1240,15 @@ fn en_espanol(c: Command) -> Command {
             })
             .mut_subcommand("join", |s| {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
-                    .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code`.").value_name("CÓDIGO"))
+                    .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code` («-» lo lee de la entrada estándar, para que no quede en el historial de la terminal).").value_name("CÓDIGO"))
                     .mut_arg("url", |a| a.help("Llegar al mismo repositorio por otra URL (por ejemplo, SSH aquí y HTTPS en el otro equipo)."))
             })
             .mut_subcommand("code", |s| s.about("Escribe el código para unirse desde otro equipo. Lleva la clave: pásalo por un canal privado."))
             .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última."))
+            .mut_subcommand("restore", |s| {
+                s.about("Recupera una memoria que olvidó otro equipo (sin id, las enseña). Vuelve también su historial.")
+                    .mut_arg("id", |a| a.help("Id de la memoria (basta con el principio)."))
+            })
             .mut_subcommand("off", |s| s.about("Deja de sincronizar en este equipo (sus memorias se quedan).").mut_arg("yes", |a| a.help("No preguntar.")))
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
