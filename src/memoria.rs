@@ -892,6 +892,9 @@ pub struct Olvidada {
     pub title: String,
     pub kind: Tipo,
     pub project: String,
+    /// Su espacio (la clave): el suyo si era de espacio, o el de su proyecto.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub space: String,
     /// Quién la olvidó: el nombre del equipo (y `[by …]` ya dice la persona, si la sincronización lo apunta).
     pub by: String,
     pub deleted_at: String,
@@ -904,7 +907,7 @@ pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
         .query_map([], |f| {
             let m: String = f.get(1)?;
             let m: Memoria = serde_json::from_str(&m).unwrap_or_default();
-            Ok(Olvidada { id: f.get(0)?, title: m.title, kind: m.kind, project: m.project, by: f.get(2)?, deleted_at: f.get(3)? })
+            Ok(Olvidada { id: f.get(0)?, title: m.title, kind: m.kind, project: m.project, space: m.space, by: f.get(2)?, deleted_at: f.get(3)? })
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)

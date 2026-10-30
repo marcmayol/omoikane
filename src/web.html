@@ -103,7 +103,11 @@ button.chip:hover { border-color: var(--accent); }
 .row .t { font-weight: 500; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
 .row .x { grid-column: 1; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .r { grid-row: 1 / span 2; grid-column: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
-.proj { font-size: 11.5px; color: var(--ink2); border: 1px solid var(--line2); border-radius: 999px; padding: 0 8px; line-height: 19px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.proj { font-size: 11.5px; color: var(--ink2); border: 1px solid var(--line2); border-radius: 999px; padding: 0 8px; line-height: 19px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; text-decoration: none; white-space: nowrap; }
+.proj .pe { color: var(--faint); }
+.proj.esp { border-style: dashed; color: var(--glow); }
+.proj.esp::before { content: "◇ "; }
+.proj.glob { color: var(--muted); }
 .what { font: 500 10.5px var(--mono); color: var(--faint); }
 .what.cambio { color: var(--glow); }
 .row.open { cursor: default; background: var(--panel); border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 30px color-mix(in srgb, var(--accent) 12%, transparent); padding: 14px 16px 12px; }
@@ -184,6 +188,18 @@ button.chip:hover { border-color: var(--accent); }
 .card .where .txt { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .leyenda { display: flex; gap: 14px; color: var(--faint); font-size: 11.5px; flex-wrap: wrap; margin-top: 16px; }
 .leyenda span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Proyectos agrupados por espacio */
+.gsp { display: flex; align-items: baseline; gap: 12px; margin: 26px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.gsp:first-of-type { margin-top: 6px; }
+.gsp h2 { margin: 0; font: 600 21px/1.2 var(--serif); }
+.gsp h2.esp::before { content: "◇ "; color: var(--glow); }
+.gsp span { color: var(--faint); font-size: 12.5px; }
+.card.esp { border-style: dashed; }
+.card .ido, .crumb .ido { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--delink); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; line-height: 16px; white-space: nowrap; }
+.cmd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 600px) { .pjs { padding: 18px 14px 30px; } .grid { grid-template-columns: minmax(0,1fr); } }
+.cmd code { font-size: 12.5px; background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; color: var(--glow); overflow-wrap: anywhere; }
 
 /* Página de un proyecto */
 .pp { display: grid; grid-template-columns: minmax(0,1fr); height: 100%; }
@@ -282,6 +298,10 @@ const ES = (navigator.language || '').toLowerCase().startsWith('es');
 const T = ES ? {
   memorias: 'Memorias', proyectos: 'Proyectos', buscar: 'Buscar como lo haría el agente…', buscarEn: p => `Buscar en ${p}…`,
   tipo: 'Tipo', todo: 'Todo', fijadas: 'Fijadas', proyecto: 'Proyecto', todos: 'Todos', global: 'Global', etiqueta: 'Etiqueta', todasEt: 'Todas',
+  espacio: 'Espacio', espacios: 'espacios', sinEspacio: 'Sin espacio', ambito: 'Ámbito', espacioDe: n => `espacio «${n}»`, espacioPath: n => `vale para todos los proyectos de ${n}`,
+  enEspacio: (p, m) => `${p} proyecto${p === 1 ? '' : 's'} · ${m} memoria${m === 1 ? '' : 's'}`, personal: 'Sin espacio', personalSub: 'Proyectos que no son de ningún espacio.', globalSub: 'Lo que vale en todos los proyectos de todos los espacios.',
+  yaNoEsta: 'ya no está', copiar: 'Copiar', copiado: 'Copiado', carpetaNueva: '<carpeta nueva>', otroProyecto: '<otro proyecto>',
+  idos: ['Proyectos que ya no están', 'Su carpeta ya no existe en este equipo. Si la moviste, apunta la nueva; si era una copia de otro proyecto, júntalo con ese (sus memorias pasan al otro).'], mueveLa: 'Si la moviste:', juntalo: 'Si era otro proyecto:',
   mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
   creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
@@ -304,6 +324,10 @@ const T = ES ? {
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
+  espacio: 'Space', espacios: 'spaces', sinEspacio: 'No space', ambito: 'Scope', espacioDe: n => `space “${n}”`, espacioPath: n => `applies to every project in ${n}`,
+  enEspacio: (p, m) => `${p} project${p === 1 ? '' : 's'} · ${m} memor${m === 1 ? 'y' : 'ies'}`, personal: 'No space', personalSub: 'Projects that belong to no space.', globalSub: 'What applies to every project in every space.',
+  yaNoEsta: 'gone', copiar: 'Copy', copiado: 'Copied', carpetaNueva: '<new folder>', otroProyecto: '<other project>',
+  idos: ['Projects that are gone', 'Their folder no longer exists on this computer. If you moved it, point to the new one; if it was a copy of another project, merge it into that one (its memories move there).'], mueveLa: 'If you moved it:', juntalo: 'If it was another project:',
   mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
   creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
@@ -338,7 +362,31 @@ const cab = clave ? { Authorization: 'Bearer ' + clave } : {};
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const nombre = p => p ? p.split(/[\\/]/).filter(Boolean).pop() : T.global;
+// El ámbito de una memoria: la carpeta de su proyecto, su espacio (`@espacio:<clave>`) o global ('').
+const PRE_ESP = '@espacio:';
+const esEspacio = a => typeof a === 'string' && a.startsWith(PRE_ESP);
+const ambito = m => m.project || (m.space ? PRE_ESP + m.space : '');
+const nombreEspacio = k => (espacios.find(s => s.key === k) || {}).name || k;
+// El nombre del proyecto es el de la tabla (no cambia aunque se mueva la carpeta); sin ficha, el de la carpeta.
+const nombre = p => !p ? T.global : esEspacio(p) ? nombreEspacio(p.slice(PRE_ESP.length)) : (fichas.find(x => x.path === p) || {}).name || p.split(/[\\/]/).filter(Boolean).pop();
+// La clave del espacio de un ámbito ('' si no tiene; null si es global).
+function espacioDe(a) {
+  if (!a) return null;
+  if (esEspacio(a)) return a.slice(PRE_ESP.length);
+  const f = fichas.find(x => x.path === a);
+  if (f) return f.space || '';
+  const m = todas.find(x => x.project === a);
+  return m ? m.space || '' : '';
+}
+// La pastilla del ámbito: el proyecto (con su espacio detrás), el espacio o global.
+function pastilla(a) {
+  const e = esEspacio(a) || !a ? '' : espacioDe(a);
+  const cls = esEspacio(a) ? 'proj esp' : a ? 'proj' : 'proj glob';
+  const titulo = esEspacio(a) ? `${T.espacioDe(nombre(a))}: ${T.espacioPath(nombre(a))}` : a ? a + (e ? ` · ${T.espacioDe(nombreEspacio(e))}` : '') : T.globalPath;
+  return `<a class="${cls}" href="${enlaceProyecto(a)}" title="${esc(titulo)}">${esc(nombre(a))}${e ? `<span class="pe"> · ${esc(nombreEspacio(e))}</span>` : ''}</a>`;
+}
+// Un argumento para la línea de órdenes, entre comillas si lleva espacios o comillas.
+const arg = s => /[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
 const loc = ES ? 'es-ES' : undefined;
 const fecha = s => s ? new Date(s).toLocaleString(loc, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const hora = s => new Date(s).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
@@ -352,7 +400,10 @@ function corta(s) {
 
 // Estado de la vista.
 let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, candidatas = [], papelera = [];
-const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
+// De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
+let fichas = [], espacios = [];
+// `espacio`: '*' todos, '' los que no son de ningún espacio, o la clave de uno.
+const filtro = { tipo: null, espacio: '*', proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
 function aviso(texto) {
@@ -471,19 +522,21 @@ async function historia(id) {
 }
 
 /* ---------- Datos ---------- */
-const delProyecto = p => todas.filter(m => m.project === p);
-// La memoria `status` más reciente de cada proyecto (la lista viene de la más nueva a la más vieja).
+const delProyecto = p => todas.filter(m => ambito(m) === p);
+// La memoria `status` más reciente de cada ámbito (la lista viene de la más nueva a la más vieja).
 function estados() {
   const r = {};
-  for (const m of todas) if (m.tags.includes(ESTADO) && !(m.project in r)) r[m.project] = m;
+  for (const m of todas) { const a = ambito(m); if (m.tags.includes(ESTADO) && !(a in r)) r[a] = m; }
   return r;
 }
+// Los ámbitos con memorias (proyectos, espacios y global), de más a menos memorias; global al final.
 function proyectos() {
   const n = {};
-  for (const m of todas) n[m.project] = (n[m.project] || 0) + 1;
+  for (const m of todas) { const a = ambito(m); n[a] = (n[a] || 0) + 1; }
   return Object.keys(n).sort((a, b) => (a === '') - (b === '') || n[b] - n[a] || nombre(a).localeCompare(nombre(b))).map(p => ({ p, n: n[p] }));
 }
-const pasa = m => (filtro.proyecto === '*' || m.project === filtro.proyecto) && (!filtro.tema || m.tags.includes(filtro.tema))
+const enEspacio = m => filtro.espacio === '*' || (m.space || '') === filtro.espacio;
+const pasa = m => enEspacio(m) && (filtro.proyecto === '*' || ambito(m) === filtro.proyecto) && (!filtro.tema || m.tags.includes(filtro.tema))
   && (!filtro.tipo || (filtro.tipo === 'pinned' ? m.pinned : m.kind === filtro.tipo));
 
 async function cargar() {
@@ -499,8 +552,12 @@ async function cargar() {
     candidatas = rc.ok ? await rc.json() : [];
     const rt = await fetch('/api/trash', { headers: cab });
     papelera = rt.ok ? await rt.json() : [];
-  } catch (e) { avisos = []; candidatas = []; papelera = []; }
-  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length;
+    const rp = await fetch('/api/projects', { headers: cab });
+    const pj = rp.ok ? await rp.json() : {};
+    fichas = pj.projects || []; espacios = pj.spaces || [];
+  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; }
+  if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
+  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length;
   c.textContent = n; c.hidden = !n;
   pintar();
 }
@@ -557,9 +614,13 @@ function queFue(m) {
 const claveEv = e => e.m.id + (e.rec ? ':r' : '');
 
 function pintarMemorias() {
-  const pjs = proyectos(), n = t => todas.filter(m => (filtro.proyecto === '*' || m.project === filtro.proyecto) && (t === 'pinned' ? m.pinned : !t || m.kind === t)).length;
+  const enAmbito = m => enEspacio(m) && (filtro.proyecto === '*' || ambito(m) === filtro.proyecto);
+  const n = t => todas.filter(m => enAmbito(m) && (t === 'pinned' ? m.pinned : !t || m.kind === t)).length;
+  // Los proyectos del espacio elegido (y lo del propio espacio); con «sin espacio», también lo global.
+  const pjs = proyectos().filter(x => filtro.espacio === '*' || (espacioDe(x.p) ?? '') === filtro.espacio);
+  const porEspacio = k => todas.filter(m => (m.space || '') === k).length;
   const temas = {};
-  for (const m of todas) if (filtro.proyecto === '*' || m.project === filtro.proyecto) for (const t of m.tags) temas[t] = (temas[t] || 0) + 1;
+  for (const m of todas) if (enAmbito(m)) for (const t of m.tags) temas[t] = (temas[t] || 0) + 1;
   const boton = (attr, v, actual, html, cuenta) => `<button class="ro" data-${attr}="${esc(v ?? '')}" aria-pressed="${v === actual}">${html}<span class="n">${cuenta}</span></button>`;
   const ev = eventos(), visibles = ev.slice(0, pagina * POR_PAGINA);
   let feed;
@@ -577,9 +638,13 @@ function pintarMemorias() {
       ${boton('tipo', null, filtro.tipo, esc(T.todo), n(null))}
       ${TIPOS.map(t => boton('tipo', t, filtro.tipo, `<i class="k ${t}"></i>${t}`, n(t))).join('')}
       ${boton('tipo', 'pinned', filtro.tipo, `<i class="k pin"></i>${esc(T.fijadas)}`, n('pinned'))}
+      ${espacios.length ? `<div class="sh">${T.espacio}</div>
+      ${boton('espacio', '*', filtro.espacio, esc(T.todos), todas.length)}
+      ${espacios.map(s => boton('espacio', s.key, filtro.espacio, `<span class="nm">◇ ${esc(s.name)}</span>`, porEspacio(s.key))).join('')}
+      ${boton('espacio', '', filtro.espacio, esc(T.sinEspacio), porEspacio(''))}` : ''}
       <div class="sh">${T.proyecto}</div>
-      ${boton('proyecto', '*', filtro.proyecto, esc(T.todos), todas.length)}
-      ${pjs.map(x => boton('proyecto', x.p, filtro.proyecto, `<span class="nm" title="${esc(x.p)}">${esc(nombre(x.p))}</span>`, x.n)).join('')}
+      ${boton('proyecto', '*', filtro.proyecto, esc(T.todos), todas.filter(enEspacio).length)}
+      ${pjs.map(x => boton('proyecto', x.p, filtro.proyecto, `<span class="nm" title="${esc(esEspacio(x.p) ? T.espacioDe(nombre(x.p)) : x.p || T.globalPath)}">${esEspacio(x.p) ? '◇ ' : ''}${esc(nombre(x.p))}</span>`, x.n)).join('')}
       <div class="sh">${T.etiqueta}</div>
       <select id="tema"><option value="">${esc(T.todasEt)}</option>${Object.keys(temas).sort((a, b) => temas[b] - temas[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}"${t === filtro.tema ? ' selected' : ''}>#${esc(t)} (${temas[t]})</option>`).join('')}</select>
       <div class="sh">${T.mostrar}</div>
@@ -589,6 +654,10 @@ function pintarMemorias() {
   </div>`;
   const v = $('vista');
   for (const b of v.querySelectorAll('[data-tipo]')) b.onclick = () => { filtro.tipo = b.dataset.tipo || null; pagina = 1; pintar(); };
+  for (const b of v.querySelectorAll('[data-espacio]')) b.onclick = () => {
+    filtro.espacio = b.dataset.espacio; filtro.proyecto = '*'; filtro.tema = ''; pagina = 1;
+    if (consulta) buscar(); else pintar();
+  };
   for (const b of v.querySelectorAll('[data-proyecto]')) b.onclick = () => { filtro.proyecto = b.dataset.proyecto; filtro.tema = ''; pagina = 1; pintar(); };
   $('tema').onchange = e => { filtro.tema = e.target.value; pagina = 1; pintar(); };
   $('recordado').onclick = () => { filtro.recordado = !filtro.recordado; pagina = 1; pintar(); };
@@ -612,7 +681,7 @@ function filaHTML(e) {
   const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
   return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
     <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}</div>
-    <div class="r"><a class="proj" href="${enlaceProyecto(m.project)}" title="${esc(m.project)}">${esc(nombre(m.project))}</a><span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
+    <div class="r">${pastilla(ambito(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
     <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
     ${open ? detalleHTML(m, false) : ''}
   </div>`;
@@ -627,7 +696,7 @@ function abrir(k) {
 /* ---------- Detalle compartido (fila abierta y panel del proyecto) ---------- */
 const enlazan = m => todas.filter(x => (x.links || []).includes(m.id));
 function enlacesHTML(m) {
-  const boton = x => `<button class="chip" data-ir="${x.id}" title="${esc(nombre(x.project))}">${esc(x.title.slice(0, 60))}</button>`;
+  const boton = x => `<button class="chip" data-ir="${x.id}" title="${esc(nombre(ambito(x)))}">${esc(x.title.slice(0, 60))}</button>`;
   const salen = (m.links || []).map(id => todas.find(x => x.id === id)).filter(Boolean), entran = enlazan(m);
   return (salen.length ? `<span>${T.enlaza}</span><b>${salen.map(boton).join(' ')}</b>` : '') + (entran.length ? `<span>${T.laEnlazan}</span><b>${entran.map(boton).join(' ')}</b>` : '');
 }
@@ -636,16 +705,19 @@ let irPendiente = null;
 function irA(id) {
   const x = todas.find(m => m.id === id);
   if (!x) return;
-  const destino = enlaceProyecto(x.project);
+  const destino = enlaceProyecto(ambito(x));
   if (location.hash === destino) { elegidaPanel = id; pintar(); } else { irPendiente = id; location.hash = destino; }
 }
 function detalleHTML(m, vertical) {
   const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
+  const a = ambito(m), e = espacioDe(a);
+  const donde = esEspacio(a) ? `${esc(T.espacioDe(nombre(a)))} <span class="pe">· ${esc(T.espacioPath(nombre(a)))}</span>`
+    : a ? `${esc(a)}${e ? ` <span class="pe">· ${esc(T.espacioDe(nombreEspacio(e)))}</span>` : ''}` : `${esc(T.global)} <span class="pe">· ${esc(T.globalPath)}</span>`;
   return `<div class="det${vertical ? ' vertical' : ''}">
     <div class="md">${md(m.content)}</div>
     <div class="lado">
       <div class="facts">
-        <span>${T.proyecto}</span><b title="${esc(m.project)}">${esc(m.project || T.global)}</b>
+        <span>${T.ambito}</span><b>${donde}</b>
         ${m.paths.length ? `<span>${T.rutas}</span><b class="mono">${m.paths.map(esc).join('<br>')}</b>` : ''}
         <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
         <span>${T.cambiadaF}</span><b>${esc(fecha(m.updated_at))}</b>
@@ -660,7 +732,8 @@ function detalleHTML(m, vertical) {
     <div class="acts">
       <button class="btn" data-a="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
       ${m.versions ? `<button class="btn" data-a="hist">${histAbierta[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
-      <select data-a="destino"><option value="">${T.mover}</option>${m.project ? `<option value="@global">${T.global}</option>` : ''}
+      <select data-a="destino"><option value="">${T.mover}</option>${a ? `<option value="@global">${T.global}</option>` : ''}
+        ${espacios.filter(s => PRE_ESP + s.key !== a).map(s => `<option value="${esc(PRE_ESP + s.key)}">◇ ${esc(s.name)}</option>`).join('')}
         ${pjs.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(nombre(p))}</option>`).join('')}<option value="@otra">${T.otra}</option></select>
       <button class="btn" data-a="mover">${T.moverBtn}</button>
       <span class="sp"></span>
@@ -679,7 +752,8 @@ async function conectar(el, m) {
     let p = q('destino').value;
     if (!p) return;
     if (p === '@otra') { p = prompt(T.carpeta); if (!p) return; }
-    accion(() => herramienta('update', { id: m.id, project: p === '@global' ? '' : p, reason: 'moved from the web view' }));
+    const args = esEspacio(p) ? { space: p.slice(PRE_ESP.length) } : { project: p === '@global' ? '' : p };
+    accion(() => herramienta('update', { id: m.id, ...args, reason: 'moved from the web view' }));
   };
   q('olvidar').onclick = () => {
     q('olvido').innerHTML = `${esc(T.seguro)} <button class="btn pri" data-a="si">${T.si}</button> <button class="btn" data-a="no">${T.no}</button>`;
@@ -720,10 +794,26 @@ function pintarRevisar() {
     <p class="vacio" style="padding:0 0 10px">${esc(T.papeleraSub)}</p>
     ${papelera.map(o => `<div class="av trash" data-t="${esc(o.id)}">
       <div class="cab"><span class="t">${esc(o.title)}</span></div>
-      <div class="cab"><a class="proj" href="${enlaceProyecto(o.project)}">${esc(nombre(o.project))}</a> <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
+      <div class="cab">${pastilla(o.project || (o.space ? PRE_ESP + o.space : ''))} <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
       <div class="acts"><button class="btn pri" data-r="restaurar">${esc(T.restaurar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.length && !candidatas.length && !papelera.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + orden.filter(k => grupos[k]).map(k => `
+  // Proyectos cuya carpeta ya no existe (lo que dicen `omoi review` y `omoi doctor`), con el comando
+  // que lo arregla.
+  const idos = fichas.filter(x => x.gone), otros = fichas.filter(x => !x.gone);
+  const perdidos = !idos.length ? '' : `
+    <div class="grupo"><h2>${esc(T.idos[0])}</h2><span class="n">${idos.length}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${esc(T.idos[1])}</p>
+    ${idos.map(x => {
+      const juntar = otros.find(o => o.key === x.key || (o.name === x.name && o.space === x.space));
+      const mover = `omoi projects move ${arg(x.name)} ${T.carpetaNueva}`, fundir = `omoi projects merge ${arg(x.name)} ${juntar ? arg(juntar.name) : T.otroProyecto}`;
+      return `<div class="av ido">
+      <div class="cab"><span class="t">${esc(x.name)}</span>${x.space ? pastilla(PRE_ESP + x.space) : ''}<span class="what">${esc(T.memoriasN(x.memories))}${x.last_update ? ' · ' + esc(corta(x.last_update)) : ''}</span></div>
+      <div class="det2 mono">${esc(x.path)}</div>
+      <div class="cmd"><span class="det2">${esc(T.mueveLa)}</span><code>${esc(mover)}</code><button class="btn" data-copia="${esc(mover)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(T.juntalo)}</span><code>${esc(fundir)}</code><button class="btn" data-copia="${esc(fundir)}">${esc(T.copiar)}</button></div>
+    </div>`;
+    }).join('')}`;
+  const cuerpo = !avisos.length && !candidatas.length && !papelera.length && !idos.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + perdidos + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
     ${grupos[k].map(avisoHTML).join('')}`).join('') + basura;
@@ -747,13 +837,16 @@ function pintarRevisar() {
       await dejar();
     });
   }
+  for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
+  };
   for (const el of v.querySelectorAll('.av.trash')) {
     el.querySelector('[data-r="restaurar"]').onclick = () => accion(async () => {
       const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: el.dataset.t }) });
       if (!r.ok) throw new Error(await r.text());
     });
   }
-  for (const el of v.querySelectorAll('.av:not(.cand):not(.trash)')) {
+  for (const el of v.querySelectorAll('.av:not(.cand):not(.trash):not(.ido)')) {
     const a = avisos.find(x => claveAv(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
     q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };
@@ -781,7 +874,7 @@ function pintarRevisar() {
 function avisoHTML(a) {
   const m = todas.find(x => x.id === a.memory_id), o = a.other_id && todas.find(x => x.id === a.other_id), abierto = revAbiertos[claveAv(a)];
   if (!m) return '';
-  const fila = x => `<a class="proj" href="${enlaceProyecto(x.project)}">${esc(nombre(x.project))}</a> <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span>`;
+  const fila = x => `${pastilla(ambito(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span>`;
   // Juntar (0.19.0): en una pareja, la más nueva absorbe a la vieja; en «se contradicen» manda la fecha.
   const juntable = o && ['outdated', 'superseded', 'contradicts'].includes(a.kind);
   const [nueva, vieja] = !o ? [null, null] : a.kind === 'contradicts' && m.updated_at > o.updated_at ? [m, o] : [o, m];
@@ -823,24 +916,50 @@ function mezcla(ms) {
 }
 function pintarProyectos() {
   const es = estados(), pjs = proyectos();
+  // Grupos: cada espacio (lo suyo y sus proyectos), luego los proyectos sin espacio y al final lo global.
+  const grupos = new Map(espacios.map(s => [s.key, []]));
+  grupos.set('', []);
+  for (const x of pjs) {
+    if (!x.p) continue;
+    const k = espacioDe(x.p) || '';
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(x);
+  }
+  // Lo del espacio, primero dentro de su grupo.
+  for (const l of grupos.values()) l.sort((a, b) => esEspacio(b.p) - esEspacio(a.p));
+  const global = pjs.find(x => x.p === '');
+  const tarjeta = ({ p, n }) => {
+    const e = es[p], ms = delProyecto(p), ficha = fichas.find(x => x.path === p);
+    return `<a class="card${esEspacio(p) ? ' esp' : ''}" href="${enlaceProyecto(p)}">
+        <div class="hd"><span class="nm">${esEspacio(p) ? '◇ ' : ''}${esc(nombre(p))}</span><span class="n">${ficha && ficha.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>&ensp;` : ''}${esc(T.memoriasN(n))}</span></div>
+        <div class="path" title="${esc(esEspacio(p) ? '' : p)}">${esc(esEspacio(p) ? T.espacioPath(nombre(p)) : p || T.globalPath)}</div>
+        ${mezcla(ms)}
+        ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="txt">${esc(extracto(e.content))}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
+      </a>`;
+  };
+  const conEspacios = espacios.length > 0;
+  const seccion = (k, l) => {
+    if (!l.length) return '';
+    if (!conEspacios) return `<div class="grid">${l.map(tarjeta).join('')}</div>`;
+    const proyectosN = l.filter(x => !esEspacio(x.p)).length, memoriasN = l.reduce((s, x) => s + x.n, 0);
+    const cab = k ? `<h2 class="esp">${esc(nombreEspacio(k))}</h2><span>${esc(T.espacioDe(nombreEspacio(k)))} · ${esc(T.enEspacio(proyectosN, memoriasN))}</span>`
+      : `<h2>${esc(T.personal)}</h2><span>${esc(T.personalSub)}</span>`;
+    return `<div class="gsp">${cab}</div><div class="grid">${l.map(tarjeta).join('')}</div>`;
+  };
+  const cuerpo = [...grupos.entries()].filter(([k]) => k).sort((a, b) => nombreEspacio(a[0]).localeCompare(nombreEspacio(b[0]))).map(([k, l]) => seccion(k, l)).join('')
+    + seccion('', grupos.get(''))
+    + (!global ? '' : conEspacios ? `<div class="gsp"><h2>${esc(T.global)}</h2><span>${esc(T.globalSub)}</span></div><div class="grid">${tarjeta(global)}</div>` : '');
   $('vista').innerHTML = `<div class="pjs">
     <div class="hero">
       <div><h1>${T.dondeTitulo}</h1><p>${T.dondeSub}</p></div>
       <div class="stats">
         <div class="stat"><b>${todas.length}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
-        <div class="stat"><b>${pjs.filter(x => x.p).length}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        <div class="stat"><b>${pjs.filter(x => x.p && !esEspacio(x.p)).length}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        ${conEspacios ? `<div class="stat"><b>${espacios.length}</b><span>${esc(T.espacios)}</span></div>` : ''}
         <div class="stat"><b>${Object.keys(es).length}</b><span>${esc(T.conEstado)}</span></div>
       </div>
     </div>
-    <div class="grid">${pjs.map(({ p, n }) => {
-      const e = es[p], ms = delProyecto(p);
-      return `<a class="card" href="${enlaceProyecto(p)}">
-        <div class="hd"><span class="nm">${esc(nombre(p))}</span><span class="n">${esc(T.memoriasN(n))}</span></div>
-        <div class="path" title="${esc(p)}">${esc(p || T.globalPath)}</div>
-        ${mezcla(ms)}
-        ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="txt">${esc(extracto(e.content))}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
-      </a>`;
-    }).join('')}</div>
+    ${conEspacios ? cuerpo : `<div class="grid">${pjs.map(tarjeta).join('')}</div>`}
     <div class="leyenda">${TIPOS.map(t => `<span><i class="k ${t}"></i>${t}</span>`).join('')}</div>
   </div>`;
 }
@@ -872,7 +991,8 @@ function grafoHTML(ms) {
 function pintarProyecto(p) {
   const ms = delProyecto(p).filter(m => !encontrados || encontrados.includes(m.id)), e = estados()[p];
   const ordenadas = encontrados ? encontrados.map(id => ms.find(m => m.id === id)).filter(Boolean) : ms;
-  const m = elegidaPanel && todas.find(x => x.id === elegidaPanel && x.project === p);
+  const m = elegidaPanel && todas.find(x => x.id === elegidaPanel && ambito(x) === p);
+  const esp = espacioDe(p), ficha = fichas.find(x => x.path === p);
   const cols = tiposDe(ms).map(t => {
     const v = ordenadas.filter(x => x.kind === t), todasCol = columnasAbiertas[p + t], vis = todasCol ? v : v.slice(0, POR_COLUMNA);
     return `<div class="col">
@@ -883,10 +1003,11 @@ function pintarProyecto(p) {
   }).join('');
   $('vista').innerHTML = `<div class="pp${m ? ' con-panel' : ''}">
     <div class="work">
-      <div class="crumb"><a href="#/proyectos">${T.proyectos}</a><span>›</span><b>${esc(nombre(p))}</b><span class="mono">${esc(p)}</span></div>
+      <div class="crumb"><a href="#/proyectos">${T.proyectos}</a><span>›</span>${esp && !esEspacio(p) ? `${pastilla(PRE_ESP + esp)}<span>›</span>` : ''}<b>${esEspacio(p) ? '◇ ' : ''}${esc(nombre(p))}</b><span class="mono">${esc(esEspacio(p) ? T.espacioPath(nombre(p)) : p || T.globalPath)}</span>${ficha && ficha.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>` : ''}</div>
       <div class="head">
         <div>
           <h1>${esc(nombre(p))}</h1>
+          ${esEspacio(p) ? `<div class="cmd" style="margin-bottom:8px">${fichas.filter(x => x.space === esp).map(x => pastilla(x.path)).join('')}</div>` : ''}
           ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="md">${md(e.content)}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
         </div>
         <div class="nums">${tiposDe(ms).map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
@@ -909,20 +1030,24 @@ function pintarProyecto(p) {
 
 /* ---------- Búsqueda, rutas y teclado ---------- */
 let espera;
-$('q').oninput = () => {
-  clearTimeout(espera);
-  espera = setTimeout(async () => {
-    consulta = $('q').value.trim();
-    if (!consulta) { encontrados = null; pintar(); return; }
-    const r = ruta();
-    if (r.vista === 'proyectos') location.hash = '#/';
-    try {
-      const v = await herramienta('search', { query: consulta, limit: 50, all_projects: true });
-      encontrados = v.map(x => x.id);
-    } catch (e) { aviso(T.error + ': ' + e.message); encontrados = []; }
-    abierta = null; pagina = 1; pintar();
-  }, 180);
-};
+// Busca como el agente. Con un espacio elegido, en ese espacio (así los 50 resultados son suyos); si el
+// servidor no lo deja (arrancó en un proyecto de otro espacio), en todo, y el filtro deja los suyos.
+async function buscar() {
+  consulta = $('q').value.trim();
+  if (!consulta) { encontrados = null; pintar(); return; }
+  if (ruta().vista === 'proyectos') location.hash = '#/';
+  const args = { query: consulta, limit: 50, all_projects: true };
+  try {
+    let v;
+    if (filtro.espacio && filtro.espacio !== '*') {
+      try { v = await herramienta('search', { query: consulta, limit: 50, space: filtro.espacio }); } catch (e) { v = null; }
+    }
+    if (!v) v = await herramienta('search', args);
+    encontrados = v.map(x => x.id);
+  } catch (e) { aviso(T.error + ': ' + e.message); encontrados = []; }
+  abierta = null; pagina = 1; pintar();
+}
+$('q').oninput = () => { clearTimeout(espera); espera = setTimeout(buscar, 180); };
 window.addEventListener('hashchange', () => { elegidaPanel = irPendiente; irPendiente = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs')?.scrollTo(0, 0); });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
