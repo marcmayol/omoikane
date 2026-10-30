@@ -149,3 +149,38 @@ fn los_descartes_de_antes_pasan_a_veredictos() {
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Los falsos positivos de la base real de Marc (30-oct-2026): dentro de un proyecto, dos memorias
+/// que no tienen nada que ver se marcaban como desfasadas solo por nombrar versiones distintas.
+#[test]
+fn una_version_a_secas_no_contradice_a_otro_tema() {
+    let (mut db, dir) = base("temas");
+    guardar(&mut db, Tipo::Fact, "Clave de firma de las Releases", "Desde la 0.14.0 el flujo firma SHA256SUMS con una clave Ed25519 guardada en los secretos del repositorio.", &[]);
+    guardar(&mut db, Tipo::Decision, "Eslogan del proyecto", "Desde la 0.14.1 el eslogan es «Memoria eterna, viva y ultrarrápida».", &[]);
+    assert!(avisos(&db).is_empty(), "{:?}", avisos(&db));
+    // Con nombre sí: la dependencia es la misma cosa aunque las memorias no se parezcan.
+    guardar(&mut db, Tipo::Fact, "Compilación en Linux", "Con rusqlite 0.41.0 hace falta glibc 2.35.", &[]);
+    guardar(&mut db, Tipo::Gotcha, "Pruebas en macOS", "Desde rusqlite 0.42.0 el bundled ya no falla en Intel.", &[]);
+    assert_eq!(avisos(&db).iter().filter(|a| a.0 == revisar::DESFASADA).count(), 1);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Un «está bien así» frente a la memoria de estado no caduca cuando el estado cambia.
+#[test]
+fn compatible_sobrevive_a_los_cambios_de_la_otra() {
+    let (mut db, dir) = base("sobrevive");
+    let vieja = guardar(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
+    let estado = guardar(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
+    assert_eq!(avisos(&db).len(), 1);
+    revisar::descartar(&db, &vieja, revisar::DESFASADA, &estado).unwrap();
+    let c = Cambios { content: Some("La 0.10.0 está publicada en GitHub y crates.io.".into()), reason: Some("otra versión".into()), ..Default::default() };
+    memoria::actualizar(&mut db, &estado, c, None).unwrap();
+    assert!(avisos(&db).is_empty(), "{:?}", avisos(&db));
+    // Pero si cambia la juzgada, el aviso puede volver.
+    let c = Cambios { content: Some("La v0.2.0 publicada el 28-oct-2026.\nFalta publicar en crates.io y en Homebrew.".into()), reason: Some("más".into()), ..Default::default() };
+    memoria::actualizar(&mut db, &vieja, c, None).unwrap();
+    assert_eq!(avisos(&db).len(), 1);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}

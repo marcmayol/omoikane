@@ -64,7 +64,7 @@ They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for
 
 ## Status
 
-Version 0.17.0,
+Version 0.17.1,
  on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install

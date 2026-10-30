@@ -7,8 +7,9 @@
 //!   en una pareja de Revisar).
 //! - `ok:<aviso>`: «está bien así» en un aviso de una sola memoria (`unused`, `due`…).
 //!
-//! Un veredicto vale mientras no cambie lo que juzgó: `superseded` y `ok:*`, mientras la memoria
-//! juzgada no cambie; `contradicts` y `compatible`, mientras no cambie ninguna de las dos. De una
+//! Un veredicto vale mientras no cambie lo que juzgó: `superseded`, `compatible` y `ok:*`, mientras
+//! la memoria juzgada no cambie (un «está bien así» frente a una memoria de estado, que cambia a
+//! diario, no debe caducar cada día); `contradicts`, mientras no cambie ninguna de las dos. De una
 //! pareja manda el veredicto más nuevo (por su sello), así que uno nuevo no necesita borrar el
 //! anterior, y dos equipos que juzgan la misma pareja acaban de acuerdo al sincronizar.
 
@@ -105,7 +106,7 @@ pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> 
             continue;
         }
         ultimo.insert(k.clone(), v.hlc.clone());
-        let vale = cambio_a <= v.at && (v.relation == SUSTITUIDA || cambio_b <= v.at);
+        let vale = cambio_a <= v.at && (v.relation != CONTRADICE || cambio_b <= v.at);
         if vale {
             r.insert(k, v);
         } else {

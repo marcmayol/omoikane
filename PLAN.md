@@ -701,9 +701,92 @@ La primera crítica pública (la IA de un conocido) dio como pega que el recall 
 - **Lo que no se copia**: el juicio en cada guardado (en el benchmark, el 49 % de las candidatas de engram no lo eran) y el escaneo con LLM (regla: ningún LLM dentro).
 - Con la copia de la base real, el eslogan salía «desfasado» frente a la memoria de estado solo por mencionar otra versión: `update` con `compatible` lo quita, que es justo el caso.
 
+### 0.17.1 · el detector de desfasadas comparaba versiones de temas distintos (30-oct-2026)
+Con la base real de Marc salían 6 parejas desfasadas y ninguna lo era: el eslogan («desde la 0.14.1»), la clave de firma («desde la 0.14.0») y la nota de historia (0.2.0), todas contra la memoria de estado y entre sí. Dos causas en `revisar.rs`:
+- **Dentro de un proyecto se daban por relacionadas todas las parejas** (`relacionadas = !vieja.project.is_empty() || …`), y el motivo «versión a secas» (la del propio proyecto) salta entre dos memorias cualesquiera que nombren versiones distintas. Ahora una versión a secas solo cuenta si las dos memorias comparten palabras (el mismo criterio que ya se usaba entre globales); una con nombre («rusqlite 0.41.0») sigue contando siempre, porque el nombre ya las ata. El caso que motivó el detector (nota en la 0.2.0 frente a estado en la 0.9.2, que sí comparten palabras) sigue saliendo: lo cubre su test.
+- **Un `compatible` caducaba cuando cambiaba cualquiera de las dos** (`veredictos.rs`), y frente a una memoria de estado, que cambia a diario, no duraba nada. Ahora solo caduca si cambia la memoria juzgada; `contradicts` sigue caducando si cambia cualquiera.
+- De paso: dos memorias guardadas en el mismo milisegundo no tenían orden y el detector las saltaba. Desempata por el sello `hlc` (y por id), con una consulta más de `(id, hlc)`. Medido intercalado con la copia de la base real, detector recalculado en cada pasada: 81 ms frente a 83 ms de mediana (proceso entero), sin diferencia.
+- Comprobado con la copia de la base real sin ningún veredicto: 0 desfasadas (antes 6). Tests nuevos en `tests/veredictos.rs`.
+
 ### Para cada versión
 
 Probar en el PC y en marc-server; el visor, con capturas en oscuro, en claro y a 400 px; tests y clippy en los tres sistemas; publicar con la receta de 7.3 en cuanto exista; PLAN y README al día.
+
+## Fase 8 · mejor que engram en lo que le faltaba a Omoikane (plan, 30-oct-2026)
+
+El 30-oct-2026, con la 0.17.0 publicada, se leyó entera la documentación de engram v3.6.0 (README, DOCS, ARCHITECTURE, PLUGINS, AGENT-SETUP, PROJECT-ALIASES, TEAM-USAGE, HTTP-AGENT-WORKFLOWS, CLOUD-README, DOCTOR) y se contrastó cada función con `src/`. Salieron diez carencias reales. Marc: «tenemos que ser mejores en esos 10 puntos, y esto es un producto real y escalable». Así que cada punto se diseña para **superar** lo que hace engram, no para igualarlo, y para miles de memorias, varios equipos y compañeros.
+
+Reglas que no cambian: ningún LLM dentro, **8 herramientas MCP** (lo nuevo entra en las que hay), cero dependencias nuevas salvo necesidad probada, Windows igual que Linux y macOS, migración probada con una copia de la base real antes de publicar, y cada cosa medida con datos reales (el recall sigue por debajo de 30 ms; nada nuevo en su camino caliente).
+
+Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts scan --semantic`) y Engram Cloud (Postgres, panel multiusuario, permisos). Faltas menores que no entran aquí: `topic_key`, historial de prompts, `mem_stats` por MCP, export a Obsidian, subproyectos, CommandCode.
+
+### 8.1 · 0.18.0 · nada se pierde: papelera y copia fiel
+
+**Papelera (punto 2).** engram borra en blando por defecto y en duro si se pide; nosotros solo en duro, y `sync restore` solo recupera lo que olvidó *otro* equipo.
+- `forget` deja de borrar: pone `deleted_at` (esquema 9, columna en `memory` con índice parcial) y saca la memoria del FTS y del índice vectorial; la fila, su historial, sus enlaces y sus veredictos se quedan. Toda lectura (`recientes`, `buscar`, recall, `contexto`, `estados`, web, TUI) filtra `deleted_at IS NULL`; es un `WHERE` con índice, no cuesta nada a 30.000 memorias.
+- **Restaurar en cualquier sitio:** `omoi restore <id>` (se funde con el `sync restore` de hoy), `restore` por HTTP, botón en la web (grupo **Papelera** en Revisar, con lo olvidado en los últimos 30 días) y en la TUI. Por MCP, sin herramienta nueva: `update(id, restore: true)`. Restaurar reindexa FTS y vector y, por sync, es un cambio con sello posterior a la marca de olvido, así que **gana en los demás equipos** (hoy ya pasa: `hlc_local > tombstone` conserva la memoria). Un `forget` hecho por error en una máquina se deshace desde cualquiera.
+- **Purga:** a los 30 días (`OMOIKANE_TRASH_DAYS`, 0 = nunca) o con `forget --purge` / `omoi trash empty`. La purga corre en segundo plano al empezar sesión, de 200 en 200, y es lo único que borra filas.
+- Mejor que engram: la papelera es visible y restaurable desde la web, la TUI y la CLI; el historial y los veredictos sobreviven; la restauración viaja.
+
+**Copia fiel (punto 1).** `omoi export` no lleva veredictos y `omoi import` de un export propio pierde historial, ids y fechas. engram tiene un JSON 0.2.0 atómico con pins, relaciones, sesiones y prompts.
+- **Formato `omoi-export/2`:** JSONL por líneas, primera línea `{"format":"omoi-export","version":2,"schema":9,"exported_at":…,"machine":…}` y una línea por cosa: `memory` (con `hlc`, `author`, `deleted_at` y su historial), `verdict`, `tombstone`, `candidate` (opcional, `--with-candidates`) y al final `{"end":true,"count":N,"sha256":…}` del contenido. Se escribe y se lee **en streaming**, una línea en memoria cada vez: 100.000 memorias no cargan la RAM. Opción `--encrypt` con la misma AES-SIV de la sync, para guardar la copia en cualquier sitio.
+- **Importar un export propio restaura exactamente:** mismos ids, fechas, sellos, historial y veredictos. Sobre una base vacía, `export → import → export` da el mismo fichero (test de ida y vuelta, byte a byte salvo la cabecera). Sobre una base viva, **funde** con las mismas reglas que la sync (gana el sello más nuevo; los olvidos no resucitan), así que un import es idempotente y sirve para juntar dos bases. El import de la versión 1 (el formato de hoy) y el de engram siguen funcionando.
+- **Copia automática:** una vez al día, la primera vez que se ejecuta, `VACUUM INTO ~/.omoikane/backups/omoikane-AAAA-MM-DD.db` y se conservan las 7 últimas (`OMOIKANE_BACKUPS`, 0 = apagado). `omoi doctor` dice cuándo fue la última y cuánto ocupan. engram no hace copias solas.
+- Hecho cuando: ida y vuelta idéntica con la base real de Marc (142 memorias) y con el corpus de 3.183; import sobre base viva sin cambios la segunda vez; una base de 50.000 memorias se exporta e importa con menos de 100 MB de RAM.
+
+### 8.2 · 0.19.0 · guardar y corregir con cabeza: secretos, veredictos con motivo, edición parcial y juntar
+
+**Secretos (punto 4).** engram quita lo marcado `<private>…</private>` en dos capas; nosotros solo filtramos las candidatas (`parece_secreto`).
+- `remember` y `update` **redactan solos** antes de guardar: prefijos conocidos (`ghp_`, `sk-`, `AKIA`, `xox?-`, `github_pat_`), bloques PEM, JWT (`eyJ…`), URLs con `usuario:clave@`, y cadenas de ≥ 20 caracteres sin separadores con minúsculas, mayúsculas y cifras (el filtro de las candidatas, que ya pilló un token real). Cada hallazgo pasa a `[redacted:<tipo>]` y la respuesta dice `redacted: N` con los tipos, para que el agente lo sepa y lo diga. `<private>…</private>` también se respeta, por compatibilidad con quien venga de engram.
+- **Segunda capa en la sync**, al exportar la línea: lo que se coló (una base de antes de la 0.19.0) no sale del equipo.
+- **Auditoría de lo que ya hay:** aviso `secret` en Revisar y en `omoi review`, con *redactar* a un clic, y `omoi doctor` cuenta cuántas hay. engram no mira hacia atrás.
+- Sin apagado por parámetro MCP (un agente no debe poder saltárselo); `OMOIKANE_REDACT=0` para quien de verdad lo quiera, y queda apuntado en `doctor`.
+- Medida: cero falsos positivos sobre las 142 memorias reales y el corpus de 3.183 (los hashes de commits y los ULID no son secretos: se excluyen por forma), y los 3 secretos sembrados en el banco de pruebas, redactados.
+
+**Veredictos con motivo y autor (punto 8).** engram guarda relación, motivo, evidencia, confianza, actor y modelo, con seis relaciones.
+- Esquema 10: `verdict.reason` y `verdict.author`. El motivo sale del `reason` de `update` cuando la llamada solo trae veredictos (sin campo nuevo) y, en `remember`, del propio contenido; el autor es la persona de la sync (o `agent:<cliente>` si no hay). Viajan en la línea `verdict`.
+- Dónde se ve: en la nota del recall y de `search` («superseded by X: <motivo>»), en Revisar (quién lo dijo y por qué) y en `omoi review`.
+- Relaciones: se queda en **tres**. `related` ya lo cubren los `[[enlaces]]`; `scoped` y `not_conflict` son `compatible`. No hay confianza numérica: un agente se la inventa, y lo que de verdad protege es que el veredicto **caduca cuando cambia lo juzgado**, cosa que engram no hace.
+- Mejor que engram: menos juicio (sin candidatas en cada guardado), más contexto (motivo y autor donde el agente lo lee), y veredictos que no se quedan viejos.
+
+**Edición parcial (punto 9).** engram tiene find/replace literal en `mem_update`.
+- `update` acepta `replace: [{find, with}]` (literal, cada `find` tiene que aparecer **exactamente una vez**; si no, error con el recuento y nada cambia) y `append: "texto"` (añade al final, para «un paso más» en una receta). Las dos son atómicas con el resto de campos, dejan la versión anterior en el historial, y la respuesta devuelve el fragmento cambiado con 80 caracteres de contexto.
+- Mejor que engram: `append`, el «exactamente una vez» (evita cambiar la línea equivocada en una receta larga) y la respuesta que enseña lo cambiado sin pedir `get`.
+
+**Juntar N memorias en una (punto 10).** engram tiene `mem_consolidate` con vista previa y confirmación.
+- Sin herramienta nueva: `update(id, absorb: [ids])`. El agente escribe él el contenido fundido (es el modelo; Omoikane no redacta) y las absorbidas **van a la papelera** con un veredicto `superseded` hacia la que queda, sus etiquetas y rutas se suman, los `[[enlaces]]` que apuntaban a ellas pasan a la nueva, y su historial se cuelga de la nueva con la nota «absorbed from <id>». Todo en una transacción.
+- Vista previa en la web: botón **Juntar** en una pareja de Revisar (estaba en el diseño de la 7.1), que enseña las dos y pide confirmar; la fusión del texto la hace el agente por `/omoikane juntar <id> <id>` o la persona a mano.
+- Mejor que engram: lo absorbido se recupera de la papelera (8.1), ningún historial se pierde, y los enlaces no se rompen.
+
+### 8.3 · 0.20.0 · proyectos de verdad: buscar donde toca y moverlos en bloque
+
+**Proyecto en `search`, y saber dónde estás (punto 7).** engram tiene `project` en `mem_search`, `mem_current_project` y `mem_list_projects`.
+- `search` y `recent` aceptan `project`: una carpeta, o un **nombre o trozo de nombre** («Balua») que se resuelve contra los proyectos conocidos; si encaja con más de uno, error con la lista. `context` devuelve `project` (ruta, clave de sync y cuántas memorias) y `projects` (hasta 50, por última actividad, con su `status` más reciente en una línea). Consultas con índice `memory_project`; a 500 proyectos sigue siendo instantáneo.
+- Mejor que engram: resolución por nombre parcial, y todo dentro de las 8 herramientas.
+
+**Mover o fusionar un proyecto en bloque (punto 5).** engram tiene alias, merge, consolidate, prune y rescue de proyectos. Nuestro proyecto es la ruta canónica de la raíz git, así que no hay variantes de nombre, pero si mueves la carpeta las memorias se quedan en la ruta vieja.
+- **Detección sola:** al empezar sesión en una carpeta cuyo `origin` coincide con la clave de un proyecto cuya ruta ya no existe en disco, las memorias se mueven a la carpeta nueva (lo mismo que `sync::adoptar` hace hoy con lo que llega de fuera) y se avisa una vez. Sin `origin`, se pregunta en Revisar (grupo **Proyectos que ya no están**, con *mover a…* y *fusionar con…*).
+- CLI: `omoi projects move <vieja> <nueva>`, `omoi projects merge <a> <b>` (b absorbe; las memorias conservan id, historial y veredictos; el `status` más nuevo se queda y el otro queda como `superseded`), `omoi projects prune` (proyectos sin memorias). `omoi doctor` lista los proyectos cuya carpeta no existe con el comando que lo arregla.
+- Mejor que engram: automático por `origin`, sin ficheros de alias ni configuración; y lo que se mueve viaja ya con la clave de sync correcta.
+
+### 8.4 · 0.21.0 · siempre al día: traer cambios a mitad de sesión y escuchar a los subagentes
+
+**Traer cambios a mitad de sesión (punto 3).** Engram Cloud sincroniza en continuo (500 ms) contra su servidor. Nosotros bajamos al empezar sesión y al escribir.
+- El hook de cada mensaje (`omoi recall`) comprueba, **fuera del camino caliente**, si hace más de `OMOIKANE_SYNC_PULL_MINUTES` (2) desde el último intento y, si la sync está configurada, lanza `omoi sync --background` desatendido: el recall sigue en 15-26 ms, y la bajada corre aparte con el `Cerrojo` que ya existe. `omoi serve` hace lo mismo con un temporizador mientras está abierto, y la web enseña lo que llega.
+- Barato cuando no hay nada: `git fetch` y comparar `HEAD`; si no cambió, no se lee ningún fichero (`por_leer` ya va por diff). Medir el coste de una pasada sin cambios en el PC y en marc-server, intercalado, antes de fijar los 2 minutos.
+- Lo que llega a mitad de sesión entra en el recall como cualquier memoria; nada se inyecta por el hecho de llegar. Si una llega marcada `[by Ana]` y tiene que ver con el mensaje, saldrá como siempre.
+- Mejor que engram: sin servidor, cifrado, con cualquier remoto git, y con tope de frecuencia para no castigar la red ni el remoto.
+
+**Subagentes (punto 6).** engram captura en `SubagentStop`.
+- Hook `classic.SubagentStop` del mod (comprobar que el motor lo expone; si no, leer los transcripts de subagentes que Claude Code deja junto al de la sesión) → `omoi recall --session-end` sobre la conversación del subagente, con la misma puntuación de candidatas y una señal más: **error de herramienta seguido del mismo comando con éxito** en un fichero del proyecto, que en los subagentes sí es señal de trampa (en las sesiones de Marc lo eran casi todo scripts de un solo uso; en un subagente que toca el repo, no). Las candidatas llevan `kind: subagent` y se deduplican contra las del padre.
+- Mismo tratamiento en los demás agentes que tengan evento de subagente (Codex, Gemini CLI: comprobar en su documentación).
+- Medida: con 30 transcripts reales de subagentes de Marc, 6 de cada 10 candidatas que él guardaría, y nunca más de 5 por sesión en total.
+
+### Orden y por qué
+8.1 primero porque todo lo demás se apoya en no perder nada (juntar y mover usan la papelera; la copia fiel es la red de seguridad de cada migración siguiente). 8.2 son cambios de API de `remember`/`update` que conviene sacar juntos para no marear a los agentes con tres versiones de esquema de herramientas. 8.3 toca el modelo de proyecto. 8.4 es lo único con red y procesos de fondo, y va al final para medirlo con calma.
+
+Cada versión: tests nuevos (ida y vuelta, papelera con sync entre dos equipos, redacción con falsos positivos cero, `replace` que no encaja una sola vez, `absorb` con enlaces, mover proyecto por `origin`, pull con tope), migración sobre una copia de la base real, capturas de la web en oscuro, claro y 400 px, README y BENCHMARK al día, y la receta de publicación.
+
 
 ## 12. Pruebas
 
