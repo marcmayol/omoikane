@@ -353,7 +353,7 @@ fn los_veredictos_del_esquema_8_se_conservan() {
     assert_eq!(todos.len(), 2);
     assert_eq!((todos[0].relation.as_str(), todos[0].reason.as_str(), todos[0].author.as_str()), ("ok:unused", "", ""));
     assert_eq!((todos[1].memory_id.as_str(), todos[1].other_id.as_str(), todos[1].relation.as_str(), todos[1].reason.as_str()), (a, b, "superseded", ""));
-    assert!(notas(&db, &a, false).unwrap().ends_with(": use that one"));
+    assert!(notas(&db, a, false).unwrap().ends_with(": use that one"));
     let ok: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
     assert_eq!(ok, "ok");
     drop(db);
