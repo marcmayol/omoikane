@@ -412,10 +412,13 @@ fn main() -> Result<()> {
         omoikane::actualizar::quizas_en_segundo_plano();
     }
     let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    // Remember, update, forget y restore saben qué memoria tocan y ponen al día la revisión solo con
+    // ella (`revisar::al_dia_de`); una importación o lo que se haga en la vista, entera.
+    let sin_saber_que = matches!(cli.orden, Orden::Import { .. } | Orden::Tui { .. });
     let r = ejecutar(c, cli.orden);
     if escribe && r.is_ok() {
         // Lo que haya que revisar queda al día para el recall, que solo lee (ver `revisar`).
-        if let Ok(db) = abrir(c) {
+        if sin_saber_que && let Ok(db) = abrir(c) {
             let _ = omoikane::revisar::al_dia(&db);
         }
         omoikane::sync::programar(&ruta_db(c));
@@ -505,11 +508,13 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 // Código 2: no es un error, pero quien llame tiene que saber que no se guardó.
                 std::process::exit(2);
             }
+            let antes = omoikane::revisar::antes(&db)?;
             let m = memoria::guardar(
                 &mut db,
                 Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
                 modelo.as_ref(),
             )?;
+            let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
             let rel = vectores::relacionadas(&db, &busca_en, &m.title, &m.id, 3)?;
             if c.json {
@@ -579,7 +584,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 append,
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
+            let antes = omoikane::revisar::antes(&db)?;
             let (m, cambiados) = memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?;
+            let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
             if c.json {
                 let mut v = serde_json::to_value(&m)?;
@@ -604,7 +611,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 println!("{}", tr!("nothing deleted", "no se ha borrado nada"));
                 return Ok(());
             }
+            let antes = omoikane::revisar::antes(&db)?;
             let m = if purge { memoria::olvidar_del_todo(&mut db, &m.id)? } else { memoria::olvidar(&mut db, &m.id)? };
+            let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             if c.json {
                 return json(&m);
             }
@@ -1756,7 +1765,9 @@ fn restaurar_cli(c: &Comun, id: Option<String>) -> Result<()> {
         return listar_papelera(c, &abrir(c)?);
     };
     let (mut db, modelo) = abrir_con_modelo(c)?;
+    let antes = omoikane::revisar::antes(&db)?;
     let m = memoria::restaurar(&mut db, &id, modelo.as_ref())?;
+    let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
     omoikane::sync::programar(&c.db.clone().unwrap_or_else(db::ruta_por_defecto));
     if c.json {
         return json(&m);

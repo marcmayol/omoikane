@@ -106,7 +106,9 @@ impl Estado {
             Vista::Borrar => {
                 if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('s')) {
                     if let Some(m) = self.elegida().cloned() {
+                        let antes = crate::revisar::antes(db)?;
                         memoria::olvidar(db, &m.id)?;
+                        crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                         self.aviso = tr!("forgotten: {}", "olvidada: {}", m.title);
                     }
                     self.vista = Vista::Lista;
@@ -148,7 +150,9 @@ impl Estado {
                 KeyCode::Char('p') => {
                     if let Some(m) = self.elegida().cloned() {
                         let c = Cambios { pinned: Some(!m.pinned), reason: Some("pinned from omoi tui".into()), ..Default::default() };
+                        let antes = crate::revisar::antes(db)?;
                         memoria::actualizar(db, &m.id, c, None)?;
+                        crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                         self.aviso = if m.pinned { tr!("unpinned", "soltada") } else { tr!("pinned", "fijada") };
                         return Ok(true);
                     }
