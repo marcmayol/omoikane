@@ -30,6 +30,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It saves even when the agent forgets to.** When a session ends, Omoikane reads the conversation and sets aside what you decided and asked for; the next session saves what is worth keeping, in your words.
 - **It saves when you ask.** `/omoikane` goes over the session and saves what is worth keeping; `/omoikane <text>` saves that.
 - **It notices when a memory is out of date.** If a newer memory contradicts an older one, the old one reaches the agent marked `⚠ may be outdated`, and the Review tab shows both side by side.
+- **It remembers what the agent judges.** If it says one memory replaces another, or that two disagree, that's kept, travels to your other machines and reaches the agent flagged next time.
 - **Recipes that come back whole.** A `procedure` memory holds the steps of something you repeat; "publish 0.14.1" brings the whole checklist, and the agent fixes a step when it changes.
 - **Linked memories.** `[[links]]` between notes travel with them: recall one and the warning linked to it comes along.
 - **It picks up where you left off.** Each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
@@ -47,7 +48,7 @@ A recall that injects too much is worse than none: it fills the context with noi
 
 At session start more does arrive: your preferences, what you pinned, where each project stands and what was touched last. Preferences and pins are what you want the agent to always know.
 
-engram, the alternative Omoikane is compared with, doesn't inject memories on each prompt, and takes another road with stale ones: every save proposes similar memories and asks the agent to judge how they relate (`mem_judge`), and each memory type has a review date. Omoikane doesn't ask the agent to judge: it detects the contradiction itself and flags it in the recall, with the reason.
+engram, the alternative Omoikane is compared with, doesn't inject memories on each prompt. With stale ones it does something else: every save proposes similar memories and asks the agent to judge how they relate (`mem_judge`). Omoikane asks for nothing. It detects the contradiction itself, flags it in the recall with the reason, and lets the agent judge only when it knows something Omoikane can't see (`supersedes`, `contradicts`, `compatible`).
 
 ## What about CLAUDE.md?
 
@@ -63,7 +64,8 @@ They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for
 
 ## Status
 
-Version 0.16.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 0.17.0,
+ on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
 
@@ -136,6 +138,10 @@ When a session ends or compacts, Omoikane reads the conversation and sets aside 
 ### It looks after itself
 
 Omoikane notices when a memory has fallen behind: a newer one on the same subject says something different (a higher version of the same thing, or done what was pending), a `status` memory the project has moved past, paths that no longer exist, memories never used in a month, and notes too long for recall. When one of those reaches the agent it comes marked `⚠ may be outdated: newer <id> …`, and saving a memory that makes another outdated says so right away, so the agent fixes it on the spot. The **Review** tab of the web view lists them with the two memories side by side, *forget the old one* and *it's fine as it is*; `omoi review` does the same from the terminal. No model involved: words, dates and versions.
+
+**Verdicts.** What Omoikane can't know by itself, the agent says, with no new tools: when saving or changing a memory it can pass `supersedes` (this one replaces those), `contradicts` (they say different things and it's unclear which holds) or `compatible` (a warning paired them and both hold). The verdict is kept, travels with sync and shows wherever the memories show: in the recall (`⚠ superseded by …`), in `search`, in `context` and in Review. It holds while what it judged doesn't change, and for a pair the newest one wins. "It's fine as it is" is a verdict too, so what you approve on one machine holds on the others.
+
+**Review date.** Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never. When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
 
 ### Procedures and linked memories
 

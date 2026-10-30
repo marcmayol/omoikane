@@ -7,7 +7,7 @@
 use crate::buscar::{self, Opciones};
 use crate::embeber::Modelo;
 use crate::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo};
-use crate::{db, modelos, proyecto, vectores};
+use crate::{db, modelos, proyecto, vectores, veredictos};
 use anyhow::Result;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -29,6 +29,7 @@ If the user asks to continue something and it is unclear what, do at most one `s
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
+When one memory replaces another, say so: `supersedes` (in `remember` or `update`) with the old one's id. When two disagree and you can't tell which holds, `contradicts`; when a warning pairs two that both hold, `compatible`. That judgment is kept, travels with sync and shows wherever the memories show up.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 
 #[derive(Clone)]
@@ -63,6 +64,10 @@ pub struct Remember {
     project: Option<String>,
     /// Save it even if a very similar memory exists.
     force: Option<bool>,
+    /// Ids of memories this one replaces: they will show up as superseded by it.
+    supersedes: Option<Vec<String>>,
+    /// Ids of memories this one disagrees with, when it's not clear which holds.
+    contradicts: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -102,6 +107,12 @@ pub struct Update {
     project: Option<String>,
     /// Why it changes; kept with the previous version.
     reason: Option<String>,
+    /// Ids of memories this one replaces: they will show up as superseded by it.
+    supersedes: Option<Vec<String>>,
+    /// Ids of memories this one disagrees with, when it's not clear which holds.
+    contradicts: Option<Vec<String>>,
+    /// Ids of memories flagged against this one that both hold: clears the warning.
+    compatible: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -133,6 +144,9 @@ struct Compacta {
     project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     similarity: Option<f32>,
+    /// Por qué tomarla con cuidado (sustituida, contradicha, desfasada, sin revisar).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 const LARGO_FRAGMENTO: usize = 200;
@@ -155,7 +169,24 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
         tags: m.tags,
         pinned: m.pinned,
         similarity: similarity.map(|s| (s * 1000.0).round() / 1000.0),
+        note: None,
     }
+}
+
+/// Los veredictos que el agente da con `supersedes`, `contradicts` y `compatible` sobre `id`.
+fn juzgar(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts: Option<Vec<String>>, compatible: Option<Vec<String>>) -> Result<usize> {
+    let mut n = 0;
+    for viejo in supersedes.unwrap_or_default() {
+        veredictos::poner(db, &viejo, id, veredictos::SUSTITUIDA)?;
+        n += 1;
+    }
+    for (lista, relacion) in [(contradicts, veredictos::CONTRADICE), (compatible, veredictos::COMPATIBLE)] {
+        for otra in lista.unwrap_or_default() {
+            veredictos::poner(db, id, &otra, relacion)?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 fn json(v: &impl Serialize) -> CallToolResult {
@@ -247,7 +278,11 @@ impl Servidor {
                     source: origen,
                 };
                 let m = memoria::guardar(db, nueva, modelo)?;
+                let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None)?;
                 let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": if m.project.is_empty() { "(global)" } else { m.project.as_str() } });
+                if juzgadas > 0 {
+                    r["judged"] = serde_json::json!(juzgadas);
+                }
                 let rel = vectores::relacionadas(db, &busca_en, &m.title, &m.id, 3)?;
                 if !rel.is_empty() {
                     r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
@@ -255,10 +290,13 @@ impl Servidor {
                 }
                 // Si deja anticuada a otra (versión más alta, o hecho lo que allí estaba pendiente), se dice ya.
                 crate::revisar::al_dia(db)?;
-                let viejas = crate::revisar::superadas_por(db, &m.id)?;
+                let viejas: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
+                    .into_iter()
+                    .filter(|(id, _, _)| veredictos::parejas(db).map(|p| !p.contains_key(&veredictos::pareja(id, &m.id))).unwrap_or(true))
+                    .collect();
                 if !viejas.is_empty() {
                     r["supersedes"] = serde_json::json!(viejas.iter().map(|(id, titulo, detalle)| serde_json::json!({ "id": id, "title": titulo, "why": detalle })).collect::<Vec<_>>());
-                    r["supersedes_hint"] = serde_json::json!("Saved. It looks newer than these memories, which may now be outdated: update them (or forget them if this one replaces them).");
+                    r["supersedes_hint"] = serde_json::json!("Saved. It looks newer than these memories, which may now be outdated: if this one replaces them, `update` it with `supersedes` (or forget them); if both hold, `compatible`.");
                 }
                 if m.content.chars().count() > crate::recall::LARGO_PARA_RECALL {
                     r["length_hint"] = serde_json::json!(format!("Long memory: only its first {} characters count for automatic recall. Consider splitting it into shorter memories, one fact each.", crate::recall::LARGO_PARA_RECALL));
@@ -300,7 +338,14 @@ impl Servidor {
                     limite: limite(p.limit),
                 };
                 let res = buscar::buscar(db, &p.query, &o, modelo)?;
-                Ok(res.into_iter().map(|r| compacta(r.memoria, todos, r.similarity)).collect::<Vec<_>>())
+                let mut notas = crate::revisar::notas_busqueda(db, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
+                Ok(res
+                    .into_iter()
+                    .map(|r| {
+                        let note = notas.remove(&r.memoria.id);
+                        Compacta { note, ..compacta(r.memoria, todos, r.similarity) }
+                    })
+                    .collect::<Vec<_>>())
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
@@ -330,9 +375,13 @@ impl Servidor {
                     },
                     reason: p.reason,
                 };
-                let m = memoria::actualizar(db, &p.id, c, modelo)?;
+                // Solo veredictos: la memoria no cambia (ni gana una versión vacía en su historial).
+                let solo_juicio = c.title.is_none() && c.content.is_none() && c.kind.is_none() && c.paths.is_none() && c.tags.is_none() && c.pinned.is_none() && c.project.is_none();
+                let m = if solo_juicio { memoria::obtener(db, &p.id)? } else { memoria::actualizar(db, &p.id, c, modelo)? };
+                juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible)?;
                 crate::revisar::al_dia(db)?;
                 Ok(m)
+
             })
             .await;
         if r.is_ok() {

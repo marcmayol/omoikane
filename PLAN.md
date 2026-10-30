@@ -690,7 +690,19 @@ Marc: «¿Omoikane se puede usar con Grok?». Grok Build (`grok`, el agente de t
 - En Windows, Grok ejecuta los hooks con PowerShell (el binario va con `&` si su ruta tiene espacios).
 - **Sin probar con Grok de verdad** (no está instalado en el PC y pide SuperGrok o X Premium+): probado con los formatos de su documentación y su código.
 
+### 0.17.0 · veredictos: lo que engram hace con lo viejo, sin LLM ni herramientas nuevas (30-oct-2026)
+La primera crítica pública (la IA de un conocido) dio como pega que el recall «arrastra lo erróneo». Comparado con la documentación de engram (`DOCS.md`, `AGENT-SETUP.md`): engram guarda siempre y devuelve candidatas por FTS5 que el agente juzga con `mem_judge` (`supersedes`, `conflicts_with`, `compatible`, `related`, `scoped`, `not_conflict`); el veredicto se guarda, se sincroniza y sale en `mem_search`; `mem_compare` juzga dos cualesquiera; `mem_review` lista las que pasaron su `review_after` (cada tipo caduca a su ritmo) y salen `needs_review` en la búsqueda; `conflicts scan --semantic` usa un LLM. Omoikane ya avisaba solo en el recall, pero `search` no llevaba la marca y nada de lo que el agente sabía quedaba apuntado. Hecho así (`src/veredictos.rs`, esquema 8, `tests/veredictos.rs`):
+- **Tabla `verdict(memory_id, other_id, relation, at, hlc)`**: `superseded` (memory_id es la vieja), `contradicts`, `compatible` y `ok:<aviso>` para «está bien así» en una memoria sola. Los «está bien así» que había en `review` pasan ahí al migrar (probado con una copia de la base real: esquema 8, `integrity_check` ok).
+- **El agente los pone con `remember` (`supersedes`, `contradicts`) y `update` (además `compatible`)**: siguen siendo 8 herramientas. Un `update` con solo veredictos no cambia la memoria ni deja una versión vacía en el historial.
+- **Vale mientras no cambie lo que juzgó**: `superseded` y `ok:*`, mientras no cambie la juzgada; `contradicts` y `compatible`, mientras no cambie ninguna. De una pareja manda el más nuevo por sello, en cualquier orden, así que no hay que borrar nada y dos equipos acaban de acuerdo.
+- **Viajan**: línea `verdict` en la carpeta de la memoria juzgada, solo si las dos memorias se comparten; al importar entra si es más nuevo. Las versiones de antes la ignoran (una línea que no entienden se salta).
+- **Dónde salen**: recall (`⚠ superseded by …`, `⚠ contradicts …`), `search` (campo `note`, también con las desfasadas y los estados viejos, que antes solo iban en el recall), `context` y Revisar (grupos Sustituidas, Se contradicen y Toca revisarlas). Una pareja con veredicto ya no sale como desfasada.
+- **Fecha de revisión por tipo (`due`)**: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, preferencias nunca, `status` con su aviso de siempre. «Está bien así» pone el reloj a cero. Sale en Revisar y en `search`, **no en el recall**: ahí solo va lo que dice que la memoria puede estar mal, para no meter ruido.
+- **Lo que no se copia**: el juicio en cada guardado (en el benchmark, el 49 % de las candidatas de engram no lo eran) y el escaneo con LLM (regla: ningún LLM dentro).
+- Con la copia de la base real, el eslogan salía «desfasado» frente a la memoria de estado solo por mencionar otra versión: `update` con `compatible` lo quita, que es justo el caso.
+
 ### Para cada versión
+
 Probar en el PC y en marc-server; el visor, con capturas en oscuro, en claro y a 400 px; tests y clippy en los tres sistemas; publicar con la receta de 7.3 en cuanto exista; PLAN y README al día.
 
 ## 12. Pruebas

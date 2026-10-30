@@ -282,6 +282,18 @@ enum Linea {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
     },
+    /// Un veredicto (`veredictos`), en la carpeta de la memoria juzgada. Las versiones de antes de la
+    /// 0.17.0 no lo entienden y se lo saltan.
+    Verdict {
+        memory_id: String,
+        #[serde(default)]
+        other_id: String,
+        relation: String,
+        at: String,
+        hlc: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        machine: String,
+    },
 }
 
 /// Un id como los que escribe Omoikane (ULID: 26 letras y números en mayúsculas). Una línea con otro
@@ -617,12 +629,15 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let claves = claves_locales(db, &config.person)?;
     let mut ficheros: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut n = 0;
+    // La carpeta de cada memoria que se comparte: sus veredictos van con ella.
+    let mut carpetas: HashMap<String, String> = HashMap::new();
     for (m, hlc) in todas(db)? {
         let k = claves.get(&m.project).cloned().unwrap_or_default();
         if !config.comparte(&m, &k) {
             continue;
         }
         let carpeta = if m.project.is_empty() { "global".to_string() } else { cifra.carpeta(&k) };
+        carpetas.insert(m.id.clone(), carpeta.clone());
         let l = Linea::Memory {
             id: m.id,
             project_key: k,
@@ -641,6 +656,14 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         };
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
+    }
+    for v in crate::veredictos::todos(db)? {
+        // Solo si las dos memorias viajan: un veredicto sobre algo que el otro equipo no tiene no sirve.
+        let (Some(carpeta), true) = (carpetas.get(&v.memory_id), v.other_id.is_empty() || carpetas.contains_key(&v.other_id)) else {
+            continue;
+        };
+        let l = Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, machine: equipo.to_string() };
+        ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
     {
         let mut q = db.prepare("SELECT id, deleted_at, hlc FROM tombstone ORDER BY id")?;
@@ -764,8 +787,9 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
             };
             let (id, machine) = match &x {
                 Linea::Memory { id, machine, .. } | Linea::Tombstone { id, machine, .. } => (id, machine),
+                Linea::Verdict { memory_id, machine, .. } => (memory_id, machine),
             };
-            if !id_valido(id) {
+            if !id_valido(id) || matches!(&x, Linea::Verdict { other_id, .. } if !other_id.is_empty() && !id_valido(other_id)) {
                 *r.malos.entry(relativo.clone()).or_default() += 1;
                 continue;
             }
@@ -805,8 +829,13 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
     // Las rutas que ya son proyectos aquí, y las que se van asignando en esta misma pasada: dos claves
     // desconocidas con la misma ruta de origen no acaban en el mismo proyecto.
     let mut rutas_locales: HashSet<String> = locales.values().cloned().collect();
+    // Los veredictos, después de las memorias que juzgan.
+    let mut veredictos = Vec::new();
     for (origen, fichero, l) in lineas {
         let Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author, .. } = l else {
+            if let Linea::Verdict { memory_id, other_id, relation, at, hlc, .. } = l {
+                veredictos.push((fichero, crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc }));
+            }
             continue;
         };
         // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra persona).
@@ -864,7 +893,21 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
             *r.malos.entry(fichero).or_default() += 1;
         }
     }
+    for (fichero, v) in veredictos {
+        // De una memoria que aquí no está (no se comparte, o se olvidó) no se apunta nada.
+        let existe = |id: &str| -> Result<bool> { Ok(db.query_row("SELECT count(*) FROM memory WHERE id = ?1", [id], |f| f.get::<_, i64>(0))? > 0) };
+        let hecho = (|| -> Result<()> {
+            if existe(&v.memory_id)? && (v.other_id.is_empty() || existe(&v.other_id)?) {
+                crate::veredictos::recibir(db, &v)?;
+            }
+            Ok(())
+        })();
+        if hecho.is_err() {
+            *r.malos.entry(fichero).or_default() += 1;
+        }
+    }
     r.ilegibles = r.malos.values().sum();
+
     Ok(())
 }
 

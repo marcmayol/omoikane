@@ -667,3 +667,26 @@ fn los_equipos_de_una_persona_sin_nombre_juntan_sus_proyectos_sin_remoto() {
     let en_b = b.get(&id).unwrap();
     assert_eq!(en_b["project"].as_str().unwrap(), web_b.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\"), "{en_b}");
 }
+
+/// 0.17.0: un «está bien así» (un veredicto) que se da en un equipo vale en los demás.
+#[test]
+fn los_veredictos_viajan() {
+    let p = Prueba::nueva("veredictos");
+    let (a, b) = dos(&p, &[], &[]);
+    let pa = a.proyecto("lumbre", Some("git@github.com:marc/lumbre.git"));
+    let pb = b.proyecto("lumbre", Some("git@github.com:marc/lumbre.git"));
+    let vieja = a.guardar(&pa, "fact", "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
+    let nueva = a.guardar(&pa, "fact", "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["--tag", "status"]);
+    a.sync();
+    b.json_en(&pb, &["sync"]);
+    let desfasadas = |e: &Equipo, en: &Path| -> usize {
+        let v = e.json_en(en, &["review", "--all"]);
+        v.as_array().unwrap().iter().filter(|x| x["kind"] == "outdated").count()
+    };
+    assert_eq!(desfasadas(&b, &pb), 1);
+    a.ok_en(&pa, &["review", "--dismiss", &vieja, "--other", &nueva], &[]);
+    assert_eq!(desfasadas(&a, &pa), 0);
+    a.sync();
+    b.json_en(&pb, &["sync"]);
+    assert_eq!(desfasadas(&b, &pb), 0);
+}

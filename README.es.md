@@ -30,6 +30,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Guarda aunque el agente se olvide.** Al cerrar la sesión, Omoikane lee la conversación y aparta lo que decidiste y lo que pediste; la sesión siguiente guarda lo que valga, con tus palabras.
 - **Guarda cuando se lo pides.** `/omoikane` repasa la sesión y guarda lo que valga; `/omoikane <texto>` guarda eso.
 - **Se da cuenta de cuándo una memoria se ha quedado vieja.** Si una más nueva contradice a otra, la vieja le llega al agente marcada con `⚠ may be outdated`, y la pestaña Revisar enseña las dos una al lado de la otra.
+- **Recuerda lo que juzga el agente.** Si dice que una memoria sustituye a otra, o que dos se contradicen, queda apuntado, viaja a tus otros equipos y le llega marcado la próxima vez.
 - **Recetas que vuelven enteras.** Una memoria de tipo `procedure` guarda los pasos de algo que se repite; «publica la 0.14.1» trae la lista entera, y el agente corrige el paso que cambie.
 - **Memorias conectadas.** Los `[[enlaces]]` entre notas viajan con ellas: al recordar una, llega también el aviso que lleva enlazado.
 - **Retoma donde lo dejaste.** Al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
@@ -47,7 +48,7 @@ Un recall que inyecta de más es peor que no tenerlo: llena el contexto de ruido
 
 Al empezar la sesión sí llega más: tus preferencias, lo que has fijado, en qué punto está cada proyecto y lo último que se tocó. Las preferencias y lo fijado son lo que tú quieres que el agente sepa siempre.
 
-engram, la alternativa con la que se compara Omoikane, no inyecta memorias en cada mensaje, y con lo viejo sigue otro camino: cada vez que guarda, propone las memorias parecidas y le pide al agente que juzgue qué relación tienen (`mem_judge`), y cada tipo de memoria tiene una fecha de revisión. Omoikane no le pide al agente que juzgue: detecta él la contradicción y la marca en el recall, con el motivo.
+engram, la alternativa con la que se compara Omoikane, no inyecta memorias en cada mensaje. Con lo viejo hace otra cosa: cada vez que guarda, propone las memorias parecidas y le pide al agente que juzgue qué relación tienen (`mem_judge`). Omoikane no pide nada. Detecta él la contradicción, la marca en el recall con el motivo y deja al agente juzgar solo cuando sabe algo que Omoikane no puede ver (`supersedes`, `contradicts`, `compatible`).
 
 ## ¿Y CLAUDE.md?
 
@@ -63,7 +64,8 @@ Pueden convivir: CLAUDE.md para las reglas fijas del repositorio y Omoikane para
 
 ## Estado
 
-Versión 0.16.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 0.17.0,
+ en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
 
@@ -136,6 +138,10 @@ Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que
 ### Se cuida sola
 
 Omoikane se da cuenta de cuándo una memoria se ha quedado atrás: otra más nueva del mismo tema dice algo distinto (una versión más alta de lo mismo, o hecho lo que estaba pendiente), una memoria `status` que el proyecto ya ha dejado atrás, rutas que ya no existen, memorias que en un mes no se han usado nunca y notas demasiado largas para el recall. Cuando una de esas le llega al agente, va marcada con `⚠ may be outdated: newer <id> …`, y al guardar una memoria que deja anticuada a otra se le dice en el momento, para que lo arregle ahí mismo. La pestaña **Revisar** de la vista web las enseña con las dos memorias una al lado de la otra, *olvidar la vieja* y *está bien así*; `omoi review` hace lo mismo desde la terminal. Sin modelo: palabras, fechas y versiones.
+
+**Veredictos.** Lo que Omoikane no puede saber solo lo dice el agente, sin herramientas nuevas: al guardar o cambiar una memoria puede pasar `supersedes` (esta sustituye a aquellas), `contradicts` (dicen cosas distintas y no se sabe cuál vale) o `compatible` (un aviso las emparejó y valen las dos). El veredicto se guarda, viaja con la sincronización y sale donde salen las memorias: en el recall (`⚠ superseded by …`), en `search`, en `context` y en Revisar. Vale mientras no cambie lo que juzgó, y de una pareja manda el más nuevo. «Está bien así» también es un veredicto, así que lo que das por bueno en un equipo vale en los demás.
+
+**Fecha de revisión.** Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca. Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.
 
 ### Recetas y memorias conectadas
 
