@@ -10,11 +10,23 @@
 
 > Omoikane (思兼, "the one who gathers thoughts") is the kami the other gods consult when a decision has to be made: he remembers everything that is known and puts it together. That is what this program does for an agent.
 
+## What makes it different
+
+Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone. Omoikane keeps those as short, typed memories in a local SQLite file, and does the rest by itself:
+
+- **It recalls without being asked.** On every prompt a hook gives the agent the 3-5 memories that matter for what you just typed, plus the gotchas of the files you mentioned, in about 20 ms. The agent doesn't have to remember to search.
+- **It saves even when the agent forgets to.** When a session ends, Omoikane reads the conversation and sets aside what you decided and asked for; the next session saves what is worth keeping, in your words.
+- **It notices when a memory is out of date.** If a newer memory contradicts an older one, the old one reaches the agent marked `⚠ may be outdated`, and the Review tab shows both side by side.
+- **Recipes that come back whole.** A `procedure` memory holds the steps of something you repeat; "publish 0.14.1" brings the whole checklist, and the agent fixes a step when it changes.
+- **Linked memories.** `[[links]]` between notes travel with them: recall one and the warning linked to it comes along.
+- **It picks up where you left off.** Each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
+- **Search that works in your language**, accents or not: on questions written blind it finds the right memory first 90 % of the time, in 43 ms.
+- **Private and small.** One binary, one file, 8 MCP tools and no server of its own. Optional sync goes through a git repository of yours, encrypted.
+- **It keeps itself up to date**, and only installs releases signed with Omoikane's key.
+
 ## Status
 
-Early development. See [PLAN.md](PLAN.md) (Spanish) for the full design and roadmap.
-
-Working today: the memory store and its CLI (phase 1), search by words (plus meaning as a fallback) and duplicate detection when saving (phase 2), the MCP server for agents (phase 3), and automatic recall through Claude Code hooks, packaged as a plugin (phase 4). Phase 5 adds prebuilt binaries and one-line installers. CI runs on Windows, Linux and macOS. The 101-language model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in **2.7 ms** instead of 1.78 s, with identical token ids to `tokenizers` over 165,282 sentences, and four processes share it with 13 MB of private memory each. Tested on Windows and Linux.
+Version 0.14.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
 
@@ -25,7 +37,7 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 /plugin install omoikane@drac
 ```
 
-To get updates automatically, turn on auto-update for the marketplace once: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
+`omoi setup claude` and the one-line installers ask whether Omoikane should keep itself up to date, and if so turn on the plugin's update too. If you only ran the two commands above, turn it on once: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
 
 On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`).
 
@@ -80,20 +92,18 @@ Memories belong to the git repository you run `omoi` in (`--global` makes one ap
 
 `omoi setup <agent>` registers the MCP server, the automatic recall where the agent allows it, and a short paragraph in its instructions file. It shows what it will change first (`--dry-run` to only look), keeps a copy of every file it touches (`<file>.antes-de-omoikane`) and does nothing twice.
 
-| Agent | Tools (MCP) | Automatic recall | Tested |
-|---|---|---|---|
-| Claude Code | yes (the plugin) | session start and every prompt | yes |
-| OpenCode | yes | every prompt (a small plugin) | yes, 1.19.5 |
-| Codex CLI | yes | session start and every prompt (approve the hooks once with `/hooks`) | from its docs |
-| Gemini CLI | yes | session start and every prompt | from its docs |
-| Qwen Code | yes | session start and every prompt | from its docs |
-| Kiro | yes | session start and every prompt | from its docs |
-| Cursor | yes | session start only (its prompt hook can't add context) | from its docs |
-| GitHub Copilot (CLI and VS Code) | yes | session start only (its docs say prompt-hook output is dropped) | from its docs |
-| Antigravity CLI | yes | session start only (no prompt event) | from its docs |
-| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | yes | no (their hooks can't add context, or it isn't documented) | from their docs |
-
-### Coming from engram
+| Agent | Tools (MCP) | Automatic recall | Saves at session end | Tested |
+|---|---|---|---|---|
+| Claude Code | yes (the plugin) | session start and every prompt | yes | yes |
+| OpenCode | yes | every prompt (a small plugin) | yes (the plugin) | yes, 1.19.5 |
+| Codex CLI | yes | session start and every prompt (approve the hooks once with `/hooks`) | yes | from its docs |
+| Gemini CLI | yes | session start and every prompt | yes | from its docs |
+| Qwen Code | yes | session start and every prompt | yes | from its docs |
+| Kiro | yes | session start and every prompt | yes | from its docs |
+| Cursor | yes | session start only (its prompt hook can't add context) | yes | from its docs |
+| GitHub Copilot (CLI and VS Code) | yes | session start only (its docs say prompt-hook output is dropped) | yes | from its docs |
+| Antigravity CLI | yes | session start only (no prompt event) | no (its conversations are in an undocumented binary format) | from its docs |
+| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | yes | no (their hooks can't add context, or it isn't documented) | no | from their docs |
 
 `omoi setup` also adds a `/omoikane-web` command that opens the web view, in the agents that support user commands: Gemini CLI, Qwen Code, Codex (`/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi and Kilo Code. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it.
 
@@ -117,24 +127,13 @@ From then on it runs by itself, for every agent: after each saved, changed or fo
 
 `omoi sync off` stops syncing on a computer; its memories stay.
 
-### Coming from engram
+### Importing from other tools
 
-`engram export` and then `omoi import engram-export.json`. Types map to Omoikane's (bugfix → gotcha, decision, preference; the rest become facts tagged with their engram type), `topic_key` becomes a `topic:` tag, personal scope becomes global, dates are kept, deleted observations are skipped and anything already saved is not imported twice. `--dry-run` shows where each memory would go. `omoi import` also reads `omoi export` files.
+`omoi import` reads exports from engram (`engram export`) and from `omoi export`: it maps the kinds, keeps the dates, skips what was deleted and imports nothing twice. `--dry-run` shows where each memory would go.
 
-## How it compares
+## Measured
 
-Against engram, with the same 127 real notes and questions written blind (130 of them never used for tuning), and at 3,183 memories: search takes the question as typed (88 % top-1 on natural questions, where engram needs keywords to match it), 34 ms per search against 120-155 ms, on questions never used for tuning it finds the right note more often (86-92 % top-1 on natural and paraphrased questions against 83-84 %, 87 % against 67 % in English), duplicates are caught as often as engram's (100 %) while flagging a third to half as many non-duplicates, it stays as accurate at 3,183 memories (50 ms per search against 203 ms), and an agent answering with it cost 29-40 % less. Both sync between computers: engram through git exports or a server you host (Postgres), in plain text; Omoikane through a git repository of yours, encrypted and automatic. Both set up 14 agents. Full method and every number, including where engram wins: [BENCHMARK.md](BENCHMARK.md).
-
-## What it does
-
-Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone.
-
-Omoikane keeps those as short, typed memories in a local SQLite file and gives them back:
-
-- **Search that works in your language.** Keywords (FTS5, accent-insensitive, file paths included) rank the results; a local static embedding model adds very close matches that share no words, and spots duplicates when you save. Measured on real notes, words alone find the right memory first 98 % of the time; the embeddings are there to catch duplicates, not to replace that.
-- **Automatic recall.** On every prompt the plugin runs `omoi recall`. It is a compiled subcommand, no bash, no curl, no server, and it answers in milliseconds with the 3-5 memories that matter for what you just typed, plus any *gotcha* attached to the files you mentioned.
-- **Small on purpose.** 8 MCP tools. No daemon and no server of its own. One `~/.omoikane/omoikane.db`; optional sync goes through a git repository of yours.
-- **History with reasons.** Updating a memory keeps the previous version and, if the agent says so, why it changed.
+With 137 real notes and questions written blind by another agent, never used for tuning: search finds the right memory first 90 % of the time and within the top three 97 %, with a median of 43 ms. At 3,183 memories it stays as accurate, at 50 ms per search. Over 300 real messages it only injects something when it relates (in 7 % of them), and the recall hook takes 15-26 ms. The 101-language embedding model ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) opens in 2.7 ms instead of 1.78 s. Full method and every number: [BENCHMARK.md](BENCHMARK.md).
 
 ## Memory model
 

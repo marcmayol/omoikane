@@ -10,11 +10,23 @@
 
 > Omoikane (思兼, «el que reúne pensamientos») es el kami al que los demás dioses consultan cuando hay que decidir: recuerda todo lo que se sabe y lo junta. Eso es lo que hace este programa por un agente.
 
+## Qué lo hace distinto
+
+Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo. Omoikane lo guarda como memorias cortas y tipadas en un SQLite local, y hace lo demás solo:
+
+- **Recuerda sin que se lo pidas.** En cada mensaje, un hook le da al agente las 3-5 memorias que importan para lo que acabas de escribir, más las trampas de los ficheros que has nombrado, en unos 20 ms. El agente no tiene que acordarse de buscar.
+- **Guarda aunque el agente se olvide.** Al cerrar la sesión, Omoikane lee la conversación y aparta lo que decidiste y lo que pediste; la sesión siguiente guarda lo que valga, con tus palabras.
+- **Se da cuenta de cuándo una memoria se ha quedado vieja.** Si una más nueva contradice a otra, la vieja le llega al agente marcada con `⚠ may be outdated`, y la pestaña Revisar enseña las dos una al lado de la otra.
+- **Recetas que vuelven enteras.** Una memoria de tipo `procedure` guarda los pasos de algo que se repite; «publica la 0.14.1» trae la lista entera, y el agente corrige el paso que cambie.
+- **Memorias conectadas.** Los `[[enlaces]]` entre notas viajan con ellas: al recordar una, llega también el aviso que lleva enlazado.
+- **Retoma donde lo dejaste.** Al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
+- **Busca bien en tu idioma**, con tildes o sin ellas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms.
+- **Privado y pequeño.** Un binario, un fichero, 8 herramientas MCP y ningún servidor propio. La sincronización, opcional, va cifrada por un repositorio git tuyo.
+- **Se mantiene al día solo**, y solo instala versiones firmadas con la clave de Omoikane.
+
 ## Estado
 
-En desarrollo. El diseño completo y las fases están en [PLAN.md](PLAN.md).
-
-Funciona ya: el almacén de memorias y su CLI (fase 1), la búsqueda por palabras (y por significado como rescate) con aviso de duplicados al guardar (fase 2) el servidor MCP para agentes (fase 3) y el recall automático con hooks de Claude Code, empaquetado como plugin (fase 4). La fase 5 añade binarios compilados e instaladores de una línea. La CI corre en Windows, Linux y macOS. El modelo de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en **2,7 ms** en vez de 1,78 s, con los mismos ids que `tokenizers` en 165.282 frases, y cuatro procesos lo comparten con 13 MB de memoria privada cada uno. Probado en Windows y Linux.
+Versión 0.14.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
 
@@ -25,7 +37,7 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 /plugin install omoikane@drac
 ```
 
-Para recibir las actualizaciones solo, activa una vez la actualización automática del marketplace: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
+`omoi setup claude` y los instaladores de una línea preguntan si quieres que Omoikane se actualice solo y, si dices que sí, encienden también la actualización del plugin. Si solo has usado los dos comandos de arriba, actívala una vez: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
 
 En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`).
 
@@ -80,18 +92,18 @@ Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--glob
 
 `omoi setup <agente>` registra el servidor MCP, el recall automático donde el agente lo permite y un párrafo en su fichero de instrucciones. Antes enseña lo que va a cambiar (`--dry-run` para solo mirar), guarda una copia de cada fichero que toca (`<fichero>.antes-de-omoikane`) y no hace nada dos veces.
 
-| Agente | Herramientas (MCP) | Recall automático | Probado |
-|---|---|---|---|
-| Claude Code | sí (el plugin) | al empezar y en cada mensaje | sí |
-| OpenCode | sí | en cada mensaje (un plugin pequeño) | sí, 1.19.5 |
-| Codex CLI | sí | al empezar y en cada mensaje (aprueba los hooks una vez con `/hooks`) | según su documentación |
-| Gemini CLI | sí | al empezar y en cada mensaje | según su documentación |
-| Qwen Code | sí | al empezar y en cada mensaje | según su documentación |
-| Kiro | sí | al empezar y en cada mensaje | según su documentación |
-| Cursor | sí | solo al empezar (su hook del mensaje no deja añadir contexto) | según su documentación |
-| GitHub Copilot (CLI y VS Code) | sí | solo al empezar (su documentación dice que la salida del hook del mensaje se descarta) | según su documentación |
-| Antigravity CLI | sí | solo al empezar (no tiene evento de mensaje) | según su documentación |
-| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | sí | no (sus hooks no pueden añadir contexto, o no está documentado) | según su documentación |
+| Agente | Herramientas (MCP) | Recall automático | Guarda al cerrar | Probado |
+|---|---|---|---|---|
+| Claude Code | sí (el plugin) | al empezar y en cada mensaje | sí | sí |
+| OpenCode | sí | en cada mensaje (un plugin pequeño) | sí (el plugin) | sí, 1.19.5 |
+| Codex CLI | sí | al empezar y en cada mensaje (aprueba los hooks una vez con `/hooks`) | sí | según su documentación |
+| Gemini CLI | sí | al empezar y en cada mensaje | sí | según su documentación |
+| Qwen Code | sí | al empezar y en cada mensaje | sí | según su documentación |
+| Kiro | sí | al empezar y en cada mensaje | sí | según su documentación |
+| Cursor | sí | solo al empezar (su hook del mensaje no deja añadir contexto) | sí | según su documentación |
+| GitHub Copilot (CLI y VS Code) | sí | solo al empezar (su documentación dice que la salida del hook del mensaje se descarta) | sí | según su documentación |
+| Antigravity CLI | sí | solo al empezar (no tiene evento de mensaje) | no (guarda las conversaciones en un formato binario sin documentar) | según su documentación |
+| Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | sí | no (sus hooks no pueden añadir contexto, o no está documentado) | no | según su documentación |
 
 `omoi setup` añade también una orden `/omoikane-web` que abre la vista web, en los agentes que admiten órdenes de usuario: Gemini CLI, Qwen Code, Codex (`/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi y Kilo Code. En esos agentes una orden es un texto para el modelo, así que es el agente quien ejecuta `omoi serve --open` y puede pedir permiso antes.
 
@@ -115,24 +127,13 @@ Desde entonces funciona solo y con todos los agentes: después de guardar, cambi
 
 `omoi sync off` deja de sincronizar en un equipo; sus memorias se quedan.
 
-### Si vienes de engram
+### Importar de otras herramientas
 
-`engram export` y después `omoi import engram-export.json`. Los tipos pasan a los de Omoikane (bugfix → gotcha, decision, preference; el resto, facts con su tipo de engram como etiqueta), `topic_key` pasa a una etiqueta `topic:`, el ámbito personal pasa a global, se conservan las fechas, se saltan las observaciones borradas y lo que ya estaba guardado no se importa dos veces. `--dry-run` enseña adónde iría cada memoria. `omoi import` también lee los ficheros de `omoi export`.
+`omoi import` lee las exportaciones de engram (`engram export`) y las de `omoi export`: adapta los tipos, conserva las fechas, se salta lo borrado y no importa nada dos veces. `--dry-run` enseña adónde iría cada memoria.
 
-## Comparado con engram
+## Medido
 
-Con las mismas 127 notas reales y preguntas escritas a ciegas (130 de ellas nunca usadas para ajustar), y con 3.183 memorias: la búsqueda entiende la pregunta tal como se escribe (88 % de top-1 con preguntas naturales, cuando engram necesita palabras clave para lo mismo), tarda 34 ms frente a 120-155 ms, con preguntas nunca usadas para ajustar encuentra más veces la nota buena (86-92 % de top-1 con naturales y paráfrasis frente a 83-84 %, 87 % frente a 67 % en inglés), caza los duplicados tanto como engram (100 %) señalando entre un tercio y la mitad de no duplicados, sigue igual de preciso con 3.183 memorias (50 ms por búsqueda frente a 203 ms), y un agente respondiendo con él gastó entre un 29 % y un 40 % menos. Los dos sincronizan entre equipos: engram con exportaciones a git o un servidor que montas tú (Postgres), en claro; Omoikane con un repositorio git tuyo, cifrado y automático. Los dos preparan 14 agentes. El método completo y todos los números, también donde gana engram: [BENCHMARK.es.md](BENCHMARK.es.md).
-
-## Qué hace
-
-Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo.
-
-Omoikane guarda eso como memorias cortas y tipadas en un SQLite local, y las devuelve:
-
-- **Búsqueda que funciona en tu idioma.** Las palabras (FTS5, sin importar las tildes, rutas de fichero incluidas) ordenan los resultados; un modelo de embeddings estático y local añade lo muy parecido que no comparte palabras y detecta duplicados al guardar. Medido con notas reales, las palabras solas sacan primero la memoria correcta el 98 % de las veces; los embeddings están para pillar duplicados, no para sustituir eso.
-- **Recall automático.** En cada mensaje el plugin ejecuta `omoi recall`. Es un subcomando compilado, sin bash, sin curl, sin servidor, y responde en milisegundos con las 3-5 memorias que importan para lo que acabas de escribir, más los *gotcha* de los ficheros que has mencionado.
-- **Pequeño a propósito.** 8 herramientas MCP. Sin demonio ni servidor propio. Un `~/.omoikane/omoikane.db`; la sincronización, opcional, va por un repositorio git tuyo.
-- **Historial con motivo.** Actualizar una memoria conserva la versión anterior y, si el agente lo dice, por qué cambió.
+Con 137 notas reales y preguntas escritas a ciegas por otro agente, que nunca se usaron para ajustar: la búsqueda acierta la memoria a la primera el 90 % de las veces y entre las tres primeras el 97 %, con una mediana de 43 ms. Con 3.183 memorias sigue igual de precisa, a 50 ms por búsqueda. En 300 mensajes reales solo inyecta algo cuando tiene que ver (en un 7 % de ellos), y el hook del recall tarda entre 15 y 26 ms. El modelo de embeddings de 101 idiomas ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) abre en 2,7 ms en lugar de 1,78 s. El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md).
 
 ## Modelo de memoria
 
