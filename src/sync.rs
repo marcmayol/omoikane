@@ -570,8 +570,8 @@ pub(crate) enum Linea {
         /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
-        /// Las versiones anteriores: solo en `omoi export` (la sincronización no las lleva, para que
-        /// el repositorio no crezca con cada cambio).
+        /// Las versiones anteriores (`omoi export` y, desde la 0.20.0, la sincronización). Las versiones
+        /// de antes las ignoran; lo que ya hay con ese número se queda.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         versions: Vec<crate::memoria::Version>,
     },
@@ -1060,14 +1060,20 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
             "global".to_string()
         };
         carpetas.insert(m.id.clone(), carpeta.clone());
+        // El historial viaja con la memoria: quien se une a un repositorio (un compañero, al pasar un
+        // proyecto personal a un espacio) la recibe con sus versiones de antes.
+        let versiones = crate::memoria::historial(db, &m.id)?;
         // Segunda capa: lo que se guardó antes de la 0.19.0 (o con `OMOIKANE_REDACT=0` en otro momento)
-        // no sale del equipo con su secreto. Aquí se queda como está, con su aviso en Revisar.
-        let m = if crate::secretos::activo() {
-            Memoria { title: crate::secretos::redactar(&m.title).0, content: crate::secretos::redactar(&m.content).0, ..m }
+        // no sale del equipo con su secreto, ni en la memoria ni en sus versiones. Aquí se queda como
+        // está, con su aviso en Revisar.
+        let (m, versiones) = if crate::secretos::activo() {
+            let tapar = |t: &str| crate::secretos::redactar(t).0;
+            let versiones = versiones.into_iter().map(|v| crate::memoria::Version { title: tapar(&v.title), content: tapar(&v.content), ..v }).collect();
+            (Memoria { title: tapar(&m.title), content: tapar(&m.content), ..m }, versiones)
         } else {
-            m
+            (m, versiones)
         };
-        let l = linea_de(m, hlc, content_hlc, equipo, Vec::new());
+        let l = linea_de(m, hlc, content_hlc, equipo, versiones);
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
     }
@@ -1080,9 +1086,16 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
     {
-        let mut q = db.prepare("SELECT id, deleted_at, hlc FROM tombstone ORDER BY id")?;
-        let marcas: Vec<(String, String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (id, deleted_at, hlc) in marcas {
+        let mut q = db.prepare("SELECT t.id, t.deleted_at, t.hlc, f.memory FROM tombstone t LEFT JOIN forgotten f ON f.id = t.id ORDER BY t.id")?;
+        let marcas: Vec<(String, String, String, Option<String>)> =
+            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (id, deleted_at, hlc, memoria) in marcas {
+            // Si la papelera dice de qué espacio era, el olvido va solo a su repositorio; si no se sabe
+            // (llegó de otro equipo sin la memoria, o se vació la papelera), a todos, como siempre.
+            let espacio = memoria.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|v| v["space"].as_str().unwrap_or("").to_string());
+            if espacio.is_some_and(|e| !va_al_repo(config, &e)) {
+                continue;
+            }
             let l = Linea::Tombstone { id, deleted_at, hlc, machine: equipo.to_string() };
             ficheros.entry("olvidos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         }
@@ -1298,7 +1311,7 @@ impl<'a> Aplicador<'a> {
                 // Vuelve a existir con un sello posterior a su olvido (otro equipo la restauró): ya no
                 // está en la papelera.
                 db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
-                // El historial que venga (solo en `omoi export`): lo que ya hay con ese número se queda.
+                // El historial que venga: lo que ya hay con ese número se queda.
                 for v in versions {
                     db.execute(
                         "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
