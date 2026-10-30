@@ -16,7 +16,7 @@
 //! `OMOIKANE_TRASH_DAYS` (30; 0 = nunca).
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, Ambito, COLUMNAS, de_fila};
+use crate::memoria::{self, Ambito, COLUMNAS, NCOL, de_fila};
 use crate::sync::{self, Aplicador, Cifra, Linea, Resumen};
 use crate::tr;
 use anyhow::{Context, Result, bail, ensure};
@@ -56,10 +56,8 @@ fn cifra_de(ruta_db: &Path) -> Result<Cifra> {
 /// Escribe el fichero. Devuelve cuántas líneas van entre la cabecera y el cierre.
 pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, salida: &mut impl Write) -> Result<Cuenta> {
     let cifra = if cifrar { Some(cifra_de(ruta_db)?) } else { None };
-    let persona = sync::leer_config(ruta_db)?.map(|c| c.person).unwrap_or_default();
-    // Las mismas claves que exporta la sincronización: una ruta que llegó de otro equipo lleva la clave
-    // con la que llegó (`remote_project`), no una calculada aquí.
-    let claves = sync::claves_locales(db, &persona)?;
+    // Las mismas claves que exporta la sincronización: las de la tabla `project` (una ruta que llegó
+    // de otro equipo lleva la clave con la que llegó, no una calculada aquí).
     let equipo = crate::reloj::equipo(db)?;
     let cabecera = Linea::Header {
         format: FORMATO.into(),
@@ -95,29 +93,13 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         }
     }
     {
-        let mut q = db.prepare(&format!("SELECT {COLUMNAS}, hlc FROM memory WHERE (?1 IS NULL OR project = ?1 OR project = '') ORDER BY id"))?;
-        let mut filas = q.query([ambito.filtro()])?;
+        let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc FROM memory m WHERE {} ORDER BY m.id", ambito.sql()))?;
+        let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
             let m = de_fila(f)?;
-            let hlc: String = f.get(14)?;
+            let (hlc, content_hlc): (String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?);
             let versions = memoria::historial(db, &m.id)?;
-            let l = Linea::Memory {
-                project_key: claves.get(&m.project).cloned().unwrap_or_else(|| sync::clave(&m.project, &persona)),
-                project_path: m.project,
-                id: m.id,
-                kind: m.kind,
-                title: m.title,
-                content: m.content,
-                paths: m.paths,
-                tags: m.tags,
-                pinned: m.pinned,
-                created_at: m.created_at,
-                updated_at: m.updated_at,
-                hlc,
-                author: m.author,
-                machine: equipo.clone(),
-                versions,
-            };
+            let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions);
             escribir(&l, salida)?;
             cuenta.memories += 1;
         }

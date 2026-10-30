@@ -37,7 +37,8 @@ fn encuentra_con_y_sin_tildes() {
     )
     .unwrap();
     memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "Receta", "Tortilla de patatas con cebolla."), None).unwrap();
-    let p = || Ambito::Proyecto("/p".into());
+    let p0 = Ambito::de(&db, "/p").unwrap();
+    let p = || p0;
     assert_eq!(buscar(&mut db, p(), "fallo de autenticación"), ["Bug en auth"]);
     assert_eq!(buscar(&mut db, p(), "AUTENTICACION"), ["Bug en auth"]);
     // Prefijo: «autentica» encuentra «autenticación». Raíz (desde 6 letras): «tokens» encuentra «token».
@@ -128,14 +129,16 @@ fn ambitos_proyecto_global_y_todos() {
     memoria::guardar(&mut db, nueva("/a", Tipo::Fact, "De A", "compartida palabra"), None).unwrap();
     memoria::guardar(&mut db, nueva("/b", Tipo::Fact, "De B", "compartida palabra"), None).unwrap();
     memoria::guardar(&mut db, nueva("", Tipo::Preference, "Global", "compartida palabra"), None).unwrap();
-    let mut a = buscar(&mut db, Ambito::Proyecto("/a".into()), "compartida");
+    let de_a = Ambito::de(&db, "/a").unwrap();
+    let mut a = buscar(&mut db, de_a, "compartida");
     a.sort();
     assert_eq!(a, ["De A", "Global"]);
     assert_eq!(buscar(&mut db, Ambito::Todos, "compartida").len(), 3);
-    let r = memoria::recientes(&db, &Ambito::Proyecto("/b".into()), None, 10).unwrap();
+    let r = memoria::recientes(&db, &Ambito::de(&db, "/b").unwrap(), None, 10).unwrap();
     assert_eq!(r.len(), 2);
-    let p = memoria::proyectos(&db).unwrap();
-    assert_eq!(p.len(), 3);
+    // Los proyectos (lo global no es uno).
+    let p = omoikane::proyecto::lista(&db, None, None, usize::MAX).unwrap();
+    assert_eq!(p.len(), 2);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -196,7 +199,7 @@ fn exporta_con_historial() {
     memoria::guardar(&mut db, nueva("/otro", Tipo::Fact, "B", "tres"), None).unwrap();
     let ruta = dir.join("o.db");
     let mut salida = Vec::new();
-    assert_eq!(omoikane::copia::exportar(&db, &ruta, &Ambito::Proyecto("/p".into()), false, &mut salida).unwrap().memories, 1);
+    assert_eq!(omoikane::copia::exportar(&db, &ruta, &Ambito::de(&db, "/p").unwrap(), false, &mut salida).unwrap().memories, 1);
     let lineas: Vec<serde_json::Value> =
         String::from_utf8(salida).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     // Cabecera, la memoria y el cierre.

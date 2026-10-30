@@ -8,7 +8,7 @@
 //! pocas memorias se mezcla con una media genérica para que no salga cero.
 
 use crate::embeber::Modelo;
-use crate::memoria::{COLUMNAS, Memoria, Tipo, de_fila};
+use crate::memoria::{Ambito, COLUMNAS, Memoria, Tipo, de_fila};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -140,6 +140,23 @@ pub fn parecidas(
     minimo: f32,
     limite: usize,
 ) -> Result<Vec<(Memoria, f32)>> {
+    let ambito = match proyecto {
+        Some(p) => Ambito::de(db, p)?,
+        None => Ambito::Todos,
+    };
+    parecidas_en(db, modelo, texto, &ambito, kind, minimo, limite)
+}
+
+/// Como `parecidas`, en un ámbito ya resuelto.
+pub fn parecidas_en(
+    db: &Connection,
+    modelo: &Modelo,
+    texto: &str,
+    ambito: &Ambito,
+    kind: Option<Tipo>,
+    minimo: f32,
+    limite: usize,
+) -> Result<Vec<(Memoria, f32)>> {
     let media = media(db, modelo)?;
     let consulta = normalizado(modelo.vector(texto)?.iter().zip(&media).map(|(x, m)| x - m).collect());
     // Con `a` normalizado: cos(a - μ, q) = (a·q - μ·q) / |a - μ|, y |a - μ|² = 1 - 2·a·μ + μ·μ.
@@ -148,11 +165,12 @@ pub fn parecidas(
     let mm: f32 = media.iter().map(|x| x * x).sum();
     let mut sims: Vec<(i64, f32)> = Vec::new();
     {
-        let mut q = db.prepare(
+        let mut q = db.prepare(&format!(
             "SELECT v.n, v.e FROM memory_vec v JOIN memory m ON m.n = v.n
-             WHERE (?1 IS NULL OR m.project = ?1 OR m.project = '') AND (?2 IS NULL OR m.kind = ?2)",
-        )?;
-        let mut filas = q.query(params![proyecto, kind.map(Tipo::as_str)])?;
+             WHERE {} AND (?1 IS NULL OR m.kind = ?1)",
+            ambito.sql()
+        ))?;
+        let mut filas = q.query(params![kind.map(Tipo::as_str)])?;
         while let Some(f) = filas.next()? {
             let e = f.get_ref(1)?.as_blob()?;
             let norma = (1.0 - 2.0 * punto(e, &media) + mm).max(1e-12).sqrt();
@@ -165,7 +183,7 @@ pub fn parecidas(
     sims.sort_by(|a, b| b.1.total_cmp(&a.1));
     sims.truncate(limite);
     // Solo se leen enteras las que se devuelven.
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory WHERE n = ?1"))?;
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
     sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
 }
 
@@ -174,8 +192,7 @@ pub fn parecidas(
 /// similitud.
 pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
     let nueva = texto(title, content);
-    let filtro = (!crate::proyecto::es_general(project)).then_some(project);
-    let mut v = parecidas(db, modelo, &nueva, filtro, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    let mut v = parecidas_en(db, modelo, &nueva, &Ambito::de(db, project)?, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
@@ -196,12 +213,12 @@ pub fn relacionadas(db: &Connection, project: &str, title: &str, excluir: &str, 
     let Some(consulta) = crate::buscar::consulta_fts(title) else { return Ok(Vec::new()) };
     let propias: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
     let mut q = db.prepare(&format!(
-        "SELECT {} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '') AND m.id != ?3
+        "SELECT {COLUMNAS} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
+         WHERE memory_fts MATCH ?1 AND {} AND m.id != ?2
          ORDER BY bm25(memory_fts) LIMIT 30",
-        COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ")
+        Ambito::de(db, project)?.sql()
     ))?;
-    let candidatas: Vec<Memoria> = q.query_map(params![consulta, (!crate::proyecto::es_general(project)).then_some(project), excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let candidatas: Vec<Memoria> = q.query_map(params![consulta, excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
     // Probado también exigir un parecido mínimo por vector: cada punto de ruido menos costaba
     // duplicadas sin cubrir (con 0,15, del 100 % al 98 %), así que no se exige.
     Ok(candidatas

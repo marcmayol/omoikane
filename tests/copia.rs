@@ -250,7 +250,8 @@ fn backup_copia_la_base_y_conserva_las_ultimas() {
 }
 
 /// 0.19.1: una memoria de un proyecto que llegó de otro equipo se exporta con la clave con la que
-/// llegó (la de `remote_project`, la misma que usa la sincronización), no con una calculada aquí.
+/// llegó, no con una calculada aquí. Desde el esquema 10 la clave de cada proyecto está en la tabla
+/// `project` (se calcula una vez, al crearlo): el export y la sincronización usan esa.
 #[test]
 fn el_export_usa_la_clave_de_los_proyectos_que_llegaron_de_fuera() {
     let e = Entorno::nuevo("clave-remota");
@@ -259,7 +260,7 @@ fn el_export_usa_la_clave_de_los_proyectos_que_llegaron_de_fuera() {
     assert!(!ruta.is_empty());
     {
         let db = rusqlite::Connection::open(e.fichero("o.db")).unwrap();
-        db.execute("INSERT INTO remote_project(path, key) VALUES (?1, 'git:github.com/marcmayol/omoikane')", [&ruta]).unwrap();
+        db.execute("UPDATE project SET key = 'git:github.com/marcmayol/omoikane' WHERE id = (SELECT project_id FROM memory WHERE id = ?1)", [&id]).unwrap();
     }
     let salida = e.omoi("o.db", &["export", "--all"], None);
     assert!(salida.status.success(), "{}", String::from_utf8_lossy(&salida.stderr));

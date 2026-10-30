@@ -102,7 +102,7 @@ fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize
 /// Cambia con cualquier escritura: memorias nuevas, cambiadas, movidas u olvidadas.
 fn huella(db: &Connection) -> Result<String> {
     Ok(db.query_row(
-        "SELECT count(*) || '|' || COALESCE(max(updated_at), '') || '|' || COALESCE(max(hlc), '') || '|' || COALESCE(sum(length(project)), 0) FROM memory",
+        "SELECT count(*) || '|' || COALESCE(max(updated_at), '') || '|' || COALESCE(max(hlc), '') || '|' || total(project_id) || '|' || total(space_id) FROM memory",
         [],
         |f| f.get(0),
     )?)
@@ -257,7 +257,8 @@ fn ficha(m: &Memoria, hlc: String) -> Ficha {
     let todo = format!("{} {texto}", normal(&m.title));
     Ficha {
         id: m.id.clone(),
-        project: m.project.clone(),
+        // Las de espacio se comparan entre ellas, no con las globales.
+        project: if m.de_espacio() { format!("space:{}", m.space) } else { m.project.clone() },
         updated_at: m.updated_at.clone(),
         hlc,
         cuando: fechas(&todo).into_iter().max().unwrap_or_else(|| m.updated_at.get(..10).unwrap_or("").to_string()),
@@ -459,7 +460,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         via: 0,
     };
     {
-        let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY found_at, memory_id")?;
+        let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 ORDER BY found_at, memory_id")?;
         let filas: Vec<(String, String, String)> = q.query_map([DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
         for (vieja, nueva, detalle) in filas {
             if let (Some(v), Some(n)) = (por_id.get(vieja.as_str()), por_id.get(nueva.as_str()))
@@ -495,7 +496,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         }
     }
     {
-        let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY memory_id")?;
+        let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 ORDER BY memory_id")?;
         let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
         for (id, detalle) in filas {
             if let Some(m) = por_id.get(id.as_str())
@@ -514,7 +515,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         }
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
         if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias(&m.updated_at) > DIAS_ESTADO && !descartado(ESTADO_VIEJO) {
-            let despues = todas.iter().filter(|x| x.project == m.project && x.id != m.id && x.updated_at > m.updated_at).count();
+            let despues = todas.iter().filter(|x| x.project_id == m.project_id && x.space == m.space && x.id != m.id && x.updated_at > m.updated_at).count();
             if despues > 0 {
                 r.push(aviso(m, ESTADO_VIEJO, None, format!("{despues} memories of this project changed after it; untouched for {} days", dias(&m.updated_at) as i64)));
             }
@@ -612,7 +613,7 @@ pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -
 pub fn superadas_por(db: &Connection, id: &str) -> Result<Vec<(String, String, String)>> {
     let mut q = db.prepare(
         "SELECT r.memory_id, m.title, r.detail FROM review r JOIN memory m ON m.id = r.memory_id
-         WHERE r.other_id = ?1 AND r.kind = ?2 AND r.dismissed_at IS NULL",
+         WHERE r.other_id = ?1 AND r.kind = ?2",
     )?;
     let v = q.query_map(params![id, DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
@@ -667,7 +668,7 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
     let fuera = descartados(db)?;
     let mut q = db.prepare(
         "SELECT r.other_id, r.detail, m.title FROM review r JOIN memory m ON m.id = r.other_id
-         WHERE r.memory_id = ?1 AND r.kind = ?2 AND r.dismissed_at IS NULL LIMIT 1",
+         WHERE r.memory_id = ?1 AND r.kind = ?2 LIMIT 1",
     )?;
     let ahora = chrono_ahora(db)?;
     for m in memorias {
@@ -682,8 +683,8 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
             r.insert(m.id.clone(), format!("may be outdated: newer {} «{corto}» ({detalle})", otra.chars().take(12).collect::<String>()));
         } else if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO {
             let despues: i64 = db.query_row(
-                "SELECT count(*) FROM memory WHERE project = ?1 AND id != ?2 AND updated_at > ?3",
-                params![m.project, m.id, m.updated_at],
+                "SELECT count(*) FROM memory WHERE project_id = ?1 AND id != ?2 AND updated_at > ?3",
+                params![m.project_id, m.id, m.updated_at],
                 |f| f.get(0),
             )?;
             if despues > 0 && !fuera.contains(&(m.id.clone(), ESTADO_VIEJO.to_string(), String::new())) {

@@ -46,8 +46,8 @@ fn ajustar(mut n: Nueva) -> Nueva {
 /// ¿Hay ya una memoria con el mismo título y contenido en ese ámbito? Para cuando no hay modelo.
 fn igual(db: &Connection, n: &Nueva) -> Result<bool> {
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM memory WHERE project = ?1 AND title = ?2 AND content = ?3)",
-        params![n.project, n.title, n.content],
+        "SELECT EXISTS(SELECT 1 FROM memory WHERE project_id = ?1 AND title = ?2 AND content = ?3)",
+        params![crate::proyecto::resolver(db, &n.project)?.map_or(-1, |(id, _)| id), n.title, n.content],
         |f| f.get(0),
     )?)
 }
@@ -149,7 +149,7 @@ pub fn leer(ruta: &Path, dir: Option<&Path>, actual: &str) -> Result<(Vec<Entran
             (None, false) => m.project,
         };
         v.push(Entrante {
-            nueva: Nueva { project, kind: Some(m.kind), title: m.title, content: m.content, paths: m.paths, tags: m.tags, pinned: m.pinned, source: "import:omoikane".into() },
+            nueva: Nueva { project, kind: Some(m.kind), title: m.title, content: m.content, paths: m.paths, tags: m.tags, pinned: m.pinned, source: "import:omoikane".into(), ..Default::default() },
             creada: m.created_at,
             cambiada: m.updated_at,
         });
@@ -199,6 +199,7 @@ fn de_engram(e: ExportEngram, forzado: Option<&str>, actual: &str) -> (Vec<Entra
                 tags,
                 pinned: o.pinned,
                 source: "import:engram".into(),
+                ..Default::default()
             },
             creada: o.created_at,
             cambiada: o.updated_at,
