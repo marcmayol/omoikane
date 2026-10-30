@@ -4,6 +4,8 @@
 
 Comparación directa con [engram](https://github.com/Gentleman-Programming/engram) (v3.6.0), la memoria en Go + SQLite para agentes de programación con la que se comparó Omoikane desde el principio. Medido el 28 de octubre de 2026 en un PC con Windows 11. **Omoikane lo he escrito yo.** Léelo sabiéndolo. El método de abajo está pensado para que eso no incline los números, y se cuenta cada resultado en el que engram sale mejor.
 
+**Lo último (29-oct-2026, Omoikane 0.9.1).** Un 7.º conjunto de 100 preguntas escritas a ciegas, con 130 notas, que no se usó para ajustar nada: Omoikane acierta a la primera el 90 % de las veces (engram, el 75 %), entre las tres primeras el 97 % (87 %) y en paráfrasis el 86,7 % (70 %), con una mediana de 43 ms frente a 173. Con 3.183 memorias no pierde calidad. Lo que sigue es la historia completa desde la primera comparación, con 127 notas. El recall de la versión actual (algo inyectado en el 7 % de 300 mensajes reales) está en el [README](README.es.md#el-ruido-lo-viejo-y-lo-erróneo).
+
 ## Método
 
 - **Datos.** 127 notas de memoria reales del trabajo diario de un desarrollador (apps Android, impresión 3D, servidores, escritura), casi todas en español. Son privadas y no se publican. Las mismas notas en los dos sistemas, con el contenido cortado a 6.000 caracteres en ambos (el CLI de engram solo acepta el contenido como argumento, y Windows limita la línea de comandos a 32 K).
@@ -198,7 +200,7 @@ La 0.7.0 y la 0.6.0 dan la misma respuesta a todas las preguntas. engram solo va
 
 ## Límites
 
-- Las notas de un solo desarrollador, casi todas en español, 127. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
+- Las notas de un solo desarrollador, casi todas en español: 127 al principio y 130 en las últimas pasadas, más los 3.055 párrafos en inglés de la prueba de escala. Con otros corpus (inglés, miles de memorias, mucho código) puede cambiar.
 - 20 preguntas de punta a punta es una muestra pequeña; la búsqueda y los duplicados usan más.
 - engram hace mucho más de lo que se mide aquí: TUI, API HTTP, sincronización y nube, integraciones con 14 agentes, revisión de conflictos. Esto compara la calidad y la velocidad de la memoria, no las funciones.
 - Los umbrales de Omoikane se recalibraron ese mismo día con estas notas: los duplicados con las notas, y el del recall con las preguntas a ciegas (comprobado también con los 300 mensajes reales), así que esas dos filas de Omoikane son optimistas. La búsqueda, de la que salen las tablas de búsqueda y de punta a punta, no cambió.

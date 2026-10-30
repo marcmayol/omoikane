@@ -16,7 +16,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 ### What it does every session
 
-- **It recalls without being asked.** On every prompt a hook gives the agent the 3-5 memories that matter for what you just typed, plus the gotchas of the files you mentioned, in about 20 ms. The agent doesn't have to remember to search.
+- **It recalls without being asked.** When what you type relates to something saved, a hook hands the agent that memory (at most 2, once per session) or the gotcha of the file you named, in about 20 ms. If nothing relates, it hands over nothing, as with 93 % of real prompts. The agent doesn't have to remember to search.
 - **Search that works in your language**, accents or not, in 101 languages: on questions written blind it finds the right memory first 90 % of the time, in 43 ms, and stays as accurate at 3,183 memories.
 - **It catches duplicates when saving.** If the agent tries to save something it already knows, it is told so and updates the memory that is there instead of adding another.
 - **It works with 15 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok and the rest share the same memory; `omoi setup <agent>` gets each one ready.
@@ -35,6 +35,32 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It picks up where you left off.** Each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
 - **It keeps itself up to date**, and only installs releases signed with Omoikane's key.
 
+## Noise, stale memories and mistakes
+
+A recall that injects too much is worse than none: it fills the context with noise and carries what no longer holds from one session to the next. That is why it is the most heavily calibrated part of Omoikane.
+
+- **Mostly silent.** A prompt only gets something if it has at least 3 useful words and a memory shares 2 words that are rare in your base, adding up to at least half of the prompt's weight. The meaning channel, for paraphrases, also needs the words to cover 25 % and is skipped on prompts longer than 500 characters. Over 300 real prompts it injected something into 7 %; the rest got nothing. "How did it all go?" brings nothing.
+- **Little, and once.** At most 2 memories per prompt, and only those close to the best one: if one stands out, it goes alone. Each arrives as 200 characters; if the agent wants the rest, it calls `get`. A linked gotcha or preference may join them, and a procedure only when the prompt says one of its `when:` words. Each memory arrives once per session.
+- **Stale memories arrive flagged.** If a newer memory on the same subject contradicts it (another version of the same thing, or done what was pending), the old one arrives with `⚠ may be outdated: newer <id> …` in front, and the agent checks the new one before trusting it. It also flags project statuses left behind, paths that no longer exist and memories nobody uses. The Review tab puts both memories side by side to forget the old one or keep it. No model involved: words, dates and versions.
+- **Mistakes get fixed, not carried.** Only what the agent saves goes into memory. What Omoikane sets aside when a session closes are proposals, and they expire after 7 days if nobody saves them. Fixing one is `update` with a reason, and the previous version stays in the history. `forget` deletes it, and it doesn't come back from your other machines. What a teammate saved arrives marked `[by Ana]`.
+- **Measured.** Every threshold comes from questions written blind by another agent, 20 of them with no answer in the notes: on those it injected something twice. The numbers are in [BENCHMARK.md](BENCHMARK.md).
+
+At session start more does arrive: your preferences, what you pinned, where each project stands and what was touched last. Preferences and pins are what you want the agent to always know.
+
+engram, the alternative Omoikane is compared with, doesn't inject memories on each prompt, and takes another road with stale ones: every save proposes similar memories and asks the agent to judge how they relate (`mem_judge`), and each memory type has a review date. Omoikane doesn't ask the agent to judge: it detects the contradiction itself and flags it in the recall, with the reason.
+
+## What about CLAUDE.md?
+
+For a small project with twenty things to remember, a good CLAUDE.md is enough. Omoikane pays off where CLAUDE.md stops reaching:
+
+- CLAUDE.md is loaded whole every session, relevant or not, and the more it knows the more context it spends. Omoikane brings what fits the prompt.
+- It's one file per project. What you learn in one doesn't reach another unless you copy it; in Omoikane a memory can apply everywhere.
+- It doesn't know when something has gone stale, nor keep why it changed.
+- You write it. Omoikane gets filled by the agent as it works.
+- One agent reads it. Omoikane is shared by 15, and by all your machines.
+
+They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for what gets learned along the way.
+
 ## Status
 
 Version 0.16.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
@@ -50,7 +76,7 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 
 `omoi setup claude` and the one-line installers ask whether Omoikane should keep itself up to date, and if so turn on the plugin's update too. If you only ran the two commands above, turn it on once: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
 
-On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`).
+On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
 
 **Without Claude Code**, or to use `omoi` from the terminal or another MCP client, install the binary with one line:
 
@@ -181,7 +207,7 @@ Once a day, the first time it runs, `omoi` checks in the background for a newer 
 
 ## Strengths
 
-- **It recalls by itself.** The agent doesn't have to remember to search: what matters reaches it on every prompt, in 15-26 ms.
+- **It recalls by itself, and only when it matters.** The agent doesn't have to remember to search: if a prompt relates to something saved, it arrives in 15-26 ms; if not, nothing arrives.
 - **It gets it right.** 90 % of the time the right memory comes first; 97 % of the time, in the top three. In 101 languages, accents or not.
 - **Fast at any size.** 43 ms per search, and 50 ms with 3,183 memories. Four processes share the model at 13 MB of memory each.
 - **It saves even when the agent forgets to**, and never saves the same thing twice.

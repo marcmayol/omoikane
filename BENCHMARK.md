@@ -4,6 +4,8 @@
 
 A head-to-head with [engram](https://github.com/Gentleman-Programming/engram) (v3.6.0), the Go + SQLite memory for coding agents that Omoikane was compared against from the start. Measured on 28 October 2026 on one Windows 11 PC. **I wrote Omoikane, so read this with that in mind**; the method below is meant to keep that from tilting the numbers, and every result where engram does better is reported.
 
+**Latest (29 Oct 2026, Omoikane 0.9.1).** A 7th set of 100 questions written blind, over 130 notes, never used to tune anything: Omoikane gets the right memory first 90 % of the time (engram, 75 %), within the top three 97 % (87 %) and on paraphrases 86.7 % (70 %), with a median of 43 ms against 173. At 3,183 memories it loses no quality. What follows is the full history since the first comparison, with 127 notes. The current version's recall (something injected into 7 % of 300 real prompts) is in the [README](README.md#noise-stale-memories-and-mistakes).
+
 ## Method
 
 - **Data.** 127 real memory notes from one developer's daily work (Android apps, 3D printing, servers, writing), mostly in Spanish. They are private and not published. The same notes go into both systems, content cut to 6,000 characters for both (engram's CLI only takes the content as an argument, and Windows caps a command line at 32 K).
@@ -198,7 +200,7 @@ Over all 190 paraphrases from every set, top-5: Omoikane 176 (92.6 %), engram 16
 
 ## Caveats
 
-- One developer's notes, mostly Spanish, 127 of them. Other corpora (English, thousands of memories, code-heavy) may differ.
+- One developer's notes, mostly Spanish: 127 at first and 130 in the latest runs, plus the 3,055 English paragraphs of the scale test. Other corpora (English, thousands of memories, code-heavy) may differ.
 - 20 end-to-end questions is a small sample; the search and duplicate numbers use more.
 - engram does much more than this measures: TUI, HTTP API, sync and cloud, integrations for 14 agents, conflict review. This compares memory quality and speed, not features.
 - Omoikane's thresholds were recalibrated with these same notes the same day: duplicates with the notes, and the recall threshold with the blind questions (checked against the 300 real prompts too), so those two Omoikane rows are optimistic. Search, which drives the search and end-to-end tables, didn't change.
