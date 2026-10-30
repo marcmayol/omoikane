@@ -65,7 +65,11 @@ curl -fsSL https://raw.githubusercontent.com/marcmayol/omoikane/master/install.s
 
 O `cargo install omoikane`. Los instaladores también añaden el plugin si Claude Code está instalado (`OMOIKANE_NO_SETUP=1` para no hacerlo, `OMOIKANE_NO_MODEL=1` para no bajar el modelo).
 
-## Uso
+## Todo lo que hace
+
+Una por una, todas las funciones, con el detalle de cómo trabajan.
+
+### Empezar
 
 Con el plugin, Claude Code lo hace solo: recibe 8 herramientas (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`) y, en cada mensaje, se le inyectan las memorias que de verdad tienen que ver (o ninguna). El plugin es un mod de Claude Code: ejecuta el binario directamente, sin servidor MCP ni scripts de shell, igual en Windows, macOS y Linux. Cualquier otro cliente MCP puede usar `omoi mcp` directamente.
 
@@ -82,21 +86,41 @@ OMOIKANE_LANG=es omoi --help
 
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos). Si abres las sesiones en tu carpeta de usuario y no dentro de un repositorio, ves las memorias de todos los proyectos, y una memoria nueva va al repositorio al que apuntan sus rutas absolutas (o es global); `omoi update <id> --project <carpeta>` o `--global` la cambia de sitio después. La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
-`omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
+### Recuerda solo
 
-`omoi serve --open` (o `/omoikane-web` en Claude Code) abre lo mismo en el navegador, en `http://127.0.0.1:7438/`. **Memorias** es una cronología por días de lo que se guardó o cambió (y, si quieres, de lo que el agente recordó), con un buscador que busca como el agente y filtros por tipo, proyecto o etiqueta; cada memoria se abre ahí mismo con su Markdown con formato, su último cambio como diff, el historial completo y botones para fijarla, moverla u olvidarla. **Proyectos** enseña en qué punto se quedó cada proyecto (su última memoria `status`) y abre una página por proyecto con sus memorias en una columna por tipo. Sigue el modo claro u oscuro del sistema y funciona sin internet: las fuentes (IBM Plex y Shippori Mincho, licencia SIL OFL, en `assets/fuentes`) van dentro del binario. Solo responde en tu propio equipo y rechaza las peticiones de otras webs.
+Al empezar la sesión le llegan al agente tus preferencias y lo fijado, en qué punto se quedó cada proyecto, lo último en lo que se trabajó y los avisos de lo que conviene revisar. En cada mensaje solo le llega algo si tiene que ver de verdad: una memoria tiene que cubrir bastantes palabras poco frecuentes del mensaje, y las trampas salen también cuando nombras sus ficheros. Cada memoria llega una vez por sesión. En 300 mensajes reales solo inyectó algo en un 7 % de ellos. Si en 15 minutos y 10 mensajes no se ha guardado nada, le recuerda que lo haga.
 
-**La memoria se cuida sola.** Omoikane se da cuenta de cuándo una memoria se ha quedado atrás: otra más nueva del mismo tema dice algo distinto (una versión más alta de lo mismo, o hecho lo que estaba pendiente), una memoria `status` que el proyecto ya ha dejado atrás, rutas que ya no existen, memorias que en un mes no se han usado nunca y notas demasiado largas para el recall. Cuando una de esas le llega al agente, va marcada con `⚠ may be outdated: newer <id> …`, y al guardar una memoria que deja anticuada a otra se le dice en el momento, para que lo arregle ahí mismo. La pestaña **Revisar** de la vista web las enseña con las dos memorias una al lado de la otra, *olvidar la vieja* y *está bien así*; `omoi review` hace lo mismo desde la terminal. Sin modelo: palabras, fechas y versiones.
+### Busca en tu idioma
 
-**Guarda aunque el agente se olvide.** Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que quizá valga la pena guardar: lo que respondiste a las preguntas del agente (con la pregunta), tus preferencias y correcciones, y el último commit o publicación. La sesión siguiente en ese proyecto lo recibe una vez, y el agente guarda lo que valga con tus palabras; la pestaña Revisar también lo enseña. Nada que parezca un secreto ni lo que ya está guardado. Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro y OpenCode (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar.
+La búsqueda empieza por palabras: le dan igual las tildes, mira también las rutas de fichero y da más peso a lo poco frecuente. Después, un modelo de embeddings local que abre en 2,7 ms rescata lo que se parece mucho aunque no comparta ninguna palabra. Dónde busca depende de dónde estés. Desde un proyecto, en él y en lo global; desde tu carpeta de usuario, en todo.
 
-**Se mantiene al día solo.** Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta antes (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano, y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia.
+### Guarda sin duplicados
+
+Cada memoria tiene un tipo que decide cuándo vuelve: `fact` y `decision` por relevancia, `gotcha` también por sus ficheros, `preference` siempre y `procedure` entera cuando la pides. Antes de guardar mira si ya existe algo casi igual. Si lo hay, no la guarda y dice cuál actualizar; si solo se parece, la guarda y enseña las relacionadas. Avisa cuando pasa de los 6.000 caracteres que cuentan para el recall y cuando deja anticuada a otra. Las rutas se guardan relativas al repositorio, así que valen en cualquier equipo.
+
+### Guarda aunque el agente se olvide
+
+Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que quizá valga la pena guardar: lo que respondiste a las preguntas del agente (con la pregunta), tus preferencias y correcciones, y el último commit o publicación. La sesión siguiente en ese proyecto lo recibe una vez, y el agente guarda lo que valga con tus palabras; la pestaña Revisar también lo enseña. Nada que parezca un secreto ni lo que ya está guardado. Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro y OpenCode (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar.
+
+### Se cuida sola
+
+Omoikane se da cuenta de cuándo una memoria se ha quedado atrás: otra más nueva del mismo tema dice algo distinto (una versión más alta de lo mismo, o hecho lo que estaba pendiente), una memoria `status` que el proyecto ya ha dejado atrás, rutas que ya no existen, memorias que en un mes no se han usado nunca y notas demasiado largas para el recall. Cuando una de esas le llega al agente, va marcada con `⚠ may be outdated: newer <id> …`, y al guardar una memoria que deja anticuada a otra se le dice en el momento, para que lo arregle ahí mismo. La pestaña **Revisar** de la vista web las enseña con las dos memorias una al lado de la otra, *olvidar la vieja* y *está bien así*; `omoi review` hace lo mismo desde la terminal. Sin modelo: palabras, fechas y versiones.
+
+### Recetas y memorias conectadas
 
 **Recetas.** Una memoria de tipo `procedure` es algo que se repite (publicar una versión, desplegar): pasos numerados y una línea `when: publica, release`. Cuando un mensaje la pide, vuelve entera, y el agente la corrige cuando un paso falla o cambia.
 
 **Memorias conectadas.** `[[nombre]]` en una memoria la enlaza con la que lleva esa etiqueta. Cuando se recuerda una memoria, puede venir con ella una trampa o una preferencia enlazada; los enlaces rotos salen en Revisar y la página de cada proyecto dibuja sus conexiones.
 
-`omoi serve` sirve las mismas herramientas por HTTP en `127.0.0.1:7438` para scripts y apps que no hablan MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `POST /tools/<nombre>` con los argumentos JSON de la herramienta. Con `OMOIKANE_HTTP_TOKEN`, cada petición tiene que llevar `Authorization: Bearer <token>`.
+### Historial, olvido y exportación
+
+Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas. Olvidar la borra con su historial. Un olvido tampoco vuelve desde otro equipo cuando sincronizas, y `omoi export` saca todas las memorias en JSONL, cada una con su historial.
+
+### La ves y la ordenas tú
+
+`omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
+
+`omoi serve --open` (o `/omoikane-web` en Claude Code) abre lo mismo en el navegador, en `http://127.0.0.1:7438/`. **Memorias** es una cronología por días de lo que se guardó o cambió (y, si quieres, de lo que el agente recordó), con un buscador que busca como el agente y filtros por tipo, proyecto o etiqueta; cada memoria se abre ahí mismo con su Markdown con formato, su último cambio como diff, el historial completo y botones para fijarla, moverla u olvidarla. **Proyectos** enseña en qué punto se quedó cada proyecto (su última memoria `status`) y abre una página por proyecto con sus memorias en una columna por tipo. Sigue el modo claro u oscuro del sistema y funciona sin internet: las fuentes (IBM Plex y Shippori Mincho, licencia SIL OFL, en `assets/fuentes`) van dentro del binario. Solo responde en tu propio equipo y rechaza las peticiones de otras webs.
 
 ### Otros agentes
 
@@ -137,9 +161,31 @@ Desde entonces funciona solo y con todos los agentes: después de guardar, cambi
 
 `omoi sync off` deja de sincronizar en un equipo; sus memorias se quedan.
 
+### Se mantiene al día solo
+
+Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta antes (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano, y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia.
+
+### Por HTTP, para scripts y apps
+
+`omoi serve` sirve las mismas herramientas por HTTP en `127.0.0.1:7438` para scripts y apps que no hablan MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `POST /tools/<nombre>` con los argumentos JSON de la herramienta. Con `OMOIKANE_HTTP_TOKEN`, cada petición tiene que llevar `Authorization: Bearer <token>`.
+
 ### Importar de otras herramientas
 
 `omoi import` lee las exportaciones de engram (`engram export`) y las de `omoi export`: adapta los tipos, conserva las fechas, se salta lo borrado y no importa nada dos veces. `--dry-run` enseña adónde iría cada memoria.
+
+## Puntos fuertes
+
+- **Recuerda sola.** El agente no tiene que acordarse de buscar: lo que importa le llega en cada mensaje, en 15-26 ms.
+- **Acierta.** El 90 % de las veces, la memoria correcta sale la primera; el 97 %, entre las tres primeras. En 101 idiomas, con tildes o sin ellas.
+- **Rápida a cualquier tamaño.** 43 ms por búsqueda, y 50 ms con 3.183 memorias. Cuatro procesos comparten el modelo con 13 MB de memoria cada uno.
+- **Guarda aunque el agente se olvide**, y no guarda dos veces lo mismo.
+- **No se queda vieja.** Ve lo que está desfasado, lo marca y te lo pone delante para decidir.
+- **Un binario sin nada más:** ni Python, ni Node, ni Docker, ni un servidor que dejar encendido. SQLite va dentro.
+- **Funciona sin internet.** Todo es local, y la vista web lleva dentro del binario hasta sus fuentes, IBM Plex y Shippori Mincho.
+- **Windows igual que Linux y macOS:** sin bash ni scripts, y probado en los tres en cada cambio.
+- **14 agentes, una sola memoria**, y `omoi setup <agente>` lo deja todo listo.
+- **Tus memorias son tuyas:** un fichero SQLite que se exporta entero, y una sincronización que solo pasa por tu repositorio git, cifrada.
+- **Se actualiza con cuidado:** solo instala versiones firmadas con Ed25519 y, antes de cambiar el esquema de la base, guarda una copia.
 
 ## Medido
 
