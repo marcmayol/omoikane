@@ -2,7 +2,7 @@
 
 # Omoikane
 
-*La memoria eterna de tu agente. Recuerda sola, en 20 ms.*
+*Memoria eterna, viva y ultrarrápida.*
 
 **Memoria local para agentes de programación. Un binario, un fichero SQLite, y el agente no tiene que acordarse de buscar.**
 
