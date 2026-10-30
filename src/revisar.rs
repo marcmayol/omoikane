@@ -30,7 +30,9 @@ pub const SUSTITUIDA: &str = crate::veredictos::SUSTITUIDA;
 pub const CONTRADICE: &str = crate::veredictos::CONTRADICE;
 /// Le ha llegado la fecha de revisión de su tipo (`dias_para_revisar`).
 pub const POR_REVISAR: &str = "due";
-const TIPOS: [&str; 9] = [SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
+/// Lleva algo que parece un secreto (`secretos`): guardada antes de la 0.19.0 o con `OMOIKANE_REDACT=0`.
+pub const SECRETO: &str = "secret";
+const TIPOS: [&str; 10] = [SECRETO, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
@@ -63,8 +65,38 @@ pub struct Aviso {
     pub other_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_title: Option<String>,
-    /// Qué se ha visto, en inglés y corto (lo leen el agente y la vista).
+    /// Qué se ha visto, en inglés y corto (lo leen el agente y la vista). En un veredicto lleva
+    /// también el motivo y «by <autor>».
     pub detail: String,
+    /// En un veredicto (`superseded`, `contradicts`): por qué lo dijo quien lo dijo, y quién.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// En una sustituida, cuántos saltos hay hasta `other_id` cuando es el final de una cadena (0 si
+    /// es la sustituta directa).
+    #[serde(skip_serializing_if = "es_cero")]
+    pub via: usize,
+}
+
+fn es_cero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// El detalle de un veredicto para el agente y la CLI: qué relación, el motivo y quién lo dijo.
+fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize) -> String {
+    let mut d = base.to_string();
+    if !v.reason.is_empty() {
+        d.push_str(": ");
+        d.push_str(&crate::veredictos::motivo_corto(&v.reason));
+    }
+    if saltos > 1 {
+        d.push_str(&format!(" (via {saltos})"));
+    }
+    if !v.author.is_empty() {
+        d.push_str(&format!(" · by {}", v.author));
+    }
+    d
 }
 
 /// Cambia con cualquier escritura: memorias nuevas, cambiadas, movidas u olvidadas.
@@ -422,6 +454,9 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         other_id: otra.map(|o| o.id.clone()).unwrap_or_default(),
         other_title: otra.map(|o| o.title.clone()),
         detail,
+        reason: String::new(),
+        author: String::new(),
+        via: 0,
     };
     {
         let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY found_at, memory_id")?;
@@ -434,13 +469,29 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
             }
         }
     }
-    for v in crate::veredictos::parejas(db)?.into_values() {
+    for mut v in crate::veredictos::parejas(db)?.into_values() {
         if v.relation == crate::veredictos::COMPATIBLE {
             continue;
         }
+        // Una sustituida apunta al final de su cadena: si B sustituye a A y C a B, A lleva a C, con el
+        // motivo del último eslabón.
+        let mut saltos = 0;
+        if v.relation == SUSTITUIDA
+            && let Some(fin) = crate::veredictos::cadena(db, &v.memory_id)?
+            && fin.saltos > 1
+        {
+            saltos = fin.saltos;
+            v.other_id = fin.id;
+            v.reason = fin.reason;
+            v.author = fin.author;
+        }
         if let (Some(m), Some(o)) = (por_id.get(v.memory_id.as_str()), por_id.get(v.other_id.as_str())) {
-            let detalle = if v.relation == SUSTITUIDA { "replaced by the other one" } else { "they disagree and neither has won yet" };
-            r.push(aviso(m, &v.relation, Some(o), detalle.into()));
+            let base = if v.relation == SUSTITUIDA { "replaced by the other one" } else { "they disagree and neither has won yet" };
+            let mut a = aviso(m, &v.relation, Some(o), detalle_veredicto(base, &v, saltos));
+            a.reason = v.reason;
+            a.author = v.author;
+            a.via = saltos;
+            r.push(a);
         }
     }
     {
@@ -477,14 +528,29 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         if m.recall_count == 0 && m.recalled_at.is_none() && dias(&m.created_at) > DIAS_SIN_USO && !descartado(SIN_USO) {
             r.push(aviso(m, SIN_USO, None, format!("never recalled in {} days", dias(&m.created_at) as i64)));
         }
+        // Se mira al leer, como `unused`: unos µs por memoria, y así vale también para lo que llega por la
+        // sincronización o una copia. Nunca enseña el secreto, solo qué parece.
+        if !descartado(SECRETO) {
+            let hs = secretos_de(m);
+            if !hs.is_empty() {
+                r.push(aviso(m, SECRETO, None, format!("looks like a secret: {}; redact it", crate::secretos::resumen(&hs))));
+            }
+        }
         let largo = m.content.chars().count();
         if largo > LARGO_PARA_RECALL && !descartado(LARGA) {
             r.push(aviso(m, LARGA, None, format!("{largo} characters; recall only reads the first {LARGO_PARA_RECALL}: consider splitting it")));
         }
     }
-    let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(9);
+    let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(TIPOS.len());
     r.sort_by_key(|a| orden(&a.kind));
     Ok(r)
+}
+
+/// Los tipos de lo que parece un secreto en el título y el contenido de una memoria, uno por hallazgo.
+pub fn secretos_de(m: &Memoria) -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = crate::secretos::hallazgos(&m.title).iter().map(|h| h.tipo).collect();
+    v.extend(crate::secretos::hallazgos(&m.content).iter().map(|h| h.tipo));
+    v
 }
 
 fn chrono_ahora(db: &Connection) -> Result<String> {
@@ -510,7 +576,9 @@ fn dias_entre(desde: &str, hasta: &str) -> f64 {
     }
 }
 
-/// Días sin revisar, si ya le toca: desde su último cambio o el último «está bien así», lo más nuevo.
+/// Días sin revisar, si ya le toca: desde su último cambio, el último «está bien así» o la última vez
+/// que el agente la recibió, lo más nuevo. Una memoria que se recuerda cada semana y nadie corrige
+/// está repasada; la que lleva 120 días sin que nadie la vea ni la toque, no (repetición espaciada).
 fn sin_revisar(m: &Memoria, revisadas: &HashMap<(String, String), String>, ahora: &str) -> Option<i64> {
     let plazo = dias_para_revisar(m)?;
     let mut desde = m.updated_at.as_str();
@@ -519,18 +587,24 @@ fn sin_revisar(m: &Memoria, revisadas: &HashMap<(String, String), String>, ahora
     {
         desde = at;
     }
+    if let Some(r) = m.recalled_at.as_deref()
+        && r > desde
+    {
+        desde = r;
+    }
     let n = dias_entre(desde, ahora);
     (n > plazo).then_some(n as i64)
 }
 
 /// «Está bien así»: no vuelve a avisar de esto hasta que la memoria cambie. En una pareja, las dos
-/// valen (`compatible`); en una memoria sola, `ok:<aviso>`. Es un veredicto, así que viaja.
+/// valen (`compatible`); en una memoria sola, `ok:<aviso>`. Es un veredicto, así que viaja, firmado
+/// por `user` (viene de la vista web o de la CLI, no del agente).
 pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -> Result<()> {
     anyhow::ensure!(TIPOS.contains(&kind), "unknown review kind «{kind}»");
     if other_id.is_empty() {
-        crate::veredictos::poner(db, memory_id, "", &format!("ok:{kind}"))
+        crate::veredictos::poner(db, memory_id, "", &format!("ok:{kind}"), "", crate::veredictos::USUARIO)
     } else {
-        crate::veredictos::poner(db, memory_id, other_id, crate::veredictos::COMPATIBLE)
+        crate::veredictos::poner(db, memory_id, other_id, crate::veredictos::COMPATIBLE, "", crate::veredictos::USUARIO)
     }
 }
 
@@ -565,14 +639,24 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
         let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
         Ok(format!("{} «{}»", id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()))
     };
+    // El motivo del veredicto, o lo que hay que hacer si no lo trae.
+    let motivo = |reason: &str, si_no: &str| -> String { if reason.trim().is_empty() { si_no.into() } else { crate::veredictos::motivo_corto(reason) } };
     for v in crate::veredictos::parejas(db)?.into_values() {
         for (esta, otra) in [(&v.memory_id, &v.other_id), (&v.other_id, &v.memory_id)] {
             if r.contains_key(esta.as_str()) || !memorias.iter().any(|m| &m.id == esta) {
                 continue;
             }
             let nota = match v.relation.as_str() {
-                SUSTITUIDA if esta == &v.memory_id => format!("superseded by {}: use that one", corto(otra)?),
-                CONTRADICE => format!("contradicts {}: check which one holds, asking the user if unsure", corto(otra)?),
+                SUSTITUIDA if esta == &v.memory_id => {
+                    // Si la sustituta está a su vez sustituida, la nota lleva al final de la cadena.
+                    let (ultima, saltos, reason) = match crate::veredictos::cadena(db, esta)? {
+                        Some(fin) if fin.saltos > 1 => (fin.id, fin.saltos, fin.reason),
+                        _ => (otra.clone(), 1, v.reason.clone()),
+                    };
+                    let via = if saltos > 1 { format!(" (via {saltos})") } else { String::new() };
+                    format!("superseded by {}{via}: {}", corto(&ultima)?, motivo(&reason, "use that one"))
+                }
+                CONTRADICE => format!("contradicts {}: {}", corto(otra)?, motivo(&v.reason, "check which one holds, asking the user if unsure")),
                 _ => continue,
             };
             r.insert(esta.clone(), nota);

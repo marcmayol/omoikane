@@ -127,6 +127,15 @@ enum Orden {
         /// Why it changes (kept with the previous version).
         #[arg(short, long)]
         reason: Option<String>,
+        /// Exact text to replace in the content; it has to appear exactly once. Pair each one with a --with (repeatable).
+        #[arg(long, value_name = "FIND")]
+        replace: Vec<String>,
+        /// What goes in place of the matching --replace (repeatable, in the same order).
+        #[arg(long, value_name = "TEXT", requires = "replace")]
+        with: Vec<String>,
+        /// Text added at the end of the content, after a blank line (one more step in a procedure).
+        #[arg(long, value_name = "TEXT")]
+        append: Option<String>,
     },
     /// Forget a memory: it goes to the trash with its history (`omoi restore` brings it back; emptied after 30 days).
     Forget {
@@ -198,7 +207,7 @@ enum Orden {
         /// "It's fine as it is": stop warning about this memory (until it changes). Give its id.
         #[arg(long, value_name = "ID")]
         dismiss: Option<String>,
-        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long).
+        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long, secret).
         #[arg(long, requires = "dismiss")]
         kind: Option<String>,
         /// With --dismiss on an outdated warning: the id of the newer memory.
@@ -496,6 +505,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
                 modelo.as_ref(),
             )?;
+            avisar_redactados(&m);
             let rel = vectores::relacionadas(&db, &busca_en, &m.title, &m.id, 3)?;
             if c.json {
                 #[derive(serde::Serialize)]
@@ -546,7 +556,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             entera(&m);
             Ok(())
         }
-        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, reason } => {
+        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, reason, replace, with, append } => {
+            anyhow::ensure!(
+                replace.len() == with.len(),
+                tr!("each --replace needs its --with ({} and {})", "cada --replace necesita su --with ({} y {})", replace.len(), with.len())
+            );
             let cambios = Cambios {
                 title,
                 content: content.map(|t| texto_o_entrada(Some(t))).transpose()?,
@@ -556,13 +570,26 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 pinned: if pin { Some(true) } else if unpin { Some(false) } else { None },
                 project: if global { Some(String::new()) } else { project.as_deref().map(proyecto::de_carpeta).transpose()? },
                 reason,
+                replace: replace.into_iter().zip(with).collect(),
+                append,
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
-            let m = memoria::actualizar(&mut db, &id, cambios, modelo.as_ref())?;
+            let (m, cambiados) = memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?;
+            avisar_redactados(&m);
             if c.json {
-                return json(&m);
+                let mut v = serde_json::to_value(&m)?;
+                if !cambiados.is_empty() {
+                    v["changed"] = serde_json::json!(cambiados);
+                }
+                return json(&v);
             }
             println!("{}", tr!("updated {}", "actualizada {}", corto(&m.id)));
+            for cambio in &cambiados {
+                println!("  {}", tr!("changed:", "cambiado:"));
+                for linea in cambio.context.lines() {
+                    println!("    {linea}");
+                }
+            }
             Ok(())
         }
         Orden::Forget { id, yes, purge } => {
@@ -658,7 +685,13 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 let id: String = a.memory_id.chars().take(12).collect();
                 println!("{:<12}  {id}  {}", a.kind, a.title.chars().take(90).collect::<String>());
                 if let Some(t) = &a.other_title {
-                    println!("{:<12}  {} {}  {}", "", tr!("newer:", "nueva:"), a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>());
+                    let etiqueta = match a.kind.as_str() {
+                        omoikane::revisar::SUSTITUIDA if a.via > 1 => tr!("by (via {}):", "por (via {}):", a.via),
+                        omoikane::revisar::SUSTITUIDA => tr!("by:", "por:"),
+                        omoikane::revisar::CONTRADICE => tr!("against:", "frente a:"),
+                        _ => tr!("newer:", "nueva:"),
+                    };
+                    println!("{:<12}  {etiqueta} {}  {}", "", a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>());
                 }
                 println!("{:<12}  {}", "", a.detail);
             }
@@ -810,14 +843,15 @@ fn preguntar_auto_update(si: bool, no: bool, simulacro: bool) -> Result<()> {
     } else if let Some(ya) = omoikane::actualizar::preferencia().filter(|_| si || !std::io::stdin().is_terminal()) {
         ya
     } else if si || !std::io::stdin().is_terminal() {
-        true
+        // Sin preguntar no se enciende: tiene que ser un sí de la persona.
+        false
     } else {
         preguntar_si(
             &tr!(
-                "Keep Omoikane up to date by itself? (once a day it installs a newer signed release, and Claude Code updates the plugin)",
-                "¿Quieres que Omoikane se actualice solo? (una vez al día instala una Release firmada más nueva, y Claude Code actualiza el plugin)"
+                "Keep Omoikane up to date by itself? (once a day it installs a newer release signed with Omoikane's key, and Claude Code updates the plugin)",
+                "¿Quieres que Omoikane se actualice solo? (una vez al día instala una Release más nueva firmada con la clave de Omoikane, y Claude Code actualiza el plugin)"
             ),
-            true,
+            false,
         )?
     };
     omoikane::actualizar::fijar(on)?;
@@ -1038,6 +1072,20 @@ fn texto_o_entrada(t: Option<String>) -> Result<String> {
     }
 }
 
+/// Por stderr (también con `--json`): lo guardado no es lo que se escribió.
+fn avisar_redactados(m: &Memoria) {
+    if !m.redacted.is_empty() {
+        let r = omoikane::secretos::resumen(&m.redacted);
+        eprintln!(
+            "{}",
+            tr!(
+                "redacted {r}: what looked like a secret was saved as [redacted:<type>] (OMOIKANE_REDACT=0 turns this off)",
+                "redactado {r}: lo que parecía un secreto se ha guardado como [redacted:<tipo>] (OMOIKANE_REDACT=0 lo apaga)"
+            )
+        );
+    }
+}
+
 fn json(v: &impl serde::Serialize) -> Result<()> {
     let mut salida = std::io::stdout().lock();
     serde_json::to_writer_pretty(&mut salida, v)?;
@@ -1140,9 +1188,38 @@ fn doctor(c: &Comun) -> Result<()> {
             None if omoikane::copia::copias_a_conservar() == 0 => println!("{}", tr!("backups    off (OMOIKANE_BACKUPS=0)", "copias     apagadas (OMOIKANE_BACKUPS=0)")),
             None => println!("{}", tr!("backups    none yet (the first one happens at the next session start)", "copias     todavía ninguna (la primera, al empezar la próxima sesión)")),
         }
+        let con_secreto = memoria::recientes(&base, &Ambito::Todos, None, usize::MAX >> 1)?
+            .iter()
+            .filter(|m| !omoikane::revisar::secretos_de(m).is_empty())
+            .count();
+        let redaccion = if omoikane::secretos::activo() {
+            tr!("on", "activa")
+        } else {
+            tr!("OFF (OMOIKANE_REDACT=0): secrets are saved as written", "APAGADA (OMOIKANE_REDACT=0): los secretos se guardan tal cual")
+        };
+        match con_secreto {
+            0 => println!("{}", tr!("secrets    redaction {redaccion}; no memory looks like it holds one", "secretos   redacción {redaccion}; ninguna memoria parece llevar uno")),
+            1 => println!(
+                "{}",
+                tr!(
+                    "secrets    redaction {redaccion}; 1 memory looks like it holds one (`omoi review`, or Redact in the web view)",
+                    "secretos   redacción {redaccion}; 1 memoria parece llevar uno (`omoi review`, o Redactar en la vista web)"
+                )
+            ),
+            n => println!(
+                "{}",
+                tr!(
+                    "secrets    redaction {redaccion}; {n} memories look like they hold one (`omoi review`, or Redact in the web view)",
+                    "secretos   redacción {redaccion}; {n} memorias parecen llevar uno (`omoi review`, o Redactar en la vista web)"
+                )
+            ),
+        }
     } else {
         let r = ruta.display();
         println!("{}", tr!("database   {r} (not created yet: it appears with the first memory)", "base       {r} (todavía no existe: se crea al guardar la primera memoria)"));
+        if !omoikane::secretos::activo() {
+            println!("{}", tr!("secrets    redaction OFF (OMOIKANE_REDACT=0): secrets are saved as written", "secretos   redacción APAGADA (OMOIKANE_REDACT=0): los secretos se guardan tal cual"));
+        }
     }
     match modelos::actual() {
         Some(d) => {
@@ -1485,6 +1562,9 @@ fn en_espanol(c: Command) -> Command {
             ("project", "Llevarla al proyecto de esta carpeta."),
             ("global", "Hacerla global: vale para todos los proyectos."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
+            ("replace", "Trozo exacto del contenido que se cambia; tiene que aparecer exactamente una vez. Cada uno con su --with (se puede repetir)."),
+            ("with", "Lo que va en lugar del --replace que le toca (se puede repetir, en el mismo orden)."),
+            ("append", "Texto que se añade al final del contenido, tras una línea en blanco (un paso más en una receta)."),
         ]),
         ("forget", "Olvida una memoria: va a la papelera con su historial (`omoi restore` la devuelve; se vacía a los 30 días).", &[
             ("id", "Id de la memoria (basta con el principio)."),

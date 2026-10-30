@@ -19,9 +19,10 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It recalls without being asked.** When what you type relates to something saved, a hook hands the agent that memory (at most 2, once per session) or the gotcha of the file you named, in about 20 ms. If nothing relates, it hands over nothing, as with 93 % of real prompts. The agent doesn't have to remember to search.
 - **Search that works in your language**, accents or not, in 101 languages: on questions written blind it finds the right memory first 90 % of the time, in 43 ms, and stays as accurate at 3,183 memories.
 - **It catches duplicates when saving.** If the agent tries to save something it already knows, it is told so and updates the memory that is there instead of adding another.
-- **It works with 15 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok and the rest share the same memory; `omoi setup <agent>` gets each one ready.
+- **It works with 15 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok and the rest share the same memory; `omoi setup <agent>` gets each one ready. Tested by hand: Claude Code and OpenCode; the rest, going by their documentation (the "Other agents" table says which, one by one).
 - **The same memory on all your computers, and with teammates.** It syncs by itself through a git repository of yours, encrypted before it leaves your computer, with nobody's server in between.
 - **History with reasons.** Changing a memory keeps the previous version and, if the agent says so, why it changed.
+- **It doesn't keep secrets.** If a token, a private key or a password slips into a memory, it becomes `[redacted:<type>]` before it is saved, and the reply tells the agent. What was saved before shows in Review with a button to redact it, history included, and none of it leaves the computer when syncing.
 - **Nothing gets lost.** Forgetting sends to the trash, history included, and `omoi restore` brings it back from any computer. `omoi export` is a faithful copy that `omoi import` rebuilds exactly, and a copy of the database is kept every day by itself.
 - **You can see it and tidy it up.** A web view and a terminal one to search, read the history, pin, move or forget.
 - **Private and small.** One binary, one file, 8 MCP tools and no server of its own.
@@ -35,7 +36,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **Recipes that come back whole.** A `procedure` memory holds the steps of something you repeat; "publish 0.14.1" brings the whole checklist, and the agent fixes a step when it changes.
 - **Linked memories.** `[[links]]` between notes travel with them: recall one and the warning linked to it comes along.
 - **It picks up where you left off.** Each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
-- **It keeps itself up to date**, and only installs releases signed with Omoikane's key.
+- **It keeps itself up to date if you ask it to**, and only installs releases signed with Omoikane's key. It comes off.
 
 ## Noise, stale memories and mistakes
 
@@ -65,7 +66,9 @@ They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for
 
 ## Status
 
-Version 0.18.0,
+**Before 1.0:** the database schema can still change. Each change migrates by itself and keeps a copy of the database first, but a migrated database can no longer be opened by an older version. 1.0 will freeze it.
+
+Version 0.19.0,
  on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
@@ -77,7 +80,7 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 /plugin install omoikane@drac
 ```
 
-`omoi setup claude` and the one-line installers ask whether Omoikane should keep itself up to date, and if so turn on the plugin's update too. If you only ran the two commands above, turn it on once: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
+Automatic updates come off. `omoi setup claude` and the one-line installers ask whether you want them (no answer leaves them off) and, if you say yes, turn on the plugin's update too; `omoi upgrade --on` turns them on any time. For the plugin's, if you only ran the two commands above: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
 
 On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
 
@@ -142,7 +145,11 @@ Omoikane notices when a memory has fallen behind: a newer one on the same subjec
 
 **Verdicts.** What Omoikane can't know by itself, the agent says, with no new tools: when saving or changing a memory it can pass `supersedes` (this one replaces those), `contradicts` (they say different things and it's unclear which holds) or `compatible` (a warning paired them and both hold). The verdict is kept, travels with sync and shows wherever the memories show: in the recall (`⚠ superseded by …`), in `search`, in `context` and in Review. It holds while what it judged doesn't change, and for a pair the newest one wins. "It's fine as it is" is a verdict too, so what you approve on one machine holds on the others.
 
-**Review date.** Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never. When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
+**Why and who.** Each verdict keeps its reason and who gave it (the sync person, or the agent and its client), and both show in the recall, in `search` and in Review. If A is superseded by B and B by C, A's note leads straight to C.
+
+**Fixing a piece and merging.** `update` takes `replace` (changes a text that must appear exactly once; otherwise nothing changes), `append` (adds at the end, for a procedure's new step) and `absorb` (merges several memories into one: the agent writes the merged text, and the absorbed ones go to the trash with their history hung on the one that stays and their tags and links moved to it). The Review tab has a **Merge** button to do it by hand.
+
+**Review date.** Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never, counting from its last change or the last time the agent got it (what gets used and nobody corrects is reviewed). When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
 
 ### Procedures and linked memories
 
@@ -206,9 +213,9 @@ From then on it runs by itself, for every agent: after each saved, changed or fo
 
 `omoi sync off` stops syncing on a computer; its memories stay.
 
-### It keeps itself up to date
+### It keeps itself up to date, if you ask it to
 
-Once a day, the first time it runs, `omoi` checks in the background for a newer release of the same major version, installs it only if it is signed with Omoikane's key, and adds whatever the new version needs to the agents that already have it; the next session tells you. `omoi setup claude` asks first (and turns on the plugin's update in Claude Code too); `omoi upgrade --off` or `OMOIKANE_AUTO_UPDATE=0` turns it off, `omoi upgrade` updates by hand, and a binary managed by cargo, Homebrew, Scoop or Nix is left to them. Before moving a database to a newer schema it keeps a copy.
+It comes off: until you say yes (`omoi upgrade --on`, or the question in `omoi setup claude`), `omoi` doesn't change itself. When on, once a day, the first time it runs, `omoi` checks in the background for a newer release of the same major version, installs it only if it is signed with Omoikane's key, and adds whatever the new version needs to the agents that already have it; the next session tells you. `omoi setup claude` asks (and turns on the plugin's update in Claude Code too); `omoi upgrade --off` or `OMOIKANE_AUTO_UPDATE=0` turns it off, `omoi upgrade` updates by hand, and a binary managed by cargo, Homebrew, Scoop or Nix is left to them. Before moving a database to a newer schema it keeps a copy.
 
 ### Over HTTP, for scripts and apps
 
@@ -228,7 +235,7 @@ Once a day, the first time it runs, `omoi` checks in the background for a newer 
 - **One binary, nothing else:** no Python, no Node, no Docker, no server to keep running. SQLite is built in.
 - **It works offline.** Everything is local, and the web view carries even its fonts, IBM Plex and Shippori Mincho, inside the binary.
 - **Windows just like Linux and macOS:** no bash, no scripts, and tested on all three on every change.
-- **15 agents, one memory**, and `omoi setup <agent>` gets each one ready.
+- **15 agents, one memory** (2 tested by hand, the rest going by their documentation), and `omoi setup <agent>` gets each one ready.
 - **Your memories are yours, and they don't get lost:** one SQLite file with a daily copy, an export that rebuilds it exactly, a trash everything comes back from, and a sync that only goes through your own git repository, encrypted.
 - **It updates carefully:** it only installs releases signed with Ed25519 and, before changing the database schema, keeps a copy.
 

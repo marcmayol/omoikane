@@ -120,7 +120,7 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         }
     }
     for v in crate::veredictos::todos(db)? {
-        escribir(&Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, machine: equipo.clone() }, salida)?;
+        escribir(&Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, reason: v.reason, author: v.author, machine: equipo.clone() }, salida)?;
         cuenta.verdicts += 1;
     }
     {

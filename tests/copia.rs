@@ -131,7 +131,7 @@ fn export_e_import_reconstruyen_la_base_exacta_y_se_pueden_repetir() {
     let c = e.id("o.db", "decision", "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.");
     e.ok("o.db", &["update", &a, "-c", "La autenticación usaba una cookie de sesión; ver JWT.", "-r", "aclarado"]);
     e.ok("o.db", &["forget", &b, "--yes"]);
-    let o = e.omoi("o.db", &["tool", "update"], Some(&format!("{{\"id\":\"{c}\",\"supersedes\":[\"{a}\"]}}")));
+    let o = e.omoi("o.db", &["tool", "update"], Some(&format!("{{\"id\":\"{c}\",\"supersedes\":[\"{a}\"],\"reason\":\"JWT replaced the cookie\"}}")));
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     let f1 = e.fichero("copia1.jsonl");
     let salida = e.omoi("o.db", &["export", "--all"], None);
@@ -145,6 +145,7 @@ fn export_e_import_reconstruyen_la_base_exacta_y_se_pueden_repetir() {
     assert_eq!(tipos, ["header", "tombstone", "memory", "memory", "verdict", "forgotten", "end"], "{tipos:?}");
     assert_eq!(lineas[6]["count"], 5);
     assert_eq!(lineas[2]["versions"].as_array().unwrap().len(), 1, "el historial viaja");
+    assert_eq!((lineas[4]["reason"].as_str(), lineas[4]["author"].as_str()), (Some("JWT replaced the cookie"), Some("agent")), "el veredicto con su motivo y su autor: {}", lineas[4]);
     // Solo contar: el fichero se comprueba entero.
     let d = e.json("o2.db", &["import", f1.to_str().unwrap(), "--dry-run"]);
     assert_eq!((d["file"]["memories"].as_u64(), d["file"]["tombstones"].as_u64(), d["file"]["verdicts"].as_u64(), d["file"]["forgotten"].as_u64()), (Some(2), Some(1), Some(1), Some(1)));
@@ -161,7 +162,10 @@ fn export_e_import_reconstruyen_la_base_exacta_y_se_pueden_repetir() {
     let o = e.omoi("o2.db", &["tool", "search"], Some("{\"query\":\"cookie de sesión\",\"all_projects\":true}"));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let nota = v.as_array().unwrap().iter().find(|x| x["id"] == a.as_str()).unwrap()["note"].as_str().unwrap_or("").to_string();
-    assert!(nota.starts_with("superseded by"), "el veredicto también: {nota}");
+    assert!(nota.starts_with("superseded by") && nota.ends_with(": JWT replaced the cookie"), "el veredicto también, con su motivo: {nota}");
+    let rev = e.json("o2.db", &["review", "--all"]);
+    let av = rev.as_array().unwrap().iter().find(|x| x["kind"] == "superseded").expect("sale en review");
+    assert_eq!((av["reason"].as_str(), av["author"].as_str()), (Some("JWT replaced the cookie"), Some("agent")), "{av}");
     // Exportar la copia da el mismo fichero (menos la cabecera, que lleva la hora).
     let f2 = e.fichero("copia2.jsonl");
     let salida = e.omoi("o2.db", &["export", "--all"], None);

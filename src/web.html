@@ -239,11 +239,13 @@ button.chip:hover { border-color: var(--accent); }
 .av .t { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
 .av .det2 { color: var(--muted); font-size: 12.5px; }
 .av .det2 b { color: var(--glow); font-weight: 600; font-family: var(--mono); font-size: 12px; }
+.av .det2.quien { color: var(--faint); font-style: italic; }
 .par { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; }
 .par > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .par .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 .par .lb.nueva { color: var(--accent); }
 .par .md { max-height: 320px; overflow-y: auto; font-size: 13px; }
+.av textarea.fusion { width: 100%; min-height: 220px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
 
 #aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 9; }
@@ -292,11 +294,13 @@ const T = ES ? {
   revisar: 'Revisar', revTitulo: 'Qué conviene revisar', revSub: 'Lo que Omoikane ha visto en la memoria. El agente también recibe estos avisos cuando le llega una de estas memorias.',
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
+  juntar: 'Juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias e hitos. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
-  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
+  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito' },
-  tipos: { superseded: ['Sustituidas', 'El agente dijo que otra memoria las sustituye: si es así, olvida la vieja.'], contradicts: ['Se contradicen', 'El agente vio que dicen cosas distintas y no supo cuál vale.'], due: ['Toca revisarlas', 'Hace tiempo que no se tocan: decisiones y recetas a los 120 días, hechos y trampas a los 180. «Está bien así» vuelve a poner el reloj a cero.'], outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
-  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
+  quienDijo: a => { const q = a.author === 'user' ? 'tú' : a.author.startsWith('agent:') ? `el agente (${a.author.slice(6)})` : a.author === 'agent' ? 'el agente' : a.author; const via = a.via > 1 ? ` · pasando por ${a.via - 1} memoria${a.via > 2 ? 's' : ''} más` : ''; return (q ? `Lo dijo ${q}` : 'Sin autor') + (a.reason ? `: «${a.reason}»` : '') + via; },
+  tipos: { secret: ['Secretos', 'Llevan algo que parece una clave, un token o una contraseña (se guardaron antes de la 0.19.0 o con OMOIKANE_REDACT=0). «Redactar» lo cambia por [redacted:<tipo>], también en su historial.'], superseded: ['Sustituidas', 'El agente dijo que otra memoria las sustituye: si es así, olvida la vieja.'], contradicts: ['Se contradicen', 'El agente vio que dicen cosas distintas y no supo cuál vale.'], due: ['Toca revisarlas', 'Hace tiempo que no se tocan: decisiones y recetas a los 120 días, hechos y trampas a los 180. «Está bien así» vuelve a poner el reloj a cero.'], outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
+  detalle: a => a.kind === 'secret' ? a.detail.replace(/^looks like a secret: (.*); redact it$/, 'parece un secreto: $1') : a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
@@ -312,11 +316,13 @@ const T = ES ? {
   revisar: 'Review', revTitulo: 'What is worth reviewing', revSub: 'What Omoikane has noticed in the memory. The agent gets these warnings too whenever one of these memories reaches it.',
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
+  juntar: 'Merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences and milestones. The agent of the next session gets them once; here you can save them yourself or drop them.',
-  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
+  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone' },
-  tipos: { superseded: ['Superseded', 'The agent said another memory replaces them: if so, forget the old one.'], contradicts: ['They disagree', 'The agent saw they say different things and could not tell which holds.'], due: ['Due for review', 'Untouched for a while: decisions and procedures after 120 days, facts and gotchas after 180. "It\'s fine as it is" restarts the clock.'], outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
-  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.detail
+  quienDijo: a => { const q = a.author === 'user' ? 'you' : a.author.startsWith('agent:') ? `the agent (${a.author.slice(6)})` : a.author === 'agent' ? 'the agent' : a.author; const via = a.via > 1 ? ` · through ${a.via - 1} more memor${a.via > 2 ? 'ies' : 'y'}` : ''; return (q ? `Said by ${q}` : 'No author') + (a.reason ? `: “${a.reason}”` : '') + via; },
+  tipos: { secret: ['Secrets', 'They hold something that looks like a key, a token or a password (saved before 0.19.0 or with OMOIKANE_REDACT=0). "Redact" replaces it with [redacted:<type>], in their history too.'], superseded: ['Superseded', 'The agent said another memory replaces them: if so, forget the old one.'], contradicts: ['They disagree', 'The agent saw they say different things and could not tell which holds.'], due: ['Due for review', 'Untouched for a while: decisions and procedures after 120 days, facts and gotchas after 180. "It\'s fine as it is" restarts the clock.'], outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
+  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.kind === 'superseded' ? 'replaced by the other one' : a.kind === 'contradicts' ? 'they disagree and neither has won yet' : a.detail
 };
 const TIPOS = ['fact', 'decision', 'gotcha', 'preference', 'procedure'];
 // En la página de un proyecto, las recetas solo tienen columna si hay alguna.
@@ -345,7 +351,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
-let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, candidatas = [], papelera = [];
+let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, candidatas = [], papelera = [];
 const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
@@ -700,7 +706,7 @@ const claveAv = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
 function pintarRevisar() {
   const grupos = {};
   for (const a of avisos) (grupos[a.kind] = grupos[a.kind] || []).push(a);
-  const orden = ['superseded', 'contradicts', 'outdated', 'broken_link', 'stale_status', 'due', 'broken_path', 'unused', 'too_long'];
+  const orden = ['secret', 'superseded', 'contradicts', 'outdated', 'broken_link', 'stale_status', 'due', 'broken_path', 'unused', 'too_long'];
   const sesiones = !candidatas.length ? '' : `
     <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidatas.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.sesionesSub)}</p>
@@ -751,8 +757,18 @@ function pintarRevisar() {
     const a = avisos.find(x => claveAv(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
     q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };
+    if (q('juntar')) q('juntar').onclick = () => { revJuntar[el.dataset.k] = !revJuntar[el.dataset.k]; pintar(); };
+    if (q('confirmar')) q('confirmar').onclick = () => accion(async () => {
+      const content = el.querySelector('textarea.fusion').value;
+      await herramienta('update', { id: el.dataset.nueva, content, absorb: [el.dataset.vieja], reason: T.juntarMotivo });
+      delete revJuntar[el.dataset.k];
+    });
     q('bien').onclick = () => accion(async () => {
       const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
+      if (!r.ok) throw new Error(await r.text());
+    });
+    if (q('redactar')) q('redactar').onclick = () => accion(async () => {
+      const r = await fetch('/api/redact', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: a.memory_id }) });
       if (!r.ok) throw new Error(await r.text());
     });
     if (q('olvidar')) q('olvidar').onclick = () => {
@@ -766,21 +782,33 @@ function avisoHTML(a) {
   const m = todas.find(x => x.id === a.memory_id), o = a.other_id && todas.find(x => x.id === a.other_id), abierto = revAbiertos[claveAv(a)];
   if (!m) return '';
   const fila = x => `<a class="proj" href="${enlaceProyecto(x.project)}">${esc(nombre(x.project))}</a> <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span>`;
-  let cont = '';
-  if (abierto && o) cont = `<div class="par">
+  // Juntar (0.19.0): en una pareja, la más nueva absorbe a la vieja; en «se contradicen» manda la fecha.
+  const juntable = o && ['outdated', 'superseded', 'contradicts'].includes(a.kind);
+  const [nueva, vieja] = !o ? [null, null] : a.kind === 'contradicts' && m.updated_at > o.updated_at ? [m, o] : [o, m];
+  const juntando = juntable && revJuntar[claveAv(a)];
+  const par = !o ? '' : `<div class="par">
       <div><span class="lb">${esc(a.kind === 'superseded' ? T.sustituida : a.kind === 'contradicts' ? T.unaEt : T.vieja)}</span><span class="t">${esc(m.title)}</span><div class="md">${md(m.content)}</div></div>
       <div><span class="lb nueva">${esc(a.kind === 'superseded' ? T.sustituta : a.kind === 'contradicts' ? T.otraEt : T.nuevaEt)}</span><span class="t">${esc(o.title)}</span><div class="md">${md(o.content)}</div></div>
     </div>`;
+  let cont = '';
+  if (juntando) cont = `${par}
+    <p class="vacio" style="padding:6px 0 0">${esc(T.juntarSub)}</p>
+    <textarea class="fusion" rows="12" spellcheck="false">${esc(nueva.content + '\n\n' + vieja.content)}</textarea>`;
+  else if (abierto && o) cont = par;
   else if (abierto) cont = `<div class="md" style="max-height:360px;overflow-y:auto">${md(m.content)}</div>`;
-  return `<div class="av" data-k="${esc(claveAv(a))}">
+  return `<div class="av" data-k="${esc(claveAv(a))}"${juntable ? ` data-nueva="${esc(nueva.id)}" data-vieja="${esc(vieja.id)}"` : ''}>
     <div class="cab"><span class="t">${esc(m.title)}</span></div>
     <div class="cab">${fila(m)}</div>
     ${o ? `<div class="det2">→ ${esc(o.title)} · <b>${esc(T.detalle(a))}</b></div>` : `<div class="det2"><b>${esc(T.detalle(a))}</b></div>`}
+    ${(a.kind === 'superseded' || a.kind === 'contradicts') && (a.author || a.reason) ? `<div class="det2 quien">${esc(T.quienDijo(a))}</div>` : ''}
     ${cont}
     <div class="acts">
       <button class="btn" data-r="ver">${abierto ? T.ocultar : (o ? T.verDos : T.ver)}</button>
       <button class="btn" data-r="bien">${esc(T.bien)}</button>
+      ${juntable ? `<button class="btn" data-r="juntar">${esc(juntando ? T.no : T.juntar)}</button>` : ''}
+      ${juntando ? `<button class="btn pri" data-r="confirmar">${esc(T.juntarBtn)}</button>` : ''}
       <span class="sp"></span>
+      ${a.kind === 'secret' ? `<button class="btn pri" data-r="redactar">${esc(T.redactar)}</button>` : ''}
       ${['outdated', 'superseded', 'unused', 'due'].includes(a.kind) ? `<span data-r="olvido"><button class="btn danger" data-r="olvidar">${a.kind === 'outdated' || a.kind === 'superseded' ? T.olvidarVieja : T.olvidar}</button></span>` : ''}
 
     </div>

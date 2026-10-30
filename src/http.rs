@@ -11,6 +11,8 @@
 //!   `POST /api/candidates/dismiss` con `{id}` para dejarlo
 //! - `GET /api/trash` → la papelera (`memoria::papelera`), y `POST /api/restore` con `{id}` para
 //!   devolver una memoria
+//! - `POST /api/redact` con `{id}` → la memoria sin lo que parece un secreto (`memoria::redactar`), con
+//!   el motivo «redacted» en su historial
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → nombres, descripciones y esquemas de las herramientas
 //! - `POST /tools/<nombre>` con los argumentos en JSON → la respuesta de la herramienta (400 si es un error)
@@ -235,6 +237,24 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
+                (Method::Post, "/api/redact") => {
+                    let mut cuerpo = String::new();
+                    peticion.as_reader().read_to_string(&mut cuerpo)?;
+                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
+                    let mut base = db::abrir(&db)?;
+                    match memoria::redactar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
+                        Ok(m) => {
+                            if !m.redacted.is_empty() {
+                                crate::revisar::al_dia(&base)?;
+                                crate::sync::programar(&db);
+                            }
+                            let mut j = serde_json::to_value(&m)?;
+                            j["redacted"] = m.redacted.len().into();
+                            Ok(json(200, j.to_string()))
+                        }
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
                 (Method::Get, "/api/candidates") => {
                     let db = db::abrir(&db)?;
                     Ok(json(200, serde_json::to_string(&crate::candidatas::todas(&db)?)?))
@@ -287,7 +307,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

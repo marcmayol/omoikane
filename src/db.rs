@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 8;
+pub const VERSION_ESQUEMA: i64 = 9;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -115,6 +115,9 @@ fn migrar(db: &mut Connection) -> Result<()> {
         tx.execute_batch(ESQUEMA_8)?;
         pasar_descartes(&tx)?;
     }
+    if v < 9 {
+        tx.execute_batch(ESQUEMA_9)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
@@ -136,6 +139,14 @@ fn aflojar_tipos(tx: &Connection) -> Result<()> {
     tx.execute_batch(&format!("PRAGMA schema_version = {}; PRAGMA writable_schema = OFF", version + 1))?;
     Ok(())
 }
+
+/// Cada veredicto con su motivo y su autor (0.19.0): el `reason` del `update` o el título de la
+/// memoria nueva, y la persona de la sync, `agent:<cliente>` o `user`. Los de antes se quedan con los
+/// dos vacíos; las versiones viejas ignoran los campos en la línea `verdict` de la sincronización.
+const ESQUEMA_9: &str = "
+ALTER TABLE verdict ADD COLUMN reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE verdict ADD COLUMN author TEXT NOT NULL DEFAULT '';
+";
 
 /// Veredictos (0.17.0, `veredictos`): lo que el agente o el usuario dicen de una memoria o de una
 /// pareja (`superseded`, `contradicts`, `compatible`, `ok:<aviso>`). Viajan por la sincronización,
