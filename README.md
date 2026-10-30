@@ -12,16 +12,26 @@
 
 ## What makes it different
 
-Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone. Omoikane keeps those as short, typed memories in a local SQLite file, and does the rest by itself:
+Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone. Omoikane keeps those as short, typed memories in a local SQLite file, and does the rest by itself.
+
+### What it does every session
 
 - **It recalls without being asked.** On every prompt a hook gives the agent the 3-5 memories that matter for what you just typed, plus the gotchas of the files you mentioned, in about 20 ms. The agent doesn't have to remember to search.
+- **Search that works in your language**, accents or not, in 101 languages: on questions written blind it finds the right memory first 90 % of the time, in 43 ms, and stays as accurate at 3,183 memories.
+- **It catches duplicates when saving.** If the agent tries to save something it already knows, it is told so and updates the memory that is there instead of adding another.
+- **It works with 14 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode and the rest share the same memory; `omoi setup <agent>` gets each one ready.
+- **The same memory on all your computers, and with teammates.** It syncs by itself through a git repository of yours, encrypted before it leaves your computer, with nobody's server in between.
+- **History with reasons.** Changing a memory keeps the previous version and, if the agent says so, why it changed.
+- **You can see it and tidy it up.** A web view and a terminal one to search, read the history, pin, move or forget.
+- **Private and small.** One binary, one file, 8 MCP tools and no server of its own.
+
+### What keeps the memory alive
+
 - **It saves even when the agent forgets to.** When a session ends, Omoikane reads the conversation and sets aside what you decided and asked for; the next session saves what is worth keeping, in your words.
 - **It notices when a memory is out of date.** If a newer memory contradicts an older one, the old one reaches the agent marked `⚠ may be outdated`, and the Review tab shows both side by side.
 - **Recipes that come back whole.** A `procedure` memory holds the steps of something you repeat; "publish 0.14.1" brings the whole checklist, and the agent fixes a step when it changes.
 - **Linked memories.** `[[links]]` between notes travel with them: recall one and the warning linked to it comes along.
 - **It picks up where you left off.** Each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
-- **Search that works in your language**, accents or not: on questions written blind it finds the right memory first 90 % of the time, in 43 ms.
-- **Private and small.** One binary, one file, 8 MCP tools and no server of its own. Optional sync goes through a git repository of yours, encrypted.
 - **It keeps itself up to date**, and only installs releases signed with Omoikane's key.
 
 ## Status
