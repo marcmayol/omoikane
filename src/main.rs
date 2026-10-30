@@ -57,8 +57,8 @@ enum Orden {
         /// Applies to every project, not just this one.
         #[arg(long)]
         global: bool,
-        /// Applies to every project of a space: this project's (without a name) or the named one.
-        #[arg(long, value_name = "SPACE", num_args = 0..=1, default_missing_value = "", conflicts_with = "global")]
+        /// Applies to every project of a space: this project's (`--space`) or the named one (`--space=<name>`).
+        #[arg(long, value_name = "SPACE", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with = "global")]
         space: Option<String>,
         /// Who saves it (for example "claude-code:<session>").
         #[arg(long, default_value = "cli")]

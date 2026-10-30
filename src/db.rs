@@ -114,6 +114,12 @@ pub fn abrir_en_esquema(ruta: &Path, hasta: i64) -> Result<Connection> {
 }
 
 fn migrar_hasta(db: &mut Connection, hasta: i64) -> Result<()> {
+    let copia = db.path().filter(|p| !p.is_empty()).map(|r| format!("{r}.antes-del-esquema-{VERSION_ESQUEMA}"));
+    migrar_copiando(db, hasta, copia)
+}
+
+/// Migra hasta `hasta`, con la copia previa en `copia` (ninguna para una base en memoria).
+fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Result<()> {
     let antes = version(db)?;
     if antes == hasta {
         return Ok(());
@@ -124,19 +130,21 @@ fn migrar_hasta(db: &mut Connection, hasta: i64) -> Result<()> {
     // Antes de migrar una base que ya tenía datos, una copia: una versión vieja no abre la nueva. Si la
     // copia falla (disco lleno, permisos), no se migra: sin ella no hay vuelta atrás.
     if antes > 0
-        && let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(String::from)
+        && let Some(copia) = copia
+        && !Path::new(&copia).exists()
     {
-        let copia = format!("{ruta}.antes-del-esquema-{VERSION_ESQUEMA}");
-        if !Path::new(&copia).exists() {
-            db.execute("VACUUM INTO ?1", [&copia]).with_context(|| {
-                tr!(
-                    "can't copy the database to {copia} before updating it to schema {VERSION_ESQUEMA}; nothing was changed",
-                    "no se puede copiar la base en {copia} antes de pasarla al esquema {VERSION_ESQUEMA}; no se ha cambiado nada"
-                )
-            })?;
-        }
+        db.execute("VACUUM INTO ?1", [&copia]).with_context(|| {
+            tr!(
+                "can't copy the database to {copia} before updating it to schema {VERSION_ESQUEMA}; nothing was changed",
+                "no se puede copiar la base en {copia} antes de pasarla al esquema {VERSION_ESQUEMA}; no se ha cambiado nada"
+            )
+        })?;
     }
     let persona = persona_de(db);
+    // Las claves ajenas, apagadas antes del BEGIN (dentro de una transacción no se pueden cambiar): con
+    // ellas encendidas, el `DROP TABLE memory` del esquema 10 borraría en cascada el historial, las
+    // rutas y los vectores. `abrir` las vuelve a encender al terminar.
+    db.pragma_update(None, "foreign_keys", false)?;
     // IMMEDIATE: si dos procesos abren una base nueva a la vez, solo uno crea el esquema.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let v = version(&tx)?;
@@ -682,6 +690,28 @@ mod tests {
         assert_eq!(por("auth"), 1);
         assert_eq!(por("seguridad"), 1);
         assert_eq!(por("trampa"), 1);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sin_copia_previa_no_se_migra() {
+        let dir = std::env::temp_dir().join(format!("omoi-db-sin-copia-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("o.db");
+        abrir_en_esquema(&ruta, 9).unwrap();
+        let mut db = Connection::open(&ruta).unwrap();
+        // Una copia que no se puede escribir (su carpeta no existe): la base se queda como estaba.
+        let imposible = dir.join("no-existe").join("copia.db").display().to_string();
+        let e = migrar_copiando(&mut db, VERSION_ESQUEMA, Some(imposible)).unwrap_err();
+        assert!(format!("{e:#}").contains("copia") || format!("{e:#}").contains("copy"), "{e:#}");
+        assert_eq!(version(&db).unwrap(), 9);
+        drop(db);
+        // Con la copia posible, sí.
+        let db = abrir(&ruta).unwrap();
+        assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
+        assert!(dir.join("o.db.antes-del-esquema-10").exists());
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }

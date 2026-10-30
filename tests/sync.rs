@@ -837,3 +837,30 @@ fn sync_con_db_relativa() {
     assert!(b.get(&id).is_some(), "B la recibe al unirse");
     a.ok_en(&p.dir, &["--db", "pc-a/o.db", "sync"], &[]);
 }
+
+/// 0.20.0: un repositorio por cliente. Con `--space acme`, solo viaja lo de ese espacio (sus proyectos
+/// y lo suyo), ni lo de otros proyectos ni lo global; y el espacio llega con las memorias.
+#[test]
+fn un_repositorio_por_espacio_solo_lleva_ese_espacio() {
+    let p = Prueba::nueva("espacio");
+    let (a, b) = dos(&p, &["--space", "acme"], &["--space", "acme"]);
+    let web = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
+    let mio = a.proyecto("personal", Some("git@github.com:marc/personal.git"));
+    a.ok(&["space", "add", "Acme"]);
+    a.ok_en(&web, &["space", "assign", "acme"], &[]);
+    let de_web = a.guardar(&web, "fact", "El staging de Acme está en Frankfurt", "Región eu-central-1.", &[]);
+    let de_espacio = a.guardar(&web, "gotcha", "La VPN de Acme corta a la hora", "Volver a entrar.", &["--space"]);
+    let personal = a.guardar(&mio, "fact", "Mi script de copias", "Corre a las 3.", &[]);
+    let global = a.guardar(&a.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
+    a.sync();
+    let r = b.sync();
+    assert_eq!(r["nuevas"], 2, "{r}");
+    assert_eq!(b.get(&de_web).expect("llegó")["space"], "acme");
+    let m = b.get(&de_espacio).expect("llegó la de espacio");
+    assert_eq!((m["project"].as_str(), m["space"].as_str()), (Some(""), Some("acme")), "{m}");
+    assert!(b.get(&personal).is_none() && b.get(&global).is_none(), "ni lo de otro proyecto ni lo global");
+    // En B, el proyecto (cuando aparezca su carpeta) ya está en el espacio.
+    let web_b = b.proyecto("web", Some("https://github.com/acme/web"));
+    let s = b.json_en(&web_b, &["search", "VPN"]);
+    assert_eq!(s[0]["id"], de_espacio.as_str(), "{s}");
+}
