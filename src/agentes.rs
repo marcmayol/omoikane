@@ -33,9 +33,9 @@
 //! con el id). En OpenCode, el plugin (con `session.idle` cada 10 min y `session.compacted`).
 //! Antigravity no: guarda las conversaciones en protobuf.
 //!
-//! La orden `/omoikane-web` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
+//! Las órdenes `/omoikane` (guarda lo aprendido) y `/omoikane-web` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
 //! (`~/.gemini/commands/*.toml`), Qwen (`~/.qwen/commands/*.md`), Codex (`~/.codex/prompts/*.md`,
-//! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane-web`), Cursor
+//! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane`), Cursor
 //! (`~/.cursor/commands/*.md`), OpenCode (`~/.config/opencode/commands/*.md`), Kiro
 //! (`~/.kiro/prompts/*.md`), Windsurf (`~/.codeium/windsurf/global_workflows/*.md`), Pi
 //! (`~/.pi/agent/prompts/*.md`) y Kilo (`~/.config/kilo/commands/*.md`). Sin ella: Copilot (no hay
@@ -210,8 +210,8 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
-            // Codex la enseña como `/prompts:omoikane-web`.
-            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, true));
+            // Codex las enseña como `/prompts:omoikane` y `/prompts:omoikane-web`.
+            ordenes_en(&mut v, d.join("prompts"), Formato::Md(true), &omoi);
         }
         "gemini" => {
             let d = h.join(".gemini");
@@ -233,8 +233,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("GEMINI.md"))? {
                 v.push(Cambio { fichero: d.join("GEMINI.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
-            let toml = format!("description = {}\nprompt = {}\n", toml_texto(DESCRIPCION_ORDEN), toml_texto(&texto_orden(&omoi)));
-            orden_en(&mut v, d.join("commands").join(format!("{ORDEN}.toml")), toml);
+            ordenes_en(&mut v, d.join("commands"), Formato::Toml, &omoi);
         }
         "cursor" => {
             let d = h.join(".cursor");
@@ -271,7 +270,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
-            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, false));
+            ordenes_en(&mut v, d.join("commands"), Formato::Md(false), &omoi);
         }
         "opencode" => {
             let d = match std::env::var_os("XDG_CONFIG_HOME") {
@@ -298,7 +297,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
-            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
+            ordenes_en(&mut v, d.join("commands"), Formato::Md(true), &omoi);
         }
         "qwen" => {
             let d = h.join(".qwen");
@@ -318,7 +317,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, d.join("QWEN.md"))?;
-            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
+            ordenes_en(&mut v, d.join("commands"), Formato::Md(true), &omoi);
         }
         "kiro" => {
             let d = h.join(".kiro");
@@ -350,7 +349,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
-            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, false));
+            ordenes_en(&mut v, d.join("prompts"), Formato::Md(false), &omoi);
         }
         "copilot" => {
             let d = h.join(".copilot");
@@ -388,7 +387,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             mcp_en(&mut v, config_sistema(&h).join("devin").join("mcp_config.json"), "mcpServers", entrada.clone())?;
             mcp_en(&mut v, h.join(".codeium").join("windsurf").join("mcp_config.json"), "mcpServers", entrada)?;
             instrucciones_en(&mut v, h.join(".codeium").join("windsurf").join("memories").join("global_rules.md"))?;
-            orden_en(&mut v, h.join(".codeium").join("windsurf").join("global_workflows").join(ORDEN_MD), orden_md(&omoi, true));
+            ordenes_en(&mut v, h.join(".codeium").join("windsurf").join("global_workflows"), Formato::Md(true), &omoi);
         }
         "antigravity" => {
             let d = h.join(".gemini").join("config");
@@ -415,7 +414,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             let d = h.join(".pi").join("agent");
             mcp_en(&mut v, d.join("mcp.json"), "mcpServers", json!({ "command": omoi, "args": ["mcp"] }))?;
             instrucciones_en(&mut v, d.join("AGENTS.md"))?;
-            orden_en(&mut v, d.join("prompts").join(ORDEN_MD), orden_md(&omoi, true));
+            ordenes_en(&mut v, d.join("prompts"), Formato::Md(true), &omoi);
         }
         "amp" => {
             let d = h.join(".config").join("amp");
@@ -445,7 +444,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             instrucciones_en(&mut v, reglas)?;
-            orden_en(&mut v, d.join("commands").join(ORDEN_MD), orden_md(&omoi, true));
+            ordenes_en(&mut v, d.join("commands"), Formato::Md(true), &omoi);
         }
         otro => bail!(tr!(
             "unknown agent «{otro}»: claude, {}",
@@ -509,10 +508,11 @@ fn instrucciones_en(v: &mut Vec<Cambio>, fichero: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// El nombre de la orden que abre la vista web. Antes era `/omoikane`, que sonaba a «Omoikane,
-/// apunta esto»; `omoi setup` borra la vieja si la había escrito él.
+/// El nombre de la orden que abre la vista web. Hasta la 0.9 era `/omoikane`, que sonaba a
+/// «Omoikane, apunta esto»: desde la 0.15 ese nombre es la orden que guarda.
 pub const ORDEN: &str = "omoikane-web";
-const ORDEN_MD: &str = "omoikane-web.md";
+/// La orden que hace guardar al agente lo que ha aprendido en la sesión.
+pub const ORDEN_GUARDAR: &str = "omoikane";
 
 /// Lo que hace la orden `/omoikane-web`: en estos agentes una orden es un texto para el modelo, así que le
 /// pide arrancar la vista web con su terminal.
@@ -525,21 +525,43 @@ fn texto_orden(omoi: &str) -> String {
 
 const DESCRIPCION_ORDEN: &str = "Open the Omoikane memory view in the browser";
 
-/// La orden `/omoikane-web` como Markdown, con `description` arriba si el agente lo admite.
-fn orden_md(omoi: &str, con_descripcion: bool) -> String {
-    let cuerpo = texto_orden(omoi);
-    if con_descripcion { format!("---\ndescription: {DESCRIPCION_ORDEN}\n---\n\n{cuerpo}\n") } else { format!("{cuerpo}\n") }
+/// Lo que hace la orden `/omoikane`. Lo que el usuario escriba detrás le llega al modelo con el texto
+/// (los agentes lo añaden al final cuando la orden no lo coloca), así que no hace falta `$ARGUMENTS`.
+/// Es el mismo texto que manda el mod de Claude Code (`hooks/omoikane.ts`).
+pub const TEXTO_GUARDAR: &str = "Save to Omoikane now, with its `remember` and `update` tools. If the user wrote something after the command, that is what to save: one memory, in their words. Otherwise go over this session and save what is worth knowing next time and is not saved yet: decisions and their reasons (kind decision), non-obvious traps with the files they affect (gotcha), how the user wants things done (preference), steps they repeat (procedure), and how something works (fact). `search` first, and `update` a memory instead of saving a near copy. Then update the project's memory tagged `status` (or save one) with where the work was left: what is done and what is next. Write each memory in the language the user writes to you in. Finish with one short line per memory saved or updated, or say that nothing new was worth saving.";
+
+const DESCRIPCION_GUARDAR: &str = "Save to Omoikane what this session learned (or what you write after it)";
+
+/// En qué formato escribe las órdenes cada agente: Markdown (con `description` arriba, si lo admite)
+/// o el TOML de Gemini y Qwen.
+enum Formato {
+    Md(bool),
+    Toml,
 }
 
-/// Añade el fichero de la orden `/omoikane-web` (si no existe ya) y borra la del nombre viejo,
-/// `omoikane.md`/`.toml`, solo si es la que escribió Omoikane.
-fn orden_en(v: &mut Vec<Cambio>, fichero: PathBuf, contenido: String) {
-    let vieja = fichero.with_file_name(format!("omoikane.{}", fichero.extension().unwrap_or_default().to_string_lossy()));
-    if std::fs::read_to_string(&vieja).is_ok_and(|t| t.contains("Open the Omoikane memory view in the browser")) {
-        let que = tr!("old /omoikane command (removed)", "orden /omoikane vieja (se borra)");
-        v.push(Cambio { fichero: vieja, que, contenido: String::new(), borrar: true });
+fn orden_con(formato: &Formato, descripcion: &str, cuerpo: &str) -> String {
+    match formato {
+        Formato::Md(true) => format!("---\ndescription: {descripcion}\n---\n\n{cuerpo}\n"),
+        Formato::Md(false) => format!("{cuerpo}\n"),
+        Formato::Toml => format!("description = {}\nprompt = {}\n", toml_texto(descripcion), toml_texto(cuerpo)),
     }
-    fichero_propio(v, fichero, tr!("/omoikane-web command (opens the web view)", "orden /omoikane-web (abre la vista web)"), contenido);
+}
+
+/// Las dos órdenes en `carpeta`, si no existen ya: `/omoikane` guarda y `/omoikane-web` abre la vista
+/// web. Una `/omoikane` de antes de la 0.15, que abría la vista web y escribió Omoikane, se cambia
+/// por la que guarda; una que escribió el usuario no se toca.
+fn ordenes_en(v: &mut Vec<Cambio>, carpeta: PathBuf, formato: Formato, omoi: &str) {
+    let ext = if matches!(formato, Formato::Toml) { "toml" } else { "md" };
+    let web = orden_con(&formato, DESCRIPCION_ORDEN, &texto_orden(omoi));
+    fichero_propio(v, carpeta.join(format!("{ORDEN}.{ext}")), tr!("/omoikane-web command (opens the web view)", "orden /omoikane-web (abre la vista web)"), web);
+    let fichero = carpeta.join(format!("{ORDEN_GUARDAR}.{ext}"));
+    let guardar = orden_con(&formato, DESCRIPCION_GUARDAR, TEXTO_GUARDAR);
+    if std::fs::read_to_string(&fichero).is_ok_and(|t| t.contains(DESCRIPCION_ORDEN)) {
+        let que = tr!("/omoikane command: now it saves (it used to open the web view)", "orden /omoikane: ahora guarda (antes abría la vista web)");
+        v.push(Cambio { fichero, que, contenido: guardar, borrar: false });
+    } else {
+        fichero_propio(v, fichero, tr!("/omoikane command (saves what the session learned)", "orden /omoikane (guarda lo aprendido en la sesión)"), guardar);
+    }
 }
 
 /// Un fichero entero que es solo de Omoikane (si no existe ya).

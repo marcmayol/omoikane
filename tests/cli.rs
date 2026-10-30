@@ -376,7 +376,14 @@ fn setup_de_otros_agentes() {
     ] {
         let t = std::fs::read_to_string(casa.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
         assert!(t.contains("serve --open") && t.contains("127.0.0.1:7438"), "{f}: {t}");
+        // Y a su lado `/omoikane`, que hace guardar al agente.
+        let g = f.replace("omoikane-web", "omoikane");
+        let t = std::fs::read_to_string(casa.join(&g)).unwrap_or_else(|_| panic!("falta {g}"));
+        assert!(t.contains("Save to Omoikane now") && t.contains("`status`") && !t.contains("serve --open"), "{g}: {t}");
     }
+    let gemini = std::fs::read_to_string(casa.join(".gemini/commands/omoikane.toml")).unwrap();
+    assert!(gemini.starts_with("description = \"Save to Omoikane") && gemini.contains("
+prompt = \""), "{gemini}");
     let gemini = std::fs::read_to_string(casa.join(".gemini/commands/omoikane-web.toml")).unwrap();
     assert!(gemini.starts_with("description = \"") && gemini.contains("\nprompt = \""), "{gemini}");
     assert!(std::fs::read_to_string(casa.join(".config/opencode/commands/omoikane-web.md")).unwrap().starts_with("---\ndescription:"));
@@ -468,7 +475,8 @@ fn setup_respeta_una_orden_existente() {
     assert_eq!(std::fs::read_to_string(casa.join(".qwen/commands/omoikane.md")).unwrap(), "también mía");
 }
 
-/// La orden con su nombre viejo, `/omoikane`, se cambia por `/omoikane-web` si la había escrito Omoikane.
+/// La `/omoikane` de antes, que abría la vista web, pasa a ser la que guarda si la había escrito Omoikane,
+/// y la vista web queda en `/omoikane-web`.
 #[test]
 fn setup_cambia_la_orden_vieja() {
     let e = Entorno::nuevo("setup-orden-vieja");
@@ -479,7 +487,8 @@ fn setup_cambia_la_orden_vieja() {
     let h = casa.to_str().unwrap();
     let o = e.omoi_con(&["setup", "gemini", "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(!vieja.exists(), "la orden vieja sigue ahí");
+    let t = std::fs::read_to_string(&vieja).unwrap();
+    assert!(t.contains("Save to Omoikane now") && !t.contains("memory view"), "{t}");
     assert!(std::fs::read_to_string(casa.join(".gemini/commands/omoikane-web.toml")).unwrap().contains("serve --open"));
 }
 
