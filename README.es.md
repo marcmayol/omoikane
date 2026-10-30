@@ -36,7 +36,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 
 ## Estado
 
-Versión 0.14.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 0.14.1, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
 

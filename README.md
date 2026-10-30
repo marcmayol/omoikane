@@ -36,7 +36,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 ## Status
 
-Version 0.14.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 0.14.1, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
 
