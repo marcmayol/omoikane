@@ -16,7 +16,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 
 ### Lo que hace en cada sesión
 
-- **Recuerda sin que se lo pidas.** En cada mensaje, un hook le da al agente las 3-5 memorias que importan para lo que acabas de escribir, más las trampas de los ficheros que has nombrado, en unos 20 ms. El agente no tiene que acordarse de buscar.
+- **Recuerda sin que se lo pidas.** Cuando lo que escribes tiene que ver con algo guardado, un hook le pasa al agente esa memoria (como mucho 2, una vez por sesión) o la trampa del fichero que has nombrado, en unos 20 ms. Si no tiene que ver, no le pasa nada, y así fue en el 93 % de los mensajes reales. El agente no tiene que acordarse de buscar.
 - **Busca bien en tu idioma**, con tildes o sin ellas y en 101 idiomas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms, y sigue igual de preciso con 3.183 memorias.
 - **Detecta duplicados al guardar.** Si el agente intenta guardar algo que ya sabe, se le dice y actualiza la memoria que hay en lugar de crear otra.
 - **Funciona con 15 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
@@ -35,6 +35,32 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Retoma donde lo dejaste.** Al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
 - **Se mantiene al día solo**, y solo instala versiones firmadas con la clave de Omoikane.
 
+## El ruido, lo viejo y lo erróneo
+
+Un recall que inyecta de más es peor que no tenerlo: llena el contexto de ruido y arrastra de una sesión a otra lo que ya no vale. Por eso es la parte de Omoikane con más horas de calibrado.
+
+- **Casi siempre calla.** Un mensaje solo recibe algo si tiene al menos 3 palabras útiles y una memoria comparte con él 2 palabras poco frecuentes en tu base que sumen como mínimo la mitad del peso del mensaje. El canal por significado, para las paráfrasis, pide además que las palabras cubran un 25 % y no se usa en mensajes de más de 500 caracteres. En 300 mensajes reales inyectó algo en el 7 %; los demás no recibieron nada. «¿Cómo ha ido todo?» no trae nada.
+- **Poco y una sola vez.** Como mucho 2 memorias por mensaje, y solo las que se acercan a la mejor: si una destaca, va sola. De cada una llegan 200 caracteres; si el agente quiere el resto, la pide con `get`. Puede sumarse una trampa o preferencia enlazada, y una receta solo si el mensaje dice una de sus palabras `when:`. Cada memoria llega una vez por sesión.
+- **Lo viejo llega marcado.** Si una memoria más nueva del mismo tema la contradice (otra versión de lo mismo, o hecho lo que estaba pendiente), la vieja llega con `⚠ may be outdated: newer <id> …` delante y el agente mira la nueva antes de fiarse. También avisa de estados de proyecto que se han quedado atrás, rutas que ya no existen y memorias que nadie usa. La pestaña Revisar pone las dos memorias lado a lado para olvidar la vieja o dejarla. Todo sin modelo: palabras, fechas y versiones.
+- **Lo erróneo se corrige, no se arrastra.** En la memoria solo entra lo que guarda el agente. Lo que Omoikane aparta al cerrar una sesión son propuestas, y caducan a los 7 días si nadie las guarda. Corregir es `update` con el motivo, y la versión anterior queda en el historial. `forget` la borra, y tampoco vuelve desde tus otros equipos. Lo que guarda un compañero llega marcado `[by Ana]`.
+- **Medido.** Cada umbral sale de preguntas escritas a ciegas por otro agente, 20 de ellas sin respuesta en las notas: con esas inyectó algo en 2. Los números, en [BENCHMARK.es.md](BENCHMARK.es.md).
+
+Al empezar la sesión sí llega más: tus preferencias, lo que has fijado, en qué punto está cada proyecto y lo último que se tocó. Las preferencias y lo fijado son lo que tú quieres que el agente sepa siempre.
+
+engram, la alternativa con la que se compara Omoikane, no inyecta memorias en cada mensaje, y con lo viejo sigue otro camino: cada vez que guarda, propone las memorias parecidas y le pide al agente que juzgue qué relación tienen (`mem_judge`), y cada tipo de memoria tiene una fecha de revisión. Omoikane no le pide al agente que juzgue: detecta él la contradicción y la marca en el recall, con el motivo.
+
+## ¿Y CLAUDE.md?
+
+Con un proyecto pequeño y veinte cosas que recordar, un buen CLAUDE.md basta. Omoikane compensa donde CLAUDE.md deja de llegar:
+
+- CLAUDE.md se carga entero en cada sesión, venga o no a cuento, y cuanto más sabe más contexto gasta. Omoikane trae lo que encaja con el mensaje.
+- Es un fichero por proyecto. Lo que aprendes en uno no llega a otro si no lo copias; en Omoikane una memoria puede valer para todos.
+- No sabe cuándo algo se ha quedado viejo ni guarda por qué cambió.
+- Lo escribes tú. Omoikane lo va llenando el agente mientras trabaja.
+- Lo lee un agente. Omoikane lo comparten 15, y todos tus equipos.
+
+Pueden convivir: CLAUDE.md para las reglas fijas del repositorio y Omoikane para lo que se va aprendiendo.
+
 ## Estado
 
 Versión 0.16.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
@@ -50,7 +76,7 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 
 `omoi setup claude` y los instaladores de una línea preguntan si quieres que Omoikane se actualice solo y, si dices que sí, encienden también la actualización del plugin. Si solo has usado los dos comandos de arriba, actívala una vez: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
 
-En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`).
+En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
 
 **Sin Claude Code**, o para usar `omoi` desde la terminal u otro cliente MCP, instala el binario con una línea:
 
@@ -181,7 +207,7 @@ Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si 
 
 ## Puntos fuertes
 
-- **Recuerda sola.** El agente no tiene que acordarse de buscar: lo que importa le llega en cada mensaje, en 15-26 ms.
+- **Recuerda sola, y solo cuando hace falta.** El agente no tiene que acordarse de buscar: si un mensaje tiene que ver con algo guardado, le llega en 15-26 ms; si no, no le llega nada.
 - **Acierta.** El 90 % de las veces, la memoria correcta sale la primera; el 97 %, entre las tres primeras. En 101 idiomas, con tildes o sin ellas.
 - **Rápida a cualquier tamaño.** 43 ms por búsqueda, y 50 ms con 3.183 memorias. Cuatro procesos comparten el modelo con 13 MB de memoria cada uno.
 - **Guarda aunque el agente se olvide**, y no guarda dos veces lo mismo.
