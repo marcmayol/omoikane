@@ -323,6 +323,9 @@ enum AccionSync {
         /// (`glab`) command line if one is installed and signed in.
         #[arg(long, value_name = "NAME", conflicts_with = "url")]
         create: Option<String>,
+        /// A repository (with its own key) for one space only, besides the general one.
+        #[arg(long, value_name = "NAME")]
+        space: Option<String>,
         #[command(flatten)]
         eleccion: OpcionesSync,
     },
@@ -338,13 +341,30 @@ enum AccionSync {
         /// stay separate from the inviter's. By default a joining computer is the inviter's own.
         #[arg(long)]
         another_person: bool,
+        /// The space this repository is for (by default, the one in the code; none: the general one).
+        #[arg(long, value_name = "NAME")]
+        space: Option<String>,
         #[command(flatten)]
         eleccion: OpcionesSync,
     },
-    /// Print the code to join from another computer. It carries the key: share it privately.
-    Code,
-    /// How sync is set up and how the last one went.
+    /// Print the code to join from another computer. It carries the current key: share it privately.
+    Code {
+        /// The code of this space's repository.
+        #[arg(long, value_name = "NAME")]
+        space: Option<String>,
+    },
+    /// How sync is set up and how the last one went (every repository).
     Status,
+    /// Change the repository's key: re-encrypt this computer's memories with a new one and print the
+    /// new code. Computers with only the old key stop reading what is written from now on.
+    Rotate {
+        /// The key of this space's repository.
+        #[arg(long, value_name = "NAME")]
+        space: Option<String>,
+        /// Don't ask.
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Bring back a memory another computer forgot (without an id, list them). Its history comes back too.
     Restore {
         /// The memory id (its first characters are enough).
@@ -355,6 +375,9 @@ enum AccionSync {
         /// Don't ask.
         #[arg(short, long)]
         yes: bool,
+        /// Only this space's repository.
+        #[arg(long, value_name = "NAME")]
+        space: Option<String>,
     },
 }
 
@@ -1260,18 +1283,24 @@ fn doctor(c: &Comun) -> Result<()> {
     if let Ok(p) = proyecto_de(c) {
         println!("{}{p}", tr!("project    ", "proyecto   "));
     }
-    println!("{}{}", tr!("sync       ", "sincroniz. "), estado_sync(&ruta_db(c)));
+    let ruta = ruta_db(c);
+    println!("{}{}", tr!("sync       ", "sincroniz. "), estado_sync(&ruta, None));
+    for e in omoikane::sync::espacios(&ruta) {
+        println!("{}{}", tr!("  space {e}: ", "  espacio {e}: "), estado_sync(&ruta, Some(&e)));
+    }
     println!("{}", tr!("language   en (OMOIKANE_LANG=es for Spanish)", "idioma     es (OMOIKANE_LANG)"));
     Ok(())
 }
 
-/// Una línea con el estado de la sincronización (para `doctor` y `sync status`).
-fn estado_sync(ruta: &std::path::Path) -> String {
+/// Una línea con el estado de la sincronización de un repositorio, el general o el de un espacio
+/// (para `doctor` y `sync status`).
+fn estado_sync(ruta: &std::path::Path, espacio: Option<&str>) -> String {
     use omoikane::sync;
-    let Ok(Some(config)) = sync::leer_config(ruta) else {
+    let r = sync::rutas_de(ruta, espacio);
+    let Ok(Some(config)) = sync::leer_config_de(&r) else {
         return tr!("off (`omoi sync init <git url>` to share memories between computers)", "apagada (`omoi sync init <url de git>` para compartir memorias entre equipos)");
     };
-    let e = sync::leer_estado(ruta);
+    let e = sync::leer_estado_de(&r);
     let hace = |s: &str| {
         let t = s.parse::<u64>().unwrap_or(0);
         let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -1290,7 +1319,23 @@ fn estado_sync(ruta: &std::path::Path) -> String {
     if let Some(a) = e.aviso {
         l.push_str(&format!(" · {a}"));
     }
+    if sync::clave_cambiada(&r) {
+        l.push_str(&format!(" · {}", sync::aviso_clave_cambiada()));
+    }
     l
+}
+
+/// El espacio de una opción `--space`, ya comprobado.
+fn espacio_de(space: Option<String>) -> Result<Option<String>> {
+    space.map(|e| omoikane::sync::espacio_valido(&e)).transpose()
+}
+
+/// Las claves de un repositorio para `sync status`: «k1, k2 (vigente k2)».
+fn claves_sync(r: &omoikane::sync::Rutas) -> String {
+    let (ids, vigente) = omoikane::sync::claves_de(r);
+    let lista: Vec<String> = ids.iter().map(|i| format!("k{i}")).collect();
+    let vigente = if vigente == 0 { ids.last().copied().unwrap_or(1) } else { vigente };
+    tr!("{} (current: k{})", "{} (vigente: k{})", lista.join(", "), vigente)
 }
 
 fn preguntar_si(texto: &str, defecto: bool) -> Result<bool> {
@@ -1430,9 +1475,10 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             );
             Ok(())
         }
-        Some(AccionSync::Init { url, create, eleccion }) => {
+        Some(AccionSync::Init { url, create, space, eleccion }) => {
             let mut db = abrir(c)?;
-            if sync::leer_config(&ruta)?.is_some() {
+            let espacio = espacio_de(space)?;
+            if sync::leer_config_de(&sync::rutas_de(&ruta, espacio.as_deref()))?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync status`; `omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"));
             }
             let url = match (url, create) {
@@ -1441,7 +1487,8 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 (None, None) => unreachable!("clap exige url o --create"),
             };
             let e = elegir(&eleccion)?;
-            let config = sync::config_de(&url, &e);
+            let mut config = sync::config_de(&url, &e);
+            config.space = espacio;
             if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
                 return Ok(());
             }
@@ -1452,11 +1499,8 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 "Sincronización configurada. Para añadir otro equipo: `omoi sync code` aquí y `omoi sync join <código>` allí."
             ))
         }
-        Some(AccionSync::Join { codigo, url: otra_url, another_person, eleccion }) => {
+        Some(AccionSync::Join { codigo, url: otra_url, another_person, space, eleccion }) => {
             let mut db = abrir(c)?;
-            if sync::leer_config(&ruta)?.is_some() {
-                bail!(tr!("sync is already set up here (`omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync off` para empezar de nuevo)"));
-            }
             let codigo = if codigo == "-" {
                 let mut l = String::new();
                 std::io::stdin().read_line(&mut l)?;
@@ -1464,21 +1508,35 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             } else {
                 codigo
             };
-            let sync::Codigo { url, clave, persona } = sync::leer_codigo(&codigo)?;
+            let sync::Codigo { url, clave, id, persona, espacio } = sync::leer_codigo(&codigo)?;
+            let espacio = espacio_de(space)?.or(espacio);
+            if sync::leer_config_de(&sync::rutas_de(&ruta, espacio.as_deref()))?.is_some() {
+                // Ya sincroniza con ese repositorio: la clave nueva de una rotación, junto a las viejas.
+                if !sync::anadir_clave(&db, &ruta, espacio.as_deref(), id, &clave)? {
+                    println!("{}", tr!("this computer already has that key", "este equipo ya tiene esa clave"));
+                    return Ok(());
+                }
+                drop(db);
+                return primera(&tr!(
+                    "New key k{id} added (the old ones stay, to read what others haven't re-encrypted yet).",
+                    "Añadida la clave nueva k{id} (las viejas se quedan, para leer lo que otros aún no han vuelto a cifrar)."
+                ));
+            }
             let url = otra_url.unwrap_or(url);
             let e = elegir(&eleccion)?;
             // Por defecto, otro equipo de la misma persona: su persona, para que los proyectos sin
             // remoto git se junten aunque cada equipo lleve otro nombre de autor.
-            let config = sync::config_con_persona(&url, &e, if another_person { None } else { persona.as_deref() });
+            let mut config = sync::config_con_persona(&url, &e, if another_person { None } else { persona.as_deref() });
+            config.space = espacio;
             if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
                 return Ok(());
             }
-            sync::unirse(&mut db, &ruta, &config, &clave)?;
+            sync::unirse(&mut db, &ruta, &config, id, &clave)?;
             drop(db);
             primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))
         }
-        Some(AccionSync::Code) => {
-            println!("{}", sync::codigo(&ruta)?);
+        Some(AccionSync::Code { space }) => {
+            println!("{}", sync::codigo(&ruta, espacio_de(space)?.as_deref())?);
             eprintln!("{}", tr!("It carries the key to your memories: share it only through a private channel.", "Lleva la clave de tus memorias: pásalo solo por un canal privado."));
             Ok(())
         }
@@ -1487,15 +1545,40 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 cf.url = sync::sin_credenciales(&cf.url);
                 cf
             });
+            let general = sync::rutas(&ruta);
+            let espacios = sync::espacios(&ruta);
             if c.json {
+                let claves = |r: &sync::Rutas| {
+                    let (ids, vigente) = sync::claves_de(r);
+                    serde_json::json!({ "ids": ids, "current": vigente, "changed": sync::clave_cambiada(r) })
+                };
+                let de_espacios: Vec<serde_json::Value> = espacios
+                    .iter()
+                    .map(|e| {
+                        let r = sync::rutas_de(&ruta, Some(e));
+                        let cf = sync::leer_config_de(&r).ok().flatten().map(|mut cf| {
+                            cf.url = sync::sin_credenciales(&cf.url);
+                            cf
+                        });
+                        serde_json::json!({ "space": e, "config": cf, "state": sync::leer_estado_de(&r), "keys": claves(&r) })
+                    })
+                    .collect();
                 return json(&serde_json::json!({
                     "config": config,
                     "state": sync::leer_estado(&ruta),
                     "pending": sync::pendiente(&ruta),
+                    "keys": config.as_ref().map(|_| claves(&general)),
+                    "spaces": de_espacios,
                 }));
             }
-            println!("{}", estado_sync(&ruta));
+            println!("{}", estado_sync(&ruta, None));
+            for e in &espacios {
+                let r = sync::rutas_de(&ruta, Some(e));
+                println!("{}{}", tr!("space {e}: ", "espacio {e}: "), estado_sync(&ruta, Some(e)));
+                println!("{}{}", tr!("  keys     ", "  claves   "), claves_sync(&r));
+            }
             if let Some(cf) = config {
+                println!("{}{}", tr!("keys       ", "claves     "), claves_sync(&general));
                 let tipos: Vec<&str> = cf.kinds.iter().map(|k| k.as_str()).collect();
                 println!("{}{}", tr!("shares     ", "comparte   "), tipos.join(", "));
                 println!("{}{}", tr!("global     ", "globales   "), if cf.global { tr!("yes", "sí") } else { "no".into() });
@@ -1511,9 +1594,46 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             Ok(())
         }
         Some(AccionSync::Restore { id }) => restaurar_cli(c, id),
-        Some(AccionSync::Off { yes }) => {
+        Some(AccionSync::Rotate { space, yes }) => {
+            let espacio = espacio_de(space)?;
+            if sync::leer_config_de(&sync::rutas_de(&ruta, espacio.as_deref()))?.is_none() {
+                bail!(tr!("sync is not set up", "la sincronización no está configurada"));
+            }
+            if !yes {
+                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to change the key", "añade --yes para cambiar la clave"));
+                if !preguntar_si(
+                    &tr!(
+                        "Change the key? Computers that should keep reading will need the new code (`omoi sync join <code>`).",
+                        "¿Cambiar la clave? Los equipos que deban seguir leyendo necesitarán el código nuevo (`omoi sync join <código>`)."
+                    ),
+                    false,
+                )? {
+                    return Ok(());
+                }
+            }
+            let (mut db, modelo) = abrir_con_modelo(c)?;
+            let actual = proyecto_de(c).ok();
+            let (id, r) = sync::rotar(&mut db, &ruta, espacio.as_deref(), actual.as_deref(), modelo.as_ref())?;
+            let codigo = sync::codigo(&ruta, espacio.as_deref())?;
+            if c.json {
+                return json(&serde_json::json!({ "key": id, "exported": r.exportadas, "code": codigo }));
+            }
+            println!(
+                "{}",
+                tr!(
+                    "New key k{id} in use: {} memories re-encrypted with it. On each computer that should keep reading, run `omoi sync join <code>` with this code:",
+                    "Clave nueva k{id} en uso: {} memorias vueltas a cifrar con ella. En cada equipo que deba seguir leyendo, `omoi sync join <código>` con este código:",
+                    r.exportadas
+                )
+            );
+            println!("{codigo}");
+            eprintln!("{}", tr!("It carries the key to your memories: share it only through a private channel.", "Lleva la clave de tus memorias: pásalo solo por un canal privado."));
+            Ok(())
+        }
+        Some(AccionSync::Off { yes, space }) => {
             let db = abrir(c)?;
-            if sync::leer_config(&ruta)?.is_none() {
+            let espacio = espacio_de(space)?;
+            if sync::leer_config_de(&sync::rutas_de(&ruta, espacio.as_deref()))?.is_none() {
                 println!("{}", tr!("sync is not set up", "la sincronización no está configurada"));
                 return Ok(());
             }
@@ -1523,7 +1643,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                     return Ok(());
                 }
             }
-            sync::desactivar(&db, &ruta)?;
+            sync::desactivar(&db, &ruta, espacio.as_deref())?;
             println!("{}", tr!("sync is off on this computer", "sincronización apagada en este equipo"));
             Ok(())
         }
@@ -1676,6 +1796,7 @@ fn en_espanol(c: Command) -> Command {
                         a.help("Crearlo antes como repositorio privado con este nombre, con la línea de órdenes de GitHub (`gh`) o de GitLab (`glab`) si hay una instalada y con sesión iniciada.")
                             .value_name("NOMBRE")
                     })
+                    .mut_arg("space", |a| a.help("Un repositorio (con su propia clave) solo para un espacio, además del general.").value_name("NOMBRE"))
             })
             .mut_subcommand("join", |s| {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
@@ -1684,14 +1805,27 @@ fn en_espanol(c: Command) -> Command {
                     .mut_arg("another_person", |a| {
                         a.help("Este equipo es de otra persona (un compañero): sus proyectos sin remoto git no se juntan con los de quien invita. Por defecto, un equipo que se une es de la misma persona.")
                     })
+                    .mut_arg("space", |a| a.help("El espacio de este repositorio (por defecto, el del código; ninguno: el general).").value_name("NOMBRE"))
             })
-            .mut_subcommand("code", |s| s.about("Escribe el código para unirse desde otro equipo. Lleva la clave: pásalo por un canal privado."))
-            .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última."))
+            .mut_subcommand("code", |s| {
+                s.about("Escribe el código para unirse desde otro equipo. Lleva la clave vigente: pásalo por un canal privado.")
+                    .mut_arg("space", |a| a.help("El código del repositorio de este espacio.").value_name("NOMBRE"))
+            })
+            .mut_subcommand("status", |s| s.about("Cómo está configurada la sincronización y cómo fue la última (todos los repositorios)."))
+            .mut_subcommand("rotate", |s| {
+                s.about("Cambia la clave del repositorio: vuelve a cifrar con una nueva las memorias de este equipo y escribe el código nuevo. Los equipos con solo la vieja dejan de leer lo que se escriba desde ahora.")
+                    .mut_arg("space", |a| a.help("La clave del repositorio de este espacio.").value_name("NOMBRE"))
+                    .mut_arg("yes", |a| a.help("No preguntar."))
+            })
             .mut_subcommand("restore", |s| {
                 s.about("Recupera una memoria que olvidó otro equipo (sin id, las enseña). Vuelve también su historial.")
                     .mut_arg("id", |a| a.help("Id de la memoria (basta con el principio)."))
             })
-            .mut_subcommand("off", |s| s.about("Deja de sincronizar en este equipo (sus memorias se quedan).").mut_arg("yes", |a| a.help("No preguntar.")))
+            .mut_subcommand("off", |s| {
+                s.about("Deja de sincronizar en este equipo (sus memorias se quedan).")
+                    .mut_arg("yes", |a| a.help("No preguntar."))
+                    .mut_arg("space", |a| a.help("Solo el repositorio de este espacio.").value_name("NOMBRE"))
+            })
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
     let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));

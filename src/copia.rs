@@ -7,8 +7,9 @@
 //! Formato `omoi-export`, versión 2: JSONL, una cosa por línea y en streaming (una línea en memoria
 //! cada vez, al escribir y al leer). La primera línea es la cabecera y la última el cierre, con
 //! cuántas líneas van entre medias y su SHA-256: un fichero cortado o tocado no se importa.
-//! Con `--encrypt`, cada línea va cifrada con la clave de la sincronización (AES-SIV), para guardar
-//! la copia en cualquier sitio.
+//! Con `--encrypt`, cada línea va cifrada con la clave vigente de la sincronización (AES-SIV) y con su
+//! id delante (`k2:…`; sin nada, la 1), como en el repositorio, para guardar la copia en cualquier
+//! sitio. Al importarla vale cualquiera de las claves que tenga el equipo.
 //!
 //! Y la copia diaria: una vez al día, al empezar la primera sesión, `VACUUM INTO` a
 //! `<carpeta de la base>/backups/omoikane-AAAA-MM-DD.db`, conservando las últimas
@@ -50,7 +51,7 @@ fn hex(b: &[u8]) -> String {
 fn cifra_de(ruta_db: &Path) -> Result<Cifra> {
     let r = sync::rutas(ruta_db);
     ensure!(r.clave.exists(), tr!("encrypting needs the sync key: set up `omoi sync` first", "para cifrar hace falta la clave de la sincronización: configura antes `omoi sync`"));
-    Ok(Cifra { clave: sync::leer_clave(&r)? })
+    sync::leer_claves(&r)
 }
 
 /// Escribe el fichero. Devuelve cuántas líneas van entre la cabecera y el cierre.
