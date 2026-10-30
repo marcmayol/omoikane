@@ -791,3 +791,49 @@ fn los_secretos_no_salen_del_equipo() {
         assert!(!f.contains("ghp_"), "{f}");
     }
 }
+
+/// 0.19.1: si A restaura lo que olvidó B, en B vuelve a estar viva y sale de su papelera (antes se
+/// quedaba en las dos y `omoi restore` fallaba con `UNIQUE constraint failed`).
+#[test]
+fn lo_que_restaura_otro_sale_de_la_papelera() {
+    let p = Prueba::nueva("restaura-otro");
+    let (a, b) = dos(&p, &[], &[]);
+    let id = b.guardar(&b.dir, "fact", "La cola de correos se vacía de noche", "A las 3:00.", &["--global"]);
+    b.sync();
+    a.sync();
+    b.ok(&["forget", &id, "--yes"]);
+    b.sync();
+    a.sync();
+    assert!(a.get(&id).is_none() && b.get(&id).is_none());
+    a.ok(&["restore", &id]);
+    a.sync();
+    b.sync();
+    assert!(b.get(&id).is_some(), "la restaurada en A vuelve a B");
+    let papelera = b.ok(&["trash"]);
+    assert!(!papelera.contains("correos"), "y ya no está en la papelera de B: {papelera}");
+    let o = b.omoi_en(&b.dir, &["restore", &id], &[]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("UNIQUE"), "{err}");
+    // Y nada vuelve a cambiar en la siguiente vuelta.
+    b.sync();
+    a.sync();
+    assert!(a.get(&id).is_some() && b.get(&id).is_some());
+    assert!(!a.ok(&["trash"]).contains("correos"));
+}
+
+/// 0.19.1: `--db` con una ruta relativa vale para `sync init` y `sync join` (git clonaba desde la
+/// carpeta de la base con el destino relativo y no lo encontraba).
+#[test]
+fn sync_con_db_relativa() {
+    let p = Prueba::nueva("db-relativa");
+    let a = p.equipo("pc-a");
+    let b = p.equipo("pc-b");
+    let url = p.url();
+    let id = a.guardar(&a.dir, "fact", "El tablero de despliegues está en la wiki", "Sección operaciones.", &["--global"]);
+    a.ok_en(&p.dir, &["--db", "pc-a/o.db", "sync", "init", &url, "--yes"], &[]);
+    let codigo = a.ok(&["sync", "code"]).trim().to_string();
+    b.ok_en(&p.dir, &["--db", "pc-b/o.db", "sync", "join", &codigo, "--yes"], &[]);
+    assert!(b.get(&id).is_some(), "B la recibe al unirse");
+    a.ok_en(&p.dir, &["--db", "pc-a/o.db", "sync"], &[]);
+}
