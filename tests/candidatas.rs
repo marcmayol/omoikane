@@ -89,6 +89,16 @@ fn lee_la_conversacion_de_cada_agente() {
             json!({"role": "user", "message": {"content": [{"type": "text", "text": format!("jueves, 29 oct\n<user_query>\n{respuesta}\n</user_query>")}]}}),
             json!({"type": "turn_ended"}),
         ]),
+        // Grok Build (`chat_history.jsonl`): lo que mete Grok lleva `synthetic_reason`.
+        ("grok", vec![
+            json!({"type": "system", "content": "You are Grok", "synthetic_reason": "primary"}),
+            json!({"type": "user", "content": [{"type": "text", "text": "# AGENTS.md del proyecto con skills"}], "synthetic_reason": "project_instructions"}),
+            json!({"type": "assistant", "content": pregunta, "model_id": "grok-4.6"}),
+            json!({"type": "user", "content": [{"type": "text", "text": respuesta}], "prompt_index": 1}),
+            json!({"type": "user", "content": [{"type": "text", "text": "<system-reminder>git_status limpio</system-reminder>"}], "synthetic_reason": "system_reminder"}),
+            json!({"type": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "run_terminal_command", "arguments": "{\"command\":\"git commit -m \\\"Portada azul\\\"\"}"}]}),
+            json!({"type": "tool_result", "tool_call_id": "c1", "content": "[main 1a2b3c] Portada azul"}),
+        ]),
         ("generico", vec![
             json!({"role": "assistant", "text": pregunta}),
             json!({"role": "user", "text": respuesta}),
@@ -103,7 +113,7 @@ fn lee_la_conversacion_de_cada_agente() {
         assert!(todo.iter().any(|t| t.ends_with(&esperada)), "{nombre}: {todo:?}");
         // Lo que mete el agente (contexto, skills, estado de git) no sale como decisión.
         assert!(!todo.iter().any(|t| t.contains("environment_context") || t.contains("skill") || t.contains("git_status") || t.contains("Tengo dos col →")), "{nombre}: {todo:?}");
-        if nombre == "codex" {
+        if nombre == "codex" || nombre == "grok" {
             assert!(todo.iter().any(|t| t == "[milestone] last commit: Portada azul"), "{todo:?}");
         }
         if nombre == "generico" {

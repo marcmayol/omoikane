@@ -330,6 +330,28 @@ pub fn turnos(ruta: &Path) -> Result<Vec<Turno>> {
             }
             continue;
         }
+        // Grok Build: un `ConversationItem` por línea, sin `id` ni `message`. Lo que mete Grok por su
+        // cuenta (instrucciones, recordatorios) lleva `synthetic_reason`; lo que escribe el usuario no
+        // (o `interjection`, si lo mandó con el agente trabajando).
+        if d.get("id").is_none() && d.get("message").is_none() {
+            if tipo == "user" && d["content"][0]["type"] == "text" {
+                if d["synthetic_reason"].as_str().is_none_or(|s| s == "interjection") {
+                    poner(&mut r, None, Turno::Usuario(texto_partes(&d["content"])));
+                }
+                continue;
+            }
+            if tipo == "assistant" && d["content"].is_string() {
+                if let Some(t) = d["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                    poner(&mut r, None, Turno::Agente(t.to_string()));
+                }
+                for c in d["tool_calls"].as_array().into_iter().flatten() {
+                    if let Some(c) = comando_de(&c["arguments"]) {
+                        poner(&mut r, None, Turno::Comando(c));
+                    }
+                }
+                continue;
+            }
+        }
         // Gemini, Qwen y el genérico (Kiro, OpenCode, otros).
         let mut t = Vec::new();
         turno_generico(&d, &mut t);
@@ -453,6 +475,11 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     ]
     .into_iter()
     .find(|p| p.is_file())
+    .or_else(|| {
+        // Grok: `~/.grok/sessions/<carpeta codificada>/<id>/chat_history.jsonl`.
+        let grok = std::env::var_os("GROK_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| casa.join(".grok"));
+        std::fs::read_dir(grok.join("sessions")).ok()?.flatten().map(|d| d.path().join(id).join("chat_history.jsonl")).find(|p| p.is_file())
+    })
 }
 
 /// Al cerrar o compactar: aparta las candidatas de la conversación que no estén ya guardadas.
