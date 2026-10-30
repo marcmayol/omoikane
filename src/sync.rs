@@ -598,6 +598,8 @@ fn clonar(url: &str, clon: &Path) -> Result<()> {
     if clon.exists() {
         std::fs::remove_dir_all(clon).with_context(|| format!("{}", clon.display()))?;
     }
+    // Git se lanza desde la carpeta padre: con un destino relativo lo buscaría dentro de ella.
+    let clon = &std::path::absolute(clon)?;
     let padre = clon.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(padre)?;
     let destino = clon.to_string_lossy().into_owned();
@@ -650,8 +652,9 @@ fn todas(db: &Connection) -> Result<Vec<(Memoria, String)>> {
     Ok(v)
 }
 
-/// La clave de cada proyecto de esta base (las rutas que llegaron de fuera la tienen apuntada).
-fn claves_locales(db: &Connection, persona: &str) -> Result<HashMap<String, String>> {
+/// La clave de cada proyecto de esta base (las rutas que llegaron de fuera la tienen apuntada). La
+/// usan la sincronización y `omoi export`, para que una memoria lleve la misma clave por los dos caminos.
+pub(crate) fn claves_locales(db: &Connection, persona: &str) -> Result<HashMap<String, String>> {
     let mut m: HashMap<String, String> = {
         let mut q = db.prepare("SELECT path, key FROM remote_project")?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
@@ -936,6 +939,9 @@ impl<'a> Aplicador<'a> {
                     memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
                     r.nuevas += 1;
                 }
+                // Vuelve a existir con un sello posterior a su olvido (otro equipo la restauró): ya no
+                // está en la papelera.
+                db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
                 // El historial que venga (solo en `omoi export`): lo que ya hay con ese número se queda.
                 for v in versions {
                     db.execute(
