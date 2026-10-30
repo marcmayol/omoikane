@@ -193,6 +193,12 @@ Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` 
 
 `omoi setup` añade también dos órdenes en los agentes que admiten órdenes de usuario: `/omoikane`, que hace guardar al agente, y `/omoikane-web`, que abre la vista web. Son Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` y `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi, Kilo Code y Grok Build. En esos agentes una orden es un texto para el modelo, así que es el agente quien ejecuta `omoi serve --open` y puede pedir permiso antes. Una `/omoikane` de antes, que abría la vista web, pasa a ser la que guarda.
 
+### Proyectos y espacios
+
+Cada proyecto tiene su clave, que se calcula una vez: el `origin` de git o, si no tiene, tu nombre y el de la carpeta. Y guarda todas las carpetas donde vive. Dos clones del mismo repositorio, o un worktree, son el mismo proyecto. Si mueves la carpeta de un repositorio con `origin`, las memorias la siguen solas al empezar la sesión y te lo dice una vez; sin `origin`, `omoi projects move <proyecto> <carpeta>`, y hasta entonces lo avisan `omoi review` y `omoi doctor`. `omoi projects` los lista. `omoi projects merge <a> <b>` junta dos sin tocar ids, historial ni veredictos, y de sus dos `status` se queda el más nuevo; `omoi projects prune` olvida los que se quedaron sin memorias.
+
+Los espacios separan clientes. `omoi spaces add acme` y luego `omoi space assign acme` en cada repositorio del cliente (o `omoi projects move <proyecto> --space acme`). Desde un proyecto de Acme se ven sus memorias, las del espacio y las globales, nunca las de otro cliente: ni en la búsqueda, ni en el recall, ni en `context`. Lo común a todos los repositorios de un cliente se guarda con `remember --space` (o `space: true` por MCP); tus preferencias siguen siendo tuyas, globales. Desde tu carpeta de usuario se ve todo. `search` y `recent` aceptan `project` (una carpeta o un trozo del nombre) y `space`. Para compartirlo, un repositorio por cliente: `omoi sync init <url> --space acme` solo lleva lo de ese espacio, sin tus globales.
+
 ### Compartir la memoria entre equipos (y con compañeros)
 
 Omoikane no aloja nada: sincroniza a través de un repositorio git tuyo, dedicado solo a este conocimiento (nunca el repositorio del código). Vale cualquier remoto: un repositorio privado en GitHub, GitLab o Codeberg, el Gitea de tu empresa o una carpeta compartida. Usa tus propias credenciales de git.
@@ -209,7 +215,7 @@ Desde entonces funciona solo y con todos los agentes: después de guardar, cambi
 - **Cifrado en el remoto:** cada línea se cifra (AES-SIV) antes de salir de tu equipo; el repositorio solo guarda texto cifrado y nombres de carpeta opacos. La clave la crea `init` y viaja dentro del código para unirse, así que **pasa el código solo por un canal privado**. Si pierdes todas las copias de la clave, lo del remoto no se puede leer, aunque cada equipo conserva sus memorias.
 - **Qué se comparte** se elige en `init`/`join`: los tipos (las preferencias se quedan en tu equipo salvo que digas lo contrario), las globales, qué proyectos y si cada memoria lleva su autor (tu nombre de git, sí por defecto). Con compañeros, sus memorias aparecen marcadas `[by Ana]` para que el agente las trate con cuidado.
 - **Qué versión gana:** el cambio más nuevo según un reloj lógico híbrido, así que un equipo con la hora mal no pisa trabajo más reciente. La versión local anterior queda en el historial de la memoria. Lo olvidado no vuelve desde otro equipo.
-- **Los proyectos** se reconocen por su remoto `origin` de git: el mismo repositorio en carpetas distintas de equipos distintos es el mismo proyecto. Los que no tienen remoto se reconocen por el nombre de la carpeta, y solo entre los equipos de una misma persona.
+- **Los proyectos** se reconocen por su remoto `origin` de git: el mismo repositorio en carpetas distintas de equipos distintos es el mismo proyecto. Los que no tienen remoto se reconocen por el nombre de la carpeta, y solo entre los equipos de una misma persona. El espacio de un proyecto viaja con sus memorias, y `--space` deja un repositorio para un solo cliente.
 
 `omoi sync off` deja de sincronizar en un equipo; sus memorias se quedan.
 

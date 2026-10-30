@@ -193,6 +193,12 @@ Changing a memory keeps the previous version with the reason, and `omoi history`
 
 `omoi setup` also adds two commands in the agents that support user commands: `/omoikane`, which makes the agent save, and `/omoikane-web`, which opens the web view. Those are Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` and `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi, Kilo Code and Grok Build. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it. An older `/omoikane`, which opened the web view, becomes the one that saves.
 
+### Projects and spaces
+
+Each project has its key, worked out once: its git `origin`, or, without one, your name and the folder's. It also keeps every folder it lives in, so two clones of the same repository, or a worktree, are the same project. Move the folder of a repository with an `origin` and its memories follow it by themselves at the next session (you're told once); without an `origin`, `omoi projects move <project> <folder>`, and until then `omoi review` and `omoi doctor` point it out. `omoi projects` lists them. `omoi projects merge <a> <b>` joins two without touching ids, history or verdicts, keeping the newer of their two `status` memories; `omoi projects prune` forgets the ones left without memories.
+
+Spaces keep clients apart. `omoi spaces add acme`, then `omoi space assign acme` in each of the client's repositories (or `omoi projects move <project> --space acme`). From an Acme project you see its memories, the space's and the global ones, never another client's: not in search, not in recall, not in `context`. What is common to all of a client's repositories is saved with `remember --space` (`space: true` over MCP); your preferences stay yours, global. From your home folder you see everything. `search` and `recent` take `project` (a folder or part of a name) and `space`. To share it, one repository per client: `omoi sync init <url> --space acme` carries only that space, without your global memories.
+
 ### Sharing memory between computers (and teammates)
 
 Omoikane hosts nothing: it syncs through a git repository of yours, used only for this knowledge (never your code repository). Any remote works: a private repo on GitHub, GitLab, Codeberg, your company's Gitea, or a shared folder. It uses your own git credentials.
@@ -209,7 +215,7 @@ From then on it runs by itself, for every agent: after each saved, changed or fo
 - **Encrypted on the remote:** each line is encrypted (AES-SIV) before it leaves your computer; the repository only ever holds ciphertext and opaque folder names. The key is created by `init` and travels inside the join code, so **share the code only through a private channel**. Lose every copy of the key and the remote can't be read, though each computer keeps its own memories.
 - **What is shared** is chosen in `init`/`join`: kinds (preferences stay personal unless you say so), global memories, which projects, and whether each memory carries its author (your git name, on by default). With teammates, their memories show up marked `[by Ana]` so the agent treats them with care.
 - **Which version wins:** the newest change by a hybrid logical clock, so a computer with the wrong time can't overwrite newer work. The older local version stays in the memory's history. Forgotten memories don't come back from another computer.
-- **Projects** are matched by their git `origin` remote, so the same repo in different folders on different computers is the same project. Projects without a remote are matched by folder name, only between the same person's computers.
+- **Projects** are matched by their git `origin` remote, so the same repo in different folders on different computers is the same project. Projects without a remote are matched by folder name, only between the same person's computers. A project's space travels with its memories, and `--space` keeps a repository to one client.
 
 `omoi sync off` stops syncing on a computer; its memories stay.
 

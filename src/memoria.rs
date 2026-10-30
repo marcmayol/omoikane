@@ -1062,11 +1062,12 @@ pub const ESTADO: &str = "status";
 pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM memory m
-         WHERE {} AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?1)
+         WHERE {} AND m.tags LIKE ?2 AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?1)
          ORDER BY m.updated_at DESC, m.id DESC",
         ambito.sql()
     ))?;
-    let todas: Vec<Memoria> = q.query_map(params![ESTADO], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    // El `LIKE` descarta sin leer el JSON lo que no lleva la etiqueta.
+    let todas: Vec<Memoria> = q.query_map(params![ESTADO, format!("%\"{ESTADO}\"%")], de_fila)?.collect::<rusqlite::Result<_>>()?;
     let mut v: Vec<Memoria> = Vec::new();
     for m in todas {
         // Una por proyecto; las de espacio, una por espacio, y las globales, una.
