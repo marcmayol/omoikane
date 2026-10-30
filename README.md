@@ -19,7 +19,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It recalls without being asked.** On every prompt a hook gives the agent the 3-5 memories that matter for what you just typed, plus the gotchas of the files you mentioned, in about 20 ms. The agent doesn't have to remember to search.
 - **Search that works in your language**, accents or not, in 101 languages: on questions written blind it finds the right memory first 90 % of the time, in 43 ms, and stays as accurate at 3,183 memories.
 - **It catches duplicates when saving.** If the agent tries to save something it already knows, it is told so and updates the memory that is there instead of adding another.
-- **It works with 14 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode and the rest share the same memory; `omoi setup <agent>` gets each one ready.
+- **It works with 15 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok and the rest share the same memory; `omoi setup <agent>` gets each one ready.
 - **The same memory on all your computers, and with teammates.** It syncs by itself through a git repository of yours, encrypted before it leaves your computer, with nobody's server in between.
 - **History with reasons.** Changing a memory keeps the previous version and, if the agent says so, why it changed.
 - **You can see it and tidy it up.** A web view and a terminal one to search, read the history, pin, move or forget.
@@ -37,7 +37,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 ## Status
 
-Version 0.15.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 0.16.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
 
@@ -105,7 +105,7 @@ Every memory has a kind that decides when it comes back: `fact` and `decision` b
 
 ### It saves even when the agent forgets to
 
-When a session ends or compacts, Omoikane reads the conversation and sets aside what may be worth keeping: your answers to the agent's questions (with the question), your preferences and corrections, and the last commit or release. The next session in that project gets them once, and the agent saves the ones worth it in your words; the Review tab lists them too. Nothing that looks like a secret, nothing already saved. It reads the conversation of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro and OpenCode (`omoi setup <agent>` adds the end-of-session hooks); not Antigravity, whose conversations are stored in an undocumented binary format.
+When a session ends or compacts, Omoikane reads the conversation and sets aside what may be worth keeping: your answers to the agent's questions (with the question), your preferences and corrections, and the last commit or release. The next session in that project gets them once, and the agent saves the ones worth it in your words; the Review tab lists them too. Nothing that looks like a secret, nothing already saved. It reads the conversation of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode and Grok Build (`omoi setup <agent>` adds the end-of-session hooks); not Antigravity, whose conversations are stored in an undocumented binary format. In agents with no recall at session start, such as Grok, what was set aside arrives through the `context` tool.
 
 ### It looks after itself
 
@@ -142,9 +142,10 @@ Changing a memory keeps the previous version with the reason, and `omoi history`
 | Cursor | yes | session start only (its prompt hook can't add context) | yes | from its docs |
 | GitHub Copilot (CLI and VS Code) | yes | session start only (its docs say prompt-hook output is dropped) | yes | from its docs |
 | Antigravity CLI | yes | session start only (no prompt event) | no (its conversations are in an undocumented binary format) | from its docs |
+| Grok Build | yes | no (its session-start and prompt hooks discard what they return; the instructions ask it to call `context` at the start) | yes | from its docs |
 | Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | yes | no (their hooks can't add context, or it isn't documented) | no | from their docs |
 
-`omoi setup` also adds two commands in the agents that support user commands: `/omoikane`, which makes the agent save, and `/omoikane-web`, which opens the web view. Those are Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` and `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi and Kilo Code. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it. An older `/omoikane`, which opened the web view, becomes the one that saves.
+`omoi setup` also adds two commands in the agents that support user commands: `/omoikane`, which makes the agent save, and `/omoikane-web`, which opens the web view. Those are Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` and `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi, Kilo Code and Grok Build. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it. An older `/omoikane`, which opened the web view, becomes the one that saves.
 
 ### Sharing memory between computers (and teammates)
 
@@ -188,7 +189,7 @@ Once a day, the first time it runs, `omoi` checks in the background for a newer 
 - **One binary, nothing else:** no Python, no Node, no Docker, no server to keep running. SQLite is built in.
 - **It works offline.** Everything is local, and the web view carries even its fonts, IBM Plex and Shippori Mincho, inside the binary.
 - **Windows just like Linux and macOS:** no bash, no scripts, and tested on all three on every change.
-- **14 agents, one memory**, and `omoi setup <agent>` gets each one ready.
+- **15 agents, one memory**, and `omoi setup <agent>` gets each one ready.
 - **Your memories are yours:** one SQLite file you can export whole, and a sync that only goes through your own git repository, encrypted.
 - **It updates carefully:** it only installs releases signed with Ed25519 and, before changing the database schema, keeps a copy.
 

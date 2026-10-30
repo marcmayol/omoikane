@@ -23,14 +23,18 @@
 //! - Antigravity CLI: MCP en `~/.gemini/config/mcp_config.json`, instrucciones en
 //!   `~/.gemini/config/AGENTS.md`, hook `SessionStart` en `~/.gemini/config/hooks.json`
 //!   (`injectSteps`); no tiene evento de mensaje.
+//! - Grok Build (`grok`): MCP en `~/.grok/config.toml`, instrucciones en `~/.grok/rules/omoikane.md`
+//!   (las carga en todos los proyectos), órdenes en `~/.grok/commands/*.md` y hooks en
+//!   `~/.grok/hooks/`. Su `SessionStart` y su `UserPromptSubmit` descartan la salida, así que sin
+//!   recall automático; `SessionEnd` y `PreCompact` sí sirven para apartar al cerrar.
 //! - Windsurf (Devin Desktop), Kimi Code, Pi, Amp y Kilo Code: MCP e instrucciones. Sus hooks no
 //!   pueden añadir contexto (o no está documentado), así que sin recall automático.
 //!
 //! Al cerrar o compactar la sesión (Fase 7.5), `omoi recall --session-end` aparta candidatas de la
 //! conversación: Codex (`SessionEnd` con `timeout: 3`, que por defecto es 1 s, y `PreCompact`), Gemini
 //! (`SessionEnd`, `PreCompress`), Qwen (`SessionEnd`, `PreCompact`), Cursor (`sessionEnd`,
-//! `preCompact`), Copilot (`SessionEnd`, sin ruta: `omoi` la busca por el id) y Kiro (`Stop`, solo
-//! con el id). En OpenCode, el plugin (con `session.idle` cada 10 min y `session.compacted`).
+//! `preCompact`), Copilot (`SessionEnd`, sin ruta: `omoi` la busca por el id), Kiro (`Stop`, solo
+//! con el id) y Grok (`SessionEnd`, `PreCompact`, también solo con el id). En OpenCode, el plugin (con `session.idle` cada 10 min y `session.compacted`).
 //! Antigravity no: guarda las conversaciones en protobuf.
 //!
 //! Las órdenes `/omoikane` (guarda lo aprendido) y `/omoikane-web` (abre la vista web), donde hay órdenes de usuario documentadas: Gemini
@@ -38,7 +42,7 @@
 //! obsoletas en favor de skills pero funcionan, como `/prompts:omoikane`), Cursor
 //! (`~/.cursor/commands/*.md`), OpenCode (`~/.config/opencode/commands/*.md`), Kiro
 //! (`~/.kiro/prompts/*.md`), Windsurf (`~/.codeium/windsurf/global_workflows/*.md`), Pi
-//! (`~/.pi/agent/prompts/*.md`) y Kilo (`~/.config/kilo/commands/*.md`). Sin ella: Copilot (no hay
+//! (`~/.pi/agent/prompts/*.md`), Kilo (`~/.config/kilo/commands/*.md`) y Grok (`~/.grok/commands/*.md`). Sin ella: Copilot (no hay
 //! carpeta de usuario documentada), Kimi (solo skills y plugins), Amp (quitó las órdenes en favor de
 //! skills) y Antigravity (sus workflows dejaron de funcionar). En todos es un texto para el modelo,
 //! que arranca `omoi serve --open` con su terminal.
@@ -48,11 +52,11 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", "kiro", "copilot", "windsurf", "antigravity", "kimi", "pi", "amp", "kilo"];
+pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", "kiro", "copilot", "windsurf", "antigravity", "kimi", "pi", "amp", "kilo", "grok"];
 
 const INICIO: &str = "<!-- omoikane -->";
 const FIN: &str = "<!-- /omoikane -->";
-const INSTRUCCIONES: &str = "## Long-term memory (Omoikane)\n\nYou have the `omoikane` memory tools (MCP). Before working on something, `search` it. When you learn something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, short and in the user's language. If `remember` says it's a duplicate, `update` that memory instead.";
+const INSTRUCCIONES: &str = "## Long-term memory (Omoikane)\n\nYou have the `omoikane` memory tools (MCP). At the start of a session, call `context`. Before working on something, `search` it. When you learn something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, short and in the user's language. If `remember` says it's a duplicate, `update` that memory instead.";
 
 /// Un fichero que cambia: cuál, por qué y cómo queda.
 #[derive(Debug)]
@@ -196,17 +200,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             })? {
                 v.push(c);
             }
-            let toml = d.join("config.toml");
-            let actual = if toml.exists() { std::fs::read_to_string(&toml)? } else { String::new() };
-            // También si ya está como tabla en línea (`omoikane = {…}` dentro de `[mcp_servers]`):
-            // repetirla dejaría el fichero sin poder leerse.
-            let ya_esta = actual.contains("[mcp_servers.omoikane]")
-                || actual.lines().any(|l| l.trim_start().starts_with("omoikane") && l.contains('='));
-            if !ya_esta {
-                let sep = if actual.is_empty() || actual.ends_with('\n') { "" } else { "\n" };
-                let contenido = format!("{actual}{sep}\n[mcp_servers.omoikane]\ncommand = {}\nargs = [\"mcp\"]\n", toml_texto(&omoi));
-                v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido, borrar: false });
-            }
+            mcp_toml(&mut v, d.join("config.toml"), &omoi)?;
             if let Some(c) = con_instrucciones(&d.join("AGENTS.md"))? {
                 v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
             }
@@ -446,6 +440,21 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             instrucciones_en(&mut v, reglas)?;
             ordenes_en(&mut v, d.join("commands"), Formato::Md(true), &omoi);
         }
+        "grok" => {
+            let d = carpeta_grok(&h);
+            mcp_toml(&mut v, d.join("config.toml"), &omoi)?;
+            instrucciones_en(&mut v, d.join("rules").join("omoikane.md"))?;
+            // Al cerrar (1,5 s por defecto en Grok) y al compactar (7.5); en Windows los ejecuta con PowerShell.
+            let cierre = format!("{} recall --session-end", orden(&omoi, Shell::Powershell));
+            if let Some(c) = json_cambio(d.join("hooks").join("omoikane.json"), tr!("setting aside at the end of the session", "apartar al cerrar la sesión"), &|j| {
+                let a = hook_con_tiempo(j, "SessionEnd", None, &cierre, 3)?;
+                let b = hook_con_tiempo(j, "PreCompact", None, &cierre, 10)?;
+                Ok(a || b)
+            })? {
+                v.push(c);
+            }
+            ordenes_en(&mut v, d.join("commands"), Formato::Md(true), &omoi);
+        }
         otro => bail!(tr!(
             "unknown agent «{otro}»: claude, {}",
             "agente «{otro}» desconocido: claude, {}",
@@ -463,7 +472,7 @@ pub fn configurados() -> Vec<&'static str> {
         Some(x) if std::env::var_os("OMOIKANE_SETUP_HOME").is_none() => PathBuf::from(x).join("opencode"),
         _ => h.join(".config").join("opencode"),
     };
-    let ficheros: [(&str, Vec<PathBuf>); 13] = [
+    let ficheros: [(&str, Vec<PathBuf>); 14] = [
         ("codex", vec![h.join(".codex").join("config.toml")]),
         ("gemini", vec![h.join(".gemini").join("settings.json")]),
         ("cursor", vec![h.join(".cursor").join("mcp.json")]),
@@ -477,12 +486,32 @@ pub fn configurados() -> Vec<&'static str> {
         ("pi", vec![h.join(".pi").join("agent").join("mcp.json")]),
         ("amp", vec![h.join(".config").join("amp").join("settings.json")]),
         ("kilo", vec![h.join(".config").join("kilo").join("kilo.jsonc")]),
+        ("grok", vec![carpeta_grok(&h).join("config.toml")]),
     ];
     ficheros
         .into_iter()
         .filter(|(_, fs)| fs.iter().any(|f| std::fs::read_to_string(f).is_ok_and(|t| t.contains("omoikane"))))
         .map(|(a, _)| a)
         .collect()
+}
+
+/// La carpeta de Grok Build: `GROK_HOME` o `~/.grok`.
+fn carpeta_grok(h: &Path) -> PathBuf {
+    std::env::var_os("GROK_HOME").filter(|_| std::env::var_os("OMOIKANE_SETUP_HOME").is_none()).map(PathBuf::from).unwrap_or_else(|| h.join(".grok"))
+}
+
+/// El servidor MCP en un `config.toml` con `[mcp_servers.<nombre>]` (Codex y Grok).
+fn mcp_toml(v: &mut Vec<Cambio>, toml: PathBuf, omoi: &str) -> Result<()> {
+    let actual = if toml.exists() { std::fs::read_to_string(&toml)? } else { String::new() };
+    // También si ya está como tabla en línea (`omoikane = {…}` dentro de `[mcp_servers]`):
+    // repetirla dejaría el fichero sin poder leerse.
+    let ya_esta = actual.contains("[mcp_servers.omoikane]") || actual.lines().any(|l| l.trim_start().starts_with("omoikane") && l.contains('='));
+    if !ya_esta {
+        let sep = if actual.is_empty() || actual.ends_with('\n') { "" } else { "\n" };
+        let contenido = format!("{actual}{sep}\n[mcp_servers.omoikane]\ncommand = {}\nargs = [\"mcp\"]\n", toml_texto(omoi));
+        v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido, borrar: false });
+    }
+    Ok(())
 }
 
 /// Registra el servidor MCP como `entrada` bajo `raiz` (`mcpServers`, `mcp`, `amp.mcpServers`…).

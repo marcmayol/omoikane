@@ -19,7 +19,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Recuerda sin que se lo pidas.** En cada mensaje, un hook le da al agente las 3-5 memorias que importan para lo que acabas de escribir, más las trampas de los ficheros que has nombrado, en unos 20 ms. El agente no tiene que acordarse de buscar.
 - **Busca bien en tu idioma**, con tildes o sin ellas y en 101 idiomas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms, y sigue igual de preciso con 3.183 memorias.
 - **Detecta duplicados al guardar.** Si el agente intenta guardar algo que ya sabe, se le dice y actualiza la memoria que hay en lugar de crear otra.
-- **Funciona con 14 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
+- **Funciona con 15 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
 - **La misma memoria en todos tus equipos, y con compañeros.** Se sincroniza sola por un repositorio git tuyo, cifrada antes de salir del equipo, y sin servidor de nadie.
 - **Historial con motivo.** Cambiar una memoria guarda la versión anterior y, si el agente lo dice, por qué cambió.
 - **La ves y la ordenas tú.** Una vista web y otra en la terminal para buscar, leer el historial, fijar, mover u olvidar.
@@ -37,7 +37,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 
 ## Estado
 
-Versión 0.15.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 0.16.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
 
@@ -105,7 +105,7 @@ Cada memoria tiene un tipo que decide cuándo vuelve: `fact` y `decision` por re
 
 ### Guarda aunque el agente se olvide
 
-Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que quizá valga la pena guardar: lo que respondiste a las preguntas del agente (con la pregunta), tus preferencias y correcciones, y el último commit o publicación. La sesión siguiente en ese proyecto lo recibe una vez, y el agente guarda lo que valga con tus palabras; la pestaña Revisar también lo enseña. Nada que parezca un secreto ni lo que ya está guardado. Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro y OpenCode (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar.
+Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que quizá valga la pena guardar: lo que respondiste a las preguntas del agente (con la pregunta), tus preferencias y correcciones, y el último commit o publicación. La sesión siguiente en ese proyecto lo recibe una vez, y el agente guarda lo que valga con tus palabras; la pestaña Revisar también lo enseña. Nada que parezca un secreto ni lo que ya está guardado. Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode y Grok Build (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar. En los agentes sin recall al empezar, como Grok, lo apartado llega con la herramienta `context`.
 
 ### Se cuida sola
 
@@ -142,9 +142,10 @@ Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` 
 | Cursor | sí | solo al empezar (su hook del mensaje no deja añadir contexto) | sí | según su documentación |
 | GitHub Copilot (CLI y VS Code) | sí | solo al empezar (su documentación dice que la salida del hook del mensaje se descarta) | sí | según su documentación |
 | Antigravity CLI | sí | solo al empezar (no tiene evento de mensaje) | no (guarda las conversaciones en un formato binario sin documentar) | según su documentación |
+| Grok Build | sí | no (sus hooks de inicio y de mensaje descartan lo que devuelven; las instrucciones le piden llamar a `context` al empezar) | sí | según su documentación |
 | Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | sí | no (sus hooks no pueden añadir contexto, o no está documentado) | no | según su documentación |
 
-`omoi setup` añade también dos órdenes en los agentes que admiten órdenes de usuario: `/omoikane`, que hace guardar al agente, y `/omoikane-web`, que abre la vista web. Son Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` y `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi y Kilo Code. En esos agentes una orden es un texto para el modelo, así que es el agente quien ejecuta `omoi serve --open` y puede pedir permiso antes. Una `/omoikane` de antes, que abría la vista web, pasa a ser la que guarda.
+`omoi setup` añade también dos órdenes en los agentes que admiten órdenes de usuario: `/omoikane`, que hace guardar al agente, y `/omoikane-web`, que abre la vista web. Son Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` y `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi, Kilo Code y Grok Build. En esos agentes una orden es un texto para el modelo, así que es el agente quien ejecuta `omoi serve --open` y puede pedir permiso antes. Una `/omoikane` de antes, que abría la vista web, pasa a ser la que guarda.
 
 ### Compartir la memoria entre equipos (y con compañeros)
 
@@ -188,7 +189,7 @@ Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si 
 - **Un binario sin nada más:** ni Python, ni Node, ni Docker, ni un servidor que dejar encendido. SQLite va dentro.
 - **Funciona sin internet.** Todo es local, y la vista web lleva dentro del binario hasta sus fuentes, IBM Plex y Shippori Mincho.
 - **Windows igual que Linux y macOS:** sin bash ni scripts, y probado en los tres en cada cambio.
-- **14 agentes, una sola memoria**, y `omoi setup <agente>` lo deja todo listo.
+- **15 agentes, una sola memoria**, y `omoi setup <agente>` lo deja todo listo.
 - **Tus memorias son tuyas:** un fichero SQLite que se exporta entero, y una sincronización que solo pasa por tu repositorio git, cifrada.
 - **Se actualiza con cuidado:** solo instala versiones firmadas con Ed25519 y, antes de cambiar el esquema de la base, guarda una copia.
 

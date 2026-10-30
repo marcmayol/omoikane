@@ -358,6 +358,13 @@ fn setup_de_otros_agentes() {
     assert!(leer(".gemini/config/hooks.json")["omoikane"]["SessionStart"].to_string().contains("--format antigravity"));
     assert_eq!(leer(".kimi-code/mcp.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
     assert_eq!(leer(".pi/agent/mcp.json")["mcpServers"]["omoikane"]["args"][0], "mcp");
+    // Grok: MCP en TOML, sus reglas, y los hooks de cierre (sin recall: sus hooks no añaden contexto).
+    assert!(std::fs::read_to_string(casa.join(".grok/config.toml")).unwrap().contains("[mcp_servers.omoikane]"));
+    assert_eq!(std::fs::read_to_string(casa.join(".grok/rules/omoikane.md")).unwrap().matches("<!-- omoikane -->").count(), 1);
+    let grok = leer(".grok/hooks/omoikane.json");
+    assert!(grok["hooks"]["SessionEnd"].to_string().contains("--session-end") && grok["hooks"]["PreCompact"].to_string().contains("--session-end"), "{grok}");
+    assert_eq!(grok["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 3);
+    assert!(grok["hooks"].get("UserPromptSubmit").is_none());
     assert_eq!(leer(".config/amp/settings.json")["amp.mcpServers"]["omoikane"]["args"][0], "mcp");
     let kilo = leer(".config/kilo/kilo.jsonc");
     assert_eq!(kilo["mcp"]["omoikane"]["type"], "local");
@@ -373,6 +380,7 @@ fn setup_de_otros_agentes() {
         ".codeium/windsurf/global_workflows/omoikane-web.md",
         ".pi/agent/prompts/omoikane-web.md",
         ".config/kilo/commands/omoikane-web.md",
+        ".grok/commands/omoikane-web.md",
     ] {
         let t = std::fs::read_to_string(casa.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
         assert!(t.contains("serve --open") && t.contains("127.0.0.1:7438"), "{f}: {t}");
@@ -455,6 +463,38 @@ fn al_cerrar_busca_la_conversacion_de_copilot_por_su_id() {
     let o = e.omoi_con(&["review", "--all"], None, &[]);
     let t = String::from_utf8_lossy(&o.stdout);
     assert!(t.contains("¿Cuál prefieres? → la segunda, pero con la letra más grande"), "{t}");
+}
+
+/// Grok tampoco da la ruta: está en `~/.grok/sessions/<carpeta>/<id>/chat_history.jsonl`.
+#[test]
+fn al_cerrar_busca_la_conversacion_de_grok_por_su_id() {
+    let e = Entorno::nuevo("cierre-grok");
+    let grok = e.dir.join("grok");
+    let sesion = grok.join("sessions").join("C--repo").join("019a-grok");
+    std::fs::create_dir_all(&sesion).unwrap();
+    let lineas = [
+        r#"{"type":"user","content":[{"type":"text","text":"vamos a montar la web"}],"prompt_index":0}"#,
+        r#"{"type":"assistant","content":"Tengo dos opciones de plantilla. ¿Cuál prefieres?"}"#,
+        r#"{"type":"user","content":[{"type":"text","text":"la segunda, pero con la letra más grande que la veo pequeña"}],"prompt_index":1}"#,
+    ];
+    std::fs::write(sesion.join("chat_history.jsonl"), lineas.join("\n")).unwrap();
+    assert!(e.omoi_con(&["remember", "--kind", "fact", "--title", "Una", "algo"], None, &[]).status.success());
+    let entrada = format!(r#"{{"hookEventName":"session_end","hook_event_name":"SessionEnd","sessionId":"019a-grok","cwd":{}}}"#, serde_json::to_string(&e.dir.join("repo").to_string_lossy()).unwrap());
+    let o = e.omoi_con(&["recall", "--session-end"], Some(&entrada), &[("GROK_HOME", grok.to_str().unwrap())]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.omoi_con(&["review", "--all"], None, &[]);
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(t.contains("¿Cuál prefieres? → la segunda, pero con la letra más grande"), "{t}");
+    // Grok no tiene recall al empezar: lo apartado le llega con `context`, una vez.
+    let repo = e.dir.join("repo");
+    let contexto = |e: &Entorno| {
+        let o = e.omoi_con(&["--dir", repo.to_str().unwrap(), "tool", "context"], Some("{}"), &[]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()
+    };
+    let c = contexto(&e);
+    assert!(c["set_aside"].to_string().contains("la letra más grande"), "{c}");
+    assert!(contexto(&e).get("set_aside").is_none(), "solo una vez");
 }
 
 /// Una orden `/omoikane-web` propia del usuario no se toca, ni una `/omoikane` que no escribió Omoikane.
