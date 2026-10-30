@@ -22,6 +22,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Funciona con 15 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
 - **La misma memoria en todos tus equipos, y con compañeros.** Se sincroniza sola por un repositorio git tuyo, cifrada antes de salir del equipo, y sin servidor de nadie.
 - **Historial con motivo.** Cambiar una memoria guarda la versión anterior y, si el agente lo dice, por qué cambió.
+- **Nada se pierde.** Olvidar manda a la papelera, con el historial, y `omoi restore` lo devuelve desde cualquier equipo. `omoi export` es una copia fiel que `omoi import` reconstruye exacta, y cada día se guarda sola una copia de la base.
 - **La ves y la ordenas tú.** Una vista web y otra en la terminal para buscar, leer el historial, fijar, mover u olvidar.
 - **Privado y pequeño.** Un binario, un fichero, 8 herramientas MCP y ningún servidor propio.
 
@@ -64,7 +65,7 @@ Pueden convivir: CLAUDE.md para las reglas fijas del repositorio y Omoikane para
 
 ## Estado
 
-Versión 0.17.1,
+Versión 0.18.0,
  en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
@@ -149,9 +150,15 @@ Omoikane se da cuenta de cuándo una memoria se ha quedado atrás: otra más nue
 
 **Memorias conectadas.** `[[nombre]]` en una memoria la enlaza con la que lleva esa etiqueta. Cuando se recuerda una memoria, puede venir con ella una trampa o una preferencia enlazada; los enlaces rotos salen en Revisar y la página de cada proyecto dibuja sus conexiones.
 
-### Historial, olvido y exportación
+### Historial, papelera y copias
 
-Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas. Olvidar la borra con su historial. Un olvido tampoco vuelve desde otro equipo cuando sincronizas, y `omoi export` saca todas las memorias en JSONL, cada una con su historial.
+Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas.
+
+**Papelera.** Olvidar una memoria (`forget`, desde el agente, la CLI o la vista web) la manda a la papelera con su historial, y un olvido tampoco vuelve desde otro equipo cuando sincronizas. `omoi restore <id>` la devuelve, con su historial, y gana en los demás equipos en la siguiente sincronización: un `forget` hecho por error en una máquina se deshace desde cualquiera. El agente lo hace con `update` y `restore: true`, sin herramienta nueva; la pestaña Revisar tiene el grupo **Papelera** con un botón para cada una. A los 30 días (`OMOIKANE_TRASH_DAYS`; 0 = nunca) se borran del todo; `forget --purge` no pasa por la papelera y `omoi trash --empty` la vacía.
+
+**Copia fiel.** `omoi export` escribe un JSONL con todo lo que hace falta para reconstruir la base: cada memoria con su historial, sello y autor, las marcas de olvido, los veredictos y la papelera, con una línea de cierre que lleva el recuento y el SHA-256 (un fichero cortado o tocado no se importa). `omoi import` lo vuelve a meter con las mismas reglas que la sincronización: los mismos ids, fechas y sellos, gana el más nuevo y lo olvidado no resucita, así que repetirlo no cambia nada y sirve tanto para restaurar una base como para juntar dos. Las dos van en streaming, una línea en memoria cada vez: 50.000 memorias se exportan e importan sin cargar la RAM. Con `--encrypt`, cada línea va cifrada con la clave de la sincronización, para guardar la copia donde quieras. Los ficheros del formato anterior y los de engram siguen entrando.
+
+**Copia diaria.** Al empezar la primera sesión de cada día, Omoikane copia la base a `~/.omoikane/backups/omoikane-<fecha>.db` y conserva las 7 últimas (`OMOIKANE_BACKUPS`; 0 = apagado). `omoi backup` la hace ahora y `omoi doctor` dice cuándo fue la última.
 
 ### La ves y la ordenas tú
 
@@ -222,7 +229,7 @@ Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si 
 - **Funciona sin internet.** Todo es local, y la vista web lleva dentro del binario hasta sus fuentes, IBM Plex y Shippori Mincho.
 - **Windows igual que Linux y macOS:** sin bash ni scripts, y probado en los tres en cada cambio.
 - **15 agentes, una sola memoria**, y `omoi setup <agente>` lo deja todo listo.
-- **Tus memorias son tuyas:** un fichero SQLite que se exporta entero, y una sincronización que solo pasa por tu repositorio git, cifrada.
+- **Tus memorias son tuyas, y no se pierden:** un fichero SQLite con copia diaria, un export que lo reconstruye exacto, una papelera desde la que todo vuelve, y una sincronización que solo pasa por tu repositorio git, cifrada.
 - **Se actualiza con cuidado:** solo instala versiones firmadas con Ed25519 y, antes de cambiar el esquema de la base, guarda una copia.
 
 ## Medido

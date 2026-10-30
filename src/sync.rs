@@ -130,7 +130,7 @@ pub fn leer_config(db: &Path) -> Result<Option<Config>> {
     Ok(Some(serde_json::from_str(&texto).with_context(|| format!("{}", r.config.display()))?))
 }
 
-fn leer_clave(r: &Rutas) -> Result<Vec<u8>> {
+pub(crate) fn leer_clave(r: &Rutas) -> Result<Vec<u8>> {
     let texto = std::fs::read_to_string(&r.clave).with_context(|| tr!("can't read the sync key {}", "no se puede leer la clave de sincronización {}", r.clave.display()))?;
     let k = desde_hex(texto.trim()).context(tr!("the sync key is damaged", "la clave de sincronización está dañada"))?;
     ensure!(k.len() == 64, tr!("the sync key is damaged", "la clave de sincronización está dañada"));
@@ -191,8 +191,8 @@ pub fn sin_credenciales(texto: &str) -> String {
 
 // --- Cifrado ---------------------------------------------------------------------------------------
 
-struct Cifra {
-    clave: Vec<u8>,
+pub(crate) struct Cifra {
+    pub(crate) clave: Vec<u8>,
 }
 
 impl Cifra {
@@ -200,12 +200,12 @@ impl Cifra {
         Aes256Siv::new_from_slice(&self.clave).expect("clave de 64 bytes")
     }
 
-    fn cifrar(&self, texto: &str) -> Result<String> {
+    pub(crate) fn cifrar(&self, texto: &str) -> Result<String> {
         let c = self.siv().encrypt([CABECERA], texto.as_bytes()).map_err(|_| anyhow!("AES-SIV"))?;
         Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(c))
     }
 
-    fn descifrar(&self, linea: &str) -> Result<String> {
+    pub(crate) fn descifrar(&self, linea: &str) -> Result<String> {
         let mal = || anyhow!(clave_ajena());
         let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(linea.trim()).map_err(|_| mal())?;
         let t = self.siv().decrypt([CABECERA], &c).map_err(|_| mal())?;
@@ -250,7 +250,7 @@ fn clave_ajena() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-enum Linea {
+pub(crate) enum Linea {
     Memory {
         id: String,
         /// Cómo se reconoce el proyecto en otro equipo (vacío: global).
@@ -274,6 +274,10 @@ enum Linea {
         /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
+        /// Las versiones anteriores: solo en `omoi export` (la sincronización no las lleva, para que
+        /// el repositorio no crezca con cada cambio).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        versions: Vec<crate::memoria::Version>,
     },
     Tombstone {
         id: String,
@@ -294,6 +298,60 @@ enum Linea {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
     },
+    /// Una memoria de la papelera, con su historial: solo en `omoi export` (una copia sin la papelera
+    /// no sería fiel).
+    Forgotten {
+        id: String,
+        memory: crate::memoria::Memoria,
+        #[serde(default)]
+        versions: Vec<crate::memoria::Version>,
+        hlc: String,
+        deleted_at: String,
+        #[serde(default)]
+        by: String,
+    },
+    /// Primera línea de un fichero de `omoi export`.
+    Header {
+        format: String,
+        version: u32,
+        schema: i64,
+        exported_at: String,
+        machine: String,
+        #[serde(default)]
+        encrypted: bool,
+    },
+    /// Última línea de un fichero de `omoi export`: cuántas líneas van entre medias y su SHA-256.
+    End {
+        count: usize,
+        sha256: String,
+    },
+}
+
+impl Linea {
+    /// El id que la línea afecta (vacío en la cabecera y el final).
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Linea::Memory { id, .. } | Linea::Tombstone { id, .. } | Linea::Forgotten { id, .. } => id,
+            Linea::Verdict { memory_id, .. } => memory_id,
+            Linea::Header { .. } | Linea::End { .. } => "",
+        }
+    }
+
+    /// Si los ids que lleva son como los que escribe Omoikane.
+    pub(crate) fn valida(&self) -> bool {
+        match self {
+            Linea::Header { .. } | Linea::End { .. } => true,
+            Linea::Verdict { memory_id, other_id, .. } => id_valido(memory_id) && (other_id.is_empty() || id_valido(other_id)),
+            otra => id_valido(otra.id()),
+        }
+    }
+
+    fn machine(&self) -> &str {
+        match self {
+            Linea::Memory { machine, .. } | Linea::Tombstone { machine, .. } | Linea::Verdict { machine, .. } => machine,
+            _ => "",
+        }
+    }
 }
 
 /// Un id como los que escribe Omoikane (ULID: 26 letras y números en mayúsculas). Una línea con otro
@@ -653,6 +711,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
             hlc,
             author: m.author,
             machine: equipo.to_string(),
+            versions: Vec::new(),
         };
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
@@ -758,18 +817,150 @@ fn no_menor(a: &str, b: &str) -> bool {
     reloj::comparar(a, b) != std::cmp::Ordering::Less
 }
 
-/// Lee los ficheros de otros equipos y los junta con la base. Una línea que no se descifra (de otra
-/// clave, o dañada) se salta y se cuenta, sin parar la sincronización.
+/// Aplica líneas con las reglas de la sincronización, vengan del repositorio o de un fichero de
+/// `omoi export`: gana el sello más nuevo, lo olvidado no resucita, un proyecto se reconoce por su
+/// clave y, si aquí no existe, toma la ruta de origen. Sin `config` (un import) se acepta todo.
+pub(crate) struct Aplicador<'a> {
+    config: Option<&'a Config>,
+    person: String,
+    /// Clave → proyecto de aquí: los que ya tienen memorias (o se adoptaron) y el de la carpeta actual.
+    locales: HashMap<String, String>,
+    /// Las rutas que ya son proyectos aquí, y las que se van asignando: dos claves desconocidas con la
+    /// misma ruta de origen no acaban en el mismo proyecto.
+    rutas_locales: HashSet<String>,
+}
+
+impl<'a> Aplicador<'a> {
+    pub(crate) fn nuevo(db: &Connection, config: Option<&'a Config>, actual: Option<&str>) -> Result<Self> {
+        let person = config.map(|c| c.person.clone()).unwrap_or_default();
+        let mut locales: HashMap<String, String> = HashMap::new();
+        for (p, k) in claves_locales(db, &person)? {
+            locales.entry(k).or_insert(p);
+        }
+        if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
+            locales.insert(clave(a, &person), a.to_string());
+        }
+        let rutas_locales = locales.values().cloned().collect();
+        Ok(Aplicador { config, person, locales, rutas_locales })
+    }
+
+    /// Aplica una línea. `Err` es una línea que no se pudo aplicar (se cuenta y se sigue). Las
+    /// marcas de olvido conviene aplicarlas antes que las memorias, y los veredictos después.
+    pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
+        match l {
+            Linea::Header { .. } | Linea::End { .. } => Ok(()),
+            Linea::Tombstone { id, deleted_at, hlc, .. } => {
+                if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
+                    return Ok(());
+                }
+                match hlc_local(db, &id)? {
+                    Some(local) if reloj::mayor(&local, &hlc) => {
+                        // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc)?;
+                        reloj::recibir(db, &hlc)?;
+                    }
+                    Some(_) => {
+                        memoria::olvidar_con(db, &id, &hlc, &deleted_at, origen)?;
+                        r.olvidadas += 1;
+                    }
+                    None => {
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc)?;
+                        reloj::recibir(db, &hlc)?;
+                    }
+                }
+                Ok(())
+            }
+            Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author, versions, .. } => {
+                // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra persona).
+                if self.config.is_some_and(|c| !c.acepta(kind, &project_key)) {
+                    return Ok(());
+                }
+                if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
+                    return Ok(());
+                }
+                let local = hlc_local(db, &id)?;
+                if local.as_ref().is_some_and(|h| no_menor(h, &hlc)) {
+                    return Ok(());
+                }
+                let project = if project_key.is_empty() {
+                    String::new()
+                } else if let Some(p) = self.locales.get(&project_key) {
+                    p.clone()
+                } else {
+                    // Aquí aún no hay ningún proyecto con esa clave: la ruta de origen, apuntada para
+                    // adoptarla. Si esa ruta ya es aquí otro proyecto (dos repositorios distintos en
+                    // `/workspace`), una ruta propia que no se confunda con él.
+                    let ocupada = |r: &str| self.rutas_locales.contains(r) || (Path::new(r).exists() && clave(r, &self.person) != project_key);
+                    let mut ruta = if ocupada(&project_path) { format!("{project_path} [{project_key}]") } else { project_path };
+                    let base = ruta.clone();
+                    let mut n = 2;
+                    while self.rutas_locales.contains(&ruta) {
+                        ruta = format!("{base} ({n})");
+                        n += 1;
+                    }
+                    db.execute("INSERT OR REPLACE INTO remote_project(path, key) VALUES (?1, ?2)", params![ruta, project_key])?;
+                    self.locales.insert(project_key.clone(), ruta.clone());
+                    self.rutas_locales.insert(ruta.clone());
+                    ruta
+                };
+                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, author: &author };
+                // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se
+                // salta y se cuenta: nunca para la sincronización.
+                if local.is_some() {
+                    let c = Cambios {
+                        title: Some(title),
+                        content: Some(content),
+                        kind: Some(kind),
+                        paths: Some(paths),
+                        tags: Some(tags),
+                        pinned: Some(pinned),
+                        project: Some(project),
+                        reason: Some(format!("sync: {origen}")),
+                    };
+                    memoria::actualizar_con_origen(db, &id, c, &o, modelo)?;
+                    r.actualizadas += 1;
+                } else {
+                    let nueva = Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source: format!("sync:{origen}") };
+                    memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
+                    r.nuevas += 1;
+                }
+                // El historial que venga (solo en `omoi export`): lo que ya hay con ese número se queda.
+                for v in versions {
+                    db.execute(
+                        "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason],
+                    )?;
+                }
+                Ok(())
+            }
+            Linea::Verdict { memory_id, other_id, relation, at, hlc, .. } => {
+                // De una memoria que aquí no está (no se comparte, o se olvidó) no se apunta nada.
+                let existe = |id: &str| -> Result<bool> { Ok(db.query_row("SELECT count(*) FROM memory WHERE id = ?1", [id], |f| f.get::<_, i64>(0))? > 0) };
+                if existe(&memory_id)? && (other_id.is_empty() || existe(&other_id)?) {
+                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc })?;
+                }
+                Ok(())
+            }
+            Linea::Forgotten { id, memory, versions, hlc, deleted_at, by } => {
+                // A la papelera, si aquí no está viva ni ya en la papelera.
+                if hlc_local(db, &id)?.is_some() {
+                    return Ok(());
+                }
+                db.execute(
+                    "INSERT OR IGNORE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![id, serde_json::to_string(&memory)?, serde_json::to_string(&versions)?, hlc, deleted_at, by],
+                )?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Lee los ficheros de otros equipos y aplica sus líneas. Una línea que no se entiende (de una versión
+/// futura, de otra clave, o dañada) se salta y se cuenta, sin parar la sincronización.
 #[allow(clippy::too_many_arguments)]
 fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Config, cifra: &Cifra, actual: Option<&str>, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
-    // Clave → proyecto de aquí: los que ya tienen memorias (o se adoptaron) y el de la carpeta actual.
-    let mut locales: HashMap<String, String> = HashMap::new();
-    for (p, k) in claves_locales(db, &config.person)? {
-        locales.entry(k).or_insert(p);
-    }
-    if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
-        locales.insert(clave(a, &config.person), a.to_string());
-    }
+    let mut aplicador = Aplicador::nuevo(db, Some(config), actual)?;
     // (equipo de origen, fichero, línea)
     let mut lineas: Vec<(String, String, Linea)> = Vec::new();
     for f in ficheros {
@@ -785,129 +976,29 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
                 Ok(x) => x,
                 Err(_) => continue, // una línea de una versión futura: se ignora
             };
-            let (id, machine) = match &x {
-                Linea::Memory { id, machine, .. } | Linea::Tombstone { id, machine, .. } => (id, machine),
-                Linea::Verdict { memory_id, machine, .. } => (memory_id, machine),
-            };
-            if !id_valido(id) || matches!(&x, Linea::Verdict { other_id, .. } if !other_id.is_empty() && !id_valido(other_id)) {
+            if !x.valida() {
                 *r.malos.entry(relativo.clone()).or_default() += 1;
                 continue;
             }
-            let origen = if machine.is_empty() { f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { machine.clone() };
+            let origen = if x.machine().is_empty() { f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { x.machine().to_string() };
             lineas.push((origen, relativo.clone(), x));
         }
         r.leidos += 1;
     }
-    // Primero los olvidos, para no traer algo que se va a borrar. Uno que falla se salta y se cuenta.
-    for (origen, fichero, l) in &lineas {
-        let Linea::Tombstone { id, deleted_at, hlc, .. } = l else { continue };
-        let aplicado = (|| -> Result<()> {
-            if hlc_olvido(db, id)?.is_some_and(|h| no_menor(&h, hlc)) {
-                return Ok(());
-            }
-            match hlc_local(db, id)? {
-                Some(local) if reloj::mayor(&local, hlc) => {
-                    // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
-                    memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
-                    reloj::recibir(db, hlc)?;
-                }
-                Some(_) => {
-                    memoria::olvidar_con(db, id, hlc, deleted_at, origen)?;
-                    r.olvidadas += 1;
-                }
-                None => {
-                    memoria::marcar_olvido(db, id, Some(deleted_at), hlc)?;
-                    reloj::recibir(db, hlc)?;
-                }
-            }
-            Ok(())
-        })();
-        if aplicado.is_err() {
-            *r.malos.entry(fichero.clone()).or_default() += 1;
-        }
-    }
-    // Las rutas que ya son proyectos aquí, y las que se van asignando en esta misma pasada: dos claves
-    // desconocidas con la misma ruta de origen no acaban en el mismo proyecto.
-    let mut rutas_locales: HashSet<String> = locales.values().cloned().collect();
-    // Los veredictos, después de las memorias que juzgan.
-    let mut veredictos = Vec::new();
+    // Primero los olvidos (para no traer algo que se va a borrar), luego las memorias y al final los
+    // veredictos, que necesitan las memorias.
+    let orden = |l: &Linea| match l {
+        Linea::Tombstone { .. } => 0,
+        Linea::Memory { .. } => 1,
+        _ => 2,
+    };
+    lineas.sort_by_key(|(_, _, l)| orden(l));
     for (origen, fichero, l) in lineas {
-        let Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author, .. } = l else {
-            if let Linea::Verdict { memory_id, other_id, relation, at, hlc, .. } = l {
-                veredictos.push((fichero, crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc }));
-            }
-            continue;
-        };
-        // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra persona).
-        if !config.acepta(kind, &project_key) {
-            continue;
-        }
-        if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
-            continue;
-        }
-        let local = hlc_local(db, &id)?;
-        if local.as_ref().is_some_and(|h| no_menor(h, &hlc)) {
-            continue;
-        }
-        let project = if project_key.is_empty() {
-            String::new()
-        } else if let Some(p) = locales.get(&project_key) {
-            p.clone()
-        } else {
-            // Aquí aún no hay ningún proyecto con esa clave: la ruta de origen, apuntada para adoptarla.
-            // Si esa ruta ya es aquí otro proyecto (dos repositorios distintos en `/workspace`), una
-            // ruta propia que no se confunda con él.
-            let ocupada = |r: &str| rutas_locales.contains(r) || (Path::new(r).exists() && clave(r, &config.person) != project_key);
-            let mut ruta = if ocupada(&project_path) { format!("{project_path} [{project_key}]") } else { project_path };
-            let base = ruta.clone();
-            let mut n = 2;
-            while rutas_locales.contains(&ruta) {
-                ruta = format!("{base} ({n})");
-                n += 1;
-            }
-            db.execute("INSERT OR REPLACE INTO remote_project(path, key) VALUES (?1, ?2)", params![ruta, project_key])?;
-            locales.insert(project_key.clone(), ruta.clone());
-            rutas_locales.insert(ruta.clone());
-            ruta
-        };
-        let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, author: &author };
-        // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se salta y
-        // se cuenta: nunca para la sincronización.
-        let hecho = if local.is_some() {
-            let c = Cambios {
-                title: Some(title),
-                content: Some(content),
-                kind: Some(kind),
-                paths: Some(paths),
-                tags: Some(tags),
-                pinned: Some(pinned),
-                project: Some(project),
-                reason: Some(format!("sync: {origen}")),
-            };
-            memoria::actualizar_con_origen(db, &id, c, &o, modelo).map(|_| r.actualizadas += 1)
-        } else {
-            let nueva = Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source: format!("sync:{origen}") };
-            memoria::guardar_con_id(db, &id, nueva, &o, modelo).map(|_| r.nuevas += 1)
-        };
-        if hecho.is_err() {
-            *r.malos.entry(fichero).or_default() += 1;
-        }
-    }
-    for (fichero, v) in veredictos {
-        // De una memoria que aquí no está (no se comparte, o se olvidó) no se apunta nada.
-        let existe = |id: &str| -> Result<bool> { Ok(db.query_row("SELECT count(*) FROM memory WHERE id = ?1", [id], |f| f.get::<_, i64>(0))? > 0) };
-        let hecho = (|| -> Result<()> {
-            if existe(&v.memory_id)? && (v.other_id.is_empty() || existe(&v.other_id)?) {
-                crate::veredictos::recibir(db, &v)?;
-            }
-            Ok(())
-        })();
-        if hecho.is_err() {
+        if aplicador.aplicar(db, &origen, l, modelo, r).is_err() {
             *r.malos.entry(fichero).or_default() += 1;
         }
     }
     r.ilegibles = r.malos.values().sum();
-
     Ok(())
 }
 

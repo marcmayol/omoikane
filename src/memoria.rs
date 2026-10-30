@@ -8,7 +8,7 @@ use crate::{tr, vectores};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+
 use std::str::FromStr;
 
 /// Cada tipo cambia cómo se recupera la memoria (ver PLAN.md §3).
@@ -487,10 +487,41 @@ pub fn reindexar_palabras(db: &mut Connection) -> Result<usize> {
     Ok(todas.len())
 }
 
-/// Borra la memoria con su historial y sus índices, y deja una marca para que la sincronización no la
-/// devuelva desde otro equipo. Devuelve lo que se borró.
+/// Olvida la memoria: sale de la base y de los índices, deja una marca para que la sincronización no
+/// la devuelva desde otro equipo, y queda en la papelera (`forgotten`) con su historial, de donde
+/// `restaurar` la devuelve. Devuelve lo que se olvidó.
 pub fn olvidar(db: &mut Connection, id: &str) -> Result<Memoria> {
     borrar(db, id, None)
+}
+
+/// Olvida y, además, la saca de la papelera: no hay vuelta atrás.
+pub fn olvidar_del_todo(db: &mut Connection, id: &str) -> Result<Memoria> {
+    let m = borrar(db, id, None)?;
+    db.execute("DELETE FROM forgotten WHERE id = ?1", [&m.id])?;
+    Ok(m)
+}
+
+/// Días que una memoria olvidada espera en la papelera antes de borrarse del todo
+/// (`OMOIKANE_TRASH_DAYS`; 0 = nunca).
+pub fn dias_papelera() -> f64 {
+    std::env::var("OMOIKANE_TRASH_DAYS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(30.0)
+}
+
+/// Borra de la papelera lo olvidado hace más de `dias` (0 = nada). Devuelve cuántas.
+pub fn purgar(db: &Connection, dias: f64) -> Result<usize> {
+    if dias <= 0.0 {
+        return Ok(0);
+    }
+    let n = db.execute(
+        "DELETE FROM forgotten WHERE deleted_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+        [format!("-{} seconds", (dias * 86400.0) as i64)],
+    )?;
+    Ok(n)
+}
+
+/// Vacía la papelera entera. Devuelve cuántas.
+pub fn vaciar_papelera(db: &Connection) -> Result<usize> {
+    Ok(db.execute("DELETE FROM forgotten", [])?)
 }
 
 /// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo. La memoria se
@@ -499,21 +530,49 @@ pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: 
     borrar(db, id, Some((hlc, deleted_at, equipo)))
 }
 
-/// Lo que otros equipos olvidaron y aquí se guardó: (id, título, quién, cuándo).
-pub fn olvidadas_fuera(db: &Connection) -> Result<Vec<(String, String, String, String)>> {
+/// Una memoria en la papelera.
+#[derive(Clone, Debug, Serialize)]
+pub struct Olvidada {
+    pub id: String,
+    pub title: String,
+    pub kind: Tipo,
+    pub project: String,
+    /// Quién la olvidó: el nombre del equipo (y `[by …]` ya dice la persona, si la sincronización lo apunta).
+    pub by: String,
+    pub deleted_at: String,
+}
+
+/// La papelera: lo olvidado aquí o en otro equipo, de lo más reciente a lo más antiguo.
+pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
     let mut q = db.prepare("SELECT id, memory, by, deleted_at FROM forgotten ORDER BY deleted_at DESC")?;
     let v = q
         .query_map([], |f| {
             let m: String = f.get(1)?;
-            let titulo = serde_json::from_str::<serde_json::Value>(&m).ok().and_then(|v| v["title"].as_str().map(String::from)).unwrap_or_default();
-            Ok((f.get(0)?, titulo, f.get(2)?, f.get(3)?))
+            let m: Memoria = serde_json::from_str(&m).unwrap_or_else(|_| Memoria {
+                id: String::new(),
+                project: String::new(),
+                kind: Tipo::Fact,
+                title: String::new(),
+                content: String::new(),
+                paths: Vec::new(),
+                tags: Vec::new(),
+                pinned: false,
+                source: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                recalled_at: None,
+                recall_count: 0,
+                author: String::new(),
+            });
+            Ok(Olvidada { id: f.get(0)?, title: m.title, kind: m.kind, project: m.project, by: f.get(2)?, deleted_at: f.get(3)? })
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Devuelve una memoria que olvidó otro equipo, con un sello posterior al olvido (así vuelve también a
-/// los demás equipos en la próxima sincronización). Su historial anterior se conserva.
+/// Devuelve una memoria de la papelera (olvidada aquí o en otro equipo), con un sello posterior al
+/// olvido: así vuelve también a los demás equipos en la próxima sincronización. Su historial anterior
+/// se conserva.
 pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
     // El id como en las demás órdenes: en mayúsculas, y un principio que valga para varias es un error.
     let id = id.trim().to_uppercase();
@@ -525,8 +584,8 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
     };
     let (id, m, versiones) = match <[_; 1]>::try_from(filas) {
         Ok([una]) => una,
-        Err(v) if v.is_empty() => bail!(tr!("nothing forgotten elsewhere with id {id}", "no hay nada olvidado en otro equipo con id {id}")),
-        Err(_) => bail!(tr!("several forgotten memories start with {id}: type more characters", "hay varias memorias olvidadas que empiezan por {id}: escribe más caracteres")),
+        Err(v) if v.is_empty() => bail!(tr!("nothing in the trash with id {id}", "no hay nada en la papelera con id {id}")),
+        Err(_) => bail!(tr!("several memories in the trash start with {id}: type more characters", "hay varias memorias en la papelera que empiezan por {id}: escribe más caracteres")),
     };
     let m: Memoria = serde_json::from_str(&m)?;
     let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
@@ -559,16 +618,18 @@ fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str, &str)>) -> R
     };
     marcar_olvido(&tx, &id, deleted_at, &hlc)?;
     let m = leer(&tx, &id)?;
-    if let Some((_, _, equipo)) = marca {
-        // Lo olvidó otro equipo (quizá otra persona): aquí queda una copia, con su historial, que
-        // `omoi sync restore <id>` devuelve.
-        let versiones = historial(&tx, &id)?;
-        let hlc_m = hlc_de(&tx, &id)?;
-        tx.execute(
-            &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
-            params![id, serde_json::to_string(&m)?, serde_json::to_string(&versiones)?, hlc_m, deleted_at, equipo],
-        )?;
-    }
+    // A la papelera, con su historial: `restaurar` la devuelve desde cualquier equipo. `by` es el
+    // equipo que la olvidó: otro (quizá otra persona) o este.
+    let quien = match marca {
+        Some((_, _, equipo)) => equipo.to_string(),
+        None => crate::reloj::equipo(&tx)?,
+    };
+    let versiones = historial(&tx, &id)?;
+    let hlc_m = hlc_de(&tx, &id)?;
+    tx.execute(
+        &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
+        params![id, serde_json::to_string(&m)?, serde_json::to_string(&versiones)?, hlc_m, deleted_at, quien],
+    )?;
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     desindexar(&tx, n)?;
     // memory_version y memory_path caen con ON DELETE CASCADE.
@@ -667,26 +728,6 @@ pub fn proyectos(db: &Connection) -> Result<Vec<Proyecto>> {
         .query_map([], |f| Ok(Proyecto { project: f.get(0)?, memories: f.get(1)?, last_update: f.get(2)? }))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
-}
-
-/// Una línea JSON por memoria, con su historial. Para no quedarse atrapado en Omoikane.
-pub fn exportar(db: &Connection, ambito: &Ambito, salida: &mut impl Write) -> Result<usize> {
-    #[derive(Serialize)]
-    struct Linea<'a> {
-        #[serde(flatten)]
-        memoria: &'a Memoria,
-        versions: Vec<Version>,
-    }
-    let mut q = db.prepare(&format!(
-        "SELECT {COLUMNAS} FROM memory WHERE (?1 IS NULL OR project = ?1 OR project = '') ORDER BY created_at, id"
-    ))?;
-    let todas: Vec<Memoria> = q.query_map([ambito.filtro()], de_fila)?.collect::<rusqlite::Result<_>>()?;
-    for m in &todas {
-        let linea = Linea { memoria: m, versions: historial(db, &m.id)? };
-        serde_json::to_writer(&mut *salida, &linea)?;
-        salida.write_all(b"\n")?;
-    }
-    Ok(todas.len())
 }
 
 #[cfg(test)]

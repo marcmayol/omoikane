@@ -690,3 +690,24 @@ fn los_veredictos_viajan() {
     b.json_en(&pb, &["sync"]);
     assert_eq!(desfasadas(&b, &pb), 0);
 }
+
+/// 0.18.0: lo olvidado aquí está en la papelera de aquí, y al devolverlo vuelve también a los demás.
+#[test]
+fn lo_olvidado_aqui_se_recupera_y_vuelve_a_los_demas() {
+    let p = Prueba::nueva("papelera");
+    let (a, b) = dos(&p, &[], &[]);
+    let id = a.guardar(&a.dir, "fact", "El puerto del servicio de pagos", "Escucha en el 8080.", &["--global"]);
+    a.sync();
+    b.sync();
+    a.ok(&["forget", &id, "--yes"]);
+    a.sync();
+    b.sync();
+    assert!(a.get(&id).is_none() && b.get(&id).is_none());
+    let papelera = a.ok(&["trash"]);
+    assert!(papelera.contains("pagos") && papelera.contains("pc-a"), "{papelera}");
+    a.ok(&["restore", &id]);
+    assert!(a.get(&id).is_some());
+    a.sync();
+    b.sync();
+    assert!(b.get(&id).is_some(), "la recuperada gana al olvido también en B");
+}

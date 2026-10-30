@@ -194,15 +194,17 @@ fn exporta_con_historial() {
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "A", "uno"), None).unwrap();
     memoria::actualizar(&mut db, &m.id, Cambios { content: Some("dos".into()), ..Default::default() }, None).unwrap();
     memoria::guardar(&mut db, nueva("/otro", Tipo::Fact, "B", "tres"), None).unwrap();
+    let ruta = dir.join("o.db");
     let mut salida = Vec::new();
-    assert_eq!(memoria::exportar(&db, &Ambito::Proyecto("/p".into()), &mut salida).unwrap(), 1);
+    assert_eq!(omoikane::copia::exportar(&db, &ruta, &Ambito::Proyecto("/p".into()), false, &mut salida).unwrap().memories, 1);
     let lineas: Vec<serde_json::Value> =
         String::from_utf8(salida).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(lineas.len(), 1);
-    assert_eq!(lineas[0]["content"], "dos");
-    assert_eq!(lineas[0]["versions"][0]["content"], "uno");
+    // Cabecera, la memoria y el cierre.
+    assert_eq!(lineas.len(), 3);
+    assert_eq!(lineas[1]["content"], "dos");
+    assert_eq!(lineas[1]["versions"][0]["content"], "uno");
     let mut todo = Vec::new();
-    assert_eq!(memoria::exportar(&db, &Ambito::Todos, &mut todo).unwrap(), 2);
+    assert_eq!(omoikane::copia::exportar(&db, &ruta, &Ambito::Todos, false, &mut todo).unwrap().memories, 2);
     let _ = std::fs::remove_dir_all(dir);
 }
 

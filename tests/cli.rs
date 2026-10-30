@@ -163,8 +163,11 @@ fn export_jsonl() {
     e.ok(&["remember", "-k", "fact", "-t", "Dos", "dos"]);
     let salida = e.ok(&["export"]);
     let lineas: Vec<serde_json::Value> = salida.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(lineas.len(), 2);
-    assert!(lineas.iter().all(|l| l["versions"].as_array().unwrap().is_empty()));
+    // Cabecera, las dos memorias y el cierre (el formato entero se prueba en `copia.rs`).
+    assert_eq!(lineas.len(), 4);
+    assert_eq!(lineas[0]["type"], "header");
+    assert!(lineas[1..3].iter().all(|l| l["type"] == "memory" && l["versions"].is_null()));
+    assert_eq!(lineas[3]["count"], 2);
 }
 
 #[test]

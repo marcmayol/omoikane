@@ -9,6 +9,8 @@
 //!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
 //!   `POST /api/candidates/dismiss` con `{id}` para dejarlo
+//! - `GET /api/trash` → la papelera (`memoria::papelera`), y `POST /api/restore` con `{id}` para
+//!   devolver una memoria
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → nombres, descripciones y esquemas de las herramientas
 //! - `POST /tools/<nombre>` con los argumentos en JSON → la respuesta de la herramienta (400 si es un error)
@@ -213,6 +215,23 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     let db = db::abrir(&db)?;
                     match crate::revisar::descartar(&db, &campo("memory_id"), &campo("kind"), &campo("other_id")) {
                         Ok(()) => Ok(json(200, serde_json::json!({ "dismissed": true }).to_string())),
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
+                (Method::Get, "/api/trash") => {
+                    let db = db::abrir(&db)?;
+                    Ok(json(200, serde_json::to_string(&memoria::papelera(&db)?)?))
+                }
+                (Method::Post, "/api/restore") => {
+                    let mut cuerpo = String::new();
+                    peticion.as_reader().read_to_string(&mut cuerpo)?;
+                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
+                    let mut base = db::abrir(&db)?;
+                    match memoria::restaurar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
+                        Ok(m) => {
+                            crate::sync::programar(&db);
+                            Ok(json(200, serde_json::to_string(&m)?))
+                        }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }

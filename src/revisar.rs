@@ -317,39 +317,32 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
             *df.entry(w.as_str()).or_default() += 1;
         }
     }
-    let tope = 2usize.max(n / 20);
+    // Rara: en el 5 % de las memorias como mucho; a partir de 2.000 memorias, en 100. Una palabra que
+    // sale en cientos de memorias no dice que dos hablen de lo mismo.
+    let tope = 2usize.max(n / 20).min(100);
     let es_rara = |w: &str| df.get(w).is_some_and(|d| *d <= tope);
     let raras = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
     let titulos: Vec<BTreeSet<String>> = fichas.iter().map(|f| raras(&f.titulo)).collect();
     let contenidos: Vec<BTreeSet<String>> = fichas.iter().map(|f| raras(&f.contenido)).collect();
 
-    // Candidatas: dentro de un proyecto, todas las parejas (son pocas y casi todo trata de él); entre
-    // las globales, las que comparten alguna palabra rara (índice invertido, para no comparar todas).
+    // Candidatas: parejas del mismo proyecto (las globales cuentan como uno) que comparten una palabra
+    // rara o nombran la versión de la misma cosa («rusqlite 0.41.0»). Es exacto: cualquier motivo de
+    // `motivos` exige una de las dos cosas. Comparar todas las parejas de un proyecto era cuadrático:
+    // con 50.000 memorias, 31 millones de parejas, 108 s y 1,2 GB en cada escritura.
     let mut parejas: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut por_proyecto: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut indice: HashMap<(&str, String), Vec<usize>> = HashMap::new();
     for (i, f) in fichas.iter().enumerate() {
-        por_proyecto.entry(f.project.as_str()).or_default().push(i);
+        for w in titulos[i].union(&contenidos[i]) {
+            indice.entry((f.project.as_str(), w.clone())).or_default().push(i);
+        }
+        for cosa in f.versiones.keys().filter(|c| !c.is_empty()) {
+            indice.entry((f.project.as_str(), format!("ver:{cosa}"))).or_default().push(i);
+        }
     }
-    for (p, v) in &por_proyecto {
-        if p.is_empty() {
-            let mut indice: HashMap<&str, Vec<usize>> = HashMap::new();
-            for &i in v {
-                for w in titulos[i].union(&contenidos[i]) {
-                    indice.entry(w.as_str()).or_default().push(i);
-                }
-            }
-            for l in indice.values() {
-                for (a, &i) in l.iter().enumerate() {
-                    for &j in &l[a + 1..] {
-                        parejas.insert((i.min(j), i.max(j)));
-                    }
-                }
-            }
-        } else {
-            for (a, &i) in v.iter().enumerate() {
-                for &j in &v[a + 1..] {
-                    parejas.insert((i.min(j), i.max(j)));
-                }
+    for l in indice.values() {
+        for (a, &i) in l.iter().enumerate() {
+            for &j in &l[a + 1..] {
+                parejas.insert((i.min(j), i.max(j)));
             }
         }
     }
@@ -367,9 +360,8 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
         let union = contenidos[iv].union(&contenidos[inu]).count().max(1);
         let jaccard = contenidos[iv].intersection(&contenidos[inu]).count() as f64 / union as f64;
         let mismo_tema = comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
-        // Dentro de un proyecto se miran todas las parejas (casi todo trata de él), pero lo que no
-        // comparte palabras solo puede contradecirse por algo con nombre.
-        if vieja.project.is_empty() && !mismo_tema {
+        // Lo que no comparte palabras solo puede contradecirse por una versión con nombre.
+        if !mismo_tema && vieja.versiones.keys().all(|c| c.is_empty()) {
             continue;
         }
         let m = motivos(vieja, nueva, mismo_tema, &raras);

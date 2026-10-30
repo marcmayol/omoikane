@@ -22,6 +22,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It works with 15 agents.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok and the rest share the same memory; `omoi setup <agent>` gets each one ready.
 - **The same memory on all your computers, and with teammates.** It syncs by itself through a git repository of yours, encrypted before it leaves your computer, with nobody's server in between.
 - **History with reasons.** Changing a memory keeps the previous version and, if the agent says so, why it changed.
+- **Nothing gets lost.** Forgetting sends to the trash, history included, and `omoi restore` brings it back from any computer. `omoi export` is a faithful copy that `omoi import` rebuilds exactly, and a copy of the database is kept every day by itself.
 - **You can see it and tidy it up.** A web view and a terminal one to search, read the history, pin, move or forget.
 - **Private and small.** One binary, one file, 8 MCP tools and no server of its own.
 
@@ -64,7 +65,7 @@ They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for
 
 ## Status
 
-Version 0.17.1,
+Version 0.18.0,
  on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
@@ -149,9 +150,15 @@ Omoikane notices when a memory has fallen behind: a newer one on the same subjec
 
 **Linked memories.** `[[name]]` in a memory links it to the one tagged with that name. When a memory is recalled, a linked gotcha or preference can come along with it; broken links show up in Review, and each project page draws its connections.
 
-### History, forgetting and export
+### History, trash and copies
 
-Changing a memory keeps the previous version with the reason, and `omoi history` shows them all. Forgetting deletes it along with its history. Nothing forgotten comes back from another computer when you sync, and `omoi export` writes every memory as JSONL, each with its history.
+Changing a memory keeps the previous version with the reason, and `omoi history` shows them all.
+
+**Trash.** Forgetting a memory (`forget`, from the agent, the CLI or the web view) sends it to the trash with its history, and a forget doesn't come back from another computer when you sync either. `omoi restore <id>` brings it back, history included, and wins on the other computers at the next sync: a `forget` made by mistake on one machine is undone from any of them. The agent does it with `update` and `restore: true`, with no new tool; the Review tab has a **Trash** group with a button for each one. After 30 days (`OMOIKANE_TRASH_DAYS`; 0 = never) they are deleted for good; `forget --purge` skips the trash and `omoi trash --empty` empties it.
+
+**Faithful copy.** `omoi export` writes a JSONL with everything needed to rebuild the database: each memory with its history, clock stamp and author, the forget marks, the verdicts and the trash, with an end line carrying the count and the SHA-256 (a cut or tampered file is not imported). `omoi import` puts it back with the same rules as sync: same ids, dates and stamps, newest wins and what was forgotten doesn't come back, so repeating it changes nothing and it serves both to restore a database and to merge two. Both stream, one line in memory at a time: 50,000 memories export and import without loading the RAM. With `--encrypt`, every line is encrypted with the sync key, to keep the copy anywhere. Files in the previous format and engram's still import.
+
+**Daily copy.** At the first session start of each day, Omoikane copies the database to `~/.omoikane/backups/omoikane-<date>.db` and keeps the last 7 (`OMOIKANE_BACKUPS`; 0 = off). `omoi backup` does it now, and `omoi doctor` says when the last one was.
 
 ### See it and tidy it up
 
@@ -222,7 +229,7 @@ Once a day, the first time it runs, `omoi` checks in the background for a newer 
 - **It works offline.** Everything is local, and the web view carries even its fonts, IBM Plex and Shippori Mincho, inside the binary.
 - **Windows just like Linux and macOS:** no bash, no scripts, and tested on all three on every change.
 - **15 agents, one memory**, and `omoi setup <agent>` gets each one ready.
-- **Your memories are yours:** one SQLite file you can export whole, and a sync that only goes through your own git repository, encrypted.
+- **Your memories are yours, and they don't get lost:** one SQLite file with a daily copy, an export that rebuilds it exactly, a trash everything comes back from, and a sync that only goes through your own git repository, encrypted.
 - **It updates carefully:** it only installs releases signed with Ed25519 and, before changing the database schema, keeps a copy.
 
 ## Measured
