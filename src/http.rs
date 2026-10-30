@@ -229,8 +229,10 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     peticion.as_reader().read_to_string(&mut cuerpo)?;
                     let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
                     let mut base = db::abrir(&db)?;
+                    let antes = crate::revisar::antes(&base)?;
                     match memoria::restaurar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
                         Ok(m) => {
+                            crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&m.id))?;
                             crate::sync::programar(&db);
                             Ok(json(200, serde_json::to_string(&m)?))
                         }
@@ -242,10 +244,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     peticion.as_reader().read_to_string(&mut cuerpo)?;
                     let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
                     let mut base = db::abrir(&db)?;
+                    let antes = crate::revisar::antes(&base)?;
                     match memoria::redactar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
                         Ok(m) => {
                             if !m.redacted.is_empty() {
-                                crate::revisar::al_dia(&base)?;
+                                crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&m.id))?;
                                 crate::sync::programar(&db);
                             }
                             let mut j = serde_json::to_value(&m)?;
