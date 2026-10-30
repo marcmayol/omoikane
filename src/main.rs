@@ -862,9 +862,12 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                     println!("{}", tr!("{} memories, {} forget marks, {} verdicts and {} in the trash to import (the file checks out)", "{} memorias, {} marcas de olvido, {} veredictos y {} en la papelera para importar (el fichero está bien)", cuenta.memories, cuenta.tombstones, cuenta.verdicts, cuenta.forgotten));
                 } else {
                     println!("{}", tr!("imported: {} new, {} updated, {} forgotten; {} lines skipped; the rest was already here", "importado: {} nuevas, {} actualizadas, {} olvidadas; {} líneas saltadas; lo demás ya estaba", r.nuevas, r.actualizadas, r.olvidadas, r.ilegibles));
-                    if r.nuevas + r.actualizadas > 0 {
-                        omoikane::sync::programar(&ruta);
-                    }
+                }
+                if cuenta.unknown > 0 {
+                    println!("{}", omoikane::sync::aviso_lineas_nuevas(cuenta.unknown));
+                }
+                if !dry_run && r.nuevas + r.actualizadas > 0 {
+                    omoikane::sync::programar(&ruta);
                 }
                 return Ok(());
             }
@@ -1544,6 +1547,10 @@ fn estado_sync(ruta: &std::path::Path, espacio: Option<&str>) -> String {
     if sync::clave_cambiada(&r) {
         l.push_str(&format!(" · {}", sync::aviso_clave_cambiada()));
     }
+    // Lo dice aunque el error de la última vez ya lo diga: es lo que hay que hacer.
+    if sync::necesita_version(&r).is_some() && !e.ultimo_error.as_deref().is_some_and(|x| x.contains(&sync::aviso_version())) {
+        l.push_str(&format!(" · {}", sync::aviso_version()));
+    }
     l
 }
 
@@ -1696,6 +1703,9 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                     r.exportadas
                 )
             );
+            if r.de_version_nueva > 0 {
+                println!("{}", sync::aviso_lineas_nuevas(r.de_version_nueva));
+            }
             Ok(())
         }
         Some(AccionSync::Init { url, create, space, eleccion }) => {

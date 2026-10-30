@@ -1282,3 +1282,159 @@ fn de_personal_a_empresa() {
     assert_eq!(historial(&a, &staging), hist_a);
     assert_eq!(veredicto(&a, &web)["reason"], ver_a["reason"]);
 }
+
+// --- Lo que viene después de la 1.0 (A3 y A5) ---------------------------------------------------------
+
+/// La base de un equipo, para mirar lo que no enseña la CLI.
+fn base(e: &Equipo) -> rusqlite::Connection {
+    rusqlite::Connection::open(e.dir.join("o.db")).unwrap()
+}
+
+/// Las líneas que escribió un equipo en un repositorio, descifradas con la clave 1.
+fn lineas_del_equipo(p: &Prueba, url: &str, clave: &[u8], equipo: &str) -> Vec<serde_json::Value> {
+    p.lineas_de(url).iter().map(|l| descifrar_linea(clave, l)).filter(|l| l["machine"] == equipo).collect()
+}
+
+const HLC_FUTURO: &str = "1761696000000-0000000000-pc-futuro";
+
+/// Un equipo con una versión más nueva escribe una memoria, un veredicto y un olvido con un campo que
+/// esta versión no conoce. Este equipo los recibe, cambia la memoria y lo vuelve a subir todo: el campo
+/// sigue ahí, y llega igual a un tercero.
+#[test]
+fn un_campo_nuevo_sobrevive_al_pasar_por_este_equipo() {
+    let p = Prueba::nueva("campo-nuevo");
+    let (a, b) = dos(&p, &[], &[]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    let id = "01M62EWVHRXM0000000000FUT1";
+    let olvidada = "01M62EWVHRXM0000000000FUT2";
+    let futuro = serde_json::json!({ "x": 1 });
+    let lineas = [
+        serde_json::json!({
+            "type": "memory", "id": id, "project_key": "", "project_path": "", "kind": "fact",
+            "title": "Una memoria de una versión nueva", "content": "Con un campo que esta no conoce.",
+            "created_at": "2026-10-29T00:00:00.000Z", "updated_at": "2026-10-29T00:00:00.000Z",
+            "hlc": HLC_FUTURO, "machine": "pc-futuro", "futuro": futuro
+        }),
+        serde_json::json!({
+            "type": "verdict", "memory_id": id, "relation": "ok:unused", "at": "2026-10-29T00:00:00.000Z",
+            "hlc": "1761696000001-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": futuro
+        }),
+        serde_json::json!({
+            "type": "tombstone", "id": olvidada, "deleted_at": "2026-10-29T00:00:00.000Z",
+            "hlc": "1761696000002-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": futuro
+        }),
+    ];
+    let texto: Vec<String> = lineas.iter().map(|l| cifrar_linea(&clave, l)).collect();
+    p.subir_a_mano("global/m-futuro.jsonl", &(texto.join("\n") + "\n"));
+    let r = a.sync();
+    assert_eq!((r["nuevas"].as_u64(), r["ilegibles"].as_u64(), r["de_version_nueva"].as_u64()), (Some(1), Some(0), Some(0)), "{r}");
+    let equipo_a = r["equipo"].as_str().unwrap().to_string();
+    let guardado: String = base(&a).query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
+    assert_eq!(guardado, r#"{"futuro":{"x":1}}"#);
+
+    // Aquí se cambia, y se vuelve a subir con un sello más nuevo y con el campo.
+    a.ok(&["update", id, "-c", "Con un campo que esta no conoce, y cambiada aquí.", "-r", "aquí"]);
+    a.ok(&["update", id, "--pin"]);
+    a.sync();
+    let de_a = lineas_del_equipo(&p, &p.url(), &clave, &equipo_a);
+    let memoria = de_a.iter().find(|l| l["type"] == "memory" && l["id"] == id).unwrap_or_else(|| panic!("{de_a:?}"));
+    assert_eq!(memoria["content"], "Con un campo que esta no conoce, y cambiada aquí.");
+    assert_eq!(memoria["pinned"], true);
+    assert_eq!(memoria["futuro"], futuro, "{memoria}");
+    assert_ne!(memoria["hlc"], HLC_FUTURO);
+    let veredicto = de_a.iter().find(|l| l["type"] == "verdict").unwrap_or_else(|| panic!("{de_a:?}"));
+    assert_eq!(veredicto["futuro"], futuro, "{veredicto}");
+    let olvido = de_a.iter().find(|l| l["type"] == "tombstone" && l["id"] == olvidada).unwrap_or_else(|| panic!("{de_a:?}"));
+    assert_eq!(olvido["futuro"], futuro, "{olvido}");
+
+    // B, otro equipo de esta versión, la recibe cambiada y la vuelve a escribir con el campo.
+    let r = b.sync();
+    let equipo_b = r["equipo"].as_str().unwrap().to_string();
+    assert_eq!(b.get(id).unwrap()["content"], "Con un campo que esta no conoce, y cambiada aquí.");
+    let de_b = lineas_del_equipo(&p, &p.url(), &clave, &equipo_b);
+    let memoria = de_b.iter().find(|l| l["type"] == "memory" && l["id"] == id).unwrap_or_else(|| panic!("{de_b:?}"));
+    assert_eq!(memoria["futuro"], futuro, "{memoria}");
+    assert_eq!(de_b.iter().find(|l| l["type"] == "tombstone").unwrap()["futuro"], futuro);
+
+    // En la papelera y de vuelta, el campo sigue con ella.
+    a.ok(&["forget", id, "--yes"]);
+    a.ok(&["restore", id]);
+    let guardado: String = base(&a).query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
+    assert_eq!(guardado, r#"{"futuro":{"x":1}}"#);
+}
+
+/// Una línea de un tipo que esta versión no conoce (o con una etiqueta de cifrado que no es de clave)
+/// se cuenta aparte de las ilegibles, `sync status` pide actualizar, y al actualizar (un lector de
+/// líneas más nuevo que el que apuntó la base) se relee todo.
+#[test]
+fn las_lineas_de_una_version_nueva_se_cuentan_y_se_releen_al_actualizar() {
+    let p = Prueba::nueva("tipo-nuevo");
+    let (a, b) = dos(&p, &[], &[]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    let comentario = serde_json::json!({ "type": "comment", "memory_id": "01M62EWVHRXM0000000000FUT1", "text": "una línea de una versión nueva", "hlc": HLC_FUTURO });
+    let etiqueta_nueva = format!("z2:{}", cifrar_linea(&clave, &comentario));
+    p.subir_a_mano("global/m-futuro.jsonl", &format!("{}\n{etiqueta_nueva}\n", cifrar_linea(&clave, &comentario)));
+    let id = b.guardar(&b.dir, "fact", "El backup corre a las cuatro", "Cada noche.", &["--global"]);
+    b.sync();
+    let r = a.sync();
+    assert_eq!((r["de_version_nueva"].as_u64(), r["ilegibles"].as_u64()), (Some(2), Some(0)), "{r}");
+    assert!(a.get(&id).is_some(), "lo demás llega igual");
+    let leidos = r["leidos"].as_u64().unwrap();
+    let estado = a.ok(&["sync", "status"]);
+    assert!(estado.contains("2 line(s) from a newer version: update omoi") && !estado.contains("couldn't be read"), "{estado}");
+    // La siguiente no vuelve a leer ese fichero, pero el aviso sigue.
+    let r = a.sync();
+    assert_eq!((r["de_version_nueva"].as_u64(), r["leidos"].as_u64()), (Some(0), Some(0)), "{r}");
+    assert!(a.ok(&["sync", "status"]).contains("from a newer version"));
+    assert_eq!(base(&a).query_row("SELECT v FROM meta WHERE k = 'sync_lector'", [], |f| f.get::<_, String>(0)).unwrap(), "1");
+
+    // «Actualizar»: la base dice que la última vez leyó un lector más viejo. Se relee todo.
+    base(&a).execute("UPDATE meta SET v = '0' WHERE k = 'sync_lector'", []).unwrap();
+    let r = a.sync();
+    assert_eq!((r["de_version_nueva"].as_u64(), r["leidos"].as_u64()), (Some(2), Some(leidos)), "{r}");
+    assert_eq!(base(&a).query_row("SELECT v FROM meta WHERE k = 'sync_lector'", [], |f| f.get::<_, String>(0)).unwrap(), "1");
+    // Una base que usó antes una versión más nueva y vuelve a esta: lo que esta se salta lo releerá
+    // aquella cuando vuelva.
+    base(&a).execute("UPDATE meta SET v = '7' WHERE k = 'sync_lector'", []).unwrap();
+    base(&a).execute("DELETE FROM meta WHERE k = 'sync_commit'", []).unwrap();
+    a.sync();
+    assert_eq!(base(&a).query_row("SELECT v FROM meta WHERE k = 'sync_lector'", [], |f| f.get::<_, String>(0)).unwrap(), "1");
+
+    // Cuando el fichero ya no las tiene y se vuelve a leer, el aviso se va.
+    p.subir_a_mano("global/m-futuro.jsonl", "");
+    a.sync();
+    assert!(!a.ok(&["sync", "status"]).contains("newer version"), "{}", a.ok(&["sync", "status"]));
+}
+
+/// `omoikane.format` lleva `min_reader`, cifrado con la clave del repositorio. Un repositorio que pide
+/// un lector más nuevo que el de esta versión no se toca, y se avisa en `sync status`, `doctor` y al
+/// empezar sesión.
+#[test]
+fn un_repositorio_que_pide_un_omoi_mas_nuevo_no_se_toca() {
+    let p = Prueba::nueva("formato");
+    let (a, _b) = dos(&p, &[], &[]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    a.guardar(&a.dir, "fact", "Una cualquiera", "Para que haya algo.", &["--global"]);
+    a.sync();
+    let formato = std::fs::read_to_string(p.clon_de(&p.url()).join("omoikane.format")).expect("lo escribe la primera sincronización");
+    assert!(!formato.contains("min_reader"), "va cifrado: {formato}");
+    assert_eq!(descifrar_linea(&clave, &formato), serde_json::json!({ "min_reader": 1 }));
+    // Otra sincronización no lo cambia.
+    a.guardar(&a.dir, "fact", "Otra cualquiera", "Más.", &["--global"]);
+    a.sync();
+    assert_eq!(std::fs::read_to_string(p.clon_de(&p.url()).join("omoikane.format")).unwrap(), formato);
+
+    // Una versión futura lo sube a 2.
+    p.subir_a_mano("omoikane.format", &(cifrar_linea(&clave, &serde_json::json!({ "min_reader": 2, "why": "algo nuevo" })) + "\n"));
+    let commits = p.commits();
+    a.guardar(&a.dir, "fact", "Una que no debe subir", "Nada.", &["--global"]);
+    let o = a.omoi_en(&a.dir, &["sync"], &[]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("needs a newer version of omoi"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(p.commits(), commits, "no se escribe nada en él");
+    assert!(!p.lineas_de(&p.url()).iter().any(|l| descifrar_linea(&clave, l)["title"] == "Una que no debe subir"));
+    assert!(a.ok(&["sync", "status"]).contains("needs a newer version of omoi"));
+    assert!(a.ok(&["doctor"]).contains("needs a newer version of omoi"));
+    let o = a.ok_en(&a.dir, &["recall", "--session-start", "--format", "plain"], &[]);
+    assert!(o.contains("needs a newer version of omoi"), "{o}");
+}

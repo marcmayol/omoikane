@@ -142,10 +142,11 @@ fn export_e_import_reconstruyen_la_base_exacta_y_se_pueden_repetir() {
     assert_eq!(lineas[0]["type"], "header");
     assert_eq!(lineas[0]["format"], "omoi-export");
     let tipos: Vec<&str> = lineas.iter().map(|l| l["type"].as_str().unwrap()).collect();
-    assert_eq!(tipos, ["header", "tombstone", "memory", "memory", "verdict", "forgotten", "end"], "{tipos:?}");
+    // Los veredictos, después de la papelera: al importar, el de una memoria olvidada encuentra su memoria.
+    assert_eq!(tipos, ["header", "tombstone", "memory", "memory", "forgotten", "verdict", "end"], "{tipos:?}");
     assert_eq!(lineas[6]["count"], 5);
     assert_eq!(lineas[2]["versions"].as_array().unwrap().len(), 1, "el historial viaja");
-    assert_eq!((lineas[4]["reason"].as_str(), lineas[4]["author"].as_str()), (Some("JWT replaced the cookie"), Some("agent")), "el veredicto con su motivo y su autor: {}", lineas[4]);
+    assert_eq!((lineas[5]["reason"].as_str(), lineas[5]["author"].as_str()), (Some("JWT replaced the cookie"), Some("agent")), "el veredicto con su motivo y su autor: {}", lineas[5]);
     // Solo contar: el fichero se comprueba entero.
     let d = e.json("o2.db", &["import", f1.to_str().unwrap(), "--dry-run"]);
     assert_eq!((d["file"]["memories"].as_u64(), d["file"]["tombstones"].as_u64(), d["file"]["verdicts"].as_u64(), d["file"]["forgotten"].as_u64()), (Some(2), Some(1), Some(1), Some(1)));
@@ -295,4 +296,164 @@ fn restaurar_una_memoria_viva_la_quita_de_la_papelera() {
     assert!(!o.status.success() && !err.contains("UNIQUE") && (err.contains("trash") || err.contains("papelera")), "{err}");
     assert!(e.get("o.db", &id).is_some(), "sigue viva");
     assert!(!e.ok("o.db", &["trash"]).contains("informes"), "y ya no está en la papelera");
+}
+
+// --- Lo que viene después de la 1.0 (A3 y A6) ---------------------------------------------------------
+
+/// Un fichero de `omoi export` escrito a mano (lo que escribiría un omoi más nuevo): la cabecera, las
+/// líneas y el cierre con su cuenta y su SHA-256.
+fn export_a_mano(lineas: &[serde_json::Value]) -> String {
+    use sha2::{Digest, Sha256};
+    let cabecera = serde_json::json!({ "type": "header", "format": "omoi-export", "version": 2, "schema": 11, "exported_at": "2026-10-31T00:00:00.000Z", "machine": "pc-futuro" });
+    let mut hash = Sha256::new();
+    let mut t = format!("{cabecera}\n");
+    for l in lineas {
+        let s = l.to_string();
+        hash.update(s.as_bytes());
+        hash.update(b"\n");
+        t.push_str(&s);
+        t.push('\n');
+    }
+    let sha: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    t.push_str(&serde_json::json!({ "type": "end", "count": lineas.len(), "sha256": sha }).to_string());
+    t.push('\n');
+    t
+}
+
+/// Las líneas de un export, ya leídas.
+fn lineas(texto: &str) -> Vec<serde_json::Value> {
+    texto.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// La línea de un tipo y un id (el de la memoria, o `memory_id` en los veredictos).
+fn la<'a>(ls: &'a [serde_json::Value], tipo: &str, id: &str) -> &'a serde_json::Value {
+    ls.iter().find(|l| l["type"] == tipo && (l["id"] == id || l["memory_id"] == id)).unwrap_or_else(|| panic!("falta {tipo} {id}"))
+}
+
+/// Un export de un omoi más nuevo: campos que esta versión no conoce en cada tipo de línea, y una
+/// línea de un tipo que no conoce. Se importa (la línea nueva se cuenta y se salta), se cambia aquí la
+/// memoria, y al volver a exportar los campos siguen; y siguen tras otro import y export.
+#[test]
+fn un_campo_nuevo_sobrevive_a_export_e_import() {
+    let e = Entorno::nuevo("campo-nuevo");
+    let (id, olvidada, en_papelera) = ("01M62EWVHRXM0000000000FUT1", "01M62EWVHRXM0000000000FUT2", "01M62EWVHRXM0000000000FUT3");
+    let futuro = serde_json::json!({ "x": 1 });
+    let hlc = |n: u32| format!("17616960000{n:02}-0000000000-pc-futuro");
+    let memoria = |id: &str, titulo: &str, sello: &str| {
+        serde_json::json!({
+            "id": id, "project_key": "", "project_path": "", "kind": "fact", "title": titulo, "content": "Algo.",
+            "created_at": "2026-10-29T00:00:00.000Z", "updated_at": "2026-10-29T00:00:00.000Z", "hlc": sello, "futuro": futuro
+        })
+    };
+    let mut viva = memoria(id, "Una memoria de una versión nueva", &hlc(1));
+    viva["type"] = "memory".into();
+    let texto = export_a_mano(&[
+        serde_json::json!({ "type": "tombstone", "id": olvidada, "deleted_at": "2026-10-29T00:00:00.000Z", "hlc": hlc(2), "futuro": futuro }),
+        viva,
+        serde_json::json!({ "type": "comment", "memory_id": id, "text": "de una versión más nueva" }),
+        serde_json::json!({
+            "type": "forgotten", "id": en_papelera, "memory": memoria(en_papelera, "Una de la papelera", &hlc(3)), "versions": [],
+            "hlc": hlc(3), "deleted_at": "2026-10-29T00:00:00.000Z", "by": "pc-futuro", "futuro": futuro
+        }),
+        serde_json::json!({ "type": "verdict", "memory_id": id, "relation": "ok:unused", "at": "2026-10-29T00:00:00.000Z", "hlc": hlc(4), "futuro": futuro }),
+    ]);
+    let f1 = e.fichero("futuro.jsonl");
+    std::fs::write(&f1, &texto).unwrap();
+    let d = e.json("o.db", &["import", f1.to_str().unwrap(), "--dry-run"]);
+    assert_eq!((d["file"]["memories"].as_u64(), d["file"]["unknown"].as_u64()), (Some(1), Some(1)), "{d}");
+    let r = e.json("o.db", &["import", f1.to_str().unwrap()]);
+    assert_eq!((r["new"].as_u64(), r["skipped_lines"].as_u64(), r["file"]["unknown"].as_u64()), (Some(1), Some(0), Some(1)), "{r}");
+    assert!(e.ok("o.db", &["import", f1.to_str().unwrap()]).contains("1 line(s) from a newer version"));
+
+    // Se cambia aquí y se exporta: los campos siguen en las cuatro.
+    e.ok("o.db", &["update", id, "-c", "Algo, cambiado aquí.", "-r", "aquí"]);
+    let salida = e.ok("o.db", &["export", "--all"]);
+    let ls = lineas(&salida);
+    assert_eq!(la(&ls, "memory", id)["content"], "Algo, cambiado aquí.");
+    for (tipo, id) in [("memory", id), ("tombstone", olvidada), ("verdict", id), ("forgotten", en_papelera)] {
+        assert_eq!(la(&ls, tipo, id)["futuro"], futuro, "{tipo}: {}", la(&ls, tipo, id));
+    }
+    assert_eq!(la(&ls, "forgotten", en_papelera)["memory"]["futuro"], futuro, "y dentro de la memoria de la papelera");
+
+    // Otra vuelta, en otra base: igual.
+    let f2 = e.fichero("vuelta.jsonl");
+    std::fs::write(&f2, &salida).unwrap();
+    e.ok("o2.db", &["import", f2.to_str().unwrap()]);
+    let ls2 = lineas(&e.ok("o2.db", &["export", "--all"]));
+    for (tipo, id) in [("memory", id), ("tombstone", olvidada), ("verdict", id), ("forgotten", en_papelera)] {
+        assert_eq!(la(&ls2, tipo, id)["futuro"], futuro, "{tipo} tras la segunda vuelta");
+    }
+    // Y la de la papelera, restaurada, vuelve con el suyo.
+    e.ok("o2.db", &["restore", en_papelera]);
+    let ls3 = lineas(&e.ok("o2.db", &["export", "--all"]));
+    assert_eq!(la(&ls3, "memory", en_papelera)["futuro"], futuro);
+}
+
+/// La papelera va con su proyecto y su espacio por clave (la forma de una línea `memory`): restaurada
+/// en otro equipo, cae donde estaba. Y los veredictos de lo que está en la papelera también van, para
+/// que al restaurarlo vuelva su `superseded`.
+#[test]
+fn la_papelera_viaja_con_su_proyecto_su_espacio_y_sus_veredictos() {
+    let e = Entorno::nuevo("papelera-espacio");
+    e.ok("o.db", &["space", "add", "Acme"]);
+    e.ok("o.db", &["space", "assign", "acme"]);
+    let de_espacio = e.json("o.db", &["remember", "-k", "fact", "-t", "Acme factura en euros", "--space=acme", "Siempre con IVA."])["id"].as_str().unwrap().to_string();
+    let cookie = e.id("o.db", "decision", "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.");
+    let jwt = e.id("o.db", "decision", "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.");
+    let o = e.omoi("o.db", &["tool", "update"], Some(&format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}")));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let clave = e.get("o.db", &cookie).unwrap()["project_key"].as_str().unwrap().to_string();
+    // Todo a la papelera: en el otro equipo nada más dirá de qué espacio es el proyecto.
+    for id in [&de_espacio, &cookie, &jwt] {
+        e.ok("o.db", &["forget", id, "--yes"]);
+    }
+    let texto = e.ok("o.db", &["export", "--all"]);
+    let ls = lineas(&texto);
+    let p = la(&ls, "forgotten", &cookie);
+    assert_eq!((p["memory"]["project_key"].as_str(), p["memory"]["space_key"].as_str()), (Some(clave.as_str()), Some("acme")), "{p}");
+    assert!(p["memory"]["project_path"].is_string() && p["memory"].get("project").is_none(), "{p}");
+    let s = la(&ls, "forgotten", &de_espacio);
+    assert_eq!((s["memory"]["project_key"].as_str(), s["memory"]["space_key"].as_str()), (Some(""), Some("acme")), "{s}");
+    assert_eq!(la(&ls, "verdict", &cookie)["relation"], "superseded", "el veredicto de la que está en la papelera");
+
+    // Otro equipo sin nada: al restaurar, cada una en su sitio, y la sustituida con su veredicto.
+    let f = e.fichero("papelera.jsonl");
+    std::fs::write(&f, &texto).unwrap();
+    e.ok("o2.db", &["import", f.to_str().unwrap()]);
+    for id in [&de_espacio, &cookie, &jwt] {
+        e.ok("o2.db", &["restore", id]);
+    }
+    let m = e.get("o2.db", &de_espacio).unwrap();
+    assert_eq!((m["space"].as_str(), m["project"].as_str()), (Some("acme"), Some("")), "de espacio, no global: {m}");
+    let m = e.get("o2.db", &cookie).unwrap();
+    assert_eq!((m["project_key"].as_str(), m["space"].as_str()), (Some(clave.as_str()), Some("acme")), "{m}");
+    let rev = e.json("o2.db", &["review", "--all"]);
+    let av = rev.as_array().unwrap().iter().find(|x| x["kind"] == "superseded" && x["memory_id"] == cookie.as_str()).unwrap_or_else(|| panic!("{rev}"));
+    assert_eq!(av["reason"], "JWT replaced the cookie");
+}
+
+/// Los exports de la 0.18.0 y la 0.19.0 llevan en `forgotten.memory` el `Memoria` de la API JSON (con
+/// `project`, la ruta, y sin su sello): siguen entrando, y lo restaurado cae en esa carpeta.
+#[test]
+fn la_papelera_de_un_export_de_la_0_19_sigue_entrando() {
+    let e = Entorno::nuevo("papelera-019");
+    let ruta = e.dir.join("repo").to_string_lossy().into_owned();
+    let id = "01M62EWVHRXM0000000000OLD1";
+    let memoria = serde_json::json!({
+        "id": id, "project": ruta, "kind": "gotcha", "title": "El puerto 8080 está ocupado", "content": "Usar el 8081.",
+        "paths": [], "tags": ["red"], "pinned": false, "source": "cli", "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z", "recalled_at": null, "recall_count": 3
+    });
+    let texto = export_a_mano(&[serde_json::json!({
+        "type": "forgotten", "id": id, "memory": memoria, "versions": [], "hlc": "1760954400000-0000000000-pc-viejo",
+        "deleted_at": "2026-10-21T10:00:00.000Z", "by": "pc-viejo"
+    })]);
+    let f = e.fichero("v019.jsonl");
+    std::fs::write(&f, &texto).unwrap();
+    let r = e.json("o.db", &["import", f.to_str().unwrap()]);
+    assert_eq!(r["file"]["forgotten"], 1, "{r}");
+    assert_eq!(e.json("o.db", &["trash"])[0]["id"], id);
+    e.ok("o.db", &["restore", id]);
+    let m = e.get("o.db", id).unwrap();
+    assert_eq!((m["project"].as_str(), m["kind"].as_str(), m["tags"][0].as_str()), (Some(ruta.as_str()), Some("gotcha"), Some("red")), "{m}");
 }

@@ -6,7 +6,14 @@
 //!
 //! Formato `omoi-export`, versión 2: JSONL, una cosa por línea y en streaming (una línea en memoria
 //! cada vez, al escribir y al leer). La primera línea es la cabecera y la última el cierre, con
-//! cuántas líneas van entre medias y su SHA-256: un fichero cortado o tocado no se importa.
+//! cuántas líneas van entre medias y su SHA-256: un fichero cortado o tocado no se importa. Las
+//! líneas son las de la sincronización (`sync::Linea`) y crecen igual que ellas: un campo que esta
+//! versión no conoce se guarda y se vuelve a exportar (`sync::Extra`), y una línea de un tipo que no
+//! conoce entra en el SHA, se cuenta (`unknown`) y se salta, en vez de parar el import. La versión
+//! del formato solo sube con un cambio que una versión vieja no pueda leer bien; añadir no la sube.
+//! Va todo: las memorias, las marcas de olvido, la papelera (cada memoria con su proyecto y su
+//! espacio por clave, como las vivas) y todos los veredictos, también los de lo que está en la
+//! papelera (después de ella, para que al importar encuentren su memoria).
 //! Con `--encrypt`, cada línea va cifrada con la clave vigente de la sincronización (AES-SIV) y con su
 //! id delante (`k2:…`; sin nada, la 1), como en el repositorio, para guardar la copia en cualquier
 //! sitio. Al importarla vale cualquiera de las claves que tenga el equipo.
@@ -36,11 +43,13 @@ pub struct Cuenta {
     pub tombstones: usize,
     pub verdicts: usize,
     pub forgotten: usize,
+    /// Líneas de un tipo que esta versión no conoce (de un omoi más nuevo): se saltan.
+    pub unknown: usize,
 }
 
 impl Cuenta {
     pub fn total(&self) -> usize {
-        self.memories + self.tombstones + self.verdicts + self.forgotten
+        self.memories + self.tombstones + self.verdicts + self.forgotten + self.unknown
     }
 }
 
@@ -84,49 +93,43 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         Ok(())
     };
     // Primero las marcas de olvido (al importar se aplican antes que las memorias), luego las memorias
-    // con su historial, los veredictos y la papelera.
+    // con su historial, la papelera y al final los veredictos, que necesitan sus memorias (vivas o en
+    // la papelera).
     {
-        let mut q = db.prepare("SELECT id, deleted_at, hlc FROM tombstone ORDER BY id")?;
+        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, {} FROM tombstone t ORDER BY t.id", sync::EXTRA_OLVIDO))?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
-            escribir(&Linea::Tombstone { id: f.get(0)?, deleted_at: f.get(1)?, hlc: f.get(2)?, machine: equipo.clone() }, salida)?;
+            let extra: String = f.get(3)?;
+            escribir(&Linea::olvido(f.get(0)?, f.get(1)?, f.get(2)?, &equipo, sync::extra_de(&extra)), salida)?;
             cuenta.tombstones += 1;
         }
     }
     {
-        let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc FROM memory m WHERE {} ORDER BY m.id", ambito.sql()))?;
+        let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", ambito.sql()))?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
             let m = de_fila(f)?;
-            let (hlc, content_hlc): (String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?);
+            let (hlc, content_hlc, extra): (String, String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?, f.get(NCOL + 2)?);
             let versions = memoria::historial(db, &m.id)?;
-            let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions);
+            let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions, sync::extra_de(&extra));
             escribir(&l, salida)?;
             cuenta.memories += 1;
         }
-    }
-    for v in crate::veredictos::todos(db)? {
-        escribir(&Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, reason: v.reason, author: v.author, machine: equipo.clone() }, salida)?;
-        cuenta.verdicts += 1;
     }
     {
         let mut q = db.prepare("SELECT id, memory, versions, hlc, deleted_at, by FROM forgotten ORDER BY id")?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
-            let memoria: String = f.get(1)?;
-            let versiones: String = f.get(2)?;
-            let Ok(memory) = serde_json::from_str(&memoria) else { continue };
-            let l = Linea::Forgotten {
-                id: f.get(0)?,
-                memory,
-                versions: serde_json::from_str(&versiones).unwrap_or_default(),
-                hlc: f.get(3)?,
-                deleted_at: f.get(4)?,
-                by: f.get(5)?,
-            };
+            let (memoria, versiones): (String, String) = (f.get(1)?, f.get(2)?);
+            let versions = serde_json::from_str(&versiones).unwrap_or_default();
+            let Some(l) = Linea::papelera(db, f.get(0)?, &memoria, versions, f.get(3)?, f.get(4)?, f.get(5)?)? else { continue };
             escribir(&l, salida)?;
             cuenta.forgotten += 1;
         }
+    }
+    for v in crate::veredictos::todos(db)? {
+        escribir(&Linea::veredicto(v, &equipo), salida)?;
+        cuenta.verdicts += 1;
     }
     // El cierre va como las demás líneas (cifrado si ellas lo van), pero no entra en el SHA.
     let fin = serde_json::to_string(&Linea::End { count: cuenta.total(), sha256: hex(&hash.finalize()) })?;
@@ -172,6 +175,14 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
             Some(c) => c.descifrar(&l).with_context(|| tr!("line {}", "línea {}", i + 2))?,
             None => l,
         };
+        // Una línea de un tipo que esta versión no conoce (de un omoi más nuevo) cuenta para el cierre
+        // y se salta; las demás que no se entienden están dañadas.
+        if sync::de_tipo_nuevo(&claro) {
+            hash.update(claro.as_bytes());
+            hash.update(b"\n");
+            cuenta.unknown += 1;
+            continue;
+        }
         let x: Linea = serde_json::from_str(&claro).with_context(|| tr!("line {} can't be read", "la línea {} no se entiende", i + 2))?;
         if let Linea::End { count, sha256 } = x {
             cierre = Some((count, sha256));
@@ -181,7 +192,7 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
         hash.update(claro.as_bytes());
         hash.update(b"\n");
         match &x {
-            Linea::Memory { .. } => cuenta.memories += 1,
+            Linea::Memory(_) => cuenta.memories += 1,
             Linea::Tombstone { .. } => cuenta.tombstones += 1,
             Linea::Verdict { .. } => cuenta.verdicts += 1,
             Linea::Forgotten { .. } => cuenta.forgotten += 1,
@@ -207,9 +218,9 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
     let mut aplicador = Aplicador::nuevo(db, None, Some(actual))?;
     let nombre = ruta.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     leer(ruta_db, ruta, |l| {
-        let origen = match &l {
-            Linea::Memory { machine, .. } | Linea::Tombstone { machine, .. } if !machine.is_empty() => machine.clone(),
-            _ => format!("import:{nombre}"),
+        let origen = match l.machine() {
+            "" => format!("import:{nombre}"),
+            m => m.to_string(),
         };
         if aplicador.aplicar(db, &origen, l, modelo, &mut r).is_err() {
             r.ilegibles += 1;

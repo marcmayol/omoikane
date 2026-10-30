@@ -52,6 +52,9 @@ pub struct Veredicto {
     pub reason: String,
     /// Quién: la persona de la sync, `agent:<cliente>`, `cli` o `user`.
     pub author: String,
+    /// Los campos que esta versión no conoce de la línea que lo trajo (`verdict.extra`, en JSON): se
+    /// vuelven a escribir al reexportarlo. Solo lo leen `todos` y `recibir`; en lo demás va `{}`.
+    pub extra: String,
 }
 
 /// La clave de una pareja, sin orden: (a, b) y (b, a) son la misma.
@@ -97,18 +100,18 @@ pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, m
 }
 
 fn de_fila(f: &rusqlite::Row) -> rusqlite::Result<Veredicto> {
-    Ok(Veredicto { memory_id: f.get(0)?, other_id: f.get(1)?, relation: f.get(2)?, at: f.get(3)?, hlc: f.get(4)?, reason: f.get(5)?, author: f.get(6)? })
+    Ok(Veredicto { memory_id: f.get(0)?, other_id: f.get(1)?, relation: f.get(2)?, at: f.get(3)?, hlc: f.get(4)?, reason: f.get(5)?, author: f.get(6)?, extra: "{}".into() })
 }
 
-/// Todos los de memorias que existen, para la sincronización.
+/// Todos, con sus campos desconocidos: también los de memorias que están en la papelera (`omoi export`
+/// los lleva todos, para que lo que se restaure vuelva con su `superseded`; la sincronización solo
+/// manda los de memorias que viajan).
 pub fn todos(db: &Connection) -> Result<Vec<Veredicto>> {
     let mut q = db.prepare(
-        "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author FROM verdict v
-         WHERE EXISTS (SELECT 1 FROM memory m WHERE m.id = v.memory_id)
-           AND (v.other_id = '' OR EXISTS (SELECT 1 FROM memory m WHERE m.id = v.other_id))
+        "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, v.extra FROM verdict v
          ORDER BY v.memory_id, v.other_id, v.relation",
     )?;
-    let v = q.query_map([], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([], |f| Ok(Veredicto { extra: f.get(7)?, ..de_fila(f)? }))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
@@ -125,8 +128,8 @@ pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
         return Ok(false);
     }
     db.execute(
-        "INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author],
+        "INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author, extra) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, v.extra],
     )?;
     crate::reloj::recibir(db, &v.hlc)?;
     Ok(true)

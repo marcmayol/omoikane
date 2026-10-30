@@ -66,6 +66,20 @@ const TEXTO_CHEQUEO: &str = "omoikane-key-check-v1";
 const CABECERA_CHEQUEO: &str = "omoikane-check-v2";
 /// Dónde viven los repositorios de los espacios, junto a la base.
 const CARPETA_ESPACIOS: &str = "sync-spaces";
+/// Lo que hace falta para entender el repositorio, en su raíz y cifrado con la clave vigente (como las
+/// líneas de `omoikane.check`): `{"min_reader": 1}`. Lo escribe la primera sincronización tras `init`
+/// (y la siguiente en los repositorios de antes) y no se cambia si ya existe; tras una rotación se
+/// vuelve a cifrar con la clave nueva, con el mismo contenido.
+const FORMATO_REPO: &str = "omoikane.format";
+/// El lector de repositorios de esta versión. Un repositorio cuyo `min_reader` pase de aquí lo ha
+/// escrito una versión que cambió el significado de algo que ya había: esta no escribe en él (ni lee)
+/// y avisa. Solo sube con un cambio así; lo que solo añade (un campo, un tipo de línea) no lo sube.
+pub const LECTOR_REPO: u64 = 1;
+/// Las líneas que sabe leer esta versión (`meta('sync_lector')`). Sube cada vez que una versión
+/// aprende a leer algo que las anteriores se saltaban (un tipo de línea nuevo): al sincronizar con un
+/// `sync_lector` menor, se olvida por dónde iba cada repositorio (`sync_commit*`) y se relee todo,
+/// así que lo que se saltó antes de actualizar entra ahora.
+pub const LECTOR_LINEAS: i64 = 1;
 /// Lo que puede tardar una orden de git antes de darla por colgada.
 const LIMITE_GIT: Duration = Duration::from_secs(120);
 
@@ -535,52 +549,210 @@ fn clave_ajena() -> String {
 
 // --- Formato de las líneas -------------------------------------------------------------------------
 
+/// Los campos de una línea que esta versión no conoce (los añadió una versión más nueva). Se guardan
+/// con lo que acompañan (`memory.extra`, `verdict.extra`; los de un olvido, en `meta`; los de una
+/// memoria de la papelera, dentro de ella) y se vuelven a escribir tal cual cuando este equipo
+/// reexporta esa cosa, aunque la haya cambiado: así un campo nuevo no se pierde por pasar por un
+/// equipo con una versión vieja. Se reexportan solo los que no son campos que esta versión ya conoce.
+pub(crate) type Extra = serde_json::Map<String, serde_json::Value>;
+
+/// Los campos de cada tipo de línea que conoce esta versión (más `type`): lo que no sea esto va a `extra`.
+const CAMPOS_MEMORIA: &[&str] = &[
+    "type", "id", "project_key", "project_path", "space_key", "kind", "title", "content", "paths", "tags", "pinned", "created_at", "updated_at", "hlc",
+    "content_hlc", "author", "machine", "versions",
+];
+const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "machine"];
+const CAMPOS_VEREDICTO: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
+const CAMPOS_PAPELERA: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
+
+/// `extra` sin lo que esta versión ya conoce (lo guardó una versión anterior que no lo conocía).
+fn solo_desconocidos(mut extra: Extra, conocidos: &[&str]) -> Extra {
+    extra.retain(|k, _| !conocidos.contains(&k.as_str()));
+    extra
+}
+
+/// `extra` desde el JSON guardado en la base (`'{}'` o lo que sea que no se entienda: vacío).
+pub(crate) fn extra_de(texto: &str) -> Extra {
+    serde_json::from_str(texto).unwrap_or_default()
+}
+
+/// `extra` como se guarda en la base.
+pub(crate) fn extra_a_texto(extra: &Extra) -> String {
+    serde_json::to_string(extra).unwrap_or_else(|_| "{}".into())
+}
+
+/// Los campos desconocidos de un olvido van en `meta` (`olvido_extra:<id>`): la tabla `tombstone` no
+/// tiene columna para ellos y el esquema 10 es el que congela la 1.0; solo los trae una versión más
+/// nueva, así que casi nunca hay ninguno. Esta es la columna con los del olvido `t` (`'{}'` si no hay).
+pub(crate) const EXTRA_OLVIDO: &str = "COALESCE((SELECT v FROM meta WHERE k = 'olvido_extra:' || t.id), '{}')";
+
+/// Apunta (o borra, si no hay) los campos desconocidos del olvido de `id`.
+pub(crate) fn guardar_extra_olvido(db: &Connection, id: &str, extra: &Extra) -> Result<()> {
+    let k = format!("olvido_extra:{id}");
+    if extra.is_empty() {
+        db.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
+    } else {
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![k, extra_a_texto(extra)])?;
+    }
+    Ok(())
+}
+
+/// Una memoria tal como viaja: en las líneas `memory` (sincronización y `omoi export`) y dentro de las
+/// `forgotten` (la papelera, en `omoi export`), para que una memoria restaurada en otro equipo caiga en
+/// su proyecto y su espacio.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CuerpoMemoria {
+    pub id: String,
+    /// Cómo se reconoce el proyecto en otro equipo (vacío: global o de espacio).
+    pub project_key: String,
+    /// La ruta en el equipo de origen, por si aquí aún no hay ningún proyecto con esa clave.
+    pub project_path: String,
+    /// El espacio (su clave): el de la memoria si es de espacio (sin `project_key`), o el de su
+    /// proyecto. Las versiones de antes de la 0.20.0 no lo mandan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub space_key: String,
+    /// Texto: un tipo de una versión futura llega tal cual (aquí cuenta como `fact`) y se reexporta igual.
+    pub kind: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub pinned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub hlc: String,
+    /// El sello del último cambio de título, contenido o tipo (con el que caducan los veredictos),
+    /// solo si no es `hlc` (fijar o mover cambian `hlc` y no este).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_hlc: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
+    /// Las versiones anteriores (`omoi export` y, desde la 0.20.0, la sincronización). Las versiones
+    /// de antes las ignoran; lo que ya hay con ese número se queda.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::memoria::Version>,
+    /// Campos de una versión más nueva (`Extra`).
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+impl CuerpoMemoria {
+    /// Una memoria de la base como viaja: la clave del proyecto sale de la tabla `project` (calculada
+    /// una vez), así que es la misma por la sincronización y por `omoi export`.
+    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> CuerpoMemoria {
+        CuerpoMemoria {
+            kind: m.tipo_texto().to_string(),
+            id: m.id,
+            project_key: m.project_key,
+            project_path: m.project,
+            space_key: m.space,
+            title: m.title,
+            content: m.content,
+            paths: m.paths,
+            tags: m.tags,
+            pinned: m.pinned,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+            content_hlc: if content_hlc == hlc { String::new() } else { content_hlc },
+            hlc,
+            author: m.author,
+            machine: equipo.to_string(),
+            versions,
+            extra: solo_desconocidos(extra, CAMPOS_MEMORIA),
+        }
+    }
+
+    /// Como se guarda en la papelera (`forgotten.memory`, el `Memoria` de siempre): lo que no tiene
+    /// sitio en `Memoria` (los campos desconocidos) lo añade `a_papelera`.
+    fn a_memoria(&self, origen: &str) -> Memoria {
+        let tipo = self.kind.parse::<Tipo>().ok();
+        Memoria {
+            id: self.id.clone(),
+            project: self.project_path.clone(),
+            project_key: self.project_key.clone(),
+            space: self.space_key.clone(),
+            kind: tipo.unwrap_or(Tipo::Fact),
+            kind_text: if tipo.is_none() { Some(self.kind.clone()) } else { None },
+            title: self.title.clone(),
+            content: self.content.clone(),
+            paths: self.paths.clone(),
+            tags: self.tags.clone(),
+            pinned: self.pinned,
+            source: origen.to_string(),
+            content_hlc: self.content_hlc.clone(),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            author: self.author.clone(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Las claves que la papelera añade al JSON de `Memoria` (que las ignora al leerlo): los campos
+/// desconocidos de la memoria y los de la línea `forgotten`.
+pub(crate) const PAPELERA_EXTRA: &str = "extra";
+pub(crate) const PAPELERA_EXTRA_LINEA: &str = "extra_forgotten";
+
+/// El JSON que se guarda en `forgotten.memory`: el `Memoria` de siempre (lo que leen la papelera y
+/// `restaurar`) y, si los hay, los campos desconocidos.
+pub(crate) fn a_papelera(m: &Memoria, extra: &Extra, extra_linea: &Extra) -> Result<String> {
+    let mut v = serde_json::to_value(m)?;
+    if !extra.is_empty() {
+        v[PAPELERA_EXTRA] = serde_json::Value::Object(extra.clone());
+    }
+    if !extra_linea.is_empty() {
+        v[PAPELERA_EXTRA_LINEA] = serde_json::Value::Object(extra_linea.clone());
+    }
+    Ok(v.to_string())
+}
+
+/// Lo que guarda `forgotten.memory`: la memoria y sus campos desconocidos (los de la memoria y los de
+/// la línea). `None` si no se entiende.
+pub(crate) fn de_papelera(texto: &str) -> Option<(Memoria, Extra, Extra)> {
+    let v: serde_json::Value = serde_json::from_str(texto).ok()?;
+    let objeto = |k: &str| v.get(k).and_then(|x| x.as_object()).cloned().unwrap_or_default();
+    let (extra, extra_linea) = (objeto(PAPELERA_EXTRA), objeto(PAPELERA_EXTRA_LINEA));
+    Some((serde_json::from_value(v).ok()?, extra, extra_linea))
+}
+
+/// La memoria de una línea `forgotten`: la forma de `CuerpoMemoria` (desde la 0.20.0) o el `Memoria`
+/// de la API JSON que escribían la 0.18.0 y la 0.19.0 (sin `project_path`; con `project`, la ruta).
+/// Las de entonces no llevan su sello dentro: queda vacío y vale el de la línea.
+fn cuerpo_olvidado<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<CuerpoMemoria, D::Error> {
+    use serde::de::Error;
+    let v = serde_json::Value::deserialize(d)?;
+    if v.get("project_path").is_some() {
+        return serde_json::from_value(v).map_err(D::Error::custom);
+    }
+    let m: Memoria = serde_json::from_value(v).map_err(D::Error::custom)?;
+    Ok(CuerpoMemoria::de(m, String::new(), String::new(), "", Vec::new(), Extra::new()))
+}
+
+/// Cada línea de la sincronización y de `omoi export`, en JSON con su tipo en `type`.
+///
+/// Reglas para que lo que venga después de la 1.0 no rompa a quien siga en ella: un campo nuevo es
+/// opcional y lo conserva quien no lo entiende (`Extra`); un tipo nuevo lo salta quien no lo entiende,
+/// que lo cuenta como «de una versión más nueva» y lo vuelve a leer al actualizarse (`LECTOR`); lo que
+/// cambie el significado de lo que ya hay sube `min_reader` en `omoikane.format` (o la versión del
+/// formato de `omoi export`), y entonces las versiones viejas no escriben en ese repositorio.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub(crate) enum Linea {
-    Memory {
-        id: String,
-        /// Cómo se reconoce el proyecto en otro equipo (vacío: global).
-        project_key: String,
-        /// La ruta en el equipo de origen, por si aquí aún no hay ningún proyecto con esa clave.
-        project_path: String,
-        /// El espacio (su clave): el de la memoria si es de espacio (sin `project_key`), o el de su
-        /// proyecto. Las versiones de antes de la 0.20.0 no lo mandan.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        space_key: String,
-        /// Texto: un tipo de una versión futura llega tal cual (aquí cuenta como `fact`) y se reexporta igual.
-        kind: String,
-        title: String,
-        content: String,
-        #[serde(default)]
-        paths: Vec<String>,
-        #[serde(default)]
-        tags: Vec<String>,
-        #[serde(default)]
-        pinned: bool,
-        created_at: String,
-        updated_at: String,
-        hlc: String,
-        /// El sello del último cambio de título, contenido o tipo (con el que caducan los veredictos),
-        /// solo si no es `hlc` (fijar o mover cambian `hlc` y no este).
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        content_hlc: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        author: String,
-        /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        machine: String,
-        /// Las versiones anteriores (`omoi export` y, desde la 0.20.0, la sincronización). Las versiones
-        /// de antes las ignoran; lo que ya hay con ese número se queda.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        versions: Vec<crate::memoria::Version>,
-    },
+    Memory(CuerpoMemoria),
     Tombstone {
         id: String,
         deleted_at: String,
         hlc: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
+        #[serde(flatten)]
+        extra: Extra,
     },
     /// Un veredicto (`veredictos`), en la carpeta de la memoria juzgada. Las versiones de antes de la
     /// 0.17.0 no lo entienden y se lo saltan; las de antes de la 0.19.0 ignoran `reason` y `author`.
@@ -597,18 +769,24 @@ pub(crate) enum Linea {
         author: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
+        #[serde(flatten)]
+        extra: Extra,
     },
     /// Una memoria de la papelera, con su historial: solo en `omoi export` (una copia sin la papelera
-    /// no sería fiel).
+    /// no sería fiel). `memory` tiene la forma de una línea `memory` (`CuerpoMemoria`), con su proyecto
+    /// y su espacio por clave.
     Forgotten {
         id: String,
-        memory: crate::memoria::Memoria,
+        #[serde(deserialize_with = "cuerpo_olvidado")]
+        memory: CuerpoMemoria,
         #[serde(default)]
         versions: Vec<crate::memoria::Version>,
         hlc: String,
         deleted_at: String,
         #[serde(default)]
         by: String,
+        #[serde(flatten)]
+        extra: Extra,
     },
     /// Primera línea de un fichero de `omoi export`.
     Header {
@@ -627,11 +805,24 @@ pub(crate) enum Linea {
     },
 }
 
+/// Los tipos de línea que entiende esta versión.
+const TIPOS_DE_LINEA: &[&str] = &["memory", "tombstone", "verdict", "forgotten", "header", "end"];
+
+/// Si un texto es una línea de un tipo que esta versión no conoce: JSON con un `type` que no es de los
+/// suyos (lo escribió una versión más nueva). Las demás que no se entienden están dañadas.
+pub(crate) fn de_tipo_nuevo(texto: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(texto)
+        .ok()
+        .and_then(|v| v.get("type")?.as_str().map(|t| !TIPOS_DE_LINEA.contains(&t)))
+        .unwrap_or(false)
+}
+
 impl Linea {
     /// El id que la línea afecta (vacío en la cabecera y el final).
     pub(crate) fn id(&self) -> &str {
         match self {
-            Linea::Memory { id, .. } | Linea::Tombstone { id, .. } | Linea::Forgotten { id, .. } => id,
+            Linea::Memory(c) => &c.id,
+            Linea::Tombstone { id, .. } | Linea::Forgotten { id, .. } => id,
             Linea::Verdict { memory_id, .. } => memory_id,
             Linea::Header { .. } | Linea::End { .. } => "",
         }
@@ -642,15 +833,57 @@ impl Linea {
         match self {
             Linea::Header { .. } | Linea::End { .. } => true,
             Linea::Verdict { memory_id, other_id, .. } => id_valido(memory_id) && (other_id.is_empty() || id_valido(other_id)),
+            Linea::Forgotten { id, memory, .. } => id_valido(id) && memory.id == *id,
             otra => id_valido(otra.id()),
         }
     }
 
-    fn machine(&self) -> &str {
+    pub(crate) fn machine(&self) -> &str {
         match self {
-            Linea::Memory { machine, .. } | Linea::Tombstone { machine, .. } | Linea::Verdict { machine, .. } => machine,
+            Linea::Memory(c) => &c.machine,
+            Linea::Tombstone { machine, .. } | Linea::Verdict { machine, .. } => machine,
             _ => "",
         }
+    }
+
+    /// Un olvido como viaja, con sus campos desconocidos.
+    pub(crate) fn olvido(id: String, deleted_at: String, hlc: String, equipo: &str, extra: Extra) -> Linea {
+        Linea::Tombstone { id, deleted_at, hlc, machine: equipo.to_string(), extra: solo_desconocidos(extra, CAMPOS_OLVIDO) }
+    }
+
+    /// Un veredicto como viaja, con sus campos desconocidos.
+    pub(crate) fn veredicto(v: crate::veredictos::Veredicto, equipo: &str) -> Linea {
+        Linea::Verdict {
+            memory_id: v.memory_id,
+            other_id: v.other_id,
+            relation: v.relation,
+            at: v.at,
+            hlc: v.hlc,
+            reason: v.reason,
+            author: v.author,
+            machine: equipo.to_string(),
+            extra: solo_desconocidos(extra_de(&v.extra), CAMPOS_VEREDICTO),
+        }
+    }
+
+    /// Una memoria de la papelera como va en `omoi export`: `texto` es lo que guarda `forgotten.memory`.
+    /// Sin la clave de su proyecto (lo olvidado antes del esquema 10), se busca por su ruta en la tabla
+    /// `project`. `None` si no se entiende.
+    pub(crate) fn papelera(db: &Connection, id: String, texto: &str, versions: Vec<crate::memoria::Version>, hlc: String, deleted_at: String, by: String) -> Result<Option<Linea>> {
+        let Some((mut m, extra, extra_linea)) = de_papelera(texto) else { return Ok(None) };
+        if m.project_key.is_empty()
+            && !m.project.is_empty()
+            && let Some((p, _)) = crate::proyecto::resolver(db, &m.project)?
+        {
+            m.project_key = crate::proyecto::clave_de(db, p)?;
+            if m.space.is_empty() {
+                m.space = crate::proyecto::clave_espacio(db, crate::proyecto::espacio_de(db, p)?)?;
+            }
+        }
+        let content_hlc = if m.content_hlc.is_empty() { hlc.clone() } else { m.content_hlc.clone() };
+        // Sin `machine` dentro: quién la olvidó lo dice `by`, y el equipo que exporta, la cabecera.
+        let memory = CuerpoMemoria::de(m, hlc.clone(), content_hlc, "", Vec::new(), extra);
+        Ok(Some(Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra: solo_desconocidos(extra_linea, CAMPOS_PAPELERA) }))
     }
 }
 
@@ -942,7 +1175,44 @@ fn ficheros_fijos(clon: &Path, cifra: &Cifra) -> Result<()> {
     if antes.as_deref() != Some(texto.as_str()) {
         std::fs::write(clon.join(CHEQUEO), texto)?;
     }
+    // `omoikane.format`: si no está, el de esta versión; si está cifrado con una clave anterior a la
+    // vigente de aquí (una rotación), el mismo contenido con la vigente. Lo que no se pueda abrir no se
+    // toca.
+    let formato = clon.join(FORMATO_REPO);
+    match std::fs::read_to_string(&formato) {
+        Err(_) => std::fs::write(&formato, cifra.cifrar(&serde_json::json!({ "min_reader": LECTOR_REPO }).to_string())? + "\n")?,
+        Ok(t) => {
+            if let Some((id, _)) = partir(t.trim())
+                && id < cifra.vigente()
+                && let Ok(claro) = cifra.descifrar(t.trim())
+            {
+                std::fs::write(&formato, cifra.cifrar(&claro)? + "\n")?;
+            }
+        }
+    }
     Ok(())
+}
+
+/// El `min_reader` de `omoikane.format` en el clon, si lo tiene y este equipo lo puede abrir.
+fn lector_pedido(clon: &Path, cifra: &Cifra) -> Option<u64> {
+    let t = std::fs::read_to_string(clon.join(FORMATO_REPO)).ok()?;
+    let claro = cifra.descifrar(t.trim()).ok()?;
+    serde_json::from_str::<serde_json::Value>(&claro).ok()?.get("min_reader")?.as_u64()
+}
+
+/// Si el repositorio pide una versión más nueva de omoi que esta (según su clon, sin red): el
+/// `min_reader` que pide.
+pub fn necesita_version(r: &Rutas) -> Option<u64> {
+    let cifra = leer_claves(r).ok()?;
+    lector_pedido(&r.clon, &cifra).filter(|n| *n > LECTOR_REPO)
+}
+
+/// El aviso de `necesita_version`.
+pub fn aviso_version() -> String {
+    tr!(
+        "this repository needs a newer version of omoi: update it (`omoi upgrade`); until then nothing is written to it",
+        "este repositorio necesita una versión más nueva de omoi: actualízalo (`omoi upgrade`); hasta entonces no se escribe nada en él"
+    )
 }
 
 /// Tras una rotación, los ficheros de este equipo con el nombre de una clave vieja: lo suyo se vuelve
@@ -991,44 +1261,26 @@ pub fn claves_de(r: &Rutas) -> (Vec<u32>, u32) {
 
 // --- Exportar e importar -----------------------------------------------------------------------------
 
-/// Todas las memorias, con su sello (`hlc`) y el de su último cambio de texto (`content_hlc`).
-pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String)>> {
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc FROM memory m ORDER BY m.id"))?;
+/// Todas las memorias, con su sello (`hlc`), el de su último cambio de texto (`content_hlc`) y sus
+/// campos desconocidos (`extra`).
+pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String, Extra)>> {
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m ORDER BY m.id"))?;
     let v = q
-        .query_map([], |f| Ok((de_fila(f)?, f.get::<_, String>(NCOL)?, f.get::<_, String>(NCOL + 1)?)))?
+        .query_map([], |f| Ok((de_fila(f)?, f.get::<_, String>(NCOL)?, f.get::<_, String>(NCOL + 1)?, extra_de(&f.get::<_, String>(NCOL + 2)?))))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// La línea de una memoria, para la sincronización y `omoi export`: la clave del proyecto sale de la
-/// tabla `project` (calculada una vez), así que es la misma por los dos caminos.
-pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>) -> Linea {
-    Linea::Memory {
-        kind: m.tipo_texto().to_string(),
-        id: m.id,
-        project_key: m.project_key,
-        project_path: m.project,
-        space_key: m.space,
-        title: m.title,
-        content: m.content,
-        paths: m.paths,
-        tags: m.tags,
-        pinned: m.pinned,
-        created_at: m.created_at,
-        updated_at: m.updated_at,
-        content_hlc: if content_hlc == hlc { String::new() } else { content_hlc },
-        hlc,
-        author: m.author,
-        machine: equipo.to_string(),
-        versions,
-    }
+/// La línea de una memoria, para la sincronización y `omoi export`.
+pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Linea {
+    Linea::Memory(CuerpoMemoria::de(m, hlc, content_hlc, equipo, versions, extra))
 }
 
 /// Qué subiría este equipo (para el resumen de `init` y `join`): globales, de proyectos y cuántos
 /// proyectos.
 pub fn resumen_de_subida(db: &Connection, config: &Config) -> Result<(usize, usize, usize)> {
     let (mut globales, mut de_proyectos, mut proyectos) = (0, 0, HashSet::new());
-    for (m, _, _) in todas(db)? {
+    for (m, _, _, _) in todas(db)? {
         if config.comparte(&m) {
             if m.project_key.is_empty() {
                 globales += 1;
@@ -1048,7 +1300,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let mut n = 0;
     // La carpeta de cada memoria que se comparte: sus veredictos van con ella.
     let mut carpetas: HashMap<String, String> = HashMap::new();
-    for (m, hlc, content_hlc) in todas(db)? {
+    for (m, hlc, content_hlc, extra) in todas(db)? {
         if !config.comparte(&m) {
             continue;
         }
@@ -1073,7 +1325,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         } else {
             (m, versiones)
         };
-        let l = linea_de(m, hlc, content_hlc, equipo, versiones);
+        let l = linea_de(m, hlc, content_hlc, equipo, versiones, extra);
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
     }
@@ -1082,21 +1334,21 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let (Some(carpeta), true) = (carpetas.get(&v.memory_id), v.other_id.is_empty() || carpetas.contains_key(&v.other_id)) else {
             continue;
         };
-        let l = Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, reason: v.reason, author: v.author, machine: equipo.to_string() };
+        let l = Linea::veredicto(v, equipo);
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
     {
-        let mut q = db.prepare("SELECT t.id, t.deleted_at, t.hlc, f.memory FROM tombstone t LEFT JOIN forgotten f ON f.id = t.id ORDER BY t.id")?;
-        let marcas: Vec<(String, String, String, Option<String>)> =
-            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (id, deleted_at, hlc, memoria) in marcas {
+        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, f.memory, {EXTRA_OLVIDO} FROM tombstone t LEFT JOIN forgotten f ON f.id = t.id ORDER BY t.id"))?;
+        let marcas: Vec<(String, String, String, Option<String>, String)> =
+            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (id, deleted_at, hlc, memoria, extra) in marcas {
             // Si la papelera dice de qué espacio era, el olvido va solo a su repositorio; si no se sabe
             // (llegó de otro equipo sin la memoria, o se vació la papelera), a todos, como siempre.
             let espacio = memoria.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|v| v["space"].as_str().unwrap_or("").to_string());
             if espacio.is_some_and(|e| !va_al_repo(config, &e)) {
                 continue;
             }
-            let l = Linea::Tombstone { id, deleted_at, hlc, machine: equipo.to_string() };
+            let l = Linea::olvido(id, deleted_at, hlc, equipo, extra_de(&extra));
             ficheros.entry("olvidos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
@@ -1126,6 +1378,23 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         }
     }
     Ok(n)
+}
+
+/// Si la base se sincronizó por última vez con un lector de líneas más viejo que el de esta versión
+/// (`LECTOR_LINEAS`; sin apuntar, el 0), olvida por dónde iba en todos los repositorios para releerlo
+/// todo, y apunta el de ahora. Devuelve si lo hizo.
+fn releer_si_hace_falta(db: &Connection) -> Result<bool> {
+    let v: i64 = db
+        .query_row("SELECT v FROM meta WHERE k = 'sync_lector'", [], |f| f.get::<_, String>(0))
+        .optional()?
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    if v >= LECTOR_LINEAS {
+        return Ok(false);
+    }
+    db.execute("DELETE FROM meta WHERE k = 'sync_commit' OR substr(k, 1, 12) = 'sync_commit:'", [])?;
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('sync_lector', ?1)", [LECTOR_LINEAS.to_string()])?;
+    Ok(true)
 }
 
 /// Qué ficheros de otros equipos hay que leer: los que cambiaron desde la última sincronización, o
@@ -1167,9 +1436,15 @@ pub struct Resumen {
     pub olvidadas: usize,
     /// Líneas de otros equipos que no se pudieron descifrar o no son válidas (se saltan).
     pub ilegibles: usize,
+    /// Líneas de un tipo (o con una etiqueta de cifrado) que esta versión no conoce: las escribió un
+    /// omoi más nuevo. Se saltan y se vuelven a leer al actualizar (`LECTOR_LINEAS`).
+    pub de_version_nueva: usize,
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
+    /// Lo mismo con las de una versión más nueva.
+    #[serde(skip)]
+    pub futuros: BTreeMap<String, usize>,
 }
 
 impl Resumen {
@@ -1181,6 +1456,7 @@ impl Resumen {
         self.actualizadas += o.actualizadas;
         self.olvidadas += o.olvidadas;
         self.ilegibles += o.ilegibles;
+        self.de_version_nueva += o.de_version_nueva;
     }
 }
 
@@ -1221,10 +1497,13 @@ impl<'a> Aplicador<'a> {
     pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
         match l {
             Linea::Header { .. } | Linea::End { .. } => Ok(()),
-            Linea::Tombstone { id, deleted_at, hlc, .. } => {
+            Linea::Tombstone { id, deleted_at, hlc, extra, .. } => {
                 if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
                     return Ok(());
                 }
+                // La marca que llega pasa a ser la de aquí (en cualquiera de los tres casos): sus campos
+                // desconocidos, con ella.
+                guardar_extra_olvido(db, &id, &extra)?;
                 match hlc_local(db, &id)? {
                     Some(local) if reloj::mayor(&local, &hlc) => {
                         // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
@@ -1242,7 +1521,7 @@ impl<'a> Aplicador<'a> {
                 }
                 Ok(())
             }
-            Linea::Memory { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, .. } => {
+            Linea::Memory(CuerpoMemoria { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, extra, .. }) => {
                 // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra
                 // persona, o lo de un espacio que este repositorio no lleva).
                 if self.config.is_some_and(|c| !c.admite(&kind, &project_key, &space_key)) {
@@ -1272,7 +1551,9 @@ impl<'a> Aplicador<'a> {
                 };
                 let tipo = kind.parse::<Tipo>().ok();
                 let kind_text = if tipo.is_none() { Some(kind.clone()) } else { None };
-                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author };
+                // Los campos que esta versión no conoce se guardan con ella, para volver a escribirlos.
+                let extra = extra_a_texto(&extra);
+                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author, extra: &extra };
                 // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se
                 // salta y se cuenta: nunca para la sincronización.
                 if local.is_some() {
@@ -1320,22 +1601,30 @@ impl<'a> Aplicador<'a> {
                 }
                 Ok(())
             }
-            Linea::Verdict { memory_id, other_id, relation, at, hlc, reason, author, .. } => {
-                // De una memoria que aquí no está (no se comparte, o se olvidó) no se apunta nada.
-                let existe = |id: &str| -> Result<bool> { Ok(db.query_row("SELECT count(*) FROM memory WHERE id = ?1", [id], |f| f.get::<_, i64>(0))? > 0) };
+            Linea::Verdict { memory_id, other_id, relation, at, hlc, reason, author, extra, .. } => {
+                // De una memoria que aquí no está (no se comparte, o se olvidó del todo) no se apunta
+                // nada. Las de la papelera, sí: si vuelve, vuelve con sus veredictos (`omoi export` los
+                // lleva, y van después de la papelera).
+                let existe = |id: &str| -> Result<bool> {
+                    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1) OR EXISTS(SELECT 1 FROM forgotten WHERE id = ?1)", [id], |f| f.get::<_, bool>(0))?)
+                };
                 if existe(&memory_id)? && (other_id.is_empty() || existe(&other_id)?) {
-                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author })?;
+                    let extra = extra_a_texto(&extra);
+                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
                 }
                 Ok(())
             }
-            Linea::Forgotten { id, memory, versions, hlc, deleted_at, by } => {
-                // A la papelera, si aquí no está viva ni ya en la papelera.
+            Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra } => {
+                // A la papelera, si aquí no está viva ni ya en la papelera. Se guarda como la de aquí
+                // (`Memoria`, con su proyecto y su espacio por clave) y con sus campos desconocidos.
                 if hlc_local(db, &id)?.is_some() {
                     return Ok(());
                 }
+                let origen = if memory.machine.is_empty() { format!("sync:{origen}") } else { format!("sync:{}", memory.machine) };
+                let texto = a_papelera(&memory.a_memoria(&origen), &memory.extra, &extra)?;
                 db.execute(
                     "INSERT OR IGNORE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, serde_json::to_string(&memory)?, serde_json::to_string(&versions)?, hlc, deleted_at, by],
+                    params![id, texto, serde_json::to_string(&versions)?, hlc, deleted_at, by],
                 )?;
                 Ok(())
             }
@@ -1354,14 +1643,29 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
         let relativo = f.strip_prefix(clon).unwrap_or(f).to_string_lossy().replace('\\', "/");
         let texto = std::fs::read_to_string(f).with_context(|| format!("{}", f.display()))?;
         r.malos.insert(relativo.clone(), 0);
+        r.futuros.insert(relativo.clone(), 0);
         for l in texto.lines().filter(|l| !l.trim().is_empty()) {
+            // Una etiqueta que no es de clave (`x1:…`) es de un formato futuro.
+            if partir(l).is_none() {
+                *r.futuros.entry(relativo.clone()).or_default() += 1;
+                continue;
+            }
             let Ok(claro) = cifra.descifrar(l) else {
                 *r.malos.entry(relativo.clone()).or_default() += 1;
                 continue;
             };
             let x = match serde_json::from_str::<Linea>(&claro) {
                 Ok(x) => x,
-                Err(_) => continue, // una línea de una versión futura: se ignora
+                // Un tipo de línea de una versión más nueva: se cuenta aparte, para pedir que se
+                // actualice, y se volverá a leer entonces.
+                Err(_) if de_tipo_nuevo(&claro) => {
+                    *r.futuros.entry(relativo.clone()).or_default() += 1;
+                    continue;
+                }
+                Err(_) => {
+                    *r.malos.entry(relativo.clone()).or_default() += 1;
+                    continue;
+                }
             };
             if !x.valida() {
                 *r.malos.entry(relativo.clone()).or_default() += 1;
@@ -1376,7 +1680,7 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
     // veredictos, que necesitan las memorias.
     let orden = |l: &Linea| match l {
         Linea::Tombstone { .. } => 0,
-        Linea::Memory { .. } => 1,
+        Linea::Memory(_) => 1,
         _ => 2,
     };
     lineas.sort_by_key(|(_, _, l)| orden(l));
@@ -1386,6 +1690,7 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
         }
     }
     r.ilegibles = r.malos.values().sum();
+    r.de_version_nueva = r.futuros.values().sum();
     Ok(())
 }
 
@@ -1439,6 +1744,7 @@ fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Opt
         adoptar(db, a)?;
     }
     let equipo = reloj::equipo(db)?;
+    releer_si_hace_falta(db)?;
     for intento in 0..4 {
         // Las cuentas, de cada intento: un reintento vuelve a leer los mismos ficheros.
         let mut res = Resumen { equipo: equipo.clone(), ..Default::default() };
@@ -1448,10 +1754,19 @@ fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Opt
             Some(k) => base.con(Chequeo::leer(&r.clon).map_or(0, |c| c.vigente()).max(base.vigente()) + 1, k.to_vec()),
             None => base.clone(),
         };
+        // Un repositorio que pide un lector más nuevo: ni se lee ni se escribe en él.
+        if lector_pedido(&r.clon, &cifra).is_some_and(|n| n > LECTOR_REPO) {
+            bail!(aviso_version());
+        }
         ficheros_fijos(&r.clon, &cifra)?;
         retirar_viejos(&r.clon, &equipo, &cifra)?;
         let ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
         importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
+        // Si esta versión se saltó líneas nuevas y la base la usó antes una más nueva (se volvió a una
+        // vieja), esa tendrá que releerlas cuando vuelva.
+        if res.de_version_nueva > 0 {
+            db.execute("UPDATE meta SET v = ?1 WHERE k = 'sync_lector' AND CAST(v AS INTEGER) > ?1", [LECTOR_LINEAS])?;
+        }
         res.exportadas = exportar(db, &r.clon, &equipo, config, &cifra)?;
         git(&r.clon, &["add", "-A"])?;
         if !git(&r.clon, &["status", "--porcelain"])?.trim().is_empty() {
@@ -1743,6 +2058,16 @@ pub struct Estado {
     /// sincronización vuelva a leer el fichero y esté bien.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_malos: BTreeMap<String, usize>,
+    /// Lo mismo con las líneas de una versión más nueva de omoi.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ficheros_futuros: BTreeMap<String, usize>,
+}
+
+impl Estado {
+    /// Cuántas líneas de una versión más nueva quedan sin leer en el repositorio.
+    pub fn de_version_nueva(&self) -> usize {
+        self.ficheros_futuros.values().sum()
+    }
 }
 
 /// Cómo fue la última sincronización del repositorio general.
@@ -1770,21 +2095,29 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
             e.ultimo_ok = Some(ahora());
             e.ultimo_error = None;
             e.error_desde = None;
-            for (f, n) in &r.malos {
-                if *n == 0 {
-                    e.ficheros_malos.remove(f);
-                } else {
-                    e.ficheros_malos.insert(f.clone(), *n);
+            for (cuentas, nuevas) in [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros)] {
+                for (f, n) in nuevas {
+                    if *n == 0 {
+                        cuentas.remove(f);
+                    } else {
+                        cuentas.insert(f.clone(), *n);
+                    }
                 }
             }
             let malas: usize = e.ficheros_malos.values().sum();
-            e.aviso = (malas > 0).then(|| {
-                tr!(
+            let futuras = e.de_version_nueva();
+            let mut avisos = Vec::new();
+            if malas > 0 {
+                avisos.push(tr!(
                     "{} shared line(s) couldn't be read and were skipped (another key, or not valid)",
                     "{} línea(s) compartidas no se pudieron leer y se saltaron (otra clave, o no válidas)",
                     malas
-                )
-            });
+                ));
+            }
+            if futuras > 0 {
+                avisos.push(aviso_lineas_nuevas(futuras));
+            }
+            e.aviso = (!avisos.is_empty()).then(|| avisos.join(" · "));
         }
         Err(err) => {
             e.ultimo_error = Some(sin_credenciales(&format!("{err:#}")));
@@ -1813,8 +2146,24 @@ fn error_corto(e: &str) -> String {
     sin_credenciales(&l.chars().take(200).collect::<String>())
 }
 
-/// Un aviso para el inicio de sesión si la sincronización lleva más de una hora fallando.
+/// «N líneas de una versión más nueva: actualiza omoi».
+pub fn aviso_lineas_nuevas(n: usize) -> String {
+    tr!(
+        "{} line(s) from a newer version: update omoi (`omoi upgrade`)",
+        "{} línea(s) de una versión más nueva: actualiza omoi (`omoi upgrade`)",
+        n
+    )
+}
+
+/// Un aviso para el inicio de sesión: si algún repositorio pide una versión más nueva de omoi (en
+/// cuanto se sabe), o si la sincronización lleva más de una hora fallando.
 pub fn aviso(ruta_db: &Path) -> Option<String> {
+    if repos(ruta_db).iter().any(|r| necesita_version(r).is_some()) {
+        return Some(
+            "An Omoikane sync repository needs a newer version of omoi: nothing is written to it until omoi is updated (`omoi upgrade`). Tell the user; `omoi sync status` shows more."
+                .into(),
+        );
+    }
     leer_config(ruta_db).ok().flatten()?;
     let e = leer_estado(ruta_db);
     let desde = segundos(e.error_desde.as_deref()?);
