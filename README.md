@@ -28,6 +28,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 ### What keeps the memory alive
 
 - **It saves even when the agent forgets to.** When a session ends, Omoikane reads the conversation and sets aside what you decided and asked for; the next session saves what is worth keeping, in your words.
+- **It saves when you ask.** `/omoikane` goes over the session and saves what is worth keeping; `/omoikane <text>` saves that.
 - **It notices when a memory is out of date.** If a newer memory contradicts an older one, the old one reaches the agent marked `⚠ may be outdated`, and the Review tab shows both side by side.
 - **Recipes that come back whole.** A `procedure` memory holds the steps of something you repeat; "publish 0.14.1" brings the whole checklist, and the agent fixes a step when it changes.
 - **Linked memories.** `[[links]]` between notes travel with them: recall one and the warning linked to it comes along.
@@ -36,7 +37,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 ## Status
 
-Version 0.14.1, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 0.15.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
 
@@ -98,6 +99,10 @@ Search starts with words: accents don't matter, file paths count too, and rare w
 
 Every memory has a kind that decides when it comes back: `fact` and `decision` by relevance, `gotcha` also by its files, `preference` always, and `procedure` whole when you ask for it. Before saving it checks whether something almost the same already exists. If so, it doesn't save and says which one to update; if it is only similar, it saves and shows the related ones. It warns when a memory goes past the 6,000 characters that count for recall and when it makes another one outdated. Paths are stored relative to the repository, so they work on any computer.
 
+### It saves when you ask
+
+`/omoikane` makes the agent save right then. It goes over the session, saves what is worth keeping and isn't saved yet (decisions with their reason, gotchas with their files, preferences, procedures) and brings the project's `status` memory up to date. With text after it, as in `/omoikane deploys go over ssh`, it saves that, in your words. It ends with one line per memory saved or changed.
+
 ### It saves even when the agent forgets to
 
 When a session ends or compacts, Omoikane reads the conversation and sets aside what may be worth keeping: your answers to the agent's questions (with the question), your preferences and corrections, and the last commit or release. The next session in that project gets them once, and the agent saves the ones worth it in your words; the Review tab lists them too. Nothing that looks like a secret, nothing already saved. It reads the conversation of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro and OpenCode (`omoi setup <agent>` adds the end-of-session hooks); not Antigravity, whose conversations are stored in an undocumented binary format.
@@ -139,7 +144,7 @@ Changing a memory keeps the previous version with the reason, and `omoi history`
 | Antigravity CLI | yes | session start only (no prompt event) | no (its conversations are in an undocumented binary format) | from its docs |
 | Windsurf / Devin Desktop, Kimi Code, Pi, Amp, Kilo Code | yes | no (their hooks can't add context, or it isn't documented) | no | from their docs |
 
-`omoi setup` also adds a `/omoikane-web` command that opens the web view, in the agents that support user commands: Gemini CLI, Qwen Code, Codex (`/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi and Kilo Code. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it.
+`omoi setup` also adds two commands in the agents that support user commands: `/omoikane`, which makes the agent save, and `/omoikane-web`, which opens the web view. Those are Gemini CLI, Qwen Code, Codex (`/prompts:omoikane` and `/prompts:omoikane-web`), Cursor, OpenCode, Kiro, Windsurf, Pi and Kilo Code. In those agents a command is a prompt, so the agent runs `omoi serve --open` itself and may ask before doing it. An older `/omoikane`, which opened the web view, becomes the one that saves.
 
 ### Sharing memory between computers (and teammates)
 

@@ -2,12 +2,16 @@
 // module downloads the `omoi` binary that matches the plugin's version (checking its SHA-256) into
 // ~/.omoikane/bin, then the model in the background. It serves the memory tools by running
 // `omoi tool <name>`, which answers exactly as the MCP server does, and injects the recall on
-// session start and on each prompt through `omoi recall`. `/omoikane-web` opens every memory in the
-// browser (`omoi serve --open`). No shell is involved anywhere, so it works the same on Windows,
+// session start and on each prompt through `omoi recall`. `/omoikane-web` opens every memory in the browser
+// (`omoi serve --open`), and `/omoikane` makes the agent save what the session learned. No shell is involved anywhere, so it works the same on Windows,
 // macOS and Linux.
 import type { Register } from 'claude-code'
 
 const REPO = 'marcmayol/omoikane'
+
+// What `/omoikane` asks the agent to do.
+const SAVE = "Save to Omoikane now, with its `remember` and `update` tools. If the user wrote something after the command, that is what to save: one memory, in their words. Otherwise go over this session and save what is worth knowing next time and is not saved yet: decisions and their reasons (kind decision), non-obvious traps with the files they affect (gotcha), how the user wants things done (preference), steps they repeat (procedure), and how something works (fact). `search` first, and `update` a memory instead of saving a near copy. Then update the project's memory tagged `status` (or save one) with where the work was left: what is done and what is next. Write each memory in the language the user writes to you in. Finish with one short line per memory saved or updated, or say that nothing new was worth saving."
+
 
 // What `prepare` leaves ready: the binary and the instructions the model reads at session start.
 type Listo = { omoi: string; instrucciones: string }
@@ -18,8 +22,22 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const l = await ready($)
     if (l !== undefined) await registerTools($, l)
+    await $.command.register({ name: 'omoikane', description: 'Save to Omoikane what this session learned (or what you write after it)', argumentHint: '[what to save]' })
     await $.command.register({ name: 'omoikane-web', description: 'Open the Omoikane web view in the browser: search, filter by project or topic, pin, move, forget', immediate: true })
     return next(e)
+  })
+
+  // Saving on demand: the agent goes over the session and saves what is worth knowing next time. The
+  // text is the one `omoi setup` writes into the other agents' `/omoikane` (TEXTO_GUARDAR in
+  // src/agentes.rs). A command.run hook can't submit a prompt itself (it would wait on its own turn),
+  // so a timer does it right after; the prompt runs as a turn of its own once the session is idle.
+  on('command.run', { command: 'omoikane' }, ($, e) => {
+    const lo = e.args.trim()
+    const text = lo === '' ? SAVE : `${SAVE}\n\nWhat the user wrote after the command: ${lo}`
+    $.clock.after(0, () => {
+      void $.prompt.submit({ text }).catch(() => {})
+    })
+    return { text: 'Omoikane: saving.' }
   })
 
   // The web view: `omoi serve --open` starts the local server and opens the browser, or just opens it
@@ -44,7 +62,7 @@ export const register: Register = on => {
     const l = await ready($)
     if (l === undefined) return r
     const recuerdo = await recall($, l.omoi, ['recall', '--session-start'], JSON.stringify(e))
-    const textos = [recuerdo, l.instrucciones].filter(t => t !== undefined && t !== '')
+    const textos = [recuerdo, l.instrucciones].filter((t): t is string => t !== undefined && t !== '')
     return { ...r, additionalContext: [...(r.additionalContext ?? []), ...textos] }
   })
 
