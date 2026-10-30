@@ -12,16 +12,26 @@
 
 ## Qué lo hace distinto
 
-Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo. Omoikane lo guarda como memorias cortas y tipadas en un SQLite local, y hace lo demás solo:
+Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo. Omoikane lo guarda como memorias cortas y tipadas en un SQLite local, y hace lo demás solo.
+
+### Lo que hace en cada sesión
 
 - **Recuerda sin que se lo pidas.** En cada mensaje, un hook le da al agente las 3-5 memorias que importan para lo que acabas de escribir, más las trampas de los ficheros que has nombrado, en unos 20 ms. El agente no tiene que acordarse de buscar.
+- **Busca bien en tu idioma**, con tildes o sin ellas y en 101 idiomas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms, y sigue igual de preciso con 3.183 memorias.
+- **Detecta duplicados al guardar.** Si el agente intenta guardar algo que ya sabe, se le dice y actualiza la memoria que hay en lugar de crear otra.
+- **Funciona con 14 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
+- **La misma memoria en todos tus equipos, y con compañeros.** Se sincroniza sola por un repositorio git tuyo, cifrada antes de salir del equipo, y sin servidor de nadie.
+- **Historial con motivo.** Cambiar una memoria guarda la versión anterior y, si el agente lo dice, por qué cambió.
+- **La ves y la ordenas tú.** Una vista web y otra en la terminal para buscar, leer el historial, fijar, mover u olvidar.
+- **Privado y pequeño.** Un binario, un fichero, 8 herramientas MCP y ningún servidor propio.
+
+### Lo que mantiene viva la memoria
+
 - **Guarda aunque el agente se olvide.** Al cerrar la sesión, Omoikane lee la conversación y aparta lo que decidiste y lo que pediste; la sesión siguiente guarda lo que valga, con tus palabras.
 - **Se da cuenta de cuándo una memoria se ha quedado vieja.** Si una más nueva contradice a otra, la vieja le llega al agente marcada con `⚠ may be outdated`, y la pestaña Revisar enseña las dos una al lado de la otra.
 - **Recetas que vuelven enteras.** Una memoria de tipo `procedure` guarda los pasos de algo que se repite; «publica la 0.14.1» trae la lista entera, y el agente corrige el paso que cambie.
 - **Memorias conectadas.** Los `[[enlaces]]` entre notas viajan con ellas: al recordar una, llega también el aviso que lleva enlazado.
 - **Retoma donde lo dejaste.** Al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
-- **Busca bien en tu idioma**, con tildes o sin ellas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms.
-- **Privado y pequeño.** Un binario, un fichero, 8 herramientas MCP y ningún servidor propio. La sincronización, opcional, va cifrada por un repositorio git tuyo.
 - **Se mantiene al día solo**, y solo instala versiones firmadas con la clave de Omoikane.
 
 ## Estado
