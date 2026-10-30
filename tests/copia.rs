@@ -248,3 +248,50 @@ fn backup_copia_la_base_y_conserva_las_ultimas() {
     let doctor = e.ok("o.db", &["doctor"]);
     assert!(doctor.contains("backups    omoikane-"), "{doctor}");
 }
+
+/// 0.19.1: una memoria de un proyecto que llegó de otro equipo se exporta con la clave con la que
+/// llegó (la de `remote_project`, la misma que usa la sincronización), no con una calculada aquí.
+#[test]
+fn el_export_usa_la_clave_de_los_proyectos_que_llegaron_de_fuera() {
+    let e = Entorno::nuevo("clave-remota");
+    let id = e.id("o.db", "fact", "La caché se invalida al publicar", "Con el hook de publicación.");
+    let ruta = e.get("o.db", &id).unwrap()["project"].as_str().unwrap().to_string();
+    assert!(!ruta.is_empty());
+    {
+        let db = rusqlite::Connection::open(e.fichero("o.db")).unwrap();
+        db.execute("INSERT INTO remote_project(path, key) VALUES (?1, 'git:github.com/marcmayol/omoikane')", [&ruta]).unwrap();
+    }
+    let salida = e.omoi("o.db", &["export", "--all"], None);
+    assert!(salida.status.success(), "{}", String::from_utf8_lossy(&salida.stderr));
+    let memoria = String::from_utf8(salida.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|l| l["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(memoria["project_key"], "git:github.com/marcmayol/omoikane", "{memoria}");
+    assert_eq!(memoria["project_path"], ruta.as_str());
+}
+
+/// 0.19.1: una base de antes que tiene en la papelera una memoria que ya está viva (otro equipo la
+/// restauró): `omoi restore` no falla con `UNIQUE`, avisa y la quita de la papelera.
+#[test]
+fn restaurar_una_memoria_viva_la_quita_de_la_papelera() {
+    let e = Entorno::nuevo("viva-en-papelera");
+    let id = e.id("o.db", "fact", "Los informes salen los viernes", "Antes de las 14:00.");
+    e.ok("o.db", &["forget", &id, "--yes"]);
+    let fila: (String, String, String, String, String) = {
+        let db = rusqlite::Connection::open(e.fichero("o.db")).unwrap();
+        db.query_row("SELECT memory, versions, hlc, deleted_at, by FROM forgotten WHERE id = ?1", [&id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?))).unwrap()
+    };
+    e.ok("o.db", &["restore", &id]);
+    {
+        let db = rusqlite::Connection::open(e.fichero("o.db")).unwrap();
+        db.execute("INSERT INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![id, fila.0, fila.1, fila.2, fila.3, fila.4]).unwrap();
+    }
+    let o = e.omoi("o.db", &["restore", &id], None);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && !err.contains("UNIQUE") && (err.contains("trash") || err.contains("papelera")), "{err}");
+    assert!(e.get("o.db", &id).is_some(), "sigue viva");
+    assert!(!e.ok("o.db", &["trash"]).contains("informes"), "y ya no está en la papelera");
+}

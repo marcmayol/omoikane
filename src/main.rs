@@ -401,7 +401,12 @@ fn main() -> Result<()> {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    let cli = Cli::from_arg_matches(&en_espanol(Cli::command()).get_matches()).unwrap_or_else(|e| e.exit());
+    let mut cli = Cli::from_arg_matches(&en_espanol(Cli::command()).get_matches()).unwrap_or_else(|e| e.exit());
+    // La base con ruta absoluta desde el principio: una relativa (`--db b/omoikane.db`) se lee desde
+    // otras carpetas (git clona la sincronización desde la carpeta de la base) y no se encontraría.
+    if let Some(d) = cli.comun.db.take() {
+        cli.comun.db = Some(std::path::absolute(&d).unwrap_or(d));
+    }
     let c = &cli.comun;
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
         omoikane::actualizar::quizas_en_segundo_plano();
