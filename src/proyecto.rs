@@ -291,8 +291,15 @@ pub fn resolver(db: &Connection, ruta: &str) -> Result<Option<(i64, Option<i64>)
 /// De paso apunta cuándo se vio y su `origin`: si cambió, la clave no cambia (las memorias de los
 /// demás equipos la siguen usando) y Revisar lo avisa.
 pub fn registrar(db: &Connection, ruta: &str) -> Result<i64> {
+    Ok(registrar_avisando(db, ruta)?.0)
+}
+
+/// Como `registrar`, y además la carpeta donde estaba el proyecto si esta es la que la sustituye
+/// (aquella ya no existe: la carpeta se movió y el `origin` lo dice). Pasa una sola vez: después, la
+/// principal ya es esta.
+pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<String>)> {
     if ruta.is_empty() {
-        return Ok(0);
+        return Ok((0, None));
     }
     let ahora = ahora(db)?;
     let existe = Path::new(ruta).is_dir();
@@ -303,9 +310,9 @@ pub fn registrar(db: &Connection, ruta: &str) -> Result<i64> {
                  WHERE path_cmp = ?1 AND (is_foreign = 1 OR origin != ?2 OR last_seen IS NULL OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'))",
                 params![comparable(ruta), origen(ruta), ahora],
             )?;
-            principal_si_hace_falta(db, id, ruta)?;
+            return Ok((id, principal_si_hace_falta(db, id, ruta)?));
         }
-        return Ok(id);
+        return Ok((id, None));
     }
     let id = match decidir(db, ruta, &crate::db::persona_de(db))? {
         Decision::Unir(id, _) => id,
@@ -321,22 +328,30 @@ pub fn registrar(db: &Connection, ruta: &str) -> Result<i64> {
         "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
         params![ruta, comparable(ruta), id, origen(ruta), existe.then_some(&ahora)],
     )?;
-    principal_si_hace_falta(db, id, ruta)?;
-    Ok(id)
+    Ok((id, principal_si_hace_falta(db, id, ruta)?))
 }
 
 /// La ruta principal de un proyecto (la que enseñan las memorias) pasa a `ruta` si la de ahora es de
-/// otro equipo o ya no existe aquí (la carpeta se movió).
-fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<()> {
+/// otro equipo o ya no existe aquí (la carpeta se movió). Devuelve la de antes si era de aquí y se
+/// movió (para avisar).
+fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Option<String>> {
     let (actual, ajena): (String, bool) = db.query_row(
         "SELECT p.path, COALESCE((SELECT is_foreign FROM project_path WHERE path = p.path), 1) FROM project p WHERE p.id = ?1",
         [id],
         |f| Ok((f.get(0)?, f.get(1)?)),
     )?;
     if actual != ruta && Path::new(ruta).is_dir() && (ajena || actual.is_empty() || !Path::new(&actual).is_dir()) {
-        db.execute("UPDATE project SET path = ?2 WHERE id = ?1", params![id, ruta])?;
+        db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![id, ruta, nombre_de(ruta, "")])?;
+        return Ok((!ajena && !actual.is_empty()).then_some(actual));
     }
-    Ok(())
+    Ok(None)
+}
+
+/// `omoi projects prune`: los proyectos sin memorias (y sus carpetas apuntadas) se borran. El de una
+/// carpeta en la que se vuelva a trabajar se crea otra vez solo. Devuelve cuántos.
+pub fn podar(db: &Connection) -> Result<usize> {
+    db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
+    Ok(db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?)
 }
 
 /// El proyecto de una clave que llega de otro equipo (o de un fichero de `omoi export`), creándolo con

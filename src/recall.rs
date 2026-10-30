@@ -382,10 +382,9 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
     crate::revisar::al_dia(db)?;
     let actualizado = crate::actualizar::aviso();
-    // El proyecto de la sesión queda apuntado (con su clave, calculada una vez) y su `origin` al día.
-    if !crate::proyecto::es_general(project) {
-        crate::proyecto::registrar(db, project)?;
-    }
+    // El proyecto de la sesión queda apuntado (con su clave, calculada una vez) y su `origin` al día. Si
+    // es la carpeta nueva de un proyecto que se movió (el mismo `origin`), se dice una vez.
+    let movido = if crate::proyecto::es_general(project) { None } else { crate::proyecto::registrar_avisando(db, project)?.1 };
     let ambito = Ambito::de(db, project)?;
     let actual = proyecto_actual(db, project);
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes. Lo que se
@@ -419,6 +418,9 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         params![e.session_id, project, e.source],
     )?;
     let mut s = String::from("<omoikane>\n");
+    if let Some(vieja) = &movido {
+        s.push_str(&format!("This project used to be in {vieja}, which no longer exists: its memories follow this folder now (same git origin). Tell the user once.\n"));
+    }
     if crate::proyecto::es_general(project) {
         s.push_str(&format!(
             "Long-term memory (Omoikane) holds {total} memories across all projects. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\nThis folder is not a project, so search covers every project. When a memory is about one project, pass its folder as `project` (or put its absolute paths in `paths`); otherwise it is saved as global.\n"

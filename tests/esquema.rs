@@ -317,6 +317,11 @@ fn por_mcp_tampoco_se_cruza_de_espacio() {
     assert!(t.contains("staging"), "{t}");
     let (t, _) = llamar(&b_web, "recent", serde_json::json!({ "limit": 50 }));
     assert!(!t.contains("staging") && !t.contains("Acme"), "{t}");
+    // Una preferencia, aunque se guarde desde un proyecto de un cliente, es de la persona: global.
+    let (t, error) = llamar(&a_web, "remember", serde_json::json!({ "title": "Commits en inglés", "content": "Siempre.", "kind": "preference" }));
+    assert!(!error && t.contains("(global)"), "{t}");
+    let (t, _) = llamar(&b_web, "context", serde_json::json!({}));
+    assert!(t.contains("Commits en inglés"), "{t}");
     // Un nombre que encaja con varios: error con la lista.
     let (t, error) = llamar(&dir.display().to_string(), "search", serde_json::json!({ "query": "zafiro", "project": "web" }));
     assert!(error && t.contains("acme-web") && t.contains("globex-web"), "{t}");
@@ -361,8 +366,13 @@ fn una_carpeta_movida_sigue_siendo_su_proyecto() {
     std::fs::rename(dir.join("app"), dir.join("app-nueva")).unwrap();
     let nueva = proyecto::de(&dir.join("app-nueva")).unwrap();
     assert_eq!(memoria::recientes(&db, &Ambito::de(&db, &nueva).unwrap(), None, 10).unwrap().len(), 1, "ya se ve antes de apuntarla");
-    proyecto::registrar(&db, &nueva).unwrap();
+    // Al empezar la sesión allí, se apunta y se avisa una vez.
+    let e = Entrada { session_id: "s".into(), ..Default::default() };
+    let r = recall::al_empezar(&mut db, &nueva, &e).unwrap().unwrap();
+    assert!(r.contains("used to be in") && r.contains("La app usa Kotlin"), "{r}");
     assert_eq!(memoria::obtener(&db, &id).unwrap().project, nueva);
+    let r = recall::al_empezar(&mut db, &nueva, &e).unwrap().unwrap();
+    assert!(!r.contains("used to be in"), "solo una vez");
     // Sin `origin`: una carpeta nueva con el mismo nombre no se junta sola (podría ser otra cosa); la
     // vieja sale como «ya no está», y `projects move` la lleva.
     std::fs::rename(dir.join("notas"), dir.join("notas-2026")).unwrap();
@@ -377,6 +387,9 @@ fn una_carpeta_movida_sigue_siendo_su_proyecto() {
     let m = memoria::obtener(&db, &id_notas).unwrap();
     assert_eq!((m.project_id, m.project.as_str()), (pid, movida.as_str()));
     assert!(!proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.gone));
+    // `projects prune`: el de la otra carpeta «notas», sin memorias, se va.
+    assert_eq!(proyecto::podar(&db).unwrap(), 1);
+    assert_eq!(proyecto::resolver(&db, &otra).unwrap(), None);
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }

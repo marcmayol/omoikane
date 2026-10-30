@@ -58,7 +58,7 @@ pub struct Remember {
     tags: Option<Vec<String>>,
     /// Always shown in `context` for this project.
     pinned: Option<bool>,
-    /// Applies to every project, not just this one (typical for user preferences).
+    /// Applies to every project, not just this one. Preferences are global unless you pass `project` or `space` (or global=false).
     global: Option<bool>,
     /// Applies to every project of this project's space (true), or of the space with this name: for
     /// what is common to one client's repositories and must not reach other clients.
@@ -351,8 +351,11 @@ impl Servidor {
             .con_base(move |db, modelo, proyecto| {
                 let kind = Some(p.kind.parse::<Tipo>()?);
                 let space_id = espacio_pedido(db, proyecto, p.space)?;
+                // Las preferencias son de la persona, no de un proyecto ni de un cliente: globales salvo
+                // que se diga otra cosa (`project`, `space`).
+                let preferencia = kind == Some(Tipo::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
                 let (project, paths) = match p.project.as_deref().map(str::trim) {
-                    _ if p.global.unwrap_or(false) => (String::new(), p.paths.unwrap_or_default()),
+                    _ if p.global.unwrap_or(false) || preferencia => (String::new(), p.paths.unwrap_or_default()),
                     Some("") => (String::new(), p.paths.unwrap_or_default()),
                     Some(d) => (proyecto::de_carpeta(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
                     None => proyecto::para_guardar(proyecto, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),

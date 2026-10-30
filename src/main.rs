@@ -343,13 +343,19 @@ enum Orden {
 enum AccionProyectos {
     /// The projects with memories, latest activity first (the default).
     List,
-    /// The project now lives in another folder (it moved, or it has no git remote to recognise it): its memories follow it.
+    /// The project now lives in another folder (it moved without a git remote to recognise it), or goes to a space: its memories follow it.
     Move {
         /// The project: its old folder, or its name or part of it.
         proyecto: String,
         /// Its new folder.
-        carpeta: PathBuf,
+        #[arg(required_unless_present = "space")]
+        carpeta: Option<PathBuf>,
+        /// Put it in this space.
+        #[arg(long, value_name = "SPACE")]
+        space: Option<String>,
     },
+    /// Forget the projects without memories (a folder you work in again comes back by itself).
+    Prune,
     /// Merge project A into B: A's memories (with their ids, history and verdicts) and folders go to B.
     Merge {
         /// The project that disappears (folder or name).
@@ -549,6 +555,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
             // al que apunten sus rutas, o es global.
             let actual = proyecto_de(c)?;
+            // Las preferencias son de la persona: globales, salvo que se diga el espacio o la carpeta (--dir).
+            let global = global || (kind == Tipo::Preference && space.is_none() && c.dir.is_none());
             let (project, paths) =
                 if global { (String::new(), paths) } else { proyecto::para_guardar(&actual, &paths, &format!("{title} {content}")) };
             // Desde una carpeta general se ve todo: ahí se buscan las duplicadas.
@@ -1196,15 +1204,26 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             }
             Ok(())
         }
-        AccionProyectos::Move { proyecto: p, carpeta } => {
+        AccionProyectos::Move { proyecto: p, carpeta, space } => {
             let id = proyecto::buscar(&db, &p)?;
-            let nueva = proyecto::de(&carpeta)?;
-            let fundidas = proyecto::mover(&mut db, id, &nueva)?;
-            if fundidas > 0 {
-                println!("{}", tr!("{nueva}: moved there (its {fundidas} memories joined it)", "{nueva}: movido allí (se le han sumado sus {fundidas} memorias)"));
-            } else {
-                println!("{}", tr!("moved to {nueva}", "movido a {nueva}"));
+            if let Some(carpeta) = carpeta {
+                let nueva = proyecto::de(&carpeta)?;
+                let fundidas = proyecto::mover(&mut db, id, &nueva)?;
+                if fundidas > 0 {
+                    println!("{}", tr!("{nueva}: moved there (its {fundidas} memories joined it)", "{nueva}: movido allí (se le han sumado sus {fundidas} memorias)"));
+                } else {
+                    println!("{}", tr!("moved to {nueva}", "movido a {nueva}"));
+                }
             }
+            if let Some(s) = space {
+                proyecto::asignar_espacio(&db, id, Some(proyecto::buscar_espacio(&db, &s)?))?;
+                println!("{}", tr!("in the space «{s}» now", "ahora en el espacio «{s}»"));
+            }
+            Ok(())
+        }
+        AccionProyectos::Prune => {
+            let n = proyecto::podar(&db)?;
+            println!("{}", tr!("{n} projects without memories forgotten", "{n} proyectos sin memorias olvidados"));
             Ok(())
         }
         AccionProyectos::Merge { a, b } => {
