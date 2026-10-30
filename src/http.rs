@@ -5,6 +5,8 @@
 //!   `/fuentes/*.woff2`, que la página carga del binario)
 //! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua, con
 //!   `versions` (cuántas versiones anteriores guarda su historial) y `links` (las que enlaza con `[[…]]`)
+//! - `GET /api/projects` → los proyectos (`proyecto::lista`: clave, espacio, carpeta y si ya no está)
+//!   y los espacios (`proyecto::espacios`, con su nombre), para agrupar y filtrar por espacio
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
@@ -205,6 +207,14 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         .collect();
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
+                (Method::Get, "/api/projects") => {
+                    let db = db::abrir(&db)?;
+                    let cuerpo = serde_json::json!({
+                        "projects": crate::proyecto::lista(&db, None, None, usize::MAX)?,
+                        "spaces": crate::proyecto::espacios(&db)?,
+                    });
+                    Ok(json(200, cuerpo.to_string()))
+                }
                 (Method::Get, "/api/review") => {
                     let db = db::abrir(&db)?;
                     Ok(json(200, serde_json::to_string(&crate::revisar::avisos(&db, &Ambito::Todos)?)?))
@@ -310,7 +320,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));
