@@ -1185,3 +1185,100 @@ fn un_repositorio_por_espacio_solo_lleva_ese_espacio() {
     let s = b.json_en(&web_b, &["search", "VPN"]);
     assert_eq!(s[0]["id"], de_espacio.as_str(), "{s}");
 }
+
+/// Criterio de la 0.20.0: cualquier proyecto pasa de personal a corporativo y la memoria escala con
+/// él. A trabaja solo, sin sincronizar; luego mete el proyecto en el espacio acme y abre el
+/// repositorio de acme, sin migrar ni reimportar nada. B se une con el código y recibe lo del
+/// proyecto entero (mismos ids, historial, veredictos con su motivo y autor), y nada más.
+#[test]
+fn de_personal_a_empresa() {
+    let p = Prueba::nueva("empresa");
+    let a = p.equipo("pc-a");
+    let web = a.proyecto("web", Some("git@github.com:acme/web.git"));
+    let blog = a.proyecto("blog", Some("git@github.com:marc/blog.git"));
+    let staging = a.guardar(&web, "fact", "El staging está en Frankfurt", "Región eu-central-1.", &[]);
+    let centimos = a.guardar(&web, "decision", "Los importes van en céntimos", "Enteros, nunca coma flotante.", &[]);
+    let webhook = a.guardar(&web, "gotcha", "El webhook de pagos reintenta tres veces", "Hay que hacerlo idempotente.", &[]);
+    a.ok_en(&web, &["update", &staging, "-c", "Región eu-central-1, con dos réplicas.", "-r", "más réplicas"], &[]);
+    let cookie = a.guardar(&web, "decision", "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
+    let jwt = a.guardar(&web, "decision", "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
+    a.tool_en(&web, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
+    let cdn = a.guardar(&web, "fact", "El CDN es Fastly", "Para los estáticos.", &[]);
+    a.ok(&["forget", &cdn, "--yes"]);
+    let preferencia = a.guardar(&a.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
+    let astro = a.guardar(&blog, "fact", "El blog usa Astro", "Con Tailwind 4.", &[]);
+    let rss = a.guardar(&blog, "gotcha", "El RSS cachea una hora", "Purgar a mano tras publicar.", &[]);
+    let borrador = a.guardar(&blog, "fact", "El borrador del post de Rust", "Pendiente de revisar.", &[]);
+    a.ok(&["forget", &borrador, "--yes"]);
+    let del_proyecto = [staging.as_str(), centimos.as_str(), webhook.as_str(), cookie.as_str(), jwt.as_str()];
+    let de_a: Vec<serde_json::Value> = del_proyecto.iter().map(|id| a.get(id).unwrap()).collect();
+    let historial = |e: &Equipo, id: &str| e.json_en(&e.dir, &["history", id]);
+    let hist_a = historial(&a, &staging);
+    assert_eq!(hist_a.as_array().unwrap().len(), 1, "{hist_a}");
+    let veredicto = |e: &Equipo, en: &Path| -> serde_json::Value {
+        let rev = e.json_en(en, &["review", "--all"]);
+        rev.as_array().unwrap().iter().find(|x| x["kind"] == "superseded" && x["memory_id"] == cookie.as_str()).cloned().unwrap_or_else(|| panic!("el veredicto en {}: {rev}", e.nombre))
+    };
+    let ver_a = veredicto(&a, &web);
+    assert_eq!((ver_a["other_id"].as_str(), ver_a["reason"].as_str()), (Some(jwt.as_str()), Some("JWT replaced the cookie")), "{ver_a}");
+
+    // De personal a empresa: un espacio, el proyecto dentro y el repositorio de acme.
+    a.ok(&["space", "add", "acme"]);
+    a.ok(&["projects", "move", web.to_str().unwrap(), "--space", "acme"]);
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let b = p.equipo("pc-b");
+    b.ok(&["sync", "join", &codigo, "--yes"]);
+    b.sync();
+
+    // B tiene lo del proyecto: mismos ids, mismo contenido, mismo historial, el veredicto con su
+    // motivo y su autor; y nada de la preferencia global ni del otro proyecto.
+    for (id, en_a) in del_proyecto.iter().zip(&de_a) {
+        let m = b.get(id).unwrap_or_else(|| panic!("falta {id} en B"));
+        for campo in ["title", "content", "kind", "created_at", "updated_at", "author"] {
+            assert_eq!(m[campo], en_a[campo], "{id} {campo}");
+        }
+        assert_eq!(m["space"], "acme", "{m}");
+        assert_eq!(historial(&b, id), historial(&a, id), "historial de {id}");
+    }
+    assert_eq!(historial(&b, &staging)[0]["reason"], "más réplicas");
+    // En B, desde su carpeta del proyecto (que aún no tenía).
+    let web_b = b.proyecto("acme-web", Some("https://github.com/acme/web"));
+    let ver_b = veredicto(&b, &web_b);
+    for campo in ["other_id", "reason", "author", "detail"] {
+        assert_eq!(ver_b[campo], ver_a[campo], "veredicto: {campo}");
+    }
+    for id in [&preferencia, &astro, &rss, &cdn, &borrador] {
+        assert!(b.get(id).is_none(), "{id} no tenía que llegar a B");
+    }
+    let todas_b = b.json_en(&web_b, &["recent", "--all", "-n", "100"]);
+    assert_eq!(todas_b.as_array().unwrap().len(), del_proyecto.len(), "{todas_b}");
+
+    // En el repositorio de acme solo hay lo del espacio: sus memorias, su veredicto y el olvido de la
+    // que está en la papelera.
+    let clave = clave_del_codigo(&codigo);
+    let lineas: Vec<serde_json::Value> = p.lineas_de(&acme).iter().map(|l| descifrar_linea(&clave, l)).collect();
+    assert!(!lineas.is_empty());
+    for l in &lineas {
+        match l["type"].as_str().unwrap() {
+            "memory" => {
+                assert!(del_proyecto.contains(&l["id"].as_str().unwrap()), "{l}");
+                assert_eq!(l["space_key"], "acme", "{l}");
+            }
+            "verdict" => assert!(del_proyecto.contains(&l["memory_id"].as_str().unwrap()), "{l}"),
+            "tombstone" => assert_eq!(l["id"], cdn.as_str(), "{l}"),
+            otro => panic!("{otro}: {l}"),
+        }
+    }
+    assert_eq!(lineas.iter().filter(|l| l["type"] == "memory").count(), 2 * del_proyecto.len(), "las de A y las que B vuelve a escribir");
+
+    // A sigue con todo lo suyo: lo del proyecto, lo personal, lo global y la papelera.
+    a.sync();
+    for id in del_proyecto.iter().copied().chain([preferencia.as_str(), astro.as_str(), rss.as_str()]) {
+        assert!(a.get(id).is_some(), "A perdió {id}");
+    }
+    assert!(a.ok(&["trash"]).contains("Fastly"));
+    assert_eq!(historial(&a, &staging), hist_a);
+    assert_eq!(veredicto(&a, &web)["reason"], ver_a["reason"]);
+}
