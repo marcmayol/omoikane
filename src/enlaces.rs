@@ -8,7 +8,7 @@
 
 use crate::memoria::{Ambito, Memoria};
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap};
 
 /// Cómo se compara un nombre: minúsculas, sin tildes y con `_` en lugar de `-` y espacios.
@@ -41,10 +41,7 @@ pub fn recalcular(db: &Connection) -> Result<Vec<(String, String)>> {
             por_nombre.entry(nombre(t)).or_default().insert(m.id.as_str());
         }
     }
-    let por_id = |s: &str| -> Option<&str> {
-        let s = s.trim().to_uppercase();
-        (s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric())).then(|| todas.iter().find(|m| m.id.starts_with(&s)).map(|m| m.id.as_str())).flatten()
-    };
+    let por_id = |s: &str| -> Option<&str> { es_id(s).and_then(|s| todas.iter().find(|m| m.id.starts_with(&s)).map(|m| m.id.as_str())) };
     let mut enlaces: BTreeSet<(String, String)> = BTreeSet::new();
     let mut rotos = Vec::new();
     for m in &todas {
@@ -70,6 +67,94 @@ pub fn recalcular(db: &Connection) -> Result<Vec<(String, String)>> {
         q.execute(params![a, b])?;
     }
     Ok(rotos)
+}
+
+/// Lo mismo que [`recalcular`], pero solo para lo que puede cambiar al escribir `ids`: sus propios
+/// enlaces, los de las memorias que las enlazaban y los de las que nombran una de sus etiquetas o el
+/// principio de su id (que ahora pueden llevar a ellas). Las busca en el índice de texto, que da de
+/// más (luego se rehace cada una con las mismas reglas), y apunta sus rotos en `review`. `false` si
+/// un nombre no tiene nada que buscar en el índice: entonces hay que recalcularlo todo.
+pub fn recalcular_de(db: &Connection, ids: &BTreeSet<String>) -> Result<bool> {
+    let mut rehacer: BTreeSet<String> = ids.clone();
+    for id in ids {
+        let mut q = db.prepare_cached("SELECT from_id FROM memory_link WHERE to_id = ?1")?;
+        for f in q.query_map([id], |f| f.get::<_, String>(0))? {
+            rehacer.insert(f?);
+        }
+        let Some(m) = crate::memoria::obtener(db, id).ok() else { continue };
+        for t in &m.tags {
+            let nt = nombre(t);
+            let Some(frase) = crate::revisar::frase_fts(&nt, false) else { return Ok(false) };
+            for (otra, contenido) in por_fts(db, &format!("content : {frase}"))? {
+                if enlaces_de(&contenido).iter().any(|e| nombre(e) == nt) {
+                    rehacer.insert(otra);
+                }
+            }
+        }
+        let prefijos: Vec<String> = (8..=m.id.len()).map(|k| format!("\"{}\"", m.id[..k].to_lowercase())).collect();
+        if !prefijos.is_empty() {
+            for (otra, contenido) in por_fts(db, &format!("content : ({})", prefijos.join(" OR ")))? {
+                if enlaces_de(&contenido).iter().any(|e| es_id(e).is_some_and(|s| m.id.starts_with(&s))) {
+                    rehacer.insert(otra);
+                }
+            }
+        }
+    }
+    let mut rotos = Vec::new();
+    for id in &rehacer {
+        db.execute("DELETE FROM memory_link WHERE from_id = ?1", [id])?;
+        db.execute("DELETE FROM review WHERE memory_id = ?1 AND kind = ?2", params![id, crate::revisar::ENLACE_ROTO])?;
+        let Some(m) = crate::memoria::obtener(db, id).ok() else { continue };
+        for e in enlaces_de(&m.content) {
+            let ne = nombre(&e);
+            let Some(frase) = crate::revisar::frase_fts(&ne, false) else { return Ok(false) };
+            let con_etiqueta: Vec<String> = por_fts_etiquetas(db, &format!("tags : {frase}"))?
+                .into_iter()
+                .filter(|(_, tags)| tags.iter().any(|t| nombre(t) == ne))
+                .map(|(d, _)| d)
+                .collect();
+            let destinos: Vec<String> = if con_etiqueta.is_empty() {
+                let primera = match es_id(&e) {
+                    // La primera en el orden de `recientes`, como en el recálculo entero.
+                    Some(s) => db
+                        .query_row("SELECT id FROM memory WHERE id GLOB ?1 ORDER BY updated_at DESC, id DESC LIMIT 1", [format!("{s}*")], |f| f.get(0))
+                        .optional()?,
+                    None => None,
+                };
+                primera.into_iter().filter(|d| *d != m.id).collect()
+            } else {
+                con_etiqueta.into_iter().filter(|d| *d != m.id).collect()
+            };
+            if destinos.is_empty() && !m.tags.iter().any(|t| nombre(t) == ne) {
+                rotos.push((m.id.clone(), e));
+            }
+            for d in destinos {
+                db.execute("INSERT OR IGNORE INTO memory_link(from_id, to_id) VALUES (?1, ?2)", params![m.id, d])?;
+            }
+        }
+    }
+    crate::revisar::apuntar_rotos(db, rotos)?;
+    Ok(true)
+}
+
+/// Un enlace que parece el principio de un id (8 letras o cifras o más), en mayúsculas.
+fn es_id(e: &str) -> Option<String> {
+    let s = e.trim().to_uppercase();
+    (s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric())).then_some(s)
+}
+
+/// (id, contenido) de las memorias que da una consulta FTS.
+fn por_fts(db: &Connection, consulta: &str) -> Result<Vec<(String, String)>> {
+    let mut q = db.prepare_cached("SELECT id, content FROM memory WHERE n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)")?;
+    let v = q.query_map([consulta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(v)
+}
+
+/// (id, etiquetas) de las memorias que da una consulta FTS.
+fn por_fts_etiquetas(db: &Connection, consulta: &str) -> Result<Vec<(String, Vec<String>)>> {
+    let mut q = db.prepare_cached("SELECT id, tags FROM memory WHERE n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)")?;
+    let v: Vec<(String, String)> = q.query_map([consulta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(v.into_iter().map(|(id, tags)| (id, serde_json::from_str(&tags).unwrap_or_default())).collect())
 }
 
 /// Las que enlaza una memoria y las que la enlazan a ella (ids).

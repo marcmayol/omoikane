@@ -308,6 +308,7 @@ impl Servidor {
                     pinned: p.pinned.unwrap_or(false),
                     source: origen.clone(),
                 };
+                let antes = crate::revisar::antes(db)?;
                 let m = memoria::guardar(db, nueva, modelo)?;
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
                 let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None, &m.title, &origen)?;
@@ -322,7 +323,7 @@ impl Servidor {
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
                 }
                 // Si deja anticuada a otra (versión más alta, o hecho lo que allí estaba pendiente), se dice ya.
-                crate::revisar::al_dia(db)?;
+                crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                 let viejas: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
                     .into_iter()
                     .filter(|(id, _, _)| veredictos::parejas(db).map(|p| !p.contains_key(&veredictos::pareja(id, &m.id))).unwrap_or(true))
@@ -365,8 +366,11 @@ impl Servidor {
     async fn cambiar(&self, p: Update, origen: String) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, modelo, _| {
+                let antes = crate::revisar::antes(db)?;
                 if p.restore.unwrap_or(false) {
-                    return Ok(serde_json::to_value(compacta(memoria::restaurar(db, &p.id, modelo)?, false, None))?);
+                    let m = memoria::restaurar(db, &p.id, modelo)?;
+                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                    return Ok(serde_json::to_value(compacta(m, false, None))?);
                 }
                 // El motivo del cambio es también el de los veredictos que vengan con él.
                 let motivo = p.reason.clone().unwrap_or_default();
@@ -407,7 +411,8 @@ impl Servidor {
                     (m, cambiados, Vec::new())
                 };
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
-                crate::revisar::al_dia(db)?;
+                let tocadas: Vec<String> = std::iter::once(m.id.clone()).chain(absorbidas.iter().cloned()).collect();
+                crate::revisar::al_dia_de(db, &antes, if solo_juicio { &[] } else { &tocadas })?;
                 let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
                 con_redactados(&mut r, &m);
                 if !cambiados.is_empty() {
@@ -481,8 +486,9 @@ impl Servidor {
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, _| {
+                let antes = crate::revisar::antes(db)?;
                 let m = memoria::olvidar(db, &p.id)?;
-                crate::revisar::al_dia(db)?;
+                crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                 Ok(m)
             })
             .await;
