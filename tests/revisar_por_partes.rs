@@ -112,7 +112,8 @@ fn huella_al_dia(db: &Connection) -> bool {
     let guardada: String = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).unwrap();
     let real: String = db
         .query_row(
-            "SELECT count(*) || '|' || COALESCE(max(updated_at), '') || '|' || COALESCE(max(hlc), '') || '|' || COALESCE(sum(length(project)), 0) FROM memory",
+            "SELECT count(*) || '|' || COALESCE(max(updated_at), '') || '|' || COALESCE(max(hlc), '') || '|' || total(project_id) || '|'
+                 || (SELECT total(space_id) FROM memory WHERE space_id IS NOT NULL) FROM memory",
             [],
             |f| f.get(0),
         )

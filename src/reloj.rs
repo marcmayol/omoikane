@@ -110,6 +110,18 @@ pub fn formato(ms: u64, contador: u64, equipo: &str) -> String {
     format!("{ms:013}-{contador:010}-{equipo}")
 }
 
+/// Un sello con el contador de otro ancho (los del esquema 5 llevaban 4 cifras), en el formato de
+/// ahora; `None` si ya lo está o no es un sello.
+pub fn normalizado(sello: &str) -> Option<String> {
+    let mut p = sello.splitn(3, '-');
+    let (ms, c, equipo) = (p.next()?, p.next()?, p.next().unwrap_or(""));
+    let cifras = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !cifras(ms) || !cifras(c) || (ms.len() == 13 && c.len() == 10) {
+        return None;
+    }
+    Some(formato(ms.parse().ok()?, c.parse().ok()?, equipo))
+}
+
 fn ultimo(db: &Connection) -> Result<String> {
     Ok(db.query_row("SELECT v FROM meta WHERE k = 'hlc'", [], |f| f.get(0)).optional()?.unwrap_or_default())
 }
@@ -167,6 +179,18 @@ mod tests {
         assert!(mayor(&formato(5, 10_000, "a"), "0000000000005-9999-a"));
         assert!(mayor("0000000000005-0002-a", &formato(5, 1, "a")));
         assert!(!mayor("0000000000005-0001-a", &formato(5, 1, "a")));
+    }
+
+    #[test]
+    fn sellos_viejos_al_formato_de_ahora() {
+        assert_eq!(normalizado("1793189415788-0000-").as_deref(), Some("1793189415788-0000000000-"));
+        assert_eq!(normalizado("1793189415788-0012-pc-a1b2").as_deref(), Some("1793189415788-0000000012-pc-a1b2"));
+        assert_eq!(normalizado(&formato(5, 3, "x")), None, "ya está bien");
+        assert_eq!(normalizado(""), None);
+        assert_eq!(normalizado("basura"), None);
+        // Comparar como texto ya es comparar sellos.
+        let (a, b) = (normalizado("1793189415788-0002-a").unwrap(), formato(1793189415788, 10, "a"));
+        assert_eq!(a < b, comparar(&a, &b) == Ordering::Less);
     }
 
     #[test]

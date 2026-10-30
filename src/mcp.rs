@@ -25,6 +25,7 @@ Keep each memory short: one-line title, then what, why and where. Don't save wha
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
 If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
+Projects can belong to a space (a client, a product with several repositories): what applies to every project of the space but not to other clients goes with `space: true` instead of `global`. From a project you see its memories, its space's and the global ones, never another space's. `search` and `recent` take `project` (a folder or part of a project's name) and `space`; `context` says where you are and lists the projects.
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies (it goes to the trash for 30 days; `update` with restore=true brings it back).
@@ -57,8 +58,11 @@ pub struct Remember {
     tags: Option<Vec<String>>,
     /// Always shown in `context` for this project.
     pinned: Option<bool>,
-    /// Applies to every project, not just this one (typical for user preferences).
+    /// Applies to every project, not just this one. Preferences are global unless you pass `project` or `space` (or global=false).
     global: Option<bool>,
+    /// Applies to every project of this project's space (true), or of the space with this name: for
+    /// what is common to one client's repositories and must not reach other clients.
+    space: Option<EspacioParam>,
     /// Folder of the project it belongs to, when it is not the current one (for example, the session
     /// runs in the home folder). By default, the current project; from a folder that is not a project,
     /// the repository its absolute paths point to, or global.
@@ -81,8 +85,20 @@ pub struct Search {
     tags: Option<Vec<String>>,
     /// How many results (1-50, default 10).
     limit: Option<usize>,
-    /// Search every project, not just this one and the global memories.
+    /// Search every project (of this space, if the project is in one), not just this one and the global memories.
     all_projects: Option<bool>,
+    /// Search this project instead: its folder, or its name or part of it ("balua").
+    project: Option<String>,
+    /// Search this space instead (every project in it, plus its own and the global memories).
+    space: Option<String>,
+}
+
+/// `space` en `remember`: `true` (el espacio del proyecto) o el nombre de un espacio.
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EspacioParam {
+    Si(bool),
+    Nombre(String),
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -106,6 +122,8 @@ pub struct Update {
     pinned: Option<bool>,
     /// Move it to the project of this folder ("" makes it global).
     project: Option<String>,
+    /// Move it to this space (its name), for every project in it.
+    space: Option<String>,
     /// Why it changes; kept with the previous version.
     reason: Option<String>,
     /// Ids of memories this one replaces: they will show up as superseded by it.
@@ -138,6 +156,12 @@ pub struct Recent {
     limit: Option<usize>,
     /// Only this kind: fact, decision, gotcha, preference or procedure.
     kind: Option<String>,
+    /// From every project (of this space, if the project is in one).
+    all_projects: Option<bool>,
+    /// From this project instead: its folder, or its name or part of it.
+    project: Option<String>,
+    /// From this space instead.
+    space: Option<String>,
 }
 
 // --- Respuestas ------------------------------------------------------------------------------------
@@ -159,6 +183,9 @@ struct Compacta {
     global: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<String>,
+    /// Su espacio, si es de espacio (sin proyecto) o si se enseña el proyecto.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     similarity: Option<f32>,
     /// Por qué tomarla con cuidado (sustituida, contradicha, desfasada, sin revisar).
@@ -176,8 +203,9 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
         plano
     };
     Compacta {
-        global: m.project.is_empty(),
+        global: m.global(),
         project: (con_proyecto && !m.project.is_empty()).then(|| m.project.clone()),
+        space: ((m.de_espacio() || con_proyecto) && !m.space.is_empty()).then(|| m.space.clone()),
         id: m.id,
         kind: m.kind,
         title: m.title,
@@ -238,6 +266,48 @@ fn limite(n: Option<usize>) -> usize {
     n.unwrap_or(10).clamp(1, 50)
 }
 
+/// El ámbito de `search` y `recent`: el de la sesión, o el que pidan (`project`, `space`,
+/// `all_projects`), sin salir nunca del espacio de la sesión (desde una carpeta general, todo).
+fn ambito_pedido(db: &Connection, proyecto: &str, project: Option<&str>, space: Option<&str>, todos: bool) -> Result<Ambito> {
+    let base = Ambito::de(db, proyecto)?;
+    let pedido = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
+        Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
+    } else if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
+        let id = proyecto::buscar(db, p)?;
+        Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
+    } else if todos {
+        base.amplio()
+    } else {
+        base
+    };
+    fuera_de_espacio(&base, &pedido)?;
+    Ok(pedido)
+}
+
+/// Error si desde `base` no se puede ver (ni escribir en) `pedido`: otro espacio.
+fn fuera_de_espacio(base: &Ambito, pedido: &Ambito) -> Result<()> {
+    anyhow::ensure!(
+        base.permite(pedido),
+        "that is in another space: from this project you only see its own space (and the global memories); open the session in that project, or in the home folder, to see it"
+    );
+    Ok(())
+}
+
+/// El espacio de `remember` (`space: true` o su nombre) o de `update` (`space: "<nombre>"`).
+fn espacio_pedido(db: &Connection, proyecto: &str, p: Option<EspacioParam>) -> Result<Option<i64>> {
+    let base = Ambito::de(db, proyecto)?;
+    let id = match p {
+        None | Some(EspacioParam::Si(false)) => return Ok(None),
+        Some(EspacioParam::Si(true)) => base.espacio().ok_or_else(|| {
+            anyhow::anyhow!("this project is not in a space: give the space's name, or put the project in one with `omoi space assign <space>`")
+        })?,
+        Some(EspacioParam::Nombre(n)) if n.trim().is_empty() => return Ok(None),
+        Some(EspacioParam::Nombre(n)) => proyecto::buscar_espacio(db, &n)?,
+    };
+    fuera_de_espacio(&base, &Ambito::Espacio(Some(id)))?;
+    Ok(Some(id))
+}
+
 // --- Servidor --------------------------------------------------------------------------------------
 
 impl Servidor {
@@ -280,8 +350,12 @@ impl Servidor {
         let r = self
             .con_base(move |db, modelo, proyecto| {
                 let kind = Some(p.kind.parse::<Tipo>()?);
+                let space_id = espacio_pedido(db, proyecto, p.space)?;
+                // Las preferencias son de la persona, no de un proyecto ni de un cliente: globales salvo
+                // que se diga otra cosa (`project`, `space`).
+                let preferencia = kind == Some(Tipo::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
                 let (project, paths) = match p.project.as_deref().map(str::trim) {
-                    _ if p.global.unwrap_or(false) => (String::new(), p.paths.unwrap_or_default()),
+                    _ if p.global.unwrap_or(false) || preferencia => (String::new(), p.paths.unwrap_or_default()),
                     Some("") => (String::new(), p.paths.unwrap_or_default()),
                     Some(d) => (proyecto::de_carpeta(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
                     None => proyecto::para_guardar(proyecto, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
@@ -298,8 +372,12 @@ impl Servidor {
                         "hint": "A very similar memory exists. Update it with `update` (give a reason), or call `remember` again with force=true if it is a different memory.",
                     }));
                 }
+                if space_id.is_none() && !project.is_empty() {
+                    fuera_de_espacio(&Ambito::de(db, proyecto)?, &Ambito::de(db, &project)?)?;
+                }
                 let nueva = Nueva {
                     project,
+                    space_id,
                     kind,
                     title: p.title,
                     content: p.content,
@@ -307,12 +385,14 @@ impl Servidor {
                     tags: p.tags.unwrap_or_default(),
                     pinned: p.pinned.unwrap_or(false),
                     source: origen.clone(),
+                    ..Default::default()
                 };
                 let antes = crate::revisar::antes(db)?;
                 let m = memoria::guardar(db, nueva, modelo)?;
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
                 let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None, &m.title, &origen)?;
-                let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": if m.project.is_empty() { "(global)" } else { m.project.as_str() } });
+                let donde = if m.de_espacio() { format!("(space {})", m.space) } else if m.project.is_empty() { "(global)".to_string() } else { m.project.clone() };
+                let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": donde });
                 con_redactados(&mut r, &m);
                 if juzgadas > 0 {
                     r["judged"] = serde_json::json!(juzgadas);
@@ -365,7 +445,7 @@ impl Servidor {
     /// `update`, con quién lo pide (`origen`, como en `guardar`): firma los veredictos que traiga.
     async fn cambiar(&self, p: Update, origen: String) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, modelo, _| {
+            .con_base(move |db, modelo, proyecto| {
                 let antes = crate::revisar::antes(db)?;
                 if p.restore.unwrap_or(false) {
                     let m = memoria::restaurar(db, &p.id, modelo)?;
@@ -374,7 +454,9 @@ impl Servidor {
                 }
                 // El motivo del cambio es también el de los veredictos que vengan con él.
                 let motivo = p.reason.clone().unwrap_or_default();
+                let space_id = espacio_pedido(db, proyecto, p.space.map(EspacioParam::Nombre))?;
                 let c = Cambios {
+                    space_id,
                     title: p.title,
                     content: p.content,
                     kind: tipo(p.kind)?,
@@ -389,6 +471,7 @@ impl Servidor {
                     reason: p.reason,
                     replace: p.replace.unwrap_or_default().into_iter().map(|r| (r.find, r.with)).collect(),
                     append: p.append,
+                    ..Default::default()
                 };
                 let absorbe = p.absorb.filter(|ids| !ids.is_empty());
                 // Solo veredictos: la memoria no cambia (ni gana una versión vacía en su historial).
@@ -399,6 +482,7 @@ impl Servidor {
                     && c.tags.is_none()
                     && c.pinned.is_none()
                     && c.project.is_none()
+                    && c.space_id.is_none()
                     && c.replace.is_empty()
                     && c.append.is_none()
                     && absorbe.is_none();
@@ -445,12 +529,12 @@ impl Servidor {
         self.guardar(p, origen_de(&peer)).await
     }
 
-    #[tool(description = "Search the memories of this project and the global ones (or every project with all_projects; from a folder that is not a project, such as the home folder, every project). Returns compact results; use `get` for the whole memory.")]
+    #[tool(description = "Search the memories of this project, its space and the global ones (or every project of the space with all_projects, another project with `project`, a space with `space`; from a folder that is not a project, such as the home folder, every project). Returns compact results; use `get` for the whole memory.")]
     async fn search(&self, Parameters(p): Parameters<Search>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, modelo, proyecto| {
-                let ambito = if p.all_projects.unwrap_or(false) { Ambito::Todos } else { Ambito::de(proyecto) };
-                let todos = matches!(ambito, Ambito::Todos);
+                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let todos = !matches!(ambito, Ambito::Proyecto { .. });
                 let o = Opciones {
                     ambito,
                     kind: tipo(p.kind)?,
@@ -504,14 +588,29 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "The user's preferences and the pinned memories for this project (and the global ones), what is worth reviewing in its memory (memories a newer one contradicts, stale status, broken paths…), and what earlier sessions set aside as possibly worth saving. Call it at the start of a session.")]
+    #[tool(description = "Where you are (this project: folder, sync key, space, how many memories) and the other projects (latest activity first, with their status), the user's preferences and the pinned memories for this project (its space's and the global ones), what is worth reviewing in its memory (memories a newer one contradicts, stale status, broken paths…), and what earlier sessions set aside as possibly worth saving. Call it at the start of a session.")]
     async fn context(&self) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(|db, _, proyecto| {
-                let v = memoria::contexto(db, proyecto, 30)?;
+                let ambito = Ambito::de(db, proyecto)?;
+                let v = memoria::contexto(db, &ambito, 30)?;
                 let memorias: Vec<_> = v.into_iter().map(|m| compacta(m, false, None)).collect();
-                let review = crate::revisar::avisos(db, &Ambito::de(proyecto))?;
-                let mut r = serde_json::json!({ "memories": memorias, "review": review });
+                let review = crate::revisar::avisos(db, &ambito)?;
+                // Dónde está: el proyecto (o la carpeta general) y, de los demás, solo los de su espacio.
+                let actual = match ambito {
+                    Ambito::Proyecto { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
+                        x.path = proyecto.to_string();
+                        serde_json::to_value(x).unwrap_or_default()
+                    }),
+                    Ambito::Todos => Some(serde_json::json!({ "path": proyecto, "general": true, "memories": memoria::cuantas(db, &ambito)? })),
+                    _ => Some(serde_json::json!({ "path": proyecto, "memories": 0 })),
+                };
+                let filtro = match ambito {
+                    Ambito::Todos => None,
+                    a => Some(a.espacio()),
+                };
+                let proyectos = proyecto::lista(db, None, filtro, 50)?;
+                let mut r = serde_json::json!({ "project": actual, "projects": proyectos, "memories": memorias, "review": review });
                 // Lo apartado al cerrar otras sesiones: en los agentes sin recall al empezar (Grok,
                 // Windsurf…) solo llega por aquí. Se enseña una vez, como en el recall.
                 let apartadas = crate::candidatas::para_empezar(db, proyecto, "")?;
@@ -525,12 +624,12 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "The latest saved or changed memories in this project (and the global ones).")]
+    #[tool(description = "The latest saved or changed memories in this project (its space's and the global ones), or in `project`, `space` or every project of the space (all_projects).")]
     async fn recent(&self, Parameters(p): Parameters<Recent>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, proyecto| {
-                let ambito = Ambito::de(proyecto);
-                let todos = matches!(ambito, Ambito::Todos);
+                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let todos = !matches!(ambito, Ambito::Proyecto { .. });
                 let v = memoria::recientes(db, &ambito, tipo(p.kind)?, limite(p.limit))?;
                 Ok(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())
             })

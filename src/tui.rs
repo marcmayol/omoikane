@@ -57,8 +57,8 @@ impl Estado {
         }
     }
 
-    fn ambito(&self) -> Ambito {
-        if self.todos { Ambito::Todos } else { Ambito::Proyecto(self.proyecto.clone()) }
+    fn ambito(&self, db: &Connection) -> Result<Ambito> {
+        if self.todos { Ok(Ambito::Todos) } else { Ambito::de(db, &self.proyecto) }
     }
 
     pub fn elegida(&self) -> Option<&Memoria> {
@@ -69,9 +69,9 @@ impl Estado {
     pub fn cargar(&mut self, db: &mut Connection, modelo: Option<&Modelo>) -> Result<()> {
         let antes = self.elegida().map(|m| m.id.clone());
         self.memorias = if self.consulta.trim().is_empty() {
-            memoria::recientes(db, &self.ambito(), None, LIMITE)?
+            memoria::recientes(db, &self.ambito(db)?, None, LIMITE)?
         } else {
-            let o = Opciones { ambito: self.ambito(), kind: None, tags: vec![], limite: 50 };
+            let o = Opciones { ambito: self.ambito(db)?, kind: None, tags: vec![], limite: 50 };
             buscar::buscar_sin_apuntar_con(db, &self.consulta, &o, modelo)?.into_iter().map(|r| r.memoria).collect()
         };
         let i = antes.and_then(|id| self.memorias.iter().position(|m| m.id == id)).unwrap_or(0);
@@ -238,7 +238,7 @@ pub fn dibujar(f: &mut Frame, e: &mut Estado) {
 /// La memoria como texto: título, datos y contenido.
 fn ficha(m: &Memoria) -> Vec<Line<'static>> {
     let mut v = vec![Line::from(m.title.clone()).bold(), Line::raw("")];
-    let ambito = if m.project.is_empty() { tr!("global", "global") } else { m.project.clone() };
+    let ambito = if m.de_espacio() { tr!("space {}", "espacio {}", m.space) } else if m.project.is_empty() { tr!("global", "global") } else { m.project.clone() };
     v.push(Line::from(format!("{} · {ambito} · {}", m.kind.as_str(), &m.updated_at[..m.updated_at.len().min(10)])).dim());
     if !m.tags.is_empty() {
         v.push(Line::from(m.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")).dim());

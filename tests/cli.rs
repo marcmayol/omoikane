@@ -152,8 +152,9 @@ fn global_se_ve_desde_cualquier_proyecto() {
     std::fs::create_dir_all(&otro).unwrap();
     let r = e.json(&["--dir", otro.to_str().unwrap(), "search", "commits"]);
     assert_eq!(r[0]["project"], "");
+    // Lo global no es un proyecto: `omoi projects` no lo lista.
     let p = e.json(&["projects"]);
-    assert_eq!(p.as_array().unwrap().len(), 1);
+    assert!(p.as_array().unwrap().is_empty(), "{p}");
 }
 
 #[test]
