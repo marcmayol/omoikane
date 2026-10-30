@@ -7,6 +7,13 @@
 //! importar). Lo demás depende de la hora o del disco y se mira al leer. «Está bien así» se apunta en
 //! la misma tabla y vale hasta que la memoria vuelva a cambiar.
 //!
+//! Quien sabe qué memorias ha escrito (remember, update, forget, restore, absorb) llama a `al_dia_de`,
+//! que solo rehace las parejas y los enlaces en los que entran ellas, con candidatas sacadas del
+//! índice de texto; la sincronización, la importación y la lectura, que no lo saben, a `al_dia`, que
+//! rehace todo. Con 50.000 memorias, guardar pasó de 2,9 s a unos 15 ms de revisión. Por partes, qué
+//! palabra es rara se toma del último recálculo entero (en `meta`), que se repite cuando el número
+//! de memorias cambia más de un 5 %.
+//!
 //! Calibrado con las 137 memorias reales de Marc del 29-oct-2026: sale el caso que lo motivó (la
 //! nota de Omoikane que seguía en la 0.2.0 frente a la de estado en la 0.10.0) y ningún falso
 //! positivo. Las primeras versiones del detector daban cinco avisos, cuatro falsos: «pendiente» en
@@ -17,7 +24,7 @@ use crate::recall::LARGO_PARA_RECALL;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub const DESFASADA: &str = "outdated";
 pub const ESTADO_VIEJO: &str = "stale_status";
@@ -108,35 +115,169 @@ fn huella(db: &Connection) -> Result<String> {
     )?)
 }
 
-/// Recalcula las desfasadas si la base cambió desde la última vez.
+/// Lo guardado del último recálculo entero: cuántas memorias había y las palabras que no eran raras.
+const CLAVE_COMUNES: &str = "revision_comunes";
+/// Cuántas escrituras se han revisado por partes desde el último recálculo entero.
+const CLAVE_PARCIALES: &str = "revision_parciales";
+/// Por debajo de este número de memorias se recalcula siempre entero: es barato y el tope de las raras
+/// aún se mueve con cada memoria (`tope_raras`).
+pub const MINIMO_POR_PARTES: usize = 2_000;
+/// Cuánto puede cambiar el número de memorias desde el último recálculo entero antes de rehacerlo:
+/// hasta ahí, qué palabra es rara se toma de entonces.
+const DERIVA: f64 = 0.05;
+/// Más memorias cambiadas de una vez que esto (una importación a mano, un `absorb` enorme) se recalcula entero.
+const MAXIMO_POR_PARTES: usize = 200;
+
+/// Recalcula las desfasadas si la base cambió desde la última vez, sin saber qué cambió: todo entero.
+/// Es lo que corre tras la sincronización y la importación, y al leer (`avisos`, el recall) por si
+/// algo escribió sin avisar.
 pub fn al_dia(db: &Connection) -> Result<()> {
     let h = huella(db)?;
     let antes: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
     if antes.as_deref() == Some(h.as_str()) {
         return Ok(());
     }
-    let nuevas = desfasadas(db)?;
+    rehacer(db, &h)
+}
+
+/// Si la revisión estaba al día justo antes de escribir. Se toma antes de la escritura y se le pasa
+/// a [`al_dia_de`]: solo así se sabe que lo único nuevo son las memorias que se escriben.
+pub struct Antes {
+    /// La huella guardada, si lo que se ve de ella sin leer la tabla entera es lo de ahora.
+    huella: Option<String>,
+}
+
+/// Lo que da la huella sin `max(hlc)`: número de memorias, último cambio y proyectos, que salen del
+/// índice `memory_project` sin leer la tabla (el `max(hlc)` la lee entera: 30 ms con 50.000 memorias).
+fn huella_ligera(db: &Connection) -> Result<(String, String, String)> {
+    Ok(db.query_row("SELECT count(*), COALESCE(max(updated_at), ''), COALESCE(sum(length(project)), 0) FROM memory", [], |f| {
+        Ok((f.get::<_, i64>(0)?.to_string(), f.get(1)?, f.get::<_, i64>(2)?.to_string()))
+    })?)
+}
+
+/// Compara con la huella guardada lo que sale del índice, sin el sello. Lo que solo cambia el sello
+/// llega por la sincronización, que lo recalcula todo al acabar.
+pub fn antes(db: &Connection) -> Result<Antes> {
+    let (n, ultimo, proyectos) = huella_ligera(db)?;
+    let guardada: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
+    let huella = guardada.filter(|g| {
+        let p: Vec<&str> = g.split('|').collect();
+        p.len() == 4 && p[0] == n && p[1] == ultimo && p[3] == proyectos
+    });
+    Ok(Antes { huella })
+}
+
+/// La huella tras escribir `ids` sobre la de `antes`, sin leer la tabla: el sello más alto es el de
+/// antes o el de una de ellas (un cambio aquí siempre lleva un sello más nuevo). `None` si alguna ya
+/// no está (olvidada o absorbida: quizá llevaba el sello más alto) y hay que leerla entera. Si saliera
+/// distinta de la de verdad, la siguiente lectura lo recalcularía todo: más lento, pero bien.
+fn huella_tras(db: &Connection, antes: &str, ids: &BTreeSet<String>) -> Result<Option<String>> {
+    let mut sello = antes.split('|').nth(2).unwrap_or("").to_string();
+    for id in ids {
+        let Some(s) = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else {
+            return Ok(None);
+        };
+        sello = sello.max(s);
+    }
+    let (n, ultimo, proyectos) = huella_ligera(db)?;
+    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}")))
+}
+
+/// Pone al día la revisión tras escribir `ids` (guardadas, cambiadas, olvidadas o recuperadas), sin
+/// rehacerla entera: solo las parejas en las que entra una de ellas, contra sus candidatas del índice
+/// de búsqueda, y los enlaces que pueden haber cambiado. Qué palabra es rara se toma del último
+/// recálculo entero; se rehace entera si la revisión no estaba al día antes de escribir, si hay
+/// pocas memorias, si su número ha cambiado más de un 5 % desde entonces o si el índice no sabe
+/// buscar alguna palabra.
+pub fn al_dia_de(db: &Connection, antes: &Antes, ids: &[String]) -> Result<()> {
+    let Some(previa) = antes.huella.as_deref() else {
+        return al_dia(db);
+    };
+    if ids.is_empty() || ids.len() > MAXIMO_POR_PARTES {
+        return al_dia(db);
+    }
+    let ids: BTreeSet<String> = ids.iter().cloned().collect();
+    let h = match huella_tras(db, previa, &ids)? {
+        Some(h) => h,
+        None => huella(db)?,
+    };
+    let n: usize = h.split('|').next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    let Some(comunes) = comunes_vigentes(db, n)? else {
+        return al_dia(db);
+    };
+    let tx = db.unchecked_transaction()?;
+    let hecho = desfasadas_de(&tx, &ids, &comunes)? && crate::enlaces::recalcular_de(&tx, &ids)?;
+    if !hecho {
+        drop(tx);
+        return al_dia(db);
+    }
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [&h])?;
+    tx.execute(
+        &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_PARCIALES}', COALESCE((SELECT v FROM meta WHERE k = '{CLAVE_PARCIALES}'), 0) + 1)"),
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Las palabras comunes del último recálculo entero, si aún valen para `n` memorias.
+fn comunes_vigentes(db: &Connection, n: usize) -> Result<Option<HashSet<String>>> {
+    let Some(v) = db.query_row(&format!("SELECT v FROM meta WHERE k = '{CLAVE_COMUNES}'"), [], |f| f.get::<_, String>(0)).optional()? else {
+        return Ok(None);
+    };
+    let mut lineas = v.split('\n');
+    let Some(n_ref) = lineas.next().and_then(|x| x.parse::<usize>().ok()) else {
+        return Ok(None);
+    };
+    if n < MINIMO_POR_PARTES || n_ref < MINIMO_POR_PARTES || (n as f64 - n_ref as f64).abs() > n_ref as f64 * DERIVA {
+        return Ok(None);
+    }
+    Ok(Some(lineas.filter(|l| !l.is_empty()).map(str::to_string).collect()))
+}
+
+/// El recálculo entero: desfasadas y enlaces de toda la base.
+fn rehacer(db: &Connection, h: &str) -> Result<()> {
+    let (nuevas, n, comunes) = desfasadas(db)?;
     let tx = db.unchecked_transaction()?;
     // Lo que se dio por bueno está en `verdict` (y viaja con la sincronización); aquí solo lo detectado.
     tx.execute("DELETE FROM review WHERE kind IN (?1, ?2)", [DESFASADA, ENLACE_ROTO])?;
-    let mut rotos: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (m, e) in crate::enlaces::recalcular(&tx)? {
-        rotos.entry(m).or_default().push(format!("[[{e}]]"));
+    let rotos = crate::enlaces::recalcular(&tx)?;
+    apuntar_rotos(&tx, rotos)?;
+    for (vieja, nueva, detalle) in nuevas {
+        apuntar_desfasada(&tx, &vieja, &nueva, &detalle)?;
     }
-    for (m, es) in rotos {
-        tx.execute(
+    let mut guardadas = n.to_string();
+    for w in comunes {
+        guardadas.push('\n');
+        guardadas.push_str(&w);
+    }
+    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_COMUNES}', ?1)"), [&guardadas])?;
+    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_PARCIALES}', '0')"), [])?;
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [h])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Los enlaces rotos (memoria, nombre tal como está escrito), uno por memoria con todos sus nombres.
+pub(crate) fn apuntar_rotos(db: &Connection, rotos: Vec<(String, String)>) -> Result<()> {
+    let mut por_memoria: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (m, e) in rotos {
+        por_memoria.entry(m).or_default().push(format!("[[{e}]]"));
+    }
+    for (m, es) in por_memoria {
+        db.execute(
             &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, '', ?3, {AHORA})"),
             params![m, ENLACE_ROTO, format!("links to nothing: {}", es.join(", "))],
         )?;
     }
-    for (vieja, nueva, detalle) in nuevas {
-        tx.execute(
-            &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"),
-            params![vieja, DESFASADA, nueva, detalle],
-        )?;
-    }
-    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [&h])?;
-    tx.commit()?;
+    Ok(())
+}
+
+fn apuntar_desfasada(db: &Connection, vieja: &str, nueva: &str, detalle: &str) -> Result<()> {
+    db.execute(
+        &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"),
+        params![vieja, DESFASADA, nueva, detalle],
+    )?;
     Ok(())
 }
 
@@ -334,8 +475,57 @@ fn motivos(vieja: &Ficha, nueva: &Ficha, mismo_tema: bool, raras: &dyn Fn(&BTree
     r
 }
 
-/// Parejas (vieja, nueva, detalle) del mismo proyecto que hablan de lo mismo y se contradicen.
-fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
+/// Las palabras raras de una memoria, del título y del contenido.
+struct Raras {
+    titulo: BTreeSet<String>,
+    contenido: BTreeSet<String>,
+}
+
+fn raras_de(f: &Ficha, es_rara: &dyn Fn(&str) -> bool) -> Raras {
+    let filtra = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
+    Raras { titulo: filtra(&f.titulo), contenido: filtra(&f.contenido) }
+}
+
+/// Rara: en el 5 % de las memorias como mucho; a partir de 2.000 memorias, en 100. Una palabra que
+/// sale en cientos de memorias no dice que dos hablen de lo mismo.
+fn tope_raras(n: usize) -> usize {
+    2usize.max(n / 20).min(100)
+}
+
+/// Lo que comparten dos memorias para ser candidatas: una palabra rara o la versión de la misma cosa.
+fn comparten(a: &Ficha, ra: &Raras, b: &Ficha, rb: &Raras) -> bool {
+    let de_a: BTreeSet<&String> = ra.titulo.union(&ra.contenido).collect();
+    rb.titulo.iter().chain(&rb.contenido).any(|w| de_a.contains(w)) || a.versiones.keys().any(|c| !c.is_empty() && b.versiones.contains_key(c))
+}
+
+/// (vieja, nueva, detalle).
+type Desfasada = (String, String, String);
+
+/// Si una de las dos deja anticuada a la otra.
+fn juzgar(a: &Ficha, ra: &Raras, b: &Ficha, rb: &Raras, es_rara: &dyn Fn(&str) -> bool) -> Option<Desfasada> {
+    // La más nueva: por la fecha que menciona, luego por su último cambio y, en el mismo
+    // milisegundo (varias guardadas seguidas, una importación), por el sello del reloj.
+    fn orden(f: &Ficha) -> (&str, &str, &str, &str) {
+        (&f.cuando, &f.updated_at, &f.hlc, &f.id)
+    }
+    let ((vieja, rv), (nueva, rn)) = if orden(a) < orden(b) { ((a, ra), (b, rb)) } else { ((b, rb), (a, ra)) };
+    let comunes_t = rv.titulo.intersection(&rn.titulo).count();
+    let union = rv.contenido.union(&rn.contenido).count().max(1);
+    let jaccard = rv.contenido.intersection(&rn.contenido).count() as f64 / union as f64;
+    let mismo_tema = comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
+    // Lo que no comparte palabras solo puede contradecirse por una versión con nombre.
+    if !mismo_tema && vieja.versiones.keys().all(|c| c.is_empty()) {
+        return None;
+    }
+    let raras = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
+    let m = motivos(vieja, nueva, mismo_tema, &raras);
+    (!m.is_empty()).then(|| (vieja.id.clone(), nueva.id.clone(), m.join("; ")))
+}
+
+/// Parejas (vieja, nueva, detalle) del mismo proyecto que hablan de lo mismo y se contradicen, de toda
+/// la base. Devuelve también cuántas memorias había y las palabras que no eran raras, que es lo que
+/// necesita la revisión por partes (`al_dia_de`) hasta el siguiente recálculo entero.
+fn desfasadas(db: &Connection) -> Result<(Vec<Desfasada>, usize, Vec<String>)> {
     let todas = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
     let sellos: HashMap<String, String> = {
         let mut q = db.prepare("SELECT id, hlc FROM memory")?;
@@ -349,13 +539,9 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
             *df.entry(w.as_str()).or_default() += 1;
         }
     }
-    // Rara: en el 5 % de las memorias como mucho; a partir de 2.000 memorias, en 100. Una palabra que
-    // sale en cientos de memorias no dice que dos hablen de lo mismo.
-    let tope = 2usize.max(n / 20).min(100);
+    let tope = tope_raras(n);
     let es_rara = |w: &str| df.get(w).is_some_and(|d| *d <= tope);
-    let raras = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
-    let titulos: Vec<BTreeSet<String>> = fichas.iter().map(|f| raras(&f.titulo)).collect();
-    let contenidos: Vec<BTreeSet<String>> = fichas.iter().map(|f| raras(&f.contenido)).collect();
+    let raras: Vec<Raras> = fichas.iter().map(|f| raras_de(f, &es_rara)).collect();
 
     // Candidatas: parejas del mismo proyecto (las globales cuentan como uno) que comparten una palabra
     // rara o nombran la versión de la misma cosa («rusqlite 0.41.0»). Es exacto: cualquier motivo de
@@ -364,7 +550,7 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
     let mut parejas: BTreeSet<(usize, usize)> = BTreeSet::new();
     let mut indice: HashMap<(&str, String), Vec<usize>> = HashMap::new();
     for (i, f) in fichas.iter().enumerate() {
-        for w in titulos[i].union(&contenidos[i]) {
+        for w in raras[i].titulo.union(&raras[i].contenido) {
             indice.entry((f.project.as_str(), w.clone())).or_default().push(i);
         }
         for cosa in f.versiones.keys().filter(|c| !c.is_empty()) {
@@ -379,30 +565,86 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
         }
     }
 
-    let mut r = Vec::new();
-    for (i, j) in parejas {
-        let (a, b) = (&fichas[i], &fichas[j]);
-        // La más nueva: por la fecha que menciona, luego por su último cambio y, en el mismo
-        // milisegundo (varias guardadas seguidas, una importación), por el sello del reloj.
-        fn orden(f: &Ficha) -> (&str, &str, &str, &str) {
-            (&f.cuando, &f.updated_at, &f.hlc, &f.id)
-        }
-        let ((vieja, iv), (nueva, inu)) = if orden(a) < orden(b) { ((a, i), (b, j)) } else { ((b, j), (a, i)) };
-        let comunes_t = titulos[iv].intersection(&titulos[inu]).count();
-        let union = contenidos[iv].union(&contenidos[inu]).count().max(1);
-        let jaccard = contenidos[iv].intersection(&contenidos[inu]).count() as f64 / union as f64;
-        let mismo_tema = comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
-        // Lo que no comparte palabras solo puede contradecirse por una versión con nombre.
-        if !mismo_tema && vieja.versiones.keys().all(|c| c.is_empty()) {
-            continue;
-        }
-        let m = motivos(vieja, nueva, mismo_tema, &raras);
+    let r = parejas.into_iter().filter_map(|(i, j)| juzgar(&fichas[i], &raras[i], &fichas[j], &raras[j], &es_rara)).collect();
+    let mut comunes: Vec<String> = df.iter().filter(|(_, d)| **d > tope).map(|(w, _)| w.to_string()).collect();
+    comunes.sort();
+    Ok((r, fichas.len(), comunes))
+}
 
-        if !m.is_empty() {
-            r.push((vieja.id.clone(), nueva.id.clone(), m.join("; ")));
+/// La frase con la que el índice de texto (`memory_fts`, unicode61 sin tildes) encuentra una palabra
+/// de las fichas: sus trozos alfanuméricos seguidos («centrelaser.es» → `"centrelaser es"`). Con
+/// `prefijo`, el último trozo vale como principio de palabra: la ficha corta el contenido en
+/// `LARGO_PARA_RECALL` y puede quedarse con media palabra. `None` si no tiene nada que buscar.
+pub(crate) fn frase_fts(palabra: &str, prefijo: bool) -> Option<String> {
+    let trozos: Vec<&str> = palabra.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect();
+    let ultimo = trozos.last()?;
+    let estrella = if prefijo && ultimo.chars().count() >= 3 { " *" } else { "" };
+    Some(format!("\"{}\"{estrella}", trozos.join(" ")))
+}
+
+/// Las memorias (con su sello) que da una consulta FTS en un proyecto.
+fn fichas_por_fts(db: &Connection, consulta: &str, project: &str) -> Result<Vec<Ficha>> {
+    let mut q = db.prepare_cached(&format!(
+        "SELECT {}, hlc FROM memory WHERE project = ?2 AND n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)",
+        crate::memoria::COLUMNAS
+    ))?;
+    let v = q
+        .query_map(params![consulta, project], |f| Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(14)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(v.into_iter().map(|(m, hlc)| ficha(&m, hlc)).collect())
+}
+
+/// Las desfasadas en las que entra alguna de `ids`, con la idea de rara del último recálculo entero:
+/// borra las que había y apunta las de ahora. Sus candidatas salen del índice de texto (cualquier
+/// memoria que comparta una palabra rara o una cosa con versión la nombra) y se comprueban igual que
+/// en el recálculo entero. `false` si una palabra no tiene nada que buscar en el índice.
+fn desfasadas_de(db: &Connection, ids: &BTreeSet<String>, comunes: &HashSet<String>) -> Result<bool> {
+    let es_rara = |w: &str| !comunes.contains(w);
+    let mut cambiadas = Vec::new();
+    for id in ids {
+        db.execute("DELETE FROM review WHERE kind = ?1 AND (memory_id = ?2 OR other_id = ?2)", params![DESFASADA, id])?;
+        let fila = db
+            .query_row(&format!("SELECT {}, hlc FROM memory WHERE id = ?1", crate::memoria::COLUMNAS), [id], |f| {
+                Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(14)?))
+            })
+            .optional()?;
+        if let Some((m, hlc)) = fila {
+            cambiadas.push(ficha(&m, hlc));
         }
     }
-    Ok(r)
+    let mut nuevas: BTreeMap<(String, String), String> = BTreeMap::new();
+    for c in &cambiadas {
+        let rc = raras_de(c, &es_rara);
+        let mut frases = Vec::new();
+        for w in rc.titulo.union(&rc.contenido) {
+            let Some(f) = frase_fts(w, true) else { return Ok(false) };
+            frases.push(f);
+        }
+        for cosa in c.versiones.keys().filter(|c| !c.is_empty()) {
+            let Some(f) = frase_fts(cosa, false) else { return Ok(false) };
+            frases.push(f);
+        }
+        if frases.is_empty() {
+            continue;
+        }
+        let consulta = format!("{{title content}} : ({})", frases.join(" OR "));
+        for b in fichas_por_fts(db, &consulta, &c.project)? {
+            if b.id == c.id {
+                continue;
+            }
+            let rb = raras_de(&b, &es_rara);
+            if !comparten(c, &rc, &b, &rb) {
+                continue;
+            }
+            if let Some((vieja, nueva, detalle)) = juzgar(c, &rc, &b, &rb, &es_rara) {
+                nuevas.insert((vieja, nueva), detalle);
+            }
+        }
+    }
+    for ((vieja, nueva), detalle) in nuevas {
+        apuntar_desfasada(db, &vieja, &nueva, &detalle)?;
+    }
+    Ok(true)
 }
 
 // --- Lectura ---------------------------------------------------------------------------------------
