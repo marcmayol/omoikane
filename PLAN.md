@@ -781,6 +781,7 @@ Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts s
 - La sincronización elige por espacio («este repo comparte todo el espacio cliente-a»), además de por proyecto: un repo de sync por cliente, con su propia clave, es el aislamiento entre clientes.
 - Cómo se asigna: `omoi spaces add <nombre>` y `omoi projects move <proyecto> --space <nombre>`; opcionalmente por carpeta padre (todo lo que cuelga de `D:\clientes\acme` es del espacio acme).
 - Se hace en la 0.20.0 y no después porque es una columna y un filtro ahora, y un cambio de esquema tras la 1.0.
+- **Rotar la clave de la sincronización y una clave por espacio** (requisito de Marc para la 1.0, pensando en una software factory). Hoy quien tuvo la clave de un repo lo lee para siempre: no hay forma de sacar a alguien que deja la empresa o un cliente. Diseño: cada línea cifrada lleva el id de su clave (`k1:`, `k2:`…; las de hoy, sin prefijo, son la clave 1), el repo lleva en `omoikane.check` qué claves hay y cuál es la vigente, y `omoi sync rotate` crea una nueva, vuelve a cifrar todo lo de este equipo con ella, la marca como vigente y da el código nuevo para los demás equipos; los que siguen con la vieja dejan de poder leer lo nuevo. Cada espacio puede tener su propio repo y su propia clave (`omoi sync init --space acme`), y un equipo puede estar en varios a la vez. Va en la 0.20.0 porque cambia el formato de la línea de sync, que la 1.0 congela.
 - **Para el aprendizaje entre proyectos de la 0.21.0** (que no rompa la 1.0): `recall_log` apunta también el proyecto desde el que se pidió cada memoria (`project_id`), y lo que hoy se borra a los 7 días se resume antes en una tabla local `memory_use(memory_id, project_id, veces, ultima)`. Son tablas locales: no viajan por la sincronización ni entran en el export, así que no tocan los formatos que se congelan.
 
 
@@ -811,6 +812,14 @@ No copiar memorias entre proyectos (duplicados que se desincronizan) ni hacer gl
 - Hook `classic.SubagentStop` del mod (comprobar que el motor lo expone; si no, leer los transcripts de subagentes que Claude Code deja junto al de la sesión) → `omoi recall --session-end` sobre la conversación del subagente, con la misma puntuación de candidatas y una señal más: **error de herramienta seguido del mismo comando con éxito** en un fichero del proyecto, que en los subagentes sí es señal de trampa (en las sesiones de Marc lo eran casi todo scripts de un solo uso; en un subagente que toca el repo, no). Las candidatas llevan `kind: subagent` y se deduplican contra las del padre.
 - Mismo tratamiento en los demás agentes que tengan evento de subagente (Codex, Gemini CLI: comprobar en su documentación).
 - Medida: con 30 transcripts reales de subagentes de Marc, 6 de cada 10 candidatas que él guardaría, y nunca más de 5 por sesión en total.
+
+### 1.1.0 · software factory (después de la 1.0; solo añade, sin romper el esquema ni los formatos)
+Marc, 30-oct-2026: que Omoikane sirva igual a una persona con sus agentes que a una software factory con muchos clientes, sin servidor propio. La 1.0 deja el esquema y el formato preparados (espacios, rotación de claves y clave por espacio, en la 0.20.0); esto llega después:
+- **Memoria de equipo para quien llega nuevo:** lo fijado del espacio le llega al agente de quien se une, como hoy las preferencias.
+- **Agentes sin persona delante** (CI, servidores): `omoi` sin carpeta de usuario, con la base y la clave por variable de entorno, y sin preguntas.
+- **Vista de responsable** en la web: espacios, quién ha escrito qué y qué está desfasado, por cliente.
+- **Muchas escrituras a la vez:** medir 20 agentes contra la misma base (SQLite escribe de uno en uno; WAL y reintentos) y arreglar lo que salga.
+- Lo que no se hace: un servidor propio con usuarios y permisos. El permiso es tener la clave del repo del cliente.
 
 ### Orden y por qué
 8.1 primero porque todo lo demás se apoya en no perder nada (juntar y mover usan la papelera; la copia fiel es la red de seguridad de cada migración siguiente). 8.2 son cambios de API de `remember`/`update` que conviene sacar juntos para no marear a los agentes con tres versiones de esquema de herramientas. 8.3 toca el modelo de proyecto. 8.4 es lo único con red y procesos de fondo, y va al final para medirlo con calma.
