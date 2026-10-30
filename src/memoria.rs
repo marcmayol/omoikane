@@ -435,6 +435,9 @@ pub(crate) struct Origen<'a> {
     /// cambia; lo mandan las versiones de antes del esquema 10 y las líneas en que coinciden).
     pub content_hlc: &'a str,
     pub author: &'a str,
+    /// Los campos de la línea que esta versión no conoce, en JSON (`memory.extra`): la memoria los
+    /// guarda y la sincronización y `omoi export` los vuelven a escribir.
+    pub extra: &'a str,
 }
 
 /// Dónde va una memoria: (proyecto, espacio). Un espacio va sin proyecto; una carpeta se apunta como
@@ -505,8 +508,8 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
     let (project_id, space_id) = alcance(tx, &nueva.project, nueva.project_id, nueva.space_id)?;
     tx.execute(
         &format!(
-            "INSERT INTO memory(id, project_id, space_id, kind, title, content, paths, tags, pinned, source, created_at, updated_at, hlc, author, content_hlc)
-             VALUES (?1, ?2, ?14, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, {AHORA}), COALESCE(?11, {AHORA}), ?12, ?13, ?15)"
+            "INSERT INTO memory(id, project_id, space_id, kind, title, content, paths, tags, pinned, source, created_at, updated_at, hlc, author, content_hlc, extra)
+             VALUES (?1, ?2, ?14, ?3, ?4, ?5, ?6, ?7, ?8, ?9, COALESCE(?10, {AHORA}), COALESCE(?11, {AHORA}), ?12, ?13, ?15, ?16)"
         ),
         params![
             id,
@@ -524,6 +527,7 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
             author,
             space_id,
             content_hlc,
+            origen.map_or("{}", |o| o.extra),
         ],
     )?;
     let n = tx.last_insert_rowid();
@@ -596,6 +600,11 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
         None => crate::reloj::sello_tras(tx, &hlc_antes)?,
     };
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    // Lo que llega de otro equipo trae la memoria entera, también los campos que esta versión no
+    // conoce; un cambio de aquí los deja como estaban.
+    if let Some(o) = origen {
+        tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, o.extra])?;
+    }
     // Solo lo que trae el cambio, y solo si se escribe aquí: lo que ya había lo avisa Revisar.
     let mut redacted = Vec::new();
     let mut limpio = |t: &str| if origen.is_none() { sin_secretos(t, &mut redacted) } else { t.to_string() };
@@ -925,7 +934,8 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         tx.commit()?;
         bail!(tr!("{id} is not forgotten here (it came back from another computer); removed it from the trash", "{id} no está olvidada aquí (volvió desde otro equipo); la quito de la papelera"));
     }
-    let m: Memoria = serde_json::from_str(&m)?;
+    let (m, extra, _) = crate::sync::de_papelera(&m).ok_or_else(|| anyhow!(tr!("{id} can't be read from the trash", "{id} no se entiende en la papelera")))?;
+    let extra = crate::sync::extra_a_texto(&extra);
     let hlc_olvidada = if m.content_hlc.is_empty() { hlc_olvidada } else { m.content_hlc.clone() };
     let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
     let marca: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
@@ -946,8 +956,9 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
     };
     // Vuelve con su texto de siempre: el sello de contenido, el de cuando se olvidó (los veredictos que
     // tenía siguen valiendo).
-    let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, content_hlc: &hlc_olvidada, author: &m.author };
+    let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, content_hlc: &hlc_olvidada, author: &m.author, extra: &extra };
     tx.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
+    crate::sync::guardar_extra_olvido(&tx, &id, &Default::default())?;
     let r = insertar_en(&tx, &id, nueva, Some(&o), modelo)?;
     for v in versiones {
         tx.execute(
@@ -969,6 +980,12 @@ pub(crate) fn alcance_guardado(tx: &Connection, m: &Memoria) -> Result<(i64, Opt
             _ if !m.project_key.is_empty() => crate::proyecto::de_clave(tx, &m.project_key, &m.project, &crate::db::persona_de(tx))?,
             _ => crate::proyecto::registrar(tx, &m.project)?,
         };
+        // Como al recibirla por la sincronización: un proyecto sin espacio aquí toma el que trae; uno
+        // con espacio se queda el suyo.
+        if !m.space.is_empty() && crate::proyecto::espacio_de(tx, id)?.is_none() {
+            let s = crate::proyecto::espacio_de_clave(tx, &m.space)?;
+            tx.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![id, s])?;
+        }
         return Ok((id, None));
     }
     Ok((0, crate::proyecto::espacio_de_clave(tx, &m.space)?))
@@ -1002,11 +1019,13 @@ fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> R
     };
     let versiones = historial(tx, id)?;
     let hlc_m = hlc_de(tx, id)?;
-    let content_hlc: String = tx.query_row("SELECT content_hlc FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    let (content_hlc, extra): (String, String) = tx.query_row("SELECT content_hlc, extra FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?)))?;
     let m = Memoria { content_hlc, ..m };
+    // En la papelera va con sus campos desconocidos: si vuelve (aquí o en otro equipo), vuelven con ella.
+    let texto = crate::sync::a_papelera(&m, &crate::sync::extra_de(&extra), &Default::default())?;
     tx.execute(
         &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
-        params![id, serde_json::to_string(&m)?, serde_json::to_string(&versiones)?, hlc_m, deleted_at, quien],
+        params![id, texto, serde_json::to_string(&versiones)?, hlc_m, deleted_at, quien],
     )?;
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
     desindexar(tx, n)?;
