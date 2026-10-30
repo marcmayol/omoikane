@@ -25,12 +25,33 @@ pub const RUTA_ROTA: &str = "broken_path";
 pub const SIN_USO: &str = "unused";
 pub const LARGA: &str = "too_long";
 pub const ENLACE_ROTO: &str = "broken_link";
-const TIPOS: [&str; 6] = [DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, RUTA_ROTA, SIN_USO, LARGA];
+/// Una que el agente dijo que otra sustituye (`supersedes`), o que contradice a otra (`contradicts`).
+pub const SUSTITUIDA: &str = crate::veredictos::SUSTITUIDA;
+pub const CONTRADICE: &str = crate::veredictos::CONTRADICE;
+/// Le ha llegado la fecha de revisión de su tipo (`dias_para_revisar`).
+pub const POR_REVISAR: &str = "due";
+const TIPOS: [&str; 9] = [SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
 /// Días desde que se creó sin recordarse nunca.
 pub const DIAS_SIN_USO: f64 = 30.0;
+
+/// Cada cuántos días sin tocar conviene comprobar que una memoria sigue siendo verdad. Una decisión o
+/// una receta se quedan viejas antes que un hecho o una trampa; una preferencia, mientras el usuario
+/// no diga otra cosa, vale siempre, y una `status` ya tiene su propio aviso. «Está bien así» vuelve a
+/// poner el reloj a cero.
+pub fn dias_para_revisar(m: &Memoria) -> Option<f64> {
+    use crate::memoria::Tipo;
+    if m.tags.iter().any(|t| t == crate::memoria::ESTADO) {
+        return None;
+    }
+    match m.kind {
+        Tipo::Decision | Tipo::Procedure => Some(120.0),
+        Tipo::Fact | Tipo::Gotcha => Some(180.0),
+        Tipo::Preference => None,
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Aviso {
@@ -64,16 +85,8 @@ pub fn al_dia(db: &Connection) -> Result<()> {
     }
     let nuevas = desfasadas(db)?;
     let tx = db.unchecked_transaction()?;
-    // Lo descartado se queda: si el aviso vuelve a salir, sigue descartado mientras nada cambie.
-    tx.execute("DELETE FROM review WHERE kind = ?1 AND dismissed_at IS NULL", [DESFASADA])?;
-    // Pero solo mientras ninguna de las dos cambie: si una cambia, el aviso puede volver.
-    tx.execute(
-        "DELETE FROM review WHERE kind IN (?1, ?2) AND dismissed_at IS NOT NULL AND (
-           EXISTS (SELECT 1 FROM memory m WHERE m.id = review.memory_id AND m.updated_at > review.dismissed_at)
-           OR EXISTS (SELECT 1 FROM memory m WHERE m.id = review.other_id AND m.updated_at > review.dismissed_at))",
-        [DESFASADA, ENLACE_ROTO],
-    )?;
-    tx.execute("DELETE FROM review WHERE kind = ?1 AND dismissed_at IS NULL", [ENLACE_ROTO])?;
+    // Lo que se dio por bueno está en `verdict` (y viaja con la sincronización); aquí solo lo detectado.
+    tx.execute("DELETE FROM review WHERE kind IN (?1, ?2)", [DESFASADA, ENLACE_ROTO])?;
     let mut rotos: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (m, e) in crate::enlaces::recalcular(&tx)? {
         rotos.entry(m).or_default().push(format!("[[{e}]]"));
@@ -359,13 +372,18 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
 // --- Lectura ---------------------------------------------------------------------------------------
 
 /// Si se dijo «está bien así» y la memoria no ha cambiado desde entonces.
+/// Los avisos que un veredicto vigente quita: (memoria, aviso, otra). Una pareja con veredicto ya no
+/// sale como desfasada: o vale (`compatible`) o tiene su propio aviso (`superseded`, `contradicts`).
 fn descartados(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
-    let mut q = db.prepare(
-        "SELECT r.memory_id, r.kind, r.other_id FROM review r JOIN memory m ON m.id = r.memory_id
-         WHERE r.dismissed_at IS NOT NULL AND m.updated_at <= r.dismissed_at",
-    )?;
-    let v = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-    Ok(v)
+    let mut r = BTreeSet::new();
+    for ((id, aviso), _) in crate::veredictos::oks(db, true)? {
+        r.insert((id, aviso, String::new()));
+    }
+    for (a, b) in crate::veredictos::parejas(db)?.into_keys() {
+        r.insert((a.clone(), DESFASADA.to_string(), b.clone()));
+        r.insert((b, DESFASADA.to_string(), a));
+    }
+    Ok(r)
 }
 
 /// Dónde está una ruta de una memoria en este equipo, si se puede saber (relativa a su proyecto).
@@ -412,6 +430,15 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
             }
         }
     }
+    for v in crate::veredictos::parejas(db)?.into_values() {
+        if v.relation == crate::veredictos::COMPATIBLE {
+            continue;
+        }
+        if let (Some(m), Some(o)) = (por_id.get(v.memory_id.as_str()), por_id.get(v.other_id.as_str())) {
+            let detalle = if v.relation == SUSTITUIDA { "replaced by the other one" } else { "they disagree and neither has won yet" };
+            r.push(aviso(m, &v.relation, Some(o), detalle.into()));
+        }
+    }
     {
         let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY memory_id")?;
         let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
@@ -425,7 +452,11 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
     }
     let ahora = chrono_ahora(db)?;
     let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
+    let revisadas = crate::veredictos::oks(db, false)?;
     for m in &todas {
+        if let Some(n) = sin_revisar(m, &revisadas, &ahora) {
+            r.push(aviso(m, POR_REVISAR, None, format!("untouched for {n} days: is it still true?")));
+        }
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
         if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias(&m.updated_at) > DIAS_ESTADO && !descartado(ESTADO_VIEJO) {
             let despues = todas.iter().filter(|x| x.project == m.project && x.id != m.id && x.updated_at > m.updated_at).count();
@@ -475,18 +506,28 @@ fn dias_entre(desde: &str, hasta: &str) -> f64 {
     }
 }
 
-/// «Está bien así»: no vuelve a avisar de esto hasta que la memoria cambie.
+/// Días sin revisar, si ya le toca: desde su último cambio o el último «está bien así», lo más nuevo.
+fn sin_revisar(m: &Memoria, revisadas: &HashMap<(String, String), String>, ahora: &str) -> Option<i64> {
+    let plazo = dias_para_revisar(m)?;
+    let mut desde = m.updated_at.as_str();
+    if let Some(at) = revisadas.get(&(m.id.clone(), POR_REVISAR.to_string()))
+        && at.as_str() > desde
+    {
+        desde = at;
+    }
+    let n = dias_entre(desde, ahora);
+    (n > plazo).then_some(n as i64)
+}
+
+/// «Está bien así»: no vuelve a avisar de esto hasta que la memoria cambie. En una pareja, las dos
+/// valen (`compatible`); en una memoria sola, `ok:<aviso>`. Es un veredicto, así que viaja.
 pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -> Result<()> {
-    let id = crate::memoria::resolver_id(db, memory_id)?;
     anyhow::ensure!(TIPOS.contains(&kind), "unknown review kind «{kind}»");
-    db.execute(
-        &format!(
-            "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, ?2, ?3, '', {AHORA}, {AHORA})
-             ON CONFLICT(memory_id, kind, other_id) DO UPDATE SET dismissed_at = {AHORA}"
-        ),
-        params![id, kind, other_id],
-    )?;
-    Ok(())
+    if other_id.is_empty() {
+        crate::veredictos::poner(db, memory_id, "", &format!("ok:{kind}"))
+    } else {
+        crate::veredictos::poner(db, memory_id, other_id, crate::veredictos::COMPATIBLE)
+    }
 }
 
 /// Las memorias que la recién guardada deja anticuadas: (id, título, por qué).
@@ -499,11 +540,39 @@ pub fn superadas_por(db: &Connection, id: &str) -> Result<Vec<(String, String, S
     Ok(v)
 }
 
-/// Para el recall: una nota corta por memoria que conviene tomar con cuidado (desfasada o estado viejo).
+/// Para el recall: una nota corta por memoria que conviene tomar con cuidado (sustituida,
+/// contradicha, desfasada o estado viejo).
 pub fn notas(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notas_con(db, memorias, false)
+}
+
+/// Para `search`: lo mismo y, además, las que ya toca revisar. En el recall no, para no meter ruido:
+/// ahí solo va lo que dice que la memoria puede estar mal.
+pub fn notas_busqueda(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notas_con(db, memorias, true)
+}
+
+fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Result<HashMap<String, String>> {
     let mut r = HashMap::new();
     if memorias.is_empty() {
         return Ok(r);
+    }
+    let corto = |id: &str| -> Result<String> {
+        let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+        Ok(format!("{} «{}»", id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()))
+    };
+    for v in crate::veredictos::parejas(db)?.into_values() {
+        for (esta, otra) in [(&v.memory_id, &v.other_id), (&v.other_id, &v.memory_id)] {
+            if r.contains_key(esta.as_str()) || !memorias.iter().any(|m| &m.id == esta) {
+                continue;
+            }
+            let nota = match v.relation.as_str() {
+                SUSTITUIDA if esta == &v.memory_id => format!("superseded by {}: use that one", corto(otra)?),
+                CONTRADICE => format!("contradicts {}: check which one holds, asking the user if unsure", corto(otra)?),
+                _ => continue,
+            };
+            r.insert(esta.clone(), nota);
+        }
     }
     // Sin `al_dia`: recalcular cuesta unos 50 ms y el recall tiene que quedarse por debajo de 30.
     // Las escrituras (MCP, CLI, sync, la vista) ya lo dejan al día.
@@ -514,6 +583,9 @@ pub fn notas(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, S
     )?;
     let ahora = chrono_ahora(db)?;
     for m in memorias {
+        if r.contains_key(&m.id) {
+            continue;
+        }
         if let Some((otra, detalle, titulo)) =
             q.query_row(params![m.id, DESFASADA], |f| Ok((f.get::<_, String>(0)?, f.get::<_, String>(1)?, f.get::<_, String>(2)?))).optional()?
             && !fuera.contains(&(m.id.clone(), DESFASADA.to_string(), otra.clone()))
@@ -531,7 +603,18 @@ pub fn notas(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, S
             }
         }
     }
+    if con_revision {
+        let revisadas = crate::veredictos::oks(db, false)?;
+        for m in memorias {
+            if !r.contains_key(&m.id)
+                && let Some(n) = sin_revisar(m, &revisadas, &ahora)
+            {
+                r.insert(m.id.clone(), format!("not reviewed in {n} days: check it still holds"));
+            }
+        }
+    }
     Ok(r)
+
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 7;
+pub const VERSION_ESQUEMA: i64 = 8;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -111,6 +111,10 @@ fn migrar(db: &mut Connection) -> Result<()> {
         tx.execute_batch(ESQUEMA_7)?;
         aflojar_tipos(&tx)?;
     }
+    if v < 8 {
+        tx.execute_batch(ESQUEMA_8)?;
+        pasar_descartes(&tx)?;
+    }
     tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
     tx.commit()?;
     Ok(())
@@ -130,6 +134,37 @@ fn aflojar_tipos(tx: &Connection) -> Result<()> {
     tx.execute_batch("PRAGMA writable_schema = ON")?;
     tx.execute("UPDATE sqlite_schema SET sql = ?1 WHERE type = 'table' AND name = 'memory'", [&nuevo])?;
     tx.execute_batch(&format!("PRAGMA schema_version = {}; PRAGMA writable_schema = OFF", version + 1))?;
+    Ok(())
+}
+
+/// Veredictos (0.17.0, `veredictos`): lo que el agente o el usuario dicen de una memoria o de una
+/// pareja (`superseded`, `contradicts`, `compatible`, `ok:<aviso>`). Viajan por la sincronización,
+/// así que llevan su sello; para una pareja manda el más nuevo.
+const ESQUEMA_8: &str = "
+CREATE TABLE verdict (
+  memory_id TEXT NOT NULL,
+  other_id  TEXT NOT NULL DEFAULT '',
+  relation  TEXT NOT NULL,
+  at        TEXT NOT NULL,
+  hlc       TEXT NOT NULL,
+  PRIMARY KEY (memory_id, other_id, relation)
+) WITHOUT ROWID;
+CREATE INDEX verdict_other ON verdict(other_id);
+";
+
+/// Los «está bien así» de la tabla `review` pasan a ser veredictos: el de una pareja desfasada,
+/// `compatible`; el de un aviso de una sola memoria, `ok:<aviso>`.
+fn pasar_descartes(tx: &Connection) -> Result<()> {
+    let filas: Vec<(String, String, String, String)> = {
+        let mut q = tx.prepare("SELECT memory_id, kind, other_id, dismissed_at FROM review WHERE dismissed_at IS NOT NULL")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, kind, otra, at) in filas {
+        let relation = if otra.is_empty() { format!("ok:{kind}") } else { "compatible".to_string() };
+        let hlc = crate::reloj::sello(tx)?;
+        tx.execute("INSERT OR IGNORE INTO verdict(memory_id, other_id, relation, at, hlc) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, otra, relation, at, hlc])?;
+    }
+    tx.execute("DELETE FROM review WHERE dismissed_at IS NOT NULL", [])?;
     Ok(())
 }
 

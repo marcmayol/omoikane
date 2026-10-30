@@ -21,3 +21,4 @@ pub mod setup;
 pub mod sync;
 pub mod tui;
 pub mod vectores;
+pub mod veredictos;
