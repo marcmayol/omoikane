@@ -293,6 +293,7 @@ const T = ES ? {
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias e hitos. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
+  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito' },
   tipos: { superseded: ['Sustituidas', 'El agente dijo que otra memoria las sustituye: si es así, olvida la vieja.'], contradicts: ['Se contradicen', 'El agente vio que dicen cosas distintas y no supo cuál vale.'], due: ['Toca revisarlas', 'Hace tiempo que no se tocan: decisiones y recetas a los 120 días, hechos y trampas a los 180. «Está bien así» vuelve a poner el reloj a cero.'], outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
   detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
@@ -312,6 +313,7 @@ const T = ES ? {
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences and milestones. The agent of the next session gets them once; here you can save them yourself or drop them.',
+  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone' },
   tipos: { superseded: ['Superseded', 'The agent said another memory replaces them: if so, forget the old one.'], contradicts: ['They disagree', 'The agent saw they say different things and could not tell which holds.'], due: ['Due for review', 'Untouched for a while: decisions and procedures after 120 days, facts and gotchas after 180. "It\'s fine as it is" restarts the clock.'], outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
   detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.detail
@@ -343,7 +345,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
-let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, candidatas = [];
+let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, candidatas = [], papelera = [];
 const filtro = { tipo: null, proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
@@ -489,7 +491,9 @@ async function cargar() {
     avisos = rv.ok ? await rv.json() : [];
     const rc = await fetch('/api/candidates', { headers: cab });
     candidatas = rc.ok ? await rc.json() : [];
-  } catch (e) { avisos = []; candidatas = []; }
+    const rt = await fetch('/api/trash', { headers: cab });
+    papelera = rt.ok ? await rt.json() : [];
+  } catch (e) { avisos = []; candidatas = []; papelera = []; }
   const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length;
   c.textContent = n; c.hidden = !n;
   pintar();
@@ -705,10 +709,18 @@ function pintarRevisar() {
       <div class="t">${esc(c.text)}</div>
       <div class="acts"><button class="btn" data-r="guardar">${esc(T.guardarComo)}</button><button class="btn" data-r="dejar">${esc(T.dejar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.length && !candidatas.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + orden.filter(k => grupos[k]).map(k => `
+  const basura = !papelera.length ? '' : `
+    <div class="grupo"><h2>${esc(T.papelera)}</h2><span class="n">${papelera.length}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${esc(T.papeleraSub)}</p>
+    ${papelera.map(o => `<div class="av trash" data-t="${esc(o.id)}">
+      <div class="cab"><span class="t">${esc(o.title)}</span></div>
+      <div class="cab"><a class="proj" href="${enlaceProyecto(o.project)}">${esc(nombre(o.project))}</a> <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
+      <div class="acts"><button class="btn pri" data-r="restaurar">${esc(T.restaurar)}</button></div>
+    </div>`).join('')}`;
+  const cuerpo = !avisos.length && !candidatas.length && !papelera.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
-    ${grupos[k].map(avisoHTML).join('')}`).join('');
+    ${grupos[k].map(avisoHTML).join('')}`).join('') + basura;
   $('vista').innerHTML = `<div class="rev">
     <div class="hero"><div><h1>${esc(T.revTitulo)}</h1><p>${esc(T.revSub)}</p></div></div>
     ${cuerpo}
@@ -729,7 +741,13 @@ function pintarRevisar() {
       await dejar();
     });
   }
-  for (const el of v.querySelectorAll('.av:not(.cand)')) {
+  for (const el of v.querySelectorAll('.av.trash')) {
+    el.querySelector('[data-r="restaurar"]').onclick = () => accion(async () => {
+      const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: el.dataset.t }) });
+      if (!r.ok) throw new Error(await r.text());
+    });
+  }
+  for (const el of v.querySelectorAll('.av:not(.cand):not(.trash)')) {
     const a = avisos.find(x => claveAv(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
     q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };

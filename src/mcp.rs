@@ -27,7 +27,7 @@ Before working on something, `search` for it. If `remember` answers duplicate_of
 If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
-When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies.
+When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies (it goes to the trash for 30 days; `update` with restore=true brings it back).
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
 When one memory replaces another, say so: `supersedes` (in `remember` or `update`) with the old one's id. When two disagree and you can't tell which holds, `contradicts`; when a warning pairs two that both hold, `compatible`. That judgment is kept, travels with sync and shows wherever the memories show up.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
@@ -113,6 +113,8 @@ pub struct Update {
     contradicts: Option<Vec<String>>,
     /// Ids of memories flagged against this one that both hold: clears the warning.
     compatible: Option<Vec<String>>,
+    /// Bring a forgotten memory back from the trash (with its history, on every synced computer). The other fields are ignored.
+    restore: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -361,6 +363,9 @@ impl Servidor {
     async fn update(&self, Parameters(p): Parameters<Update>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, modelo, _| {
+                if p.restore.unwrap_or(false) {
+                    return memoria::restaurar(db, &p.id, modelo);
+                }
                 let c = Cambios {
                     title: p.title,
                     content: p.content,
@@ -390,7 +395,7 @@ impl Servidor {
         Ok(r.map(|m| json(&compacta(m, false, None))).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "Delete a memory and its history. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
+    #[tool(description = "Forget a memory: it goes to the trash with its history for 30 days, and `update` with restore=true brings it back on every synced computer. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, _| {

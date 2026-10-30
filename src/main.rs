@@ -128,11 +128,28 @@ enum Orden {
         #[arg(short, long)]
         reason: Option<String>,
     },
-    /// Delete a memory and its history. It can't be undone.
+    /// Forget a memory: it goes to the trash with its history (`omoi restore` brings it back; emptied after 30 days).
     Forget {
         /// Memory id (its start is enough).
         id: String,
         /// Don't ask. Without it, omoi asks in a terminal and refuses elsewhere.
+        #[arg(short, long)]
+        yes: bool,
+        /// Skip the trash: delete it for good.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Bring back a memory from the trash, on this or any synced computer (without an id, list the trash).
+    Restore {
+        /// Memory id (its start is enough).
+        id: Option<String>,
+    },
+    /// What is in the trash: memories forgotten here or elsewhere, kept 30 days (OMOIKANE_TRASH_DAYS).
+    Trash {
+        /// Empty it now.
+        #[arg(long)]
+        empty: bool,
+        /// Don't ask before emptying.
         #[arg(short, long)]
         yes: bool,
     },
@@ -188,11 +205,20 @@ enum Orden {
         #[arg(long, requires = "dismiss")]
         other: Option<String>,
     },
-    /// Every memory with its history, one JSON object per line.
+    /// A faithful copy: every memory with its history, forget marks, verdicts and the trash, one JSON line each (`omoi import` restores it exactly).
     Export {
         /// From every project (default: this one and the global ones).
         #[arg(long)]
         all: bool,
+        /// Encrypt every line with the sync key (AES-SIV), to keep the copy anywhere.
+        #[arg(long)]
+        encrypt: bool,
+    },
+    /// Copy the database now to <its folder>/backups/omoikane-<date>.db (it also happens by itself once a day; OMOIKANE_BACKUPS copies are kept, 7 by default).
+    Backup {
+        /// Only list the copies there are.
+        #[arg(long)]
+        list: bool,
     },
     /// Browse, search, pin and forget memories in the terminal.
     Tui {
@@ -200,7 +226,7 @@ enum Orden {
         #[arg(long)]
         all: bool,
     },
-    /// Import memories from an engram export (`engram export`) or an `omoi export` file.
+    /// Import an `omoi export` file (exactly: same ids, dates, history and verdicts; newest wins, so it is safe to repeat) or an engram export.
     Import {
         /// The export file.
         fichero: PathBuf,
@@ -371,7 +397,7 @@ fn main() -> Result<()> {
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
         omoikane::actualizar::quizas_en_segundo_plano();
     }
-    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
     let r = ejecutar(c, cli.orden);
     if escribe && r.is_ok() {
         // Lo que haya que revisar queda al día para el recall, que solo lee (ver `revisar`).
@@ -539,18 +565,43 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("updated {}", "actualizada {}", corto(&m.id)));
             Ok(())
         }
-        Orden::Forget { id, yes } => {
+        Orden::Forget { id, yes, purge } => {
             let mut db = abrir(c)?;
             let m = memoria::obtener(&db, &id)?;
-            if !yes && !confirmar_olvido(&m)? {
+            if !yes && !confirmar_olvido(&m, purge)? {
                 println!("{}", tr!("nothing deleted", "no se ha borrado nada"));
                 return Ok(());
             }
-            let m = memoria::olvidar(&mut db, &m.id)?;
+            let m = if purge { memoria::olvidar_del_todo(&mut db, &m.id)? } else { memoria::olvidar(&mut db, &m.id)? };
             if c.json {
                 return json(&m);
             }
-            println!("{}", tr!("forgotten {}: {}", "olvidada {}: {}", corto(&m.id), m.title));
+            if purge {
+                println!("{}", tr!("deleted for good {}: {}", "borrada del todo {}: {}", corto(&m.id), m.title));
+            } else {
+                println!("{}", tr!("forgotten {}: {} (in the trash; `omoi restore {}` brings it back)", "olvidada {}: {} (en la papelera; `omoi restore {}` la devuelve)", corto(&m.id), m.title, corto(&m.id)));
+            }
+            Ok(())
+        }
+        Orden::Restore { id } => restaurar_cli(c, id),
+        Orden::Trash { empty, yes } => {
+            let db = abrir(c)?;
+            if !empty {
+                return listar_papelera(c, &db);
+            }
+            let n = memoria::papelera(&db)?.len();
+            if !yes {
+                use std::io::IsTerminal;
+                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
+                if !preguntar_si(&tr!("Empty the trash ({n} memories)? They can't be brought back afterwards.", "¿Vaciar la papelera ({n} memorias)? Después no se pueden recuperar."), false)? {
+                    return Ok(());
+                }
+            }
+            let n = memoria::vaciar_papelera(&db)?;
+            if c.json {
+                return json(&serde_json::json!({ "emptied": n }));
+            }
+            println!("{}", tr!("trash emptied: {n} memories deleted for good", "papelera vaciada: {n} memorias borradas del todo"));
             Ok(())
         }
         Orden::History { id } => {
@@ -633,6 +684,23 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Import { fichero, force, dry_run } => {
             let actual = proyecto_de(c)?;
+            if omoikane::copia::es_propio(&fichero)? {
+                let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+                let (mut db, modelo) = abrir_con_modelo(c)?;
+                let (cuenta, r) = omoikane::copia::importar(&mut db, &ruta, &fichero, &actual, modelo.as_ref(), dry_run)?;
+                if c.json {
+                    return json(&serde_json::json!({ "file": cuenta, "new": r.nuevas, "updated": r.actualizadas, "forgotten": r.olvidadas, "skipped_lines": r.ilegibles, "dry_run": dry_run }));
+                }
+                if dry_run {
+                    println!("{}", tr!("{} memories, {} forget marks, {} verdicts and {} in the trash to import (the file checks out)", "{} memorias, {} marcas de olvido, {} veredictos y {} en la papelera para importar (el fichero está bien)", cuenta.memories, cuenta.tombstones, cuenta.verdicts, cuenta.forgotten));
+                } else {
+                    println!("{}", tr!("imported: {} new, {} updated, {} forgotten; {} lines skipped; the rest was already here", "importado: {} nuevas, {} actualizadas, {} olvidadas; {} líneas saltadas; lo demás ya estaba", r.nuevas, r.actualizadas, r.olvidadas, r.ilegibles));
+                    if r.nuevas + r.actualizadas > 0 {
+                        omoikane::sync::programar(&ruta);
+                    }
+                }
+                return Ok(());
+            }
             let (entrantes, borradas) = omoikane::importar::leer(&fichero, c.dir.as_deref(), &actual)?;
             if dry_run {
                 let mut por_proyecto: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -660,12 +728,35 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             );
             Ok(())
         }
-        Orden::Export { all } => {
-            let mut salida = std::io::stdout().lock();
+        Orden::Export { all, encrypt } => {
+            let mut salida = std::io::BufWriter::new(std::io::stdout().lock());
             let ambito = if all { Ambito::Todos } else { Ambito::Proyecto(proyecto_de(c)?) };
-            let n = memoria::exportar(&abrir(c)?, &ambito, &mut salida)?;
+            let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            let n = omoikane::copia::exportar(&abrir(c)?, &ruta, &ambito, encrypt, &mut salida)?;
             salida.flush()?;
-            eprintln!("{}", tr!("{n} memories exported", "{n} memorias exportadas"));
+            eprintln!("{}", tr!("{} memories exported (with {} forget marks, {} verdicts and {} in the trash)", "{} memorias exportadas (con {} marcas de olvido, {} veredictos y {} en la papelera)", n.memories, n.tombstones, n.verdicts, n.forgotten));
+            Ok(())
+        }
+        Orden::Backup { list } => {
+            let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            if !list {
+                let destino = omoikane::copia::copiar(&abrir(c)?, &ruta)?;
+                if !c.json {
+                    println!("{}", tr!("copied to {}", "copiada en {}", destino.display()));
+                }
+            }
+            let v = omoikane::copia::copias(&ruta);
+            if c.json {
+                return json(&v.iter().map(|(p, b)| serde_json::json!({ "path": p, "bytes": b })).collect::<Vec<_>>());
+            }
+            if list {
+                if v.is_empty() {
+                    println!("{}", tr!("no copies yet", "todavía no hay copias"));
+                }
+                for (p, b) in v {
+                    println!("{}  {} KB", p.display(), b / 1024);
+                }
+            }
             Ok(())
         }
     }
@@ -834,6 +925,8 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     }
     let mut db = db::abrir(&ruta)?;
     let (evento, texto) = if al_empezar {
+        // Una vez al día: la copia de la base y la purga de la papelera.
+        omoikane::copia::diaria(&db, &ruta);
         if let Ok(Some(config)) = omoikane::sync::leer_config(&ruta) {
             let _ = omoikane::sync::adoptar(&db, &project, &config.person);
             omoikane::sync::programar(&ruta);
@@ -1036,6 +1129,17 @@ fn doctor(c: &Comun) -> Result<()> {
         let memorias = if n == 1 { tr!("1 memory", "1 memoria") } else { tr!("{n} memories", "{n} memorias") };
         let proyectos = if p == 1 { tr!("1 project", "1 proyecto") } else { tr!("{p} projects", "{p} proyectos") };
         println!("{}", tr!("database   {r} ({memorias}, {proyectos}, schema {v})", "base       {r} ({memorias}, {proyectos}, esquema {v})"));
+        let papelera: i64 = base.query_row("SELECT count(*) FROM forgotten", [], |f| f.get(0))?;
+        let copias = omoikane::copia::copias(&ruta);
+        let total_kb: u64 = copias.iter().map(|(_, b)| b).sum::<u64>() / 1024;
+        match copias.first() {
+            Some((p, _)) => {
+                let nombre = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                println!("{}", tr!("backups    {} ({} copies, {total_kb} KB, {} in the trash)", "copias     {} ({} copias, {total_kb} KB, {} en la papelera)", nombre, copias.len(), papelera));
+            }
+            None if omoikane::copia::copias_a_conservar() == 0 => println!("{}", tr!("backups    off (OMOIKANE_BACKUPS=0)", "copias     apagadas (OMOIKANE_BACKUPS=0)")),
+            None => println!("{}", tr!("backups    none yet (the first one happens at the next session start)", "copias     todavía ninguna (la primera, al empezar la próxima sesión)")),
+        }
     } else {
         let r = ruta.display();
         println!("{}", tr!("database   {r} (not created yet: it appears with the first memory)", "base       {r} (todavía no existe: se crea al guardar la primera memoria)"));
@@ -1315,29 +1419,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             }
             Ok(())
         }
-        Some(AccionSync::Restore { id }) => {
-            let Some(id) = id else {
-                let v = omoikane::memoria::olvidadas_fuera(&abrir(c)?)?;
-                if c.json {
-                    return json(&v.iter().map(|(id, t, by, cuando)| serde_json::json!({ "id": id, "title": t, "by": by, "forgotten_at": cuando })).collect::<Vec<_>>());
-                }
-                if v.is_empty() {
-                    println!("{}", tr!("nothing forgotten by other computers", "nada olvidado por otros equipos"));
-                }
-                for (id, t, by, cuando) in v {
-                    println!("{}  {t}  ({by}, {cuando})", corto(&id));
-                }
-                return Ok(());
-            };
-            let (mut db, modelo) = abrir_con_modelo(c)?;
-            let m = omoikane::memoria::restaurar(&mut db, &id, modelo.as_ref())?;
-            sync::programar(&ruta);
-            if c.json {
-                return json(&m);
-            }
-            println!("{}", tr!("restored {}: {}", "recuperada {}: {}", corto(&m.id), m.title));
-            Ok(())
-        }
+        Some(AccionSync::Restore { id }) => restaurar_cli(c, id),
         Some(AccionSync::Off { yes }) => {
             let db = abrir(c)?;
             if sync::leer_config(&ruta)?.is_none() {
@@ -1404,9 +1486,15 @@ fn en_espanol(c: Command) -> Command {
             ("global", "Hacerla global: vale para todos los proyectos."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
         ]),
-        ("forget", "Borra una memoria y su historial. No se puede deshacer.", &[
+        ("forget", "Olvida una memoria: va a la papelera con su historial (`omoi restore` la devuelve; se vacía a los 30 días).", &[
             ("id", "Id de la memoria (basta con el principio)."),
             ("yes", "Sin preguntar. Sin él, omoi pregunta en una terminal y se niega en cualquier otro sitio."),
+            ("purge", "Sin pasar por la papelera: la borra del todo."),
+        ]),
+        ("restore", "Devuelve una memoria de la papelera, en este equipo o en cualquiera sincronizado (sin id, enseña la papelera).", &[("id", "Id de la memoria (basta con el principio).")]),
+        ("trash", "Lo que hay en la papelera: memorias olvidadas aquí o en otro equipo, 30 días (OMOIKANE_TRASH_DAYS).", &[
+            ("empty", "Vaciarla ahora."),
+            ("yes", "Sin preguntar antes de vaciar."),
         ]),
         ("history", "Versiones anteriores de una memoria.", &[("id", "Id de la memoria (basta con el principio).")]),
         ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
@@ -1421,12 +1509,13 @@ fn en_espanol(c: Command) -> Command {
             ("all", "De todos los proyectos."),
         ]),
         ("projects", "Proyectos con memorias.", &[]),
-        ("export", "Todas las memorias con su historial, una por línea en JSON.", &[(
-            "all",
-            "De todos los proyectos (por defecto, este y las globales).",
-        )]),
+        ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
+            ("all", "De todos los proyectos (por defecto, este y las globales)."),
+            ("encrypt", "Cifra cada línea con la clave de la sincronización (AES-SIV), para guardar la copia en cualquier sitio."),
+        ]),
+        ("backup", "Copia la base ahora en <su carpeta>/backups/omoikane-<fecha>.db (también se hace sola una vez al día; se conservan OMOIKANE_BACKUPS copias, 7 por defecto).", &[("list", "Solo enseñar las copias que hay.")]),
         ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),
-        ("import", "Importa memorias de una exportación de engram (`engram export`) o de `omoi export`.", &[
+        ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir) o una exportación de engram.", &[
             ("fichero", "El fichero exportado."),
             ("force", "Importar también lo que parece una memoria ya guardada."),
             ("dry_run", "Solo decir qué se importaría."),
@@ -1576,25 +1665,47 @@ fn preguntar() -> Result<bool> {
     Ok(matches!(linea.trim().to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí"))
 }
 
+/// `omoi restore [id]` (y `omoi sync restore`, que es lo mismo): sin id, la papelera.
+fn restaurar_cli(c: &Comun, id: Option<String>) -> Result<()> {
+    let Some(id) = id else {
+        return listar_papelera(c, &abrir(c)?);
+    };
+    let (mut db, modelo) = abrir_con_modelo(c)?;
+    let m = memoria::restaurar(&mut db, &id, modelo.as_ref())?;
+    omoikane::sync::programar(&c.db.clone().unwrap_or_else(db::ruta_por_defecto));
+    if c.json {
+        return json(&m);
+    }
+    println!("{}", tr!("restored {}: {}", "recuperada {}: {}", corto(&m.id), m.title));
+    Ok(())
+}
+
+fn listar_papelera(c: &Comun, db: &Connection) -> Result<()> {
+    let v = memoria::papelera(db)?;
+    if c.json {
+        return json(&v);
+    }
+    if v.is_empty() {
+        println!("{}", tr!("the trash is empty", "la papelera está vacía"));
+    }
+    for o in v {
+        println!("{}  {}  ({}, {})", corto(&o.id), o.title.chars().take(90).collect::<String>(), o.by, o.deleted_at.get(..10).unwrap_or(&o.deleted_at));
+    }
+    Ok(())
+}
+
 /// En una terminal, pregunta; en cualquier otro sitio (un agente, un script) se niega sin `--yes`,
 /// para que nadie borre por no haber leído la ayuda.
-fn confirmar_olvido(m: &Memoria) -> Result<bool> {
+fn confirmar_olvido(m: &Memoria, purge: bool) -> Result<bool> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
-        bail!(tr!(
-            "forget can't be undone: add --yes to delete {} without asking",
-            "forget no se puede deshacer: añade --yes para borrar {} sin preguntar",
-            corto(&m.id)
-        ));
+        bail!(tr!("add --yes to forget {} without asking", "añade --yes para olvidar {} sin preguntar", corto(&m.id)));
     }
-    eprint!(
-        "{}",
-        tr!(
-            "Forget «{}» and its history? It can't be undone [y/N] ",
-            "¿Olvidar «{}» y su historial? No se puede deshacer [s/N] ",
-            m.title
-        )
-    );
+    if purge {
+        eprint!("{}", tr!("Delete «{}» and its history for good? It can't be undone [y/N] ", "¿Borrar «{}» y su historial del todo? No se puede deshacer [s/N] ", m.title));
+    } else {
+        eprint!("{}", tr!("Forget «{}»? It goes to the trash with its history; `omoi restore` brings it back [y/N] ", "¿Olvidar «{}»? Va a la papelera con su historial; `omoi restore` la devuelve [s/N] ", m.title));
+    }
     std::io::stderr().flush()?;
     let mut linea = String::new();
     std::io::stdin().read_line(&mut linea)?;
