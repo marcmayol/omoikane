@@ -200,7 +200,7 @@ pub fn vecina_para(
                 continue;
             }
             let Ok(v) = crate::memoria::obtener(db, &id) else { continue };
-            let visible = v.project.is_empty() || v.project == project || crate::proyecto::es_general(project);
+            let visible = crate::memoria::Ambito::de(db, project)?.ve(db, &v.id)?;
             if visible && matches!(v.kind, crate::memoria::Tipo::Gotcha | crate::memoria::Tipo::Preference) {
                 candidatas.push((v, m.id.clone(), liston));
             }

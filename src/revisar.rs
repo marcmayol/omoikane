@@ -106,13 +106,13 @@ fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize
     d
 }
 
-/// Cambia con cualquier escritura: memorias nuevas, cambiadas, movidas u olvidadas.
+/// Cambia con cualquier escritura: memorias nuevas, cambiadas, movidas u olvidadas. Es
+/// `número|último cambio|sello más alto|proyectos|espacios`; todo menos el sello sale de
+/// `huella_ligera`, así que la de `antes` y la de `al_dia_de` no pueden ir cada una por su lado.
 fn huella(db: &Connection) -> Result<String> {
-    Ok(db.query_row(
-        "SELECT count(*) || '|' || COALESCE(max(updated_at), '') || '|' || COALESCE(max(hlc), '') || '|' || COALESCE(sum(length(project)), 0) FROM memory",
-        [],
-        |f| f.get(0),
-    )?)
+    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
+    let sello: String = db.query_row("SELECT COALESCE(max(hlc), '') FROM memory", [], |f| f.get(0))?;
+    Ok(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}"))
 }
 
 /// Lo guardado del último recálculo entero: cuántas memorias había y las palabras que no eran raras.
@@ -147,22 +147,25 @@ pub struct Antes {
     huella: Option<String>,
 }
 
-/// Lo que da la huella sin `max(hlc)`: número de memorias, último cambio y proyectos, que salen del
-/// índice `memory_project` sin leer la tabla (el `max(hlc)` la lee entera: 30 ms con 50.000 memorias).
-fn huella_ligera(db: &Connection) -> Result<(String, String, String)> {
-    Ok(db.query_row("SELECT count(*), COALESCE(max(updated_at), ''), COALESCE(sum(length(project)), 0) FROM memory", [], |f| {
-        Ok((f.get::<_, i64>(0)?.to_string(), f.get(1)?, f.get::<_, i64>(2)?.to_string()))
-    })?)
+/// Lo que da la huella sin `max(hlc)`: número de memorias, último cambio, proyectos y espacios, que
+/// salen de los índices `memory_scope` y `memory_space` sin leer la tabla (el `max(hlc)` la lee
+/// entera: 30 ms con 50.000 memorias). Las sumas, como texto de SQLite, igual por los dos caminos.
+fn huella_ligera(db: &Connection) -> Result<(String, String, String, String)> {
+    let (n, ultimo, proyectos) = db.query_row("SELECT count(*), COALESCE(max(updated_at), ''), total(project_id) || '' FROM memory", [], |f| {
+        Ok((f.get::<_, i64>(0)?.to_string(), f.get::<_, String>(1)?, f.get::<_, String>(2)?))
+    })?;
+    let espacios: String = db.query_row("SELECT total(space_id) || '' FROM memory WHERE space_id IS NOT NULL", [], |f| f.get(0))?;
+    Ok((n, ultimo, proyectos, espacios))
 }
 
 /// Compara con la huella guardada lo que sale del índice, sin el sello. Lo que solo cambia el sello
 /// llega por la sincronización, que lo recalcula todo al acabar.
 pub fn antes(db: &Connection) -> Result<Antes> {
-    let (n, ultimo, proyectos) = huella_ligera(db)?;
+    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
     let guardada: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
     let huella = guardada.filter(|g| {
         let p: Vec<&str> = g.split('|').collect();
-        p.len() == 4 && p[0] == n && p[1] == ultimo && p[3] == proyectos
+        p.len() == 5 && p[0] == n && p[1] == ultimo && p[3] == proyectos && p[4] == espacios
     });
     Ok(Antes { huella })
 }
@@ -179,8 +182,8 @@ fn huella_tras(db: &Connection, antes: &str, ids: &BTreeSet<String>) -> Result<O
         };
         sello = sello.max(s);
     }
-    let (n, ultimo, proyectos) = huella_ligera(db)?;
-    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}")))
+    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
+    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}")))
 }
 
 /// Pone al día la revisión tras escribir `ids` (guardadas, cambiadas, olvidadas o recuperadas), sin
@@ -398,7 +401,8 @@ fn ficha(m: &Memoria, hlc: String) -> Ficha {
     let todo = format!("{} {texto}", normal(&m.title));
     Ficha {
         id: m.id.clone(),
-        project: m.project.clone(),
+        // Las de espacio se comparan entre ellas, no con las globales.
+        project: if m.de_espacio() { format!("space:{}", m.space) } else { m.project.clone() },
         updated_at: m.updated_at.clone(),
         hlc,
         cuando: fechas(&todo).into_iter().max().unwrap_or_else(|| m.updated_at.get(..10).unwrap_or("").to_string()),
@@ -582,14 +586,22 @@ pub(crate) fn frase_fts(palabra: &str, prefijo: bool) -> Option<String> {
     Some(format!("\"{}\"{estrella}", trozos.join(" ")))
 }
 
-/// Las memorias (con su sello) que da una consulta FTS en un proyecto.
-fn fichas_por_fts(db: &Connection, consulta: &str, project: &str) -> Result<Vec<Ficha>> {
+/// Las memorias (con su sello) que da una consulta FTS entre las que se comparan con `m`: las de su
+/// proyecto, las de su espacio si es de nivel espacio, o las globales (lo mismo que agrupa `ficha`).
+fn fichas_por_fts(db: &Connection, consulta: &str, m: &Memoria) -> Result<Vec<Ficha>> {
+    let (filtro, valor): (&str, rusqlite::types::Value) = if m.project_id != 0 {
+        ("m.project_id = ?2", m.project_id.into())
+    } else if m.de_espacio() {
+        ("m.project_id = 0 AND m.space_id = (SELECT id FROM space WHERE key = ?2)", m.space.clone().into())
+    } else {
+        ("m.project_id = 0 AND m.space_id IS NULL AND ?2 IS NULL", rusqlite::types::Value::Null)
+    };
     let mut q = db.prepare_cached(&format!(
-        "SELECT {}, hlc FROM memory WHERE project = ?2 AND n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)",
+        "SELECT {}, m.hlc FROM memory m WHERE {filtro} AND m.n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)",
         crate::memoria::COLUMNAS
     ))?;
     let v = q
-        .query_map(params![consulta, project], |f| Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(14)?)))?
+        .query_map(params![consulta, valor], |f| Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(crate::memoria::NCOL)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(v.into_iter().map(|(m, hlc)| ficha(&m, hlc)).collect())
 }
@@ -604,16 +616,16 @@ fn desfasadas_de(db: &Connection, ids: &BTreeSet<String>, comunes: &HashSet<Stri
     for id in ids {
         db.execute("DELETE FROM review WHERE kind = ?1 AND (memory_id = ?2 OR other_id = ?2)", params![DESFASADA, id])?;
         let fila = db
-            .query_row(&format!("SELECT {}, hlc FROM memory WHERE id = ?1", crate::memoria::COLUMNAS), [id], |f| {
-                Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(14)?))
+            .query_row(&format!("SELECT {}, m.hlc FROM memory m WHERE m.id = ?1", crate::memoria::COLUMNAS), [id], |f| {
+                Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(crate::memoria::NCOL)?))
             })
             .optional()?;
         if let Some((m, hlc)) = fila {
-            cambiadas.push(ficha(&m, hlc));
+            cambiadas.push((ficha(&m, hlc), m));
         }
     }
     let mut nuevas: BTreeMap<(String, String), String> = BTreeMap::new();
-    for c in &cambiadas {
+    for (c, m) in &cambiadas {
         let rc = raras_de(c, &es_rara);
         let mut frases = Vec::new();
         for w in rc.titulo.union(&rc.contenido) {
@@ -628,7 +640,7 @@ fn desfasadas_de(db: &Connection, ids: &BTreeSet<String>, comunes: &HashSet<Stri
             continue;
         }
         let consulta = format!("{{title content}} : ({})", frases.join(" OR "));
-        for b in fichas_por_fts(db, &consulta, &c.project)? {
+        for b in fichas_por_fts(db, &consulta, m)? {
             if b.id == c.id {
                 continue;
             }
@@ -701,7 +713,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         via: 0,
     };
     {
-        let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY found_at, memory_id")?;
+        let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 ORDER BY found_at, memory_id")?;
         let filas: Vec<(String, String, String)> = q.query_map([DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
         for (vieja, nueva, detalle) in filas {
             if let (Some(v), Some(n)) = (por_id.get(vieja.as_str()), por_id.get(nueva.as_str()))
@@ -737,7 +749,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         }
     }
     {
-        let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 AND dismissed_at IS NULL ORDER BY memory_id")?;
+        let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 ORDER BY memory_id")?;
         let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
         for (id, detalle) in filas {
             if let Some(m) = por_id.get(id.as_str())
@@ -756,7 +768,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         }
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
         if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias(&m.updated_at) > DIAS_ESTADO && !descartado(ESTADO_VIEJO) {
-            let despues = todas.iter().filter(|x| x.project == m.project && x.id != m.id && x.updated_at > m.updated_at).count();
+            let despues = todas.iter().filter(|x| x.project_id == m.project_id && x.space == m.space && x.id != m.id && x.updated_at > m.updated_at).count();
             if despues > 0 {
                 r.push(aviso(m, ESTADO_VIEJO, None, format!("{despues} memories of this project changed after it; untouched for {} days", dias(&m.updated_at) as i64)));
             }
@@ -854,7 +866,7 @@ pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -
 pub fn superadas_por(db: &Connection, id: &str) -> Result<Vec<(String, String, String)>> {
     let mut q = db.prepare(
         "SELECT r.memory_id, m.title, r.detail FROM review r JOIN memory m ON m.id = r.memory_id
-         WHERE r.other_id = ?1 AND r.kind = ?2 AND r.dismissed_at IS NULL",
+         WHERE r.other_id = ?1 AND r.kind = ?2",
     )?;
     let v = q.query_map(params![id, DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
@@ -909,7 +921,7 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
     let fuera = descartados(db)?;
     let mut q = db.prepare(
         "SELECT r.other_id, r.detail, m.title FROM review r JOIN memory m ON m.id = r.other_id
-         WHERE r.memory_id = ?1 AND r.kind = ?2 AND r.dismissed_at IS NULL LIMIT 1",
+         WHERE r.memory_id = ?1 AND r.kind = ?2 LIMIT 1",
     )?;
     let ahora = chrono_ahora(db)?;
     for m in memorias {
@@ -924,8 +936,8 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
             r.insert(m.id.clone(), format!("may be outdated: newer {} «{corto}» ({detalle})", otra.chars().take(12).collect::<String>()));
         } else if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO {
             let despues: i64 = db.query_row(
-                "SELECT count(*) FROM memory WHERE project = ?1 AND id != ?2 AND updated_at > ?3",
-                params![m.project, m.id, m.updated_at],
+                "SELECT count(*) FROM memory WHERE project_id = ?1 AND id != ?2 AND updated_at > ?3",
+                params![m.project_id, m.id, m.updated_at],
                 |f| f.get(0),
             )?;
             if despues > 0 && !fuera.contains(&(m.id.clone(), ESTADO_VIEJO.to_string(), String::new())) {

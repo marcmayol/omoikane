@@ -445,8 +445,13 @@ impl Prueba {
     /// Sube al repositorio compartido un fichero escrito a mano (lo que haría otro programa o un equipo
     /// con otra clave).
     fn subir_a_mano(&self, ruta: &str, texto: &str) {
+        self.subir_a_mano_en(&self.url(), ruta, texto);
+    }
+
+    /// Lo mismo en otro repositorio (el de un espacio).
+    fn subir_a_mano_en(&self, url: &str, ruta: &str, texto: &str) {
         let clon = self.dir.join(format!("mano-{}", ulid::Ulid::generate()));
-        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", &self.url(), clon.to_str().unwrap()]);
+        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", url, clon.to_str().unwrap()]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         let f = clon.join(ruta);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
@@ -619,6 +624,15 @@ fn cifrar_linea(clave: &[u8], json: &serde_json::Value) -> String {
     use base64::Engine;
     let c = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().encrypt([b"omoikane-sync-v1".as_slice()], json.to_string().as_bytes()).unwrap();
     base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)
+}
+
+/// Lo que lleva dentro una línea cifrada con la clave 1 (sin prefijo).
+fn descifrar_linea(clave: &[u8], linea: &str) -> serde_json::Value {
+    use aes_siv::KeyInit;
+    use base64::Engine;
+    let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(linea.trim()).unwrap();
+    let t = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().decrypt([b"omoikane-sync-v1".as_slice()], &c).unwrap();
+    serde_json::from_slice(&t).unwrap()
 }
 
 #[test]
@@ -1043,8 +1057,7 @@ fn dos_repositorios_a_la_vez_el_general_y_el_de_un_espacio() {
     assert_eq!(st["spaces"][0]["space"], "acme", "{st}");
     assert!(st["spaces"][0]["state"]["ultimo_ok"].is_string(), "{st}");
     assert!(st["state"]["ultimo_ok"].is_string(), "{st}");
-    // Hasta que cada memoria sepa su espacio (`space_key`), el repositorio de un espacio no lleva
-    // ninguna: nada de lo general se escapa a él.
+    // Lo global no va al repositorio de un espacio.
     assert!(p.lineas_de(&acme).is_empty());
     assert!(!p.lineas_de(&p.url()).is_empty());
     // Rotar la de acme no toca la del general.
@@ -1065,9 +1078,8 @@ fn dos_repositorios_a_la_vez_el_general_y_el_de_un_espacio() {
     b.sync();
 }
 
-/// Lo que completará la fusión con el esquema nuevo (`space_key`): ver `va_al_repo` en `src/sync.rs`.
+/// Lo de un espacio va solo a su repositorio, y lo demás solo al general.
 #[test]
-#[ignore = "falta el espacio de cada memoria (space_key): lo completa la fusión con el esquema nuevo"]
 fn las_memorias_de_un_espacio_van_solo_a_su_repo() {
     let p = Prueba::nueva("espacio-filtro");
     let (a, b) = dos(&p, &[], &[]);
@@ -1076,16 +1088,100 @@ fn las_memorias_de_un_espacio_van_solo_a_su_repo() {
     let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
     let c = p.equipo("pc-c");
     c.ok(&["sync", "join", &codigo, "--yes"]);
-    // TODO(espacios): la forma de guardar una memoria en un espacio la decide el esquema nuevo; aquí,
-    // un proyecto que pertenece al espacio acme.
+    a.ok(&["space", "add", "acme"]);
     let proyecto = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
-    let de_acme = a.guardar(&proyecto, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space", "acme"]);
+    a.ok_en(&proyecto, &["space", "assign", "acme"], &[]);
+    let de_acme = a.guardar(&proyecto, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
+    let del_proyecto = a.guardar(&proyecto, "fact", "El staging de Acme está en Frankfurt", "Región eu-central-1.", &[]);
     let general = a.guardar(&a.dir, "fact", "Mi editor es Helix", "Con el tema por defecto.", &["--global"]);
     a.sync();
-    // La de acme va solo al repositorio de acme (una línea), y la otra solo al general.
-    assert_eq!(p.lineas_de(&acme).len(), 1);
+    // Las de acme (la del espacio y la de su proyecto) van solo al repositorio de acme, y la otra
+    // solo al general.
+    let clave_acme = clave_del_codigo(&codigo);
+    let mut en_acme: Vec<String> = p.lineas_de(&acme).iter().map(|l| descifrar_linea(&clave_acme, l)["id"].as_str().unwrap().to_string()).collect();
+    en_acme.sort();
+    let mut esperadas = vec![de_acme.clone(), del_proyecto.clone()];
+    esperadas.sort();
+    assert_eq!(en_acme, esperadas);
+    assert_eq!(p.lineas_de(&p.url()).len(), 1);
     b.sync();
-    assert!(b.get(&general).is_some() && b.get(&de_acme).is_none(), "B solo está en el general");
+    assert!(b.get(&general).is_some() && b.get(&de_acme).is_none() && b.get(&del_proyecto).is_none(), "B solo está en el general");
     c.sync();
-    assert!(c.get(&de_acme).is_some() && c.get(&general).is_none(), "C solo está en el de acme");
+    assert!(c.get(&de_acme).is_some() && c.get(&del_proyecto).is_some() && c.get(&general).is_none(), "C solo está en el de acme");
+    // Lo que C escribe en acme vuelve a A por el de acme, y C no puede colar una global por él.
+    let de_c = c.guardar(&c.dir, "gotcha", "La VPN de Acme corta a la hora", "Volver a entrar.", &["--space=acme"]);
+    c.sync();
+    a.sync();
+    assert_eq!(a.get(&de_c).expect("llegó por el de acme")["space"], "acme");
+    let clave_general = clave_del_codigo(&a.ok(&["sync", "code"]));
+    for l in p.lineas_de(&p.url()) {
+        assert_eq!(descifrar_linea(&clave_general, &l)["id"], general.as_str(), "nada de acme en el general");
+    }
+}
+
+/// Un repositorio que dice ser de un espacio no puede meter memorias de otro espacio ni globales.
+#[test]
+fn un_repositorio_de_espacio_no_acepta_lo_de_fuera() {
+    let p = Prueba::nueva("espacio-fuera");
+    let a = p.equipo("pc-a");
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code", "--space", "acme"]));
+    let linea = |id: &str, space: &str| {
+        let mut j = serde_json::json!({
+            "type": "memory", "id": id, "project_key": "", "project_path": "", "kind": "fact",
+            "title": "Colada", "content": "Por el repositorio de acme.", "created_at": "2026-10-29T00:00:00.000Z",
+            "updated_at": "2026-10-29T00:00:00.000Z", "hlc": "1761696000000-0000000000-x"
+        });
+        if !space.is_empty() {
+            j["space_key"] = serde_json::json!(space);
+        }
+        cifrar_linea(&clave, &j)
+    };
+    let (global, globex, buena) = ("01M62EWVHRXM0000000000AAA1", "01M62EWVHRXM0000000000AAA2", "01M62EWVHRXM0000000000AAA3");
+    let texto = [linea(global, ""), linea(globex, "globex"), linea(buena, "acme")].join("
+") + "
+";
+    p.subir_a_mano_en(&acme, "global/otro.jsonl", &texto);
+    a.sync();
+    assert!(a.get(global).is_none() && a.get(globex).is_none(), "ni globales ni de otro espacio");
+    assert_eq!(a.get(buena).expect("la de acme sí")["space"], "acme");
+}
+
+/// 0.20.0: un repositorio por cliente. Con `sync init --space acme`, ese repositorio (con su clave)
+/// lleva solo lo de ese espacio (sus proyectos y lo suyo), ni lo de otros proyectos ni lo global; y
+/// el espacio llega con las memorias.
+#[test]
+fn un_repositorio_por_espacio_solo_lleva_ese_espacio() {
+    let p = Prueba::nueva("espacio");
+    let (a, b) = (p.equipo("pc-a"), p.equipo("pc-b"));
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    b.ok(&["sync", "join", &codigo, "--yes"]);
+    let web = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
+    let mio = a.proyecto("personal", Some("git@github.com:marc/personal.git"));
+    a.ok(&["space", "add", "Acme"]);
+    a.ok_en(&web, &["space", "assign", "acme"], &[]);
+    let de_web = a.guardar(&web, "fact", "El staging de Acme está en Frankfurt", "Región eu-central-1.", &[]);
+    let de_espacio = a.guardar(&web, "gotcha", "La VPN de Acme corta a la hora", "Volver a entrar.", &["--space"]);
+    let personal = a.guardar(&mio, "fact", "Mi script de copias", "Corre a las 3.", &[]);
+    let global = a.guardar(&a.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
+    a.sync();
+    let r = b.sync();
+    assert_eq!(r["nuevas"], 2, "{r}");
+    assert_eq!(b.get(&de_web).expect("llegó")["space"], "acme");
+    let m = b.get(&de_espacio).expect("llegó la de espacio");
+    assert_eq!((m["project"].as_str(), m["space"].as_str()), (Some(""), Some("acme")), "{m}");
+    assert!(b.get(&personal).is_none() && b.get(&global).is_none(), "ni lo de otro proyecto ni lo global");
+    let clave = clave_del_codigo(&codigo);
+    for l in p.lineas_de(&acme) {
+        let j = descifrar_linea(&clave, &l);
+        assert!([de_web.as_str(), de_espacio.as_str()].contains(&j["id"].as_str().unwrap()), "en el repositorio de acme, solo lo de acme: {j}");
+        assert_eq!(j["space_key"], "acme", "{j}");
+    }
+    // En B, el proyecto (cuando aparezca su carpeta) ya está en el espacio.
+    let web_b = b.proyecto("web", Some("https://github.com/acme/web"));
+    let s = b.json_en(&web_b, &["search", "VPN"]);
+    assert_eq!(s[0]["id"], de_espacio.as_str(), "{s}");
 }

@@ -1,7 +1,7 @@
 //! Búsqueda: palabras (FTS5 con BM25) y, como rescate, significado (vectores centrados).
 
 use crate::embeber::Modelo;
-use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, Tipo, de_fila};
+use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, NCOL, Tipo, de_fila};
 use crate::vectores;
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -140,15 +140,12 @@ fn cobertura_idf(terminos: &[String], m: &Memoria, idf: &std::collections::HashM
 
 /// IDF de Lucene de cada término (sin tildes) en el ámbito, contando por el índice como la búsqueda.
 fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<std::collections::HashMap<String, f64>> {
-    let n: f64 = db.query_row(
-        "SELECT count(*) FROM memory WHERE (?1 IS NULL OR project = ?1 OR project = '')",
-        [o.ambito.filtro()],
-        |f| f.get::<_, i64>(0),
-    )? as f64;
-    let mut q = db.prepare(
+    let n: f64 = crate::memoria::cuantas(db, &o.ambito)? as f64;
+    let mut q = db.prepare(&format!(
         "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '')",
-    )?;
+         WHERE memory_fts MATCH ?1 AND {}",
+        o.ambito.sql()
+    ))?;
     let mut v = std::collections::HashMap::new();
     for t in terminos {
         let t = sin_tildes(t);
@@ -160,7 +157,7 @@ fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<st
             None if t.chars().count() >= 3 => format!("\"{t}\"*"),
             None => format!("\"{t}\""),
         };
-        let df = q.query_row(params![consulta, o.ambito.filtro()], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
+        let df = q.query_row(params![consulta], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
         let d = df.max(1.0);
         v.insert(t, (1.0 + (n - d + 0.5) / (d + 0.5)).ln());
     }
@@ -249,11 +246,11 @@ fn buscar_base(
 
     let por_palabras: Vec<(Memoria, usize, f64)> = palabras(db, texto, o)?.into_iter().filter(|(m, _, _)| con_tags(m)).collect();
     let por_significado: Vec<(Memoria, f32)> = match modelo {
-        Some(modelo) if !texto.trim().is_empty() => vectores::parecidas(
+        Some(modelo) if !texto.trim().is_empty() => vectores::parecidas_en(
             db,
             modelo,
             texto,
-            o.ambito.filtro(),
+            &o.ambito,
             o.kind,
             // Se piden todas: el umbral solo se aplica a lo que no sale también por palabras.
             -1.0,
@@ -342,7 +339,7 @@ fn buscar_base(
                 }
             }
             if apuntar {
-                apuntar_recuperadas(db, arriba.iter().map(|r| r.memoria.id.as_str()))?;
+                apuntar_recuperadas(db, arriba.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
             }
             return Ok(arriba);
         }
@@ -363,7 +360,7 @@ fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apunta
     fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
     fusion.truncate(o.limite);
     if apuntar {
-        apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()))?;
+        apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
     }
     Ok(fusion)
 }
@@ -373,19 +370,18 @@ fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apunta
 fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize, f64)>> {
     let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
     let terminos = terminos(texto);
-    let columnas = COLUMNAS.split(", ").map(|c| format!("m.{c}")).collect::<Vec<_>>().join(", ");
     let mut q = db.prepare(&format!(
-        "SELECT {columnas}, -bm25(memory_fts, {PESOS}) AS relevancia
+        "SELECT {COLUMNAS}, -bm25(memory_fts, {PESOS}) AS relevancia
          FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1
-           AND (?2 IS NULL OR m.project = ?2 OR m.project = '')
-           AND (?3 IS NULL OR m.kind = ?3)
-         ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?4"
+           AND {}
+           AND (?2 IS NULL OR m.kind = ?2)
+         ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?3",
+        o.ambito.sql()
     ))?;
-    let ncol = COLUMNAS.split(", ").count();
     let mut v: Vec<(Memoria, f64)> = q
-        .query_map(params![consulta, o.ambito.filtro(), o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| {
-            Ok((de_fila(f)?, f.get::<_, f64>(ncol)?))
+        .query_map(params![consulta, o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| {
+            Ok((de_fila(f)?, f.get::<_, f64>(NCOL)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     // Con IDF, una paráfrasis más de 70 en primer puesto y mejor MRR, sin perder nada en 310
@@ -405,8 +401,10 @@ fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, 
 }
 
 /// Lo que devuelven la búsqueda y el recall cuenta como recuperado: sirve para ordenar y, más
-/// adelante, para proponer borrar lo que nunca sale.
-pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'a str>) -> Result<()> {
+/// adelante, para proponer borrar lo que nunca sale. Con `proyecto` (una búsqueda hecha desde un
+/// proyecto), se suma también a `memory_use`: desde qué proyectos se usa cada memoria (el recall lo
+/// suma al caducar su registro, ver `recall::al_empezar`).
+pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'a str>, proyecto: Option<i64>) -> Result<()> {
     let ids: Vec<&str> = ids.collect();
     if ids.is_empty() {
         return Ok(());
@@ -416,8 +414,15 @@ pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'
         let mut u = tx.prepare(&format!(
             "UPDATE memory SET recalled_at = {AHORA}, recall_count = recall_count + 1 WHERE id = ?1"
         ))?;
+        let mut uso = tx.prepare(&format!(
+            "INSERT INTO memory_use(memory_id, project_id, veces, ultima) VALUES (?1, ?2, 1, {AHORA})
+             ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + 1, ultima = excluded.ultima"
+        ))?;
         for id in ids {
             u.execute([id])?;
+            if let Some(p) = proyecto {
+                uso.execute(params![id, p])?;
+            }
         }
     }
     tx.commit()?;
@@ -452,20 +457,11 @@ mod tests {
     fn cobertura_sin_tildes_y_por_prefijo() {
         let m = Memoria {
             id: "X".into(),
-            project: String::new(),
             kind: Tipo::Gotcha,
             title: "Bug en auth".into(),
             content: "Fallo de autenticación al renovar tokens".into(),
-            paths: vec![],
             tags: vec!["login".into()],
-            pinned: false,
-            source: String::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-            recalled_at: None,
-            recall_count: 0,
-            author: String::new(),
-            redacted: Vec::new(),
+            ..Memoria::default()
         };
         assert_eq!(cobertura(&terminos("fallo autenticacion"), &m), 1.0);
         assert_eq!(cobertura(&terminos("token caducado"), &m), 0.5);

@@ -9,7 +9,12 @@
 //!
 //! Un veredicto vale mientras no cambie lo que juzgó: `superseded`, `compatible` y `ok:*`, mientras
 //! la memoria juzgada no cambie (un «está bien así» frente a una memoria de estado, que cambia a
-//! diario, no debe caducar cada día); `contradicts`, mientras no cambie ninguna de las dos. De una
+//! diario, no debe caducar cada día); `contradicts`, mientras no cambie ninguna de las dos. «Cambiar»
+//! es cambiar su título, contenido o tipo, y se compara por reloj lógico (esquema 10): el sello de ese
+//! cambio (`memory.content_hlc`) no es posterior al del veredicto (`verdict.hlc`). Antes se comparaban
+//! `updated_at` y `at`, relojes de pared de equipos distintos: un equipo con la hora adelantada dejaba
+//! sin valor los veredictos de los demás. Los sellos tienen ancho fijo, así que se comparan como texto.
+//! De una
 //! pareja manda el veredicto más nuevo (por su sello), así que uno nuevo no necesita borrar el
 //! anterior, y dos equipos que juzgan la misma pareja acaban de acuerdo al sincronizar.
 //!
@@ -80,7 +85,10 @@ pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, m
     let otra = if other_id.is_empty() { String::new() } else { crate::memoria::resolver_id(db, other_id)? };
     anyhow::ensure!(de_pareja != otra.is_empty(), "«{relation}» needs {}", if de_pareja { "another memory" } else { "no other memory" });
     anyhow::ensure!(id != otra, "a memory can't be judged against itself");
-    let hlc = crate::reloj::sello(db)?;
+    // Posterior al último cambio de texto de las dos: aunque ese cambio venga de un equipo con la hora
+    // muy adelantada (que no adelanta el reloj de aquí), el veredicto que se da ahora vale.
+    let ultimo: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, otra], |f| f.get(0))?;
+    let hlc = crate::reloj::sello_tras(db, &ultimo)?;
     db.execute(
         &format!("INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, {AHORA}, ?4, ?5, ?6)"),
         params![id, otra, relation, hlc, motivo.trim(), autor.trim()],
@@ -127,7 +135,7 @@ pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
 /// Lo que vale de cada pareja: el veredicto más nuevo, si lo que juzgó no ha cambiado desde entonces.
 pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> {
     let mut q = db.prepare(
-        "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, a.updated_at, b.updated_at FROM verdict v
+        "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, a.content_hlc, b.content_hlc FROM verdict v
          JOIN memory a ON a.id = v.memory_id JOIN memory b ON b.id = v.other_id
          WHERE v.other_id != ''",
     )?;
@@ -141,7 +149,7 @@ pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> 
             continue;
         }
         ultimo.insert(k.clone(), v.hlc.clone());
-        let vale = cambio_a <= v.at && (v.relation != CONTRADICE || cambio_b <= v.at);
+        let vale = cambio_a <= v.hlc && (v.relation != CONTRADICE || cambio_b <= v.hlc);
         if vale {
             r.insert(k, v);
         } else {
@@ -171,7 +179,7 @@ pub fn cadena(db: &Connection, id: &str) -> Result<Option<Final>> {
             "WITH RECURSIVE vigente AS (
                SELECT v.memory_id, v.other_id, v.reason, v.author FROM verdict v
                JOIN memory a ON a.id = v.memory_id JOIN memory b ON b.id = v.other_id
-               WHERE v.relation = ?2 AND a.updated_at <= v.at
+               WHERE v.relation = ?2 AND a.content_hlc <= v.hlc
                  AND NOT EXISTS (SELECT 1 FROM verdict w
                                  WHERE ((w.memory_id = v.memory_id AND w.other_id = v.other_id) OR (w.memory_id = v.other_id AND w.other_id = v.memory_id))
                                    AND w.hlc > v.hlc)
@@ -201,7 +209,7 @@ pub fn ultima_de_cadena(db: &Connection, id: &str) -> Result<Option<(String, usi
 pub fn oks(db: &Connection, vigentes: bool) -> Result<HashMap<(String, String), String>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, substr(v.relation, 4), v.at FROM verdict v JOIN memory m ON m.id = v.memory_id
-         WHERE v.other_id = '' AND v.relation LIKE 'ok:%' AND (?1 = 0 OR m.updated_at <= v.at)",
+         WHERE v.other_id = '' AND v.relation LIKE 'ok:%' AND (?1 = 0 OR m.content_hlc <= v.hlc)",
     )?;
     let filas: Vec<(String, String, String)> = q.query_map([vigentes], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(filas.into_iter().map(|(id, aviso, at)| ((id, aviso), at)).collect())

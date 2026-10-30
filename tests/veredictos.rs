@@ -134,24 +134,40 @@ fn de_otro_equipo_gana_el_mas_nuevo() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn los_descartes_de_antes_pasan_a_veredictos() {
-    let (mut db, dir) = base("migrar");
-    let a = guardar(&mut db, Tipo::Fact, "Uno", "Algo que nadie usa.", &[]);
-    // Una base del esquema 7 con un «está bien así» en `review`.
-    db.execute_batch("DROP TABLE verdict; PRAGMA user_version = 7;").unwrap();
+/// Una memoria escrita a mano en una base de un esquema viejo (con `project` como ruta).
+fn memoria_vieja(db: &Connection, n: i64, id: &str, title: &str, content: &str, cuando: &str) {
     db.execute(
-        "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, 'unused', '', '', '2026-10-29T00:00:00.000Z', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 minute'))",
-        [&a],
+        "INSERT INTO memory(n, id, project, kind, title, content, created_at, updated_at) VALUES (?1, ?2, '/p', 'fact', ?3, ?4, ?5, ?5)",
+        rusqlite::params![n, id, title, content, cuando],
     )
     .unwrap();
-    drop(db);
+    db.execute("INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, '', '')", rusqlite::params![n, title, content]).unwrap();
+}
+
+#[test]
+fn los_descartes_de_antes_pasan_a_veredictos() {
+    let dir = std::env::temp_dir().join(format!("omoi-veredictos-migrar-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = "01JAAAAAAAAAAAAAAAAAAAAAAA";
+    {
+        // Una base del esquema 7 con un «está bien así» en `review`.
+        let db = db::abrir_en_esquema(&dir.join("o.db"), 7).unwrap();
+        memoria_vieja(&db, 1, a, "Uno", "Algo que nadie usa.", "2026-10-28T00:00:00.000Z");
+        db.execute(
+            "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, 'unused', '', '', '2026-10-29T00:00:00.000Z', '2026-10-29T00:01:00.000Z')",
+            [a],
+        )
+        .unwrap();
+    }
     let db = db::abrir(&dir.join("o.db")).unwrap();
     let v = veredictos::todos(&db).unwrap();
     assert_eq!(v.len(), 1);
-    assert_eq!((v[0].memory_id.as_str(), v[0].relation.as_str()), (a.as_str(), "ok:unused"));
-    let quedan: i64 = db.query_row("SELECT count(*) FROM review WHERE dismissed_at IS NOT NULL", [], |f| f.get(0)).unwrap();
-    assert_eq!(quedan, 0);
+    assert_eq!((v[0].memory_id.as_str(), v[0].relation.as_str()), (a, "ok:unused"));
+    // El esquema 10 deja `review` como caché: sin `dismissed_at`.
+    assert!(db.query_row("SELECT count(*) FROM review WHERE dismissed_at IS NOT NULL", [], |f| f.get::<_, i64>(0)).is_err());
+    // Y el «está bien así» sigue valiendo (la memoria no ha cambiado desde entonces).
+    assert!(veredictos::oks(&db, true).unwrap().contains_key(&(a.to_string(), "unused".to_string())));
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -308,26 +324,36 @@ fn un_ciclo_de_sustituciones_no_cuelga() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Esquema 8 → 9: los veredictos que ya había se conservan, sin motivo ni autor.
+/// Esquema 8 → 10: los veredictos que ya había se conservan, sin motivo ni autor, y siguen valiendo.
 #[test]
 fn los_veredictos_del_esquema_8_se_conservan() {
-    let (mut db, dir) = base("esquema8");
-    let a = guardar(&mut db, Tipo::Fact, "Uno", "El puerto es el 8080.", &[]);
-    let b = guardar(&mut db, Tipo::Fact, "Dos", "El puerto es el 9090.", &[]);
-    veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "no debería quedar", "nadie").unwrap();
-    veredictos::poner(&db, &a, "", "ok:unused", "", "user").unwrap();
-    // Una base del esquema 8: la tabla `verdict` sin las dos columnas.
-    db.execute_batch("ALTER TABLE verdict DROP COLUMN reason; ALTER TABLE verdict DROP COLUMN author; PRAGMA user_version = 8;").unwrap();
-    drop(db);
+    let dir = std::env::temp_dir().join(format!("omoi-veredictos-esquema8-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b) = ("01JAAAAAAAAAAAAAAAAAAAAAAA", "01JBBBBBBBBBBBBBBBBBBBBBBB");
+    {
+        // Una base del esquema 8: la tabla `verdict` sin motivo ni autor, y sellos de contador corto.
+        let db = db::abrir_en_esquema(&dir.join("o.db"), 8).unwrap();
+        memoria_vieja(&db, 1, a, "Uno", "El puerto es el 8080.", "2026-10-28T10:00:00.000Z");
+        memoria_vieja(&db, 2, b, "Dos", "El puerto es el 9090.", "2026-10-28T11:00:00.000Z");
+        db.execute_batch(&format!(
+            "INSERT INTO verdict(memory_id, other_id, relation, at, hlc) VALUES ('{a}', '{b}', 'superseded', '2026-10-28T12:00:00.000Z', '1793188800000-0003-pc');
+             INSERT INTO verdict(memory_id, other_id, relation, at, hlc) VALUES ('{a}', '', 'ok:unused', '2026-10-28T12:00:00.000Z', '1793188800000-0004-pc');"
+        ))
+        .unwrap();
+    }
     let db = db::abrir(&dir.join("o.db")).unwrap();
     let v: i64 = db.query_row("PRAGMA user_version", [], |f| f.get(0)).unwrap();
-    assert_eq!(v, 9);
+    assert_eq!(v, db::VERSION_ESQUEMA);
+    // Los sellos, al formato de ahora.
+    let sello: String = db.query_row("SELECT hlc FROM verdict WHERE relation = 'superseded'", [], |f| f.get(0)).unwrap();
+    assert_eq!(sello, "1793188800000-0000000003-pc");
     let mut todos = veredictos::todos(&db).unwrap();
     todos.sort_by(|x, y| x.relation.cmp(&y.relation));
     assert_eq!(todos.len(), 2);
     assert_eq!((todos[0].relation.as_str(), todos[0].reason.as_str(), todos[0].author.as_str()), ("ok:unused", "", ""));
-    assert_eq!((todos[1].memory_id.as_str(), todos[1].other_id.as_str(), todos[1].relation.as_str(), todos[1].reason.as_str()), (a.as_str(), b.as_str(), "superseded", ""));
-    assert!(notas(&db, &a, false).unwrap().ends_with(": use that one"));
+    assert_eq!((todos[1].memory_id.as_str(), todos[1].other_id.as_str(), todos[1].relation.as_str(), todos[1].reason.as_str()), (a, b, "superseded", ""));
+    assert!(notas(&db, a, false).unwrap().ends_with(": use that one"));
     let ok: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
     assert_eq!(ok, "ok");
     drop(db);

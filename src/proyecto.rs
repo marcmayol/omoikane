@@ -4,6 +4,8 @@
 
 use crate::tr;
 use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// Proyecto de la carpeta actual.
@@ -176,6 +178,523 @@ fn texto(p: &Path) -> String {
     }
     #[allow(unreachable_code)]
     s
+}
+
+// --- Proyectos y espacios en la base (esquema 10) -------------------------------------------------
+//
+// Un proyecto es una fila de `project` con su clave de sincronización (calculada una vez, al crearlo)
+// y todas las carpetas donde vive en `project_path`: un clon, un worktree, la carpeta a la que se
+// movió o la ruta que trajo otro equipo (`is_foreign`). Un espacio (`space`) agrupa proyectos de un
+// mismo cliente: desde un proyecto se ven las memorias suyas, las de su espacio y las globales, nunca
+// las de otro espacio.
+
+/// Cómo se comparan dos rutas: en Windows y macOS (sistemas de ficheros que no distinguen mayúsculas),
+/// en minúsculas.
+pub fn comparable(ruta: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) { ruta.to_lowercase() } else { ruta.to_string() }
+}
+
+/// El nombre corto de un proyecto: el de su carpeta (o, sin ruta, el final de la clave).
+pub fn nombre_de(ruta: &str, clave: &str) -> String {
+    let desde_ruta = ruta.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
+    if !desde_ruta.is_empty() {
+        return desde_ruta;
+    }
+    clave.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or(clave).to_string()
+}
+
+/// El `origin` de git de una carpeta, normalizado como en las claves (vacío si no tiene).
+pub fn origen(ruta: &str) -> String {
+    if ruta.is_empty() {
+        return String::new();
+    }
+    crate::sync::origen_git(Path::new(ruta)).map(|u| crate::sync::normalizar_remoto(&u)).unwrap_or_default()
+}
+
+fn ahora(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |f| f.get(0))?)
+}
+
+/// El proyecto (y su espacio) de una carpeta que ya está apuntada.
+fn por_ruta(db: &Connection, ruta: &str) -> Result<Option<(i64, Option<i64>)>> {
+    Ok(db
+        .query_row(
+            "SELECT pp.project_id, p.space_id FROM project_path pp JOIN project p ON p.id = pp.project_id WHERE pp.path_cmp = ?1",
+            [comparable(ruta)],
+            |f| Ok((f.get(0)?, f.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// Qué es una carpeta que aún no está apuntada.
+enum Decision {
+    /// Otra carpeta del proyecto que ya tiene esa clave (un clon, un worktree, la carpeta movida de un
+    /// repositorio con `origin`, o la carpeta local de un proyecto que llegó de otro equipo).
+    Unir(i64, Option<i64>),
+    /// Un proyecto nuevo, con esta clave.
+    Nuevo(String),
+}
+
+fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
+    let clave = crate::sync::clave(ruta, persona);
+    let existente: Option<(i64, Option<i64>)> =
+        db.query_row("SELECT id, space_id FROM project WHERE key = ?1", [&clave], |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
+    let Some((id, espacio)) = existente else { return Ok(Decision::Nuevo(clave)) };
+    // Con `origin`, la misma clave es el mismo repositorio. Sin él (`dir:`), dos carpetas con el mismo
+    // nombre pueden ser cosas distintas: solo se junta con un proyecto que aquí no tiene ninguna
+    // carpeta propia (el de otro equipo de la misma persona). Una carpeta movida sin `origin` se
+    // arregla con `omoi projects move` (Revisar la enseña como «ya no está»).
+    let propias: i64 = db.query_row("SELECT count(*) FROM project_path WHERE project_id = ?1 AND is_foreign = 0", [id], |f| f.get(0))?;
+    if clave.starts_with("git:") || propias == 0 {
+        return Ok(Decision::Unir(id, espacio));
+    }
+    let mut n = 2;
+    loop {
+        let k = format!("{clave}~{n}");
+        let ya: Option<(i64, Option<i64>, i64)> = db
+            .query_row(
+                "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0) FROM project p WHERE p.key = ?1",
+                [&k],
+                |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)),
+            )
+            .optional()?;
+        match ya {
+            None => return Ok(Decision::Nuevo(k)),
+            Some((id, espacio, 0)) => return Ok(Decision::Unir(id, espacio)),
+            Some(_) => n += 1,
+        }
+    }
+}
+
+/// Si una carpeta ya está apuntada como carpeta de un proyecto.
+pub fn apuntada(db: &Connection, ruta: &str) -> Result<bool> {
+    Ok(por_ruta(db, ruta)?.is_some())
+}
+
+/// El proyecto de una carpeta, sin escribir nada: el apuntado o, si no lo está, el que tiene su clave
+/// (si la carpeta se juntaría con él). `None`: un proyecto que aún no tiene nada. La carpeta vacía es
+/// lo global (0).
+pub fn resolver(db: &Connection, ruta: &str) -> Result<Option<(i64, Option<i64>)>> {
+    if ruta.is_empty() {
+        return Ok(Some((0, None)));
+    }
+    if let Some(r) = por_ruta(db, ruta)? {
+        return Ok(Some(r));
+    }
+    Ok(match decidir(db, ruta, &crate::db::persona_de(db))? {
+        Decision::Unir(id, espacio) => Some((id, espacio)),
+        Decision::Nuevo(_) => None,
+    })
+}
+
+/// El id del proyecto de una carpeta, apuntándola si hace falta (y creando el proyecto si es nuevo).
+/// De paso apunta cuándo se vio y su `origin`: si cambió, la clave no cambia (las memorias de los
+/// demás equipos la siguen usando) y Revisar lo avisa.
+pub fn registrar(db: &Connection, ruta: &str) -> Result<i64> {
+    Ok(registrar_avisando(db, ruta)?.0)
+}
+
+/// Como `registrar`, y además la carpeta donde estaba el proyecto si esta es la que la sustituye
+/// (aquella ya no existe: la carpeta se movió y el `origin` lo dice). Pasa una sola vez: después, la
+/// principal ya es esta.
+pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<String>)> {
+    if ruta.is_empty() {
+        return Ok((0, None));
+    }
+    let ahora = ahora(db)?;
+    let existe = Path::new(ruta).is_dir();
+    if let Some((id, _)) = por_ruta(db, ruta)? {
+        if existe {
+            db.execute(
+                "UPDATE project_path SET is_foreign = 0, origin = ?2, last_seen = ?3
+                 WHERE path_cmp = ?1 AND (is_foreign = 1 OR origin != ?2 OR last_seen IS NULL OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'))",
+                params![comparable(ruta), origen(ruta), ahora],
+            )?;
+            return Ok((id, principal_si_hace_falta(db, id, ruta)?));
+        }
+        return Ok((id, None));
+    }
+    let id = match decidir(db, ruta, &crate::db::persona_de(db))? {
+        Decision::Unir(id, _) => id,
+        Decision::Nuevo(clave) => {
+            db.execute(
+                "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![clave, nombre_de(ruta, &clave), ruta, ahora],
+            )?;
+            db.last_insert_rowid()
+        }
+    };
+    db.execute(
+        "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+        params![ruta, comparable(ruta), id, origen(ruta), existe.then_some(&ahora)],
+    )?;
+    Ok((id, principal_si_hace_falta(db, id, ruta)?))
+}
+
+/// La ruta principal de un proyecto (la que enseñan las memorias) pasa a `ruta` si la de ahora es de
+/// otro equipo o ya no existe aquí (la carpeta se movió). Devuelve la de antes si era de aquí y se
+/// movió (para avisar).
+fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Option<String>> {
+    let (actual, ajena): (String, bool) = db.query_row(
+        "SELECT p.path, COALESCE((SELECT is_foreign FROM project_path WHERE path = p.path), 1) FROM project p WHERE p.id = ?1",
+        [id],
+        |f| Ok((f.get(0)?, f.get(1)?)),
+    )?;
+    if actual != ruta && Path::new(ruta).is_dir() && (ajena || actual.is_empty() || !Path::new(&actual).is_dir()) {
+        db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![id, ruta, nombre_de(ruta, "")])?;
+        return Ok((!ajena && !actual.is_empty()).then_some(actual));
+    }
+    Ok(None)
+}
+
+/// `omoi projects prune`: los proyectos sin memorias (y sus carpetas apuntadas) se borran. El de una
+/// carpeta en la que se vuelva a trabajar se crea otra vez solo. Devuelve cuántos.
+pub fn podar(db: &Connection) -> Result<usize> {
+    db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
+    Ok(db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?)
+}
+
+/// El proyecto de una clave que llega de otro equipo (o de un fichero de `omoi export`), creándolo con
+/// la ruta de origen si aquí no hay ninguno. Si esa ruta existe aquí con la misma clave, es la carpeta
+/// local del proyecto; si existe con otra clave o ya es de otro proyecto, la ruta ajena lleva la
+/// clave detrás (`/workspace [git:…]`) para no confundirse con él.
+pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str) -> Result<i64> {
+    if clave.is_empty() {
+        return Ok(0);
+    }
+    if let Some(id) = db.query_row("SELECT id FROM project WHERE key = ?1", [clave], |f| f.get(0)).optional()? {
+        return Ok(id);
+    }
+    let existe = !ruta_origen.is_empty() && Path::new(ruta_origen).is_dir();
+    if existe && por_ruta(db, ruta_origen)?.is_none() && crate::sync::clave(ruta_origen, persona) == clave {
+        return registrar(db, ruta_origen);
+    }
+    let libre = |r: &str| -> Result<bool> { Ok(por_ruta(db, r)?.is_none() && !Path::new(r).exists()) };
+    let mut ruta = if ruta_origen.is_empty() { format!("[{clave}]") } else { ruta_origen.to_string() };
+    if !libre(&ruta)? {
+        ruta = format!("{ruta_origen} [{clave}]");
+    }
+    let base = ruta.clone();
+    let mut n = 2;
+    while !libre(&ruta)? {
+        ruta = format!("{base} ({n})");
+        n += 1;
+    }
+    let ahora = ahora(db)?;
+    db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![clave, nombre_de(ruta_origen, clave), ruta, ahora])?;
+    let id = db.last_insert_rowid();
+    db.execute(
+        "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, '', 1, NULL)",
+        params![ruta, comparable(&ruta), id],
+    )?;
+    Ok(id)
+}
+
+/// Un proyecto, como lo enseñan `context`, `omoi projects` y Revisar.
+#[derive(Clone, Debug, Serialize)]
+pub struct Proyecto {
+    #[serde(skip)]
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub key: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub space: String,
+    pub memories: i64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_update: String,
+    /// La memoria `status` más reciente, en una línea.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    /// Su carpeta ya no existe en este equipo (y no es de otro equipo).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
+    /// El `origin` de git de alguna de sus carpetas ya no es el de su clave.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub origin_changed: String,
+}
+
+/// Los proyectos con memorias (o el que se pida, aunque no tenga), del más al menos activo. Sin lo
+/// global. Con `espacio`, solo los de ese espacio (`Some(None)`: los que no tienen).
+pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, limite: usize) -> Result<Vec<Proyecto>> {
+    // Cuántas y la última, de todos los proyectos en una pasada por el índice `memory_scope` (con
+    // 50.000 memorias, una subconsulta por proyecto recorría la tabla entera una vez por cada uno).
+    let por_proyecto: std::collections::HashMap<i64, (i64, String)> = {
+        let mut q = db.prepare("SELECT project_id, count(*), max(updated_at) FROM memory WHERE project_id != 0 GROUP BY project_id")?;
+        q.query_map([], |f| Ok((f.get(0)?, (f.get(1)?, f.get(2)?))))?.collect::<rusqlite::Result<_>>()?
+    };
+    let mut q = db.prepare(
+        "SELECT p.id, p.name, p.path, p.key, COALESCE(s.key, ''),
+                COALESCE((SELECT is_foreign FROM project_path WHERE path = p.path), 0),
+                COALESCE((SELECT origin FROM project_path WHERE project_id = p.id AND is_foreign = 0 AND origin != ''
+                            AND p.key LIKE 'git:%' AND 'git:' || origin != p.key LIMIT 1), ''),
+                p.space_id
+         FROM project p LEFT JOIN space s ON s.id = p.space_id
+         WHERE p.id != 0 AND (?1 IS NULL OR p.id = ?1)",
+    )?;
+    // (proyecto, su ruta principal es de otro equipo, su espacio)
+    let mut v: Vec<(Proyecto, bool, Option<i64>)> = q
+        .query_map(params![solo], |f| {
+            let id: i64 = f.get(0)?;
+            let (memories, last_update) = por_proyecto.get(&id).cloned().unwrap_or_default();
+            Ok((
+                Proyecto {
+                    id,
+                    name: f.get(1)?,
+                    path: f.get(2)?,
+                    key: f.get(3)?,
+                    space: f.get(4)?,
+                    memories,
+                    last_update,
+                    status: String::new(),
+                    gone: false,
+                    origin_changed: f.get(6)?,
+                },
+                f.get(5)?,
+                f.get(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    v.retain(|(p, _, e)| (p.memories > 0 || solo.is_some()) && espacio.is_none_or(|x| x == *e));
+    v.sort_by(|a, b| b.0.last_update.cmp(&a.0.last_update).then(a.0.name.cmp(&b.0.name)));
+    v.truncate(limite);
+    // El `status` más reciente de cada proyecto, en una pasada por la tabla: el `LIKE` descarta sin leer
+    // el JSON lo que no lleva la etiqueta, y con `max`, SQLite da el título de esa misma fila. `NOT
+    // INDEXED`: por el índice de proyecto, SQLite iba fila a fila a la tabla (210 ms con 50.000
+    // memorias, frente a 30 recorriéndola de seguido).
+    let estados: std::collections::HashMap<i64, String> = {
+        let mut q = db.prepare(
+            "SELECT project_id, title, max(updated_at) FROM memory NOT INDEXED
+             WHERE project_id != 0 AND tags LIKE ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
+             GROUP BY project_id",
+        )?;
+        let etiqueta = crate::memoria::ESTADO;
+        q.query_map(params![format!("%\"{etiqueta}\"%"), etiqueta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    Ok(v.into_iter()
+        .map(|(mut p, ajena, _)| {
+            p.gone = !ajena && !p.path.is_empty() && !Path::new(&p.path).is_dir();
+            p.status = estados.get(&p.id).cloned().unwrap_or_default();
+            p
+        })
+        .collect())
+}
+
+/// El proyecto que dice una persona o un agente: una carpeta, o un nombre o trozo de nombre de los
+/// proyectos conocidos («balua»). Error si no encaja con ninguno o encaja con varios (con la lista).
+pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
+    let t = texto.trim();
+    anyhow::ensure!(!t.is_empty(), tr!("which project? give its folder or its name", "¿qué proyecto? di su carpeta o su nombre"));
+    let parece_ruta = t.contains(['/', '\\']) || t == "." || t == "..";
+    if (parece_ruta || Path::new(t).is_dir())
+        && let Ok(ruta) = de(Path::new(t))
+    {
+        if let Some((id, _)) = resolver(db, &ruta)? {
+            return Ok(id);
+        }
+        anyhow::ensure!(!parece_ruta, tr!("no memories in the project of {ruta}", "el proyecto de {ruta} no tiene memorias"));
+    }
+    if parece_ruta && let Some((id, _)) = por_ruta(db, t)? {
+        return Ok(id);
+    }
+    let todos: Vec<(i64, String, String)> = {
+        let mut q = db.prepare("SELECT id, name, path FROM project WHERE id != 0 ORDER BY name")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let n = t.to_lowercase();
+    let exactos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase() == n).collect();
+    let trozos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase().contains(&n)).collect();
+    let elegidos = if exactos.is_empty() { trozos } else { exactos };
+    match elegidos.as_slice() {
+        [uno] => Ok(uno.0),
+        [] => anyhow::bail!(tr!(
+            "no project matches «{t}» (known: {})",
+            "ningún proyecto encaja con «{t}» (hay: {})",
+            todos.iter().map(|x| x.1.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+        varios => anyhow::bail!(tr!(
+            "«{t}» matches several projects, say which: {}",
+            "«{t}» encaja con varios proyectos, di cuál: {}",
+            varios.iter().map(|x| format!("{} ({})", x.1, x.2)).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// La clave de un proyecto por su id (vacía si no existe o es lo global).
+pub fn clave_de(db: &Connection, proyecto: i64) -> Result<String> {
+    Ok(db.query_row("SELECT key FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+/// El espacio de un proyecto (`None` si no tiene, o si el proyecto no existe).
+pub fn espacio_de(db: &Connection, proyecto: i64) -> Result<Option<i64>> {
+    Ok(db.query_row("SELECT space_id FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?.flatten())
+}
+
+/// Un espacio, como lo enseña `omoi space list`.
+#[derive(Clone, Debug, Serialize)]
+pub struct Espacio {
+    #[serde(skip)]
+    pub id: i64,
+    pub key: String,
+    pub name: String,
+    pub projects: Vec<String>,
+    pub memories: i64,
+}
+
+/// La clave de un espacio a partir de su nombre: minúsculas, letras, números y guiones.
+pub fn clave_de_espacio(nombre: &str) -> String {
+    let k: String = nombre.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    k.split('-').filter(|x| !x.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// Crea un espacio. Error si ya hay uno con la misma clave.
+pub fn crear_espacio(db: &Connection, nombre: &str) -> Result<i64> {
+    let clave = clave_de_espacio(nombre);
+    anyhow::ensure!(!clave.is_empty(), tr!("the space needs a name", "el espacio necesita un nombre"));
+    let ya: Option<i64> = db.query_row("SELECT id FROM space WHERE key = ?1", [&clave], |f| f.get(0)).optional()?;
+    anyhow::ensure!(ya.is_none(), tr!("the space «{clave}» already exists", "el espacio «{clave}» ya existe"));
+    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?2, ?3)", params![clave, nombre.trim(), ahora(db)?])?;
+    Ok(db.last_insert_rowid())
+}
+
+/// El espacio de una clave que llega de otro equipo, creándolo si aquí no está.
+pub fn espacio_de_clave(db: &Connection, clave: &str) -> Result<Option<i64>> {
+    if clave.is_empty() {
+        return Ok(None);
+    }
+    if let Some(id) = db.query_row("SELECT id FROM space WHERE key = ?1", [clave], |f| f.get(0)).optional()? {
+        return Ok(Some(id));
+    }
+    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?1, ?2)", params![clave, ahora(db)?])?;
+    Ok(Some(db.last_insert_rowid()))
+}
+
+/// El espacio que dice una persona o un agente, por su clave o su nombre. Error (con la lista) si no hay.
+pub fn buscar_espacio(db: &Connection, texto: &str) -> Result<i64> {
+    let t = texto.trim();
+    let id: Option<i64> = db
+        .query_row(
+            "SELECT id FROM space WHERE key = ?1 OR lower(name) = lower(?2) ORDER BY key = ?1 DESC LIMIT 1",
+            params![clave_de_espacio(t), t],
+            |f| f.get(0),
+        )
+        .optional()?;
+    id.ok_or_else(|| {
+        let hay: Vec<String> = db
+            .prepare("SELECT key FROM space ORDER BY key")
+            .and_then(|mut q| q.query_map([], |f| f.get(0))?.collect())
+            .unwrap_or_default();
+        anyhow::anyhow!(tr!(
+            "no space «{t}» (there are: {}); create it with `omoi space add {t}`",
+            "no hay ningún espacio «{t}» (hay: {}); créalo con `omoi space add {t}`",
+            if hay.is_empty() { "-".to_string() } else { hay.join(", ") }
+        ))
+    })
+}
+
+/// La clave de un espacio por su id (vacía si no hay).
+pub fn clave_espacio(db: &Connection, id: Option<i64>) -> Result<String> {
+    let Some(id) = id else { return Ok(String::new()) };
+    Ok(db.query_row("SELECT key FROM space WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+/// Los espacios, con sus proyectos y cuántas memorias tienen (las de sus proyectos y las suyas).
+pub fn espacios(db: &Connection) -> Result<Vec<Espacio>> {
+    let mut q = db.prepare(
+        "SELECT s.id, s.key, s.name,
+                (SELECT count(*) FROM memory m WHERE m.space_id = s.id OR m.project_id IN (SELECT id FROM project WHERE space_id = s.id))
+         FROM space s ORDER BY s.key",
+    )?;
+    let v: Vec<Espacio> = q
+        .query_map([], |f| Ok(Espacio { id: f.get(0)?, key: f.get(1)?, name: f.get(2)?, projects: Vec::new(), memories: f.get(3)? }))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut p = db.prepare("SELECT name FROM project WHERE space_id = ?1 ORDER BY name")?;
+    v.into_iter()
+        .map(|mut e| {
+            e.projects = p.query_map([e.id], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+            Ok(e)
+        })
+        .collect()
+}
+
+/// Mete un proyecto en un espacio (o lo saca, con `None`). Sus memorias cambian de sello para que la
+/// sincronización lleve el espacio nuevo a los demás equipos. Devuelve cuántas.
+pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> Result<usize> {
+    anyhow::ensure!(proyecto != 0, tr!("global memories have no project to put in a space", "las memorias globales no tienen proyecto que meter en un espacio"));
+    db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![proyecto, espacio])?;
+    resellar(db, proyecto)
+}
+
+/// Un sello nuevo para cada memoria del proyecto (sin tocar su contenido ni `content_hlc`): así viaja
+/// lo que cambió del proyecto (su espacio, su clave al fundirlo con otro).
+fn resellar(db: &Connection, proyecto: i64) -> Result<usize> {
+    let ids: Vec<(String, String)> = {
+        let mut q = db.prepare("SELECT id, hlc FROM memory WHERE project_id = ?1")?;
+        q.query_map([proyecto], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, hlc) in &ids {
+        let nuevo = crate::reloj::sello_tras(db, hlc)?;
+        db.execute("UPDATE memory SET hlc = ?2 WHERE id = ?1", params![id, nuevo])?;
+    }
+    Ok(ids.len())
+}
+
+/// Junta el proyecto `de` en `en`: sus memorias (con su id, historial y veredictos) y sus carpetas pasan
+/// a `en`, y `de` desaparece. Si los dos tenían memoria `status`, la más nueva se queda y la otra queda
+/// sustituida por ella. Devuelve cuántas memorias se movieron.
+pub fn fundir(db: &mut Connection, de: i64, en: i64) -> Result<usize> {
+    anyhow::ensure!(de != 0 && en != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
+    anyhow::ensure!(de != en, tr!("it's the same project", "es el mismo proyecto"));
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let estado = |p: i64| -> Result<Option<String>> {
+        Ok(tx
+            .query_row(
+                "SELECT id FROM memory WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2) ORDER BY updated_at DESC LIMIT 1",
+                params![p, crate::memoria::ESTADO],
+                |f| f.get(0),
+            )
+            .optional()?)
+    };
+    let (viejo, nuevo) = (estado(de)?, estado(en)?);
+    let n = tx.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    tx.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    tx.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    tx.execute(
+        "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
+         ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",
+        params![de, en],
+    )?;
+    tx.execute("DELETE FROM memory_use WHERE project_id = ?1", [de])?;
+    tx.execute("UPDATE project SET space_id = COALESCE(space_id, (SELECT space_id FROM project WHERE id = ?1)) WHERE id = ?2", params![de, en])?;
+    tx.execute("DELETE FROM project WHERE id = ?1", [de])?;
+    resellar(&tx, en)?;
+    if let (Some(a), Some(b)) = (viejo, nuevo) {
+        let (vieja, nueva): (String, String) = tx.query_row(
+            "SELECT CASE WHEN a.updated_at <= b.updated_at THEN a.id ELSE b.id END, CASE WHEN a.updated_at <= b.updated_at THEN b.id ELSE a.id END
+             FROM memory a, memory b WHERE a.id = ?1 AND b.id = ?2",
+            params![a, b],
+            |f| Ok((f.get(0)?, f.get(1)?)),
+        )?;
+        crate::veredictos::poner(&tx, &vieja, &nueva, crate::veredictos::SUSTITUIDA, "projects merged: the newer status stays", "omoikane")?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// `omoi projects move`: el proyecto vive ahora en `carpeta`. Se queda con su clave (los demás equipos
+/// la conocen) y suma la carpeta; si la carpeta ya era otro proyecto, ese se funde en este.
+pub fn mover(db: &mut Connection, proyecto: i64, carpeta: &str) -> Result<usize> {
+    anyhow::ensure!(proyecto != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
+    let n = match por_ruta(db, carpeta)? {
+        Some((otro, _)) if otro != proyecto => fundir(db, otro, proyecto)?,
+        _ => 0,
+    };
+    db.execute(
+        "INSERT OR REPLACE INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+        params![carpeta, comparable(carpeta), proyecto, origen(carpeta), ahora(db)?],
+    )?;
+    db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![proyecto, carpeta, nombre_de(carpeta, "")])?;
+    Ok(n)
 }
 
 #[cfg(test)]
