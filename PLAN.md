@@ -781,6 +781,7 @@ Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts s
 - La sincronización elige por espacio («este repo comparte todo el espacio cliente-a»), además de por proyecto: un repo de sync por cliente, con su propia clave, es el aislamiento entre clientes.
 - Cómo se asigna: `omoi spaces add <nombre>` y `omoi projects move <proyecto> --space <nombre>`; opcionalmente por carpeta padre (todo lo que cuelga de `D:\clientes\acme` es del espacio acme).
 - Se hace en la 0.20.0 y no después porque es una columna y un filtro ahora, y un cambio de esquema tras la 1.0.
+- **Para el aprendizaje entre proyectos de la 0.21.0** (que no rompa la 1.0): `recall_log` apunta también el proyecto desde el que se pidió cada memoria (`project_id`), y lo que hoy se borra a los 7 días se resume antes en una tabla local `memory_use(memory_id, project_id, veces, ultima)`. Son tablas locales: no viajan por la sincronización ni entran en el export, así que no tocan los formatos que se congelan.
 
 
 **Proyecto en `search`, y saber dónde estás (punto 7).** engram tiene `project` en `mem_search`, `mem_current_project` y `mem_list_projects`.
@@ -793,6 +794,12 @@ Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts s
 - Mejor que engram: automático por `origin`, sin ficheros de alias ni configuración; y lo que se mueve viaja ya con la clave de sync correcta.
 
 ### 8.4 · 0.21.0 · siempre al día: traer cambios a mitad de sesión y escuchar a los subagentes
+
+**Aprender entre proyectos (añadido el 30-oct-2026).** Lo que se aprende en un proyecto y sirve en otros (la trampa de bitsandbytes en la RTX 5070 Ti, aprendida en Balùa, vale para cualquier proyecto de visión) hoy solo llega si el agente lo guardó como global. Tres piezas, sin LLM y sin cruzar nunca de un espacio a otro:
+1. **Recall entre proyectos:** si en un mensaje no pasa la puerta ninguna memoria del proyecto actual, se buscan también las de los demás proyectos del mismo espacio (o de la misma persona sin espacios), con un listón de cobertura más alto y como mucho una, marcada con su origen («de Balùa: …»). Se mide con los mensajes reales antes de dejarlo: cuántas veces trae algo útil y cuántas mete ruido.
+2. **Proponer promociones en Revisar:** una memoria de proyecto que se ha recibido o buscado desde dos o más proyectos (`memory_use`) sale como «parece general: ¿hacerla global / de espacio?». «Déjala» es un veredicto `ok:promote`, que ya viaja.
+3. **Aviso al guardar:** si una memoria nueva no nombra ningún fichero del proyecto y habla de herramientas (PowerShell, Gradle, una GPU, el sistema), `remember` sugiere guardarla como global. Solo una pista.
+No copiar memorias entre proyectos (duplicados que se desincronizan) ni hacer global lo dudoso (es la fuga entre clientes que los espacios evitan).
 
 **Traer cambios a mitad de sesión (punto 3).** Engram Cloud sincroniza en continuo (500 ms) contra su servidor. Nosotros bajamos al empezar sesión y al escribir.
 - El hook de cada mensaje (`omoi recall`) comprueba, **fuera del camino caliente**, si hace más de `OMOIKANE_SYNC_PULL_MINUTES` (2) desde el último intento y, si la sync está configurada, lanza `omoi sync --background` desatendido: el recall sigue en 15-26 ms, y la bajada corre aparte con el `Cerrojo` que ya existe. `omoi serve` hace lo mismo con un temporizador mientras está abierto, y la web enseña lo que llega.
