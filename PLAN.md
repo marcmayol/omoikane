@@ -774,6 +774,15 @@ Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts s
 
 ### 8.3 · 0.20.0 · proyectos de verdad: buscar donde toca y moverlos en bloque
 
+**Espacios: separar clientes (añadido el 30-oct-2026, a petición de Marc, pensando en una software factory).** Hoy una memoria es de un proyecto o global, y las globales se ven en todos los proyectos: lo que se guarda como global trabajando para el cliente A le llega al agente en los proyectos del cliente B, y un cliente con varios repos (web, app, backend) no tiene dónde guardar lo común sin hacerlo global. Con la tabla `project` de la auditoría (A1) se añade un nivel entre proyecto y global:
+- Tabla `space(id, key, name, created_at)`; `project.space_id` (NULL = sin espacio). La memoria tiene tres alcances: proyecto (`project_id`), espacio (`space_id` sin proyecto) o global (ni uno ni otro). Las preferencias del usuario siguen siendo globales.
+- Desde un proyecto se ven las suyas, las de su espacio y las globales; nunca las de otro espacio. Desde la carpeta de usuario se sigue viendo todo, pero `search`/`recent` aceptan `space` como aceptan `project`.
+- `remember` acepta `space: true` (o el nombre) para guardar a nivel de espacio; `context` dice en qué espacio estás. Sin herramientas nuevas.
+- La sincronización elige por espacio («este repo comparte todo el espacio cliente-a»), además de por proyecto: un repo de sync por cliente, con su propia clave, es el aislamiento entre clientes.
+- Cómo se asigna: `omoi spaces add <nombre>` y `omoi projects move <proyecto> --space <nombre>`; opcionalmente por carpeta padre (todo lo que cuelga de `D:\clientes\acme` es del espacio acme).
+- Se hace en la 0.20.0 y no después porque es una columna y un filtro ahora, y un cambio de esquema tras la 1.0.
+
+
 **Proyecto en `search`, y saber dónde estás (punto 7).** engram tiene `project` en `mem_search`, `mem_current_project` y `mem_list_projects`.
 - `search` y `recent` aceptan `project`: una carpeta, o un **nombre o trozo de nombre** («Balua») que se resuelve contra los proyectos conocidos; si encaja con más de uno, error con la lista. `context` devuelve `project` (ruta, clave de sync y cuántas memorias) y `projects` (hasta 50, por última actividad, con su `status` más reciente en una línea). Consultas con índice `memory_project`; a 500 proyectos sigue siendo instantáneo.
 - Mejor que engram: resolución por nombre parcial, y todo dentro de las 8 herramientas.
