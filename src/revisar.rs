@@ -114,6 +114,8 @@ struct Ficha {
     id: String,
     project: String,
     updated_at: String,
+    /// El sello del último cambio (`reloj`): desempata dos memorias del mismo milisegundo.
+    hlc: String,
     /// La fecha más reciente que cuenta (o la del último cambio si no menciona ninguna).
     cuando: String,
     titulo: BTreeSet<String>,
@@ -217,7 +219,7 @@ fn versiones(t: &str) -> BTreeMap<String, BTreeSet<Vec<u64>>> {
     r
 }
 
-fn ficha(m: &Memoria) -> Ficha {
+fn ficha(m: &Memoria, hlc: String) -> Ficha {
     let contenido: String = m.content.chars().take(LARGO_PARA_RECALL).collect();
     let texto = normal(&contenido);
     let todo = format!("{} {texto}", normal(&m.title));
@@ -225,6 +227,7 @@ fn ficha(m: &Memoria) -> Ficha {
         id: m.id.clone(),
         project: m.project.clone(),
         updated_at: m.updated_at.clone(),
+        hlc,
         cuando: fechas(&todo).into_iter().max().unwrap_or_else(|| m.updated_at.get(..10).unwrap_or("").to_string()),
         titulo: palabras(&m.title),
         contenido: palabras(&contenido),
@@ -270,13 +273,17 @@ fn texto_version(v: &[u64]) -> String {
     v.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
 }
 
-/// Por qué la vieja parece superada por la nueva, o nada.
-fn motivos(vieja: &Ficha, nueva: &Ficha, raras: &dyn Fn(&BTreeSet<String>) -> BTreeSet<String>) -> Vec<String> {
+/// Por qué la vieja parece superada por la nueva, o nada. `mismo_tema`: comparten palabras; sin eso,
+/// una versión a secas no dice nada (en un proyecto casi todo nombra versiones suyas: el eslogan
+/// «desde la 0.14.1» no contradice a la firma «desde la 0.14.0»). Una versión con nombre
+/// («rusqlite 0.41.0») sí, porque el nombre ya las ata.
+fn motivos(vieja: &Ficha, nueva: &Ficha, mismo_tema: bool, raras: &dyn Fn(&BTreeSet<String>) -> BTreeSet<String>) -> Vec<String> {
     let mut r = Vec::new();
     for (cosa, va) in &vieja.versiones {
         if let Some(vb) = nueva.versiones.get(cosa)
             && let (Some(a), Some(b)) = (va.last(), vb.last())
             && b > a
+            && (mismo_tema || !cosa.is_empty())
         {
             let nombre = if cosa.is_empty() { "version".to_string() } else { cosa.clone() };
             r.push(format!("{nombre} {} → {}", texto_version(a), texto_version(b)));
@@ -298,7 +305,11 @@ fn motivos(vieja: &Ficha, nueva: &Ficha, raras: &dyn Fn(&BTreeSet<String>) -> BT
 /// Parejas (vieja, nueva, detalle) del mismo proyecto que hablan de lo mismo y se contradicen.
 fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
     let todas = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
-    let fichas: Vec<Ficha> = todas.iter().map(ficha).collect();
+    let sellos: HashMap<String, String> = {
+        let mut q = db.prepare("SELECT id, hlc FROM memory")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let fichas: Vec<Ficha> = todas.iter().map(|m| ficha(m, sellos.get(&m.id).cloned().unwrap_or_default())).collect();
     let n = fichas.len().max(1);
     let mut df: HashMap<&str, usize> = HashMap::new();
     for f in &fichas {
@@ -346,22 +357,23 @@ fn desfasadas(db: &Connection) -> Result<Vec<(String, String, String)>> {
     let mut r = Vec::new();
     for (i, j) in parejas {
         let (a, b) = (&fichas[i], &fichas[j]);
-        let (mut ca, mut cb) = (a.cuando.as_str(), b.cuando.as_str());
-        if ca == cb {
-            (ca, cb) = (a.updated_at.as_str(), b.updated_at.as_str());
+        // La más nueva: por la fecha que menciona, luego por su último cambio y, en el mismo
+        // milisegundo (varias guardadas seguidas, una importación), por el sello del reloj.
+        fn orden(f: &Ficha) -> (&str, &str, &str, &str) {
+            (&f.cuando, &f.updated_at, &f.hlc, &f.id)
         }
-        if ca == cb {
-            continue;
-        }
-        let ((vieja, iv), (nueva, inu)) = if ca < cb { ((a, i), (b, j)) } else { ((b, j), (a, i)) };
+        let ((vieja, iv), (nueva, inu)) = if orden(a) < orden(b) { ((a, i), (b, j)) } else { ((b, j), (a, i)) };
         let comunes_t = titulos[iv].intersection(&titulos[inu]).count();
         let union = contenidos[iv].union(&contenidos[inu]).count().max(1);
         let jaccard = contenidos[iv].intersection(&contenidos[inu]).count() as f64 / union as f64;
-        let relacionadas = !vieja.project.is_empty() || comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
-        if !relacionadas {
+        let mismo_tema = comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
+        // Dentro de un proyecto se miran todas las parejas (casi todo trata de él), pero lo que no
+        // comparte palabras solo puede contradecirse por algo con nombre.
+        if vieja.project.is_empty() && !mismo_tema {
             continue;
         }
-        let m = motivos(vieja, nueva, &raras);
+        let m = motivos(vieja, nueva, mismo_tema, &raras);
+
         if !m.is_empty() {
             r.push((vieja.id.clone(), nueva.id.clone(), m.join("; ")));
         }
