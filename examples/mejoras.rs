@@ -65,7 +65,7 @@ fn busqueda(dir: &Path, tsvs: &[String]) -> Result<()> {
         let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t, content: c, ..Default::default() };
         fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f);
     }
-    let o = Opciones { ambito: Ambito::Proyecto("/p".into()), kind: None, tags: vec![], limite: 5 };
+    let o = Opciones { ambito: Ambito::de(&db, "/p")?, kind: None, tags: vec![], limite: 5 };
     let mut configs: Vec<(String, Fusion)> = vec![("rescate (0.5.0)".into(), Fusion::Rescate)];
     for desde in [0.30f32, 0.40, 0.50, 0.60] {
         for huecos in [1usize, 2] {
@@ -132,7 +132,7 @@ pub fn fallos(dir: &Path, tsv: &str) -> Result<()> {
         let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t, content: c, ..Default::default() };
         fichero_de.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f);
     }
-    let o = Opciones { ambito: Ambito::Proyecto("/p".into()), kind: None, tags: vec![], limite: 5 };
+    let o = Opciones { ambito: Ambito::de(&db, "/p")?, kind: None, tags: vec![], limite: 5 };
     for (tipo, f, q) in preguntas(tsv)? {
         if f == "-" {
             continue;

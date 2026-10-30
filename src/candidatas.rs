@@ -486,7 +486,7 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
 /// Al cerrar o compactar: aparta las candidatas de la conversación que no estén ya guardadas.
 pub fn apartar(db: &Connection, project: &str, session: &str, ruta: &Path) -> Result<usize> {
     let cs = de_conversacion(ruta)?;
-    let memorias = crate::memoria::recientes(db, &Ambito::de(project), None, usize::MAX >> 1)?;
+    let memorias = crate::memoria::recientes(db, &Ambito::de(db, project)?, None, usize::MAX >> 1)?;
     let mut n = 0;
     for c in cs {
         let respuesta = c.text.rsplit(" → ").next().unwrap_or(&c.text);

@@ -167,26 +167,20 @@ fn esta(t: &str, fichas: &BTreeSet<String>) -> bool {
     if t.chars().count() >= PREFIJO_MIN { fichas.iter().any(|p| p.starts_with(t)) } else { fichas.contains(t) }
 }
 
-/// El proyecto para los filtros `(?1 IS NULL OR project = ?1 OR project = '')`: ninguno (todos) desde
-/// una carpeta general.
-fn filtro(project: &str) -> Option<&str> {
-    (!crate::proyecto::es_general(project)).then_some(project)
-}
-
-/// Memorias del ámbito (el proyecto y las globales) y en cuántas aparece cada término.
+/// Memorias del ámbito (el proyecto, su espacio y las globales; todas desde una carpeta general) y en
+/// cuántas aparece cada término.
 fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f64, Vec<f64>)> {
-    let project = filtro(project);
-    let n: i64 = db.query_row("SELECT count(*) FROM memory WHERE ?1 IS NULL OR project = ?1 OR project = ''", [project], |f| {
-        f.get(0)
-    })?;
-    let mut q = db.prepare(
+    let ambito = Ambito::de(db, project)?;
+    let n = memoria::cuantas(db, &ambito)?;
+    let mut q = db.prepare(&format!(
         "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND (?2 IS NULL OR m.project = ?2 OR m.project = '')",
-    )?;
+         WHERE memory_fts MATCH ?1 AND {}",
+        ambito.sql()
+    ))?;
     let mut df = Vec::with_capacity(terminos.len());
     for t in terminos {
         let consulta = if t.chars().count() >= PREFIJO_MIN { format!("\"{t}\"*") } else { format!("\"{t}\"") };
-        df.push(q.query_row(params![consulta, project], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64);
+        df.push(q.query_row(params![consulta], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64);
     }
     Ok((n as f64, df))
 }
@@ -231,7 +225,7 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     let cobertura_min = leer("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(COBERTURA_MIN);
     let raros_min = leer("OMOIKANE_CALIBRAR_RAROS").map_or(RAROS_MIN, |v| v as usize);
     // 30 candidatas: una nota larga que es justo la del tema puede quedar lejos en BM25.
-    let o = Opciones { ambito: Ambito::de(project), kind: None, tags: vec![], limite: 30 };
+    let o = Opciones { ambito: Ambito::de(db, project)?, kind: None, tags: vec![], limite: 30 };
     // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
     // cuesta más. Así el hook tampoco abre el modelo.
     let candidatos = buscar::buscar_sin_apuntar(db, &terminos.join(" "), &o)?;
@@ -270,7 +264,7 @@ pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Mo
     if sim_min > 1.0 || prompt.chars().count() > LARGO_MAX_CON_VECTOR || utiles(prompt).len() < TERMINOS_MIN {
         return Ok(Vec::new());
     }
-    let v = crate::vectores::parecidas(db, modelo, prompt, filtro(project), None, sim_min, MAXIMO)?;
+    let v = crate::vectores::parecidas_en(db, modelo, prompt, &Ambito::de(db, project)?, None, sim_min, MAXIMO)?;
     if v.is_empty() {
         return Ok(Vec::new());
     }
@@ -282,11 +276,12 @@ pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Mo
 /// fichero si tiene al menos 5 caracteres).
 pub fn por_rutas(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Memoria>> {
     let texto = prompt.to_lowercase().replace('\\', "/");
-    let mut q = db.prepare(
+    let mut q = db.prepare(&format!(
         "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id
-         WHERE ?1 IS NULL OR m.project = ?1 OR m.project = ''",
-    )?;
-    let rutas: Vec<(String, String)> = q.query_map([filtro(project)], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+         WHERE {}",
+        Ambito::de(db, project)?.sql()
+    ))?;
+    let rutas: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut ids: Vec<String> = Vec::new();
     for (id, ruta) in rutas {
         let ruta = ruta.to_lowercase();
@@ -305,35 +300,52 @@ fn ya_inyectadas(db: &Connection, sesion: &str) -> Result<BTreeSet<String>> {
     Ok(v)
 }
 
-fn apuntar(db: &mut Connection, sesion: &str, ids: &[String]) -> Result<()> {
+/// Apunta lo inyectado en la sesión, con el proyecto desde el que se pidió (0 desde una carpeta
+/// general o un proyecto sin memorias aún).
+fn apuntar(db: &mut Connection, sesion: &str, ids: &[String], proyecto: i64) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for id in ids {
         tx.execute(
-            &format!("INSERT OR IGNORE INTO recall_log(session, memory_id, at) VALUES (?1, ?2, {})", memoria::AHORA),
-            params![sesion, id],
+            &format!("INSERT OR IGNORE INTO recall_log(session, memory_id, at, project_id) VALUES (?1, ?2, {}, ?3)", memoria::AHORA),
+            params![sesion, id, proyecto],
         )?;
     }
     tx.commit()?;
-    buscar::apuntar_recuperadas(db, ids.iter().map(String::as_str))
+    buscar::apuntar_recuperadas(db, ids.iter().map(String::as_str), None)
 }
 
-/// `project` es el de la sesión: una memoria de otro proyecto (vista desde una carpeta general) dice
-/// de cuál es. `propio` es el autor de este equipo: una memoria de otra persona dice de quién es, para
-/// que el agente la trate con cuidado.
-fn linea(m: &Memoria, project: &str, propio: Option<&str>) -> String {
-    let fragmento = fragmento(&m.content, FRAGMENTO);
-    let rutas = if m.paths.is_empty() { String::new() } else { format!(" ({})", m.paths.join(", ")) };
-    let global = if m.project.is_empty() {
+/// Dónde está una memoria, si no es del proyecto de la sesión (`actual`): `[global]`, `[space x]` o
+/// `[project x]` (vista desde una carpeta general o desde otro proyecto del espacio).
+fn donde(m: &Memoria, actual: i64) -> String {
+    if m.global() {
         " [global]".to_string()
-    } else if m.project != project {
-        let nombre = std::path::Path::new(&m.project).file_name().map_or(m.project.clone(), |n| n.to_string_lossy().into_owned());
-        format!(" [project {nombre}]")
+    } else if m.de_espacio() {
+        format!(" [space {}]", m.space)
+    } else if m.project_id != actual {
+        format!(" [project {}]", crate::proyecto::nombre_de(&m.project, &m.project_key))
     } else {
         String::new()
-    };
+    }
+}
+
+/// El id del proyecto de la sesión (-1 si aún no tiene nada; 0 nunca: lo global no es una sesión).
+fn proyecto_actual(db: &Connection, project: &str) -> i64 {
+    match crate::proyecto::resolver(db, project) {
+        Ok(Some((id, _))) if !project.is_empty() => id,
+        _ => -1,
+    }
+}
+
+/// `actual` es el proyecto de la sesión: una memoria de otro proyecto (vista desde una carpeta general)
+/// dice de cuál es. `propio` es el autor de este equipo: una memoria de otra persona dice de quién es,
+/// para que el agente la trate con cuidado.
+fn linea(m: &Memoria, actual: i64, propio: Option<&str>) -> String {
+    let fragmento = fragmento(&m.content, FRAGMENTO);
+    let rutas = if m.paths.is_empty() { String::new() } else { format!(" ({})", m.paths.join(", ")) };
+    let global = donde(m, actual);
     // Sin autor propio (este equipo no apunta el suyo), lo que lleva autor viene de otro equipo.
     let de = match propio {
         _ if m.author.is_empty() => String::new(),
@@ -370,17 +382,30 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
     crate::revisar::al_dia(db)?;
     let actualizado = crate::actualizar::aviso();
-    // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes.
-    db.execute(
-        "DELETE FROM recall_log WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
-        [&e.session_id],
-    )?;
-    let total: i64 = db.query_row(
-        "SELECT count(*) FROM memory WHERE ?1 IS NULL OR project = ?1 OR project = ''",
-        [filtro(project)],
-        |f| f.get(0),
-    )?;
-    let contexto = memoria::contexto(db, project, 30)?;
+    // El proyecto de la sesión queda apuntado (con su clave, calculada una vez) y su `origin` al día.
+    if !crate::proyecto::es_general(project) {
+        crate::proyecto::registrar(db, project)?;
+    }
+    let ambito = Ambito::de(db, project)?;
+    let actual = proyecto_actual(db, project);
+    // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes. Lo que se
+    // borra queda resumido en `memory_use` (cuántas veces y desde qué proyecto se recibió cada memoria).
+    {
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let caduca = "session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')";
+        tx.execute(
+            &format!(
+                "INSERT INTO memory_use(memory_id, project_id, veces, ultima)
+                 SELECT memory_id, project_id, count(*), max(at) FROM recall_log WHERE {caduca} GROUP BY memory_id, project_id
+                 ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)"
+            ),
+            [&e.session_id],
+        )?;
+        tx.execute(&format!("DELETE FROM recall_log WHERE {caduca}"), [&e.session_id])?;
+        tx.commit()?;
+    }
+    let total = memoria::cuantas(db, &ambito)?;
+    let contexto = memoria::contexto(db, &ambito, 30)?;
     // Tras compactar sigue siendo la misma sesión: no se reinicia el reloj del recordatorio.
     db.execute(
         &format!(
@@ -407,14 +432,14 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         let notas = crate::revisar::notas(db, &contexto.iter().collect::<Vec<_>>())?;
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
-            s.push_str(&linea(m, project, propio.as_deref()));
+            s.push_str(&linea(m, actual, propio.as_deref()));
             s.push_str(&nota(&notas, m));
             s.push('\n');
         }
     }
     // En qué punto se quedó cada proyecto (la memoria `status` más reciente de cada uno), con un buen
     // trozo del contenido: «sigamos con X» se responde sin buscar. Tampoco cuentan como inyectadas.
-    let estados: Vec<Memoria> = memoria::estados(db, &Ambito::de(project), ESTADOS)?
+    let estados: Vec<Memoria> = memoria::estados(db, &ambito, ESTADOS)?
         .into_iter()
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
         .collect();
@@ -422,14 +447,14 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         let notas = crate::revisar::notas(db, &estados.iter().collect::<Vec<_>>())?;
         s.push_str("Where work was left (the latest `status` memory of each project, newest first):\n");
         for m in &estados {
-            let linea = linea_corta(m, project, propio.as_deref());
+            let linea = linea_corta(m, actual, propio.as_deref());
             s.push_str(&format!("{linea}{}: {}\n", nota(&notas, m), fragmento(&m.content, FRAGMENTO_ESTADO)));
         }
     }
     // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
     // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
     // Un estado que ya no es el último de su proyecto tampoco sale: llevaría a retomar desde lo viejo.
-    let ultimas: Vec<Memoria> = memoria::recientes(db, &Ambito::de(project), None, 50)?
+    let ultimas: Vec<Memoria> = memoria::recientes(db, &ambito, None, 50)?
         .into_iter()
         .filter(|m| !contexto.iter().any(|c| c.id == m.id) && !m.tags.iter().any(|t| t == memoria::ESTADO))
         .take(RECIENTES)
@@ -438,7 +463,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         s.push_str("Last worked on (newest first; `get` an id for the whole memory):\n");
         let notas = crate::revisar::notas(db, &ultimas.iter().collect::<Vec<_>>())?;
         for m in &ultimas {
-            s.push_str(&linea_corta(m, project, propio.as_deref()));
+            s.push_str(&linea_corta(m, actual, propio.as_deref()));
             s.push_str(&nota(&notas, m));
             s.push('\n');
         }
@@ -458,7 +483,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
-    apuntar(db, &e.session_id, &ids)?;
+    apuntar(db, &e.session_id, &ids, ambito.proyecto().unwrap_or(0))?;
     Ok(Some(s))
 }
 
@@ -469,15 +494,8 @@ pub const RECIENTES: usize = 5;
 const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another.\n";
 
 /// Una memoria en una línea, sin contenido: fecha, tipo, proyecto si no es el de la sesión, título e id.
-fn linea_corta(m: &Memoria, project: &str, propio: Option<&str>) -> String {
-    let donde = if m.project.is_empty() {
-        " [global]".to_string()
-    } else if m.project != project {
-        let nombre = std::path::Path::new(&m.project).file_name().map_or(m.project.clone(), |n| n.to_string_lossy().into_owned());
-        format!(" [project {nombre}]")
-    } else {
-        String::new()
-    };
+fn linea_corta(m: &Memoria, actual: i64, propio: Option<&str>) -> String {
+    let donde = donde(m, actual);
     let de = match propio {
         Some(yo) if !m.author.is_empty() && m.author != yo => format!(" [by {}]", m.author),
         _ => String::new(),
@@ -519,12 +537,13 @@ fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria
             n[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric()) && n[i + w.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric())
         })
     };
-    let recetas = memoria::recientes(db, &Ambito::de(project), Some(memoria::Tipo::Procedure), 200)?;
+    let recetas = memoria::recientes(db, &Ambito::de(db, project)?, Some(memoria::Tipo::Procedure), 200)?;
     Ok(recetas.into_iter().find(|m| disparadores(m).iter().any(|w| tiene(w))))
 }
 
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
     let propio = autor_propio(db);
+    let actual = proyecto_actual(db, project);
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
     let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id));
@@ -560,12 +579,12 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
         let notas = crate::revisar::notas(db, &elegidas.iter().collect::<Vec<_>>())?;
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &elegidas {
-            s.push_str(&linea(m, project, propio.as_deref()));
+            s.push_str(&linea(m, actual, propio.as_deref()));
             s.push_str(&nota(&notas, m));
             s.push('\n');
         }
         if let Some((v, de)) = &vecina {
-            s.push_str(&format!("{} (linked from {})\n", linea(v, project, propio.as_deref()), de.chars().take(12).collect::<String>()));
+            s.push_str(&format!("{} (linked from {})\n", linea(v, actual, propio.as_deref()), de.chars().take(12).collect::<String>()));
         }
     }
     if recordar {
@@ -574,7 +593,7 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
     }
     s.push_str("</omoikane>");
     let ids: Vec<String> = elegidas.iter().chain(&la_receta).chain(vecina.iter().map(|(v, _)| v)).map(|m| m.id.clone()).collect();
-    apuntar(db, &e.session_id, &ids)?;
+    apuntar(db, &e.session_id, &ids, actual.max(0))?;
     Ok(Some(s))
 }
 
@@ -596,18 +615,19 @@ fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
         params![sesion, project],
     )?;
     let toca: bool = db.query_row(
-        "SELECT s.prompts >= ?2
-                AND s.started_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)
-                AND (s.reminded_at IS NULL OR s.reminded_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
-                AND NOT EXISTS (SELECT 1 FROM memory m
-                                WHERE (?5 OR m.project = s.project OR m.project = '') AND m.updated_at >= s.started_at)
+        &format!(
+            "SELECT s.prompts >= ?2
+                    AND s.started_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)
+                    AND (s.reminded_at IS NULL OR s.reminded_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
+                    AND NOT EXISTS (SELECT 1 FROM memory m WHERE {} AND m.updated_at >= s.started_at)
              FROM session s WHERE s.session = ?1",
+            Ambito::de(db, project)?.sql()
+        ),
         params![
             sesion,
             MENSAJES_ANTES_DE_RECORDAR,
             format!("-{MINUTOS_ANTES_DE_RECORDAR} minutes"),
             format!("-{MINUTOS_ENTRE_RECORDATORIOS} minutes"),
-            crate::proyecto::es_general(project),
         ],
         |f| f.get(0),
     )?;

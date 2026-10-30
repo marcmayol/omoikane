@@ -57,6 +57,9 @@ enum Orden {
         /// Applies to every project, not just this one.
         #[arg(long)]
         global: bool,
+        /// Applies to every project of a space: this project's (without a name) or the named one.
+        #[arg(long, value_name = "SPACE", num_args = 0..=1, default_missing_value = "", conflicts_with = "global")]
+        space: Option<String>,
         /// Who saves it (for example "claude-code:<session>").
         #[arg(long, default_value = "cli")]
         source: String,
@@ -78,9 +81,15 @@ enum Orden {
         /// How many results.
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
-        /// In every project.
+        /// In every project (of this space, if the project is in one).
         #[arg(long)]
         all: bool,
+        /// In this project instead: its folder, or its name or part of it.
+        #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+        project: Option<String>,
+        /// In this space instead.
+        #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+        space: Option<String>,
     },
     /// Show a whole memory (the start of the id is enough).
     Get {
@@ -124,6 +133,9 @@ enum Orden {
         /// Make it global: it applies to every project.
         #[arg(long)]
         global: bool,
+        /// Move it to this space: it applies to every project in it.
+        #[arg(long, value_name = "SPACE", conflicts_with_all = ["global", "project"])]
+        space: Option<String>,
         /// Why it changes (kept with the previous version).
         #[arg(short, long)]
         reason: Option<String>,
@@ -175,12 +187,27 @@ enum Orden {
         /// Only this kind.
         #[arg(short, long)]
         kind: Option<Tipo>,
-        /// From every project.
+        /// From every project (of this space, if the project is in one).
         #[arg(long)]
         all: bool,
+        /// From this project instead: its folder, or its name or part of it.
+        #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+        project: Option<String>,
+        /// From this space instead.
+        #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+        space: Option<String>,
     },
-    /// Projects that have memories.
-    Projects,
+    /// Projects with memories (without an action, the list): move one to its new folder, or merge two.
+    Projects {
+        #[command(subcommand)]
+        accion: Option<AccionProyectos>,
+    },
+    /// Spaces: groups of projects (a client, a product with several repositories) whose memories don't reach other spaces.
+    #[command(alias = "spaces")]
+    Space {
+        #[command(subcommand)]
+        accion: Option<AccionEspacio>,
+    },
     /// Omoikane's own update: check now, or turn the daily automatic update on or off.
     Upgrade {
         /// Only say whether there is a newer version.
@@ -313,6 +340,49 @@ enum Orden {
 }
 
 #[derive(Subcommand)]
+enum AccionProyectos {
+    /// The projects with memories, latest activity first (the default).
+    List,
+    /// The project now lives in another folder (it moved, or it has no git remote to recognise it): its memories follow it.
+    Move {
+        /// The project: its old folder, or its name or part of it.
+        proyecto: String,
+        /// Its new folder.
+        carpeta: PathBuf,
+    },
+    /// Merge project A into B: A's memories (with their ids, history and verdicts) and folders go to B.
+    Merge {
+        /// The project that disappears (folder or name).
+        a: String,
+        /// The project that stays (folder or name).
+        b: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccionEspacio {
+    /// The spaces, with their projects (the default).
+    List,
+    /// Create a space.
+    Add {
+        /// Its name (a client, a product…).
+        nombre: String,
+    },
+    /// Put a project in a space (by default, this folder's project).
+    Assign {
+        /// The space.
+        espacio: String,
+        /// The project: its folder, or its name or part of it.
+        proyecto: Option<String>,
+    },
+    /// Take a project out of its space (by default, this folder's project).
+    Unassign {
+        /// The project: its folder, or its name or part of it.
+        proyecto: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum AccionSync {
     /// Set up a new shared repository (empty, or without memories yet): any git URL you can push to.
     Init {
@@ -372,6 +442,10 @@ struct OpcionesSync {
     /// Share only this project (repeatable; by default, every project).
     #[arg(long, value_name = "DIR")]
     project: Vec<PathBuf>,
+    /// Share only this space: its projects and its own memories (repeatable; one repository per client).
+    /// Global memories then stay on this computer.
+    #[arg(long, value_name = "SPACE")]
+    space: Vec<String>,
     /// Don't write an author on each memory.
     #[arg(long, conflicts_with = "author")]
     no_author: bool,
@@ -470,7 +544,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, source, force } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, source, force } => {
             let content = texto_o_entrada(content)?;
             // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
             // al que apunten sus rutas, o es global.
@@ -505,9 +579,16 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 // Código 2: no es un error, pero quien llame tiene que saber que no se guardó.
                 std::process::exit(2);
             }
+            let space_id = match space.as_deref().map(str::trim) {
+                None => None,
+                Some("") => Some(Ambito::de(&db, &actual)?.espacio().with_context(|| {
+                    tr!("this project is not in a space: give its name (--space <name>), or `omoi space assign <space>`", "este proyecto no está en ningún espacio: di cuál (--space <nombre>), o `omoi space assign <espacio>`")
+                })?),
+                Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
+            };
             let m = memoria::guardar(
                 &mut db,
-                Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source },
+                Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, ..Default::default() },
                 modelo.as_ref(),
             )?;
             avisar_redactados(&m);
@@ -538,9 +619,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Search { query, kind, tags, limit, all } => {
-            let o = Opciones { ambito: ambito(c, all)?, kind, tags, limite: limit };
+        Orden::Search { query, kind, tags, limit, all, project, space } => {
             let (mut db, modelo) = abrir_con_modelo(c)?;
+            let ambito = ambito_pedido(c, &db, all, project.as_deref(), space.as_deref())?;
+            let all = !matches!(ambito, Ambito::Proyecto { .. });
+            let o = Opciones { ambito, kind, tags, limite: limit };
             let res = buscar::buscar(&mut db, &query.join(" "), &o, modelo.as_ref())?;
             if c.json {
                 return json(&res);
@@ -561,7 +644,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             entera(&m);
             Ok(())
         }
-        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, reason, replace, with, append } => {
+        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, reason, replace, with, append } => {
             anyhow::ensure!(
                 replace.len() == with.len(),
                 tr!("each --replace needs its --with ({} and {})", "cada --replace necesita su --with ({} y {})", replace.len(), with.len())
@@ -577,8 +660,10 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 reason,
                 replace: replace.into_iter().zip(with).collect(),
                 append,
+                ..Default::default()
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
+            let cambios = Cambios { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..cambios };
             let (m, cambiados) = memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?;
             avisar_redactados(&m);
             if c.json {
@@ -646,8 +731,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             historial(&m, &v);
             Ok(())
         }
-        Orden::Recent { limit, kind, all } => {
-            let v = memoria::recientes(&abrir(c)?, &ambito(c, all)?, kind, limit)?;
+        Orden::Recent { limit, kind, all, project, space } => {
+            let db = abrir(c)?;
+            let ambito = ambito_pedido(c, &db, all, project.as_deref(), space.as_deref())?;
+            let all = !matches!(ambito, Ambito::Proyecto { .. });
+            let v = memoria::recientes(&db, &ambito, kind, limit)?;
             if c.json {
                 return json(&v);
             }
@@ -671,9 +759,22 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 println!("{}", tr!("ok: it won't warn about it again until the memory changes", "hecho: no volverá a avisar hasta que la memoria cambie"));
                 return Ok(());
             }
-            let v = omoikane::revisar::avisos(&db, &ambito(c, all)?)?;
+            let ambito = ambito_pedido(c, &db, all, None, None)?;
+            let v = omoikane::revisar::avisos(&db, &ambito)?;
             if c.json {
                 return json(&v);
+            }
+            // Los proyectos que ya no están en su carpeta, o cuyo `origin` cambió (de los que se ven desde aquí).
+            let filtro = if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) };
+            for p in proyecto::lista(&db, None, filtro, usize::MAX)? {
+                if p.gone {
+                    println!("{:<12}  {}  {}", "project_gone", p.name, p.path);
+                    println!("{:<12}  {}", "", tr!("the folder no longer exists: `omoi projects move {} <new folder>`", "la carpeta ya no existe: `omoi projects move {} <carpeta nueva>`", p.name));
+                }
+                if !p.origin_changed.is_empty() {
+                    println!("{:<12}  {}  {}", "origin", p.name, p.path);
+                    println!("{:<12}  {}", "", tr!("its git origin is now {} (its sync key stays {})", "su origin de git ahora es {} (su clave de sincronización sigue siendo {})", p.origin_changed, p.key));
+                }
             }
             let cs = omoikane::candidatas::todas(&db)?;
             if v.is_empty() && cs.is_empty() {
@@ -702,18 +803,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Projects => {
-            let v = memoria::proyectos(&abrir(c)?)?;
-            if c.json {
-                return json(&v);
-            }
-            for p in &v {
-                let globales = tr!("(global)", "(globales)");
-                let nombre = if p.project.is_empty() { &globales } else { &p.project };
-                println!("{:>5}  {}  {}", p.memories, &p.last_update[..10], nombre);
-            }
-            Ok(())
-        }
+        Orden::Projects { accion } => proyectos_cli(c, accion.unwrap_or(AccionProyectos::List)),
+        Orden::Space { accion } => espacios_cli(c, accion.unwrap_or(AccionEspacio::List)),
         Orden::Tui { all } => {
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let proyecto = proyecto_de(c)?;
@@ -768,9 +859,18 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Export { all, encrypt } => {
             let mut salida = std::io::BufWriter::new(std::io::stdout().lock());
-            let ambito = if all { Ambito::Todos } else { Ambito::Proyecto(proyecto_de(c)?) };
             let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
-            let n = omoikane::copia::exportar(&abrir(c)?, &ruta, &ambito, encrypt, &mut salida)?;
+            let db = abrir(c)?;
+            // Sin --all, lo que se ve desde el proyecto (también desde la carpeta del usuario: no todo).
+            let ambito = if all {
+                Ambito::Todos
+            } else {
+                match proyecto::resolver(&db, &proyecto_de(c)?)? {
+                    Some((id, space)) => Ambito::Proyecto { id, space },
+                    None => Ambito::Proyecto { id: -1, space: None },
+                }
+            };
+            let n = omoikane::copia::exportar(&db, &ruta, &ambito, encrypt, &mut salida)?;
             salida.flush()?;
             eprintln!("{}", tr!("{} memories exported (with {} forget marks, {} verdicts and {} in the trash)", "{} memorias exportadas (con {} marcas de olvido, {} veredictos y {} en la papelera)", n.memories, n.tombstones, n.verdicts, n.forgotten));
             Ok(())
@@ -966,8 +1066,8 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     let (evento, texto) = if al_empezar {
         // Una vez al día: la copia de la base y la purga de la papelera.
         omoikane::copia::diaria(&db, &ruta);
-        if let Ok(Some(config)) = omoikane::sync::leer_config(&ruta) {
-            let _ = omoikane::sync::adoptar(&db, &project, &config.person);
+        if let Ok(Some(_)) = omoikane::sync::leer_config(&ruta) {
+            let _ = omoikane::sync::adoptar(&db, &project);
             omoikane::sync::programar(&ruta);
         }
         let texto = recall::al_empezar(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&ruta) {
@@ -1054,8 +1154,110 @@ fn proyecto_de(c: &Comun) -> Result<String> {
     }
 }
 
-fn ambito(c: &Comun, todos: bool) -> Result<Ambito> {
-    Ok(if todos { Ambito::Todos } else { Ambito::de(&proyecto_de(c)?) })
+/// Lo que se ve desde la carpeta (`--dir` o la actual), o lo que se pida (`--all`, `--project`,
+/// `--space`), sin salir de su espacio.
+fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>, space: Option<&str>) -> Result<Ambito> {
+    let base = Ambito::de(db, &proyecto_de(c)?)?;
+    let pedido = if let Some(s) = space {
+        Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
+    } else if let Some(p) = project {
+        let id = proyecto::buscar(db, p)?;
+        Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
+    } else if todos {
+        base.amplio()
+    } else {
+        base
+    };
+    anyhow::ensure!(
+        base.permite(&pedido),
+        tr!(
+            "that is in another space: from this project you only see its own space; run it from that project or from your home folder",
+            "eso es de otro espacio: desde este proyecto solo se ve su espacio; hazlo desde ese proyecto o desde tu carpeta de usuario"
+        )
+    );
+    Ok(pedido)
+}
+
+/// `omoi projects`.
+fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
+    let mut db = abrir(c)?;
+    match accion {
+        AccionProyectos::List => {
+            let base = Ambito::de(&db, &proyecto_de(c)?)?;
+            let filtro = if matches!(base, Ambito::Todos) { None } else { Some(base.espacio()) };
+            let v = proyecto::lista(&db, None, filtro, usize::MAX)?;
+            if c.json {
+                return json(&v);
+            }
+            for p in &v {
+                let espacio = if p.space.is_empty() { String::new() } else { format!(" [{}]", p.space) };
+                let ido = if p.gone { tr!("  (folder gone)", "  (ya no está)") } else { String::new() };
+                println!("{:>5}  {}  {}{espacio}  {}{ido}", p.memories, p.last_update.get(..10).unwrap_or(""), p.name, p.path);
+            }
+            Ok(())
+        }
+        AccionProyectos::Move { proyecto: p, carpeta } => {
+            let id = proyecto::buscar(&db, &p)?;
+            let nueva = proyecto::de(&carpeta)?;
+            let fundidas = proyecto::mover(&mut db, id, &nueva)?;
+            if fundidas > 0 {
+                println!("{}", tr!("{nueva}: moved there (its {fundidas} memories joined it)", "{nueva}: movido allí (se le han sumado sus {fundidas} memorias)"));
+            } else {
+                println!("{}", tr!("moved to {nueva}", "movido a {nueva}"));
+            }
+            Ok(())
+        }
+        AccionProyectos::Merge { a, b } => {
+            let (de, en) = (proyecto::buscar(&db, &a)?, proyecto::buscar(&db, &b)?);
+            let n = proyecto::fundir(&mut db, de, en)?;
+            println!("{}", tr!("merged: {n} memories moved to {b}", "fundidos: {n} memorias pasan a {b}"));
+            Ok(())
+        }
+    }
+}
+
+/// `omoi space`.
+fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
+    let db = abrir(c)?;
+    let elegido = |p: Option<String>| -> Result<i64> {
+        match p {
+            Some(p) => proyecto::buscar(&db, &p),
+            None => proyecto::registrar(&db, &proyecto_de(c)?),
+        }
+    };
+    match accion {
+        AccionEspacio::List => {
+            let v = proyecto::espacios(&db)?;
+            if c.json {
+                return json(&v);
+            }
+            if v.is_empty() {
+                println!("{}", tr!("no spaces yet: `omoi space add <name>`", "todavía no hay espacios: `omoi space add <nombre>`"));
+            }
+            for e in &v {
+                println!("{}  ({} {})  {}", e.key, e.memories, tr!("memories", "memorias"), e.projects.join(", "));
+            }
+            Ok(())
+        }
+        AccionEspacio::Add { nombre } => {
+            proyecto::crear_espacio(&db, &nombre)?;
+            println!("{}", tr!("space «{}» created; put projects in it with `omoi space assign {}`", "espacio «{}» creado; mete proyectos con `omoi space assign {}`", proyecto::clave_de_espacio(&nombre), proyecto::clave_de_espacio(&nombre)));
+            Ok(())
+        }
+        AccionEspacio::Assign { espacio, proyecto: p } => {
+            let s = proyecto::buscar_espacio(&db, &espacio)?;
+            let id = elegido(p)?;
+            proyecto::asignar_espacio(&db, id, Some(s))?;
+            println!("{}", tr!("done: its memories are now seen only from the space «{espacio}» (and the home folder)", "hecho: sus memorias ya solo se ven desde el espacio «{espacio}» (y desde la carpeta de usuario)"));
+            Ok(())
+        }
+        AccionEspacio::Unassign { proyecto: p } => {
+            let id = elegido(p)?;
+            proyecto::asignar_espacio(&db, id, None)?;
+            println!("{}", tr!("done: the project is no longer in a space", "hecho: el proyecto ya no está en ningún espacio"));
+            Ok(())
+        }
+    }
 }
 
 fn texto_o_entrada(t: Option<String>) -> Result<String> {
@@ -1176,12 +1378,15 @@ fn doctor(c: &Comun) -> Result<()> {
     if ruta.exists() {
         let base = db::abrir(&ruta)?;
         let n: i64 = base.query_row("SELECT count(*) FROM memory", [], |f| f.get(0))?;
-        let p: i64 = base.query_row("SELECT count(DISTINCT project) FROM memory", [], |f| f.get(0))?;
+        let p: i64 = base.query_row("SELECT count(DISTINCT project_id) FROM memory WHERE project_id != 0", [], |f| f.get(0))?;
         let v = db::VERSION_ESQUEMA;
         let r = ruta.display();
         let memorias = if n == 1 { tr!("1 memory", "1 memoria") } else { tr!("{n} memories", "{n} memorias") };
         let proyectos = if p == 1 { tr!("1 project", "1 proyecto") } else { tr!("{p} projects", "{p} proyectos") };
         println!("{}", tr!("database   {r} ({memorias}, {proyectos}, schema {v})", "base       {r} ({memorias}, {proyectos}, esquema {v})"));
+        for x in proyecto::lista(&base, None, None, usize::MAX)?.into_iter().filter(|x| x.gone) {
+            println!("{}", tr!("project    {} is gone from {}: `omoi projects move {} <new folder>`", "proyecto   {} ya no está en {}: `omoi projects move {} <carpeta nueva>`", x.name, x.path, x.name));
+        }
         let papelera: i64 = base.query_row("SELECT count(*) FROM forgotten", [], |f| f.get(0))?;
         let copias = omoikane::copia::copias(&ruta);
         let total_kb: u64 = copias.iter().map(|(_, b)| b).sum::<u64>() / 1024;
@@ -1355,8 +1560,10 @@ fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
     let proyectos = o.project.iter().map(|p| proyecto::de(p)).collect::<Result<Vec<_>>>()?;
     let mut e = omoikane::sync::Eleccion {
         preferencias: o.share_preferences,
-        global: !o.no_global,
+        // Un repositorio de un cliente no lleva las globales (son de la persona, no del cliente).
+        global: !o.no_global && o.space.is_empty(),
         proyectos,
+        espacios: o.space.clone(),
         autor: if o.no_author { None } else { o.author.clone().or_else(omoikane::sync::nombre_git) },
     };
     if o.yes || !std::io::stdin().is_terminal() {

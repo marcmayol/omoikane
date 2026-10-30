@@ -11,7 +11,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Versión del esquema que esta versión de omoi sabe crear y leer.
-pub const VERSION_ESQUEMA: i64 = 9;
+pub const VERSION_ESQUEMA: i64 = 10;
+
+/// El esquema más viejo que puede leer una base de este esquema, guardado en `meta('lector_minimo')`.
+/// Una versión de omoi abre una base de un esquema mayor que el suyo si `lector_minimo` no pasa del
+/// suyo: un cambio que solo añade (una tabla, una columna con valor por defecto) no lo sube, y la base
+/// sigue abriéndose con la versión anterior. El esquema 10 cambia la tabla `memory` (el proyecto pasa
+/// de ruta a id), así que lo pone en 10.
+pub const LECTOR_MINIMO: i64 = 10;
 
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
@@ -48,8 +55,10 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     db.busy_timeout(Duration::from_secs(5))?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
-    db.pragma_update(None, "foreign_keys", true)?;
+    // Las claves ajenas, después de migrar: reconstruir `memory` (esquema 10) pide tenerlas apagadas, y
+    // `PRAGMA foreign_keys` no cambia dentro de una transacción (lang_altertable.html, paso 1).
     migrar(&mut db)?;
+    db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }
 
@@ -57,35 +66,89 @@ fn version(db: &Connection) -> Result<i64> {
     Ok(db.query_row("PRAGMA user_version", [], |f| f.get(0))?)
 }
 
+/// El `lector_minimo` que dice una base (el propio esquema si no lo dice: las de antes del 10 no lo
+/// apuntaban, y cualquier esquema mayor rompía).
+fn lector_minimo(db: &Connection, v: i64) -> i64 {
+    db.query_row("SELECT v FROM meta WHERE k = 'lector_minimo'", [], |f| f.get::<_, String>(0))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(v)
+}
+
+/// Una base de un esquema mayor que el de esta versión: se abre tal cual si su `lector_minimo` lo
+/// permite (lo nuevo que tenga, esta versión no lo toca), y si no, error.
+fn comprobar_lector(db: &Connection, v: i64) -> Result<()> {
+    let minimo = lector_minimo(db, v);
+    anyhow::ensure!(
+        minimo <= VERSION_ESQUEMA,
+        tr!(
+            "the database comes from a newer omoi (schema {v}, readable from schema {minimo}; this one reads up to {VERSION_ESQUEMA}): update omoi",
+            "la base es de una versión más nueva de omoi (esquema {v}, legible desde el esquema {minimo}; esta entiende hasta {VERSION_ESQUEMA}): actualiza omoi"
+        )
+    );
+    Ok(())
+}
+
+/// La persona de la sincronización (la que va en las claves `dir:`), si la base tiene `sync.json`.
+pub(crate) fn persona_de(db: &Connection) -> String {
+    db.path()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| crate::sync::leer_config(Path::new(p)).ok().flatten())
+        .map(|c| c.person)
+        .unwrap_or_default()
+}
+
 fn migrar(db: &mut Connection) -> Result<()> {
-    if version(db)? == VERSION_ESQUEMA {
+    migrar_hasta(db, VERSION_ESQUEMA)
+}
+
+/// Una base en un esquema viejo (`hasta`), sin migrar más allá: para probar las migraciones con bases
+/// como las que tiene la gente. No es para usarla: esta versión solo sabe trabajar con la última.
+#[doc(hidden)]
+pub fn abrir_en_esquema(ruta: &Path, hasta: i64) -> Result<Connection> {
+    registrar_sqlite_vec();
+    let mut db = Connection::open(ruta)?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    migrar_hasta(&mut db, hasta)?;
+    Ok(db)
+}
+
+fn migrar_hasta(db: &mut Connection, hasta: i64) -> Result<()> {
+    let antes = version(db)?;
+    if antes == hasta {
         return Ok(());
     }
-    // Antes de migrar una base que ya tenía datos, una copia: una versión vieja no abre la nueva.
-    let antes = version(db)?;
+    if antes > VERSION_ESQUEMA {
+        return comprobar_lector(db, antes);
+    }
+    // Antes de migrar una base que ya tenía datos, una copia: una versión vieja no abre la nueva. Si la
+    // copia falla (disco lleno, permisos), no se migra: sin ella no hay vuelta atrás.
     if antes > 0
-        && antes < VERSION_ESQUEMA
         && let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(String::from)
     {
         let copia = format!("{ruta}.antes-del-esquema-{VERSION_ESQUEMA}");
-        if !std::path::Path::new(&copia).exists() {
-            let _ = db.execute("VACUUM INTO ?1", [&copia]);
+        if !Path::new(&copia).exists() {
+            db.execute("VACUUM INTO ?1", [&copia]).with_context(|| {
+                tr!(
+                    "can't copy the database to {copia} before updating it to schema {VERSION_ESQUEMA}; nothing was changed",
+                    "no se puede copiar la base en {copia} antes de pasarla al esquema {VERSION_ESQUEMA}; no se ha cambiado nada"
+                )
+            })?;
         }
     }
+    let persona = persona_de(db);
     // IMMEDIATE: si dos procesos abren una base nueva a la vez, solo uno crea el esquema.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let v = version(&tx)?;
-    anyhow::ensure!(
-        v <= VERSION_ESQUEMA,
-        tr!(
-            "the database comes from a newer omoi (schema {v}; this one reads up to {VERSION_ESQUEMA})",
-            "la base es de una versión más nueva de omoi (esquema {v}, esta entiende hasta {VERSION_ESQUEMA})"
-        )
-    );
-    if v < 1 {
+    if v >= hasta {
+        // Otro proceso la migró mientras se esperaba el cerrojo (o es de una versión más nueva).
+        comprobar_lector(&tx, v)?;
+        return Ok(());
+    }
+    if v < 1 && 1 <= hasta {
         tx.execute_batch(ESQUEMA_1)?;
     }
-    if v < 2 {
+    if v < 2 && 2 <= hasta {
         tx.execute_batch(ESQUEMA_2)?;
         // El índice FTS nuevo (con rutas) se rellena desde la tabla.
         tx.execute(
@@ -97,31 +160,282 @@ fn migrar(db: &mut Connection) -> Result<()> {
             [],
         )?;
     }
-    if v < 3 {
+    if v < 3 && 3 <= hasta {
         tx.execute_batch(ESQUEMA_3)?;
     }
-    if v < 4 {
+    if v < 4 && 4 <= hasta {
         tx.execute_batch(ESQUEMA_4)?;
     }
-    if v < 5 {
+    if v < 5 && 5 <= hasta {
         tx.execute_batch(ESQUEMA_5)?;
     }
-    if v < 6 {
+    if v < 6 && 6 <= hasta {
         tx.execute_batch(ESQUEMA_6)?;
     }
-    if v < 7 {
+    if v < 7 && 7 <= hasta {
         tx.execute_batch(ESQUEMA_7)?;
         aflojar_tipos(&tx)?;
     }
-    if v < 8 {
+    if v < 8 && 8 <= hasta {
         tx.execute_batch(ESQUEMA_8)?;
         pasar_descartes(&tx)?;
     }
-    if v < 9 {
+    if v < 9 && 9 <= hasta {
         tx.execute_batch(ESQUEMA_9)?;
     }
-    tx.pragma_update(None, "user_version", VERSION_ESQUEMA)?;
+    if v < 10 && 10 <= hasta {
+        esquema_10(&tx, &persona)?;
+    }
+    // Con las claves ajenas apagadas nada las ha comprobado: se mira antes de dar la migración por buena.
+    let malas: usize = {
+        let mut q = tx.prepare("PRAGMA foreign_key_check")?;
+        let mut filas = q.query([])?;
+        let mut n = 0;
+        while filas.next()?.is_some() {
+            n += 1;
+        }
+        n
+    };
+    anyhow::ensure!(malas == 0, "schema {hasta}: {malas} rows break a foreign key; nothing was changed");
+    tx.pragma_update(None, "user_version", hasta)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Esquema 10 (0.20.0), el que congela la 1.0:
+/// - **Proyectos y espacios como tablas** (`space`, `project`, `project_path`): la memoria guarda el id
+///   de su proyecto en vez de la ruta, y cada proyecto su clave de sincronización (calculada una vez,
+///   al crearlo) y todas las carpetas donde vive (clones, worktrees, la carpeta a la que se movió, o
+///   la ruta que trajo otro equipo, `is_foreign`). Una memoria es de un proyecto (`project_id`), de
+///   un espacio (`space_id`, sin proyecto) o global (ni uno ni otro): la restricción `CHECK` impide
+///   las dos cosas a la vez.
+/// - `kind` sin `CHECK`: un tipo que llegue de una versión futura se guarda tal cual.
+/// - `content_hlc`: el sello del último cambio de título, contenido o tipo, con el que caducan los
+///   veredictos (antes, comparando relojes de pared de equipos distintos).
+/// - `extra` en `memory` y `verdict`: campos de versiones futuras que esta no entiende, para no
+///   perderlos al reexportar.
+/// - `review` vuelve a ser solo caché (sin `dismissed_at`, que ya vivía en `verdict`), y
+///   `remote_project` pasa a `project_path`.
+/// - Locales, que no viajan: el proyecto desde el que se recibió cada memoria (`recall_log.project_id`)
+///   y su resumen cuando el registro caduca (`memory_use`).
+const ESQUEMA_10: &str = "
+CREATE TABLE space (
+  id         INTEGER PRIMARY KEY,
+  key        TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE project (
+  id         INTEGER PRIMARY KEY,
+  key        TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
+  path       TEXT NOT NULL DEFAULT '',
+  space_id   INTEGER REFERENCES space(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX project_name ON project(name);
+CREATE INDEX project_space ON project(space_id) WHERE space_id IS NOT NULL;
+INSERT INTO project(id, key, name, path, created_at) VALUES (0, '', '', '', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+CREATE TABLE project_path (
+  path       TEXT PRIMARY KEY,
+  path_cmp   TEXT NOT NULL UNIQUE,
+  project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  origin     TEXT NOT NULL DEFAULT '',
+  is_foreign INTEGER NOT NULL DEFAULT 0,
+  last_seen  TEXT
+) WITHOUT ROWID;
+CREATE INDEX project_path_project ON project_path(project_id);
+
+DROP TABLE review;
+CREATE TABLE review (
+  memory_id TEXT NOT NULL,
+  kind      TEXT NOT NULL,
+  other_id  TEXT NOT NULL DEFAULT '',
+  detail    TEXT NOT NULL DEFAULT '',
+  found_at  TEXT NOT NULL,
+  PRIMARY KEY (memory_id, kind, other_id)
+) WITHOUT ROWID;
+DELETE FROM meta WHERE k = 'revision';
+
+ALTER TABLE verdict ADD COLUMN extra TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE recall_log ADD COLUMN project_id INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE memory_use (
+  memory_id  TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL,
+  veces      INTEGER NOT NULL DEFAULT 0,
+  ultima     TEXT NOT NULL,
+  PRIMARY KEY (memory_id, project_id)
+) WITHOUT ROWID;
+
+-- Lo que una base de antes tuviera suelto (con las claves ajenas apagadas en algún momento) no debe
+-- parar la migración: se quita antes de comprobarlas.
+DELETE FROM memory_version WHERE memory_id NOT IN (SELECT id FROM memory);
+DELETE FROM memory_path WHERE memory_id NOT IN (SELECT id FROM memory);
+DELETE FROM recall_log WHERE memory_id NOT IN (SELECT id FROM memory);
+DELETE FROM memory_vec WHERE n NOT IN (SELECT n FROM memory);
+";
+
+/// La tabla `memory` nueva, con los 12 pasos de lang_altertable.html: crear `memory_nueva`, copiar
+/// conservando `n` (así `memory_fts` y `memory_vec`, que van por `n`, siguen valiendo), borrar la
+/// vieja, renombrar y rehacer los índices (no hay disparadores ni vistas). `mig_proyecto` (ruta vieja →
+/// id) la rellena `pasar_a_proyectos`.
+const ESQUEMA_10_MEMORIA: &str = "
+CREATE TABLE memory_nueva (
+  n            INTEGER PRIMARY KEY,
+  id           TEXT NOT NULL UNIQUE,
+  project_id   INTEGER NOT NULL DEFAULT 0 REFERENCES project(id),
+  space_id     INTEGER REFERENCES space(id),
+  kind         TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  content      TEXT NOT NULL,
+  paths        TEXT NOT NULL DEFAULT '[]',
+  tags         TEXT NOT NULL DEFAULT '[]',
+  pinned       INTEGER NOT NULL DEFAULT 0,
+  source       TEXT NOT NULL DEFAULT '',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  recalled_at  TEXT,
+  recall_count INTEGER NOT NULL DEFAULT 0,
+  hlc          TEXT NOT NULL DEFAULT '',
+  content_hlc  TEXT NOT NULL DEFAULT '',
+  author       TEXT NOT NULL DEFAULT '',
+  extra        TEXT NOT NULL DEFAULT '{}',
+  CHECK (project_id = 0 OR space_id IS NULL)
+);
+-- content_hlc: el último cambio de texto fue en updated_at (fijar y mover no lo tocan). Como sello de
+-- contador 0 y sin equipo, un veredicto que valía (updated_at <= at) sigue valiendo: su sello nunca
+-- es anterior a su hora.
+INSERT INTO memory_nueva(n, id, project_id, space_id, kind, title, content, paths, tags, pinned, source,
+                         created_at, updated_at, recalled_at, recall_count, hlc, content_hlc, author)
+SELECT n, id, COALESCE((SELECT project_id FROM mig_proyecto WHERE path = memory.project), 0), NULL, kind,
+       title, content, paths, tags, pinned, source, created_at, updated_at, recalled_at, recall_count, hlc,
+       printf('%013d-%010d-', CAST(round((julianday(updated_at) - 2440587.5) * 86400000) AS INTEGER), 0), author
+FROM memory;
+DROP TABLE memory;
+ALTER TABLE memory_nueva RENAME TO memory;
+CREATE INDEX memory_scope   ON memory(project_id, kind, updated_at);
+CREATE INDEX memory_updated ON memory(updated_at);
+CREATE INDEX memory_space   ON memory(space_id) WHERE space_id IS NOT NULL;
+CREATE INDEX memory_always  ON memory(project_id, updated_at) WHERE pinned = 1 OR kind = 'preference';
+
+UPDATE recall_log SET project_id = COALESCE(
+  (SELECT p.project_id FROM session s JOIN mig_proyecto p ON p.path = s.project WHERE s.session = recall_log.session), 0);
+DROP TABLE mig_proyecto;
+DROP TABLE remote_project;
+";
+
+fn esquema_10(tx: &Connection, persona: &str) -> Result<()> {
+    tx.execute_batch(ESQUEMA_10)?;
+    normalizar_sellos(tx)?;
+    pasar_a_proyectos(tx, persona)?;
+    tx.execute_batch(ESQUEMA_10_MEMORIA)?;
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', ?1)", [LECTOR_MINIMO.to_string()])?;
+    Ok(())
+}
+
+/// Los sellos del esquema 5 llevan el contador con 4 cifras (`%013d-0000-`); los de ahora, con 10. Se
+/// comparaban bien con `reloj::comparar`, pero no como texto (`max(hlc)`, `w.hlc > v.hlc`): ahora
+/// todos tienen el mismo ancho y comparar como texto es comparar sellos.
+fn normalizar_sellos(tx: &Connection) -> Result<()> {
+    // (tabla, columnas que identifican la fila)
+    for (tabla, clave) in [("memory", "n"), ("tombstone", "id"), ("forgotten", "id"), ("verdict", "memory_id || char(31) || other_id || char(31) || relation")] {
+        let filas: Vec<(String, String)> = {
+            let mut q = tx.prepare(&format!("SELECT CAST({clave} AS TEXT), hlc FROM {tabla} WHERE hlc != ''"))?;
+            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        let mut u = tx.prepare(&format!("UPDATE {tabla} SET hlc = ?2 WHERE CAST({clave} AS TEXT) = ?1"))?;
+        for (k, hlc) in filas {
+            if let Some(nuevo) = crate::reloj::normalizado(&hlc) {
+                u.execute(rusqlite::params![k, nuevo])?;
+            }
+        }
+    }
+    let ultimo: Option<String> = tx.query_row("SELECT v FROM meta WHERE k = 'hlc'", [], |f| f.get(0)).ok();
+    if let Some(nuevo) = ultimo.as_deref().and_then(crate::reloj::normalizado) {
+        tx.execute("UPDATE meta SET v = ?1 WHERE k = 'hlc'", [nuevo])?;
+    }
+    Ok(())
+}
+
+/// Cada ruta de `memory.project` pasa a un proyecto con su clave:
+/// - si llegó de otro equipo (`remote_project`), la clave con la que llegó, como ruta ajena;
+/// - si existe en el disco, la de siempre (`sync::clave`: el `origin` de git, o `dir:<persona>/<carpeta>`);
+/// - si ya no existe, la `dir:` (sin el `origin` no se puede saber más), y queda sin `last_seen`: es
+///   un proyecto que «ya no está» (Revisar lo enseña con `omoi projects move`).
+///
+/// Las rutas con la misma clave `git:` son el mismo proyecto (clones, worktrees); con la misma `dir:`,
+/// solo una ruta local se queda la clave (la que existe; las ajenas se juntan con ella, como hacía
+/// `sync::adoptar`), y las demás, carpetas distintas con el mismo nombre, llevan `~2`, `~3`…
+fn pasar_a_proyectos(tx: &Connection, persona: &str) -> Result<()> {
+    tx.execute_batch("CREATE TEMP TABLE mig_proyecto (path TEXT PRIMARY KEY, project_id INTEGER NOT NULL);")?;
+    let remotos: std::collections::HashMap<String, String> = {
+        let mut q = tx.prepare("SELECT path, key FROM remote_project")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    // (ruta, memorias), las de más memorias primero: a igualdad de todo, esa se queda la clave.
+    let rutas: Vec<(String, i64)> = {
+        let mut q = tx.prepare("SELECT project, count(*) FROM memory WHERE project != '' GROUP BY project ORDER BY count(*) DESC, project")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    struct Ruta {
+        ruta: String,
+        clave: String,
+        ajena: bool,
+        existe: bool,
+        origen: String,
+    }
+    let mut grupos: Vec<(String, Vec<Ruta>)> = Vec::new();
+    for (ruta, _) in rutas {
+        let r = match remotos.get(&ruta) {
+            Some(k) => Ruta { clave: k.clone(), ajena: true, existe: false, origen: String::new(), ruta },
+            None => {
+                let existe = Path::new(&ruta).is_dir();
+                Ruta { clave: crate::sync::clave(&ruta, persona), ajena: false, existe, origen: crate::proyecto::origen(&ruta), ruta }
+            }
+        };
+        match grupos.iter_mut().find(|(k, _)| *k == r.clave) {
+            Some((_, v)) => v.push(r),
+            None => grupos.push((r.clave.clone(), vec![r])),
+        }
+    }
+    let ahora: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |f| f.get(0))?;
+    let mut claves: std::collections::HashSet<String> = grupos.iter().map(|(k, _)| k.clone()).collect();
+    for (clave, mut rutas) in grupos {
+        // Las que existen, delante; dentro de eso, el orden de antes (más memorias primero).
+        rutas.sort_by_key(|r| (r.ajena, !r.existe));
+        let mut proyectos: Vec<(String, Vec<Ruta>)> = vec![(clave.clone(), Vec::new())];
+        for r in rutas {
+            let primera_local = proyectos[0].1.iter().any(|x| !x.ajena);
+            if clave.starts_with("dir:") && !r.ajena && primera_local {
+                // Otra carpeta con el mismo nombre: un proyecto aparte, con su sufijo.
+                let mut n = 2;
+                while claves.contains(&format!("{clave}~{n}")) {
+                    n += 1;
+                }
+                let k = format!("{clave}~{n}");
+                claves.insert(k.clone());
+                proyectos.push((k, vec![r]));
+            } else {
+                proyectos[0].1.push(r);
+            }
+        }
+        for (k, rs) in proyectos {
+            let principal = rs.iter().find(|r| !r.ajena && r.existe).or_else(|| rs.iter().find(|r| !r.ajena)).or(rs.first()).map(|r| r.ruta.clone()).unwrap_or_default();
+            let nombre = crate::proyecto::nombre_de(&principal, &k);
+            tx.execute(
+                "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![k, nombre, principal, ahora],
+            )?;
+            let id = tx.last_insert_rowid();
+            for r in rs {
+                tx.execute(
+                    "INSERT OR IGNORE INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![r.ruta, crate::proyecto::comparable(&r.ruta), id, r.origen, r.ajena, r.existe.then_some(&ahora)],
+                )?;
+                tx.execute("INSERT OR REPLACE INTO mig_proyecto(path, project_id) VALUES (?1, ?2)", rusqlite::params![r.ruta, id])?;
+            }
+        }
+    }
     Ok(())
 }
 

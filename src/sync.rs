@@ -27,7 +27,7 @@
 //! en la misma carpeta no compartan sincronización.
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, COLUMNAS, Cambios, Memoria, Nueva, Origen, Tipo, de_fila};
+use crate::memoria::{self, COLUMNAS, Cambios, Memoria, NCOL, Nueva, Origen, Tipo, de_fila};
 use crate::{reloj, tr};
 use aes_siv::KeyInit;
 use aes_siv::siv::Aes256Siv;
@@ -97,6 +97,10 @@ pub struct Config {
     /// Proyectos que se comparten, por su clave; ninguno = todos.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projects: Option<Vec<String>>,
+    /// Espacios que se comparten, por su clave (sus proyectos y lo suyo): un repositorio por cliente.
+    /// Con `projects`, se comparte lo que esté en cualquiera de las dos listas; sin ninguna, todo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spaces: Option<Vec<String>>,
     /// El nombre que se apunta como autor de cada memoria; ninguno = no se apunta.
     #[serde(default)]
     pub author: Option<String>,
@@ -106,18 +110,27 @@ pub struct Config {
 }
 
 impl Config {
-    fn acepta(&self, kind: Tipo, clave: &str) -> bool {
+    /// Si se comparte una memoria de este tipo (un tipo que esta versión no conoce cuenta como `fact`),
+    /// de este proyecto (`clave`) y de este espacio (`espacio`: el de la memoria o el de su proyecto).
+    fn acepta(&self, kind: &str, clave: &str, espacio: &str) -> bool {
+        let kind = kind.parse::<Tipo>().unwrap_or(Tipo::Fact);
         if !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
             return false;
         }
-        if clave.is_empty() {
+        if clave.is_empty() && espacio.is_empty() {
             return self.global;
         }
-        self.projects.as_ref().is_none_or(|p| p.iter().any(|k| k == clave))
+        match (&self.projects, &self.spaces) {
+            (None, None) => true,
+            (p, s) => {
+                p.as_ref().is_some_and(|p| !clave.is_empty() && p.iter().any(|k| k == clave))
+                    || s.as_ref().is_some_and(|s| !espacio.is_empty() && s.iter().any(|k| k == espacio))
+            }
+        }
     }
 
-    fn comparte(&self, m: &Memoria, clave: &str) -> bool {
-        self.acepta(m.kind, if m.project.is_empty() { "" } else { clave })
+    fn comparte(&self, m: &Memoria) -> bool {
+        self.acepta(m.tipo_texto(), &m.project_key, &m.space)
     }
 }
 
@@ -257,7 +270,12 @@ pub(crate) enum Linea {
         project_key: String,
         /// La ruta en el equipo de origen, por si aquí aún no hay ningún proyecto con esa clave.
         project_path: String,
-        kind: Tipo,
+        /// El espacio (su clave): el de la memoria si es de espacio (sin `project_key`), o el de su
+        /// proyecto. Las versiones de antes de la 0.20.0 no lo mandan.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        space_key: String,
+        /// Texto: un tipo de una versión futura llega tal cual (aquí cuenta como `fact`) y se reexporta igual.
+        kind: String,
         title: String,
         content: String,
         #[serde(default)]
@@ -269,6 +287,10 @@ pub(crate) enum Linea {
         created_at: String,
         updated_at: String,
         hlc: String,
+        /// El sello del último cambio de título, contenido o tipo (con el que caducan los veredictos),
+        /// solo si no es `hlc` (fijar o mover cambian `hlc` y no este).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        content_hlc: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         author: String,
         /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
@@ -382,7 +404,7 @@ pub fn clave(project: &str, persona: &str) -> String {
 }
 
 /// La URL del remoto `origin`, leyendo `.git/config` (rápido; en un worktree, el del repositorio).
-fn origen_git(raiz: &Path) -> Option<String> {
+pub(crate) fn origen_git(raiz: &Path) -> Option<String> {
     let punto_git = raiz.join(".git");
     let config = if punto_git.is_dir() {
         punto_git.join("config")
@@ -406,7 +428,7 @@ fn origen_git(raiz: &Path) -> Option<String> {
     None
 }
 
-fn normalizar_remoto(url: &str) -> String {
+pub(crate) fn normalizar_remoto(url: &str) -> String {
     let mut u = url.trim().to_lowercase();
     for p in ["https://", "http://", "ssh://", "git://", "git+ssh://"] {
         if let Some(r) = u.strip_prefix(p) {
@@ -430,24 +452,16 @@ pub fn persona(nombre: &str) -> String {
     p.trim_matches('-').to_string()
 }
 
-/// Si hay memorias que llegaron con la ruta de otro equipo y aquí aparece un proyecto con la misma
-/// clave, pasan a la ruta de aquí. Barato si no hay ninguna pendiente.
-pub fn adoptar(db: &Connection, project: &str, persona: &str) -> Result<usize> {
-    let pendientes: i64 = db.query_row("SELECT count(*) FROM remote_project", [], |f| f.get(0))?;
-    if pendientes == 0 || project.is_empty() {
+/// La carpeta de un proyecto queda apuntada: si su clave es la de un proyecto que llegó de otro equipo
+/// (o la de un clon, un worktree o una carpeta movida con el mismo `origin`), sus memorias ya son de
+/// aquí, sin moverlas (van por el id del proyecto). Devuelve cuántas memorias tenía ese proyecto si la
+/// carpeta no estaba apuntada (0 si ya lo estaba o es nuevo).
+pub fn adoptar(db: &Connection, project: &str) -> Result<usize> {
+    if project.is_empty() || crate::proyecto::es_general(project) || crate::proyecto::apuntada(db, project)? {
         return Ok(0);
     }
-    let k = clave(project, persona);
-    let rutas: Vec<String> = {
-        let mut q = db.prepare("SELECT path FROM remote_project WHERE key = ?1 AND path != ?2")?;
-        q.query_map(params![k, project], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
-    };
-    let mut n = 0;
-    for r in rutas {
-        n += db.execute("UPDATE memory SET project = ?2 WHERE project = ?1", params![r, project])?;
-        db.execute("DELETE FROM remote_project WHERE path = ?1", [&r])?;
-    }
-    Ok(n)
+    let id = crate::proyecto::registrar(db, project)?;
+    Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [id], |f| f.get::<_, i64>(0))? as usize)
 }
 
 // --- git ---------------------------------------------------------------------------------------------
@@ -646,42 +660,50 @@ fn ficheros_fijos(clon: &Path, cifra: &Cifra) -> Result<()> {
 
 // --- Exportar e importar -----------------------------------------------------------------------------
 
-fn todas(db: &Connection) -> Result<Vec<(Memoria, String)>> {
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS}, hlc FROM memory ORDER BY id"))?;
-    let v = q.query_map([], |f| Ok((de_fila(f)?, f.get::<_, String>(14)?)))?.collect::<rusqlite::Result<_>>()?;
+/// Todas las memorias, con su sello (`hlc`) y el de su último cambio de texto (`content_hlc`).
+pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String)>> {
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc FROM memory m ORDER BY m.id"))?;
+    let v = q
+        .query_map([], |f| Ok((de_fila(f)?, f.get::<_, String>(NCOL)?, f.get::<_, String>(NCOL + 1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// La clave de cada proyecto de esta base (las rutas que llegaron de fuera la tienen apuntada). La
-/// usan la sincronización y `omoi export`, para que una memoria lleve la misma clave por los dos caminos.
-pub(crate) fn claves_locales(db: &Connection, persona: &str) -> Result<HashMap<String, String>> {
-    let mut m: HashMap<String, String> = {
-        let mut q = db.prepare("SELECT path, key FROM remote_project")?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
-    };
-    let proyectos: Vec<String> = {
-        let mut q = db.prepare("SELECT DISTINCT project FROM memory WHERE project != ''")?;
-        q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
-    };
-    for p in proyectos {
-        m.entry(p).or_insert_with_key(|p| clave(p, persona));
+/// La línea de una memoria, para la sincronización y `omoi export`: la clave del proyecto sale de la
+/// tabla `project` (calculada una vez), así que es la misma por los dos caminos.
+pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>) -> Linea {
+    Linea::Memory {
+        kind: m.tipo_texto().to_string(),
+        id: m.id,
+        project_key: m.project_key,
+        project_path: m.project,
+        space_key: m.space,
+        title: m.title,
+        content: m.content,
+        paths: m.paths,
+        tags: m.tags,
+        pinned: m.pinned,
+        created_at: m.created_at,
+        updated_at: m.updated_at,
+        content_hlc: if content_hlc == hlc { String::new() } else { content_hlc },
+        hlc,
+        author: m.author,
+        machine: equipo.to_string(),
+        versions,
     }
-    Ok(m)
 }
 
 /// Qué subiría este equipo (para el resumen de `init` y `join`): globales, de proyectos y cuántos
 /// proyectos.
 pub fn resumen_de_subida(db: &Connection, config: &Config) -> Result<(usize, usize, usize)> {
-    let claves = claves_locales(db, &config.person)?;
     let (mut globales, mut de_proyectos, mut proyectos) = (0, 0, HashSet::new());
-    for (m, _) in todas(db)? {
-        let k = claves.get(&m.project).cloned().unwrap_or_default();
-        if config.comparte(&m, &k) {
-            if m.project.is_empty() {
+    for (m, _, _) in todas(db)? {
+        if config.comparte(&m) {
+            if m.project_key.is_empty() {
                 globales += 1;
             } else {
                 de_proyectos += 1;
-                proyectos.insert(k);
+                proyectos.insert(m.project_key);
             }
         }
     }
@@ -691,42 +713,30 @@ pub fn resumen_de_subida(db: &Connection, config: &Config) -> Result<(usize, usi
 /// Escribe los ficheros de este equipo en el clon y borra los suyos que ya no tocan. Devuelve cuántas
 /// memorias exportó.
 fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: &Cifra) -> Result<usize> {
-    let claves = claves_locales(db, &config.person)?;
     let mut ficheros: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut n = 0;
     // La carpeta de cada memoria que se comparte: sus veredictos van con ella.
     let mut carpetas: HashMap<String, String> = HashMap::new();
-    for (m, hlc) in todas(db)? {
-        let k = claves.get(&m.project).cloned().unwrap_or_default();
-        if !config.comparte(&m, &k) {
+    for (m, hlc, content_hlc) in todas(db)? {
+        if !config.comparte(&m) {
             continue;
         }
-        let carpeta = if m.project.is_empty() { "global".to_string() } else { cifra.carpeta(&k) };
+        let carpeta = if !m.project_key.is_empty() {
+            cifra.carpeta(&m.project_key)
+        } else if !m.space.is_empty() {
+            cifra.carpeta(&format!("space:{}", m.space))
+        } else {
+            "global".to_string()
+        };
         carpetas.insert(m.id.clone(), carpeta.clone());
         // Segunda capa: lo que se guardó antes de la 0.19.0 (o con `OMOIKANE_REDACT=0` en otro momento)
         // no sale del equipo con su secreto. Aquí se queda como está, con su aviso en Revisar.
-        let (title, content) = if crate::secretos::activo() {
-            (crate::secretos::redactar(&m.title).0, crate::secretos::redactar(&m.content).0)
+        let m = if crate::secretos::activo() {
+            Memoria { title: crate::secretos::redactar(&m.title).0, content: crate::secretos::redactar(&m.content).0, ..m }
         } else {
-            (m.title, m.content)
+            m
         };
-        let l = Linea::Memory {
-            id: m.id,
-            project_key: k,
-            project_path: m.project,
-            kind: m.kind,
-            title,
-            content,
-            paths: m.paths,
-            tags: m.tags,
-            pinned: m.pinned,
-            created_at: m.created_at,
-            updated_at: m.updated_at,
-            hlc,
-            author: m.author,
-            machine: equipo.to_string(),
-            versions: Vec::new(),
-        };
+        let l = linea_de(m, hlc, content_hlc, equipo, Vec::new());
         ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
     }
@@ -837,25 +847,17 @@ fn no_menor(a: &str, b: &str) -> bool {
 pub(crate) struct Aplicador<'a> {
     config: Option<&'a Config>,
     person: String,
-    /// Clave → proyecto de aquí: los que ya tienen memorias (o se adoptaron) y el de la carpeta actual.
-    locales: HashMap<String, String>,
-    /// Las rutas que ya son proyectos aquí, y las que se van asignando: dos claves desconocidas con la
-    /// misma ruta de origen no acaban en el mismo proyecto.
-    rutas_locales: HashSet<String>,
 }
 
 impl<'a> Aplicador<'a> {
+    /// Con `actual` (la carpeta de la sesión), esa carpeta queda apuntada antes de aplicar nada: lo que
+    /// llegue con su clave es ya suyo.
     pub(crate) fn nuevo(db: &Connection, config: Option<&'a Config>, actual: Option<&str>) -> Result<Self> {
-        let person = config.map(|c| c.person.clone()).unwrap_or_default();
-        let mut locales: HashMap<String, String> = HashMap::new();
-        for (p, k) in claves_locales(db, &person)? {
-            locales.entry(k).or_insert(p);
-        }
+        let person = config.map(|c| c.person.clone()).unwrap_or_else(|| crate::db::persona_de(db));
         if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
-            locales.insert(clave(a, &person), a.to_string());
+            crate::proyecto::registrar(db, a)?;
         }
-        let rutas_locales = locales.values().cloned().collect();
-        Ok(Aplicador { config, person, locales, rutas_locales })
+        Ok(Aplicador { config, person })
     }
 
     /// Aplica una línea. `Err` es una línea que no se pudo aplicar (se cuenta y se sigue). Las
@@ -884,9 +886,10 @@ impl<'a> Aplicador<'a> {
                 }
                 Ok(())
             }
-            Linea::Memory { id, project_key, project_path, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, author, versions, .. } => {
-                // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra persona).
-                if self.config.is_some_and(|c| !c.acepta(kind, &project_key)) {
+            Linea::Memory { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, .. } => {
+                // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra
+                // persona, o lo de un espacio que este repositorio no lleva).
+                if self.config.is_some_and(|c| !c.acepta(&kind, &project_key, &space_key)) {
                     return Ok(());
                 }
                 if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
@@ -896,46 +899,56 @@ impl<'a> Aplicador<'a> {
                 if local.as_ref().is_some_and(|h| no_menor(h, &hlc)) {
                     return Ok(());
                 }
-                let project = if project_key.is_empty() {
-                    String::new()
-                } else if let Some(p) = self.locales.get(&project_key) {
-                    p.clone()
-                } else {
-                    // Aquí aún no hay ningún proyecto con esa clave: la ruta de origen, apuntada para
-                    // adoptarla. Si esa ruta ya es aquí otro proyecto (dos repositorios distintos en
-                    // `/workspace`), una ruta propia que no se confunda con él.
-                    let ocupada = |r: &str| self.rutas_locales.contains(r) || (Path::new(r).exists() && clave(r, &self.person) != project_key);
-                    let mut ruta = if ocupada(&project_path) { format!("{project_path} [{project_key}]") } else { project_path };
-                    let base = ruta.clone();
-                    let mut n = 2;
-                    while self.rutas_locales.contains(&ruta) {
-                        ruta = format!("{base} ({n})");
-                        n += 1;
+                // El proyecto, por su clave (si aquí no hay ninguno, con la ruta de origen, que se adopta
+                // en cuanto aparezca aquí una carpeta con esa clave); o el espacio; o global.
+                let (project_id, space_id) = if !project_key.is_empty() {
+                    let p = crate::proyecto::de_clave(db, &project_key, &project_path, &self.person)?;
+                    // Un proyecto sin espacio aquí toma el que trae la línea; uno con espacio se queda el suyo.
+                    if !space_key.is_empty() && crate::proyecto::espacio_de(db, p)?.is_none() {
+                        let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
+                        db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![p, s])?;
                     }
-                    db.execute("INSERT OR REPLACE INTO remote_project(path, key) VALUES (?1, ?2)", params![ruta, project_key])?;
-                    self.locales.insert(project_key.clone(), ruta.clone());
-                    self.rutas_locales.insert(ruta.clone());
-                    ruta
+                    (Some(p), None)
+                } else if !space_key.is_empty() {
+                    (None, crate::proyecto::espacio_de_clave(db, &space_key)?)
+                } else {
+                    (Some(0), None)
                 };
-                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, author: &author };
+                let tipo = kind.parse::<Tipo>().ok();
+                let kind_text = if tipo.is_none() { Some(kind.clone()) } else { None };
+                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author };
                 // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se
                 // salta y se cuenta: nunca para la sincronización.
                 if local.is_some() {
                     let c = Cambios {
                         title: Some(title),
                         content: Some(content),
-                        kind: Some(kind),
+                        kind: Some(tipo.unwrap_or(Tipo::Fact)),
+                        kind_text,
                         paths: Some(paths),
                         tags: Some(tags),
                         pinned: Some(pinned),
-                        project: Some(project),
+                        project_id,
+                        space_id,
                         reason: Some(format!("sync: {origen}")),
                         ..Default::default()
                     };
                     memoria::actualizar_con_origen(db, &id, c, &o, modelo)?;
                     r.actualizadas += 1;
                 } else {
-                    let nueva = Nueva { project, kind: Some(kind), title, content, paths, tags, pinned, source: format!("sync:{origen}") };
+                    let nueva = Nueva {
+                        project: String::new(),
+                        project_id,
+                        space_id,
+                        kind: Some(tipo.unwrap_or(Tipo::Fact)),
+                        kind_text,
+                        title,
+                        content,
+                        paths,
+                        tags,
+                        pinned,
+                        source: format!("sync:{origen}"),
+                    };
                     memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
                     r.nuevas += 1;
                 }
@@ -1032,7 +1045,7 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
     let cifra = Cifra { clave: leer_clave(&r)? };
     ensure!(r.clon.join(".git").exists(), tr!("the sync clone is missing: run `omoi sync init` again", "falta el clon de la sincronización: vuelve a hacer `omoi sync init`"));
     if let Some(a) = actual {
-        adoptar(db, a, &config.person)?;
+        adoptar(db, a)?;
     }
     let equipo = reloj::equipo(db)?;
     for intento in 0..4 {
@@ -1076,6 +1089,8 @@ pub struct Eleccion {
     pub global: bool,
     /// Carpetas de proyecto; vacío = todos.
     pub proyectos: Vec<String>,
+    /// Espacios (nombre o clave); vacío = todos. Con proyectos, lo de unos y otros.
+    pub espacios: Vec<String>,
     pub autor: Option<String>,
 }
 
@@ -1106,7 +1121,8 @@ pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config
         .or_else(|| e.autor.clone().or_else(nombre_git).map(|n| persona(&n)).filter(|p| !p.is_empty()))
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.proyectos.is_empty()).then(|| e.proyectos.iter().map(|p| clave(p, &person)).collect());
-    Config { url: url.to_string(), kinds, global: e.global, projects, author: e.autor.clone(), person }
+    let spaces = (!e.espacios.is_empty()).then(|| e.espacios.iter().map(|s| crate::proyecto::clave_de_espacio(s)).collect());
+    Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.autor.clone(), person }
 }
 
 fn guardar_config(db: &Connection, r: &Rutas, config: &Config, clave: &[u8]) -> Result<()> {
@@ -1648,7 +1664,7 @@ mod tests {
     fn personas() {
         assert_eq!(persona("Marc Mayol"), "marc-mayol");
         assert_eq!(persona("  "), "");
-        let e = Eleccion { preferencias: false, global: true, proyectos: vec![], autor: Some(" ".into()) };
+        let e = Eleccion { preferencias: false, global: true, proyectos: vec![], espacios: vec![], autor: Some(" ".into()) };
         let c = config_de("x", &e);
         assert!(c.person.starts_with("u-") || !c.person.is_empty(), "nunca vacía: {}", c.person);
         assert_eq!(config_con_persona("x", &e, Some("Ana López")).person, "ana-lópez");
