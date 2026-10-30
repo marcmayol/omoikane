@@ -784,6 +784,13 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         Err(v) if v.is_empty() => bail!(tr!("nothing in the trash with id {id}", "no hay nada en la papelera con id {id}")),
         Err(_) => bail!(tr!("several memories in the trash start with {id}: type more characters", "hay varias memorias en la papelera que empiezan por {id}: escribe más caracteres")),
     };
+    // Ya está viva (otro equipo la restauró y llegó por la sincronización, de una base de antes de la
+    // 0.19.1): solo sobraba en la papelera.
+    if tx.query_row("SELECT count(*) FROM memory WHERE id = ?1", [&id], |f| f.get::<_, i64>(0))? > 0 {
+        tx.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
+        tx.commit()?;
+        bail!(tr!("{id} is not forgotten here (it came back from another computer); removed it from the trash", "{id} no está olvidada aquí (volvió desde otro equipo); la quito de la papelera"));
+    }
     let m: Memoria = serde_json::from_str(&m)?;
     let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
     let marca: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();

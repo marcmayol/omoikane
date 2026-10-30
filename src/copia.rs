@@ -57,6 +57,9 @@ fn cifra_de(ruta_db: &Path) -> Result<Cifra> {
 pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, salida: &mut impl Write) -> Result<Cuenta> {
     let cifra = if cifrar { Some(cifra_de(ruta_db)?) } else { None };
     let persona = sync::leer_config(ruta_db)?.map(|c| c.person).unwrap_or_default();
+    // Las mismas claves que exporta la sincronización: una ruta que llegó de otro equipo lleva la clave
+    // con la que llegó (`remote_project`), no una calculada aquí.
+    let claves = sync::claves_locales(db, &persona)?;
     let equipo = crate::reloj::equipo(db)?;
     let cabecera = Linea::Header {
         format: FORMATO.into(),
@@ -99,7 +102,7 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
             let hlc: String = f.get(14)?;
             let versions = memoria::historial(db, &m.id)?;
             let l = Linea::Memory {
-                project_key: sync::clave(&m.project, &persona),
+                project_key: claves.get(&m.project).cloned().unwrap_or_else(|| sync::clave(&m.project, &persona)),
                 project_path: m.project,
                 id: m.id,
                 kind: m.kind,

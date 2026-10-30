@@ -16,7 +16,9 @@ pub const VERSION_ESQUEMA: i64 = 9;
 /// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
 pub fn ruta_por_defecto() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_DB").filter(|r| !r.is_empty()) {
-        return PathBuf::from(r);
+        // Absoluta, como `--db`: la sincronización la usa desde otras carpetas.
+        let r = PathBuf::from(r);
+        return std::path::absolute(&r).unwrap_or(r);
     }
     dirs::home_dir().unwrap_or_default().join(".omoikane").join("omoikane.db")
 }
