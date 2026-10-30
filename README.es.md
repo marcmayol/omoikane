@@ -68,7 +68,7 @@ Pueden convivir: CLAUDE.md para las reglas fijas del repositorio y Omoikane para
 
 **Antes de la 1.0:** el esquema de la base todavía puede cambiar. Cada cambio migra solo y guarda antes una copia de la base, pero una base migrada ya no la abre una versión anterior. La 1.0 lo congelará.
 
-Versión 0.19.0,
+Versión 0.19.1,
  en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación

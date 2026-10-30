@@ -68,7 +68,7 @@ They can live together: CLAUDE.md for the repository's fixed rules, Omoikane for
 
 **Before 1.0:** the database schema can still change. Each change migrates by itself and keeps a copy of the database first, but a migrated database can no longer be opened by an older version. 1.0 will freeze it.
 
-Version 0.19.0,
+Version 0.19.1,
  on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Install
