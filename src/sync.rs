@@ -287,7 +287,7 @@ pub(crate) enum Linea {
         machine: String,
     },
     /// Un veredicto (`veredictos`), en la carpeta de la memoria juzgada. Las versiones de antes de la
-    /// 0.17.0 no lo entienden y se lo saltan.
+    /// 0.17.0 no lo entienden y se lo saltan; las de antes de la 0.19.0 ignoran `reason` y `author`.
     Verdict {
         memory_id: String,
         #[serde(default)]
@@ -295,6 +295,10 @@ pub(crate) enum Linea {
         relation: String,
         at: String,
         hlc: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reason: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        author: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
     },
@@ -696,13 +700,20 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         }
         let carpeta = if m.project.is_empty() { "global".to_string() } else { cifra.carpeta(&k) };
         carpetas.insert(m.id.clone(), carpeta.clone());
+        // Segunda capa: lo que se guardó antes de la 0.19.0 (o con `OMOIKANE_REDACT=0` en otro momento)
+        // no sale del equipo con su secreto. Aquí se queda como está, con su aviso en Revisar.
+        let (title, content) = if crate::secretos::activo() {
+            (crate::secretos::redactar(&m.title).0, crate::secretos::redactar(&m.content).0)
+        } else {
+            (m.title, m.content)
+        };
         let l = Linea::Memory {
             id: m.id,
             project_key: k,
             project_path: m.project,
             kind: m.kind,
-            title: m.title,
-            content: m.content,
+            title,
+            content,
             paths: m.paths,
             tags: m.tags,
             pinned: m.pinned,
@@ -721,7 +732,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let (Some(carpeta), true) = (carpetas.get(&v.memory_id), v.other_id.is_empty() || carpetas.contains_key(&v.other_id)) else {
             continue;
         };
-        let l = Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, machine: equipo.to_string() };
+        let l = Linea::Verdict { memory_id: v.memory_id, other_id: v.other_id, relation: v.relation, at: v.at, hlc: v.hlc, reason: v.reason, author: v.author, machine: equipo.to_string() };
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
     {
@@ -916,6 +927,7 @@ impl<'a> Aplicador<'a> {
                         pinned: Some(pinned),
                         project: Some(project),
                         reason: Some(format!("sync: {origen}")),
+                        ..Default::default()
                     };
                     memoria::actualizar_con_origen(db, &id, c, &o, modelo)?;
                     r.actualizadas += 1;
@@ -933,11 +945,11 @@ impl<'a> Aplicador<'a> {
                 }
                 Ok(())
             }
-            Linea::Verdict { memory_id, other_id, relation, at, hlc, .. } => {
+            Linea::Verdict { memory_id, other_id, relation, at, hlc, reason, author, .. } => {
                 // De una memoria que aquí no está (no se comparte, o se olvidó) no se apunta nada.
                 let existe = |id: &str| -> Result<bool> { Ok(db.query_row("SELECT count(*) FROM memory WHERE id = ?1", [id], |f| f.get::<_, i64>(0))? > 0) };
                 if existe(&memory_id)? && (other_id.is_empty() || existe(&other_id)?) {
-                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc })?;
+                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author })?;
                 }
                 Ok(())
             }

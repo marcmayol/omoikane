@@ -465,6 +465,7 @@ mod tests {
             recalled_at: None,
             recall_count: 0,
             author: String::new(),
+            redacted: Vec::new(),
         };
         assert_eq!(cobertura(&terminos("fallo autenticacion"), &m), 1.0);
         assert_eq!(cobertura(&terminos("token caducado"), &m), 0.5);

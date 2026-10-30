@@ -4,7 +4,7 @@
 
 Comparación directa con [engram](https://github.com/Gentleman-Programming/engram) (v3.6.0), la memoria en Go + SQLite para agentes de programación con la que se comparó Omoikane desde el principio. Medido el 28 de octubre de 2026 en un PC con Windows 11. **Omoikane lo he escrito yo.** Léelo sabiéndolo. El método de abajo está pensado para que eso no incline los números, y se cuenta cada resultado en el que engram sale mejor.
 
-**Lo último (29-oct-2026, Omoikane 0.9.1).** Un 7.º conjunto de 100 preguntas escritas a ciegas, con 130 notas, que no se usó para ajustar nada: Omoikane acierta a la primera el 90 % de las veces (engram, el 75 %), entre las tres primeras el 97 % (87 %) y en paráfrasis el 86,7 % (70 %), con una mediana de 43 ms frente a 173. Con 3.183 memorias no pierde calidad. Lo que sigue es la historia completa desde la primera comparación, con 127 notas. El recall de la versión actual (algo inyectado en el 7 % de 300 mensajes reales) está en el [README](README.es.md#el-ruido-lo-viejo-y-lo-erróneo).
+**Lo último (29-oct-2026, Omoikane 0.9.1).** Un 7.º conjunto de 100 preguntas escritas a ciegas, con 130 notas, que no se usó para ajustar nada: Omoikane acierta a la primera el 90 % de las veces (engram, el 75 %), entre las tres primeras el 97 % (87 %) y en paráfrasis el 86,7 % (70 %), con una mediana de 43 ms frente a 173. Con 3.183 memorias no pierde calidad. **Duplicados:** desde la 0.4.0, al guardar otra vez una nota se señala o se lista entre las relacionadas el 100 % de las veces, como engram, pero con un 14 % de avisos de más frente a su 49 % (la tabla de 90 % de abajo es de la 0.3.1). Lo que sigue es la historia completa desde la primera comparación, con 127 notas. El recall de la versión actual (algo inyectado en el 7 % de 300 mensajes reales) está en el [README](README.es.md#el-ruido-lo-viejo-y-lo-erróneo).
 
 ## Método
 
@@ -35,7 +35,7 @@ engram ordena bien cuando la consulta es una lista de palabras clave; con la pre
 | Buscar, mediana | **34 ms** | 120 ms (por defecto) · 155 ms (`any`) |
 | Guardar, mediana | **39 ms** | 135 ms |
 
-### Duplicados: 126 notas guardadas otra vez como lo haría un agente (otro título, el principio del texto)
+### Duplicados: 126 notas guardadas otra vez como lo haría un agente (otro título, el principio del texto) — Omoikane 0.3.1, superado en la 0.4.0 (más abajo)
 
 | | Omoikane | engram CLI | engram MCP (`mem_save`) |
 |---|---|---|---|

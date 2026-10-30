@@ -18,6 +18,7 @@ pub mod proyecto;
 pub mod recall;
 pub mod reloj;
 pub mod revisar;
+pub mod secretos;
 pub mod setup;
 pub mod sync;
 pub mod tui;

@@ -19,9 +19,10 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Recuerda sin que se lo pidas.** Cuando lo que escribes tiene que ver con algo guardado, un hook le pasa al agente esa memoria (como mucho 2, una vez por sesión) o la trampa del fichero que has nombrado, en unos 20 ms. Si no tiene que ver, no le pasa nada, y así fue en el 93 % de los mensajes reales. El agente no tiene que acordarse de buscar.
 - **Busca bien en tu idioma**, con tildes o sin ellas y en 101 idiomas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces, en 43 ms, y sigue igual de preciso con 3.183 memorias.
 - **Detecta duplicados al guardar.** Si el agente intenta guardar algo que ya sabe, se le dice y actualiza la memoria que hay en lugar de crear otra.
-- **Funciona con 15 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo.
+- **Funciona con 15 agentes.** Claude Code, Codex, Gemini CLI, Qwen Code, Cursor, Copilot, Kiro, OpenCode, Grok y los demás comparten la misma memoria; `omoi setup <agente>` deja cada uno listo. Probados a mano: Claude Code y OpenCode; los demás, según su documentación (la tabla de «Otros agentes» lo dice uno por uno).
 - **La misma memoria en todos tus equipos, y con compañeros.** Se sincroniza sola por un repositorio git tuyo, cifrada antes de salir del equipo, y sin servidor de nadie.
 - **Historial con motivo.** Cambiar una memoria guarda la versión anterior y, si el agente lo dice, por qué cambió.
+- **No guarda secretos.** Si un token, una clave privada o una contraseña se cuela en una memoria, se cambia por `[redacted:<tipo>]` antes de guardarla, y la respuesta se lo dice al agente. Lo que se guardó antes sale en Revisar con un botón para redactarlo, historial incluido, y nada de eso sale del equipo al sincronizar.
 - **Nada se pierde.** Olvidar manda a la papelera, con el historial, y `omoi restore` lo devuelve desde cualquier equipo. `omoi export` es una copia fiel que `omoi import` reconstruye exacta, y cada día se guarda sola una copia de la base.
 - **La ves y la ordenas tú.** Una vista web y otra en la terminal para buscar, leer el historial, fijar, mover u olvidar.
 - **Privado y pequeño.** Un binario, un fichero, 8 herramientas MCP y ningún servidor propio.
@@ -35,7 +36,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Recetas que vuelven enteras.** Una memoria de tipo `procedure` guarda los pasos de algo que se repite; «publica la 0.14.1» trae la lista entera, y el agente corrige el paso que cambie.
 - **Memorias conectadas.** Los `[[enlaces]]` entre notas viajan con ellas: al recordar una, llega también el aviso que lleva enlazado.
 - **Retoma donde lo dejaste.** Al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
-- **Se mantiene al día solo**, y solo instala versiones firmadas con la clave de Omoikane.
+- **Se mantiene al día si se lo pides**, y solo instala versiones firmadas con la clave de Omoikane. Viene apagado.
 
 ## El ruido, lo viejo y lo erróneo
 
@@ -65,7 +66,9 @@ Pueden convivir: CLAUDE.md para las reglas fijas del repositorio y Omoikane para
 
 ## Estado
 
-Versión 0.18.0,
+**Antes de la 1.0:** el esquema de la base todavía puede cambiar. Cada cambio migra solo y guarda antes una copia de la base, pero una base migrada ya no la abre una versión anterior. La 1.0 lo congelará.
+
+Versión 0.19.0,
  en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Instalación
@@ -77,7 +80,7 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 /plugin install omoikane@drac
 ```
 
-`omoi setup claude` y los instaladores de una línea preguntan si quieres que Omoikane se actualice solo y, si dices que sí, encienden también la actualización del plugin. Si solo has usado los dos comandos de arriba, actívala una vez: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
+La actualización automática viene apagada. `omoi setup claude` y los instaladores de una línea preguntan si la quieres (si no contestas, se queda apagada) y, si dices que sí, encienden también la del plugin; `omoi upgrade --on` la enciende cuando quieras. Para la del plugin, si solo has usado los dos comandos de arriba: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
 
 En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
 
@@ -142,7 +145,11 @@ Omoikane se da cuenta de cuándo una memoria se ha quedado atrás: otra más nue
 
 **Veredictos.** Lo que Omoikane no puede saber solo lo dice el agente, sin herramientas nuevas: al guardar o cambiar una memoria puede pasar `supersedes` (esta sustituye a aquellas), `contradicts` (dicen cosas distintas y no se sabe cuál vale) o `compatible` (un aviso las emparejó y valen las dos). El veredicto se guarda, viaja con la sincronización y sale donde salen las memorias: en el recall (`⚠ superseded by …`), en `search`, en `context` y en Revisar. Vale mientras no cambie lo que juzgó, y de una pareja manda el más nuevo. «Está bien así» también es un veredicto, así que lo que das por bueno en un equipo vale en los demás.
 
-**Fecha de revisión.** Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca. Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.
+**Por qué y quién.** Cada veredicto guarda el motivo y quién lo dio (la persona de la sincronización, o el agente y su cliente), y los dos salen en el recall, en `search` y en Revisar. Si A está sustituida por B y B por C, la nota de A lleva directamente a C.
+
+**Corregir un trozo y juntar.** `update` acepta `replace` (cambia un texto que tiene que aparecer exactamente una vez; si no, no toca nada), `append` (añade al final, para el paso nuevo de una receta) y `absorb` (junta varias memorias en una: el agente escribe el texto fundido, y las absorbidas van a la papelera con su historial colgado de la que queda y sus etiquetas y enlaces pasados a ella). La pestaña Revisar tiene un botón **Juntar** para hacerlo a mano.
+
+**Fecha de revisión.** Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca, contando desde su último cambio o desde la última vez que el agente la recibió (lo que se usa y nadie corrige, está repasado). Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.
 
 ### Recetas y memorias conectadas
 
@@ -206,9 +213,9 @@ Desde entonces funciona solo y con todos los agentes: después de guardar, cambi
 
 `omoi sync off` deja de sincronizar en un equipo; sus memorias se quedan.
 
-### Se mantiene al día solo
+### Se mantiene al día, si se lo pides
 
-Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta antes (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano, y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia.
+Viene apagado: hasta que digas que sí (`omoi upgrade --on`, o la pregunta de `omoi setup claude`), `omoi` no se cambia a sí mismo. Encendido, una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano, y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia.
 
 ### Por HTTP, para scripts y apps
 
@@ -228,7 +235,7 @@ Una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si 
 - **Un binario sin nada más:** ni Python, ni Node, ni Docker, ni un servidor que dejar encendido. SQLite va dentro.
 - **Funciona sin internet.** Todo es local, y la vista web lleva dentro del binario hasta sus fuentes, IBM Plex y Shippori Mincho.
 - **Windows igual que Linux y macOS:** sin bash ni scripts, y probado en los tres en cada cambio.
-- **15 agentes, una sola memoria**, y `omoi setup <agente>` lo deja todo listo.
+- **15 agentes, una sola memoria** (2 probados a mano, el resto según su documentación), y `omoi setup <agente>` lo deja todo listo.
 - **Tus memorias son tuyas, y no se pierden:** un fichero SQLite con copia diaria, un export que lo reconstruye exacto, una papelera desde la que todo vuelve, y una sincronización que solo pasa por tu repositorio git, cifrada.
 - **Se actualiza con cuidado:** solo instala versiones firmadas con Ed25519 y, antes de cambiar el esquema de la base, guarda una copia.
 

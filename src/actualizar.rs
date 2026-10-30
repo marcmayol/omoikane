@@ -57,9 +57,11 @@ pub fn fijar(on: bool) -> Result<()> {
     Ok(())
 }
 
-/// Encendida salvo que se apague; sin respuesta guardada, encendida.
+/// Solo si el usuario dijo que sí (`omoi upgrade --on` o la pregunta de `omoi setup claude`). Sin
+/// respuesta, apagada: un binario que se cambia solo es lo primero que mira quien se preocupa por la
+/// seguridad, y no debe pasar sin que nadie lo haya pedido (0.19.0; antes venía encendida).
 pub fn activada() -> bool {
-    !std::env::var("OMOIKANE_AUTO_UPDATE").is_ok_and(|v| v.trim() == "0" || v.trim().eq_ignore_ascii_case("off")) && preferencia() != Some(false)
+    !std::env::var("OMOIKANE_AUTO_UPDATE").is_ok_and(|v| v.trim() == "0" || v.trim().eq_ignore_ascii_case("off")) && preferencia() == Some(true)
 }
 
 /// Si el binario lo gestiona otro programa, cuál (entonces no se toca).

@@ -74,9 +74,13 @@ const TRIVIALES: &[&str] = &["si", "sí", "vale", "ok", "okay", "claro", "perfec
 
 /// Formatos de secreto conocidos, o una «palabra» larga que mezcla minúsculas, mayúsculas y cifras.
 pub fn parece_secreto(t: &str) -> bool {
+    // Lo que `secretos` redactaría (tokens con prefijo, claves PEM, JWT, cadenas que parecen aleatorias…).
+    if !crate::secretos::hallazgos(t).is_empty() {
+        return true;
+    }
+    // Y, para apartar, también lo que habla de una clave aunque no se vea la forma del token.
     let n = t.to_lowercase();
-    let prefijos = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sk-", "akia", "xoxb-", "xoxp-", "private key"];
-    if prefijos.iter().any(|p| n.contains(p)) {
+    if n.contains("private key") {
         return true;
     }
     for clave in ["password", "passwd", "contraseña", "contrasena", "token", "secret", "api_key", "apikey", "api-key"] {
@@ -87,10 +91,7 @@ pub fn parece_secreto(t: &str) -> bool {
             }
         }
     }
-    // Un token es un trozo largo sin separadores; «potion-multilingual-128M-int8» son palabras con guiones.
-    t.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
-        w.len() >= 20 && w.chars().any(|c| c.is_ascii_lowercase()) && w.chars().any(|c| c.is_ascii_uppercase()) && w.chars().any(|c| c.is_ascii_digit())
-    })
+    false
 }
 
 /// La última pregunta de los últimos párrafos de un mensaje del agente (sin marcas de Markdown).

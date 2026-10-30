@@ -73,6 +73,10 @@ pub struct Memoria {
     /// Quién la escribió (el nombre de git), si la sincronización lo apunta.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author: String,
+    /// Lo que `secretos` quitó al guardarla o cambiarla en esta llamada, un tipo por hallazgo (vacío si
+    /// nada). No se guarda ni sale en el JSON: es para que quien guarda lo diga.
+    #[serde(skip)]
+    pub redacted: Vec<&'static str>,
 }
 
 /// Lo que decide quien guarda. Lo demás (id, fechas, estadísticas) lo pone Omoikane.
@@ -101,7 +105,28 @@ pub struct Cambios {
     pub project: Option<String>,
     /// Por qué cambia: se guarda con la versión anterior.
     pub reason: Option<String>,
+    /// Edición parcial (0.19.0): `(buscar, poner)` literales, en orden. Cada trozo buscado tiene que
+    /// aparecer exactamente una vez en el contenido tal como está al aplicarlo; si no, nada cambia.
+    pub replace: Vec<(String, String)>,
+    /// Texto que se añade al final del contenido (un paso más en una receta), con una línea en
+    /// blanco entre medias.
+    pub append: Option<String>,
 }
+
+/// Un trozo que `replace` o `append` cambió, con [`CONTEXTO`] caracteres a cada lado: lo que la
+/// respuesta de `update` enseña para que el agente no tenga que pedir `get`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Cambiado {
+    /// El trozo que se buscó (`replace`); nada si fue `append`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub appended: bool,
+    pub context: String,
+}
+
+/// Caracteres de contexto a cada lado de lo cambiado.
+pub const CONTEXTO: usize = 80;
 
 /// Una versión anterior de una memoria.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -166,6 +191,7 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         recalled_at: f.get(11)?,
         recall_count: f.get(12)?,
         author: f.get(13)?,
+        redacted: Vec::new(),
     })
 }
 
@@ -181,6 +207,17 @@ fn titulo(t: &str) -> Result<String> {
     ensure!(!t.is_empty(), tr!("the title can't be empty", "el título no puede estar vacío"));
     ensure!(t.chars().count() <= 200, tr!("the title is over 200 characters: put the details in the content", "el título pasa de 200 caracteres: lo largo va en el contenido"));
     Ok(t)
+}
+
+/// Lo que se escribe aquí (no lo que llega de la sincronización ni lo que vuelve de la papelera) pasa
+/// por `secretos::redactar`, salvo con `OMOIKANE_REDACT=0`. Apunta en `hallados` el tipo de cada uno.
+fn sin_secretos(texto: &str, hallados: &mut Vec<&'static str>) -> String {
+    if !crate::secretos::activo() {
+        return texto.to_string();
+    }
+    let (s, hs) = crate::secretos::redactar(texto);
+    hallados.extend(hs.iter().map(|h| h.tipo));
+    s
 }
 
 fn contenido(c: &str) -> Result<String> {
@@ -211,6 +248,45 @@ fn etiquetas(ts: &[String]) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// Lo que va de `inicio` a `fin` del texto con [`CONTEXTO`] caracteres a cada lado, y «…» donde
+/// se corta.
+fn alrededor(texto: &str, inicio: usize, fin: usize) -> String {
+    let desde = texto[..inicio].char_indices().rev().nth(CONTEXTO - 1).map(|(i, _)| i).unwrap_or(0);
+    let hasta = texto[fin..].char_indices().nth(CONTEXTO).map(|(i, _)| fin + i).unwrap_or(texto.len());
+    let (antes, despues) = (if desde > 0 { "…" } else { "" }, if hasta < texto.len() { "…" } else { "" });
+    format!("{antes}{}{despues}", &texto[desde..hasta])
+}
+
+/// Aplica a `contenido` los `replace` (cada uno exactamente una vez, en orden) y el `append` de
+/// unos `Cambios`. Devuelve los trozos cambiados con su contexto; con un `find` que aparece 0 o
+/// varias veces, error con el recuento y el contenido no se toca.
+fn aplicar_edicion(contenido: &mut String, c: &Cambios) -> Result<Vec<Cambiado>> {
+    let mut nuevo = contenido.clone();
+    let mut cambiados = Vec::new();
+    for (find, with) in &c.replace {
+        ensure!(!find.is_empty(), tr!("replace: `find` can't be empty", "replace: `find` no puede estar vacío"));
+        let veces = nuevo.matches(find.as_str()).count();
+        ensure!(
+            veces == 1,
+            tr!(
+                "replace: «{find}» appears {veces} times in the content (it has to appear exactly once); nothing changed",
+                "replace: «{find}» aparece {veces} veces en el contenido (tiene que aparecer exactamente una); no se ha cambiado nada"
+            )
+        );
+        let inicio = nuevo.find(find.as_str()).unwrap_or(0);
+        nuevo.replace_range(inicio..inicio + find.len(), with);
+        cambiados.push(Cambiado { find: Some(find.clone()), appended: false, context: alrededor(&nuevo, inicio, inicio + with.len()) });
+    }
+    if let Some(a) = c.append.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        let base = nuevo.trim_end().to_string();
+        let inicio = base.len() + 2;
+        nuevo = format!("{base}\n\n{a}");
+        cambiados.push(Cambiado { find: None, appended: true, context: alrededor(&nuevo, inicio, nuevo.len()) });
+    }
+    *contenido = nuevo;
+    Ok(cambiados)
 }
 
 // --- Índices ---------------------------------------------------------------------------------------
@@ -271,7 +347,7 @@ pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>,
 }
 
 /// El autor que se apunta en lo que se guarda aquí (lo configura la sincronización; vacío = ninguno).
-fn autor(db: &Connection) -> Result<String> {
+pub(crate) fn autor(db: &Connection) -> Result<String> {
     Ok(db.query_row("SELECT v FROM meta WHERE k = 'autor'", [], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
@@ -285,7 +361,12 @@ fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>
 /// `insertar` dentro de una transacción que ya está abierta (quien llama hace el commit).
 fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
     let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha, preference or procedure", "falta el tipo: fact, decision, gotcha, preference o procedure"))?;
-    let (title, content) = (titulo(&nueva.title)?, contenido(&nueva.content)?);
+    // Se redacta antes de validar: lo que cuenta para los 200 caracteres del título es lo que se guarda.
+    let mut redacted = Vec::new();
+    let (title, content) = match origen {
+        None => (titulo(&sin_secretos(&nueva.title, &mut redacted))?, contenido(&sin_secretos(&nueva.content, &mut redacted))?),
+        Some(_) => (titulo(&nueva.title)?, contenido(&nueva.content)?),
+    };
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
     let (hlc, author) = match origen {
         Some(o) => {
@@ -321,7 +402,7 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
     if let Some(modelo) = modelo {
         vectores::guardar(tx, n, modelo, &m.title, &m.content)?;
     }
-    Ok(m)
+    Ok(Memoria { redacted, ..m })
 }
 
 fn leer(db: &Connection, id: &str) -> Result<Memoria> {
@@ -349,38 +430,61 @@ pub fn obtener(db: &Connection, id: &str) -> Result<Memoria> {
 }
 
 pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<Memoria> {
+    Ok(actualizar_con_cambios(db, id, c, modelo)?.0)
+}
+
+/// Como `actualizar`, y además devuelve lo que `replace` y `append` cambiaron, con su contexto.
+pub fn actualizar_con_cambios(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
     actualizar_desde(db, id, c, None, modelo)
 }
 
 /// Para la sincronización: el cambio que llega de otro equipo, con sus fechas, sello y autor, todo en
 /// la misma transacción (la versión de aquí queda en el historial).
 pub(crate) fn actualizar_con_origen(db: &mut Connection, id: &str, c: Cambios, o: &Origen, modelo: Option<&Modelo>) -> Result<Memoria> {
-    actualizar_desde(db, id, c, Some(o), modelo)
+    Ok(actualizar_desde(db, id, c, Some(o), modelo)?.0)
 }
 
-fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
+fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
-    let antes = leer(&tx, &id)?;
-    let hlc_antes = hlc_de(&tx, &id)?;
+    let r = actualizar_en(&tx, &id, c, origen, modelo)?;
+    tx.commit()?;
+    Ok(r)
+}
+
+/// `actualizar` dentro de una transacción que ya está abierta (quien llama hace el commit), con el
+/// id ya resuelto.
+fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
+    let antes = leer(tx, id)?;
+    let hlc_antes = hlc_de(tx, id)?;
     // El sello del cambio: el de origen, o uno de aquí posterior al de la versión que se cambia.
     let hlc = match origen {
         Some(o) => {
-            crate::reloj::recibir(&tx, o.hlc)?;
+            crate::reloj::recibir(tx, o.hlc)?;
             o.hlc.to_string()
         }
-        None => crate::reloj::sello_tras(&tx, &hlc_antes)?,
+        None => crate::reloj::sello_tras(tx, &hlc_antes)?,
     };
-    let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
+    let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    // Solo lo que trae el cambio, y solo si se escribe aquí: lo que ya había lo avisa Revisar.
+    let mut redacted = Vec::new();
+    let mut limpio = |t: &str| if origen.is_none() { sin_secretos(t, &mut redacted) } else { t.to_string() };
+    // El contenido nuevo, y encima la edición parcial (`replace`, `append`).
+    let mut content = match &c.content {
+        Some(t) => contenido(t)?,
+        None => antes.content.clone(),
+    };
+    let cambiados = aplicar_edicion(&mut content, &c)?;
+    // Lo nuevo (el contenido entero, o lo que trajo la edición) pasa por la redacción.
+    if c.content.is_some() || !cambiados.is_empty() {
+        content = limpio(&content);
+    }
     let despues = Memoria {
         title: match &c.title {
-            Some(t) => titulo(t)?,
+            Some(t) => titulo(&limpio(t))?,
             None => antes.title.clone(),
         },
-        content: match &c.content {
-            Some(t) => contenido(t)?,
-            None => antes.content.clone(),
-        },
+        content: contenido(&content)?,
         kind: c.kind.unwrap_or(antes.kind),
         paths: c.paths.as_deref().map(rutas).unwrap_or_else(|| antes.paths.clone()),
         tags: c.tags.as_deref().map(etiquetas).unwrap_or_else(|| antes.tags.clone()),
@@ -404,33 +508,11 @@ fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&O
             if let Some(o) = origen {
                 tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
             }
-            tx.commit()?;
         }
-        return Ok(Memoria { pinned: despues.pinned, project: despues.project, ..antes });
+        return Ok((Memoria { pinned: despues.pinned, project: despues.project, redacted, ..antes }, cambiados));
     }
-    {
-        // La foto anterior va al historial.
-        let version: i64 =
-            tx.query_row("SELECT COALESCE(MAX(version), 0) + 1 FROM memory_version WHERE memory_id = ?1", [&id], |f| {
-                f.get(0)
-            })?;
-        tx.execute(
-            &format!(
-                "INSERT INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, {AHORA}, ?8)"
-            ),
-            params![
-                id,
-                version,
-                antes.title,
-                antes.content,
-                antes.kind.as_str(),
-                serde_json::to_string(&antes.paths)?,
-                serde_json::to_string(&antes.tags)?,
-                c.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()),
-            ],
-        )?;
-    }
+    // La foto anterior va al historial.
+    guardar_version(tx, id, &antes, None, c.reason.as_deref())?;
     tx.execute(
         &format!(
             "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project = ?8,
@@ -446,26 +528,140 @@ fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&O
             despues.pinned,
             despues.project,
             hlc,
-            autor(&tx)?,
+            autor(tx)?,
         ],
     )?;
     if let Some(o) = origen {
         tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
     }
-    desindexar(&tx, n)?;
-    let m = leer(&tx, &id)?;
-    indexar(&tx, n, &m)?;
+    desindexar(tx, n)?;
+    let m = leer(tx, id)?;
+    indexar(tx, n, &m)?;
     if despues.title != antes.title || despues.content != antes.content {
         match modelo {
-            Some(modelo) => vectores::guardar(&tx, n, modelo, &m.title, &m.content)?,
+            Some(modelo) => vectores::guardar(tx, n, modelo, &m.title, &m.content)?,
             // Sin modelo, el vector viejo ya no vale: se borra y `sincronizar` lo rehará.
             None => {
                 tx.execute("DELETE FROM memory_vec WHERE n = ?1", [n])?;
             }
         }
     }
+    Ok((Memoria { redacted, ..m }, cambiados))
+}
+
+/// Cuelga una foto de `m` del historial de `id`, con el número siguiente al último que tiene.
+/// `changed_at` es cuándo dejó de ser la versión viva (ahora, si no se dice).
+fn guardar_version(tx: &Transaction, id: &str, m: &Memoria, changed_at: Option<&str>, reason: Option<&str>) -> Result<()> {
+    let version: i64 =
+        tx.query_row("SELECT COALESCE(MAX(version), 0) + 1 FROM memory_version WHERE memory_id = ?1", [id], |f| f.get(0))?;
+    tx.execute(
+        &format!(
+            "INSERT INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, COALESCE(?8, {AHORA}), ?9)"
+        ),
+        params![
+            id,
+            version,
+            m.title,
+            m.content,
+            m.kind.as_str(),
+            serde_json::to_string(&m.paths)?,
+            serde_json::to_string(&m.tags)?,
+            changed_at,
+            reason.map(str::trim).filter(|r| !r.is_empty()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Junta N memorias en una (0.19.0): `id` se queda con el contenido fundido que trae `c` (lo escribe
+/// el agente o la persona; Omoikane no redacta) y las `ids` van a la papelera con un veredicto
+/// `superseded` hacia ella. Sus etiquetas y rutas se suman a la que queda (así los `[[enlaces]]`
+/// que llegaban a ellas por etiqueta pasan a resolver a esta) y su historial se cuelga del de la
+/// que queda, con el motivo «absorbed from <id>». Todo en una transacción. Devuelve la que queda,
+/// lo que `replace`/`append` cambiaron y los ids absorbidos.
+pub fn absorber(db: &mut Connection, id: &str, ids: &[String], mut c: Cambios, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>, Vec<String>)> {
+    ensure!(
+        c.content.is_some(),
+        tr!(
+            "absorb needs the merged text: write the content that joins the memories and pass it as `content` (Omoikane doesn't write it)",
+            "absorb necesita el texto fundido: escribe el contenido que junta las memorias y pásalo en `content` (Omoikane no lo redacta)"
+        )
+    );
+    let id = resolver_id(db, id)?;
+    let tx = escribir_tx(db)?;
+    let viva = leer(&tx, &id)?;
+    let mut absorbidas: Vec<Memoria> = Vec::new();
+    for otra in ids {
+        let otra = resolver_id(&tx, otra)?;
+        ensure!(otra != id, tr!("a memory can't absorb itself", "una memoria no puede absorberse a sí misma"));
+        if !absorbidas.iter().any(|a| a.id == otra) {
+            absorbidas.push(leer(&tx, &otra)?);
+        }
+    }
+    ensure!(!absorbidas.is_empty(), tr!("absorb: no memory to absorb", "absorb: ninguna memoria que absorber"));
+    // Etiquetas y rutas: las que vengan en los cambios (o las de la viva) más las de las absorbidas.
+    let mut tags = c.tags.take().unwrap_or_else(|| viva.tags.clone());
+    let mut paths = c.paths.take().unwrap_or_else(|| viva.paths.clone());
+    for a in &absorbidas {
+        tags.extend(a.tags.iter().cloned());
+        paths.extend(a.paths.iter().cloned());
+    }
+    c.tags = Some(tags);
+    c.paths = Some(paths);
+    let lista = absorbidas.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
+    if c.reason.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        c.reason = Some(format!("absorbed {lista}"));
+    }
+    let (m, cambiados) = actualizar_en(&tx, &id, c, None, modelo)?;
+    for a in &absorbidas {
+        // El veredicto antes de borrarla: se resuelve contra las memorias vivas, y vuelve a valer si
+        // alguien la restaura de la papelera.
+        crate::veredictos::poner(&tx, &a.id, &id, crate::veredictos::SUSTITUIDA, &format!("absorbed into {id}"), "omoikane")?;
+        // Su historial, de la más vieja a la última viva, a continuación del de la que queda.
+        let motivo = format!("absorbed from {}", a.id);
+        for v in historial(&tx, &a.id)?.into_iter().rev() {
+            let foto = Memoria { title: v.title, content: v.content, kind: v.kind.parse().unwrap_or(a.kind), paths: v.paths, tags: v.tags, ..a.clone() };
+            guardar_version(&tx, &id, &foto, Some(&v.changed_at), Some(&motivo))?;
+        }
+        guardar_version(&tx, &id, a, None, Some(&motivo))?;
+        borrar_en(&tx, &a.id, None)?;
+    }
     tx.commit()?;
-    Ok(m)
+    Ok((m, cambiados, absorbidas.into_iter().map(|a| a.id).collect()))
+}
+
+/// Redacta una memoria que ya está guardada (el botón «Redactar» de Revisar): título y contenido sin
+/// sus secretos, con el motivo «redacted» en la versión anterior, y su historial también (si no, el
+/// secreto seguiría en la versión de antes). Lo pide la persona, así que se hace aunque
+/// `OMOIKANE_REDACT=0`. Sin nada que quitar, la deja como está (`redacted` vacío).
+pub fn redactar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
+    let m = obtener(db, id)?;
+    let (title, ht) = crate::secretos::redactar(&m.title);
+    let (content, hc) = crate::secretos::redactar(&m.content);
+    if ht.is_empty() && hc.is_empty() {
+        return Ok(m);
+    }
+    let c = Cambios {
+        title: (!ht.is_empty()).then_some(title),
+        content: (!hc.is_empty()).then_some(content),
+        reason: Some("redacted".into()),
+        ..Cambios::default()
+    };
+    let (r, _) = actualizar_desde(db, &m.id, c, None, modelo)?;
+    let tx = escribir_tx(db)?;
+    let versiones: Vec<(i64, String, String)> = {
+        let mut q = tx.prepare("SELECT version, title, content FROM memory_version WHERE memory_id = ?1")?;
+        q.query_map([&m.id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (version, titulo, contenido) in versiones {
+        let (t, c) = (crate::secretos::redactar(&titulo).0, crate::secretos::redactar(&contenido).0);
+        if t != titulo || c != contenido {
+            tx.execute("UPDATE memory_version SET title = ?3, content = ?4 WHERE memory_id = ?1 AND version = ?2", params![m.id, version, t, c])?;
+        }
+    }
+    tx.commit()?;
+    Ok(Memoria { redacted: ht.iter().chain(&hc).map(|h| h.tipo).collect(), ..r })
 }
 
 /// Rehace el índice de palabras desde la tabla. Devuelve cuántas memorias indexó.
@@ -563,6 +759,7 @@ pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
                 recalled_at: None,
                 recall_count: 0,
                 author: String::new(),
+                redacted: Vec::new(),
             });
             Ok(Olvidada { id: f.get(0)?, title: m.title, kind: m.kind, project: m.project, by: f.get(2)?, deleted_at: f.get(3)? })
         })?
@@ -609,32 +806,39 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
 fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str, &str)>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
+    let m = borrar_en(&tx, &id, marca)?;
+    tx.commit()?;
+    Ok(m)
+}
+
+/// `borrar` dentro de una transacción que ya está abierta (quien llama hace el commit), con el id
+/// ya resuelto.
+fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> Result<Memoria> {
     let (hlc, deleted_at): (String, Option<&str>) = match marca {
         Some((h, d, _)) => {
-            crate::reloj::recibir(&tx, h)?;
+            crate::reloj::recibir(tx, h)?;
             (h.to_string(), Some(d))
         }
-        None => (crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?, None),
+        None => (crate::reloj::sello_tras(tx, &hlc_de(tx, id)?)?, None),
     };
-    marcar_olvido(&tx, &id, deleted_at, &hlc)?;
-    let m = leer(&tx, &id)?;
+    marcar_olvido(tx, id, deleted_at, &hlc)?;
+    let m = leer(tx, id)?;
     // A la papelera, con su historial: `restaurar` la devuelve desde cualquier equipo. `by` es el
     // equipo que la olvidó: otro (quizá otra persona) o este.
     let quien = match marca {
         Some((_, _, equipo)) => equipo.to_string(),
-        None => crate::reloj::equipo(&tx)?,
+        None => crate::reloj::equipo(tx)?,
     };
-    let versiones = historial(&tx, &id)?;
-    let hlc_m = hlc_de(&tx, &id)?;
+    let versiones = historial(tx, id)?;
+    let hlc_m = hlc_de(tx, id)?;
     tx.execute(
         &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
         params![id, serde_json::to_string(&m)?, serde_json::to_string(&versiones)?, hlc_m, deleted_at, quien],
     )?;
-    let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
-    desindexar(&tx, n)?;
+    let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    desindexar(tx, n)?;
     // memory_version y memory_path caen con ON DELETE CASCADE.
-    tx.execute("DELETE FROM memory WHERE id = ?1", [&id])?;
-    tx.commit()?;
+    tx.execute("DELETE FROM memory WHERE id = ?1", [id])?;
     Ok(m)
 }
 

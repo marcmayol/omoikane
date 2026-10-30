@@ -143,6 +143,32 @@ impl Equipo {
         self.json_en(&self.dir, &["sync"])
     }
 
+    /// Una herramienta MCP (`omoi tool <nombre>`) con sus argumentos JSON, desde una carpeta.
+    fn tool_en(&self, en: &Path, nombre: &str, args: &str) -> serde_json::Value {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
+        c.args(["tool", nombre])
+            .current_dir(en)
+            .env("OMOIKANE_DB", self.dir.join("o.db"))
+            .env("OMOIKANE_MODELS", self.dir.join("models"))
+            .env("OMOIKANE_EQUIPO", &self.nombre)
+            .env("OMOIKANE_SYNC_AUTO", "0")
+            .env("OMOIKANE_SOURCE", "mcp:claude-code")
+            .env("GIT_CONFIG_GLOBAL", self.raiz.join("gitconfig-vacio"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("OMOIKANE_LANG")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut hijo = c.spawn().unwrap();
+        {
+            use std::io::Write;
+            hijo.stdin.take().unwrap().write_all(args.as_bytes()).unwrap();
+        }
+        let o = hijo.wait_with_output().unwrap();
+        assert!(o.status.success(), "{} omoi tool {nombre}: {}{}", self.nombre, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    }
+
     fn get(&self, id: &str) -> Option<serde_json::Value> {
         let o = self.omoi_en(&self.dir, &["--json", "get", id], &[]);
         o.status.success().then(|| serde_json::from_slice(&o.stdout).unwrap())
@@ -691,6 +717,42 @@ fn los_veredictos_viajan() {
     assert_eq!(desfasadas(&b, &pb), 0);
 }
 
+/// 0.19.0: el motivo y el autor del veredicto llegan al otro equipo, y el final de una cadena también
+/// se ve allí.
+#[test]
+fn los_veredictos_viajan_con_motivo_y_autor() {
+    let p = Prueba::nueva("motivo");
+    let (a, b) = dos(&p, &["--author", "Marc"], &["--author", "Ana"]);
+    let pa = a.proyecto("tienda", Some("git@github.com:marc/tienda.git"));
+    let pb = b.proyecto("tienda", Some("git@github.com:marc/tienda.git"));
+    let cookie = a.guardar(&pa, "decision", "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
+    let jwt = a.guardar(&pa, "decision", "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
+    // Con la persona de la sync, el autor es ella, no el agente.
+    a.tool_en(&pa, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
+    a.sync();
+    b.json_en(&pb, &["sync"]);
+    let rev = b.json_en(&pb, &["review", "--all"]);
+    let av = rev.as_array().unwrap().iter().find(|x| x["kind"] == "superseded").expect("llega el veredicto");
+    assert_eq!((av["memory_id"].as_str(), av["other_id"].as_str()), (Some(cookie.as_str()), Some(jwt.as_str())));
+    assert_eq!((av["reason"].as_str(), av["author"].as_str()), (Some("JWT replaced the cookie"), Some("Marc")), "{av}");
+    assert_eq!(av["detail"], "replaced by the other one: JWT replaced the cookie · by Marc");
+    let s = b.tool_en(&pb, "search", "{\"query\":\"cookie de sesión\"}");
+    let nota = s.as_array().unwrap().iter().find(|x| x["id"] == cookie.as_str()).unwrap()["note"].as_str().unwrap_or("").to_string();
+    assert!(nota.starts_with("superseded by") && nota.ends_with(": JWT replaced the cookie"), "{nota}");
+    // B añade un eslabón (JWT → PASETO) con `remember`: el motivo es el título de la nueva, y en A la
+    // nota de la cookie salta hasta el final de la cadena.
+    let r = b.tool_en(&pb, "remember", &format!("{{\"kind\":\"decision\",\"title\":\"La autenticación va con PASETO\",\"content\":\"PASETO v4 en vez de JWT, por las firmas.\",\"supersedes\":[\"{jwt}\"],\"force\":true}}"));
+    let paseto = r["id"].as_str().unwrap().to_string();
+    b.json_en(&pb, &["sync"]);
+    a.json_en(&pa, &["sync"]);
+    let rev = a.json_en(&pa, &["review", "--all"]);
+    let de_cookie = rev.as_array().unwrap().iter().find(|x| x["kind"] == "superseded" && x["memory_id"] == cookie.as_str()).unwrap();
+    assert_eq!((de_cookie["other_id"].as_str(), de_cookie["via"].as_u64(), de_cookie["author"].as_str(), de_cookie["reason"].as_str()), (Some(paseto.as_str()), Some(2), Some("Ana"), Some("La autenticación va con PASETO")), "{de_cookie}");
+    let s = a.tool_en(&pa, "search", "{\"query\":\"cookie de sesión\"}");
+    let nota = s.as_array().unwrap().iter().find(|x| x["id"] == cookie.as_str()).unwrap()["note"].as_str().unwrap_or("").to_string();
+    assert_eq!(nota, format!("superseded by {} «La autenticación va con PASETO» (via 2): La autenticación va con PASETO", &paseto[..12]));
+}
+
 /// 0.18.0: lo olvidado aquí está en la papelera de aquí, y al devolverlo vuelve también a los demás.
 #[test]
 fn lo_olvidado_aqui_se_recupera_y_vuelve_a_los_demas() {
@@ -710,4 +772,22 @@ fn lo_olvidado_aqui_se_recupera_y_vuelve_a_los_demas() {
     a.sync();
     b.sync();
     assert!(b.get(&id).is_some(), "la recuperada gana al olvido también en B");
+}
+
+/// 0.19.0, segunda capa: lo que se guardó con un secreto (antes de la 0.19.0, o con
+/// `OMOIKANE_REDACT=0`) sale redactado hacia los otros equipos, y en este se queda como está.
+#[test]
+fn los_secretos_no_salen_del_equipo() {
+    let p = Prueba::nueva("secretos");
+    let (a, b) = dos(&p, &[], &[]);
+    let texto = "export GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let salida = a.ok_en(&a.dir, &["--json", "remember", "-k", "fact", "-t", "Token de CI", "--global", texto], &[("OMOIKANE_REDACT", "0")]);
+    let id = serde_json::from_str::<serde_json::Value>(&salida).unwrap()["id"].as_str().unwrap().to_string();
+    a.sync();
+    b.sync();
+    assert_eq!(b.get(&id).expect("llegó")["content"], "export GH_TOKEN=[redacted:github-token]");
+    assert_eq!(a.get(&id).unwrap()["content"], texto, "en su equipo se queda (con su aviso en Revisar)");
+    for (_, f) in p.ficheros_compartidos() {
+        assert!(!f.contains("ghp_"), "{f}");
+    }
 }
