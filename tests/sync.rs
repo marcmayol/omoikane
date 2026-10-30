@@ -45,7 +45,7 @@ impl Prueba {
     /// Los ficheros del repositorio compartido, en un clon nuevo.
     fn ficheros_compartidos(&self) -> Vec<(String, String)> {
         let clon = self.dir.join(format!("mirar-{}", ulid::Ulid::generate()));
-        let o = self.git(&self.dir, &["clone", "--quiet", &self.url(), clon.to_str().unwrap()]);
+        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", &self.url(), clon.to_str().unwrap()]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         let mut v = Vec::new();
         for e in std::fs::read_dir(&clon).unwrap().flatten() {
@@ -836,4 +836,256 @@ fn sync_con_db_relativa() {
     b.ok_en(&p.dir, &["--db", "pc-b/o.db", "sync", "join", &codigo, "--yes"], &[]);
     assert!(b.get(&id).is_some(), "B la recibe al unirse");
     a.ok_en(&p.dir, &["--db", "pc-a/o.db", "sync"], &[]);
+}
+
+// --- Claves con id, rotación y un repositorio por espacio (0.20.0) ----------------------------------
+
+impl Prueba {
+    /// Otro repositorio desnudo (el de un espacio). Devuelve su URL.
+    fn otro_repo(&self, nombre: &str) -> String {
+        let o = self.git(&self.dir, &["init", "--quiet", "--bare", &format!("{nombre}.git")]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        self.dir.join(format!("{nombre}.git")).to_string_lossy().replace('\\', "/")
+    }
+
+    /// Un clon nuevo de un repositorio, para mirar.
+    fn clon_de(&self, url: &str) -> PathBuf {
+        let clon = self.dir.join(format!("mirar-{}", ulid::Ulid::generate()));
+        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", url, clon.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        clon
+    }
+
+    /// `omoikane.check` de un repositorio.
+    fn chequeo_de(&self, url: &str) -> String {
+        std::fs::read_to_string(self.clon_de(url).join("omoikane.check")).unwrap_or_default()
+    }
+
+    /// Las líneas de los ficheros de memorias de un repositorio.
+    fn lineas_de(&self, url: &str) -> Vec<String> {
+        let clon = self.clon_de(url);
+        let mut v = Vec::new();
+        for e in std::fs::read_dir(&clon).unwrap().flatten() {
+            if e.file_name().to_string_lossy().starts_with('.') || !e.path().is_dir() {
+                continue;
+            }
+            for f in std::fs::read_dir(e.path()).unwrap().flatten() {
+                v.extend(std::fs::read_to_string(f.path()).unwrap().lines().filter(|l| !l.is_empty()).map(String::from));
+            }
+        }
+        v
+    }
+}
+
+/// Un texto cifrado como las líneas de Omoikane con la clave 1 (sin prefijo).
+fn cifrar_texto(clave: &[u8], texto: &str) -> String {
+    use aes_siv::KeyInit;
+    use base64::Engine;
+    let c = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().encrypt([b"omoikane-sync-v1".as_slice()], texto.as_bytes()).unwrap();
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)
+}
+
+/// El JSON de dentro de un código de `omoi sync code`.
+fn json_del_codigo(codigo: &str) -> serde_json::Value {
+    use base64::Engine;
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(codigo.trim().strip_prefix("omoi1.").unwrap()).unwrap();
+    serde_json::from_slice(&json).unwrap()
+}
+
+#[test]
+fn rotar_la_clave_deja_fuera_a_quien_solo_tiene_la_vieja() {
+    let p = Prueba::nueva("rotar");
+    let (a, b) = dos(&p, &[], &[]);
+    let c = p.equipo("pc-c");
+    let viejo = a.ok(&["sync", "code"]).trim().to_string();
+    c.ok(&["sync", "join", &viejo, "--yes"]);
+    let de_b = b.guardar(&b.dir, "fact", "El NAS se llama Atlas", "Está en el armario del pasillo.", &["--global"]);
+    b.sync();
+    let antes = a.guardar(&a.dir, "fact", "La VPN usa el puerto 51820", "Es WireGuard.", &["--global"]);
+    a.sync();
+
+    // A rota: clave 2, el código cambia y lleva su id.
+    let r = a.json_en(&a.dir, &["sync", "rotate", "--yes"]);
+    assert_eq!(r["key"], 2, "{r}");
+    let nuevo = a.ok(&["sync", "code"]).trim().to_string();
+    assert_eq!(r["code"], nuevo.as_str());
+    assert_ne!(nuevo, viejo);
+    assert_eq!(json_del_codigo(&nuevo)["id"], 2);
+    assert!(json_del_codigo(&viejo).get("id").is_none(), "el código de la clave 1 es el de siempre");
+    // El repositorio dice qué claves hay y cuál es la vigente; lo de A va todo con la 2.
+    let check = p.chequeo_de(&p.url());
+    assert!(check.starts_with("omoikane-check-v2 current=2\n"), "{check}");
+    assert_eq!(check.lines().count(), 3, "{check}");
+    assert!(check.lines().any(|l| l.starts_with("k2:")));
+    assert!(a.ok(&["sync", "status"]).contains("k1, k2 (current: k2)"));
+
+    let nueva = a.guardar(&a.dir, "decision", "Las copias van a Atlas", "Cada noche a las tres.", &["--global"]);
+    a.sync();
+    // B, con solo la vieja, no lee lo nuevo, y `status` y `doctor` se lo dicen.
+    let r = b.sync();
+    assert!(b.get(&nueva).is_none());
+    assert!(r["ilegibles"].as_u64().unwrap() > 0, "{r}");
+    let st = b.ok(&["sync", "status"]);
+    assert!(st.contains("this repository's key has changed: ask for the new code"), "{st}");
+    assert!(b.ok(&["doctor"]).contains("key has changed"));
+    assert!(!a.ok(&["sync", "status"]).contains("key has changed"));
+
+    // C, también con solo la vieja, sigue leyendo lo antiguo que nadie ha vuelto a cifrar (lo de B),
+    // pero ni lo nuevo ni lo que A volvió a cifrar.
+    c.sync();
+    assert!(c.get(&de_b).is_some());
+    assert!(c.get(&nueva).is_none() && c.get(&antes).is_none());
+
+    // B se une con el código nuevo: conserva la vieja, lo lee todo y vuelve a cifrar lo suyo.
+    let out = b.ok(&["sync", "join", &nuevo, "--yes"]);
+    assert!(out.contains("k2"), "{out}");
+    assert!(b.get(&nueva).is_some() && b.get(&antes).is_some());
+    assert!(!b.ok(&["sync", "status"]).contains("key has changed"));
+    assert!(b.ok(&["sync", "join", &nuevo, "--yes"]).contains("already has that key"));
+    let llaves = std::fs::read_to_string(b.dir.join("o.sync.key")).unwrap();
+    assert_eq!(llaves.lines().count(), 2, "las dos claves");
+    assert!(llaves.lines().nth(1).unwrap().starts_with("k2:"));
+    // Ya solo queda con la clave 1 el fichero de C.
+    let clon = p.clon_de(&p.url());
+    let ficheros: Vec<(String, String)> = std::fs::read_dir(clon.join("global"))
+        .unwrap()
+        .flatten()
+        .map(|f| (f.file_name().to_string_lossy().into_owned(), std::fs::read_to_string(f.path()).unwrap()))
+        .collect();
+    assert_eq!(ficheros.len(), 3, "uno por equipo: {ficheros:?}");
+    let con_la_vieja = ficheros.iter().filter(|(_, t)| t.lines().any(|l| !l.contains(':'))).count();
+    assert_eq!(con_la_vieja, 1, "{ficheros:?}");
+
+    // Lo que B escribe ahora ya no lo lee C; lo de C (con la vieja) sí lo leen A y B.
+    let otra_de_b = b.guardar(&b.dir, "gotcha", "Atlas se duerme a los 20 minutos", "Despiértalo con wake-on-lan.", &["--global"]);
+    b.sync();
+    let de_c = c.guardar(&c.dir, "fact", "La impresora es la HP de la entrada", "Imprime a doble cara.", &["--global"]);
+    c.sync();
+    assert!(c.get(&otra_de_b).is_none() && c.get(&de_b).is_some());
+    a.sync();
+    assert!(a.get(&de_c).is_some() && a.get(&otra_de_b).is_some());
+
+    // `omoi export --encrypt` usa la vigente con su id: lo lee quien la tiene, y no quien solo tiene la vieja.
+    let copia = a.ok(&["export", "--all", "--encrypt"]);
+    assert!(copia.lines().skip(1).all(|l| l.starts_with("k2:")), "{}", copia.lines().nth(1).unwrap_or_default());
+    let fichero = p.dir.join("copia-k2.jsonl");
+    std::fs::write(&fichero, &copia).unwrap();
+    b.ok(&["import", fichero.to_str().unwrap()]);
+    let o = c.omoi_en(&c.dir, &["import", fichero.to_str().unwrap()], &[]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("k2"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn un_repositorio_de_antes_de_las_claves_con_id_sigue_igual() {
+    let p = Prueba::nueva("de-antes");
+    let (a, b) = dos(&p, &[], &[]);
+    let codigo = a.ok(&["sync", "code"]);
+    let clave = clave_del_codigo(&codigo);
+    assert!(json_del_codigo(&codigo).get("id").is_none());
+    a.guardar(&a.dir, "fact", "El dominio caduca en marzo", "Renovarlo en febrero.", &["--global"]);
+    a.sync();
+    // Con una sola clave todo queda como antes: la comprobación de una línea, las líneas sin
+    // prefijo y la clave local en hex a secas.
+    assert_eq!(p.chequeo_de(&p.url()), cifrar_texto(&clave, "omoikane-key-check-v1") + "\n");
+    let lineas = p.lineas_de(&p.url());
+    assert!(!lineas.is_empty() && lineas.iter().all(|l| !l.contains(':')), "{lineas:?}");
+    let hex: String = clave.iter().map(|x| format!("{x:02x}")).collect();
+    assert_eq!(std::fs::read_to_string(a.dir.join("o.sync.key")).unwrap().trim(), hex);
+    // Un sync.json de antes (sin `space`) sigue siendo el del repositorio general.
+    let cf: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(a.dir.join("o.sync.json")).unwrap()).unwrap();
+    assert!(cf.get("space").is_none(), "{cf}");
+    // Una línea escrita por una versión de antes (sin prefijo) se lee.
+    let id = "01M62EWVHRXM0000000000ABCE";
+    let linea = cifrar_linea(
+        &clave,
+        &serde_json::json!({
+            "type": "memory", "id": id, "project_key": "", "project_path": "", "kind": "fact",
+            "title": "Escrita por la 0.19", "content": "Sin id de clave.", "created_at": "2026-10-29T00:00:00.000Z",
+            "updated_at": "2026-10-29T00:00:00.000Z", "hlc": "1761696000000-0000000000-x"
+        }),
+    );
+    p.subir_a_mano("global/antigua.jsonl", &(linea + "\n"));
+    b.sync();
+    assert!(b.get(id).is_some());
+}
+
+#[test]
+fn dos_repositorios_a_la_vez_el_general_y_el_de_un_espacio() {
+    let p = Prueba::nueva("espacios");
+    let (a, b) = dos(&p, &[], &[]);
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let o = a.omoi_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &[]);
+    assert!(!o.status.success(), "dos veces el mismo espacio, no");
+    let de_acme = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let general = a.ok(&["sync", "code"]).trim().to_string();
+    assert_eq!(json_del_codigo(&de_acme)["space"], "acme");
+    assert!(json_del_codigo(&general).get("space").is_none());
+    let (clave_acme, clave_general) = (clave_del_codigo(&de_acme), clave_del_codigo(&general));
+    assert_ne!(clave_acme, clave_general, "cada repositorio con su clave");
+    // B se une al de acme con su código (el espacio va en el código).
+    b.ok(&["sync", "join", &de_acme, "--yes"]);
+    for f in ["o.sync-spaces/acme/sync.json", "o.sync-spaces/acme/sync.key", "o.sync-spaces/acme/repo/.git"] {
+        assert!(b.dir.join(f).exists(), "{f}");
+    }
+    let cf: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.dir.join("o.sync-spaces/acme/sync.json")).unwrap()).unwrap();
+    assert_eq!(cf["space"], "acme");
+    // Cada repositorio, con su comprobación y su clave.
+    assert_eq!(p.chequeo_de(&acme), cifrar_texto(&clave_acme, "omoikane-key-check-v1") + "\n");
+    assert_eq!(p.chequeo_de(&p.url()), cifrar_texto(&clave_general, "omoikane-key-check-v1") + "\n");
+    // `omoi sync` recorre los dos.
+    let id = a.guardar(&a.dir, "fact", "La reunión de los lunes es a las diez", "En la sala grande.", &["--global"]);
+    a.sync();
+    b.sync();
+    assert!(b.get(&id).is_some());
+    let st = a.json_en(&a.dir, &["sync", "status"]);
+    assert_eq!(st["spaces"][0]["space"], "acme", "{st}");
+    assert!(st["spaces"][0]["state"]["ultimo_ok"].is_string(), "{st}");
+    assert!(st["state"]["ultimo_ok"].is_string(), "{st}");
+    // Hasta que cada memoria sepa su espacio (`space_key`), el repositorio de un espacio no lleva
+    // ninguna: nada de lo general se escapa a él.
+    assert!(p.lineas_de(&acme).is_empty());
+    assert!(!p.lineas_de(&p.url()).is_empty());
+    // Rotar la de acme no toca la del general.
+    let antes = p.chequeo_de(&p.url());
+    let r = a.json_en(&a.dir, &["sync", "rotate", "--space", "acme", "--yes"]);
+    assert_eq!(r["key"], 2);
+    assert_eq!(json_del_codigo(r["code"].as_str().unwrap())["space"], "acme");
+    assert_eq!(p.chequeo_de(&p.url()), antes);
+    assert!(p.chequeo_de(&acme).starts_with("omoikane-check-v2 current=2\n"));
+    b.sync();
+    let st = b.ok(&["sync", "status"]);
+    assert_eq!(st.matches("key has changed").count(), 1, "solo el de acme: {st}");
+    assert!(st.lines().any(|l| l.starts_with("space acme:") && l.contains("key has changed")), "{st}");
+    // Apagar el espacio deja el general.
+    b.ok(&["sync", "off", "--space", "acme", "--yes"]);
+    assert!(!b.dir.join("o.sync-spaces/acme").exists());
+    assert!(b.dir.join("o.sync.json").exists());
+    b.sync();
+}
+
+/// Lo que completará la fusión con el esquema nuevo (`space_key`): ver `va_al_repo` en `src/sync.rs`.
+#[test]
+#[ignore = "falta el espacio de cada memoria (space_key): lo completa la fusión con el esquema nuevo"]
+fn las_memorias_de_un_espacio_van_solo_a_su_repo() {
+    let p = Prueba::nueva("espacio-filtro");
+    let (a, b) = dos(&p, &[], &[]);
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let c = p.equipo("pc-c");
+    c.ok(&["sync", "join", &codigo, "--yes"]);
+    // TODO(espacios): la forma de guardar una memoria en un espacio la decide el esquema nuevo; aquí,
+    // un proyecto que pertenece al espacio acme.
+    let proyecto = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
+    let de_acme = a.guardar(&proyecto, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space", "acme"]);
+    let general = a.guardar(&a.dir, "fact", "Mi editor es Helix", "Con el tema por defecto.", &["--global"]);
+    a.sync();
+    // La de acme va solo al repositorio de acme (una línea), y la otra solo al general.
+    assert_eq!(p.lineas_de(&acme).len(), 1);
+    b.sync();
+    assert!(b.get(&general).is_some() && b.get(&de_acme).is_none(), "B solo está en el general");
+    c.sync();
+    assert!(c.get(&de_acme).is_some() && c.get(&general).is_none(), "C solo está en el de acme");
 }

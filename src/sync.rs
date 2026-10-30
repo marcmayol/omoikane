@@ -13,6 +13,14 @@
 //!   carpetas de proyecto tienen un nombre opaco derivado de la clave. En el equipo todo está en claro.
 //!   El repositorio lleva un fichero de comprobación (`omoikane.check`) cifrado con su clave: un equipo
 //!   con otra clave lo sabe antes de leer nada.
+//! - **Claves con id y rotación (0.20.0):** cada línea lleva el id de la clave que la cifró (`k2:…`;
+//!   sin prefijo, la clave 1, como todas las de antes). `omoikane.check` dice qué claves hay y cuál es
+//!   la vigente. `omoi sync rotate` crea una clave nueva, vuelve a cifrar con ella todo lo de este
+//!   equipo y da el código nuevo: quien solo tiene la vieja deja de leer lo que se escriba desde
+//!   entonces (y `omoi sync status` se lo dice). Un equipo guarda todas las claves que ha recibido,
+//!   para leer lo que otros aún no han vuelto a cifrar, y escribe siempre con la más nueva.
+//! - **Un repositorio por espacio:** además del general, uno por espacio (`omoi sync init --space
+//!   <nombre>`), cada uno con su clave; `omoi sync` y la sincronización de fondo los recorren todos.
 //! - **Quién gana:** el sello del reloj lógico (`reloj`) más alto. La versión de aquí que pierde queda
 //!   en el historial con el motivo `sync: <equipo>`. Los olvidos se aplican antes que las memorias, así
 //!   que lo olvidado no resucita; lo que olvida otro equipo se guarda aquí aparte (`omoi sync restore`).
@@ -21,10 +29,13 @@
 //! - **Automático:** después de cada cambio, `programar` lanza `omoi sync --background` aparte; espera
 //!   unos segundos para juntar cambios y solo corre uno a la vez por equipo.
 //!
-//! Todo vive junto a la base: `sync.json` (configuración), `sync.key` (clave), `sync/` (el clon),
-//! `sync-estado.json`, `sync.pendiente`, `sync.hecho` y `sync.lock`. Con una base que no se llama
-//! `omoikane.db`, los nombres llevan delante el de la base (`trabajo.sync.json`…), para que dos bases
-//! en la misma carpeta no compartan sincronización.
+//! Todo vive junto a la base: `sync.json` (configuración), `sync.key` (claves), `sync/` (el clon),
+//! `sync-estado.json`, `sync.pendiente`, `sync.hecho` y `sync.lock`. Cada espacio con repositorio
+//! propio, en `sync-spaces/<espacio>/`: `sync.json`, `sync.key`, `repo/` (su clon) y `estado.json`
+//! (la marca de pendiente y el cerrojo son los de la base: una sincronización los recorre todos). Con
+//! una base que no se llama `omoikane.db`, los nombres llevan delante el de la base
+//! (`trabajo.sync.json`, `trabajo.sync-spaces/`…), para que dos bases en la misma carpeta no
+//! compartan sincronización.
 
 use crate::embeber::Modelo;
 use crate::memoria::{self, COLUMNAS, Cambios, Memoria, Nueva, Origen, Tipo, de_fila};
@@ -49,6 +60,10 @@ const PREFIJO_CODIGO: &str = "omoi1.";
 /// El fichero de comprobación de la clave, en la raíz del repositorio, y lo que lleva dentro (cifrado).
 const CHEQUEO: &str = "omoikane.check";
 const TEXTO_CHEQUEO: &str = "omoikane-key-check-v1";
+/// La cabecera de `omoikane.check` cuando el repositorio tiene más de una clave.
+const CABECERA_CHEQUEO: &str = "omoikane-check-v2";
+/// Dónde viven los repositorios de los espacios, junto a la base.
+const CARPETA_ESPACIOS: &str = "sync-spaces";
 /// Lo que puede tardar una orden de git antes de darla por colgada.
 const LIMITE_GIT: Duration = Duration::from_secs(120);
 
@@ -63,9 +78,19 @@ pub struct Rutas {
     pub pendiente: PathBuf,
     pub hecho: PathBuf,
     pub cerrojo: PathBuf,
+    /// El espacio de este repositorio (`None`: el general).
+    pub espacio: Option<String>,
+    /// La clave de `meta` donde la base apunta el último commit leído de este repositorio.
+    pub(crate) marca_commit: String,
 }
 
+/// Las rutas del repositorio general.
 pub fn rutas(db: &Path) -> Rutas {
+    rutas_de(db, None)
+}
+
+/// Las rutas del repositorio general (`None`) o del de un espacio.
+pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
     let dir = db.parent().map(Path::to_path_buf).unwrap_or_default();
     let delante = match db.file_name().map(|n| n.to_string_lossy().into_owned()) {
         Some(n) if n != "omoikane.db" && !n.is_empty() => {
@@ -74,15 +99,74 @@ pub fn rutas(db: &Path) -> Rutas {
         _ => String::new(),
     };
     let f = |nombre: &str| dir.join(format!("{delante}{nombre}"));
-    Rutas {
-        config: f("sync.json"),
-        clave: f("sync.key"),
-        clon: f("sync"),
-        estado: f("sync-estado.json"),
-        pendiente: f("sync.pendiente"),
-        hecho: f("sync.hecho"),
-        cerrojo: f("sync.lock"),
+    match espacio {
+        None => Rutas {
+            config: f("sync.json"),
+            clave: f("sync.key"),
+            clon: f("sync"),
+            estado: f("sync-estado.json"),
+            pendiente: f("sync.pendiente"),
+            hecho: f("sync.hecho"),
+            cerrojo: f("sync.lock"),
+            espacio: None,
+            marca_commit: "sync_commit".into(),
+        },
+        Some(e) => {
+            let d = f(CARPETA_ESPACIOS).join(e);
+            Rutas {
+                config: d.join("sync.json"),
+                clave: d.join("sync.key"),
+                clon: d.join("repo"),
+                estado: d.join("estado.json"),
+                pendiente: f("sync.pendiente"),
+                hecho: f("sync.hecho"),
+                cerrojo: f("sync.lock"),
+                espacio: Some(e.to_string()),
+                marca_commit: format!("sync_commit:{e}"),
+            }
+        }
     }
+}
+
+/// Los espacios con repositorio propio en este equipo, por orden de nombre.
+pub fn espacios(db: &Path) -> Vec<String> {
+    let carpeta = rutas_de(db, Some("x")).config.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
+    let mut v: Vec<String> = std::fs::read_dir(carpeta)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().join("sync.json").exists())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| espacio_valido(n).is_ok())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Todos los repositorios configurados en este equipo: el general (si lo está) y uno por espacio.
+pub fn repos(db: &Path) -> Vec<Rutas> {
+    let general = rutas(db);
+    let mut v = Vec::new();
+    if general.config.exists() {
+        v.push(general);
+    }
+    v.extend(espacios(db).iter().map(|e| rutas_de(db, Some(e))));
+    v
+}
+
+/// El nombre de un espacio tal como se guarda (es el nombre de una carpeta): minúsculas, números,
+/// `-` y `_`, hasta 64.
+pub fn espacio_valido(nombre: &str) -> Result<String> {
+    let n = nombre.trim().to_lowercase();
+    ensure!(
+        !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !n.starts_with(['-', '_']),
+        tr!(
+            "«{}» is not a valid space name (letters, digits, - and _)",
+            "«{}» no vale como nombre de espacio (letras, números, - y _)",
+            nombre
+        )
+    );
+    Ok(n)
 }
 
 /// Qué se comparte y cómo. Se decide en `omoi sync init` (o `join`). Vale para lo que se sube y para
@@ -103,6 +187,10 @@ pub struct Config {
     /// Para reconocer los proyectos sin remoto git: los de la misma persona se juntan entre sus
     /// equipos, los de dos personas no.
     pub person: String,
+    /// El espacio cuyas memorias van a este repositorio (`None`: el repositorio general). Los
+    /// `sync.json` de antes no lo llevan: son el general.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 impl Config {
@@ -117,12 +205,32 @@ impl Config {
     }
 
     fn comparte(&self, m: &Memoria, clave: &str) -> bool {
-        self.acepta(m.kind, if m.project.is_empty() { "" } else { clave })
+        self.acepta(m.kind, if m.project.is_empty() { "" } else { clave }) && va_al_repo(self, m)
     }
 }
 
+/// Si una memoria va al repositorio de esta configuración: las de un espacio, al de ese espacio; las
+/// demás, al general.
+///
+/// TODO(espacios): falta saber el espacio de cada memoria (`space_key`, del esquema nuevo con las
+/// tablas `project`/`space`). Al fusionarlo: en el repositorio de un espacio (`config.space =
+/// Some(x)`), solo las memorias con `space_key == x`; en el general, las que no son de ningún espacio
+/// con repositorio propio en este equipo (`espacios(ruta_db)`), para que lo de un cliente no salga por
+/// el repositorio general. Lo mismo al aceptar líneas (`Config::acepta`, que hoy acepta todo lo de los
+/// tipos y proyectos elegidos). Mientras tanto el repositorio de un espacio no sube nada (así nunca
+/// se escapa nada a un repositorio ajeno) y el general sube como hasta ahora. El test que lo describe:
+/// `tests/sync.rs`, `las_memorias_de_un_espacio_van_solo_a_su_repo` (con `#[ignore]` hasta entonces).
+fn va_al_repo(config: &Config, _m: &Memoria) -> bool {
+    config.space.is_none()
+}
+
+/// La configuración del repositorio general.
 pub fn leer_config(db: &Path) -> Result<Option<Config>> {
-    let r = rutas(db);
+    leer_config_de(&rutas(db))
+}
+
+/// La configuración de un repositorio (el general o el de un espacio).
+pub fn leer_config_de(r: &Rutas) -> Result<Option<Config>> {
     if !r.config.exists() {
         return Ok(None);
     }
@@ -130,11 +238,26 @@ pub fn leer_config(db: &Path) -> Result<Option<Config>> {
     Ok(Some(serde_json::from_str(&texto).with_context(|| format!("{}", r.config.display()))?))
 }
 
-pub(crate) fn leer_clave(r: &Rutas) -> Result<Vec<u8>> {
+/// Las claves que tiene este equipo para un repositorio (`sync.key`): una por línea, en hex, con su
+/// id delante como en las líneas cifradas (`k2:<hex>`; sin prefijo, la 1). El fichero de antes de las
+/// claves con id, una sola clave en hex, es la clave 1 y sigue valiendo tal cual.
+pub(crate) fn leer_claves(r: &Rutas) -> Result<Cifra> {
     let texto = std::fs::read_to_string(&r.clave).with_context(|| tr!("can't read the sync key {}", "no se puede leer la clave de sincronización {}", r.clave.display()))?;
-    let k = desde_hex(texto.trim()).context(tr!("the sync key is damaged", "la clave de sincronización está dañada"))?;
-    ensure!(k.len() == 64, tr!("the sync key is damaged", "la clave de sincronización está dañada"));
-    Ok(k)
+    let danada = || anyhow!(tr!("the sync key is damaged", "la clave de sincronización está dañada"));
+    let mut claves = BTreeMap::new();
+    for l in texto.lines().filter(|l| !l.trim().is_empty()) {
+        let (id, hex) = partir(l).ok_or_else(danada)?;
+        let k = desde_hex(hex).ok_or_else(danada)?;
+        ensure!(k.len() == 64, danada());
+        claves.insert(id, k);
+    }
+    ensure!(!claves.is_empty(), danada());
+    Ok(Cifra { claves })
+}
+
+fn guardar_claves(r: &Rutas, cifra: &Cifra) -> Result<()> {
+    let texto: String = cifra.claves.iter().map(|(id, k)| format!("{}{}\n", prefijo(*id), a_hex(k))).collect();
+    escribir_privado(&r.clave, &texto)
 }
 
 /// Escribe un fichero que solo puede leer el usuario (en unix, creado ya con permisos 0600).
@@ -191,51 +314,201 @@ pub fn sin_credenciales(texto: &str) -> String {
 
 // --- Cifrado ---------------------------------------------------------------------------------------
 
+/// Las claves de un repositorio que tiene este equipo, por su id: se cifra con la vigente (la de id
+/// más alto) y se descifra con la que diga cada línea.
+///
+/// Una línea cifrada es `k<id>:<base64>`, y sin prefijo es de la clave 1: así las líneas de los
+/// repositorios de antes de las claves con id siguen valiendo, y las que escribe un equipo con solo la
+/// clave 1 siguen saliendo igual byte a byte. El base64 nunca lleva `:`, así que lo de antes del primer
+/// `:` es siempre una etiqueta; una que no sea `k<número>` es de un formato futuro y la línea se salta
+/// como ilegible. El texto cifrado lleva siempre la misma cabecera asociada (`CABECERA`).
+#[derive(Clone)]
 pub(crate) struct Cifra {
-    pub(crate) clave: Vec<u8>,
+    claves: BTreeMap<u32, Vec<u8>>,
+}
+
+/// El id y el cuerpo de una línea con id de clave (`k2:…`, o sin prefijo: la 1). `None` si lleva una
+/// etiqueta que no es de clave.
+fn partir(linea: &str) -> Option<(u32, &str)> {
+    let l = linea.trim();
+    match l.split_once(':') {
+        None => Some((1, l)),
+        Some((etiqueta, cuerpo)) => {
+            let id = etiqueta.strip_prefix('k')?.parse::<u32>().ok().filter(|n| *n >= 1)?;
+            Some((id, cuerpo))
+        }
+    }
+}
+
+/// Lo que va delante de una línea de la clave `id` (nada para la 1).
+fn prefijo(id: u32) -> String {
+    if id == 1 { String::new() } else { format!("k{id}:") }
+}
+
+/// Lo que lleva dentro la línea de la clave `id` en `omoikane.check`: el id va dentro (salvo en la 1,
+/// que es la de siempre), para que la línea de una clave no pase por la de otra.
+fn texto_chequeo(id: u32) -> String {
+    if id == 1 { TEXTO_CHEQUEO.to_string() } else { format!("{TEXTO_CHEQUEO} k{id}") }
+}
+
+/// Un nombre opaco derivado de una clave.
+fn opaco(clave: &[u8], partes: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(clave);
+    for p in partes {
+        h.update(p);
+    }
+    a_hex(&h.finalize())[..16].to_string()
 }
 
 impl Cifra {
-    fn siv(&self) -> Aes256Siv {
-        Aes256Siv::new_from_slice(&self.clave).expect("clave de 64 bytes")
+    /// Una sola clave, con su id.
+    pub(crate) fn una(id: u32, clave: Vec<u8>) -> Cifra {
+        Cifra { claves: BTreeMap::from([(id, clave)]) }
     }
 
+    /// Estas claves y una más (la nueva de una rotación, o la que llega en un código).
+    fn con(&self, id: u32, clave: Vec<u8>) -> Cifra {
+        let mut c = self.clone();
+        c.claves.insert(id, clave);
+        c
+    }
+
+    /// El id de la clave con la que se cifra.
+    pub(crate) fn vigente(&self) -> u32 {
+        self.claves.keys().next_back().copied().unwrap_or(1)
+    }
+
+    /// Los ids de las claves que hay.
+    pub(crate) fn ids(&self) -> Vec<u32> {
+        self.claves.keys().copied().collect()
+    }
+
+    fn clave_vigente(&self) -> &[u8] {
+        self.claves.values().next_back().map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn siv(clave: &[u8]) -> Aes256Siv {
+        Aes256Siv::new_from_slice(clave).expect("clave de 64 bytes")
+    }
+
+    /// Cifra con la clave vigente, con su id delante.
     pub(crate) fn cifrar(&self, texto: &str) -> Result<String> {
-        let c = self.siv().encrypt([CABECERA], texto.as_bytes()).map_err(|_| anyhow!("AES-SIV"))?;
-        Ok(base64::engine::general_purpose::STANDARD_NO_PAD.encode(c))
+        self.cifrar_con(self.vigente(), texto)
     }
 
+    fn cifrar_con(&self, id: u32, texto: &str) -> Result<String> {
+        let clave = self.claves.get(&id).context("clave")?;
+        let c = Cifra::siv(clave).encrypt([CABECERA], texto.as_bytes()).map_err(|_| anyhow!("AES-SIV"))?;
+        Ok(format!("{}{}", prefijo(id), base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)))
+    }
+
+    /// Descifra con la clave que diga la línea.
     pub(crate) fn descifrar(&self, linea: &str) -> Result<String> {
         let mal = || anyhow!(clave_ajena());
-        let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(linea.trim()).map_err(|_| mal())?;
-        let t = self.siv().decrypt([CABECERA], &c).map_err(|_| mal())?;
+        let (id, cuerpo) = partir(linea).ok_or_else(mal)?;
+        let Some(clave) = self.claves.get(&id) else {
+            bail!(tr!(
+                "this was encrypted with key k{} and this computer doesn't have it: ask for the current code (`omoi sync code` on a computer that has it) and run `omoi sync join <code>` here",
+                "esto va cifrado con la clave k{} y este equipo no la tiene: pide el código vigente (`omoi sync code` en un equipo que la tenga) y aquí `omoi sync join <código>`",
+                id
+            ));
+        };
+        let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(cuerpo).map_err(|_| mal())?;
+        let t = Cifra::siv(clave).decrypt([CABECERA], &c).map_err(|_| mal())?;
         String::from_utf8(t).map_err(|_| mal())
     }
 
     /// Nombre opaco de la carpeta de un proyecto: no dice qué proyecto es a quien no tiene la clave.
     fn carpeta(&self, clave_proyecto: &str) -> String {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(&self.clave);
-        h.update(clave_proyecto.as_bytes());
-        format!("p-{}", &a_hex(&h.finalize())[..16])
+        format!("p-{}", opaco(self.clave_vigente(), &[clave_proyecto.as_bytes()]))
     }
 
     /// Nombre opaco del fichero de un equipo: el nombre del equipo (con el del sistema) no queda a la
     /// vista en el repositorio.
     fn fichero(&self, equipo: &str) -> String {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(&self.clave);
-        h.update(b"equipo:");
-        h.update(equipo.as_bytes());
-        format!("m-{}.jsonl", &a_hex(&h.finalize())[..16])
+        format!("m-{}.jsonl", opaco(self.clave_vigente(), &[b"equipo:", equipo.as_bytes()]))
     }
 
-    /// Si `omoikane.check` del clon se abre con esta clave. `None` si el repositorio no lo tiene.
-    fn comprueba(&self, clon: &Path) -> Option<bool> {
-        let t = std::fs::read_to_string(clon.join(CHEQUEO)).ok()?;
-        Some(self.descifrar(t.trim()).is_ok_and(|x| x == TEXTO_CHEQUEO))
+    /// Los nombres que tenían los ficheros de este equipo con sus claves viejas.
+    fn ficheros_viejos(&self, equipo: &str) -> Vec<String> {
+        let vigente = self.vigente();
+        self.claves.iter().filter(|(id, _)| **id != vigente).map(|(_, k)| format!("m-{}.jsonl", opaco(k, &[b"equipo:", equipo.as_bytes()]))).collect()
+    }
+
+    /// Si la línea de la clave `id` de `omoikane.check` se abre con la clave `id` de aquí.
+    fn abre(&self, id: u32, linea: &str) -> bool {
+        self.claves.contains_key(&id) && partir(linea).is_some_and(|(i, _)| i == id) && self.descifrar(linea).is_ok_and(|t| t == texto_chequeo(id))
+    }
+}
+
+/// `omoikane.check`: qué claves tiene el repositorio y cuál es la vigente.
+///
+/// Una línea por clave, cifrada con ella y con su id delante como las demás (`k2:…`, la 1 sin nada),
+/// con `texto_chequeo(id)` dentro. Con más de una clave va delante la cabecera
+/// `omoikane-check-v2 current=<id>`; con solo la 1, el fichero es el de siempre (una línea), y las
+/// versiones de antes lo siguen entendiendo. Así un equipo que no tiene una clave sabe igual que
+/// existe, aunque no pueda abrir su línea. De la cabecera se ignora lo que no se entienda (para que
+/// pueda crecer), y una línea con una etiqueta que no es de clave también.
+#[derive(Debug, Default)]
+struct Chequeo {
+    lineas: BTreeMap<u32, String>,
+    /// La vigente según la cabecera (0 si no la lleva).
+    actual: u32,
+}
+
+impl Chequeo {
+    fn de_texto(texto: &str) -> Chequeo {
+        let mut c = Chequeo::default();
+        for l in texto.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if let Some(resto) = l.strip_prefix("omoikane-check-") {
+                for campo in resto.split_whitespace() {
+                    if let Some(n) = campo.strip_prefix("current=").and_then(|n| n.trim_start_matches('k').parse().ok()) {
+                        c.actual = n;
+                    }
+                }
+            } else if let Some((id, _)) = partir(l) {
+                c.lineas.insert(id, l.to_string());
+            }
+        }
+        c
+    }
+
+    /// El del clon; `None` si el repositorio no lo tiene.
+    fn leer(clon: &Path) -> Option<Chequeo> {
+        std::fs::read_to_string(clon.join(CHEQUEO)).ok().map(|t| Chequeo::de_texto(&t))
+    }
+
+    /// El id de la clave vigente del repositorio.
+    fn vigente(&self) -> u32 {
+        self.actual.max(self.lineas.keys().next_back().copied().unwrap_or(0))
+    }
+
+    fn texto(&self) -> String {
+        let mut t = String::new();
+        if self.lineas.len() > 1 || self.vigente() > 1 {
+            t.push_str(&format!("{CABECERA_CHEQUEO} current={}\n", self.vigente()));
+        }
+        for l in self.lineas.values() {
+            t.push_str(l);
+            t.push('\n');
+        }
+        t
+    }
+
+    /// Cuántas claves de aquí abren su línea, y cuáles tienen línea y no la abren (otra clave con el
+    /// mismo id).
+    fn comprobar(&self, cifra: &Cifra) -> (usize, Vec<u32>) {
+        let (mut abren, mut fallan) = (0, Vec::new());
+        for id in cifra.ids() {
+            match self.lineas.get(&id) {
+                Some(l) if cifra.abre(id, l) => abren += 1,
+                Some(_) => fallan.push(id),
+                None => {}
+            }
+        }
+        (abren, fallan)
     }
 }
 
@@ -636,12 +909,69 @@ fn ficheros_fijos(clon: &Path, cifra: &Cifra) -> Result<()> {
     if !atributos.exists() {
         std::fs::write(atributos, "* -text\n")?;
     }
-    match cifra.comprueba(clon) {
-        Some(true) => {}
-        Some(false) => bail!(clave_ajena()),
-        None => std::fs::write(clon.join(CHEQUEO), cifra.cifrar(TEXTO_CHEQUEO)? + "\n")?,
+    let antes = std::fs::read_to_string(clon.join(CHEQUEO)).ok();
+    let mut ch = antes.as_deref().map(Chequeo::de_texto).unwrap_or_default();
+    let (abren, fallan) = ch.comprobar(cifra);
+    if !fallan.is_empty() || (abren == 0 && !ch.lineas.is_empty()) {
+        bail!(clave_ajena());
+    }
+    // Las claves de aquí que el repositorio aún no apunta: la de un repositorio nuevo, la nueva de una
+    // rotación, o una cuya subida se perdió.
+    for id in cifra.ids() {
+        if let std::collections::btree_map::Entry::Vacant(e) = ch.lineas.entry(id) {
+            e.insert(cifra.cifrar_con(id, &texto_chequeo(id))?);
+        }
+    }
+    ch.actual = ch.vigente();
+    let texto = ch.texto();
+    if antes.as_deref() != Some(texto.as_str()) {
+        std::fs::write(clon.join(CHEQUEO), texto)?;
     }
     Ok(())
+}
+
+/// Tras una rotación, los ficheros de este equipo con el nombre de una clave vieja: lo suyo se vuelve
+/// a escribir con la vigente (y con el nombre de la vigente), así que los viejos se borran. Si no,
+/// quien solo tiene la clave vieja seguiría leyendo lo que este equipo escribió antes.
+fn retirar_viejos(clon: &Path, equipo: &str, cifra: &Cifra) -> Result<()> {
+    let viejos = cifra.ficheros_viejos(equipo);
+    if viejos.is_empty() {
+        return Ok(());
+    }
+    for e in std::fs::read_dir(clon)?.flatten() {
+        if e.file_name().to_string_lossy().starts_with('.') || !e.path().is_dir() {
+            continue;
+        }
+        for n in &viejos {
+            let f = e.path().join(n);
+            if f.exists() {
+                std::fs::remove_file(f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Si el repositorio ya cifra con una clave que este equipo no tiene (otro la rotó): lo que se escriba
+/// desde entonces no se puede leer aquí. Mira el clon de la última sincronización (sin red).
+pub fn clave_cambiada(r: &Rutas) -> bool {
+    let Ok(cifra) = leer_claves(r) else { return false };
+    Chequeo::leer(&r.clon).is_some_and(|c| c.vigente() > 0 && !cifra.claves.contains_key(&c.vigente()))
+}
+
+/// El aviso de `clave_cambiada`.
+pub fn aviso_clave_cambiada() -> String {
+    tr!(
+        "this repository's key has changed: ask for the new code (`omoi sync code` on a computer that has it) and run `omoi sync join <code>` here",
+        "la clave de este repositorio ha cambiado: pide el código nuevo (`omoi sync code` en un equipo que la tenga) y aquí `omoi sync join <código>`"
+    )
+}
+
+/// Los ids de las claves que tiene este equipo para un repositorio y el de la vigente del repositorio
+/// (según su clon; 0 si aún no se sabe).
+pub fn claves_de(r: &Rutas) -> (Vec<u32>, u32) {
+    let ids = leer_claves(r).map(|c| c.ids()).unwrap_or_default();
+    (ids, Chequeo::leer(&r.clon).map_or(0, |c| c.vigente()))
 }
 
 // --- Exportar e importar -----------------------------------------------------------------------------
@@ -776,9 +1106,9 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
 
 /// Qué ficheros de otros equipos hay que leer: los que cambiaron desde la última sincronización, o
 /// todos si es la primera (o si la base no recuerda por dónde iba).
-fn por_leer(db: &Connection, clon: &Path, equipo: &str, cifra: &Cifra) -> Result<Vec<PathBuf>> {
+fn por_leer(db: &Connection, clon: &Path, equipo: &str, cifra: &Cifra, marca: &str) -> Result<Vec<PathBuf>> {
     let propio = cifra.fichero(equipo);
-    let ultimo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'sync_commit'", [], |f| f.get(0)).optional()?;
+    let ultimo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [marca], |f| f.get(0)).optional()?;
     let cambiados: Option<Vec<String>> = match ultimo {
         Some(u) => git(clon, &["diff", "--name-only", &u, "HEAD"]).ok().map(|s| s.lines().map(String::from).collect()),
         None => None,
@@ -816,6 +1146,18 @@ pub struct Resumen {
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
+}
+
+impl Resumen {
+    /// Junta las cuentas de otro repositorio (los ficheros malos se apuntan en el estado de cada uno).
+    fn sumar(&mut self, o: Resumen) {
+        self.exportadas += o.exportadas;
+        self.leidos += o.leidos;
+        self.nuevas += o.nuevas;
+        self.actualizadas += o.actualizadas;
+        self.olvidadas += o.olvidadas;
+        self.ilegibles += o.ilegibles;
+    }
 }
 
 fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
@@ -1022,14 +1364,49 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
 
 // --- Sincronizar -----------------------------------------------------------------------------------
 
-/// Una sincronización completa: bajar, juntar, escribir lo de este equipo, commit y subir.
-pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<Resumen> {
-    let r = rutas(ruta_db);
-    let config = leer_config(ruta_db)?.context(tr!(
+fn no_configurada() -> String {
+    tr!(
         "sync is not set up: `omoi sync init <git url>` (or `omoi sync join <code>`)",
         "la sincronización no está configurada: `omoi sync init <url de git>` (o `omoi sync join <código>`)"
-    ))?;
-    let cifra = Cifra { clave: leer_clave(&r)? };
+    )
+}
+
+/// Una sincronización completa de cada repositorio de este equipo (el general y el de cada espacio):
+/// bajar, juntar, escribir lo de este equipo, commit y subir. Apunta cómo fue cada uno en su estado;
+/// si uno falla, los demás se sincronizan igual y se devuelve el primer error.
+pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<Resumen> {
+    let repos = repos(ruta_db);
+    ensure!(!repos.is_empty(), no_configurada());
+    let mut total = Resumen { equipo: reloj::equipo(db)?, ..Default::default() };
+    let mut fallo = None;
+    for r in &repos {
+        let res = leer_config_de(r)
+            .and_then(|c| c.context(no_configurada()))
+            .and_then(|config| sincronizar_repo(db, r, &config, actual, modelo, None))
+            .map(|(res, _)| res);
+        let res = match &r.espacio {
+            Some(e) => res.with_context(|| tr!("space {}", "espacio {}", e)),
+            None => res,
+        };
+        apuntar(r, &res);
+        match res {
+            Ok(x) => total.sumar(x),
+            Err(e) => {
+                fallo.get_or_insert(e);
+            }
+        }
+    }
+    match fallo {
+        Some(e) => Err(e),
+        None => Ok(total),
+    }
+}
+
+/// Sincroniza un repositorio. Con `rotar`, antes de escribir nada estrena esa clave: le da el id
+/// siguiente al más alto que conozca el repositorio, la apunta en `omoikane.check` como vigente y
+/// cifra con ella todo lo de este equipo. Devuelve las claves con las que lo hizo.
+fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Option<&str>, modelo: Option<&Modelo>, rotar: Option<&[u8]>) -> Result<(Resumen, Cifra)> {
+    let base = leer_claves(r)?;
     ensure!(r.clon.join(".git").exists(), tr!("the sync clone is missing: run `omoi sync init` again", "falta el clon de la sincronización: vuelve a hacer `omoi sync init`"));
     if let Some(a) = actual {
         adoptar(db, a, &config.person)?;
@@ -1039,10 +1416,16 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
         // Las cuentas, de cada intento: un reintento vuelve a leer los mismos ficheros.
         let mut res = Resumen { equipo: equipo.clone(), ..Default::default() };
         limpiar(&r.clon)?;
+        // El id de la clave nueva, de cada intento: si otro equipo rotó entre medias, la siguiente.
+        let cifra = match rotar {
+            Some(k) => base.con(Chequeo::leer(&r.clon).map_or(0, |c| c.vigente()).max(base.vigente()) + 1, k.to_vec()),
+            None => base.clone(),
+        };
         ficheros_fijos(&r.clon, &cifra)?;
-        let ficheros = por_leer(db, &r.clon, &equipo, &cifra)?;
-        importar(db, &r.clon, &ficheros, &config, &cifra, actual, modelo, &mut res)?;
-        res.exportadas = exportar(db, &r.clon, &equipo, &config, &cifra)?;
+        retirar_viejos(&r.clon, &equipo, &cifra)?;
+        let ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
+        importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
+        res.exportadas = exportar(db, &r.clon, &equipo, config, &cifra)?;
         git(&r.clon, &["add", "-A"])?;
         if !git(&r.clon, &["status", "--porcelain"])?.trim().is_empty() {
             git(&r.clon, &["commit", "--quiet", "--no-verify", "-m", "omoikane"])?;
@@ -1053,11 +1436,11 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
             Ok(_) => {
                 if hay_commits {
                     let head = git(&r.clon, &["rev-parse", "HEAD"])?;
-                    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('sync_commit', ?1)", [head.trim()])?;
+                    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![r.marca_commit, head.trim()])?;
                 }
                 // Lo que llegó de otros equipos puede dejar anticuadas memorias de aquí (o al revés).
                 let _ = crate::revisar::al_dia(db);
-                return Ok(res);
+                return Ok((res, cifra));
             }
             // Otro equipo subió entre medias: se baja lo suyo y se vuelve a intentar.
             Err(_) if intento < 3 => std::thread::sleep(Duration::from_millis(200 * (intento + 1))),
@@ -1106,17 +1489,23 @@ pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config
         .or_else(|| e.autor.clone().or_else(nombre_git).map(|n| persona(&n)).filter(|p| !p.is_empty()))
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.proyectos.is_empty()).then(|| e.proyectos.iter().map(|p| clave(p, &person)).collect());
-    Config { url: url.to_string(), kinds, global: e.global, projects, author: e.autor.clone(), person }
+    Config { url: url.to_string(), kinds, global: e.global, projects, author: e.autor.clone(), person, space: None }
 }
 
-fn guardar_config(db: &Connection, r: &Rutas, config: &Config, clave: &[u8]) -> Result<()> {
-    escribir_privado(&r.clave, &a_hex(clave))?;
+fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) -> Result<()> {
+    if let Some(d) = r.config.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    guardar_claves(r, cifra)?;
     escribir_privado(&r.config, &serde_json::to_string_pretty(config)?)?;
-    match &config.author {
-        Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
-        None => db.execute("DELETE FROM meta WHERE k = 'autor'", [])?,
-    };
-    db.execute("DELETE FROM meta WHERE k = 'sync_commit'", [])?;
+    // El autor de la base es el del repositorio general.
+    if r.espacio.is_none() {
+        match &config.author {
+            Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
+            None => db.execute("DELETE FROM meta WHERE k = 'autor'", [])?,
+        };
+    }
+    db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
     Ok(())
 }
 
@@ -1137,24 +1526,36 @@ fn ya_en_uso() -> String {
 
 /// `omoi sync init <url>`: un repositorio nuevo (vacío o sin memorias), con una clave nueva.
 pub fn iniciar(db: &mut Connection, ruta_db: &Path, config: &Config) -> Result<()> {
-    let r = rutas(ruta_db);
+    let r = rutas_de(ruta_db, config.space.as_deref());
     let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
     clonar(&config.url, &r.clon)?;
     if r.clon.join(CHEQUEO).exists() || hay_memorias_en(&r.clon) {
         let _ = std::fs::remove_dir_all(&r.clon);
         bail!(ya_en_uso());
     }
-    let mut clave = vec![0u8; 64];
-    getrandom::fill(&mut clave).map_err(|e| anyhow!("getrandom: {e}"))?;
-    guardar_config(db, &r, config, &clave)
+    guardar_config(db, &r, config, &Cifra::una(1, clave_nueva()?))
 }
 
-/// El código para unir otro equipo: lleva la URL y la clave (¡pásalo por un canal privado!).
-pub fn codigo(ruta_db: &Path) -> Result<String> {
-    let r = rutas(ruta_db);
-    let config = leer_config(ruta_db)?.context(tr!("sync is not set up", "la sincronización no está configurada"))?;
-    let k = leer_clave(&r)?;
-    let json = serde_json::json!({ "url": config.url, "key": a_hex(&k), "person": config.person });
+fn clave_nueva() -> Result<Vec<u8>> {
+    let mut clave = vec![0u8; 64];
+    getrandom::fill(&mut clave).map_err(|e| anyhow!("getrandom: {e}"))?;
+    Ok(clave)
+}
+
+/// El código para unir otro equipo a un repositorio (el general o el de un espacio): lleva la URL y
+/// la clave vigente con su id (¡pásalo por un canal privado!). Un repositorio que nunca rotó da el
+/// mismo código que antes de las claves con id (sin `id`).
+pub fn codigo(ruta_db: &Path, espacio: Option<&str>) -> Result<String> {
+    let r = rutas_de(ruta_db, espacio);
+    let config = leer_config_de(&r)?.context(tr!("sync is not set up", "la sincronización no está configurada"))?;
+    let cifra = leer_claves(&r)?;
+    let mut json = serde_json::json!({ "url": config.url, "key": a_hex(cifra.clave_vigente()), "person": config.person });
+    if cifra.vigente() != 1 {
+        json["id"] = cifra.vigente().into();
+    }
+    if let Some(e) = &config.space {
+        json["space"] = e.clone().into();
+    }
     Ok(format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string())))
 }
 
@@ -1163,8 +1564,12 @@ pub fn codigo(ruta_db: &Path) -> Result<String> {
 pub struct Codigo {
     pub url: String,
     pub clave: Vec<u8>,
+    /// El id de la clave (los códigos de antes de las claves con id son de la 1).
+    pub id: u32,
     /// La persona del equipo que invita (los códigos de antes no la llevan).
     pub persona: Option<String>,
+    /// El espacio del repositorio (`None`: el general).
+    pub espacio: Option<String>,
 }
 
 /// URL, clave y persona de un código de `omoi sync code`.
@@ -1176,18 +1581,23 @@ pub fn leer_codigo(codigo: &str) -> Result<Codigo> {
     let url = v["url"].as_str().ok_or_else(mal)?.to_string();
     let k = desde_hex(v["key"].as_str().ok_or_else(mal)?).ok_or_else(mal)?;
     ensure!(k.len() == 64, mal());
-    Ok(Codigo { url, clave: k, persona: v["person"].as_str().filter(|p| !p.is_empty()).map(String::from) })
+    let id = match v.get("id") {
+        None => 1,
+        Some(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n >= 1).ok_or_else(mal)?,
+    };
+    let espacio = v["space"].as_str().filter(|e| !e.is_empty()).map(espacio_valido).transpose()?;
+    Ok(Codigo { url, clave: k, id, persona: v["person"].as_str().filter(|p| !p.is_empty()).map(String::from), espacio })
 }
 
 /// `omoi sync join <código>`: el repositorio y la clave de otro equipo. Comprueba que la clave abre
 /// el repositorio antes de guardar nada.
-pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, clave: &[u8]) -> Result<()> {
-    let r = rutas(ruta_db);
+pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, id: u32, clave: &[u8]) -> Result<()> {
+    let r = rutas_de(ruta_db, config.space.as_deref());
     let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
     clonar(&config.url, &r.clon)?;
-    let cifra = Cifra { clave: clave.to_vec() };
-    let vale = match cifra.comprueba(&r.clon) {
-        Some(v) => v,
+    let cifra = Cifra::una(id, clave.to_vec());
+    let vale = match Chequeo::leer(&r.clon) {
+        Some(ch) => ch.lineas.get(&id).is_some_and(|l| cifra.abre(id, l)),
         // Un repositorio sin comprobación (o aún vacío): la primera línea que haya.
         None => std::fs::read_dir(&r.clon)?
             .flatten()
@@ -1201,20 +1611,84 @@ pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, clave: &[u8]
         let _ = std::fs::remove_dir_all(&r.clon);
         bail!(clave_ajena());
     }
-    guardar_config(db, &r, config, clave)
+    guardar_config(db, &r, config, &cifra)
 }
 
-/// Deja de sincronizar: borra la configuración, la clave y el clon (las memorias de aquí se quedan).
-pub fn desactivar(db: &Connection, ruta_db: &Path) -> Result<()> {
-    let r = rutas(ruta_db);
+/// `omoi sync join <código>` en un equipo que ya sincroniza con ese repositorio (tras una rotación):
+/// guarda la clave nueva junto a las que ya tenía, que siguen sirviendo para leer lo que otros aún no
+/// han vuelto a cifrar, y la siguiente sincronización vuelve a leerlo todo y recifra lo de este
+/// equipo con ella. `false` si ya la tenía.
+pub fn anadir_clave(db: &Connection, ruta_db: &Path, espacio: Option<&str>, id: u32, clave: &[u8]) -> Result<bool> {
+    let r = rutas_de(ruta_db, espacio);
+    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+    let otro = || {
+        anyhow!(tr!(
+            "that code is for another repository, and this computer already syncs one here (`omoi sync status`; `omoi sync off` to start over)",
+            "ese código es de otro repositorio, y este equipo ya sincroniza uno aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"
+        ))
+    };
+    let cifra = leer_claves(&r)?;
+    if let Some(k) = cifra.claves.get(&id) {
+        ensure!(k.as_slice() == clave, otro());
+        return Ok(false);
+    }
+    limpiar(&r.clon)?;
+    let nueva = Cifra::una(id, clave.to_vec());
+    ensure!(Chequeo::leer(&r.clon).and_then(|c| c.lineas.get(&id).cloned()).is_some_and(|l| nueva.abre(id, &l)), otro());
+    guardar_claves(&r, &cifra.con(id, clave.to_vec()))?;
+    db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
+    Ok(true)
+}
+
+/// `omoi sync rotate`: una clave nueva para un repositorio. La apunta como vigente en
+/// `omoikane.check`, vuelve a cifrar con ella todo lo de este equipo (y borra sus ficheros con la
+/// vieja), hace commit y push, y la guarda aquí junto a las viejas. Desde entonces `omoi sync code` da
+/// el código de la nueva; quien solo tiene la vieja ya no lee lo que se escriba con ella. Devuelve el
+/// id de la clave nueva.
+pub fn rotar(db: &mut Connection, ruta_db: &Path, espacio: Option<&str>, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<(u32, Resumen)> {
+    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+    let r = rutas_de(ruta_db, espacio);
+    let config = leer_config_de(&r)?.context(no_configurada())?;
+    let nueva = clave_nueva()?;
+    let res = sincronizar_repo(db, &r, &config, actual, modelo, Some(&nueva));
+    let (res, cifra) = match res {
+        Ok((res, cifra)) => (Ok(res), Some(cifra)),
+        Err(e) => (Err(e), None),
+    };
+    // Solo con la subida hecha: si no, el repositorio no sabe nada de la clave nueva.
+    if let Some(c) = &cifra {
+        guardar_claves(&r, c)?;
+    }
+    apuntar(&r, &res);
+    Ok((cifra.map_or(0, |c| c.vigente()), res?))
+}
+
+/// Deja de sincronizar un repositorio (el general o el de un espacio): borra su configuración, sus
+/// claves y su clon (las memorias de aquí se quedan).
+pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Result<()> {
+    let r = rutas_de(ruta_db, espacio);
     let c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    for f in [&r.config, &r.clave, &r.estado, &r.pendiente, &r.hecho] {
+    for f in [&r.config, &r.clave, &r.estado] {
         let _ = std::fs::remove_file(f);
     }
     if r.clon.exists() {
         std::fs::remove_dir_all(&r.clon)?;
     }
-    db.execute("DELETE FROM meta WHERE k IN ('autor', 'sync_commit')", [])?;
+    match &r.espacio {
+        Some(_) => {
+            if let Some(d) = r.config.parent() {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        }
+        None => {
+            db.execute("DELETE FROM meta WHERE k = 'autor'", [])?;
+        }
+    }
+    if repos(ruta_db).is_empty() {
+        let _ = std::fs::remove_file(&r.pendiente);
+        let _ = std::fs::remove_file(&r.hecho);
+    }
+    db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
     drop(c);
     Ok(())
 }
@@ -1241,8 +1715,13 @@ pub struct Estado {
     pub ficheros_malos: BTreeMap<String, usize>,
 }
 
+/// Cómo fue la última sincronización del repositorio general.
 pub fn leer_estado(ruta_db: &Path) -> Estado {
-    std::fs::read_to_string(rutas(ruta_db).estado).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    leer_estado_de(&rutas(ruta_db))
+}
+
+pub fn leer_estado_de(r: &Rutas) -> Estado {
+    std::fs::read_to_string(&r.estado).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 fn ahora() -> String {
@@ -1254,8 +1733,8 @@ fn segundos(s: &str) -> u64 {
     s.parse().unwrap_or(0)
 }
 
-fn apuntar(ruta_db: &Path, resultado: &Result<Resumen>) {
-    let mut e = leer_estado(ruta_db);
+fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
+    let mut e = leer_estado_de(r);
     match resultado {
         Ok(r) => {
             e.ultimo_ok = Some(ahora());
@@ -1283,7 +1762,7 @@ fn apuntar(ruta_db: &Path, resultado: &Result<Resumen>) {
         }
     }
     if let Ok(t) = serde_json::to_string_pretty(&e) {
-        let _ = std::fs::write(rutas(ruta_db).estado, t);
+        let _ = std::fs::write(&r.estado, t);
     }
 }
 
@@ -1324,7 +1803,7 @@ pub fn aviso(ruta_db: &Path) -> Option<String> {
 pub fn programar(ruta_db: &Path) {
     let r = rutas(ruta_db);
     // `OMOIKANE_SYNC_AUTO=0`: solo a mano (`omoi sync`).
-    if !r.config.exists() || std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") {
+    if (!r.config.exists() && espacios(ruta_db).is_empty()) || std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") {
         return;
     }
     // Cada cambio, una marca distinta: el proceso de fondo repite mientras la marca no sea la que ya
@@ -1572,8 +2051,15 @@ pub fn en_segundo_plano(ruta_db: &Path, abrir: impl Fn() -> Result<(Connection, 
     for _ in 0..20 {
         std::thread::sleep(espera());
         let marca = std::fs::read_to_string(&r.pendiente).ok();
-        let resultado = abrir().and_then(|(mut db, modelo)| sincronizar(&mut db, ruta_db, None, modelo.as_ref()));
-        apuntar(ruta_db, &resultado);
+        // `sincronizar` apunta cómo fue cada repositorio; un fallo al abrir la base, en el general.
+        let resultado = match abrir() {
+            Ok((mut db, modelo)) => sincronizar(&mut db, ruta_db, None, modelo.as_ref()),
+            Err(e) => {
+                let e = Err(e);
+                apuntar(&r, &e);
+                e
+            }
+        };
         if resultado.is_err() {
             break;
         }
@@ -1594,9 +2080,7 @@ pub fn ahora_mismo(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
     let mut vueltas = 0;
     loop {
         let marca = std::fs::read_to_string(&r.pendiente).ok();
-        let res = sincronizar(db, ruta_db, actual, modelo);
-        apuntar(ruta_db, &res);
-        let res = res?;
+        let res = sincronizar(db, ruta_db, actual, modelo)?;
         hecho(&r, marca.as_deref());
         vueltas += 1;
         if !pendiente(ruta_db) || vueltas >= 5 {
@@ -1620,11 +2104,11 @@ mod tests {
 
     #[test]
     fn cifrado_determinista_y_clave_mala() {
-        let c = Cifra { clave: (0..64).collect() };
+        let c = Cifra::una(1, (0..64).collect());
         let x = c.cifrar("{\"hola\":\"mundo, una línea\"}").unwrap();
         assert_eq!(x, c.cifrar("{\"hola\":\"mundo, una línea\"}").unwrap(), "la misma línea cifra igual");
         assert_eq!(c.descifrar(&x).unwrap(), "{\"hola\":\"mundo, una línea\"}");
-        let otra = Cifra { clave: (1..65).collect() };
+        let otra = Cifra::una(1, (1..65).collect());
         assert!(otra.descifrar(&x).is_err());
         assert_ne!(c.carpeta("git:a/b"), otra.carpeta("git:a/b"));
         assert!(c.fichero("marc-pc-abc").starts_with("m-") && !c.fichero("marc-pc-abc").contains("marc"));
@@ -1637,7 +2121,7 @@ mod tests {
         let k: Vec<u8> = (0..64).collect();
         let json = serde_json::json!({ "url": "git@x:y/z.git", "key": a_hex(&k) });
         let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
-        assert_eq!(leer_codigo(&c).unwrap(), Codigo { url: "git@x:y/z.git".to_string(), clave: k.clone(), persona: None });
+        assert_eq!(leer_codigo(&c).unwrap(), Codigo { url: "git@x:y/z.git".to_string(), clave: k.clone(), id: 1, persona: None, espacio: None });
         let json = serde_json::json!({ "url": "u", "key": a_hex(&k), "person": "marc" });
         let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
         assert_eq!(leer_codigo(&c).unwrap().persona.as_deref(), Some("marc"));
@@ -1670,5 +2154,56 @@ mod tests {
         assert!(a.config.ends_with("sync.json") && a.clon.ends_with("sync"));
         let b = rutas(Path::new("/x/trabajo.db"));
         assert!(b.config.ends_with("trabajo.sync.json") && b.clon.ends_with("trabajo.sync") && b.cerrojo.ends_with("trabajo.sync.lock"));
+        let e = rutas_de(Path::new("/x/trabajo.db"), Some("acme"));
+        assert!(e.config.ends_with("trabajo.sync-spaces/acme/sync.json") && e.clon.ends_with("trabajo.sync-spaces/acme/repo"), "{}", e.config.display());
+        assert_eq!(e.cerrojo, b.cerrojo, "un solo cerrojo por base");
+        assert_ne!(e.marca_commit, b.marca_commit);
+        assert_eq!(espacio_valido(" Acme-2 ").unwrap(), "acme-2");
+        assert!(espacio_valido("../x").is_err() && espacio_valido("").is_err() && espacio_valido("-x").is_err());
+    }
+
+    #[test]
+    fn lineas_con_id_de_clave() {
+        let k1: Vec<u8> = (0..64).collect();
+        let k2: Vec<u8> = (64..128).collect();
+        let vieja = Cifra::una(1, k1.clone());
+        let ambas = vieja.con(2, k2.clone());
+        assert_eq!(ambas.vigente(), 2);
+        // La 1 sin prefijo (igual que antes); las demás con `k<id>:`.
+        let l1 = vieja.cifrar("hola").unwrap();
+        assert!(!l1.contains(':'));
+        let l2 = ambas.cifrar("hola").unwrap();
+        assert!(l2.starts_with("k2:"), "{l2}");
+        assert_eq!(ambas.descifrar(&l1).unwrap(), "hola", "con las dos se lee lo viejo");
+        assert_eq!(ambas.descifrar(&l2).unwrap(), "hola");
+        assert!(vieja.descifrar(&l2).unwrap_err().to_string().contains("k2"), "sin la nueva no se lee, y lo dice");
+        assert_eq!(vieja.descifrar(&format!("k1:{l1}")).unwrap(), "hola", "`k1:` también vale");
+        assert!(ambas.descifrar(&format!("x9:{l1}")).is_err(), "una etiqueta desconocida es de un formato futuro");
+        assert_eq!(Cifra::una(2, k2.clone()).fichero("pc"), ambas.fichero("pc"));
+        assert_eq!(ambas.ficheros_viejos("pc"), vec![vieja.fichero("pc")]);
+    }
+
+    #[test]
+    fn el_chequeo_de_siempre_y_el_de_varias_claves() {
+        let k1: Vec<u8> = (0..64).collect();
+        let vieja = Cifra::una(1, k1.clone());
+        // Con solo la 1: una línea, como siempre.
+        let mut ch = Chequeo::default();
+        ch.lineas.insert(1, vieja.cifrar_con(1, &texto_chequeo(1)).unwrap());
+        let t = ch.texto();
+        assert_eq!(t.lines().count(), 1);
+        assert!(Chequeo::de_texto(&t).comprobar(&vieja) == (1, vec![]));
+        // Con la 2: la cabecera con la vigente, y quien solo tiene la 1 sabe que existe.
+        let ambas = vieja.con(2, (64..128).collect());
+        ch.lineas.insert(2, ambas.cifrar_con(2, &texto_chequeo(2)).unwrap());
+        let t = ch.texto();
+        assert!(t.starts_with("omoikane-check-v2 current=2\n"), "{t}");
+        let leido = Chequeo::de_texto(&(t.clone() + "omoikane-check-v3 algo=nuevo\nz7:futuro\n"));
+        assert_eq!(leido.vigente(), 2);
+        assert_eq!(leido.comprobar(&vieja), (1, vec![]));
+        assert_eq!(leido.comprobar(&ambas), (2, vec![]));
+        // Otra clave con el mismo id no pasa, ni la línea de una clave puesta como la de otra.
+        assert_eq!(leido.comprobar(&vieja.con(2, (1..65).collect())), (1, vec![2]));
+        assert!(!ambas.abre(2, &ch.lineas[&1]));
     }
 }
