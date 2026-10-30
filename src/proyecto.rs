@@ -417,10 +417,14 @@ pub struct Proyecto {
 /// Los proyectos con memorias (o el que se pida, aunque no tenga), del más al menos activo. Sin lo
 /// global. Con `espacio`, solo los de ese espacio (`Some(None)`: los que no tienen).
 pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, limite: usize) -> Result<Vec<Proyecto>> {
+    // Cuántas y la última, de todos los proyectos en una pasada por el índice `memory_scope` (con
+    // 50.000 memorias, una subconsulta por proyecto recorría la tabla entera una vez por cada uno).
+    let por_proyecto: std::collections::HashMap<i64, (i64, String)> = {
+        let mut q = db.prepare("SELECT project_id, count(*), max(updated_at) FROM memory WHERE project_id != 0 GROUP BY project_id")?;
+        q.query_map([], |f| Ok((f.get(0)?, (f.get(1)?, f.get(2)?))))?.collect::<rusqlite::Result<_>>()?
+    };
     let mut q = db.prepare(
         "SELECT p.id, p.name, p.path, p.key, COALESCE(s.key, ''),
-                (SELECT count(*) FROM memory m WHERE m.project_id = p.id),
-                COALESCE((SELECT max(updated_at) FROM memory m WHERE m.project_id = p.id), ''),
                 COALESCE((SELECT is_foreign FROM project_path WHERE path = p.path), 0),
                 COALESCE((SELECT origin FROM project_path WHERE project_id = p.id AND is_foreign = 0 AND origin != ''
                             AND p.key LIKE 'git:%' AND 'git:' || origin != p.key LIMIT 1), ''),
@@ -431,35 +435,46 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
     // (proyecto, su ruta principal es de otro equipo, su espacio)
     let mut v: Vec<(Proyecto, bool, Option<i64>)> = q
         .query_map(params![solo], |f| {
+            let id: i64 = f.get(0)?;
+            let (memories, last_update) = por_proyecto.get(&id).cloned().unwrap_or_default();
             Ok((
                 Proyecto {
-                    id: f.get(0)?,
+                    id,
                     name: f.get(1)?,
                     path: f.get(2)?,
                     key: f.get(3)?,
                     space: f.get(4)?,
-                    memories: f.get(5)?,
-                    last_update: f.get(6)?,
+                    memories,
+                    last_update,
                     status: String::new(),
                     gone: false,
-                    origin_changed: f.get(8)?,
+                    origin_changed: f.get(6)?,
                 },
+                f.get(5)?,
                 f.get(7)?,
-                f.get(9)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     v.retain(|(p, _, e)| (p.memories > 0 || solo.is_some()) && espacio.is_none_or(|x| x == *e));
     v.sort_by(|a, b| b.0.last_update.cmp(&a.0.last_update).then(a.0.name.cmp(&b.0.name)));
     v.truncate(limite);
-    let mut estado = db.prepare(
-        "SELECT title FROM memory WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
-         ORDER BY updated_at DESC LIMIT 1",
-    )?;
+    // El `status` más reciente de cada proyecto, en una pasada por la tabla: el `LIKE` descarta sin leer
+    // el JSON lo que no lleva la etiqueta, y con `max`, SQLite da el título de esa misma fila. `NOT
+    // INDEXED`: por el índice de proyecto, SQLite iba fila a fila a la tabla (210 ms con 50.000
+    // memorias, frente a 30 recorriéndola de seguido).
+    let estados: std::collections::HashMap<i64, String> = {
+        let mut q = db.prepare(
+            "SELECT project_id, title, max(updated_at) FROM memory NOT INDEXED
+             WHERE project_id != 0 AND tags LIKE ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
+             GROUP BY project_id",
+        )?;
+        let etiqueta = crate::memoria::ESTADO;
+        q.query_map(params![format!("%\"{etiqueta}\"%"), etiqueta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
     Ok(v.into_iter()
         .map(|(mut p, ajena, _)| {
             p.gone = !ajena && !p.path.is_empty() && !Path::new(&p.path).is_dir();
-            p.status = estado.query_row(params![p.id, crate::memoria::ESTADO], |f| f.get::<_, String>(0)).unwrap_or_default();
+            p.status = estados.get(&p.id).cloned().unwrap_or_default();
             p
         })
         .collect())
