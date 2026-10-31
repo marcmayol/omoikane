@@ -52,7 +52,7 @@ Or `cargo install omoikane`. The installers also add the Claude Code plugin if C
 
 Throughout 1.x, the database, the sync line and the `omoi export` format don't change in any way that breaks things: a 1.3 and a 1.0 sync with each other, and a computer on 1.0 keeps and passes on what it doesn't understand from a newer version. The 8 tools and their parameters don't break either; things only get added. If something ever has to break, that will be 2.0, with a migration and a warning.
 
-Version 1.0.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 1.1.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Measured
 
@@ -80,6 +80,10 @@ Full method and every number: [BENCHMARK.md](BENCHMARK.md). A public, reproducib
 ## Stack
 
 Rust · [rusqlite](https://crates.io/crates/rusqlite) (bundled SQLite + FTS5) · [sqlite-vec](https://github.com/asg017/sqlite-vec) · [model2vec-rs](https://github.com/MinishLab/model2vec-rs) · [rmcp](https://github.com/modelcontextprotocol/rust-sdk)
+
+## Contributing
+
+Issues and pull requests are welcome: read [CONTRIBUTING.md](CONTRIBUTING.md) first (the rules that keep 1.x stable, and how to test). Security problems go through private reporting: [SECURITY.md](SECURITY.md).
 
 ## License
 

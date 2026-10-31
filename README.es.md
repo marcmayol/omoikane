@@ -52,7 +52,7 @@ O `cargo install omoikane`. Los instaladores también añaden el plugin si Claud
 
 Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las 8 herramientas y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
 
-Versión 1.0.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 1.1.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Medido
 
@@ -80,6 +80,10 @@ El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). Un
 ## Stack
 
 Rust · [rusqlite](https://crates.io/crates/rusqlite) (SQLite + FTS5 incluidos) · [sqlite-vec](https://github.com/asg017/sqlite-vec) · [model2vec-rs](https://github.com/MinishLab/model2vec-rs) · [rmcp](https://github.com/modelcontextprotocol/rust-sdk)
+
+## Contribuir
+
+Las issues y los pull requests son bienvenidos: lee antes [CONTRIBUTING.es.md](CONTRIBUTING.es.md) (las reglas que mantienen estable la 1.x y cómo probar). Los problemas de seguridad van por el aviso privado: [SECURITY.md](SECURITY.md).
 
 ## Licencia
 

@@ -1,0 +1,22 @@
+name: Idea or change
+description: A new feature, or a change to how something works
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do and what got in the way. A real case is worth more than a proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd do
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Rules
+      description: See "Rules that don't bend" in CONTRIBUTING.md.
+      options:
+        - label: It keeps the 1.x promise (only adds; 1.0 still reads the database, sync and export), or it says why not.
+        - label: It needs no LLM inside Omoikane and no new MCP tool, or it says why it must.

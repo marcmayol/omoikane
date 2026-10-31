@@ -1,0 +1,38 @@
+name: Bug
+description: Something doesn't work as the docs say
+body:
+  - type: markdown
+    attributes:
+      value: "Security problems go through private reporting, not here: see SECURITY.md."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got. Paste the exact command and output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `omoi --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options: [Windows, Linux, macOS]
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      description: Claude Code, Codex, Cursor… and its version, if it's about the plugin, hooks or MCP.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: omoi doctor
+      description: Output of `omoi doctor`. Check it has nothing you'd rather keep private.
+      render: text
