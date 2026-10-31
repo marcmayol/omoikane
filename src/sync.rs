@@ -561,7 +561,7 @@ const CAMPOS_MEMORIA: &[&str] = &[
     "type", "id", "project_key", "project_path", "space_key", "kind", "title", "content", "paths", "tags", "pinned", "created_at", "updated_at", "hlc",
     "content_hlc", "author", "machine", "versions",
 ];
-const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "machine"];
+const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "space_key", "machine"];
 const CAMPOS_VEREDICTO: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
 const CAMPOS_PAPELERA: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
 
@@ -749,6 +749,10 @@ pub(crate) enum Linea {
         id: String,
         deleted_at: String,
         hlc: String,
+        /// El espacio de lo olvidado (su clave), con el que el olvido va solo a su repositorio. Vacío:
+        /// de ninguno, o de una versión que no lo manda (por el repositorio de un espacio, de ese).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        space_key: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
         #[serde(flatten)]
@@ -797,6 +801,10 @@ pub(crate) enum Linea {
         machine: String,
         #[serde(default)]
         encrypted: bool,
+        /// La persona local de la base que exporta (la de sus claves `dir:`): un import en una base
+        /// recién creada la adopta, como quien restaura su base en un equipo nuevo.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        person: String,
     },
     /// Última línea de un fichero de `omoi export`: cuántas líneas van entre medias y su SHA-256.
     End {
@@ -846,9 +854,9 @@ impl Linea {
         }
     }
 
-    /// Un olvido como viaja, con sus campos desconocidos.
-    pub(crate) fn olvido(id: String, deleted_at: String, hlc: String, equipo: &str, extra: Extra) -> Linea {
-        Linea::Tombstone { id, deleted_at, hlc, machine: equipo.to_string(), extra: solo_desconocidos(extra, CAMPOS_OLVIDO) }
+    /// Un olvido como viaja, con su espacio y sus campos desconocidos.
+    pub(crate) fn olvido(id: String, deleted_at: String, hlc: String, space_key: String, equipo: &str, extra: Extra) -> Linea {
+        Linea::Tombstone { id, deleted_at, hlc, space_key, machine: equipo.to_string(), extra: solo_desconocidos(extra, CAMPOS_OLVIDO) }
     }
 
     /// Un veredicto como viaja, con sus campos desconocidos.
@@ -1300,6 +1308,8 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let mut n = 0;
     // La carpeta de cada memoria que se comparte: sus veredictos van con ella.
     let mut carpetas: HashMap<String, String> = HashMap::new();
+    // El historial de todas, en una consulta (una por memoria eran 50.000 con una base grande).
+    let mut historiales = crate::memoria::historiales(db)?;
     for (m, hlc, content_hlc, extra) in todas(db)? {
         if !config.comparte(&m) {
             continue;
@@ -1314,7 +1324,7 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         carpetas.insert(m.id.clone(), carpeta.clone());
         // El historial viaja con la memoria: quien se une a un repositorio (un compañero, al pasar un
         // proyecto personal a un espacio) la recibe con sus versiones de antes.
-        let versiones = crate::memoria::historial(db, &m.id)?;
+        let versiones = historiales.remove(&m.id).unwrap_or_default();
         // Segunda capa: lo que se guardó antes de la 0.19.0 (o con `OMOIKANE_REDACT=0` en otro momento)
         // no sale del equipo con su secreto, ni en la memoria ni en sus versiones. Aquí se queda como
         // está, con su aviso en Revisar.
@@ -1338,17 +1348,16 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
     {
-        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, f.memory, {EXTRA_OLVIDO} FROM tombstone t LEFT JOIN forgotten f ON f.id = t.id ORDER BY t.id"))?;
-        let marcas: Vec<(String, String, String, Option<String>, String)> =
+        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {EXTRA_OLVIDO} FROM tombstone t ORDER BY t.id"))?;
+        let marcas: Vec<(String, String, String, String, String)> =
             q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (id, deleted_at, hlc, memoria, extra) in marcas {
-            // Si la papelera dice de qué espacio era, el olvido va solo a su repositorio; si no se sabe
-            // (llegó de otro equipo sin la memoria, o se vació la papelera), a todos, como siempre.
-            let espacio = memoria.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).map(|v| v["space"].as_str().unwrap_or("").to_string());
-            if espacio.is_some_and(|e| !va_al_repo(config, &e)) {
+        for (id, deleted_at, hlc, espacio, extra) in marcas {
+            // Cada olvido, solo al repositorio de su espacio: el que tenía la memoria al olvidarla (o el
+            // del repositorio por el que llegó). Sin espacio (o de antes del esquema 10), al general.
+            if !va_al_repo(config, &espacio) {
                 continue;
             }
-            let l = Linea::olvido(id, deleted_at, hlc, equipo, extra_de(&extra));
+            let l = Linea::olvido(id, deleted_at, hlc, espacio, equipo, extra_de(&extra));
             ficheros.entry("olvidos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
@@ -1439,12 +1448,19 @@ pub struct Resumen {
     /// Líneas de un tipo (o con una etiqueta de cifrado) que esta versión no conoce: las escribió un
     /// omoi más nuevo. Se saltan y se vuelven a leer al actualizar (`LECTOR_LINEAS`).
     pub de_version_nueva: usize,
+    /// Líneas rechazadas porque tocan algo que aquí es de otro espacio (un proyecto, una memoria, las
+    /// de un veredicto o un olvido) o llegan por un repositorio que no lleva su espacio: nada de un
+    /// cliente entra en otro ni cambia de espacio por lo que llega. No se aplican.
+    pub conflictos_de_espacio: usize,
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
     /// Lo mismo con las de una versión más nueva.
     #[serde(skip)]
     pub futuros: BTreeMap<String, usize>,
+    /// Lo mismo con las rechazadas por ser de otro espacio.
+    #[serde(skip)]
+    pub conflictos: BTreeMap<String, usize>,
 }
 
 impl Resumen {
@@ -1457,6 +1473,7 @@ impl Resumen {
         self.olvidadas += o.olvidadas;
         self.ilegibles += o.ilegibles;
         self.de_version_nueva += o.de_version_nueva;
+        self.conflictos_de_espacio += o.conflictos_de_espacio;
     }
 }
 
@@ -1466,6 +1483,48 @@ fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
 
 fn hlc_olvido(db: &Connection, id: &str) -> Result<Option<String>> {
     Ok(db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?)
+}
+
+/// El olvido de `id` en el espacio `espacio`: el que puede parar una memoria de ese espacio. Uno que
+/// llegó por el repositorio de otro espacio no la para (no puede borrar lo de otro cliente).
+fn hlc_olvido_en(db: &Connection, id: &str, espacio: &str) -> Result<Option<String>> {
+    Ok(db.query_row("SELECT hlc FROM tombstone WHERE id = ?1 AND space_key = ?2", [id, espacio], |f| f.get(0)).optional()?)
+}
+
+/// El espacio (su clave; vacía si no es de ninguno) del proyecto de esta clave, si aquí hay uno.
+fn espacio_del_proyecto(db: &Connection, clave: &str) -> Result<Option<String>> {
+    Ok(db
+        .query_row("SELECT COALESCE((SELECT key FROM space WHERE id = p.space_id), '') FROM project p WHERE p.key = ?1", [clave], |f| f.get(0))
+        .optional()?)
+}
+
+/// El espacio de una memoria de la papelera: el que tiene ahora aquí su proyecto (si aquí está), o el
+/// que se apuntó al olvidarla.
+pub(crate) fn espacio_de_papelera(db: &Connection, texto: &str) -> Result<String> {
+    let Some((m, _, _)) = de_papelera(texto) else { return Ok(String::new()) };
+    if !m.project_key.is_empty()
+        && let Some(e) = espacio_del_proyecto(db, &m.project_key)?
+    {
+        return Ok(e);
+    }
+    Ok(m.space)
+}
+
+/// El espacio (su clave; vacía si no es de ninguno) de una memoria de aquí, viva o en la papelera;
+/// `None` si aquí no está.
+pub(crate) fn espacio_aqui(db: &Connection, id: &str) -> Result<Option<String>> {
+    let viva: Option<String> = db
+        .query_row(
+            "SELECT COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '') FROM memory m WHERE m.id = ?1",
+            [id],
+            |f| f.get(0),
+        )
+        .optional()?;
+    if viva.is_some() {
+        return Ok(viva);
+    }
+    let papelera: Option<String> = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+    papelera.map(|t| espacio_de_papelera(db, &t)).transpose()
 }
 
 /// `a` es igual o posterior a `b`.
@@ -1485,7 +1544,7 @@ impl<'a> Aplicador<'a> {
     /// Con `actual` (la carpeta de la sesión), esa carpeta queda apuntada antes de aplicar nada: lo que
     /// llegue con su clave es ya suyo.
     pub(crate) fn nuevo(db: &Connection, config: Option<&'a Config>, actual: Option<&str>) -> Result<Self> {
-        let person = config.map(|c| c.person.clone()).unwrap_or_else(|| crate::db::persona_de(db));
+        let person = crate::db::persona_de(db);
         if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
             crate::proyecto::registrar(db, a)?;
         }
@@ -1497,17 +1556,33 @@ impl<'a> Aplicador<'a> {
     pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
         match l {
             Linea::Header { .. } | Linea::End { .. } => Ok(()),
-            Linea::Tombstone { id, deleted_at, hlc, extra, .. } => {
+            Linea::Tombstone { id, deleted_at, hlc, space_key, extra, .. } => {
                 if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
                     return Ok(());
                 }
+                // Por el repositorio de un espacio solo llegan olvidos de ese espacio (sin `space_key`,
+                // de una versión que no lo manda: el del repositorio).
+                let espacio = match (space_key.is_empty(), self.config.and_then(|c| c.space.as_deref())) {
+                    (true, Some(e)) => crate::proyecto::clave_de_espacio(e),
+                    _ => space_key,
+                };
+                let aqui = espacio_aqui(db, &id)?;
+                // Un olvido solo borra lo que lleva el repositorio por el que llega: el de acme no olvida
+                // una memoria de beta (ni una personal).
+                if let Some(c) = self.config
+                    && (!va_al_repo(c, &espacio) || aqui.as_deref().is_some_and(|e| !va_al_repo(c, e)))
+                {
+                    r.conflictos_de_espacio += 1;
+                    return Ok(());
+                }
+                let espacio = aqui.unwrap_or(espacio);
                 // La marca que llega pasa a ser la de aquí (en cualquiera de los tres casos): sus campos
                 // desconocidos, con ella.
                 guardar_extra_olvido(db, &id, &extra)?;
                 match hlc_local(db, &id)? {
                     Some(local) if reloj::mayor(&local, &hlc) => {
                         // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc)?;
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &espacio)?;
                         reloj::recibir(db, &hlc)?;
                     }
                     Some(_) => {
@@ -1515,30 +1590,53 @@ impl<'a> Aplicador<'a> {
                         r.olvidadas += 1;
                     }
                     None => {
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc)?;
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &espacio)?;
                         reloj::recibir(db, &hlc)?;
                     }
                 }
                 Ok(())
             }
             Linea::Memory(CuerpoMemoria { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, extra, .. }) => {
-                // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra
-                // persona, o lo de un espacio que este repositorio no lleva).
-                if self.config.is_some_and(|c| !c.admite(&kind, &project_key, &space_key)) {
-                    return Ok(());
+                if let Some(c) = self.config {
+                    // Por un repositorio solo entra lo de su espacio (el general: lo de ninguno, y los
+                    // espacios que diga su `spaces`): lo demás se rechaza y se cuenta.
+                    if !va_al_repo(c, &space_key) {
+                        r.conflictos_de_espacio += 1;
+                        return Ok(());
+                    }
+                    // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra
+                    // persona).
+                    if !c.acepta(&kind, &project_key, &space_key) {
+                        return Ok(());
+                    }
                 }
-                if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
+                // Lo olvidado no vuelve; por la sincronización, solo lo para un olvido de su mismo espacio.
+                let olvido = if self.config.is_some() { hlc_olvido_en(db, &id, &space_key)? } else { hlc_olvido(db, &id)? };
+                if olvido.is_some_and(|h| no_menor(&h, &hlc)) {
                     return Ok(());
                 }
                 let local = hlc_local(db, &id)?;
                 if local.as_ref().is_some_and(|h| no_menor(h, &hlc)) {
                     return Ok(());
                 }
+                // Nada cambia de espacio por lo que llega: ni una memoria de aquí, ni un proyecto de aquí.
+                // Una línea que caería en otro espacio (la carpeta `web` de otro cliente con la misma
+                // clave, o una clave de beta escrita en el repositorio de acme) se rechaza.
+                if self.config.is_some() {
+                    let memoria_fuera = local.is_some() && espacio_aqui(db, &id)?.is_some_and(|e| e != space_key);
+                    let proyecto_fuera = !project_key.is_empty() && espacio_del_proyecto(db, &project_key)?.is_some_and(|e| e != space_key);
+                    if memoria_fuera || proyecto_fuera {
+                        r.conflictos_de_espacio += 1;
+                        return Ok(());
+                    }
+                }
                 // El proyecto, por su clave (si aquí no hay ninguno, con la ruta de origen, que se adopta
                 // en cuanto aparezca aquí una carpeta con esa clave); o el espacio; o global.
                 let (project_id, space_id) = if !project_key.is_empty() {
-                    let p = crate::proyecto::de_clave(db, &project_key, &project_path, &self.person)?;
-                    // Un proyecto sin espacio aquí toma el que trae la línea; uno con espacio se queda el suyo.
+                    let p = crate::proyecto::de_clave(db, &project_key, &project_path, &self.person, self.config.is_none())?;
+                    // Un proyecto nuevo toma el espacio que trae la línea (por la sincronización, uno que ya
+                    // estaba aquí en otro espacio se ha rechazado arriba; en un import, uno sin espacio
+                    // toma el que trae).
                     if !space_key.is_empty() && crate::proyecto::espacio_de(db, p)?.is_none() {
                         let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
                         db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![p, s])?;
@@ -1605,13 +1703,23 @@ impl<'a> Aplicador<'a> {
                 // De una memoria que aquí no está (no se comparte, o se olvidó del todo) no se apunta
                 // nada. Las de la papelera, sí: si vuelve, vuelve con sus veredictos (`omoi export` los
                 // lleva, y van después de la papelera).
-                let existe = |id: &str| -> Result<bool> {
-                    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM memory WHERE id = ?1) OR EXISTS(SELECT 1 FROM forgotten WHERE id = ?1)", [id], |f| f.get::<_, bool>(0))?)
+                let Some(de_una) = espacio_aqui(db, &memory_id)? else { return Ok(()) };
+                let de_otra = match other_id.is_empty() {
+                    true => None,
+                    false => match espacio_aqui(db, &other_id)? {
+                        Some(e) => Some(e),
+                        None => return Ok(()),
+                    },
                 };
-                if existe(&memory_id)? && (other_id.is_empty() || existe(&other_id)?) {
-                    let extra = extra_a_texto(&extra);
-                    crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
+                // Un veredicto solo toca memorias de lo que lleva el repositorio por el que llega.
+                if let Some(c) = self.config
+                    && (!va_al_repo(c, &de_una) || de_otra.as_deref().is_some_and(|e| !va_al_repo(c, e)))
+                {
+                    r.conflictos_de_espacio += 1;
+                    return Ok(());
                 }
+                let extra = extra_a_texto(&extra);
+                crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
                 Ok(())
             }
             Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra } => {
@@ -1644,6 +1752,7 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
         let texto = std::fs::read_to_string(f).with_context(|| format!("{}", f.display()))?;
         r.malos.insert(relativo.clone(), 0);
         r.futuros.insert(relativo.clone(), 0);
+        r.conflictos.insert(relativo.clone(), 0);
         for l in texto.lines().filter(|l| !l.trim().is_empty()) {
             // Una etiqueta que no es de clave (`x1:…`) es de un formato futuro.
             if partir(l).is_none() {
@@ -1685,8 +1794,12 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
     };
     lineas.sort_by_key(|(_, _, l)| orden(l));
     for (origen, fichero, l) in lineas {
+        let antes = r.conflictos_de_espacio;
         if aplicador.aplicar(db, &origen, l, modelo, r).is_err() {
-            *r.malos.entry(fichero).or_default() += 1;
+            *r.malos.entry(fichero.clone()).or_default() += 1;
+        }
+        if r.conflictos_de_espacio > antes {
+            *r.conflictos.entry(fichero).or_default() += r.conflictos_de_espacio - antes;
         }
     }
     r.ilegibles = r.malos.values().sum();
@@ -1814,13 +1927,13 @@ pub fn nombre_git() -> Option<String> {
 }
 
 pub fn config_de(url: &str, e: &Eleccion) -> Config {
-    config_con_persona(url, e, None)
+    config_con_persona(url, e, None, "")
 }
 
 /// Como `config_de`, pero con la persona ya decidida (`join` usa la del equipo que invita: así los
 /// proyectos sin remoto de una misma persona se juntan entre sus equipos aunque cada uno lleve otro
-/// nombre de autor).
-pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config {
+/// nombre de autor) y, si no hay ni autor ni nombre de git, la persona local de la base (`local`).
+pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>, local: &str) -> Config {
     let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Procedure];
     if e.preferencias {
         kinds.push(Tipo::Preference);
@@ -1831,10 +1944,39 @@ pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>) -> Config
         .map(persona)
         .filter(|p| !p.is_empty())
         .or_else(|| e.autor.clone().or_else(nombre_git).map(|n| persona(&n)).filter(|p| !p.is_empty()))
+        .or_else(|| Some(persona(local)).filter(|p| !p.is_empty()))
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.proyectos.is_empty()).then(|| e.proyectos.iter().map(|p| clave(p, &person)).collect());
     let spaces = (!e.espacios.is_empty()).then(|| e.espacios.iter().map(|s| crate::proyecto::clave_de_espacio(s)).collect());
     Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.autor.clone(), person, space: None }
+}
+
+/// Tras `sync init` o `join`: si la persona de la sincronización (`nueva`) no es la de esta base, pasa
+/// a serlo (es la misma persona en otro equipo): las claves `dir:` de los proyectos de aquí se vuelven a
+/// calcular con ella y sus memorias se vuelven a sellar, para que viajen con la clave buena, y todos
+/// los repositorios de este equipo la apuntan. Con `--another-person`, la de la configuración ya es la
+/// local y no cambia nada. Devuelve cuántos proyectos cambiaron de clave.
+pub fn adoptar_persona(db: &mut Connection, ruta_db: &Path, nueva: &str) -> Result<usize> {
+    let vieja = crate::db::persona_de(db);
+    if nueva.is_empty() || vieja == nueva {
+        return Ok(0);
+    }
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('persona', ?1)", [nueva])?;
+    let n = crate::proyecto::cambiar_persona(&tx, &vieja, nueva)?;
+    tx.commit()?;
+    let (de, a) = (format!("dir:{vieja}/"), format!("dir:{nueva}/"));
+    for r in repos(ruta_db) {
+        let Some(mut c) = leer_config_de(&r)? else { continue };
+        c.person = nueva.to_string();
+        for k in c.projects.iter_mut().flatten() {
+            if let Some(resto) = k.strip_prefix(&de) {
+                *k = format!("{a}{resto}");
+            }
+        }
+        escribir_privado(&r.config, &serde_json::to_string_pretty(&c)?)?;
+    }
+    Ok(n)
 }
 
 fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) -> Result<()> {
@@ -2061,12 +2203,20 @@ pub struct Estado {
     /// Lo mismo con las líneas de una versión más nueva de omoi.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_futuros: BTreeMap<String, usize>,
+    /// Lo mismo con las líneas rechazadas por tocar algo de otro espacio (`Resumen::conflictos_de_espacio`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ficheros_conflicto: BTreeMap<String, usize>,
 }
 
 impl Estado {
     /// Cuántas líneas de una versión más nueva quedan sin leer en el repositorio.
     pub fn de_version_nueva(&self) -> usize {
         self.ficheros_futuros.values().sum()
+    }
+
+    /// Cuántas líneas del repositorio se rechazaron por tocar algo de otro espacio.
+    pub fn conflictos_de_espacio(&self) -> usize {
+        self.ficheros_conflicto.values().sum()
     }
 }
 
@@ -2095,7 +2245,7 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
             e.ultimo_ok = Some(ahora());
             e.ultimo_error = None;
             e.error_desde = None;
-            for (cuentas, nuevas) in [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros)] {
+            for (cuentas, nuevas) in [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros), (&mut e.ficheros_conflicto, &r.conflictos)] {
                 for (f, n) in nuevas {
                     if *n == 0 {
                         cuentas.remove(f);
@@ -2116,6 +2266,14 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
             }
             if futuras > 0 {
                 avisos.push(aviso_lineas_nuevas(futuras));
+            }
+            let conflictos = e.conflictos_de_espacio();
+            if conflictos > 0 {
+                avisos.push(tr!(
+                    "{} shared line(s) rejected: they touch a project or memory that is in another space here (nothing from one space reaches another)",
+                    "{} línea(s) compartidas rechazadas: tocan un proyecto o una memoria que aquí es de otro espacio (nada de un espacio llega a otro)",
+                    conflictos
+                ));
             }
             e.aviso = (!avisos.is_empty()).then(|| avisos.join(" · "));
         }
@@ -2514,7 +2672,8 @@ mod tests {
         let e = Eleccion { preferencias: false, global: true, proyectos: vec![], espacios: vec![], autor: Some(" ".into()) };
         let c = config_de("x", &e);
         assert!(c.person.starts_with("u-") || !c.person.is_empty(), "nunca vacía: {}", c.person);
-        assert_eq!(config_con_persona("x", &e, Some("Ana López")).person, "ana-lópez");
+        assert_eq!(config_con_persona("x", &e, Some("Ana López"), "").person, "ana-lópez");
+        assert_eq!(config_con_persona("x", &e, None, "u-1234abcd").person, "u-1234abcd", "sin autor, la persona local");
         assert!(id_valido("01M62EWVHRXM0000000000ABCD"));
         assert!(!id_valido("01m62ewvhrxm0000000000abcd") && !id_valido("CORTO") && !id_valido("01M62EWVHRXM0000000000ABCÑ"));
     }

@@ -353,6 +353,9 @@ enum AccionProyectos {
         /// Put it in this space.
         #[arg(long, value_name = "SPACE")]
         space: Option<String>,
+        /// Merge it even if the folder is another space's project (its memories change space).
+        #[arg(long)]
+        force: bool,
     },
     /// Forget the projects without memories (a folder you work in again comes back by itself).
     Prune,
@@ -362,6 +365,9 @@ enum AccionProyectos {
         a: String,
         /// The project that stays (folder or name).
         b: String,
+        /// Merge them even if they are in different spaces (the memories change space).
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1237,11 +1243,11 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             }
             Ok(())
         }
-        AccionProyectos::Move { proyecto: p, carpeta, space } => {
+        AccionProyectos::Move { proyecto: p, carpeta, space, force } => {
             let id = proyecto::buscar(&db, &p)?;
             if let Some(carpeta) = carpeta {
                 let nueva = proyecto::de(&carpeta)?;
-                let fundidas = proyecto::mover(&mut db, id, &nueva)?;
+                let fundidas = proyecto::mover(&mut db, id, &nueva, force)?;
                 if fundidas > 0 {
                     println!("{}", tr!("{nueva}: moved there (its {fundidas} memories joined it)", "{nueva}: movido allí (se le han sumado sus {fundidas} memorias)"));
                 } else {
@@ -1259,9 +1265,9 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             println!("{}", tr!("{n} projects without memories forgotten", "{n} proyectos sin memorias olvidados"));
             Ok(())
         }
-        AccionProyectos::Merge { a, b } => {
+        AccionProyectos::Merge { a, b, force } => {
             let (de, en) = (proyecto::buscar(&db, &a)?, proyecto::buscar(&db, &b)?);
-            let n = proyecto::fundir(&mut db, de, en)?;
+            let n = proyecto::fundir(&mut db, de, en, force)?;
             println!("{}", tr!("merged: {n} memories moved to {b}", "fundidos: {n} memorias pasan a {b}"));
             Ok(())
         }
@@ -1720,7 +1726,11 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 (None, None) => unreachable!("clap exige url o --create"),
             };
             let e = elegir(&eleccion)?;
-            let mut config = sync::config_de(&url, &e);
+            // La persona: si este equipo ya sincroniza otro repositorio, la que ya tiene; si es el
+            // primero, la del autor (o el nombre de git), y si no hay, la local.
+            let local = omoikane::db::persona_de(&db);
+            let ya_sincroniza = !sync::repos(&ruta).is_empty();
+            let mut config = sync::config_con_persona(&url, &e, ya_sincroniza.then_some(local.as_str()), &local);
             // Un repositorio de un cliente no lleva las globales (son de la persona, no del cliente).
             config.global &= espacio.is_none();
             config.space = espacio;
@@ -1728,6 +1738,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                 return Ok(());
             }
             sync::iniciar(&mut db, &ruta, &config)?;
+            sync::adoptar_persona(&mut db, &ruta, &config.person)?;
             drop(db);
             primera(&tr!(
                 "Sync set up. To add another computer, run `omoi sync code` here and `omoi sync join <code>` there.",
@@ -1760,14 +1771,18 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             let url = otra_url.unwrap_or(url);
             let e = elegir(&eleccion)?;
             // Por defecto, otro equipo de la misma persona: su persona, para que los proyectos sin
-            // remoto git se junten aunque cada equipo lleve otro nombre de autor.
-            let mut config = sync::config_con_persona(&url, &e, if another_person { None } else { persona.as_deref() });
+            // remoto git se junten aunque cada equipo lleve otro nombre de autor (y los que ya había
+            // aquí pasan a ella). Con `--another-person`, la de este equipo: nada se junta.
+            let local = omoikane::db::persona_de(&db);
+            let fija = if another_person { Some(local.clone()) } else { persona };
+            let mut config = sync::config_con_persona(&url, &e, fija.as_deref(), &local);
             config.global &= espacio.is_none();
             config.space = espacio;
             if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
                 return Ok(());
             }
             sync::unirse(&mut db, &ruta, &config, id, &clave)?;
+            sync::adoptar_persona(&mut db, &ruta, &config.person)?;
             drop(db);
             primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))
         }
