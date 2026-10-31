@@ -1589,7 +1589,9 @@ impl Choque {
     pub fn orden(&self) -> String {
         let n = argumento(&self.name);
         match (self.there.is_empty(), self.here.is_empty()) {
-            (false, true) => format!("omoi projects move {n} --space {}", self.there),
+            // Aquí no está en ningún espacio y otro equipo dice que sí: meterlo es decisión de esta
+            // persona, no del repositorio que lo propone (quizá lo hizo personal a propósito).
+            (false, true) => format!("omoi projects move {n} --space {} --force", self.there),
             (false, false) => format!("omoi projects move {n} --space {} --force", self.there),
             (true, _) => format!("omoi projects move {n} --space {}", self.here),
         }

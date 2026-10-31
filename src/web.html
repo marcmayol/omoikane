@@ -823,7 +823,7 @@ function pintarRevisar() {
     <p class="vacio" style="padding:0 0 10px">${esc(T.fuera[1])}</p>
     ${fueraDeEspacio.map(x => `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.there ? ' → ' + esc(x.there) : ''}</span></div>
-      <div class="det2">${esc(x.text)}</div>
+      ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
       <div class="cmd"><code>${esc(x.command)}</code><button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
   // Proyectos en pausa: otro equipo dice que están en otro espacio (o el repositorio de un espacio dice
@@ -833,7 +833,7 @@ function pintarRevisar() {
     <p class="vacio" style="padding:0 0 10px">${esc(T.pausa[1])}</p>
     ${enPausa.map(x => `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.space ? ' → ' + esc(x.space) : ''}</span></div>
-      <div class="det2">${esc(x.text)}</div>
+      ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
       <div class="cmd"><code>${esc(x.keep)}</code><button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
       <div class="cmd"><code>${esc(x.accept)}</code><button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
