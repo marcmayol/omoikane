@@ -1111,7 +1111,9 @@ fn las_memorias_de_un_espacio_van_solo_a_su_repo() {
     assert_eq!(en_acme, esperadas);
     // En el general, la memoria global y la línea con el espacio del proyecto (sin nada de lo suyo).
     let clave_general = clave_del_codigo(&a.ok(&["sync", "code"]));
-    let tipos: Vec<String> = p.lineas_de(&p.url()).iter().map(|l| descifrar_linea(&clave_general, l)["type"].as_str().unwrap().to_string()).collect();
+    // Ordenados: el orden de los ficheros depende del sistema de ficheros (NTFS y ext4 listan distinto).
+    let mut tipos: Vec<String> = p.lineas_de(&p.url()).iter().map(|l| descifrar_linea(&clave_general, l)["type"].as_str().unwrap().to_string()).collect();
+    tipos.sort();
     assert_eq!(tipos, ["memory", "project"]);
     b.sync();
     assert!(b.get(&general).is_some() && b.get(&de_acme).is_none() && b.get(&del_proyecto).is_none(), "B solo está en el general");
