@@ -287,7 +287,9 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
 /// - `project.hlc`: el sello del último cambio de espacio del proyecto (vacío si nunca cambió), con el
 ///   que su espacio viaja como línea `project`. Esa línea nunca cambia el espacio de nada: si dice otro,
 ///   el proyecto queda en pausa (`project.paused`, local: JSON con el espacio que dice, su sello y qué
-///   equipo) hasta que la persona decida aquí (`omoi projects move` o `omoi projects keep`).
+///   equipo) hasta que la persona decida aquí (`omoi projects move` o `omoi projects keep`). También
+///   queda en pausa (`claimed`) el proyecto de un espacio al que se une una carpeta de aquí cuando este
+///   equipo no tenía ninguna suya: está en ese espacio solo porque lo dice su repositorio.
 /// - `tombstone.space_key`: el espacio de lo olvidado, para que cada olvido vaya solo al repositorio de
 ///   su espacio (los de antes, vacío: al general). Y `meta('persona')`, la de las claves `dir:`.
 /// - Locales, que no viajan: el proyecto desde el que se recibió cada memoria (`recall_log.project_id`)

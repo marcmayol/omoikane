@@ -354,12 +354,14 @@ enum AccionProyectos {
         #[arg(long, value_name = "SPACE")]
         space: Option<String>,
         /// Merge it even if the folder is another space's project, or move it from one space to
-        /// another (its memories change space).
+        /// another, or put a paused project in a space (its memories change space).
         #[arg(long)]
         force: bool,
     },
-    /// A paused project (another computer says it is in another space) stays where it is here, and
-    /// syncs again. To accept the other space instead: `omoi projects move <project> --space <space>`.
+    /// A paused project stays where it is here, and syncs again: when another computer says it is in
+    /// another space (to accept that instead: `omoi projects move <project> --space <space> --force`),
+    /// or when this folder joined a space's project only because that space's repository says so (it
+    /// is that space's; if it is yours: `omoi space unassign <project> --force`).
     Keep {
         /// The project: its folder, or its name or part of it.
         proyecto: String,
@@ -393,7 +395,8 @@ enum AccionEspacio {
         espacio: String,
         /// The project: its folder, or its name or part of it.
         proyecto: Option<String>,
-        /// Move it even if it is already in another space (its memories go to that space's repository).
+        /// Move it even if it is already in another space, or if it is paused (its memories go to that
+        /// space's repository).
         #[arg(long)]
         force: bool,
     },
@@ -1250,6 +1253,20 @@ fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>,
     Ok(pedido)
 }
 
+/// Un proyecto en pausa sin espacio aquí entra en uno (`projects move --space`, `space assign`) solo con
+/// `--force`: la pausa la puso otro equipo diciendo que es de un cliente, y aceptarlo manda sus
+/// memorias al repositorio de ese cliente.
+fn pausado_sin_espacio_exige_force(db: &Connection, id: i64, destino: i64, pausado: bool, force: bool) -> Result<()> {
+    if pausado && !force && proyecto::espacio_de(db, id)?.is_none() {
+        bail!(tr!(
+            "the project is paused because another computer says it belongs to a space: moving it to «{}» sends its memories to that space's sync repository. If you are not sure, `omoi projects keep` leaves it as it is; add --force if moving it is what you want",
+            "el proyecto está en pausa porque otro equipo dice que es de un espacio: pasarlo a «{}» manda sus memorias al repositorio de ese espacio. Si no lo sabes, `omoi projects keep` lo deja como está; añade --force si es lo que quieres",
+            proyecto::clave_espacio(db, Some(destino))?
+        ));
+    }
+    Ok(())
+}
+
 /// `omoi projects`.
 fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
     let mut db = abrir(c)?;
@@ -1271,8 +1288,9 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
         AccionProyectos::Move { proyecto: p, carpeta, space, force } => {
             let id = proyecto::buscar(&db, &p)?;
             // De un espacio a otro, solo con --force (como merge y move por carpeta): lo de un cliente
-            // pasaría al repositorio de otro. De ninguno a uno, no hace falta. El espacio que dice la
-            // línea que pausó el proyecto se crea aquí si aún no está.
+            // pasaría al repositorio de otro. De ninguno a uno, no hace falta, salvo si está en pausa
+            // (porque otro equipo dice que es de un espacio: puede no serlo). El espacio que dice la línea
+            // que pausó el proyecto se crea aquí si aún no está.
             let clave = proyecto::clave_de(&db, id)?;
             let pausa = proyecto::en_pausa(&db)?.into_iter().find(|x| x.key == clave);
             let destino = match space.as_deref() {
@@ -1282,6 +1300,9 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
                 Some(s) => Some(proyecto::buscar_espacio(&db, s)?),
                 None => None,
             };
+            if let Some(d) = destino {
+                pausado_sin_espacio_exige_force(&db, id, d, pausa.is_some(), force)?;
+            }
             if let (Some(antes), Some(d)) = (proyecto::espacio_de(&db, id)?, destino)
                 && antes != d
                 && !force
@@ -1366,6 +1387,8 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
         AccionEspacio::Assign { espacio, proyecto: p, force } => {
             let s = proyecto::buscar_espacio(&db, &espacio)?;
             let id = elegido(p)?;
+            let pausado = proyecto::pausado(&db, &proyecto::clave_de(&db, id)?)?;
+            pausado_sin_espacio_exige_force(&db, id, s, pausado, force)?;
             // De un espacio a otro, solo con --force, como `projects move --space`: lo de un cliente
             // pasaría al repositorio de otro.
             if let Some(antes) = proyecto::espacio_de(&db, id)?

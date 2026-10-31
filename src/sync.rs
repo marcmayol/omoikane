@@ -1624,19 +1624,20 @@ pub fn sin_repetir<'a>(choques: impl IntoIterator<Item = &'a Choque>) -> Vec<Cho
     choques.into_iter().filter(|c| vistos.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
 }
 
-/// La orden que acepta lo que dice la línea que pausó el proyecto: pasarlo a ese espacio (con
-/// `--force` si sale de otro; sin espacio, sacarlo del suyo). Si no se sabe a cuál, con `<space>`.
+/// La otra orden, la que no deja el proyecto como está: pasarlo al espacio que dice la línea que lo
+/// pausó (siempre con `--force`: su repositorio pasaría a ser el de ese cliente), o sacarlo del suyo.
+/// Si no se sabe a cuál, con `<space>`. En la pausa de una carpeta reclamada (`claimed`), sacarlo del
+/// espacio: es personal.
 pub fn orden_aceptar(p: &crate::proyecto::EnPausa) -> String {
     let n = argumento(&p.name);
-    match (p.pausa.unknown, p.pausa.space.is_empty(), p.here.is_empty()) {
-        (true, _, _) => format!("omoi projects move {n} --space <space>"),
-        (false, true, _) => format!("omoi space unassign {n} --force"),
-        (false, false, true) => format!("omoi projects move {n} --space {}", p.pausa.space),
+    match (p.pausa.claimed, p.pausa.unknown, p.pausa.space.is_empty()) {
+        (true, _, _) | (false, false, true) => format!("omoi space unassign {n} --force"),
+        (false, true, _) => format!("omoi projects move {n} --space <space> --force"),
         (false, false, false) => format!("omoi projects move {n} --space {} --force", p.pausa.space),
     }
 }
 
-/// La orden que lo deja donde está (`omoi projects keep`).
+/// La orden que lo deja donde está (`omoi projects keep`): la primera que se recomienda.
 pub fn orden_quedarse(p: &crate::proyecto::EnPausa) -> String {
     format!("omoi projects keep {}", argumento(&p.name))
 }
@@ -1646,26 +1647,32 @@ pub fn orden_quedarse(p: &crate::proyecto::EnPausa) -> String {
 pub fn texto_pausa(ruta_db: &Path, p: &crate::proyecto::EnPausa) -> String {
     let (n, m, si, no) = (&p.name, &p.pausa.machine, orden_aceptar(p), orden_quedarse(p));
     let (aqui_en, aqui_es) = if p.here.is_empty() { ("in no space".to_string(), "en ninguno".to_string()) } else { (format!("in {}", p.here), format!("en {}", p.here)) };
-    let mut t = if p.pausa.unknown {
+    let e = &p.pausa.space;
+    // Lo que dice otro equipo no se repite como si fuera cierto: puede ser un error o una línea escrita a
+    // propósito. Primero, la orden que lo deja como está.
+    let mut t = if p.pausa.claimed {
         tr!(
-            "{n} is paused: {m} moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` or, to leave it where it is, `{no}`",
-            "{n} está en pausa: {m} lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` o, para dejarlo donde está, `{no}`"
+            "{n} is paused: this folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What you save in it stays here until you decide: if it is {e}'s, `{no}`; if it is yours, `{si}` (it goes to the general repository, never to {e})",
+            "{n} está en pausa: esta carpeta es del espacio {e} solo porque lo dice el repositorio de {e} (este equipo no tenía ninguna carpeta suya). Lo que guardes en ella se queda aquí hasta que decidas: si es de {e}, `{no}`; si es tuya, `{si}` (va al repositorio general, nunca a {e})"
         )
-    } else if p.pausa.space.is_empty() {
+    } else if p.pausa.unknown {
         tr!(
-            "{n} is paused: {m} says it is in no space; here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` (its memories would go to the general repository) or `{no}`",
-            "{n} está en pausa: {m} dice que no es de ningún espacio; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` (sus memorias irían al repositorio general) o `{no}`"
+            "{n} is paused: another computer ({m}) says it moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to move it, `{si}`",
+            "{n} está en pausa: otro equipo ({m}) dice que lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para moverlo, `{si}`"
+        )
+    } else if e.is_empty() {
+        tr!(
+            "{n} is paused: another computer ({m}) says it is in no space; here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to take it out, `{si}` (its memories would go to the general repository)",
+            "{n} está en pausa: otro equipo ({m}) dice que no es de ningún espacio; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para sacarlo, `{si}` (sus memorias irían al repositorio general)"
         )
     } else {
         tr!(
-            "{n} is paused: {m} says it belongs to the space {}; here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` or `{no}`",
-            "{n} está en pausa: {m} dice que es del espacio {}; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` o `{no}`",
-            p.pausa.space
+            "{n} is paused: another computer ({m}) says it belongs to the space {e}; here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to move it to {e}, `{si}`",
+            "{n} está en pausa: otro equipo ({m}) dice que es del espacio {e}; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para pasarlo a {e}, `{si}`"
         )
     };
     // Si va a un espacio cuyo repositorio este equipo no tiene: cómo unirse.
-    if !p.pausa.space.is_empty() && repo_de_espacio(ruta_db, &p.pausa.space).is_none() {
-        let e = &p.pausa.space;
+    if !p.pausa.claimed && !e.is_empty() && repo_de_espacio(ruta_db, e).is_none() {
         t.push_str(&tr!(
             " (to sync it in {e}, join its repository: `omoi sync join --space {e} <code>`; `omoi sync code --space {e}` on a computer that has it gives the code)",
             " (para sincronizarlo en {e}, únete a su repositorio: `omoi sync join --space {e} <código>`; el código lo da `omoi sync code --space {e}` en un equipo que ya lo tenga)"
@@ -1686,14 +1693,24 @@ pub fn aviso_de_pausa_agente(db: &Connection) -> Option<String> {
         .iter()
         .map(|p| {
             let (si, no) = (orden_aceptar(p), orden_quedarse(p));
+            let e = &p.pausa.space;
+            if p.pausa.claimed {
+                return format!(
+                    "The project {} is paused: its folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What is saved in it stays on this computer until the user decides. Ask the user whether it belongs to {e}: if so, run `{no}`; if it is theirs, `{si}`.",
+                    p.name
+                );
+            }
             let dice = if p.pausa.unknown {
-                "another computer moved it to another space (the general repository doesn't say which: ask the user which one)".to_string()
-            } else if p.pausa.space.is_empty() {
+                "another computer says it moved it to a space (the general repository doesn't say which)".to_string()
+            } else if e.is_empty() {
                 "another computer says it is in no space".to_string()
             } else {
-                format!("another computer says it belongs to the space {}", p.pausa.space)
+                format!("another computer says it belongs to the space {e}")
             };
-            format!("The project {} is paused: {dice}. Nothing of it is synced until the user decides: ask the user, then run `{si}` or `{no}`.", p.name)
+            format!(
+                "The project {} is paused: {dice}. Nothing of it is synced until the user decides. Ask the user; if they don't know, run `{no}` (it stays as it is); to accept the change, `{si}`.",
+                p.name
+            )
         })
         .collect();
     (!lineas.is_empty()).then(|| lineas.join("\n"))
@@ -1875,7 +1892,7 @@ impl<'a> Aplicador<'a> {
                 }
                 // Otro espacio: ni se mueve ni se sigue sincronizando; en pausa hasta que se decida aquí.
                 let quien = reloj::partes(&hlc).2.to_string();
-                let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: quien, at: String::new() };
+                let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: quien, ..Default::default() };
                 crate::proyecto::pausar(db, id, &p)?;
                 reloj::recibir(db, &p.hlc)?;
                 Ok(())
@@ -1987,6 +2004,12 @@ impl<'a> Aplicador<'a> {
                     if !space_key.is_empty() && crate::proyecto::espacio_de(db, p)?.is_none() {
                         let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
                         db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![p, s])?;
+                        // Si su carpeta ya estaba aquí (la misma ruta, con la misma clave), es una carpeta
+                        // de aquí que entra en un espacio porque lo dice su repositorio: en pausa hasta
+                        // que la persona lo confirme, como si la abriera después.
+                        if self.config.is_some() && crate::proyecto::carpetas_propias(db, p)? > 0 {
+                            crate::proyecto::pausar_por_reclamo(db, p)?;
+                        }
                     }
                     (Some(p), None)
                 } else if !space_key.is_empty() {
