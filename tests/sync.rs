@@ -1548,7 +1548,7 @@ fn lo_que_llega_por_un_espacio_no_cae_en_otro() {
     let r = a.sync();
     assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(1)), "{r}");
     assert!(a.get(&fuga).is_none(), "no cae en beta/web");
-    assert!(a.ok(&["sync", "status"]).contains("web is paused: pc-c"));
+    assert!(a.ok(&["sync", "status"]).contains("web is paused: another computer (pc-c"));
     a.ok(&["projects", "keep", bweb.to_str().unwrap()]);
     let r = a.sync();
     assert_eq!(r["conflictos_de_espacio"], 1, "{r}");
@@ -1806,10 +1806,15 @@ fn personal_a_empresa_con_dos_equipos() {
     c.ok(&["sync", "join", a.ok(&["sync", "code", "--space", "acme"]).trim(), "--yes"]);
     let r = c.sync();
     assert_eq!(espacio_de(&c, WEB), "");
-    assert!(r["avisos"].to_string().contains("says it belongs to the space acme") && r["avisos"].to_string().contains("omoi projects move web --space acme"), "{r}");
+    let avisos = r["avisos"].to_string();
+    assert!(avisos.contains("says it belongs to the space acme") && avisos.contains("If you don't know, `omoi projects keep web`"), "{r}");
+    assert!(avisos.contains("`omoi projects move web --space acme --force`"), "{r}");
     let en_acme = serde_json::to_string(&lineas_claras(&p, &acme, &clave_del_codigo(&a.ok(&["sync", "code", "--space", "acme"])))).unwrap();
     assert!(!en_acme.contains("CDOS") && !en_acme.contains("CNUEVA"), "tampoco va a acme mientras está en pausa");
-    let o = c.ok(&["projects", "move", "web", "--space", "acme"]);
+    // Sin espacio aquí, pasarlo al que dice otro equipo pide --force.
+    let o = c.omoi_en(&c.dir, &["projects", "move", "web", "--space", "acme"], &[]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--force"), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = c.ok(&["projects", "move", "web", "--space", "acme", "--force"]);
     assert!(o.contains("no longer paused"), "{o}");
     c.sync();
     a.sync();
@@ -1921,7 +1926,7 @@ fn una_linea_project_solo_pausa(caso: &str, i: usize, espacio: &str, sin_el: [Ve
     assert_eq!(t.espacios(), antes, "{caso}: nada cambia de espacio: {r}");
     let pausados: Vec<String> = base(a).prepare("SELECT key FROM project WHERE paused != ''").unwrap().query_map([], |f| f.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(pausados, [CLAVES[i]], "{caso}");
-    assert!(r["avisos"].to_string().contains("is paused: pc-x"), "{caso}: {r}");
+    assert!(r["avisos"].to_string().contains("is paused: another computer (pc-x)"), "{caso}: {r}");
     assert_eq!(t.marcas(), sin_el, "{caso}: lo suyo deja de ir a su repositorio, y nada va a otro");
     // Lo que cambia mientras está en pausa no sale de aquí.
     a.ok_en(&t.carpetas[i], &["update", &t.ids[i], "-c", "Cambiado NUEVOSEC.", "-r", "x"], &[]);
@@ -1992,8 +1997,8 @@ fn una_linea_project_por_un_cliente_o_sin_nombre_solo_pausa() {
     assert_eq!(t.espacios(), antes, "{r}");
     assert_eq!(t.marcas(), [vec![], vec!["ACMESEC"], vec![]], "{r}");
     let estado = a.ok(&["sync", "status"]);
-    assert!(estado.contains("beta-web is paused: pc-x says it belongs to the space acme") && estado.contains("omoi projects move beta-web --space acme --force"), "{estado}");
-    assert!(estado.contains("personal is paused: pc-y moved it to a space") && estado.contains("omoi projects keep personal"), "{estado}");
+    assert!(estado.contains("beta-web is paused: another computer (pc-x) says it belongs to the space acme") && estado.contains("omoi projects move beta-web --space acme --force"), "{estado}");
+    assert!(estado.contains("personal is paused: another computer (pc-y) says it moved it to a space") && estado.contains("omoi projects keep personal"), "{estado}");
     let web = a.json_en(&a.dir, &["sync", "status"]);
     assert_eq!(web["paused"].as_array().unwrap().len(), 2, "{web}");
     for i in [0, 2] {
@@ -2084,7 +2089,7 @@ fn mover_entre_espacios_con_otro_equipo() {
     assert_eq!(espacio_de(&c, WEB), "acme", "nada se mueve solo: {r}");
     let estado = c.ok(&["sync", "status"]);
     assert!(
-        estado.contains("web is paused: pc-a") && estado.contains("`omoi projects move web --space beta --force`") && estado.contains("`omoi projects keep web`"),
+        estado.contains("web is paused: another computer (pc-a") && estado.contains("`omoi projects move web --space beta --force`") && estado.contains("`omoi projects keep web`"),
         "{estado}"
     );
 
@@ -2163,7 +2168,7 @@ fn la_edicion_mas_nueva_gana_aunque_otro_equipo_mueva_el_proyecto() {
         }
         assert_eq!(espacio_de(&a, WEB), "", "{caso}: A no lo mueve solo");
         assert!(a.ok(&["sync", "status"]).contains("web is paused"), "{caso}");
-        a.ok(&["projects", "move", "web", "--space", "acme"]);
+        a.ok(&["projects", "move", "web", "--space", "acme", "--force"]);
         for e in orden {
             e.sync();
         }
@@ -2174,4 +2179,131 @@ fn la_edicion_mas_nueva_gana_aunque_otro_equipo_mueva_el_proyecto() {
             assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(0)), "{caso} {}: {r}", e.nombre);
         }
     }
+}
+
+/// El texto de un repositorio, para buscar marcas.
+fn texto_del_repo(p: &Prueba, url: &str, clave: &[u8]) -> String {
+    serde_json::to_string(&lineas_claras(p, url, clave)).unwrap()
+}
+
+/// Reclamo por adelantado: el repositorio de acme apunta en acme un proyecto que aquí aún no tiene
+/// carpeta (con una línea `project`, o con una memoria de su clave). Cuando la persona abre después esa
+/// carpeta, el proyecto queda en pausa y se avisa (también al agente, en la primera sesión): lo que
+/// guarda en ella no va a acme hasta `omoi projects keep`; con `omoi space unassign --force` va al
+/// general, y nunca a acme.
+fn un_cliente_no_reclama_un_proyecto_por_adelantado(caso: &str, por_memoria: bool) {
+    const CLAVE: &str = "git:github.com/me/futuro";
+    for decision in ["keep", "unassign"] {
+        let caso = format!("{caso}-{decision}");
+        let t = tres_repos(&caso);
+        let a = &t.a;
+        let sello = sello_pronto("pc-x");
+        // Con la memoria, una vez con una ruta de otro equipo y otra con la misma ruta en la que la
+        // persona abrirá luego la carpeta (la ruta ajena pasa a ser la suya).
+        let ruta = if decision == "keep" { "/x/futuro".to_string() } else { a.dir.join("futuro").to_string_lossy().into_owned() };
+        let (fichero, linea) = if por_memoria {
+            (
+                "p-x/m-x.jsonl",
+                serde_json::json!({
+                    "type": "memory", "id": "01M62EWVHRXM00000000PRECL2", "project_key": CLAVE, "project_path": ruta, "space_key": "acme",
+                    "kind": "fact", "title": "cebo", "content": "cebo", "hlc": sello, "created_at": "2026-10-31T00:00:00.000Z",
+                    "updated_at": "2026-10-31T00:00:00.000Z", "machine": "pc-x"
+                }),
+            )
+        } else {
+            ("proyectos/m-x.jsonl", serde_json::json!({ "type": "project", "key": CLAVE, "name": "futuro", "space_key": "acme", "hlc": sello, "machine": "pc-x" }))
+        };
+        t.p.subir_a_mano_en(&t.acme, fichero, &format!("{}\n", cifrar_linea(&t.claves[1], &linea)));
+        a.sync();
+        assert_eq!(espacio_de(a, CLAVE), "acme", "{caso}: el repositorio de acme lo apunta allí");
+
+        // La persona abre su carpeta: la primera sesión ya avisa, y el agente debe preguntar.
+        let futuro = a.proyecto("futuro", Some("git@github.com:me/futuro.git"));
+        let al_empezar = a.ok_en(&futuro, &["recall", "--session-start", "--format", "plain"], &[]);
+        assert!(
+            al_empezar.contains("The project futuro is paused") && al_empezar.contains("only because acme's repository says so") && al_empezar.contains("Ask the user"),
+            "{caso}: {al_empezar}"
+        );
+        a.guardar(&futuro, "fact", "Mi proyecto", "Personal RECLAMOSEC.", &[]);
+        let r = a.sync();
+        let avisos = r["avisos"].to_string();
+        assert!(avisos.contains("futuro is paused: this folder is in the space acme only because acme's repository says so"), "{caso}: {r}");
+        let estado = a.ok(&["sync", "status"]);
+        assert!(estado.contains("`omoi projects keep futuro`") && estado.contains("`omoi space unassign futuro --force`"), "{caso}: {estado}");
+        assert!(a.ok_en(&futuro, &["review"], &[]).contains("project_paused"), "{caso}");
+        // Lo guardado se queda aquí: ni en acme ni en el general (ni en beta).
+        let repos = [(t.p.url(), &t.claves[0]), (t.acme.clone(), &t.claves[1]), (t.beta.clone(), &t.claves[2])];
+        for (url, clave) in &repos {
+            assert!(!texto_del_repo(&t.p, url, clave).contains("RECLAMOSEC"), "{caso}: {url}");
+        }
+
+        if decision == "keep" {
+            // Sí es de acme: sale de la pausa en acme, y lo suyo va a acme.
+            assert!(a.ok(&["projects", "keep", futuro.to_str().unwrap()]).contains("stays in the space «acme»"));
+            a.sync();
+            assert_eq!(espacio_de(a, CLAVE), "acme");
+            assert!(texto_del_repo(&t.p, &t.acme, &t.claves[1]).contains("RECLAMOSEC"), "{caso}");
+            assert!(!texto_del_repo(&t.p, &t.p.url(), &t.claves[0]).contains("RECLAMOSEC"), "{caso}");
+        } else {
+            // Es personal: sale de la pausa sin espacio; va al general, y nunca a acme.
+            let o = a.omoi_en(&futuro, &["space", "unassign"], &[]);
+            assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--force"), "{caso}");
+            a.ok_en(&futuro, &["space", "unassign", "--force"], &[]);
+            a.guardar(&futuro, "fact", "Otra mía", "Personal RECLAMODOS.", &[]);
+            a.sync();
+            a.sync();
+            assert_eq!(espacio_de(a, CLAVE), "");
+            let general = texto_del_repo(&t.p, &t.p.url(), &t.claves[0]);
+            assert!(general.contains("RECLAMOSEC") && general.contains("RECLAMODOS"), "{caso}");
+            let en_acme = texto_del_repo(&t.p, &t.acme, &t.claves[1]);
+            assert!(!en_acme.contains("RECLAMOSEC") && !en_acme.contains("RECLAMODOS"), "{caso}: {en_acme}");
+        }
+        let estado = a.ok(&["sync", "status"]);
+        assert!(!estado.contains("paused"), "{caso}: {estado}");
+        // Lo de antes sigue en su sitio.
+        assert_eq!(t.espacios(), ["", "acme", "beta"], "{caso}");
+    }
+}
+
+#[test]
+fn un_cliente_no_reclama_un_proyecto_por_adelantado_con_project() {
+    un_cliente_no_reclama_un_proyecto_por_adelantado("reclamo-project", false);
+}
+
+#[test]
+fn un_cliente_no_reclama_un_proyecto_por_adelantado_con_memory() {
+    un_cliente_no_reclama_un_proyecto_por_adelantado("reclamo-memory", true);
+}
+
+/// El caso normal: un compañero se une a acme y abre la carpeta del proyecto del cliente. Se le pide
+/// una confirmación (este equipo no tenía ninguna carpeta suya); con `keep`, se sincroniza en los dos
+/// sentidos.
+#[test]
+fn un_companero_que_se_une_a_un_cliente_confirma_el_proyecto() {
+    let t = tres_repos("companero");
+    let (a, c) = (&t.a, t.p.equipo("pc-c"));
+    c.ok(&["sync", "join", a.ok(&["sync", "code", "--space", "acme"]).trim(), "--yes"]);
+    c.sync();
+    assert_eq!(espacio_de(&c, CLAVES[1]), "acme");
+    let cweb = c.proyecto("acme-web", Some("https://github.com/acme/web"));
+    let al_empezar = c.ok_en(&cweb, &["recall", "--session-start", "--format", "plain"], &[]);
+    assert!(al_empezar.contains("The project acme-web is paused") && al_empezar.contains("omoi projects keep acme-web"), "{al_empezar}");
+    let de_c = c.guardar(&cweb, "fact", "De C", "Lo de C CSEC.", &[]);
+    c.sync();
+    assert!(!texto_del_repo(&t.p, &t.acme, &t.claves[1]).contains("CSEC"), "nada sale de C hasta confirmar");
+
+    c.ok_en(&cweb, &["projects", "keep", cweb.to_str().unwrap()], &[]);
+    c.sync();
+    a.sync();
+    assert_eq!(a.get(&de_c).expect("A tiene lo de C")["space"], "acme");
+    a.ok_en(&t.carpetas[1], &["update", &t.ids[1], "-c", "Cambiado por A ACAMBIO.", "-r", "a"], &[]);
+    a.sync();
+    c.sync();
+    assert_eq!(contenido(&c, &t.ids[1]), "Cambiado por A ACAMBIO.");
+    for e in [a, &c] {
+        let r = e.sync();
+        assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(0)), "{}: {r}", e.nombre);
+        assert!(!e.ok(&["sync", "status"]).contains("paused"), "{}", e.nombre);
+    }
+    assert_eq!(t.marcas()[0], ["PERSONALSEC"], "nada de acme en el general");
 }

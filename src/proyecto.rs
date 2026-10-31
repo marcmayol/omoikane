@@ -244,8 +244,7 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
     // nombre pueden ser cosas distintas: solo se junta con un proyecto que aquí no tiene ninguna
     // carpeta propia (el de otro equipo de la misma persona). Una carpeta movida sin `origin` se
     // arregla con `omoi projects move` (Revisar la enseña como «ya no está»).
-    let propias: i64 = db.query_row("SELECT count(*) FROM project_path WHERE project_id = ?1 AND is_foreign = 0", [id], |f| f.get(0))?;
-    if clave.starts_with("git:") || propias == 0 {
+    if clave.starts_with("git:") || carpetas_propias(db, id)? == 0 {
         return Ok(Decision::Unir(id, espacio));
     }
     let mut n = 2;
@@ -264,6 +263,11 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
             Some(_) => n += 1,
         }
     }
+}
+
+/// Cuántas carpetas propias (de este equipo, no las que trajo otro) tiene un proyecto.
+pub fn carpetas_propias(db: &Connection, proyecto: i64) -> Result<i64> {
+    Ok(db.query_row("SELECT count(*) FROM project_path WHERE project_id = ?1 AND is_foreign = 0", [proyecto], |f| f.get(0))?)
 }
 
 /// Si una carpeta ya está apuntada como carpeta de un proyecto.
@@ -303,31 +307,43 @@ pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<St
     }
     let ahora = ahora(db)?;
     let existe = Path::new(ruta).is_dir();
-    if let Some((id, _)) = por_ruta(db, ruta)? {
+    if let Some((id, espacio)) = por_ruta(db, ruta)? {
         if existe {
+            // La ruta que trajo otro equipo existe ahora aquí: es la primera carpeta de este equipo, y
+            // como al unirse por la clave, entrar así en un espacio pide confirmarlo.
+            let reclamado = espacio.is_some() && carpetas_propias(db, id)? == 0;
             db.execute(
                 "UPDATE project_path SET is_foreign = 0, origin = ?2, last_seen = ?3
                  WHERE path_cmp = ?1 AND (is_foreign = 1 OR origin != ?2 OR last_seen IS NULL OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'))",
                 params![comparable(ruta), origen(ruta), ahora],
             )?;
+            if reclamado {
+                pausar_por_reclamo(db, id)?;
+            }
             return Ok((id, principal_si_hace_falta(db, id, ruta)?));
         }
         return Ok((id, None));
     }
-    let id = match decidir(db, ruta, &crate::db::persona_de(db))? {
-        Decision::Unir(id, _) => id,
+    let (id, reclamado) = match decidir(db, ruta, &crate::db::persona_de(db))? {
+        // Un proyecto que está en un espacio sin tener aquí ninguna carpeta propia está en él porque lo
+        // dice el repositorio de ese espacio (una línea `project`, o una memoria con su clave): esta
+        // carpeta no entra en él sin que la persona lo confirme.
+        Decision::Unir(id, espacio) => (id, espacio.is_some() && carpetas_propias(db, id)? == 0),
         Decision::Nuevo(clave) => {
             db.execute(
                 "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![clave, nombre_de(ruta, &clave), ruta, ahora],
             )?;
-            db.last_insert_rowid()
+            (db.last_insert_rowid(), false)
         }
     };
     db.execute(
         "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
         params![ruta, comparable(ruta), id, origen(ruta), existe.then_some(&ahora)],
     )?;
+    if reclamado {
+        pausar_por_reclamo(db, id)?;
+    }
     Ok((id, principal_si_hace_falta(db, id, ruta)?))
 }
 
@@ -671,6 +687,11 @@ pub struct Pausa {
     /// repositorio general, que no nombra clientes).
     #[serde(default)]
     pub unknown: bool,
+    /// No la puso una línea `project`: una carpeta de aquí se unió a un proyecto que estaba en un
+    /// espacio (`space`) solo porque lo dice el repositorio de ese espacio (aquí no tenía ninguna carpeta
+    /// propia). Sale de ella confirmándolo (`omoi projects keep`) o sacándolo del espacio.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub claimed: bool,
     /// El sello de esa línea.
     #[serde(default)]
     pub hlc: String,
@@ -694,6 +715,21 @@ pub fn pausar(db: &Connection, proyecto: i64, pausa: &Pausa) -> Result<()> {
     let p = Pausa { at: ahora(db)?, ..pausa.clone() };
     db.execute("UPDATE project SET paused = ?2 WHERE id = ?1", params![proyecto, serde_json::to_string(&p)?])?;
     Ok(())
+}
+
+/// Deja en pausa (`Pausa::claimed`) un proyecto de un espacio al que acaba de unirse una carpeta de
+/// aquí sin que este equipo tuviera ninguna: el repositorio de ese espacio dice que es suyo, pero
+/// puede no serlo (una librería personal que un compañero usa en el cliente, o una línea escrita a
+/// propósito para quedarse con lo que se guarde en esa carpeta). Si ya estaba en pausa, se queda la que
+/// tenía.
+pub fn pausar_por_reclamo(db: &Connection, proyecto: i64) -> Result<()> {
+    let (espacio, hlc, pausa): (Option<i64>, String, String) =
+        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
+    if espacio.is_none() || !pausa.is_empty() {
+        return Ok(());
+    }
+    let machine = crate::reloj::partes(&hlc).2.to_string();
+    pausar(db, proyecto, &Pausa { space: clave_espacio(db, espacio)?, claimed: true, hlc, machine, ..Default::default() })
 }
 
 /// Un proyecto en pausa, como lo enseñan `omoi sync`, `doctor`, `review` y Revisar.
