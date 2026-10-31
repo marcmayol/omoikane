@@ -31,6 +31,7 @@ use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const FORMATO: &str = "omoi-export";
@@ -76,6 +77,7 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         exported_at: db.query_row(&format!("SELECT {}", memoria::AHORA), [], |f| f.get(0))?,
         machine: equipo.clone(),
         encrypted: cifrar,
+        person: crate::db::persona_de(db),
     };
     serde_json::to_writer(&mut *salida, &cabecera)?;
     salida.write_all(b"\n")?;
@@ -92,18 +94,42 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         salida.write_all(b"\n")?;
         Ok(())
     };
+    // Sin `--all` (un proyecto o un espacio), de la papelera, los olvidos y los veredictos solo va lo de
+    // ese ámbito: una copia de un cliente no lleva nada de otro. La papelera de este ámbito, primero:
+    // los olvidos y los veredictos dependen de ella.
+    let todo = matches!(ambito, Ambito::Todos);
+    let mut en_papelera: HashSet<String> = HashSet::new();
+    let mut con_copia: HashSet<String> = HashSet::new();
+    {
+        let mut q = db.prepare("SELECT id, memory FROM forgotten")?;
+        let mut filas = q.query([])?;
+        while let Some(f) = filas.next()? {
+            let (id, texto): (String, String) = (f.get(0)?, f.get(1)?);
+            if todo || de_papelera_en(db, ambito, &texto)? {
+                en_papelera.insert(id.clone());
+            }
+            con_copia.insert(id);
+        }
+    }
+    let espacio_del_ambito = crate::proyecto::clave_espacio(db, ambito.espacio())?;
     // Primero las marcas de olvido (al importar se aplican antes que las memorias), luego las memorias
     // con su historial, la papelera y al final los veredictos, que necesitan sus memorias (vivas o en
     // la papelera).
     {
-        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, {} FROM tombstone t ORDER BY t.id", sync::EXTRA_OLVIDO))?;
+        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {} FROM tombstone t ORDER BY t.id", sync::EXTRA_OLVIDO))?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
-            let extra: String = f.get(3)?;
-            escribir(&Linea::olvido(f.get(0)?, f.get(1)?, f.get(2)?, &equipo, sync::extra_de(&extra)), salida)?;
+            let (id, espacio, extra): (String, String, String) = (f.get(0)?, f.get(3)?, f.get(4)?);
+            // De este ámbito: lo que está en su papelera o, sin copia en la papelera, lo de su espacio.
+            if !todo && !en_papelera.contains(&id) && (con_copia.contains(&id) || espacio != espacio_del_ambito) {
+                continue;
+            }
+            escribir(&Linea::olvido(id, f.get(1)?, f.get(2)?, espacio, &equipo, sync::extra_de(&extra)), salida)?;
             cuenta.tombstones += 1;
         }
     }
+    // Las memorias que van (vivas o en la papelera): sus veredictos, con ellas.
+    let mut van = en_papelera.clone();
     {
         let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", ambito.sql()))?;
         let mut filas = q.query([])?;
@@ -111,6 +137,7 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
             let m = de_fila(f)?;
             let (hlc, content_hlc, extra): (String, String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?, f.get(NCOL + 2)?);
             let versions = memoria::historial(db, &m.id)?;
+            van.insert(m.id.clone());
             let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions, sync::extra_de(&extra));
             escribir(&l, salida)?;
             cuenta.memories += 1;
@@ -120,14 +147,22 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         let mut q = db.prepare("SELECT id, memory, versions, hlc, deleted_at, by FROM forgotten ORDER BY id")?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
+            let id: String = f.get(0)?;
+            if !en_papelera.contains(&id) {
+                continue;
+            }
             let (memoria, versiones): (String, String) = (f.get(1)?, f.get(2)?);
             let versions = serde_json::from_str(&versiones).unwrap_or_default();
-            let Some(l) = Linea::papelera(db, f.get(0)?, &memoria, versions, f.get(3)?, f.get(4)?, f.get(5)?)? else { continue };
+            let Some(l) = Linea::papelera(db, id, &memoria, versions, f.get(3)?, f.get(4)?, f.get(5)?)? else { continue };
             escribir(&l, salida)?;
             cuenta.forgotten += 1;
         }
     }
     for v in crate::veredictos::todos(db)? {
+        // Las dos memorias, del ámbito: un veredicto no se lleva a una copia que no tiene la otra.
+        if !todo && !(van.contains(&v.memory_id) && (v.other_id.is_empty() || van.contains(&v.other_id))) {
+            continue;
+        }
         escribir(&Linea::veredicto(v, &equipo), salida)?;
         cuenta.verdicts += 1;
     }
@@ -139,6 +174,29 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
     }
     salida.write_all(b"\n")?;
     Ok(cuenta)
+}
+
+/// Si una memoria de la papelera (`texto`, lo que guarda `forgotten.memory`) es de este ámbito: su
+/// proyecto por la clave (o, en las de antes del esquema 10, por la ruta) o su espacio. Una cuyo
+/// proyecto o espacio aquí ya no existe no es de ningún ámbito.
+fn de_papelera_en(db: &Connection, ambito: &Ambito, texto: &str) -> Result<bool> {
+    let Some((m, _, _)) = sync::de_papelera(texto) else { return Ok(false) };
+    let proyecto = if !m.project_key.is_empty() {
+        db.query_row("SELECT id FROM project WHERE key = ?1", [&m.project_key], |f| f.get::<_, i64>(0)).optional()?
+    } else if !m.project.is_empty() {
+        crate::proyecto::resolver(db, &m.project)?.map(|(id, _)| id)
+    } else {
+        Some(0)
+    };
+    let Some(proyecto) = proyecto else { return Ok(false) };
+    let espacio = match (proyecto, m.space.is_empty()) {
+        (0, false) => match db.query_row("SELECT id FROM space WHERE key = ?1", [&m.space], |f| f.get::<_, i64>(0)).optional()? {
+            Some(s) => Some(s),
+            None => return Ok(false),
+        },
+        _ => None,
+    };
+    ambito.incluye(db, proyecto, espacio)
 }
 
 /// Si el fichero empieza por la cabecera de este formato (lo demás es la exportación antigua o la de
@@ -215,6 +273,14 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
     if dry_run {
         return Ok((cuenta, r));
     }
+    // En una base recién creada (sin memorias, sin papelera y sin sincronización), la persona de la
+    // copia: es la misma persona restaurando su base, y sus proyectos sin remoto vuelven a sus carpetas.
+    if let Some(persona) = persona_de_copia(ruta)?
+        && sync::repos(ruta_db).is_empty()
+        && db.query_row("SELECT NOT EXISTS(SELECT 1 FROM memory) AND NOT EXISTS(SELECT 1 FROM forgotten)", [], |f| f.get::<_, bool>(0))?
+    {
+        sync::adoptar_persona(db, ruta_db, &persona)?;
+    }
     let mut aplicador = Aplicador::nuevo(db, None, Some(actual))?;
     let nombre = ruta.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     leer(ruta_db, ruta, |l| {
@@ -229,6 +295,17 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
     })?;
     crate::revisar::al_dia(db)?;
     Ok((cuenta, r))
+}
+
+/// La persona que dice la cabecera de un fichero de `omoi export` (las de antes no la llevan).
+fn persona_de_copia(ruta: &Path) -> Result<Option<String>> {
+    let f = std::fs::File::open(ruta).with_context(|| format!("{}", ruta.display()))?;
+    let mut primera = String::new();
+    BufReader::new(f).read_line(&mut primera)?;
+    Ok(match serde_json::from_str::<Linea>(primera.trim_start_matches('\u{feff}')) {
+        Ok(Linea::Header { person, .. }) if !person.is_empty() => Some(person),
+        _ => None,
+    })
 }
 
 // --- Copia diaria ------------------------------------------------------------------------------------

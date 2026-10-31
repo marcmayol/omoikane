@@ -383,7 +383,7 @@ fn una_carpeta_movida_sigue_siendo_su_proyecto() {
     assert!(proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.path == sin_git && p.gone));
     let movida = proyecto::de(&dir.join("notas-2026")).unwrap();
     let pid = memoria::obtener(&db, &id_notas).unwrap().project_id;
-    proyecto::mover(&mut db, pid, &movida).unwrap();
+    proyecto::mover(&mut db, pid, &movida, false).unwrap();
     let m = memoria::obtener(&db, &id_notas).unwrap();
     assert_eq!((m.project_id, m.project.as_str()), (pid, movida.as_str()));
     assert!(!proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.gone));
@@ -405,7 +405,7 @@ fn fundir_dos_proyectos_conserva_ids_y_deja_el_estado_mas_nuevo() {
     memoria::actualizar(&mut db, &otra, Cambios { content: Some("Algo más.".into()), ..Default::default() }, None).unwrap();
     let eb = memoria::guardar(&mut db, Nueva { project: b.clone(), kind: Some(Tipo::Fact), title: "Estado nuevo".into(), content: "Voy por la 2.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
     let (pa, pb) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap());
-    assert_eq!(proyecto::fundir(&mut db, pa, pb).unwrap(), 2);
+    assert_eq!(proyecto::fundir(&mut db, pa, pb, false).unwrap(), 2);
     for id in [&ea, &otra, &eb] {
         assert_eq!(memoria::obtener(&db, id).unwrap().project_id, pb);
     }
@@ -509,6 +509,149 @@ fn el_uso_desde_cada_proyecto_queda_resumido() {
     // Olvidarla del todo (y que no quede nada colgando).
     memoria::olvidar_del_todo(&mut db, &id).unwrap();
     assert_eq!(uno(&db, "SELECT count(*) FROM memory_use"), 0);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// --- Persona local y aislamiento por id (revisión de la 1.0) -----------------------------------------
+
+/// La clave del único proyecto (no global) de una base.
+fn la_clave(db: &Connection) -> String {
+    db.query_row("SELECT key FROM project WHERE id != 0", [], |f| f.get(0)).unwrap()
+}
+
+/// La migración 9 → 10 nunca deja una clave `dir:/<carpeta>`: sin sincronización, la persona local
+/// (una nueva y estable); con ella, la de su `sync.json`.
+#[test]
+fn la_migracion_pone_persona_en_las_claves_dir() {
+    for (nombre, sync) in [("persona-nueva", None), ("persona-sync", Some("ana"))] {
+        let dir = carpeta(nombre);
+        let notas = suelta(&dir.join("notas"));
+        let ruta = dir.join("o.db");
+        {
+            let db = db::abrir_en_esquema(&ruta, 9).unwrap();
+            memoria_9(&db, 1, "01J00000000000000000000001", &notas, "fact", "Notas", "En markdown.", "1793181600000-0000000000-pc-a");
+        }
+        if let Some(p) = sync {
+            std::fs::write(dir.join("o.sync.json"), serde_json::json!({ "url": "x", "kinds": [], "global": true, "person": p }).to_string()).unwrap();
+        }
+        let db = db::abrir(&ruta).unwrap();
+        let persona = db::persona_de(&db);
+        match sync {
+            Some(p) => assert_eq!(persona, p),
+            None => assert!(persona.starts_with("u-") && persona.len() == 10, "{persona}"),
+        }
+        assert_eq!(la_clave(&db), format!("dir:{persona}/notas"));
+        drop(db);
+        assert_eq!(db::persona_de(&db::abrir(&ruta).unwrap()), persona, "estable");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Una base del esquema 10 de antes de la persona local (de una versión sin publicar): al abrirla, sus
+/// claves `dir:/<carpeta>` toman persona y los olvidos su columna de espacio.
+#[test]
+fn una_base_10_sin_persona_se_pone_al_dia() {
+    let dir = carpeta("diez-sin-persona");
+    let notas = suelta(&dir.join("notas"));
+    let ruta = dir.join("o.db");
+    {
+        let mut db = db::abrir(&ruta).unwrap();
+        guardar(&mut db, &notas, Tipo::Fact, "Notas", "En markdown.");
+        let otra = guardar(&mut db, &notas, Tipo::Fact, "Otra", "Para olvidar.");
+        memoria::olvidar(&mut db, &otra).unwrap();
+        db.execute_batch("DELETE FROM meta WHERE k = 'persona'; UPDATE project SET key = 'dir:/notas' WHERE id != 0; ALTER TABLE tombstone DROP COLUMN space_key;").unwrap();
+    }
+    let db = db::abrir(&ruta).unwrap();
+    let persona = db::persona_de(&db);
+    assert!(persona.starts_with("u-"), "{persona}");
+    assert_eq!(la_clave(&db), format!("dir:{persona}/notas"));
+    assert_eq!(uno(&db, "SELECT count(*) FROM tombstone WHERE space_key = ''"), 1);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Por id tampoco se cruza: `get`, `history`, `update` (y sus veredictos y `absorb`) y `forget` de una
+/// memoria de otro espacio (o de un proyecto sin espacio) dan error desde un proyecto de un cliente;
+/// desde la carpeta del usuario se puede todo, salvo un veredicto entre memorias de espacios
+/// distintos, que nunca.
+#[test]
+fn por_id_tampoco_se_cruza_de_espacio() {
+    let Clientes { dir, db, a_web, b_web, .. } = clientes("por-id");
+    let id_de = |t: &str| -> String { db.query_row("SELECT id FROM memory WHERE title = ?1", [t], |f| f.get(0)).unwrap() };
+    let (globex, acme, acme_espacio, global, personal) = (
+        id_de("Globex web: puerto zafiro"),
+        id_de("Acme web: puerto zafiro"),
+        id_de("Acme espacio: VPN zafiro"),
+        id_de("Global: respuestas zafiro"),
+        id_de("Personal: zafiro"),
+    );
+    drop(db);
+    let ruta = dir.join("o.db");
+    let llamar = |desde: &str, nombre: &str, args: serde_json::Value| -> (String, bool) {
+        omoikane::mcp::herramienta(ruta.clone(), Some(PathBuf::from(desde)), Some(nombre), &args.to_string(), "test").unwrap()
+    };
+    for (nombre, args) in [
+        ("get", serde_json::json!({ "id": globex })),
+        ("get", serde_json::json!({ "id": &globex[..10] })),
+        ("history", serde_json::json!({ "id": globex })),
+        ("forget", serde_json::json!({ "id": globex })),
+        ("update", serde_json::json!({ "id": globex, "content": "Cambiada desde Acme." })),
+        ("update", serde_json::json!({ "id": acme, "supersedes": [globex] })),
+        ("update", serde_json::json!({ "id": acme, "contradicts": [globex] })),
+        ("update", serde_json::json!({ "id": acme, "compatible": [globex] })),
+        ("update", serde_json::json!({ "id": acme, "absorb": [globex], "content": "Juntas." })),
+        ("get", serde_json::json!({ "id": personal })),
+    ] {
+        let (t, error) = llamar(&a_web, nombre, args.clone());
+        assert!(error && t.contains("not in this scope") && !t.contains("9931"), "{nombre} {args}: {t}");
+    }
+    // Lo suyo, lo de su espacio y lo global, sí.
+    for id in [&acme, &acme_espacio, &global] {
+        let (t, error) = llamar(&a_web, "get", serde_json::json!({ "id": id }));
+        assert!(!error, "{t}");
+    }
+    // Globex sigue intacta y, desde Globex, se ve.
+    let (t, error) = llamar(&b_web, "get", serde_json::json!({ "id": globex }));
+    assert!(!error && t.contains("9931") && !t.contains("Cambiada"), "{t}");
+    // Desde la carpeta del usuario, todo; pero un veredicto (o un absorb) entre espacios distintos, nunca.
+    let home = dirs::home_dir().unwrap().display().to_string();
+    let (t, error) = llamar(&home, "get", serde_json::json!({ "id": globex }));
+    assert!(!error && t.contains("9931"), "{t}");
+    let (t, error) = llamar(&home, "update", serde_json::json!({ "id": acme, "supersedes": [globex], "reason": "cruzado" }));
+    assert!(error && t.contains("different spaces"), "{t}");
+    let (t, error) = llamar(&home, "update", serde_json::json!({ "id": acme, "absorb": [globex], "content": "Juntas." }));
+    assert!(error && t.contains("different spaces"), "{t}");
+    let db = db::abrir(&ruta).unwrap();
+    assert_eq!(uno(&db, "SELECT count(*) FROM verdict"), 0);
+    assert!(memoria::obtener(&db, &globex).is_ok(), "no se absorbió");
+    drop(db);
+    // Con una global, sí: se ve desde los dos.
+    let (t, error) = llamar(&a_web, "update", serde_json::json!({ "id": acme, "compatible": [global] }));
+    assert!(!error, "{t}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `fundir` y `mover` entre proyectos de espacios distintos: error (de qué espacio a cuál) salvo con
+/// `forzar`; uno vacío sí se junta (la carpeta que se apuntó sola al pasar por ella).
+#[test]
+fn fundir_entre_espacios_pide_forzar() {
+    let Clientes { dir, mut db, a_web, a_app, b_web, suelto } = clientes("fundir-espacios");
+    let id = |p: &str| proyecto::resolver(&db, p).unwrap().unwrap().0;
+    let (pa, papp, pb, ps) = (id(&a_web), id(&a_app), id(&b_web), id(&suelto));
+    let e = proyecto::fundir(&mut db, pb, pa, false).unwrap_err().to_string();
+    assert!(e.contains("«globex» → «acme»"), "{e}");
+    let e = proyecto::fundir(&mut db, ps, pa, false).unwrap_err().to_string();
+    assert!(e.contains("no space → «acme»"), "{e}");
+    let e = proyecto::mover(&mut db, pa, &b_web, false).unwrap_err().to_string();
+    assert!(e.contains("«globex» → «acme»"), "{e}");
+    // Dentro del mismo espacio, sin más.
+    assert_eq!(proyecto::fundir(&mut db, papp, pa, false).unwrap(), 1);
+    // Una carpeta sin memorias (la que se apuntó sola al pasar por ella) se junta sin forzar.
+    let vacia = suelta(&dir.join("vacia"));
+    let pv = proyecto::registrar(&db, &vacia).unwrap();
+    assert_eq!(proyecto::fundir(&mut db, pv, pa, false).unwrap(), 0);
+    assert_eq!(proyecto::fundir(&mut db, pb, pa, true).unwrap(), 1);
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }

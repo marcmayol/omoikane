@@ -88,6 +88,17 @@ pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, m
     let otra = if other_id.is_empty() { String::new() } else { crate::memoria::resolver_id(db, other_id)? };
     anyhow::ensure!(de_pareja != otra.is_empty(), "«{relation}» needs {}", if de_pareja { "another memory" } else { "no other memory" });
     anyhow::ensure!(id != otra, "a memory can't be judged against itself");
+    // Nunca entre memorias de espacios distintos (una global vale con cualquiera): la nota «sustituida
+    // por …» llevaría el título de lo de un cliente a las sesiones de otro.
+    if !otra.is_empty()
+        && let (Some((ga, ea)), Some((gb, eb))) = (crate::memoria::alcance_de_memoria(db, &id)?, crate::memoria::alcance_de_memoria(db, &otra)?)
+        && !ga
+        && !gb
+        && ea != eb
+    {
+        let nombre = |e: &str| if e.is_empty() { "no space".to_string() } else { format!("«{e}»") };
+        anyhow::bail!("{id} and {otra} are in different spaces ({} and {}): a verdict can't join them", nombre(&ea), nombre(&eb));
+    }
     // Posterior al último cambio de texto de las dos: aunque ese cambio venga de un equipo con la hora
     // muy adelantada (que no adelanta el reloj de aquí), el veredicto que se da ahora vale.
     let ultimo: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, otra], |f| f.get(0))?;

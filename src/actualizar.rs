@@ -364,6 +364,9 @@ mod tests {
         assert_eq!(gestor(Path::new("D:\\Omoikane\\target\\debug\\omoi.exe")), Some("cargo build"));
     }
 
+    // La clave de pruebas (`OMOIKANE_UPDATE_KEY`) solo vale en depuración: en release solo vale la de las
+    // Releases, que `firmas` ya prueba.
+    #[cfg(debug_assertions)]
     #[test]
     fn verifica_firma_y_suma() {
         use ring::signature::KeyPair;

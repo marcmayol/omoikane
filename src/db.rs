@@ -6,7 +6,7 @@
 
 use crate::tr;
 use anyhow::{Context, Result};
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,6 +58,7 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     // Las claves ajenas, después de migrar: reconstruir `memory` (esquema 10) pide tenerlas apagadas, y
     // `PRAGMA foreign_keys` no cambia dentro de una transacción (lang_altertable.html, paso 1).
     migrar(&mut db)?;
+    asegurar_persona(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }
@@ -89,13 +90,49 @@ fn comprobar_lector(db: &Connection, v: i64) -> Result<()> {
     Ok(())
 }
 
-/// La persona de la sincronización (la que va en las claves `dir:`), si la base tiene `sync.json`.
-pub(crate) fn persona_de(db: &Connection) -> String {
-    db.path()
+/// La persona local: la que va en las claves `dir:` (`dir:<persona>/<carpeta>`), para que la carpeta
+/// `notas` de Ana y la de Carlos no sean el mismo proyecto. Vive en `meta('persona')`, que `abrir`
+/// pone siempre; al configurar la sincronización se adopta la de la sync (`sync::adoptar_persona`) si
+/// es la misma persona en otro equipo.
+pub fn persona_de(db: &Connection) -> String {
+    db.query_row("SELECT v FROM meta WHERE k = 'persona'", [], |f| f.get::<_, String>(0))
+        .ok()
         .filter(|p| !p.is_empty())
-        .and_then(|p| crate::sync::leer_config(Path::new(p)).ok().flatten())
-        .map(|c| c.person)
-        .unwrap_or_default()
+        .unwrap_or_else(|| persona_inicial(db))
+}
+
+/// La persona de una base que aún no la tiene: la del `sync.json` general o la de cualquier
+/// repositorio de espacio, si los hay; si no, una nueva y estable (`u-` y 8 caracteres de un ULID).
+fn persona_inicial(db: &Connection) -> String {
+    if let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(PathBuf::from) {
+        for r in crate::sync::repos(&ruta) {
+            if let Ok(Some(c)) = crate::sync::leer_config_de(&r)
+                && !c.person.is_empty()
+            {
+                return c.person;
+            }
+        }
+    }
+    format!("u-{}", ulid::Ulid::generate().to_string()[18..].to_lowercase())
+}
+
+/// Deja la persona apuntada en `meta` si aún no lo está y la devuelve. Una base del esquema 10 de
+/// antes de la persona local (de una versión sin publicar) se pone al día de paso: la columna
+/// `tombstone.space_key` y las claves `dir:/<carpeta>`, que se quedaron sin persona.
+fn asegurar_persona(db: &Connection) -> Result<String> {
+    if let Some(p) = db.query_row("SELECT v FROM meta WHERE k = 'persona'", [], |f| f.get::<_, String>(0)).optional()?.filter(|p| !p.is_empty()) {
+        return Ok(p);
+    }
+    let persona = persona_inicial(db);
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('persona', ?1)", [&persona])?;
+    if version(db)? >= 10 {
+        let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('tombstone') WHERE name = 'space_key')", [], |f| f.get(0))?;
+        if !tiene {
+            db.execute_batch("ALTER TABLE tombstone ADD COLUMN space_key TEXT NOT NULL DEFAULT ''")?;
+        }
+        crate::proyecto::cambiar_persona(db, "", &persona)?;
+    }
+    Ok(persona)
 }
 
 fn migrar(db: &mut Connection) -> Result<()> {
@@ -131,16 +168,21 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
     // copia falla (disco lleno, permisos), no se migra: sin ella no hay vuelta atrás.
     if antes > 0
         && let Some(copia) = copia
-        && !Path::new(&copia).exists()
+        && !copia_buena(Path::new(&copia))
     {
-        db.execute("VACUUM INTO ?1", [&copia]).with_context(|| {
+        // A un nombre temporal y luego se renombra: una copia cortada a medias (el proceso muere, el
+        // disco se llena) nunca queda con el nombre de la buena.
+        let tmp = format!("{copia}.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let fallo = || {
             tr!(
                 "can't copy the database to {copia} before updating it to schema {VERSION_ESQUEMA}; nothing was changed",
                 "no se puede copiar la base en {copia} antes de pasarla al esquema {VERSION_ESQUEMA}; no se ha cambiado nada"
             )
-        })?;
+        };
+        db.execute("VACUUM INTO ?1", [&tmp]).with_context(fallo)?;
+        std::fs::rename(&tmp, &copia).with_context(fallo)?;
     }
-    let persona = persona_de(db);
     // Las claves ajenas, apagadas antes del BEGIN (dentro de una transacción no se pueden cambiar): con
     // ellas encendidas, el `DROP TABLE memory` del esquema 10 borraría en cascada el historial, las
     // rutas y los vectores. `abrir` las vuelve a encender al terminar.
@@ -192,6 +234,8 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
         tx.execute_batch(ESQUEMA_9)?;
     }
     if v < 10 && 10 <= hasta {
+        // La persona de las claves `dir:` antes de calcularlas: nunca `dir:/<carpeta>`.
+        let persona = asegurar_persona(&tx)?;
         esquema_10(&tx, &persona)?;
     }
     // Con las claves ajenas apagadas nada las ha comprobado: se mira antes de dar la migración por buena.
@@ -224,6 +268,8 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
 ///   perderlos al reexportar.
 /// - `review` vuelve a ser solo caché (sin `dismissed_at`, que ya vivía en `verdict`), y
 ///   `remote_project` pasa a `project_path`.
+/// - `tombstone.space_key`: el espacio de lo olvidado, para que cada olvido vaya solo al repositorio de
+///   su espacio (los de antes, vacío: al general). Y `meta('persona')`, la de las claves `dir:`.
 /// - Locales, que no viajan: el proyecto desde el que se recibió cada memoria (`recall_log.project_id`)
 ///   y su resumen cuando el registro caduca (`memory_use`).
 const ESQUEMA_10: &str = "
@@ -266,6 +312,8 @@ CREATE TABLE review (
 DELETE FROM meta WHERE k = 'revision';
 
 ALTER TABLE verdict ADD COLUMN extra TEXT NOT NULL DEFAULT '{}';
+-- El espacio de cada olvido (su clave; vacío: de ninguno o de antes): a qué repositorio va.
+ALTER TABLE tombstone ADD COLUMN space_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE recall_log ADD COLUMN project_id INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE memory_use (
   memory_id  TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
@@ -331,6 +379,15 @@ UPDATE recall_log SET project_id = COALESCE(
 DROP TABLE mig_proyecto;
 DROP TABLE remote_project;
 ";
+
+/// Si en `ruta` hay una copia previa que vale: se abre y tiene tablas. Una vacía o dañada (de una
+/// migración que se cortó en una versión que copiaba directamente con el nombre final) se rehace.
+fn copia_buena(ruta: &Path) -> bool {
+    ruta.exists()
+        && Connection::open_with_flags(ruta, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|c| c.query_row("SELECT count(*) FROM sqlite_schema WHERE type = 'table'", [], |f| f.get::<_, i64>(0)))
+            .is_ok_and(|n| n > 0)
+}
 
 fn esquema_10(tx: &Connection, persona: &str) -> Result<()> {
     tx.execute_batch(ESQUEMA_10)?;
@@ -713,6 +770,27 @@ mod tests {
         assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
         assert!(dir.join("o.db.antes-del-esquema-10").exists());
         drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rehace_una_copia_previa_a_medias() {
+        let dir = std::env::temp_dir().join(format!("omoi-db-copia-medias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("o.db");
+        abrir_en_esquema(&ruta, 9).unwrap().execute_batch("INSERT INTO meta(k, v) VALUES ('marca', 'de la 9')").unwrap();
+        // Una copia cortada (de una versión que copiaba directamente con el nombre final): sin tablas.
+        let copia = dir.join("o.db.antes-del-esquema-10");
+        std::fs::write(&copia, b"").unwrap();
+        let db = abrir(&ruta).unwrap();
+        assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
+        drop(db);
+        let c = Connection::open(&copia).unwrap();
+        assert_eq!(version(&c).unwrap(), 9, "la copia es la base de antes");
+        assert_eq!(c.query_row("SELECT v FROM meta WHERE k = 'marca'", [], |f| f.get::<_, String>(0)).unwrap(), "de la 9");
+        drop(c);
+        assert!(!dir.join("o.db.antes-del-esquema-10.tmp").exists(), "sin el temporal");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -251,6 +251,18 @@ impl Ambito {
         matches!(self, Ambito::Todos) || self.espacio() == otro.espacio()
     }
 
+    /// Si una memoria de este proyecto (`project_id`; 0 si no tiene) y, sin proyecto, de este espacio
+    /// (`space_id`) se ve desde aquí: la misma condición que `sql`, para lo que no está en la tabla
+    /// `memory` (lo de la papelera).
+    pub fn incluye(&self, db: &Connection, project_id: i64, space_id: Option<i64>) -> Result<bool> {
+        let su_espacio = |s: Option<i64>| project_id != 0 || space_id.is_none() || space_id == s;
+        Ok(match self {
+            Ambito::Todos => true,
+            Ambito::Proyecto { id, space } => (project_id == *id || project_id == 0) && su_espacio(*space),
+            Ambito::Espacio(s) => (project_id == 0 || crate::proyecto::espacio_de(db, project_id)? == *s) && su_espacio(*s),
+        })
+    }
+
     /// La condición SQL sobre la memoria `m` (con `m.project_id IN (…)`, que va por el índice
     /// `memory_scope`). Los ids son enteros de la base: van en el texto, no hace falta parámetro.
     pub(crate) fn sql(&self) -> String {
@@ -460,13 +472,14 @@ fn hlc_de(db: &Connection, id: &str) -> Result<String> {
     Ok(db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
-/// Apunta una marca de olvido, salvo que ya haya una posterior.
-pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str) -> Result<()> {
+/// Apunta una marca de olvido, salvo que ya haya una posterior, con el espacio (su clave; vacía: de
+/// ninguno) de lo olvidado: el olvido va solo al repositorio de ese espacio.
+pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str, espacio: &str) -> Result<()> {
     let actual: Option<String> = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?;
     if actual.is_none_or(|a| crate::reloj::mayor(hlc, &a)) {
         db.execute(
-            &format!("INSERT OR REPLACE INTO tombstone(id, deleted_at, hlc) VALUES (?1, COALESCE(?2, {AHORA}), ?3)"),
-            params![id, deleted_at, hlc],
+            &format!("INSERT OR REPLACE INTO tombstone(id, deleted_at, hlc, space_key) VALUES (?1, COALESCE(?2, {AHORA}), ?3, ?4)"),
+            params![id, deleted_at, hlc, espacio],
         )?;
     }
     Ok(())
@@ -543,6 +556,26 @@ fn leer(db: &Connection, id: &str) -> Result<Memoria> {
     db.query_row(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.id = ?1"), [id], de_fila)
         .optional()?
         .ok_or_else(|| anyhow!(tr!("no memory with id {id}", "no existe la memoria {id}")))
+}
+
+/// Dónde está una memoria de aquí, viva o en la papelera: si es global (ni proyecto ni espacio) y la
+/// clave de su espacio (el suyo o el de su proyecto; vacía si no tiene). `None` si aquí no está.
+pub(crate) fn alcance_de_memoria(db: &Connection, id: &str) -> Result<Option<(bool, String)>> {
+    let viva: Option<(bool, String)> = db
+        .query_row(
+            "SELECT m.project_id = 0 AND m.space_id IS NULL,
+                    COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '')
+             FROM memory m WHERE m.id = ?1",
+            [id],
+            |f| Ok((f.get(0)?, f.get(1)?)),
+        )
+        .optional()?;
+    if viva.is_some() {
+        return Ok(viva);
+    }
+    let Some(texto) = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else { return Ok(None) };
+    let global = crate::sync::de_papelera(&texto).is_some_and(|(m, _, _)| m.project_key.is_empty() && m.project.is_empty() && m.space.is_empty());
+    Ok(Some((global, crate::sync::espacio_de_papelera(db, &texto)?)))
 }
 
 /// Id completo a partir del id o de su principio (lo que enseña la CLI basta).
@@ -980,7 +1013,7 @@ pub(crate) fn alcance_guardado(tx: &Connection, m: &Memoria) -> Result<(i64, Opt
     if !m.project.is_empty() || !m.project_key.is_empty() {
         let id = match crate::proyecto::resolver(tx, &m.project)? {
             Some((id, _)) if m.project_key.is_empty() || crate::proyecto::clave_de(tx, id)? == m.project_key => id,
-            _ if !m.project_key.is_empty() => crate::proyecto::de_clave(tx, &m.project_key, &m.project, &crate::db::persona_de(tx))?,
+            _ if !m.project_key.is_empty() => crate::proyecto::de_clave(tx, &m.project_key, &m.project, &crate::db::persona_de(tx), true)?,
             _ => crate::proyecto::registrar(tx, &m.project)?,
         };
         // Como al recibirla por la sincronización: un proyecto sin espacio aquí toma el que trae; uno
@@ -1012,8 +1045,8 @@ fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> R
         }
         None => (crate::reloj::sello_tras(tx, &hlc_de(tx, id)?)?, None),
     };
-    marcar_olvido(tx, id, deleted_at, &hlc)?;
     let m = leer(tx, id)?;
+    marcar_olvido(tx, id, deleted_at, &hlc, &m.space)?;
     // A la papelera, con su historial: `restaurar` la devuelve desde cualquier equipo. `by` es el
     // equipo que la olvidó: otro (quizá otra persona) o este.
     let quien = match marca {
@@ -1037,6 +1070,22 @@ fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> R
     Ok(m)
 }
 
+/// Una versión de `memory_version` desde las columnas `version, kind, title, content, paths, tags,
+/// changed_at, reason` (a partir de la columna `desde`).
+fn version_de_fila(f: &Row, desde: usize) -> rusqlite::Result<Version> {
+    let lista = |i: usize| -> rusqlite::Result<Vec<String>> { Ok(serde_json::from_str(&f.get::<_, String>(desde + i)?).unwrap_or_default()) };
+    Ok(Version {
+        version: f.get(desde)?,
+        kind: f.get(desde + 1)?,
+        title: f.get(desde + 2)?,
+        content: f.get(desde + 3)?,
+        paths: lista(4)?,
+        tags: lista(5)?,
+        changed_at: f.get(desde + 6)?,
+        reason: f.get(desde + 7)?,
+    })
+}
+
 /// Versiones anteriores, de la más reciente a la más antigua.
 pub fn historial(db: &Connection, id: &str) -> Result<Vec<Version>> {
     let id = resolver_id(db, id)?;
@@ -1044,23 +1093,22 @@ pub fn historial(db: &Connection, id: &str) -> Result<Vec<Version>> {
         "SELECT version, kind, title, content, paths, tags, changed_at, reason
          FROM memory_version WHERE memory_id = ?1 ORDER BY version DESC",
     )?;
-    let v = q
-        .query_map([&id], |f| {
-            let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
-                Ok(serde_json::from_str(&f.get::<_, String>(i)?).unwrap_or_default())
-            };
-            Ok(Version {
-                version: f.get(0)?,
-                kind: f.get(1)?,
-                title: f.get(2)?,
-                content: f.get(3)?,
-                paths: lista(4)?,
-                tags: lista(5)?,
-                changed_at: f.get(6)?,
-                reason: f.get(7)?,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([&id], |f| version_de_fila(f, 0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(v)
+}
+
+/// El historial de todas las memorias que lo tienen, en una sola pasada (para la sincronización: una
+/// consulta por memoria era lo más lento de `omoi sync` con una base grande).
+pub(crate) fn historiales(db: &Connection) -> Result<std::collections::HashMap<String, Vec<Version>>> {
+    let mut q = db.prepare(
+        "SELECT memory_id, version, kind, title, content, paths, tags, changed_at, reason
+         FROM memory_version ORDER BY memory_id, version DESC",
+    )?;
+    let mut v: std::collections::HashMap<String, Vec<Version>> = std::collections::HashMap::new();
+    let mut filas = q.query([])?;
+    while let Some(f) = filas.next()? {
+        v.entry(f.get(0)?).or_default().push(version_de_fila(f, 1)?);
+    }
     Ok(v)
 }
 

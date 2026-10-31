@@ -293,6 +293,36 @@ fn fuera_de_espacio(base: &Ambito, pedido: &Ambito) -> Result<()> {
     Ok(())
 }
 
+/// El id entero de una memoria que se pide por id (viva, o en la papelera con `papelera`), con error si
+/// desde la sesión no se ve: desde un proyecto, solo las de su espacio (o, sin espacio, las que no
+/// tienen) y las globales; desde una carpeta general, todas. Así `get`, `history`, `update` y `forget`
+/// no sacan nada de otro cliente aunque el agente tenga su id.
+fn id_en_ambito(db: &Connection, proyecto: &str, id: &str, papelera: bool) -> Result<String> {
+    let id = if papelera {
+        let pedido = id.trim().to_uppercase();
+        let mut q = db.prepare("SELECT id FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
+        let ids: Vec<String> = q.query_map([&pedido], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        // Sin una sola que encaje, lo dirá `restaurar`.
+        match <[String; 1]>::try_from(ids) {
+            Ok([uno]) => uno,
+            Err(_) => return Ok(pedido),
+        }
+    } else {
+        memoria::resolver_id(db, id)?
+    };
+    let base = Ambito::de(db, proyecto)?;
+    if matches!(base, Ambito::Todos) {
+        return Ok(id);
+    }
+    let propio = proyecto::clave_espacio(db, base.espacio())?;
+    match memoria::alcance_de_memoria(db, &id)? {
+        Some((global, espacio)) if !global && espacio != propio => anyhow::bail!(
+            "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
+        ),
+        _ => Ok(id),
+    }
+}
+
 /// El espacio de `remember` (`space: true` o su nombre) o de `update` (`space: "<nombre>"`).
 fn espacio_pedido(db: &Connection, proyecto: &str, p: Option<EspacioParam>) -> Result<Option<i64>> {
     let base = Ambito::de(db, proyecto)?;
@@ -448,9 +478,19 @@ impl Servidor {
             .con_base(move |db, modelo, proyecto| {
                 let antes = crate::revisar::antes(db)?;
                 if p.restore.unwrap_or(false) {
-                    let m = memoria::restaurar(db, &p.id, modelo)?;
+                    let id = id_en_ambito(db, proyecto, &p.id, true)?;
+                    let m = memoria::restaurar(db, &id, modelo)?;
                     crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::to_value(compacta(m, false, None))?);
+                }
+                // La memoria y todas las que se nombran (veredictos, absorb), de lo que se ve desde aquí.
+                let base = Ambito::de(db, proyecto)?;
+                let id = id_en_ambito(db, proyecto, &p.id, false)?;
+                for otra in [&p.supersedes, &p.contradicts, &p.compatible, &p.absorb].into_iter().flatten().flatten() {
+                    id_en_ambito(db, proyecto, otra, false)?;
+                }
+                if let Some(d) = p.project.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                    fuera_de_espacio(&base, &Ambito::de(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
                 }
                 // El motivo del cambio es también el de los veredictos que vengan con él.
                 let motivo = p.reason.clone().unwrap_or_default();
@@ -487,11 +527,11 @@ impl Servidor {
                     && c.append.is_none()
                     && absorbe.is_none();
                 let (m, cambiados, absorbidas) = if solo_juicio {
-                    (memoria::obtener(db, &p.id)?, Vec::new(), Vec::new())
+                    (memoria::obtener(db, &id)?, Vec::new(), Vec::new())
                 } else if let Some(ids) = absorbe {
-                    memoria::absorber(db, &p.id, &ids, c, modelo)?
+                    memoria::absorber(db, &id, &ids, c, modelo)?
                 } else {
-                    let (m, cambiados) = memoria::actualizar_con_cambios(db, &p.id, c, modelo)?;
+                    let (m, cambiados) = memoria::actualizar_con_cambios(db, &id, c, modelo)?;
                     (m, cambiados, Vec::new())
                 };
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
@@ -557,7 +597,7 @@ impl Servidor {
 
     #[tool(description = "Get a whole memory by id.")]
     async fn get(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, _| memoria::obtener(db, &p.id)).await;
+        let r = self.con_base(move |db, _, proyecto| memoria::obtener(db, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
         Ok(r.map(|m| json(&m)).unwrap_or_else(fallo))
     }
 
@@ -569,9 +609,10 @@ impl Servidor {
     #[tool(description = "Forget a memory: it goes to the trash with its history for 30 days, and `update` with restore=true brings it back on every synced computer. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, _| {
+            .con_base(move |db, _, proyecto| {
+                let id = id_en_ambito(db, proyecto, &p.id, false)?;
                 let antes = crate::revisar::antes(db)?;
-                let m = memoria::olvidar(db, &p.id)?;
+                let m = memoria::olvidar(db, &id)?;
                 crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                 Ok(m)
             })
@@ -584,7 +625,7 @@ impl Servidor {
 
     #[tool(description = "Previous versions of a memory, newest first, with the reason for each change.")]
     async fn history(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, _| memoria::historial(db, &p.id)).await;
+        let r = self.con_base(move |db, _, proyecto| memoria::historial(db, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 

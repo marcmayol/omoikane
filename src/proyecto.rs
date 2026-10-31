@@ -358,7 +358,13 @@ pub fn podar(db: &Connection) -> Result<usize> {
 /// la ruta de origen si aquí no hay ninguno. Si esa ruta existe aquí con la misma clave, es la carpeta
 /// local del proyecto; si existe con otra clave o ya es de otro proyecto, la ruta ajena lleva la
 /// clave detrás (`/workspace [git:…]`) para no confundirse con él.
-pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str) -> Result<i64> {
+///
+/// Con `de_copia` (un `omoi import` o una restauración de la papelera, no la sincronización), una
+/// carpeta sin apuntar que existe aquí en la ruta de origen y que tendría esa misma clave con la
+/// persona de la clave (`dir:<persona>/<carpeta>`) es esa carpeta: la copia es de esta misma carpeta,
+/// quizá de otra base con otra persona local. Por la sincronización no: dos personas pueden tener la
+/// misma ruta en sus equipos.
+pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, de_copia: bool) -> Result<i64> {
     if clave.is_empty() {
         return Ok(0);
     }
@@ -366,8 +372,21 @@ pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str) 
         return Ok(id);
     }
     let existe = !ruta_origen.is_empty() && Path::new(ruta_origen).is_dir();
-    if existe && por_ruta(db, ruta_origen)?.is_none() && crate::sync::clave(ruta_origen, persona) == clave {
-        return registrar(db, ruta_origen);
+    if existe && por_ruta(db, ruta_origen)?.is_none() {
+        if crate::sync::clave(ruta_origen, persona) == clave {
+            return registrar(db, ruta_origen);
+        }
+        let suya = clave.strip_prefix("dir:").and_then(|r| r.split_once('/')).map(|(p, _)| p);
+        if de_copia && suya.is_some_and(|p| crate::sync::clave(ruta_origen, p) == clave) {
+            let ahora = ahora(db)?;
+            db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![clave, nombre_de(ruta_origen, clave), ruta_origen, ahora])?;
+            let id = db.last_insert_rowid();
+            db.execute(
+                "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, '', 0, ?4)",
+                params![ruta_origen, comparable(ruta_origen), id, ahora],
+            )?;
+            return Ok(id);
+        }
     }
     let libre = |r: &str| -> Result<bool> { Ok(por_ruta(db, r)?.is_none() && !Path::new(r).exists()) };
     let mut ruta = if ruta_origen.is_empty() { format!("[{clave}]") } else { ruta_origen.to_string() };
@@ -639,12 +658,106 @@ fn resellar(db: &Connection, proyecto: i64) -> Result<usize> {
     Ok(ids.len())
 }
 
+/// Las claves `dir:` de los proyectos de aquí (los que tienen alguna carpeta propia) pasan de la
+/// persona `vieja` a la `nueva` (`dir:<vieja>/x` → `dir:<nueva>/x`; con `vieja` vacía, las `dir:/x`
+/// que se quedaron sin persona), y sus memorias cambian de sello para que viajen con la clave buena.
+/// Si la clave nueva ya es de un proyecto que aquí solo existe por otro equipo y está en el mismo
+/// espacio, es el mismo proyecto y se juntan; si no, la nueva lleva sufijo (`~2`). Devuelve cuántos
+/// proyectos cambiaron.
+pub fn cambiar_persona(db: &Connection, vieja: &str, nueva: &str) -> Result<usize> {
+    if vieja == nueva {
+        return Ok(0);
+    }
+    let prefijo = format!("dir:{vieja}/");
+    let proyectos: Vec<(i64, String, Option<i64>)> = {
+        let mut q = db.prepare(
+            "SELECT p.id, p.key, p.space_id FROM project p
+             WHERE substr(p.key, 1, length(?1)) = ?1 AND EXISTS (SELECT 1 FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0)",
+        )?;
+        q.query_map([&prefijo], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, clave, espacio) in &proyectos {
+        let base = format!("dir:{nueva}/{}", &clave[prefijo.len()..]);
+        let mut k = base.clone();
+        let mut n = 2;
+        loop {
+            let otro: Option<(i64, Option<i64>, i64)> = db
+                .query_row(
+                    "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0) FROM project p WHERE p.key = ?1",
+                    [&k],
+                    |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)),
+                )
+                .optional()?;
+            match otro {
+                None => break,
+                Some((o, e, 0)) if e == *espacio => {
+                    juntar(db, o, *id)?;
+                    break;
+                }
+                Some(_) => {
+                    k = format!("{base}~{n}");
+                    n += 1;
+                }
+            }
+        }
+        db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![id, k])?;
+        resellar(db, *id)?;
+    }
+    Ok(proyectos.len())
+}
+
+/// Las memorias, carpetas y usos del proyecto `de` pasan a `en`, y `de` desaparece (sin tocar el
+/// espacio de `en` ni los sellos: eso lo decide quien llama).
+fn juntar(db: &Connection, de: i64, en: i64) -> Result<usize> {
+    let n = db.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    db.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    db.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    db.execute(
+        "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
+         ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",
+        params![de, en],
+    )?;
+    db.execute("DELETE FROM memory_use WHERE project_id = ?1", [de])?;
+    db.execute("DELETE FROM project WHERE id = ?1", [de])?;
+    Ok(n)
+}
+
+/// Error si juntar `de` en `en` cambiaría de espacio memorias de alguno de los dos: las de `de` (si
+/// tiene) acabarían en el espacio de `en`, y las de `en`, si no tiene espacio, en el de `de`. Así lo de
+/// un cliente no pasa al repositorio de otro (ni al personal) por un `merge` o un `move`.
+fn mismos_espacios(db: &Connection, de: i64, en: i64) -> Result<()> {
+    let (ed, ee) = (espacio_de(db, de)?, espacio_de(db, en)?);
+    if ed == ee {
+        return Ok(());
+    }
+    let cuantas = |p: i64| -> Result<i64> { Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [p], |f| f.get(0))?) };
+    if cuantas(de)? == 0 && (ee.is_some() || cuantas(en)? == 0) {
+        return Ok(());
+    }
+    let nombre = |e: Option<i64>| -> Result<String> {
+        Ok(match e {
+            Some(_) => format!("«{}»", clave_espacio(db, e)?),
+            None => tr!("no space", "ninguno"),
+        })
+    };
+    anyhow::bail!(tr!(
+        "the projects are in different spaces ({} → {}): their memories would go to another space's sync repository. Add --force if that is what you want",
+        "los proyectos están en espacios distintos ({} → {}): sus memorias irían al repositorio de otro espacio. Añade --force si es lo que quieres",
+        nombre(ed)?,
+        nombre(ee)?
+    ))
+}
+
 /// Junta el proyecto `de` en `en`: sus memorias (con su id, historial y veredictos) y sus carpetas pasan
 /// a `en`, y `de` desaparece. Si los dos tenían memoria `status`, la más nueva se queda y la otra queda
-/// sustituida por ella. Devuelve cuántas memorias se movieron.
-pub fn fundir(db: &mut Connection, de: i64, en: i64) -> Result<usize> {
+/// sustituida por ella. Entre proyectos de espacios distintos, solo con `forzar`. Devuelve cuántas
+/// memorias se movieron.
+pub fn fundir(db: &mut Connection, de: i64, en: i64, forzar: bool) -> Result<usize> {
     anyhow::ensure!(de != 0 && en != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
     anyhow::ensure!(de != en, tr!("it's the same project", "es el mismo proyecto"));
+    if !forzar {
+        mismos_espacios(db, de, en)?;
+    }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let estado = |p: i64| -> Result<Option<String>> {
         Ok(tx
@@ -656,17 +769,8 @@ pub fn fundir(db: &mut Connection, de: i64, en: i64) -> Result<usize> {
             .optional()?)
     };
     let (viejo, nuevo) = (estado(de)?, estado(en)?);
-    let n = tx.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    tx.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    tx.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    tx.execute(
-        "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
-         ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",
-        params![de, en],
-    )?;
-    tx.execute("DELETE FROM memory_use WHERE project_id = ?1", [de])?;
     tx.execute("UPDATE project SET space_id = COALESCE(space_id, (SELECT space_id FROM project WHERE id = ?1)) WHERE id = ?2", params![de, en])?;
-    tx.execute("DELETE FROM project WHERE id = ?1", [de])?;
+    let n = juntar(&tx, de, en)?;
     resellar(&tx, en)?;
     if let (Some(a), Some(b)) = (viejo, nuevo) {
         let (vieja, nueva): (String, String) = tx.query_row(
@@ -682,11 +786,12 @@ pub fn fundir(db: &mut Connection, de: i64, en: i64) -> Result<usize> {
 }
 
 /// `omoi projects move`: el proyecto vive ahora en `carpeta`. Se queda con su clave (los demás equipos
-/// la conocen) y suma la carpeta; si la carpeta ya era otro proyecto, ese se funde en este.
-pub fn mover(db: &mut Connection, proyecto: i64, carpeta: &str) -> Result<usize> {
+/// la conocen) y suma la carpeta; si la carpeta ya era otro proyecto, ese se funde en este (si es de
+/// otro espacio, solo con `forzar`).
+pub fn mover(db: &mut Connection, proyecto: i64, carpeta: &str, forzar: bool) -> Result<usize> {
     anyhow::ensure!(proyecto != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
     let n = match por_ruta(db, carpeta)? {
-        Some((otro, _)) if otro != proyecto => fundir(db, otro, proyecto)?,
+        Some((otro, _)) if otro != proyecto => fundir(db, otro, proyecto, forzar)?,
         _ => 0,
     };
     db.execute(
