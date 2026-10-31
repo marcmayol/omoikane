@@ -855,6 +855,7 @@ Qué queda fuera a propósito: el escaneo de conflictos con un LLM (`conflicts s
 - Mejor que engram: automático por `origin`, sin ficheros de alias ni configuración; y lo que se mueve viaja ya con la clave de sync correcta.
 
 ### 8.4 · 0.21.0 · siempre al día: traer cambios a mitad de sesión y escuchar a los subagentes
+**Pasa a la 1.2.0 (Fase 9, §9.2), 31-oct-2026:** la 0.20.0 salió como 1.0.0 y esto solo añade.
 
 **Aprender entre proyectos (añadido el 30-oct-2026).** Lo que se aprende en un proyecto y sirve en otros (la trampa de bitsandbytes en la RTX 5070 Ti, aprendida en Balùa, vale para cualquier proyecto de visión) hoy solo llega si el agente lo guardó como global. Tres piezas, sin LLM y sin cruzar nunca de un espacio a otro:
 1. **Recall entre proyectos:** si en un mensaje no pasa la puerta ninguna memoria del proyecto actual, se buscan también las de los demás proyectos del mismo espacio (o de la misma persona sin espacios), con un listón de cobertura más alto y como mucho una, marcada con su origen («de Balùa: …»). Se mide con los mensajes reales antes de dejarlo: cuántas veces trae algo útil y cuántas mete ruido.
@@ -881,6 +882,7 @@ Marc: «terminar la 0.20 y convertirla en la 1.0.0». La 0.20.0 no llegó a publ
 - Medido a 50.000 memorias: `remember` 294 ms (0.19.1: 2,5 s), `update` 263 ms, `omoi sync` sin cambios 1,98 s (igual que la 0.19.1), recall igual que antes. 219 tests en Windows y Linux.
 
 ### 1.1.0 · software factory (después de la 1.0; solo añade, sin romper el esquema ni los formatos)
+**Pasa a la 1.3.0 (Fase 9, §9.3), 31-oct-2026.**
 Marc, 30-oct-2026: que Omoikane sirva igual a una persona con sus agentes que a una software factory con muchos clientes, sin servidor propio. La 1.0 deja el esquema y el formato preparados (espacios, rotación de claves y clave por espacio, en la 0.20.0); esto llega después:
 - **Memoria de equipo para quien llega nuevo:** lo fijado del espacio le llega al agente de quien se une, como hoy las preferencias.
 - **Agentes sin persona delante** (CI, servidores): `omoi` sin carpeta de usuario, con la base y la clave por variable de entorno, y sin preguntas.
@@ -893,6 +895,43 @@ Marc, 30-oct-2026: que Omoikane sirva igual a una persona con sus agentes que a 
 
 Cada versión: tests nuevos (ida y vuelta, papelera con sync entre dos equipos, redacción con falsos positivos cero, `replace` que no encaja una sola vez, `absorb` con enlaces, mover proyecto por `origin`, pull con tope), migración sobre una copia de la base real, capturas de la web en oscuro, claro y 400 px, README y BENCHMARK al día, y la receta de publicación.
 
+
+## Fase 9 · la 1.x: confianza, siempre al día y la software factory (plan, 31-oct-2026)
+
+Con la 1.0.0 publicada, la pieza que falta no es una función: es la confianza de quien no conoce el proyecto. Las tres revisiones independientes del 30-oct (comparando con engram) coincidieron en lo mismo: benchmark del autor y no reproducible, demasiadas versiones en pocos días, un solo mantenedor, README enorme. Esta fase empieza por ahí y sigue con lo que quedó de la Fase 8.
+
+**Reglas de la 1.x** (las de siempre, más las que fija la 1.0): solo se añade; un campo, un tipo de línea o una relación nuevos van en `extra` o con `#[serde(default)]` y una 1.0 los conserva; un ámbito nuevo (p. ej. equipo) o cualquier cosa que una 1.0 malinterpretaría sube `min_reader`/`lector_minimo` y es motivo de pensárselo dos veces; nada de LLM dentro; 8 herramientas; el recall por debajo de 30 ms; cada versión con una revisión independiente que intente romperla (como las cinco pasadas de la 1.0) cuando toque la sync, el esquema o el aislamiento.
+
+### 9.1 · 1.1.0 · que se pueda comprobar
+- **Benchmark público y reproducible, en un repo aparte** (`omoikane-bench`), enlazado desde el README y el BENCHMARK: un corpus público en inglés (los 3.055 párrafos de READMEs técnicos de la prueba de escala, con sus licencias, más preguntas escritas a ciegas por otro agente y publicadas), un script que instala Omoikane y engram 3.6 desde sus releases y los pasa con las mismas condiciones (intercalado, proceso nuevo por llamada), y resultados con top-1/top-3, **P50 y P95**, **tokens que añade el recall por mensaje**, y escalas de **1.000, 10.000 y 100.000** memorias. Cualquiera lo ejecuta con una orden y obtiene la misma tabla.
+- **Test de compatibilidad en la CI**: un binario 1.0.0 fijo sincroniza por el mismo repo con el de cada commit (en los dos sentidos, con campos y líneas nuevas), y abre su base. Si una versión 1.x rompe a la 1.0, la CI lo dice antes de publicar.
+- **README a la mitad**: la portada dice qué es, cómo se instala, lo que promete la 1.0 y el benchmark; «Todo lo que hace» pasa a `docs/` (un fichero por tema, plano: `docs/sync.md`, `docs/espacios.md`, `docs/agentes.md`…).
+- **macOS** probado de verdad (la CI ya lo compila; falta una pasada de la revisión con sync y espacios) y **notas de cada versión** en la Release (qué cambia, qué no rompe, con qué versiones se entiende).
+- Hecho cuando: el benchmark lo reproduce alguien que no sea Marc, y la CI de compatibilidad está en verde.
+
+### 9.2 · 1.2.0 · siempre al día (lo que era la 8.4)
+- **Traer cambios a mitad de sesión**: pull en segundo plano desde el hook de cada mensaje, fuera del camino caliente, con tope (2 min) y `git fetch` barato cuando no hay nada; `omoi serve` lo mismo con un temporizador.
+- **Subagentes**: candidatas también de lo que aprenden los subagentes (`SubagentStop`), con la señal de «error y luego el mismo comando con éxito» en ficheros del proyecto.
+- **Aprender entre proyectos** (sin cruzar nunca de un espacio a otro): recall de otros proyectos del mismo espacio como último recurso y con listón alto; proponer en Revisar hacer global (o de espacio) lo que se usa desde varios proyectos (`memory_use`, ya en el esquema 10); pista al guardar algo que habla de herramientas y no del proyecto. Cada pieza, medida con los mensajes reales antes de dejarla.
+
+### 9.3 · 1.3.0 · software factory (lo que era la 1.1.0)
+- **Memoria para quien llega**: lo fijado del espacio le llega al agente de quien se une a un cliente, como hoy las preferencias.
+- **Agentes sin persona delante** (CI, servidores): base, clave y persona por variables de entorno, sin preguntas y sin carpeta de usuario.
+- **Vista de responsable** en la web: por cliente, qué hay, quién lo escribió, qué está desfasado o en pausa.
+- **Muchas escrituras a la vez**: 20 agentes contra la misma base (WAL, reintentos, `BEGIN IMMEDIATE`), medido antes de prometer nada.
+- **Recall sobre una wiki en solo lectura** (la LLM Wiki de Karpathy u otra documentación): que el recall traiga también el trozo de la wiki que toca, sin copiarla a la base. Es la idea con más valor para una factory que ya tiene su documentación.
+- Lo que no se hace: un servidor propio con usuarios y permisos. El permiso sigue siendo tener la clave del repo del cliente.
+
+### Deudas conocidas que entran donde encajen
+- La TUI no conoce la papelera ni los espacios (9.1 o 9.3).
+- Un campo nuevo dentro de `versions[]` se pierde: añadir `memory_version.extra` (solo añade).
+- Dos carpetas sin `origin` con el mismo nombre en dos clientes, de la misma persona, se pausan la una a la otra; se resuelve con `keep` y queda como conflicto. Pensar una clave `dir:` que incluya el espacio sin romper las que ya hay.
+- A 50.000 memorias, `review --all` tarda unos 2 s y `search` de todo unos 600 ms; recall, `remember` y `sync` ya están bien.
+- `export --encrypt` desde un espacio cifra con la clave de ese espacio; una copia de varios espacios a la vez sigue usando la del general.
+- Nombres mezclados en tablas y claves locales (`memory_use.veces`, `meta('persona')`): son locales y no se congelan, se dejan.
+
+### Orden y por qué
+9.1 primero porque es lo que frena que otros lo usen, y porque la CI de compatibilidad protege todo lo demás. 9.2 antes que 9.3 porque mejora a todos los usuarios, y la factory se apoya en ella (traer cambios a mitad de sesión importa más con varias personas). 9.3 al final, con datos de concurrencia antes de prometerla.
 
 ## 12. Pruebas
 
