@@ -4,6 +4,8 @@
 
 Thanks for wanting to help. Omoikane is a memory that people trust with what they learned over months, on every computer they own and, in a company, shared with a whole team. That shapes everything below: a change that loses a memory, leaks one across clients or breaks a sync with an older version is worse than a missing feature.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Before you write code
 
 - **Small fixes** (a typo, a clearer message, a bug with an obvious cause): open the pull request directly.

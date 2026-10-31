@@ -4,6 +4,8 @@
 
 Gracias por querer echar una mano. Omoikane es una memoria a la que la gente confía lo que ha aprendido durante meses, en todos sus equipos y, en una empresa, compartida con todo un equipo. Eso marca todo lo que sigue: un cambio que pierde una memoria, la cuela de un cliente a otro o rompe la sincronización con una versión anterior es peor que una función que falta.
 
+Quien participa sigue el [código de conducta](CODE_OF_CONDUCT.md) (en inglés).
+
 ## Antes de escribir código
 
 - **Arreglos pequeños** (una errata, un mensaje más claro, un fallo de causa evidente): abre el pull request directamente.
