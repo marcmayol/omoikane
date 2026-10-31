@@ -16,7 +16,9 @@
 //! papelera (después de ella, para que al importar encuentren su memoria).
 //! Con `--encrypt`, cada línea va cifrada con la clave vigente de la sincronización (AES-SIV) y con su
 //! id delante (`k2:…`; sin nada, la 1), como en el repositorio, para guardar la copia en cualquier
-//! sitio. Al importarla vale cualquiera de las claves que tenga el equipo.
+//! sitio: la del repositorio del espacio del ámbito exportado (la copia de un cliente, con la clave de
+//! ese cliente) o, con `--all` o sin espacio, la del general. Al importarla vale cualquiera de las
+//! claves que tenga el equipo, del general o de un espacio.
 //!
 //! Y la copia diaria: una vez al día, al empezar la primera sesión, `VACUUM INTO` a
 //! `<carpeta de la base>/backups/omoikane-AAAA-MM-DD.db`, conservando las últimas
@@ -44,29 +46,63 @@ pub struct Cuenta {
     pub tombstones: usize,
     pub verdicts: usize,
     pub forgotten: usize,
+    /// Líneas `project` (las de la sincronización; un import no las aplica).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub projects: usize,
     /// Líneas de un tipo que esta versión no conoce (de un omoi más nuevo): se saltan.
     pub unknown: usize,
 }
 
 impl Cuenta {
     pub fn total(&self) -> usize {
-        self.memories + self.tombstones + self.verdicts + self.forgotten + self.unknown
+        self.memories + self.tombstones + self.verdicts + self.forgotten + self.projects + self.unknown
     }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn cifra_de(ruta_db: &Path) -> Result<Cifra> {
-    let r = sync::rutas(ruta_db);
-    ensure!(r.clave.exists(), tr!("encrypting needs the sync key: set up `omoi sync` first", "para cifrar hace falta la clave de la sincronización: configura antes `omoi sync`"));
-    sync::leer_claves(&r)
+/// Las claves con las que se cifra una copia de este ámbito: las del repositorio de su espacio (desde
+/// un proyecto de acme, las de acme: la copia de un cliente no se abre con la clave personal) o, con
+/// `--all` o desde algo sin espacio, las del general.
+fn cifra_para(db: &Connection, ruta_db: &Path, ambito: &Ambito) -> Result<Cifra> {
+    let espacio = crate::proyecto::clave_espacio(db, ambito.espacio())?;
+    if espacio.is_empty() {
+        let r = sync::rutas(ruta_db);
+        ensure!(
+            r.clave.exists(),
+            tr!(
+                "encrypting needs the key of the general sync repository: set up `omoi sync init <git url>` (or `omoi sync join <code>`) first",
+                "para cifrar hace falta la clave del repositorio general de la sincronización: configura antes `omoi sync init <url de git>` (o `omoi sync join <código>`)"
+            )
+        );
+        return sync::leer_claves(&r);
+    }
+    match sync::repo_de_espacio(ruta_db, &espacio).filter(|r| r.clave.exists()) {
+        Some(r) => sync::leer_claves(&r),
+        None => bail!(tr!(
+            "encrypting a copy of the space {espacio} needs the key of its sync repository: set it up first with `omoi sync init <git url> --space {espacio}` (or `omoi sync join --space {espacio} <code>`)",
+            "para cifrar una copia del espacio {espacio} hace falta la clave de su repositorio de sincronización: configúralo antes con `omoi sync init <url de git> --space {espacio}` (o `omoi sync join --space {espacio} <código>`)"
+        )),
+    }
+}
+
+/// Todas las claves de este equipo (la del general y las de cada espacio), para leer una copia cifrada
+/// con cualquiera de ellas.
+fn todas_las_cifras(ruta_db: &Path) -> Result<Vec<Cifra>> {
+    let v: Vec<Cifra> = sync::repos(ruta_db).iter().filter(|r| r.clave.exists()).filter_map(|r| sync::leer_claves(r).ok()).collect();
+    ensure!(!v.is_empty(), tr!("the copy is encrypted and this computer has no sync key: set up `omoi sync` first", "la copia va cifrada y este equipo no tiene ninguna clave de sincronización: configura antes `omoi sync`"));
+    Ok(v)
 }
 
 /// Escribe el fichero. Devuelve cuántas líneas van entre la cabecera y el cierre.
 pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, salida: &mut impl Write) -> Result<Cuenta> {
-    let cifra = if cifrar { Some(cifra_de(ruta_db)?) } else { None };
+    let cifra = if cifrar { Some(cifra_para(db, ruta_db, ambito)?) } else { None };
     // Las mismas claves que exporta la sincronización: las de la tabla `project` (una ruta que llegó
     // de otro equipo lleva la clave con la que llegó, no una calculada aquí).
     let equipo = crate::reloj::equipo(db)?;
@@ -220,7 +256,7 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
         bail!(tr!("{} is not an omoi export", "{} no es una exportación de omoi", ruta.display()));
     };
     ensure!(format == FORMATO && version <= VERSION, tr!("{} comes from a newer omoi (export format {version}; this one reads up to {VERSION})", "{} viene de un omoi más nuevo (formato {version}, este entiende hasta el {VERSION})", ruta.display()));
-    let cifra = if encrypted { Some(cifra_de(ruta_db)?) } else { None };
+    let cifras = if encrypted { todas_las_cifras(ruta_db)? } else { Vec::new() };
     let mut hash = Sha256::new();
     let mut cuenta = Cuenta::default();
     let mut cierre: Option<(usize, String)> = None;
@@ -229,9 +265,16 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
         if l.trim().is_empty() {
             continue;
         }
-        let claro = match &cifra {
-            Some(c) => c.descifrar(&l).with_context(|| tr!("line {}", "línea {}", i + 2))?,
-            None => l,
+        let claro = if encrypted {
+            // Con la primera clave que la abra; si no la abre ninguna, el error de la primera.
+            let mut fallo = None;
+            let claro = cifras.iter().find_map(|c| c.descifrar(&l).map_err(|e| fallo.get_or_insert(e)).ok());
+            match claro {
+                Some(t) => t,
+                None => return Err(fallo.unwrap_or_else(|| anyhow::anyhow!("?"))).with_context(|| tr!("line {}", "línea {}", i + 2)),
+            }
+        } else {
+            l
         };
         // Una línea de un tipo que esta versión no conoce (de un omoi más nuevo) cuenta para el cierre
         // y se salta; las demás que no se entienden están dañadas.
@@ -254,6 +297,7 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
             Linea::Tombstone { .. } => cuenta.tombstones += 1,
             Linea::Verdict { .. } => cuenta.verdicts += 1,
             Linea::Forgotten { .. } => cuenta.forgotten += 1,
+            Linea::Project { .. } => cuenta.projects += 1,
             Linea::Header { .. } | Linea::End { .. } => {}
         }
         f(x)?;

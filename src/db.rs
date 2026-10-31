@@ -58,6 +58,7 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     // Las claves ajenas, después de migrar: reconstruir `memory` (esquema 10) pide tenerlas apagadas, y
     // `PRAGMA foreign_keys` no cambia dentro de una transacción (lang_altertable.html, paso 1).
     migrar(&mut db)?;
+    al_dia_10(&db)?;
     asegurar_persona(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
@@ -133,6 +134,18 @@ fn asegurar_persona(db: &Connection) -> Result<String> {
         crate::proyecto::cambiar_persona(db, "", &persona)?;
     }
     Ok(persona)
+}
+
+/// Una base del esquema 10 de una versión sin publicar a la que le falta `project.hlc` (el sello del
+/// último cambio de espacio del proyecto, que viaja en las líneas `project`): se añade, vacío.
+fn al_dia_10(db: &Connection) -> Result<()> {
+    if version(db)? == 10 {
+        let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project') WHERE name = 'hlc')", [], |f| f.get(0))?;
+        if !tiene {
+            db.execute_batch("ALTER TABLE project ADD COLUMN hlc TEXT NOT NULL DEFAULT ''")?;
+        }
+    }
+    Ok(())
 }
 
 fn migrar(db: &mut Connection) -> Result<()> {
@@ -268,6 +281,8 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
 ///   perderlos al reexportar.
 /// - `review` vuelve a ser solo caché (sin `dismissed_at`, que ya vivía en `verdict`), y
 ///   `remote_project` pasa a `project_path`.
+/// - `project.hlc`: el sello del último cambio de espacio del proyecto (vacío si nunca cambió), con el
+///   que su espacio viaja como línea `project` y gana el cambio más nuevo.
 /// - `tombstone.space_key`: el espacio de lo olvidado, para que cada olvido vaya solo al repositorio de
 ///   su espacio (los de antes, vacío: al general). Y `meta('persona')`, la de las claves `dir:`.
 /// - Locales, que no viajan: el proyecto desde el que se recibió cada memoria (`recall_log.project_id`)
@@ -285,7 +300,8 @@ CREATE TABLE project (
   name       TEXT NOT NULL,
   path       TEXT NOT NULL DEFAULT '',
   space_id   INTEGER REFERENCES space(id),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  hlc        TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX project_name ON project(name);
 CREATE INDEX project_space ON project(space_id) WHERE space_id IS NOT NULL;

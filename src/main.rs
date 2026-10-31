@@ -353,7 +353,8 @@ enum AccionProyectos {
         /// Put it in this space.
         #[arg(long, value_name = "SPACE")]
         space: Option<String>,
-        /// Merge it even if the folder is another space's project (its memories change space).
+        /// Merge it even if the folder is another space's project, or move it from one space to
+        /// another (its memories change space).
         #[arg(long)]
         force: bool,
     },
@@ -810,10 +811,16 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             // Los proyectos que ya no están en su carpeta, o cuyo `origin` cambió (de los que se ven desde aquí).
             let filtro = if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) };
+            // Y los que están en otro espacio en otro equipo de la sincronización, con la orden.
+            let choques = omoikane::sync::choques(&ruta_db(c));
             for p in proyecto::lista(&db, None, filtro, usize::MAX)? {
                 if p.gone {
                     println!("{:<12}  {}  {}", "project_gone", p.name, p.path);
                     println!("{:<12}  {}", "", tr!("the folder no longer exists: `omoi projects move {} <new folder>`", "la carpeta ya no existe: `omoi projects move {} <carpeta nueva>`", p.name));
+                }
+                if let Some(x) = choques.iter().find(|x| x.key == p.key) {
+                    println!("{:<12}  {}  {}", "project_space", p.name, p.path);
+                    println!("{:<12}  {}", "", x.texto());
                 }
                 if !p.origin_changed.is_empty() {
                     println!("{:<12}  {}  {}", "origin", p.name, p.path);
@@ -1245,6 +1252,20 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
         }
         AccionProyectos::Move { proyecto: p, carpeta, space, force } => {
             let id = proyecto::buscar(&db, &p)?;
+            // De un espacio a otro, solo con --force (como merge y move por carpeta): lo de un cliente
+            // pasaría al repositorio de otro. De ninguno a uno, no hace falta.
+            let destino = space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?;
+            if let (Some(antes), Some(d)) = (proyecto::espacio_de(&db, id)?, destino)
+                && antes != d
+                && !force
+            {
+                bail!(tr!(
+                    "the project is in the space «{}»: moving it to «{}» sends its memories to that space's sync repository. Add --force if that is what you want",
+                    "el proyecto está en el espacio «{}»: moverlo a «{}» manda sus memorias al repositorio de ese espacio. Añade --force si es lo que quieres",
+                    proyecto::clave_espacio(&db, Some(antes))?,
+                    proyecto::clave_espacio(&db, Some(d))?
+                ));
+            }
             if let Some(carpeta) = carpeta {
                 let nueva = proyecto::de(&carpeta)?;
                 let fundidas = proyecto::mover(&mut db, id, &nueva, force)?;
@@ -1254,8 +1275,8 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
                     println!("{}", tr!("moved to {nueva}", "movido a {nueva}"));
                 }
             }
-            if let Some(s) = space {
-                proyecto::asignar_espacio(&db, id, Some(proyecto::buscar_espacio(&db, &s)?))?;
+            if let (Some(s), Some(d)) = (space, destino) {
+                proyecto::asignar_espacio(&db, id, Some(d))?;
                 println!("{}", tr!("in the space «{s}» now", "ahora en el espacio «{s}»"));
             }
             Ok(())
@@ -1711,6 +1732,9 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             );
             if r.de_version_nueva > 0 {
                 println!("{}", sync::aviso_lineas_nuevas(r.de_version_nueva));
+            }
+            for a in &r.avisos {
+                println!("{a}");
             }
             Ok(())
         }

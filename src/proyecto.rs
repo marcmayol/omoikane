@@ -636,26 +636,39 @@ pub fn espacios(db: &Connection) -> Result<Vec<Espacio>> {
         .collect()
 }
 
-/// Mete un proyecto en un espacio (o lo saca, con `None`). Sus memorias cambian de sello para que la
-/// sincronización lleve el espacio nuevo a los demás equipos. Devuelve cuántas.
+/// Mete un proyecto en un espacio (o lo saca, con `None`). El proyecto se lleva un sello nuevo
+/// (`project.hlc`), con el que la sincronización lleva su espacio a los demás equipos en una línea
+/// `project`; sus memorias no cambian de sello (si cambiaran, una versión vieja de aquí ganaría a
+/// una más nueva de otro equipo solo por haberse movido). Devuelve cuántas memorias tiene.
 pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> Result<usize> {
     anyhow::ensure!(proyecto != 0, tr!("global memories have no project to put in a space", "las memorias globales no tienen proyecto que meter en un espacio"));
-    db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![proyecto, espacio])?;
-    resellar(db, proyecto)
+    let (antes, previo): (Option<i64>, String) = db.query_row("SELECT space_id, hlc FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?)))?;
+    if antes != espacio || previo.is_empty() {
+        let hlc = crate::reloj::sello_tras(db, &previo)?;
+        db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![proyecto, espacio, hlc])?;
+    }
+    Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [proyecto], |f| f.get::<_, i64>(0))? as usize)
 }
 
 /// Un sello nuevo para cada memoria del proyecto (sin tocar su contenido ni `content_hlc`): así viaja
-/// lo que cambió del proyecto (su espacio, su clave al fundirlo con otro).
+/// lo que cambió de su clave (al cambiar de persona). El espacio no: viaja en la línea `project`.
 fn resellar(db: &Connection, proyecto: i64) -> Result<usize> {
-    let ids: Vec<(String, String)> = {
-        let mut q = db.prepare("SELECT id, hlc FROM memory WHERE project_id = ?1")?;
-        q.query_map([proyecto], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    let ids: Vec<String> = {
+        let mut q = db.prepare("SELECT id FROM memory WHERE project_id = ?1")?;
+        q.query_map([proyecto], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    for (id, hlc) in &ids {
-        let nuevo = crate::reloj::sello_tras(db, hlc)?;
+    resellar_estas(db, &ids)?;
+    Ok(ids.len())
+}
+
+/// Un sello nuevo para cada una de estas memorias.
+fn resellar_estas(db: &Connection, ids: &[String]) -> Result<()> {
+    for id in ids {
+        let hlc: String = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+        let nuevo = crate::reloj::sello_tras(db, &hlc)?;
         db.execute("UPDATE memory SET hlc = ?2 WHERE id = ?1", params![id, nuevo])?;
     }
-    Ok(ids.len())
+    Ok(())
 }
 
 /// Las claves `dir:` de los proyectos de aquí (los que tienen alguna carpeta propia) pasan de la
@@ -769,9 +782,19 @@ pub fn fundir(db: &mut Connection, de: i64, en: i64, forzar: bool) -> Result<usi
             .optional()?)
     };
     let (viejo, nuevo) = (estado(de)?, estado(en)?);
-    tx.execute("UPDATE project SET space_id = COALESCE(space_id, (SELECT space_id FROM project WHERE id = ?1)) WHERE id = ?2", params![de, en])?;
+    // `en` toma el espacio de `de` si no tenía (con sello nuevo: viaja en su línea `project`).
+    if espacio_de(&tx, en)?.is_none()
+        && let Some(e) = espacio_de(&tx, de)?
+    {
+        asignar_espacio(&tx, en, Some(e))?;
+    }
+    // Las memorias de `de` viajan ahora con la clave de `en`: sello nuevo (las de `en` no cambian).
+    let movidas: Vec<String> = {
+        let mut q = tx.prepare("SELECT id FROM memory WHERE project_id = ?1")?;
+        q.query_map([de], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
     let n = juntar(&tx, de, en)?;
-    resellar(&tx, en)?;
+    resellar_estas(&tx, &movidas)?;
     if let (Some(a), Some(b)) = (viejo, nuevo) {
         let (vieja, nueva): (String, String) = tx.query_row(
             "SELECT CASE WHEN a.updated_at <= b.updated_at THEN a.id ELSE b.id END, CASE WHEN a.updated_at <= b.updated_at THEN b.id ELSE a.id END
