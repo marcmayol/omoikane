@@ -48,7 +48,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::Engine;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -98,6 +98,8 @@ pub struct Rutas {
     pub espacio: Option<String>,
     /// La clave de `meta` donde la base apunta el último commit leído de este repositorio.
     pub(crate) marca_commit: String,
+    /// La base de la que son estas rutas.
+    pub(crate) db: PathBuf,
 }
 
 /// Las rutas del repositorio general.
@@ -126,6 +128,7 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
             cerrojo: f("sync.lock"),
             espacio: None,
             marca_commit: "sync_commit".into(),
+            db: db.to_path_buf(),
         },
         Some(e) => {
             let d = f(CARPETA_ESPACIOS).join(e);
@@ -139,6 +142,7 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
                 cerrojo: f("sync.lock"),
                 espacio: Some(e.to_string()),
                 marca_commit: format!("sync_commit:{e}"),
+                db: db.to_path_buf(),
             }
         }
     }
@@ -157,6 +161,11 @@ pub fn espacios(db: &Path) -> Vec<String> {
         .collect();
     v.sort();
     v
+}
+
+/// El repositorio del espacio de esta clave en este equipo, si lo tiene.
+pub fn repo_de_espacio(db: &Path, clave: &str) -> Option<Rutas> {
+    espacios(db).into_iter().find(|e| crate::proyecto::clave_de_espacio(e) == clave).map(|e| rutas_de(db, Some(&e)))
 }
 
 /// Todos los repositorios configurados en este equipo: el general (si lo está) y uno por espacio.
@@ -564,6 +573,7 @@ const CAMPOS_MEMORIA: &[&str] = &[
 const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "space_key", "machine"];
 const CAMPOS_VEREDICTO: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
 const CAMPOS_PAPELERA: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
+const CAMPOS_PROYECTO: &[&str] = &["type", "key", "name", "space_key", "hlc", "person", "machine"];
 
 /// `extra` sin lo que esta versión ya conoce (lo guardó una versión anterior que no lo conocía).
 fn solo_desconocidos(mut extra: Extra, conocidos: &[&str]) -> Extra {
@@ -589,6 +599,23 @@ pub(crate) const EXTRA_OLVIDO: &str = "COALESCE((SELECT v FROM meta WHERE k = 'o
 /// Apunta (o borra, si no hay) los campos desconocidos del olvido de `id`.
 pub(crate) fn guardar_extra_olvido(db: &Connection, id: &str, extra: &Extra) -> Result<()> {
     let k = format!("olvido_extra:{id}");
+    if extra.is_empty() {
+        db.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
+    } else {
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![k, extra_a_texto(extra)])?;
+    }
+    Ok(())
+}
+
+/// Los campos desconocidos de la línea `project` de un proyecto, en `meta` (`proyecto_extra:<clave>`),
+/// como los de los olvidos: la tabla `project` no tiene columna para ellos.
+fn extra_proyecto(db: &Connection, clave: &str) -> Result<Extra> {
+    let t: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("proyecto_extra:{clave}")], |f| f.get(0)).optional()?;
+    Ok(t.map(|t| extra_de(&t)).unwrap_or_default())
+}
+
+fn guardar_extra_proyecto(db: &Connection, clave: &str, extra: &Extra) -> Result<()> {
+    let k = format!("proyecto_extra:{clave}");
     if extra.is_empty() {
         db.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
     } else {
@@ -792,6 +819,28 @@ pub(crate) enum Linea {
         #[serde(flatten)]
         extra: Extra,
     },
+    /// El espacio de un proyecto (desde la 1.0): cada equipo escribe una por proyecto cuyo espacio se
+    /// haya cambiado alguna vez (`project.hlc`), en el repositorio general y en el de su espacio. Gana
+    /// el `hlc` más nuevo por `key`, pero solo se aplica la que llega por el repositorio general y es
+    /// de la persona de esta base (sus otros equipos): así `omoi projects move web --space acme` en un
+    /// equipo pasa `web` a acme en los demás sin resellar sus memorias, y el general deja de llevarlo.
+    /// La que llega por el repositorio de un espacio, o de otra persona, no cambia nada: se avisa.
+    Project {
+        key: String,
+        #[serde(default)]
+        name: String,
+        /// El espacio (su clave); vacío: ninguno.
+        #[serde(default)]
+        space_key: String,
+        hlc: String,
+        /// La persona del equipo que la escribió (la de sus claves `dir:`).
+        #[serde(default)]
+        person: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        machine: String,
+        #[serde(flatten)]
+        extra: Extra,
+    },
     /// Primera línea de un fichero de `omoi export`.
     Header {
         format: String,
@@ -814,7 +863,7 @@ pub(crate) enum Linea {
 }
 
 /// Los tipos de línea que entiende esta versión.
-const TIPOS_DE_LINEA: &[&str] = &["memory", "tombstone", "verdict", "forgotten", "header", "end"];
+const TIPOS_DE_LINEA: &[&str] = &["memory", "tombstone", "verdict", "forgotten", "project", "header", "end"];
 
 /// Si un texto es una línea de un tipo que esta versión no conoce: JSON con un `type` que no es de los
 /// suyos (lo escribió una versión más nueva). Las demás que no se entienden están dañadas.
@@ -832,6 +881,7 @@ impl Linea {
             Linea::Memory(c) => &c.id,
             Linea::Tombstone { id, .. } | Linea::Forgotten { id, .. } => id,
             Linea::Verdict { memory_id, .. } => memory_id,
+            Linea::Project { key, .. } => key,
             Linea::Header { .. } | Linea::End { .. } => "",
         }
     }
@@ -842,6 +892,7 @@ impl Linea {
             Linea::Header { .. } | Linea::End { .. } => true,
             Linea::Verdict { memory_id, other_id, .. } => id_valido(memory_id) && (other_id.is_empty() || id_valido(other_id)),
             Linea::Forgotten { id, memory, .. } => id_valido(id) && memory.id == *id,
+            Linea::Project { key, hlc, .. } => !key.trim().is_empty() && key.len() <= 1024 && !hlc.is_empty(),
             otra => id_valido(otra.id()),
         }
     }
@@ -849,7 +900,7 @@ impl Linea {
     pub(crate) fn machine(&self) -> &str {
         match self {
             Linea::Memory(c) => &c.machine,
-            Linea::Tombstone { machine, .. } | Linea::Verdict { machine, .. } => machine,
+            Linea::Tombstone { machine, .. } | Linea::Verdict { machine, .. } | Linea::Project { machine, .. } => machine,
             _ => "",
         }
     }
@@ -1347,6 +1398,26 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let l = Linea::veredicto(v, equipo);
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
+    // El espacio de cada proyecto que lo cambió alguna vez (`project.hlc`): en el general, el de todos
+    // los que comparte (así sus otros equipos lo mueven igual y el general deja de llevarlo); en el de
+    // un espacio, el de los suyos.
+    {
+        let persona = crate::db::persona_de(db);
+        let mut q = db.prepare(
+            "SELECT p.key, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc FROM project p
+             WHERE p.id != 0 AND p.key != '' AND p.hlc != '' ORDER BY p.key",
+        )?;
+        let proyectos: Vec<(String, String, String, String)> =
+            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (key, name, espacio, hlc) in proyectos {
+            if config.projects.as_ref().is_some_and(|p| !p.contains(&key)) || (config.space.is_some() && !va_al_repo(config, &espacio)) {
+                continue;
+            }
+            let extra = solo_desconocidos(extra_proyecto(db, &key)?, CAMPOS_PROYECTO);
+            let l = Linea::Project { key, name, space_key: espacio, hlc, person: persona.clone(), machine: equipo.to_string(), extra };
+            ficheros.entry("proyectos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
+        }
+    }
     {
         let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {EXTRA_OLVIDO} FROM tombstone t ORDER BY t.id"))?;
         let marcas: Vec<(String, String, String, String, String)> =
@@ -1461,6 +1532,94 @@ pub struct Resumen {
     /// Lo mismo con las rechazadas por ser de otro espacio.
     #[serde(skip)]
     pub conflictos: BTreeMap<String, usize>,
+    /// Por fichero leído, los proyectos que allí están en otro espacio (`Choque`).
+    #[serde(skip)]
+    pub choques: BTreeMap<String, BTreeSet<Choque>>,
+    /// Los de la línea que se está aplicando (`importar` los pasa a `choques`, con su fichero).
+    #[serde(skip)]
+    pendientes: Vec<Choque>,
+    /// Los proyectos que pasaron a otro espacio por una línea `project` (nombre, espacio).
+    #[serde(skip)]
+    movidos: Vec<(String, String)>,
+    /// Los avisos de unirse al repositorio del espacio al que pasó un proyecto (una vez: en esta
+    /// sincronización y en su estado hasta la siguiente).
+    #[serde(skip)]
+    unirse: Vec<String>,
+    /// Lo que conviene decir: esos avisos y, por proyecto, los que están en otro espacio en otro equipo
+    /// con la orden que lo arregla.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub avisos: Vec<String>,
+}
+
+/// Un proyecto que aquí está en un espacio y en otro equipo en otro: lo que llega de él no se aplica
+/// (o, con `moved`, una línea `project` que no se aplicó porque llegó por el repositorio de un espacio
+/// o de otra persona). Se avisa con la orden que lo arregla, y desaparece en cuanto los dos coinciden:
+/// los ficheros con alguno se vuelven a leer en cada sincronización.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Choque {
+    pub key: String,
+    pub name: String,
+    /// Su espacio aquí (vacío: ninguno).
+    pub here: String,
+    /// El que trae la línea (vacío: ninguno).
+    pub there: String,
+    /// El equipo que lo tiene así (o que lo movió).
+    pub machine: String,
+    #[serde(default)]
+    pub moved: bool,
+}
+
+/// Un nombre de proyecto como argumento de una orden (entre comillas si hace falta).
+fn argumento(n: &str) -> String {
+    if !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || "-_./:@".contains(c)) { n.to_string() } else { format!("\"{}\"", n.replace('"', "\\\"")) }
+}
+
+impl Choque {
+    /// La orden que lo arregla: la que deja aquí el proyecto donde lo tiene el otro equipo, salvo si el
+    /// otro aún lo tiene sin espacio (por el general) y aquí está en uno: entonces, la que hay que
+    /// ejecutar en ese equipo.
+    pub fn orden(&self) -> String {
+        let n = argumento(&self.name);
+        match (self.there.is_empty(), self.here.is_empty()) {
+            (false, true) => format!("omoi projects move {n} --space {}", self.there),
+            (false, false) => format!("omoi projects move {n} --space {} --force", self.there),
+            (true, _) if self.moved => format!("omoi space unassign {n}"),
+            (true, _) => format!("omoi projects move {n} --space {}", self.here),
+        }
+    }
+
+    pub fn texto(&self) -> String {
+        let (n, m, o) = (&self.name, &self.machine, self.orden());
+        let (aqui_en, aqui_es) = if self.here.is_empty() {
+            ("in no space".to_string(), "en ninguno".to_string())
+        } else {
+            (format!("in {}", self.here), format!("en {}", self.here))
+        };
+        match (self.moved, self.there.is_empty()) {
+            (true, false) => tr!("{m} moved {n} to the space {}: `{o}`", "{m} movió {n} al espacio {}: `{o}`", self.there),
+            (true, true) => tr!("{m} took {n} out of its space: `{o}`", "{m} sacó {n} de su espacio: `{o}`"),
+            (false, false) => tr!(
+                "{n} is in the space {} on {m} and {aqui_en} here, so its changes are not applied; if it is the same project and belongs in {}: `{o}`",
+                "{n} está en el espacio {} en {m} y aquí {aqui_es}, así que sus cambios no se aplican; si es el mismo proyecto y va en {}: `{o}`",
+                self.there,
+                self.there
+            ),
+            (false, true) => tr!(
+                "{n} is in the space {} here but {m} still has it in no space (through the general repository), so its changes are not applied: on {m}, `{o}`",
+                "{n} está aquí en el espacio {} pero {m} aún lo tiene sin espacio (por el repositorio general), así que sus cambios no se aplican: en {m}, `{o}`",
+                self.here
+            ),
+        }
+    }
+}
+
+/// Los choques de varios ficheros, uno por proyecto y situación (sin repetir el de cada equipo, y el de
+/// las memorias que no se aplican antes que el de la línea `project` que lo movió, que pide lo mismo).
+pub fn sin_repetir<'a>(choques: impl IntoIterator<Item = &'a Choque>) -> Vec<Choque> {
+    let mut v: Vec<&Choque> = choques.into_iter().collect();
+    v.sort_by_key(|c| c.moved);
+    let mut vistos = HashSet::new();
+    v.into_iter().filter(|c| vistos.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
 }
 
 impl Resumen {
@@ -1474,6 +1633,7 @@ impl Resumen {
         self.ilegibles += o.ilegibles;
         self.de_version_nueva += o.de_version_nueva;
         self.conflictos_de_espacio += o.conflictos_de_espacio;
+        self.avisos.extend(o.avisos);
     }
 }
 
@@ -1556,6 +1716,62 @@ impl<'a> Aplicador<'a> {
     pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
         match l {
             Linea::Header { .. } | Linea::End { .. } => Ok(()),
+            Linea::Project { key, name, space_key, hlc, person, extra, .. } => {
+                // En un import no se aplica: el espacio de un proyecto nuevo lo traen sus memorias, y uno
+                // de aquí no cambia de espacio por una copia.
+                let Some(c) = self.config else { return Ok(()) };
+                if c.projects.as_ref().is_some_and(|p| !p.contains(&key)) {
+                    return Ok(());
+                }
+                let local: Option<(i64, String, String, String)> = db
+                    .query_row(
+                        "SELECT p.id, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc FROM project p WHERE p.key = ?1",
+                        [&key],
+                        |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)),
+                    )
+                    .optional()?;
+                // Gana el sello más nuevo por proyecto.
+                if local.as_ref().is_some_and(|(_, _, _, h)| no_menor(h, &hlc)) {
+                    return Ok(());
+                }
+                // Quién lo movió: el equipo del sello (otro equipo puede haber reescrito la línea).
+                let quien = reloj::partes(&hlc).2.to_string();
+                // Solo mueve un proyecto la que llega por el repositorio general y es de esta misma
+                // persona (sus otros equipos). La de un repositorio de espacio (un cliente no decide qué
+                // es de otro, ni qué deja de serlo) o de otra persona solo se avisa.
+                if c.space.is_some() || person.is_empty() || person != self.person {
+                    if let Some((_, nombre, aqui, _)) = local
+                        && aqui != space_key
+                    {
+                        r.pendientes.push(Choque { key, name: nombre, here: aqui, there: space_key, machine: quien, moved: true });
+                    }
+                    return Ok(());
+                }
+                let (id, nombre, antes) = match local {
+                    Some((id, nombre, aqui, _)) => (id, nombre, aqui),
+                    // Un proyecto que aquí aún no está y no es de ningún espacio: nada que apuntar.
+                    None if space_key.is_empty() => return Ok(()),
+                    // Si no, se apunta ya en su espacio: una carpeta suya que aparezca aquí entra en él.
+                    None => {
+                        let id = crate::proyecto::de_clave(db, &key, "", &self.person, false)?;
+                        if !name.trim().is_empty() {
+                            db.execute("UPDATE project SET name = ?2 WHERE id = ?1", params![id, name.trim()])?;
+                        }
+                        let nombre = db.query_row("SELECT name FROM project WHERE id = ?1", [id], |f| f.get(0))?;
+                        (id, nombre, String::new())
+                    }
+                };
+                // Sin volver a sellar sus memorias: su espacio sale del proyecto, y cada una sigue con su
+                // sello (así ningún cambio más viejo gana a uno más nuevo por haberse movido).
+                let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
+                db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
+                guardar_extra_proyecto(db, &key, &extra)?;
+                reloj::recibir(db, &hlc)?;
+                if antes != space_key && !space_key.is_empty() {
+                    r.movidos.push((nombre, space_key));
+                }
+                Ok(())
+            }
             Linea::Tombstone { id, deleted_at, hlc, space_key, extra, .. } => {
                 if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
                     return Ok(());
@@ -1566,9 +1782,14 @@ impl<'a> Aplicador<'a> {
                     (true, Some(e)) => crate::proyecto::clave_de_espacio(e),
                     _ => space_key,
                 };
-                let aqui = espacio_aqui(db, &id)?;
+                // Lo olvidado del todo aquí (sin copia en la papelera) es del espacio de su marca.
+                let marca: Option<String> = db.query_row("SELECT space_key FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?;
+                let aqui = match espacio_aqui(db, &id)? {
+                    Some(e) => Some(e),
+                    None => marca,
+                };
                 // Un olvido solo borra lo que lleva el repositorio por el que llega: el de acme no olvida
-                // una memoria de beta (ni una personal).
+                // una memoria de beta (ni una personal), ni cambia de espacio la marca de una de ellas.
                 if let Some(c) = self.config
                     && (!va_al_repo(c, &espacio) || aqui.as_deref().is_some_and(|e| !va_al_repo(c, e)))
                 {
@@ -1624,9 +1845,14 @@ impl<'a> Aplicador<'a> {
                 // clave, o una clave de beta escrita en el repositorio de acme) se rechaza.
                 if self.config.is_some() {
                     let memoria_fuera = local.is_some() && espacio_aqui(db, &id)?.is_some_and(|e| e != space_key);
-                    let proyecto_fuera = !project_key.is_empty() && espacio_del_proyecto(db, &project_key)?.is_some_and(|e| e != space_key);
-                    if memoria_fuera || proyecto_fuera {
+                    let proyecto_fuera = if project_key.is_empty() { None } else { espacio_del_proyecto(db, &project_key)?.filter(|e| *e != space_key) };
+                    if memoria_fuera || proyecto_fuera.is_some() {
                         r.conflictos_de_espacio += 1;
+                        // De qué proyecto, para decir qué orden lo arregla.
+                        if let Some(aqui) = proyecto_fuera {
+                            let name = db.query_row("SELECT name FROM project WHERE key = ?1", [&project_key], |f| f.get(0))?;
+                            r.pendientes.push(Choque { key: project_key, name, here: aqui, there: space_key, machine: origen.to_string(), moved: false });
+                        }
                         return Ok(());
                     }
                 }
@@ -1785,21 +2011,31 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
         }
         r.leidos += 1;
     }
-    // Primero los olvidos (para no traer algo que se va a borrar), luego las memorias y al final los
-    // veredictos, que necesitan las memorias.
+    // Primero los olvidos (para no traer algo que se va a borrar), luego los proyectos (el espacio en
+    // el que caen sus memorias), luego las memorias y al final los veredictos, que las necesitan.
     let orden = |l: &Linea| match l {
         Linea::Tombstone { .. } => 0,
-        Linea::Memory(_) => 1,
-        _ => 2,
+        Linea::Project { .. } => 1,
+        Linea::Memory(_) => 2,
+        _ => 3,
     };
-    lineas.sort_by_key(|(_, _, l)| orden(l));
+    // Las `project`, de la más nueva a la más vieja: la que gana se aplica antes, y las demás ya no
+    // cambian nada ni avisan de lo que ya no es.
+    let sello = |l: &Linea| match l {
+        Linea::Project { hlc, .. } => hlc.clone(),
+        _ => String::new(),
+    };
+    lineas.sort_by(|(_, _, x), (_, _, y)| orden(x).cmp(&orden(y)).then_with(|| reloj::comparar(&sello(y), &sello(x))));
     for (origen, fichero, l) in lineas {
         let antes = r.conflictos_de_espacio;
         if aplicador.aplicar(db, &origen, l, modelo, r).is_err() {
             *r.malos.entry(fichero.clone()).or_default() += 1;
         }
         if r.conflictos_de_espacio > antes {
-            *r.conflictos.entry(fichero).or_default() += r.conflictos_de_espacio - antes;
+            *r.conflictos.entry(fichero.clone()).or_default() += r.conflictos_de_espacio - antes;
+        }
+        for c in std::mem::take(&mut r.pendientes) {
+            r.choques.entry(fichero.clone()).or_default().insert(c);
         }
     }
     r.ilegibles = r.malos.values().sum();
@@ -1873,8 +2109,35 @@ fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Opt
         }
         ficheros_fijos(&r.clon, &cifra)?;
         retirar_viejos(&r.clon, &equipo, &cifra)?;
-        let ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
+        let mut ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
+        // Los ficheros con líneas rechazadas por estar su proyecto en otro espacio (o con un aviso de
+        // proyecto) se vuelven a leer siempre, aunque no hayan cambiado: si aquí el proyecto ya está
+        // donde dicen (se movió a mano o por una línea `project`), sus cambios entran ahora, y si no,
+        // el aviso se vuelve a calcular. Los que ya no existen se dejan de contar.
+        let e = leer_estado_de(r);
+        for f in e.ficheros_conflicto.keys().chain(e.ficheros_choques.keys()).chain(e.ficheros_malos.keys()).chain(e.ficheros_futuros.keys()) {
+            let ruta = r.clon.join(f);
+            if !ruta.exists() {
+                for cuentas in [&mut res.malos, &mut res.futuros, &mut res.conflictos] {
+                    cuentas.insert(f.clone(), 0);
+                }
+            } else if (e.ficheros_conflicto.contains_key(f) || e.ficheros_choques.contains_key(f)) && !ficheros.contains(&ruta) {
+                ficheros.push(ruta);
+            }
+        }
+        ficheros.sort();
         importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
+        // Un proyecto que pasó a un espacio cuyo repositorio no tiene este equipo: que se una.
+        for (nombre, espacio) in std::mem::take(&mut res.movidos) {
+            if repo_de_espacio(&r.db, &espacio).is_none() {
+                res.unirse.push(tr!(
+                    "{nombre} is now in the space {espacio} (it was moved on another computer): join its repository with `omoi sync join --space {espacio} <code>` (`omoi sync code --space {espacio}` on a computer that has it gives the code)",
+                    "{nombre} está ahora en el espacio {espacio} (se movió en otro equipo): únete a su repositorio con `omoi sync join --space {espacio} <código>` (el código lo da `omoi sync code --space {espacio}` en un equipo que ya lo tenga)"
+                ));
+            }
+        }
+        res.avisos = res.unirse.clone();
+        res.avisos.extend(sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto));
         // Si esta versión se saltó líneas nuevas y la base la usó antes una más nueva (se volvió a una
         // vieja), esa tendrá que releerlas cuando vuelva.
         if res.de_version_nueva > 0 {
@@ -2206,6 +2469,10 @@ pub struct Estado {
     /// Lo mismo con las líneas rechazadas por tocar algo de otro espacio (`Resumen::conflictos_de_espacio`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_conflicto: BTreeMap<String, usize>,
+    /// Por fichero, los proyectos que allí están en otro espacio (`Choque`): se vuelven a leer en cada
+    /// sincronización hasta que no quede ninguno.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ficheros_choques: BTreeMap<String, BTreeSet<Choque>>,
 }
 
 impl Estado {
@@ -2218,6 +2485,18 @@ impl Estado {
     pub fn conflictos_de_espacio(&self) -> usize {
         self.ficheros_conflicto.values().sum()
     }
+
+    /// Los proyectos que están en otro espacio en otro equipo, uno por situación.
+    pub fn choques(&self) -> Vec<Choque> {
+        sin_repetir(self.ficheros_choques.values().flatten())
+    }
+}
+
+/// Los proyectos en otro espacio en otro equipo, de todos los repositorios de este equipo (para
+/// Revisar, `omoi review` y `doctor`).
+pub fn choques(ruta_db: &Path) -> Vec<Choque> {
+    let todos: Vec<Choque> = repos(ruta_db).iter().flat_map(|r| leer_estado_de(r).choques()).collect();
+    sin_repetir(&todos)
 }
 
 /// Cómo fue la última sincronización del repositorio general.
@@ -2254,6 +2533,13 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
                     }
                 }
             }
+            // Los de cada fichero leído (todos pasan por `malos`), en lugar de los de la vez anterior.
+            for f in r.malos.keys() {
+                match r.choques.get(f).filter(|c| !c.is_empty()) {
+                    Some(c) => e.ficheros_choques.insert(f.clone(), c.clone()),
+                    None => e.ficheros_choques.remove(f),
+                };
+            }
             let malas: usize = e.ficheros_malos.values().sum();
             let futuras = e.de_version_nueva();
             let mut avisos = Vec::new();
@@ -2275,6 +2561,9 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
                     conflictos
                 ));
             }
+            // Qué proyecto y qué orden lo arregla; y si alguno pasó a un espacio que aquí no se sincroniza.
+            avisos.extend(e.choques().iter().map(Choque::texto));
+            avisos.extend(r.unirse.iter().cloned());
             e.aviso = (!avisos.is_empty()).then(|| avisos.join(" · "));
         }
         Err(err) => {

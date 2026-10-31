@@ -549,7 +549,8 @@ fn la_migracion_pone_persona_en_las_claves_dir() {
 }
 
 /// Una base del esquema 10 de antes de la persona local (de una versión sin publicar): al abrirla, sus
-/// claves `dir:/<carpeta>` toman persona y los olvidos su columna de espacio.
+/// claves `dir:/<carpeta>` toman persona, los olvidos su columna de espacio y los proyectos la de su
+/// sello (`project.hlc`).
 #[test]
 fn una_base_10_sin_persona_se_pone_al_dia() {
     let dir = carpeta("diez-sin-persona");
@@ -560,13 +561,14 @@ fn una_base_10_sin_persona_se_pone_al_dia() {
         guardar(&mut db, &notas, Tipo::Fact, "Notas", "En markdown.");
         let otra = guardar(&mut db, &notas, Tipo::Fact, "Otra", "Para olvidar.");
         memoria::olvidar(&mut db, &otra).unwrap();
-        db.execute_batch("DELETE FROM meta WHERE k = 'persona'; UPDATE project SET key = 'dir:/notas' WHERE id != 0; ALTER TABLE tombstone DROP COLUMN space_key;").unwrap();
+        db.execute_batch("DELETE FROM meta WHERE k = 'persona'; UPDATE project SET key = 'dir:/notas' WHERE id != 0; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc;").unwrap();
     }
     let db = db::abrir(&ruta).unwrap();
     let persona = db::persona_de(&db);
     assert!(persona.starts_with("u-"), "{persona}");
     assert_eq!(la_clave(&db), format!("dir:{persona}/notas"));
     assert_eq!(uno(&db, "SELECT count(*) FROM tombstone WHERE space_key = ''"), 1);
+    assert_eq!(uno(&db, "SELECT count(*) FROM project WHERE hlc = ''"), 2, "la columna, vacía");
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }

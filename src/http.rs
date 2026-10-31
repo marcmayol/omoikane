@@ -208,10 +208,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Get, "/api/projects") => {
+                    let ruta = db.clone();
                     let db = db::abrir(&db)?;
                     let cuerpo = serde_json::json!({
                         "projects": crate::proyecto::lista(&db, None, None, usize::MAX)?,
                         "spaces": crate::proyecto::espacios(&db)?,
+                        // Los proyectos que otro equipo tiene en otro espacio, con lo que dice
+                        // `sync status` y la orden que lo arregla.
+                        "space_conflicts": crate::sync::choques(&ruta).iter().map(|x| {
+                            let mut v = serde_json::to_value(x).unwrap_or_default();
+                            v["text"] = x.texto().into();
+                            v["command"] = x.orden().into();
+                            v
+                        }).collect::<Vec<_>>(),
                     });
                     Ok(json(200, cuerpo.to_string()))
                 }
