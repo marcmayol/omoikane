@@ -1419,8 +1419,27 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
                     proyecto::clave_espacio(&db, Some(antes))?
                 ));
             }
+            // Lo que llegó de otros equipos por el repositorio del espacio es del cliente, no de esta
+            // persona: se queda en el espacio, como memoria de espacio (sigue yendo solo a su
+            // repositorio y ya no se ve desde este proyecto). Lo escrito aquí sale con el proyecto.
+            let mut quedan = 0;
+            if let Some(antes) = proyecto::espacio_de(&db, id)? {
+                quedan = db.execute(
+                    "UPDATE memory SET project_id = 0, space_id = ?2 WHERE project_id = ?1 AND source LIKE 'sync:%'",
+                    rusqlite::params![id, antes],
+                )?;
+            }
             proyecto::asignar_espacio(&db, id, None)?;
             println!("{}", tr!("done: the project is no longer in a space", "hecho: el proyecto ya no está en ningún espacio"));
+            if quedan > 0 {
+                println!(
+                    "{}",
+                    tr!(
+                        "{quedan} memories that came from other computers through the space's repository stay in the space (they are the client's)",
+                        "{quedan} memorias que llegaron de otros equipos por el repositorio del espacio se quedan en el espacio (son del cliente)"
+                    )
+                );
+            }
             Ok(())
         }
     }

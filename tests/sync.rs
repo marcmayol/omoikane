@@ -2257,6 +2257,13 @@ fn un_cliente_no_reclama_un_proyecto_por_adelantado(caso: &str, por_memoria: boo
             assert!(general.contains("RECLAMOSEC") && general.contains("RECLAMODOS"), "{caso}");
             let en_acme = texto_del_repo(&t.p, &t.acme, &t.claves[1]);
             assert!(!en_acme.contains("RECLAMOSEC") && !en_acme.contains("RECLAMODOS"), "{caso}: {en_acme}");
+            if por_memoria {
+                // El cebo llegó del repositorio de acme: es del cliente. No pasa al general; se queda en
+                // acme como memoria de espacio.
+                assert!(!general.contains("01M62EWVHRXM00000000PRECL2"), "{caso}: {general}");
+                let cebo = a.get("01M62EWVHRXM00000000PRECL2").expect("sigue aquí");
+                assert_eq!((cebo["project"].as_str(), cebo["space"].as_str()), (Some(""), Some("acme")), "{caso}: {cebo}");
+            }
         }
         let estado = a.ok(&["sync", "status"]);
         assert!(!estado.contains("paused"), "{caso}: {estado}");
