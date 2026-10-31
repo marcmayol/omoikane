@@ -1543,6 +1543,13 @@ fn lo_que_llega_por_un_espacio_no_cae_en_otro() {
     let fuga = c.guardar(&cweb, "decision", "ACME web: precio", "Acme paga 900 la hora FUGAACME.", &[]);
     c.sync();
     assert_eq!(claves_de(&c).iter().filter(|k| k.ends_with("/web")).count(), 1);
+    // La línea `project` de C (su web, en acme) tiene la misma clave que la web de beta de A: A no la
+    // mueve, la pausa, y no acepta nada suyo (ni sube nada a beta) hasta decidir. Se la queda en beta.
+    let r = a.sync();
+    assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(1)), "{r}");
+    assert!(a.get(&fuga).is_none(), "no cae en beta/web");
+    assert!(a.ok(&["sync", "status"]).contains("web is paused: pc-c"));
+    a.ok(&["projects", "keep", bweb.to_str().unwrap()]);
     let r = a.sync();
     assert_eq!(r["conflictos_de_espacio"], 1, "{r}");
     assert!(a.get(&fuga).is_none(), "no cae en beta/web");
@@ -1751,9 +1758,10 @@ fn contenido(e: &Equipo, id: &str) -> String {
 
 /// El caso más común de «pasar de personal a empresa»: dos equipos de la misma persona comparten `web`
 /// por el repositorio general; A lo mete en acme y crea su repositorio. C, que todavía no se había
-/// enterado, lo había cambiado: al sincronizar, C pasa solo `web` a acme (sin tocar los sellos de sus
-/// memorias), avisa de que se una a acme, y desde entonces los cambios de los dos se cruzan por acme,
-/// gana el más nuevo y el general deja de llevarlo.
+/// enterado, lo había cambiado. Al sincronizar, C no lo mueve solo: lo pone en pausa (deja de subirlo
+/// al general, que era la fuga) y avisa con las dos órdenes. C se une a acme, acepta con
+/// `omoi projects move web --space acme`, y desde entonces los cambios de los dos se cruzan por acme y
+/// gana el más nuevo. El general nunca dice que web es de acme.
 #[test]
 fn personal_a_empresa_con_dos_equipos() {
     let p = Prueba::nueva("dos-equipos");
@@ -1767,6 +1775,7 @@ fn personal_a_empresa_con_dos_equipos() {
     c.ok(&["sync", "join", a.ok(&["sync", "code"]).trim(), "--yes"]);
     let cweb = c.proyecto("web", Some("https://github.com/acme/web"));
     assert_eq!(contenido(&c, &m), "V1.");
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
 
     // A: de personal a empresa.
     a.ok(&["space", "add", "acme"]);
@@ -1778,14 +1787,31 @@ fn personal_a_empresa_con_dos_equipos() {
     c.ok_en(&cweb, &["update", &m, "-c", "V2 de C CDOS.", "-r", "c"], &[]);
     let nueva = c.guardar(&cweb, "fact", "Nueva de C", "CNUEVA.", &[]);
     let r = c.sync();
-    assert_eq!(espacio_de(&c, WEB), "acme", "C pasa web a acme: {r}");
+    assert_eq!(espacio_de(&c, WEB), "", "C no lo mueve solo: {r}");
     let avisos = r["avisos"].to_string();
-    assert!(avisos.contains("web is now in the space acme") && avisos.contains("omoi sync join --space acme"), "{r}");
-    assert!(c.ok(&["sync", "status"]).contains("omoi sync join --space acme"));
+    assert!(avisos.contains("web is paused") && avisos.contains("doesn't say which") && avisos.contains("`omoi projects keep web`"), "{r}");
+    for orden in [&["sync", "status"][..], &["doctor"]] {
+        let t = c.ok(orden);
+        assert!(t.contains("web is paused"), "{orden:?}: {t}");
+    }
+    assert!(c.ok_en(&cweb, &["review"], &[]).contains("project_paused"));
+    let al_empezar = c.ok_en(&cweb, &["recall", "--session-start", "--format", "plain"], &[]);
+    assert!(al_empezar.contains("The project web is paused") && al_empezar.contains("omoi projects keep web"), "{al_empezar}");
+    // Lo de C en web ya no va al general (ni lo nuevo ni lo de antes).
+    let general = serde_json::to_string(&lineas_claras(&p, &p.url(), &clave)).unwrap();
+    assert!(!general.contains("CDOS") && !general.contains("CNUEVA") && !general.contains("V1."), "{general}");
     assert_eq!(c.get(&de_blog).unwrap()["space"].as_str().unwrap_or(""), "", "blog no se mueve");
 
-    // C se une a acme: los cambios se cruzan.
+    // C se une a acme: ahora sabe a qué espacio va, y sigue en pausa hasta que decida.
     c.ok(&["sync", "join", a.ok(&["sync", "code", "--space", "acme"]).trim(), "--yes"]);
+    let r = c.sync();
+    assert_eq!(espacio_de(&c, WEB), "");
+    assert!(r["avisos"].to_string().contains("says it belongs to the space acme") && r["avisos"].to_string().contains("omoi projects move web --space acme"), "{r}");
+    let en_acme = serde_json::to_string(&lineas_claras(&p, &acme, &clave_del_codigo(&a.ok(&["sync", "code", "--space", "acme"])))).unwrap();
+    assert!(!en_acme.contains("CDOS") && !en_acme.contains("CNUEVA"), "tampoco va a acme mientras está en pausa");
+    let o = c.ok(&["projects", "move", "web", "--space", "acme"]);
+    assert!(o.contains("no longer paused"), "{o}");
+    c.sync();
     a.sync();
     assert_eq!(contenido(&a, &m), "V2 de C CDOS.");
     assert_eq!(a.get(&nueva).expect("A tiene la nueva de C")["space"], "acme");
@@ -1795,69 +1821,237 @@ fn personal_a_empresa_con_dos_equipos() {
     assert_eq!(contenido(&c, &m), "V3 de A ATRES.");
     for e in [&a, &c] {
         let r = e.sync();
-        assert_eq!(r["conflictos_de_espacio"], 0, "{}: {r}", e.nombre);
-        assert!(!e.ok(&["sync", "status"]).contains("rejected"), "{}", e.nombre);
+        assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(0)), "{}: {r}", e.nombre);
+        let estado = e.ok(&["sync", "status"]);
+        assert!(!estado.contains("rejected") && !estado.contains("paused"), "{}: {estado}", e.nombre);
     }
 
-    // El general ya no lleva nada de web (solo la línea con su espacio), y sigue llevando blog.
-    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    // El general ya no lleva nada de web ni dice de qué cliente es: solo que un proyecto (con nombre
+    // opaco) se movió a un espacio. Y sigue llevando blog.
     let general = lineas_claras(&p, &p.url(), &clave);
     let texto = serde_json::to_string(&general).unwrap();
-    for x in ["CDOS", "CNUEVA", "ATRES"] {
-        assert!(!texto.contains(x), "{x} en el general");
+    for x in ["CDOS", "CNUEVA", "ATRES", "acme"] {
+        assert!(!texto.contains(x), "{x} en el general: {texto}");
     }
     assert!(general.iter().any(|l| l["id"] == de_blog.as_str()));
-    let de_web: Vec<&serde_json::Value> = general.iter().filter(|l| l["key"] == WEB || l["project_key"] == WEB).collect();
-    assert!(!de_web.is_empty() && de_web.iter().all(|l| l["type"] == "project" && l["space_key"] == "acme"), "{de_web:?}");
+    let movidos: Vec<&serde_json::Value> = general.iter().filter(|l| l["type"] == "project").collect();
+    assert!(!movidos.is_empty() && movidos.iter().all(|l| l["moved"] == true && l.get("name").is_none() && l.get("space_key").is_none()), "{movidos:?}");
 }
 
-/// Una línea `project` solo mueve un proyecto si llega por el repositorio general y es de la misma
-/// persona: una escrita a mano en el repositorio de un cliente, o por otra persona en el general, no
-/// mueve nada; solo se avisa (con quién y la orden).
-#[test]
-fn una_linea_project_de_un_espacio_o_de_otra_persona_no_mueve_nada() {
-    let p = Prueba::nueva("project-ajena");
+/// Un repositorio con A en tres sitios: un proyecto personal (general), uno de acme y uno de beta,
+/// cada uno con una memoria que lleva una marca; el general, acme y beta con sus claves.
+struct TresRepos {
+    p: Prueba,
+    a: Equipo,
+    acme: String,
+    beta: String,
+    claves: [Vec<u8>; 3],
+    carpetas: [PathBuf; 3],
+    ids: [String; 3],
+}
+
+const MARCAS: [&str; 3] = ["PERSONALSEC", "ACMESEC", "BETASEC"];
+
+/// Un sello de dentro de diez minutos, de un equipo: más nuevo que todo lo de la prueba (y no tan
+/// lejos como para descartarlo, que es lo que pasa a más de una hora).
+fn sello_pronto(equipo: &str) -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 600_000;
+    format!("{ms:013}-0000000000-{equipo}")
+}
+const CLAVES: [&str; 3] = ["git:github.com/me/personal", "git:github.com/acme/web", "git:github.com/beta/web"];
+
+fn tres_repos(nombre: &str) -> TresRepos {
+    let p = Prueba::nueva(nombre);
     let a = p.equipo("pc-a");
-    let blog = a.proyecto("blog", Some("git@github.com:marc/blog.git"));
-    let de_blog = a.guardar(&blog, "fact", "Blog", "El blog usa Astro.", &[]);
-    a.ok(&["space", "add", "acme"]);
-    let acme = p.otro_repo("acme");
+    let (acme, beta) = (p.otro_repo("acme"), p.otro_repo("beta"));
+    for s in ["acme", "beta"] {
+        a.ok(&["space", "add", s]);
+    }
+    let carpetas = [
+        a.proyecto("personal", Some("git@github.com:me/personal.git")),
+        a.proyecto("acme-web", Some("git@github.com:acme/web.git")),
+        a.proyecto("beta-web", Some("git@github.com:beta/web.git")),
+    ];
+    a.ok_en(&carpetas[1], &["space", "assign", "acme"], &[]);
+    a.ok_en(&carpetas[2], &["space", "assign", "beta"], &[]);
+    let ids = [0, 1, 2].map(|i| a.guardar(&carpetas[i], "fact", MARCAS[i], &format!("Lo de aquí {}.", MARCAS[i]), &[]));
     a.ok(&["sync", "init", &p.url(), "--yes"]);
-    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    a.ok(&["sync", "init", &acme, "--space", "acme", "--yes"]);
+    a.ok(&["sync", "init", &beta, "--space", "beta", "--yes"]);
     a.sync();
-    let codigo = a.ok(&["sync", "code"]).trim().to_string();
-    let persona = json_del_codigo(&codigo)["person"].as_str().unwrap().to_string();
-    let clave_general = clave_del_codigo(&codigo);
-    let clave_acme = clave_del_codigo(&a.ok(&["sync", "code", "--space", "acme"]));
-    let linea = |espacio: &str, persona: &str, hlc: &str| {
-        serde_json::json!({ "type": "project", "key": "git:github.com/marc/blog", "name": "blog", "space_key": espacio, "hlc": hlc, "person": persona, "machine": "pc-x" })
-    };
-    // Por el repositorio de acme, aunque diga ser de la misma persona.
-    p.subir_a_mano_en(&acme, "proyectos/m-x.jsonl", &format!("{}\n", cifrar_linea(&clave_acme, &linea("acme", &persona, "1893404800000-0000000000-pc-x"))));
-    // Por el general, de otra persona.
-    p.subir_a_mano("proyectos/m-y.jsonl", &format!("{}\n", cifrar_linea(&clave_general, &linea("acme", "otra-persona", "1893404800001-0000000000-pc-y"))));
-    let r = a.sync();
-    assert_eq!(espacio_de(&a, "git:github.com/marc/blog"), "", "blog sigue sin espacio: {r}");
-    assert_eq!(a.get(&de_blog).unwrap()["space"].as_str().unwrap_or(""), "");
-    let estado = a.ok(&["sync", "status"]);
-    assert!(estado.contains("moved blog to the space acme: `omoi projects move blog --space acme`"), "{estado}");
-    // Sigue yendo por el general, y nada de blog va al de acme.
-    a.ok_en(&blog, &["update", &de_blog, "-c", "El blog usa Astro 5.", "-r", "x"], &[]);
-    a.sync();
-    let general = serde_json::to_string(&lineas_claras(&p, &p.url(), &clave_general)).unwrap();
-    assert!(general.contains("Astro 5"));
-    let de_acme = lineas_claras(&p, &acme, &clave_acme);
-    assert!(de_acme.iter().all(|l| l["machine"] == "pc-x"), "{de_acme:?}");
-    // La misma, por el general y de la misma persona: esa sí lo mueve (y el aviso desaparece).
-    p.subir_a_mano("proyectos/m-z.jsonl", &format!("{}\n", cifrar_linea(&clave_general, &linea("acme", &persona, "1893404800002-0000000000-pc-z"))));
-    a.sync();
-    assert_eq!(espacio_de(&a, "git:github.com/marc/blog"), "acme");
-    assert!(!a.ok(&["sync", "status"]).contains("moved blog"));
+    let claves = [
+        clave_del_codigo(&a.ok(&["sync", "code"])),
+        clave_del_codigo(&a.ok(&["sync", "code", "--space", "acme"])),
+        clave_del_codigo(&a.ok(&["sync", "code", "--space", "beta"])),
+    ];
+    let t = TresRepos { p, a, acme, beta, claves, carpetas, ids };
+    assert_eq!(t.marcas(), [vec!["PERSONALSEC"], vec!["ACMESEC"], vec!["BETASEC"]]);
+    t
 }
 
-/// Mover un proyecto de un espacio a otro pide `--force`; de ninguno a uno, no. Sin repositorio
-/// general, el otro equipo no lo mueve solo: se le avisa con la orden, y en cuanto la ejecuta los
-/// cambios de los dos vuelven a cruzarse (por el repositorio nuevo, y el viejo deja de llevarlo).
+impl TresRepos {
+    /// Qué marcas lleva cada repositorio (general, acme, beta).
+    fn marcas(&self) -> [Vec<&'static str>; 3] {
+        let urls = [self.p.url(), self.acme.clone(), self.beta.clone()];
+        [0, 1, 2].map(|i| {
+            let texto = serde_json::to_string(&lineas_claras(&self.p, &urls[i], &self.claves[i])).unwrap();
+            MARCAS.iter().chain(["NUEVOSEC"].iter()).copied().filter(|m| texto.contains(m)).collect()
+        })
+    }
+
+    fn espacios(&self) -> Vec<String> {
+        CLAVES.iter().map(|k| espacio_de(&self.a, k)).collect()
+    }
+}
+
+/// Lo que puede hacer quien tenga la clave del general escribiendo a mano una línea `project` con el
+/// sello más nuevo (y la persona de A, que va en claro): nada cambia de espacio, nada viaja a otro
+/// repositorio; el proyecto queda en pausa (ni sube ni acepta nada) y se avisa. `omoi projects keep`
+/// lo deja donde estaba y la misma línea ya no vuelve a pausarlo.
+fn una_linea_project_solo_pausa(caso: &str, i: usize, espacio: &str, sin_el: [Vec<&'static str>; 3], con_nuevo: [Vec<&'static str>; 3]) {
+    let t = tres_repos(caso);
+    let a = &t.a;
+    let antes = t.espacios();
+    let persona = json_del_codigo(a.ok(&["sync", "code"]).trim())["person"].as_str().unwrap().to_string();
+    let linea = serde_json::json!({
+        "type": "project", "key": CLAVES[i], "name": "x", "space_key": espacio, "hlc": sello_pronto("pc-x"), "person": persona, "machine": "pc-x"
+    });
+    t.p.subir_a_mano("proyectos/m-x.jsonl", &format!("{}\n", cifrar_linea(&t.claves[0], &linea)));
+    let r = a.sync();
+    assert_eq!(t.espacios(), antes, "{caso}: nada cambia de espacio: {r}");
+    let pausados: Vec<String> = base(a).prepare("SELECT key FROM project WHERE paused != ''").unwrap().query_map([], |f| f.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(pausados, [CLAVES[i]], "{caso}");
+    assert!(r["avisos"].to_string().contains("is paused: pc-x"), "{caso}: {r}");
+    assert_eq!(t.marcas(), sin_el, "{caso}: lo suyo deja de ir a su repositorio, y nada va a otro");
+    // Lo que cambia mientras está en pausa no sale de aquí.
+    a.ok_en(&t.carpetas[i], &["update", &t.ids[i], "-c", "Cambiado NUEVOSEC.", "-r", "x"], &[]);
+    a.sync();
+    assert_eq!(t.marcas(), sin_el, "{caso}: tampoco lo nuevo");
+    assert!(a.ok(&["sync", "status"]).contains("is paused"));
+
+    // A decide quedárselo donde estaba: vuelve a su repositorio, y la línea no lo vuelve a pausar.
+    let o = a.ok(&["projects", "keep", t.carpetas[i].to_str().unwrap()]);
+    assert!(o.contains("syncs again"), "{o}");
+    let r = a.sync();
+    assert_eq!(t.espacios(), antes);
+    assert_eq!(t.marcas(), con_nuevo, "{caso}: {r}");
+    let r = a.sync();
+    assert!(!r["avisos"].to_string().contains("paused") && !a.ok(&["sync", "status"]).contains("paused"), "{caso}: {r}");
+    assert!(a.ok(&["projects", "keep", t.carpetas[i].to_str().unwrap()]).contains("not paused"));
+}
+
+#[test]
+fn una_linea_project_solo_pausa_sacar_de_un_cliente() {
+    una_linea_project_solo_pausa(
+        "pausa-sacar",
+        1,
+        "",
+        [vec!["PERSONALSEC"], vec![], vec!["BETASEC"]],
+        [vec!["PERSONALSEC"], vec!["ACMESEC", "NUEVOSEC"], vec!["BETASEC"]],
+    );
+}
+
+#[test]
+fn una_linea_project_solo_pausa_meter_lo_personal_en_un_cliente() {
+    una_linea_project_solo_pausa(
+        "pausa-meter",
+        0,
+        "acme",
+        [vec![], vec!["ACMESEC"], vec!["BETASEC"]],
+        [vec!["PERSONALSEC", "NUEVOSEC"], vec!["ACMESEC"], vec!["BETASEC"]],
+    );
+}
+
+#[test]
+fn una_linea_project_solo_pausa_de_un_cliente_a_otro() {
+    una_linea_project_solo_pausa(
+        "pausa-otro",
+        2,
+        "acme",
+        [vec!["PERSONALSEC"], vec!["ACMESEC"], vec![]],
+        [vec!["PERSONALSEC"], vec!["ACMESEC"], vec!["BETASEC", "NUEVOSEC"]],
+    );
+}
+
+/// También por el repositorio de un cliente (alguien de acme dice que el proyecto de beta es suyo), y
+/// con la línea sin nombre del general (`moved`) para un proyecto que aquí no tiene espacio: pausa,
+/// sin que nada cruce. Una sin nombre que no es de ningún proyecto de aquí no hace nada.
+#[test]
+fn una_linea_project_por_un_cliente_o_sin_nombre_solo_pausa() {
+    let t = tres_repos("pausa-cliente");
+    let a = &t.a;
+    let antes = t.espacios();
+    let por_acme = serde_json::json!({ "type": "project", "key": CLAVES[2], "space_key": "acme", "hlc": sello_pronto("pc-x"), "machine": "pc-x" });
+    t.p.subir_a_mano_en(&t.acme, "proyectos/m-x.jsonl", &format!("{}\n", cifrar_linea(&t.claves[1], &por_acme)));
+    // El nombre opaco del personal (el de su carpeta en el general) y uno que no es de nadie.
+    let carpeta_personal = t.p.ficheros_compartidos().iter().map(|(f, _)| f.split('/').next().unwrap().to_string()).find(|f| f.starts_with("p-")).unwrap();
+    let movidas = [carpeta_personal.as_str(), "p-0000000000000000"]
+        .map(|k| cifrar_linea(&t.claves[0], &serde_json::json!({ "type": "project", "key": k, "hlc": sello_pronto("pc-y"), "moved": true, "machine": "pc-y" })));
+    t.p.subir_a_mano("proyectos/m-y.jsonl", &format!("{}\n", movidas.join("\n")));
+    let r = a.sync();
+    assert_eq!(t.espacios(), antes, "{r}");
+    assert_eq!(t.marcas(), [vec![], vec!["ACMESEC"], vec![]], "{r}");
+    let estado = a.ok(&["sync", "status"]);
+    assert!(estado.contains("beta-web is paused: pc-x says it belongs to the space acme") && estado.contains("omoi projects move beta-web --space acme --force"), "{estado}");
+    assert!(estado.contains("personal is paused: pc-y moved it to a space") && estado.contains("omoi projects keep personal"), "{estado}");
+    let web = a.json_en(&a.dir, &["sync", "status"]);
+    assert_eq!(web["paused"].as_array().unwrap().len(), 2, "{web}");
+    for i in [0, 2] {
+        a.ok(&["projects", "keep", t.carpetas[i].to_str().unwrap()]);
+    }
+    a.sync();
+    assert_eq!(t.marcas(), [vec!["PERSONALSEC"], vec!["ACMESEC"], vec!["BETASEC"]]);
+
+    // Una con un sello de 2040 no se aplica (se cuenta como no válida): ni pausa, ni deja un sello con
+    // el que `keep` haría el proyecto sordo a los movimientos de verdad.
+    let futura = serde_json::json!({ "type": "project", "key": CLAVES[1], "space_key": "", "hlc": "2208988800000-0000000000-pc-z", "machine": "pc-z" });
+    t.p.subir_a_mano("proyectos/m-z.jsonl", &format!("{}\n", cifrar_linea(&t.claves[0], &futura)));
+    let r = a.sync();
+    assert_eq!(r["ilegibles"], 1, "{r}");
+    assert!(!a.ok(&["sync", "status"]).contains("paused"));
+    assert_eq!(t.marcas(), [vec!["PERSONALSEC"], vec!["ACMESEC"], vec!["BETASEC"]]);
+}
+
+/// Una línea con un sello de 2040 (un equipo con la hora mal, o escrita a mano) se aplica, y el
+/// cambio que se hace aquí sobre ella le gana; pero no adelanta el reloj: lo siguiente que se guarda
+/// lleva la hora de ahora, y no queda atascado detrás de 2040.
+#[test]
+fn un_sello_del_futuro_no_envenena_el_reloj() {
+    let p = Prueba::nueva("reloj-futuro");
+    let a = p.equipo("pc-a");
+    let m = a.guardar(&a.dir, "fact", "Reloj", "V1.", &["--global"]);
+    a.ok(&["sync", "init", &p.url(), "--yes"]);
+    a.sync();
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    let futuro = "2208988800000-0000000000-pc-x";
+    let linea = serde_json::json!({
+        "type": "memory", "id": m, "project_key": "", "project_path": "", "kind": "fact", "title": "Reloj", "content": "Del futuro.",
+        "created_at": "2026-10-31T00:00:00.000Z", "updated_at": "2040-01-01T00:00:00.000Z", "hlc": futuro, "machine": "pc-x"
+    });
+    p.subir_a_mano("global/m-x.jsonl", &format!("{}\n", cifrar_linea(&clave, &linea)));
+    a.sync();
+    assert_eq!(contenido(&a, &m), "Del futuro.");
+    a.ok(&["update", &m, "-c", "Editada aquí.", "-r", "x"]);
+    let otra = a.guardar(&a.dir, "fact", "Después", "Guardada después.", &["--global"]);
+    let db = base(&a);
+    let sello = |id: &str| -> String { db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap() };
+    let ms = |s: &str| -> u64 { s.split('-').next().unwrap().parse().unwrap() };
+    assert!(sello(&m).as_str() > futuro, "la edición de aquí gana a la de 2040: {}", sello(&m));
+    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    assert!(ms(&sello(&otra)) <= ahora + 60_000, "lo siguiente va en la hora de ahora: {}", sello(&otra));
+    let reloj: String = db.query_row("SELECT v FROM meta WHERE k = 'hlc'", [], |f| f.get(0)).unwrap();
+    assert!(ms(&reloj) <= ahora + 60_000, "el reloj no se adelanta a 2040: {reloj}");
+    // Y la edición viaja: otro equipo la recibe a ella y no la de 2040.
+    a.sync();
+    let b = p.equipo("pc-b");
+    b.ok(&["sync", "join", a.ok(&["sync", "code"]).trim(), "--yes"]);
+    assert_eq!(contenido(&b, &m), "Editada aquí.");
+}
+
+/// Mover un proyecto de un espacio a otro pide `--force`; de ninguno a uno, no. El otro equipo no lo
+/// mueve solo: lo pone en pausa (deja de subirlo a acme y de aceptar lo suyo) y avisa con las dos
+/// órdenes; en cuanto ejecuta la de moverlo, los cambios de los dos vuelven a cruzarse por el
+/// repositorio nuevo, y el viejo deja de llevarlo.
 #[test]
 fn mover_entre_espacios_con_otro_equipo() {
     let p = Prueba::nueva("entre-espacios");
@@ -1887,19 +2081,25 @@ fn mover_entre_espacios_con_otro_equipo() {
     a.ok(&["projects", "move", aweb.to_str().unwrap(), "--space", "beta", "--force"]);
     a.sync();
     let r = c.sync();
-    assert_eq!(espacio_de(&c, WEB), "acme", "por un repositorio de espacio no se mueve nada: {r}");
+    assert_eq!(espacio_de(&c, WEB), "acme", "nada se mueve solo: {r}");
     let estado = c.ok(&["sync", "status"]);
-    assert!(estado.contains("moved web to the space beta: `omoi projects move web --space beta --force`"), "{estado}");
+    assert!(
+        estado.contains("web is paused: pc-a") && estado.contains("`omoi projects move web --space beta --force`") && estado.contains("`omoi projects keep web`"),
+        "{estado}"
+    );
 
-    // C sigue cambiando en acme: A no lo aplica y dice qué proyecto y qué hacer.
+    // C sigue cambiando: nada sale de C (ni a acme ni a beta) mientras está en pausa.
     c.ok_en(&cweb, &["update", &m, "-c", "Versión de C CCAMBIO.", "-r", "c"], &[]);
     let nueva = c.guardar(&cweb, "fact", "Nueva de C", "Nueva en acme CNUEVA.", &[]);
     c.sync();
     let r = a.sync();
-    assert!(r["conflictos_de_espacio"].as_u64().unwrap() > 0, "{r}");
+    assert_eq!(r["conflictos_de_espacio"], 0, "{r}");
     assert!(a.get(&nueva).is_none() && contenido(&a, &m) == "Versión 1 V1TXT.");
-    let estado = a.ok(&["sync", "status"]);
-    assert!(estado.contains("web is in the space acme on pc-c") && estado.contains("in beta here"), "{estado}");
+    let (clave_acme, clave_beta) = (clave_del_codigo(&codigo_acme), clave_del_codigo(&codigo_beta));
+    for (url, clave) in [(&acme, &clave_acme), (&beta, &clave_beta)] {
+        let t = serde_json::to_string(&lineas_claras(&p, url, clave)).unwrap();
+        assert!(!t.contains("CCAMBIO") && !t.contains("CNUEVA"), "{t}");
+    }
 
     // C ejecuta la orden del aviso: todo vuelve a cruzarse, por beta.
     c.ok(&["projects", "move", "web", "--space", "beta", "--force"]);
@@ -1914,9 +2114,8 @@ fn mover_entre_espacios_con_otro_equipo() {
     for e in [&a, &c] {
         assert_eq!(e.sync()["conflictos_de_espacio"], 0, "{}", e.nombre);
         let estado = e.ok(&["sync", "status"]);
-        assert!(!estado.contains("rejected") && !estado.contains("moved web"), "{}: {estado}", e.nombre);
+        assert!(!estado.contains("rejected") && !estado.contains("paused"), "{}: {estado}", e.nombre);
     }
-    let (clave_acme, clave_beta) = (clave_del_codigo(&codigo_acme), clave_del_codigo(&codigo_beta));
     let en_acme = serde_json::to_string(&lineas_claras(&p, &acme, &clave_acme)).unwrap();
     assert!(!en_acme.contains("CCAMBIO") && !en_acme.contains("CNUEVA") && !en_acme.contains("Versión 3"), "acme ya no lleva web: {en_acme}");
     let en_beta = serde_json::to_string(&lineas_claras(&p, &beta, &clave_beta)).unwrap();
@@ -1933,7 +2132,7 @@ fn mover_entre_espacios_con_otro_equipo() {
 }
 
 /// Mover no vuelve a sellar las memorias: gana la edición más nueva, haya movido quien haya movido y
-/// sincronice quien sincronice primero.
+/// sincronice quien sincronice primero (el otro equipo acepta el movimiento con `projects move`).
 #[test]
 fn la_edicion_mas_nueva_gana_aunque_otro_equipo_mueva_el_proyecto() {
     for (caso, a_despues) in [("a-despues", true), ("c-despues", false)] {
@@ -1955,16 +2154,24 @@ fn la_edicion_mas_nueva_gana_aunque_otro_equipo_mueva_el_proyecto() {
         primero.0.ok_en(primero.1, &["update", &m, "-c", "La vieja.", "-r", "x"], &[]);
         std::thread::sleep(std::time::Duration::from_millis(5));
         segundo.0.ok_en(segundo.1, &["update", &m, "-c", "La nueva.", "-r", "x"], &[]);
-        // C mueve el proyecto (después de las dos ediciones) y se sincroniza en los dos órdenes.
+        // C mueve el proyecto (después de las dos ediciones) y se sincroniza en los dos órdenes; A lo
+        // pausa, y lo acepta.
         c.ok(&["projects", "move", "web", "--space", "acme"]);
         let orden = if a_despues { [&c, &a, &c, &a] } else { [&a, &c, &a, &c] };
+        for e in orden {
+            e.sync();
+        }
+        assert_eq!(espacio_de(&a, WEB), "", "{caso}: A no lo mueve solo");
+        assert!(a.ok(&["sync", "status"]).contains("web is paused"), "{caso}");
+        a.ok(&["projects", "move", "web", "--space", "acme"]);
         for e in orden {
             e.sync();
         }
         for e in [&a, &c] {
             assert_eq!(espacio_de(e, WEB), "acme", "{caso} {}", e.nombre);
             assert_eq!(contenido(e, &m), "La nueva.", "{caso}: en {} gana la más nueva", e.nombre);
-            assert_eq!(e.sync()["conflictos_de_espacio"], 0, "{caso} {}", e.nombre);
+            let r = e.sync();
+            assert_eq!((r["conflictos_de_espacio"].as_u64(), r["en_pausa"].as_u64()), (Some(0), Some(0)), "{caso} {}: {r}", e.nombre);
         }
     }
 }
