@@ -457,3 +457,20 @@ fn la_papelera_de_un_export_de_la_0_19_sigue_entrando() {
     let m = e.get("o.db", id).unwrap();
     assert_eq!((m["project"].as_str(), m["kind"].as_str(), m["tags"][0].as_str()), (Some(ruta.as_str()), Some("gotcha"), Some("red")), "{m}");
 }
+
+/// Pasar un proyecto de un cliente a otro, o sacarlo de su espacio (sus memorias irían al repositorio
+/// personal), solo con `--force`, como `projects move --space`.
+#[test]
+fn cambiar_de_espacio_o_sacarlo_pide_force() {
+    let e = Entorno::nuevo("asignar");
+    e.id("o.db", "fact", "Algo del proyecto", "Para que exista.");
+    e.ok("o.db", &["space", "add", "acme"]);
+    e.ok("o.db", &["space", "add", "beta"]);
+    e.ok("o.db", &["space", "assign", "acme"]);
+    let o = e.omoi("o.db", &["space", "assign", "beta"], None);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--force"), "{}", String::from_utf8_lossy(&o.stderr));
+    e.ok("o.db", &["space", "assign", "beta", "--force"]);
+    let o = e.omoi("o.db", &["space", "unassign"], None);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--force"), "{}", String::from_utf8_lossy(&o.stderr));
+    e.ok("o.db", &["space", "unassign", "--force"]);
+}
