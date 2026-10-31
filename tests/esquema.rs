@@ -595,7 +595,9 @@ fn por_id_tampoco_se_cruza_de_espacio() {
     };
     for (nombre, args) in [
         ("get", serde_json::json!({ "id": globex })),
-        ("get", serde_json::json!({ "id": &globex[..10] })),
+        // 20 caracteres: los 10 primeros de un ULID son la hora, y en una máquina rápida varias memorias
+        // del test caen en el mismo milisegundo (el prefijo sería ambiguo, no «de otro espacio»).
+        ("get", serde_json::json!({ "id": &globex[..20] })),
         ("history", serde_json::json!({ "id": globex })),
         ("forget", serde_json::json!({ "id": globex })),
         ("update", serde_json::json!({ "id": globex, "content": "Cambiada desde Acme." })),
