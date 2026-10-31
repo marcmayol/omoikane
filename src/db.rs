@@ -60,8 +60,113 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     migrar(&mut db)?;
     al_dia_10(&db)?;
     asegurar_persona(&db)?;
+    locales(&mut db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
+}
+
+/// Lo que esta versión añade para ir rápida con muchas memorias y que no es parte del esquema: un
+/// índice, dos tablas y unos disparadores que una 1.0 ignora (no los lee, y los disparadores, en SQL
+/// normal, los mantiene también ella al escribir). Así la base sigue abriéndose con la 1.0 y no sube
+/// `lector_minimo`.
+///
+/// - `memory_ambito`: el ámbito de cada memoria por su `n`, para juntar con `memory_fts` y
+///   `memory_vec` sin leer la fila entera (con 100.000 memorias, contar las de una palabra pasaba de
+///   10 a 3 ms). Se usa con `INDEXED BY`: por sí solo, SQLite va por la clave primaria.
+/// - `memory_reciente`: las últimas del ámbito en orden, sin leer y ordenar todas (al empezar sesión,
+///   con 100.000 memorias, 440 ms).
+/// - `memory_hlc`: el último sello, sin leer la tabla (la huella de `revisar::al_dia`, en cada sesión:
+///   con 100.000 memorias, 90 ms).
+/// - `memory_cuenta`: cuántas memorias hay por proyecto y espacio, al día por disparadores; contar las
+///   de un ámbito ya no recorre la tabla.
+/// - `vec_cambio`: qué vectores han cambiado desde la última vez que se puso al día el resumen de
+///   vectores (`vectores::al_dia`), con el vector de antes. Lo llenan los disparadores, escriba quien
+///   escriba (también una 1.0 o la sincronización).
+///
+/// Si falta cualquiera de las piezas (una base nueva, una de la 1.0 o una cuyo `memory` rehízo una
+/// migración), se rehacen todas y se recuentan; el resumen de vectores se rehará entero al usarlo.
+const LOCALES: &str = "
+CREATE INDEX memory_ambito ON memory(n, project_id, space_id, kind);
+CREATE INDEX memory_hlc ON memory(hlc);
+CREATE INDEX memory_reciente ON memory(updated_at, id, project_id, space_id);
+
+CREATE TABLE memory_cuenta (project_id INTEGER NOT NULL, space_id INTEGER, n INTEGER NOT NULL);
+INSERT INTO memory_cuenta(project_id, space_id, n) SELECT project_id, space_id, count(*) FROM memory GROUP BY project_id, space_id;
+CREATE TRIGGER memory_cuenta_mas AFTER INSERT ON memory BEGIN
+  INSERT INTO memory_cuenta(project_id, space_id, n) SELECT NEW.project_id, NEW.space_id, 0
+    WHERE NOT EXISTS (SELECT 1 FROM memory_cuenta WHERE project_id = NEW.project_id AND space_id IS NEW.space_id);
+  UPDATE memory_cuenta SET n = n + 1 WHERE project_id = NEW.project_id AND space_id IS NEW.space_id;
+END;
+CREATE TRIGGER memory_cuenta_menos AFTER DELETE ON memory BEGIN
+  UPDATE memory_cuenta SET n = n - 1 WHERE project_id = OLD.project_id AND space_id IS OLD.space_id;
+END;
+CREATE TRIGGER memory_cuenta_mueve AFTER UPDATE OF project_id, space_id ON memory BEGIN
+  UPDATE memory_cuenta SET n = n - 1 WHERE project_id = OLD.project_id AND space_id IS OLD.space_id;
+  INSERT INTO memory_cuenta(project_id, space_id, n) SELECT NEW.project_id, NEW.space_id, 0
+    WHERE NOT EXISTS (SELECT 1 FROM memory_cuenta WHERE project_id = NEW.project_id AND space_id IS NEW.space_id);
+  UPDATE memory_cuenta SET n = n + 1 WHERE project_id = NEW.project_id AND space_id IS NEW.space_id;
+END;
+
+-- Sin `INSERT OR IGNORE`: dentro de un disparador manda el `OR` de la sentencia de fuera (el
+-- `INSERT OR REPLACE` de `vectores::guardar`), que cambiaría el vector de antes apuntado. Vale el
+-- primero: es el que está en el resumen. En el `INSERT` el de antes se lee antes de que el `REPLACE`
+-- lo borre (ese borrado no dispara nada). Sin resumen no se apunta nada: se hará entero (así, cambiar
+-- de modelo no copia aquí todos los vectores viejos).
+CREATE TABLE vec_cambio (n INTEGER PRIMARY KEY, viejo BLOB);
+CREATE TRIGGER vec_cambio_pon BEFORE INSERT ON memory_vec WHEN EXISTS (SELECT 1 FROM meta WHERE k = 'vec_resumen') BEGIN
+  INSERT INTO vec_cambio(n, viejo) SELECT NEW.n, (SELECT e FROM memory_vec WHERE n = NEW.n)
+    WHERE NOT EXISTS (SELECT 1 FROM vec_cambio WHERE n = NEW.n);
+END;
+CREATE TRIGGER vec_cambio_cambia BEFORE UPDATE ON memory_vec WHEN EXISTS (SELECT 1 FROM meta WHERE k = 'vec_resumen') BEGIN
+  INSERT INTO vec_cambio(n, viejo) SELECT OLD.n, OLD.e WHERE NOT EXISTS (SELECT 1 FROM vec_cambio WHERE n = OLD.n);
+  INSERT INTO vec_cambio(n, viejo) SELECT NEW.n, (SELECT e FROM memory_vec WHERE n = NEW.n)
+    WHERE NOT EXISTS (SELECT 1 FROM vec_cambio WHERE n = NEW.n);
+END;
+CREATE TRIGGER vec_cambio_quita BEFORE DELETE ON memory_vec WHEN EXISTS (SELECT 1 FROM meta WHERE k = 'vec_resumen') BEGIN
+  INSERT INTO vec_cambio(n, viejo) SELECT OLD.n, OLD.e WHERE NOT EXISTS (SELECT 1 FROM vec_cambio WHERE n = OLD.n);
+END;
+
+-- El resumen de vectores (`vectores::al_dia`): los de `memory_vec` en int8, de 1.024 en 1.024 por `n`.
+CREATE TABLE vec_bloque (b INTEGER PRIMARY KEY, ns BLOB NOT NULL, datos BLOB NOT NULL);
+";
+
+/// Los nombres de lo que crea `LOCALES`, para ver si está todo.
+const PIEZAS_LOCALES: &[&str] = &[
+    "memory_ambito",
+    "memory_hlc",
+    "memory_reciente",
+    "memory_cuenta",
+    "memory_cuenta_mas",
+    "memory_cuenta_menos",
+    "memory_cuenta_mueve",
+    "vec_cambio",
+    "vec_cambio_pon",
+    "vec_cambio_cambia",
+    "vec_cambio_quita",
+    "vec_bloque",
+];
+
+/// Deja `LOCALES` en la base (ver allí). Lo normal es que ya esté: una consulta a `sqlite_schema`.
+fn locales(db: &mut Connection) -> Result<()> {
+    let lista = PIEZAS_LOCALES.iter().map(|p| format!("'{p}'")).collect::<Vec<_>>().join(", ");
+    let consulta = format!("SELECT count(*) FROM sqlite_schema WHERE name IN ({lista})");
+    let hay = |db: &Connection| -> Result<usize> { Ok(db.query_row(&consulta, [], |f| f.get::<_, i64>(0))? as usize) };
+    if hay(db)? == PIEZAS_LOCALES.len() {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if hay(&tx)? != PIEZAS_LOCALES.len() {
+        for p in PIEZAS_LOCALES {
+            let tipo: Option<String> = tx.query_row("SELECT type FROM sqlite_schema WHERE name = ?1", [p], |f| f.get(0)).optional()?;
+            if let Some(tipo) = tipo {
+                tx.execute_batch(&format!("DROP {} \"{p}\"", tipo.to_uppercase()))?;
+            }
+        }
+        tx.execute_batch(LOCALES)?;
+        crate::vectores::olvidar_resumen(&tx)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn version(db: &Connection) -> Result<i64> {

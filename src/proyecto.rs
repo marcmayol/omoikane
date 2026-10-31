@@ -24,10 +24,17 @@ pub fn de(dir: &Path) -> Result<String> {
 /// ella o la raíz de una unidad, sin repositorio git. Quien abre las sesiones ahí trabaja en muchos
 /// proyectos a la vez, así que desde ahí se ven las memorias de todos.
 pub fn es_general(project: &str) -> bool {
-    match dirs::home_dir().and_then(|h| de(&h).ok()) {
-        Some(home) => general_en(project, Path::new(&home)),
+    match carpeta_personal() {
+        Some(home) => general_en(project, Path::new(home)),
         None => false,
     }
+}
+
+/// La carpeta del usuario como proyecto (`de`), calculada una vez por proceso: en Windows, resolverla
+/// cuesta un par de milisegundos, y el recall de cada mensaje pregunta varias veces por el ámbito.
+fn carpeta_personal() -> Option<&'static str> {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| dirs::home_dir().and_then(|h| de(&h).ok())).as_deref()
 }
 
 fn general_en(project: &str, home: &Path) -> bool {
