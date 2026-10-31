@@ -6,6 +6,15 @@ The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Unreleased
 
+## Unreleased
+
+### Added
+- **The meaning model, first piece** (EmbeddingGemma 300M, for questions asked with other words; see PLAN.md 9.2). It runs in pure Rust with candle, with no ONNX Runtime or anything else outside the binary, and gives the same vectors as Google's reference (cosine 1.00000). Loading it takes about 2 s, so it lives in a service of its own that Omoikane starts by itself the first time it's needed (`127.0.0.1` only, with a token) and that closes after 30 minutes without use. Whoever asks never waits for it to load: without the service, everything works as in 1.1. Search and recall don't use it yet.
+- `omoi model semantic --off` turns it off and closes its service: Omoikane goes back to the light model only, as in 1.1, faster and with less memory. `--on` turns it back on; `OMOIKANE_SEMANTIC=0` overrides both.
+
+### Compatibility
+- Same as 1.1.0: the database, the sync lines and the export format don't change.
+
 ## 1.1.0 (2026-10-31)
 
 Recall and search that hold up at 100,000 memories, a compatibility test against 1.0.0 on every commit, a public benchmark, and what a project needs to take contributions.

@@ -515,6 +515,19 @@ enum AccionModelo {
     },
     /// Delete installed models that are not in use.
     Clean,
+    /// Turn the meaning model (EmbeddingGemma) on or off. Off, Omoikane uses only the light model, as
+    /// before 1.2: faster and less memory, but it misses questions asked with other words.
+    Semantic {
+        /// Turn it on.
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn it off and close its service.
+        #[arg(long)]
+        off: bool,
+    },
+    /// The service that keeps the meaning model loaded (Omoikane starts it by itself).
+    #[command(hide = true)]
+    ServeSemantic,
 }
 
 fn main() -> Result<()> {
@@ -1207,6 +1220,38 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
                 return json(&serde_json::json!({ "model": id, "vectors": n }));
             }
             println!("{}", tr!("model ready: {id} ({n} vectors computed)", "modelo listo: {id} ({n} vectores calculados)"));
+            Ok(())
+        }
+        AccionModelo::ServeSemantic => omoikane::significado::servir(),
+        AccionModelo::Semantic { on, off } => {
+            use omoikane::significado as s;
+            if on || off {
+                s::fijar(on)?;
+            }
+            let modelo = s::modelo();
+            let vivo = s::vivo(std::time::Duration::from_millis(300));
+            if c.json {
+                return json(&serde_json::json!({
+                    "on": s::activado(),
+                    "installed": modelo.as_ref().map(|d| d.display().to_string()),
+                    "service_pid": vivo.as_ref().map(|r| r.pid),
+                }));
+            }
+            let estado = match (s::activado(), &modelo) {
+                (false, _) => tr!(
+                    "meaning model: off (only the light model: faster, less memory). `omoi model semantic --on` turns it on",
+                    "modelo de significado: apagado (solo el modelo ligero: más rápido y con menos memoria). `omoi model semantic --on` lo enciende"
+                ),
+                (true, None) => tr!("meaning model: on, but not installed", "modelo de significado: encendido, pero no está instalado"),
+                (true, Some(_)) => tr!(
+                    "meaning model: on. `omoi model semantic --off` goes back to the light model only",
+                    "modelo de significado: encendido. `omoi model semantic --off` vuelve a usar solo el modelo ligero"
+                ),
+            };
+            println!("{estado}");
+            if let Some(r) = vivo {
+                println!("{}", tr!("service running (pid {})", "servicio en marcha (pid {})", r.pid));
+            }
             Ok(())
         }
         AccionModelo::Clean => {
@@ -2195,6 +2240,11 @@ fn en_espanol(c: Command) -> Command {
                 })
             })
             .mut_subcommand("clean", |s| s.about("Borra los modelos instalados que no se usan."))
+            .mut_subcommand("semantic", |s| {
+                s.about("Enciende o apaga el modelo de significado (EmbeddingGemma). Apagado, Omoikane usa solo el modelo ligero, como antes de la 1.2: más rápido y con menos memoria, pero no entiende las preguntas hechas con otras palabras.")
+                    .mut_arg("on", |a| a.help("Encenderlo."))
+                    .mut_arg("off", |a| a.help("Apagarlo y cerrar su servicio."))
+            })
     });
     let opciones_sync = |s: Command| {
         s.mut_arg("yes", |a| a.help("No preguntar: usar estas opciones y las de por defecto."))
