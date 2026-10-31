@@ -1659,8 +1659,8 @@ pub fn texto_pausa(ruta_db: &Path, p: &crate::proyecto::EnPausa) -> String {
         )
     } else if p.pausa.unknown {
         tr!(
-            "{n} is paused: another computer ({m}) says it moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to move it, `{si}`",
-            "{n} está en pausa: otro equipo ({m}) dice que lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para moverlo, `{si}`"
+            "{n} is paused: another computer ({m}) says it moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is). If it does belong to a client, first join that client's repository (`omoi sync join --space <space> <code>`, with the code from a computer that is in it): then this notice names the space, and `{si}` moves it",
+            "{n} está en pausa: otro equipo ({m}) dice que lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está). Si sí es de un cliente, primero únete al repositorio de ese cliente (`omoi sync join --space <espacio> <código>`, con el código de un equipo que esté en él): entonces este aviso dice el espacio, y `{si}` lo mueve"
         )
     } else if e.is_empty() {
         tr!(
