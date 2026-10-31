@@ -12,7 +12,7 @@ omoi sync code                                            # escribe un código q
 omoi sync join <código>                                   # en otro equipo (o `--url` para llegar por otra vía)
 ```
 
-Desde entonces funciona solo y con todos los agentes: después de guardar, cambiar u olvidar una memoria, `omoi` sincroniza en segundo plano (espera 3 segundos y junta en un commit lo que llegue mientras), y baja lo nuevo al empezar cada sesión. `omoi sync status` y `omoi doctor` dicen cómo fue la última sincronización, la vista web también lo enseña, y si lleva más de una hora fallando, la sesión lo avisa al empezar.
+Desde entonces funciona solo y con todos los agentes: después de guardar, cambiar u olvidar una memoria, `omoi` sincroniza en segundo plano (espera unos segundos y junta en un commit lo que llegue mientras), y baja lo nuevo al empezar cada sesión. `omoi sync status` y `omoi doctor` dicen cómo fue la última sincronización, la vista web también lo enseña, y si lleva más de una hora fallando, la sesión lo avisa al empezar.
 
 - **Qué viaja:** texto, nunca la base de datos. Una línea cifrada por memoria, en un fichero por proyecto y por equipo, así que un cambio es una línea en el diff y el fichero de nadie choca con el de otro. Los vectores y los índices se rehacen en cada equipo.
 - **Cifrado en el remoto:** cada línea se cifra (AES-SIV) antes de salir de tu equipo; el repositorio solo guarda texto cifrado y nombres de carpeta opacos. La clave la crea `init` y viaja dentro del código para unirse, así que **pasa el código solo por un canal privado**. Si pierdes todas las copias de la clave, lo del remoto no se puede leer, aunque cada equipo conserva sus memorias.
