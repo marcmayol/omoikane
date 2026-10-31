@@ -1,6 +1,8 @@
 name: release
 
-# Un tag v* compila omoi para cada sistema y publica la Release con los binarios y sus sumas.
+# Un tag v* compila omoi para cada sistema, comprueba que se sigue entendiendo con la 1.0.0
+# (compat.yml) y publica la Release con los binarios, sus sumas y, como notas, la sección de esa
+# versión de CHANGELOG.md.
 # A mano (workflow_dispatch) solo compila y deja los paquetes como artefactos, para probar.
 on:
   push:
@@ -57,12 +59,31 @@ jobs:
           name: omoi-${{ matrix.target }}
           path: omoi-${{ matrix.target }}.${{ matrix.ext }}
 
+  # La 1.x no puede romper lo que prometió la 1.0: si el test de compatibilidad falla, no se publica.
+  compat:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/compat.yml
+
   publicar:
-    needs: compilar
+    needs: [compilar, compat]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Notas de la versión
+        # La sección «## <versión>» de CHANGELOG.md, hasta la siguiente «## ». Sin sección, o sin su
+        # apartado de compatibilidad, no hay Release (como sin firma).
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## / { if (dentro) exit; if ($2 == v) { dentro = 1; next } } dentro { print }' CHANGELOG.md > "$RUNNER_TEMP/notas.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notas.md" || { echo "CHANGELOG.md no tiene la sección «## $v»"; exit 1; }
+          grep -q '^### Compatibility' "$RUNNER_TEMP/notas.md" || { echo "la sección «## $v» de CHANGELOG.md no tiene «### Compatibility»"; exit 1; }
+          {
+            echo
+            echo "### Install"
+            echo "See the README: one line on Windows, Linux and macOS. Binaries for Windows x64, Linux x64/ARM64 (glibc ≥ 2.35) and macOS Apple Silicon/Intel, with SHA256SUMS and its signature."
+          } >> "$RUNNER_TEMP/notas.md"
+          cat "$RUNNER_TEMP/notas.md"
       - uses: actions/download-artifact@v4
         with:
           path: paquetes
@@ -86,4 +107,4 @@ jobs:
           rm -f "$RUNNER_TEMP/firma.pem"
           gh release create "$GITHUB_REF_NAME" omoi-* SHA256SUMS SHA256SUMS.sig \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "Omoikane $GITHUB_REF_NAME" \
-            --notes "Install: see the README (one line on Windows, Linux and macOS). Binaries for Windows x64, Linux x64/ARM64 (glibc ≥ 2.35) and macOS Apple Silicon/Intel, with SHA256SUMS."
+            --notes-file "$RUNNER_TEMP/notas.md"
