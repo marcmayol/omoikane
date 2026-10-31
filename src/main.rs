@@ -1151,9 +1151,11 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
         });
         ("SessionStart", texto)
     } else {
-        // El modelo abre en milisegundos (mapeado); sin él, el recall va solo por palabras.
-        let modelo = modelos::abrir_actual().ok().flatten();
-        ("UserPromptSubmit", recall::al_preguntar(&mut db, &project, &e, modelo.as_ref())?)
+        // El modelo abre en milisegundos (mapeado), y solo si el mensaje llega al canal por
+        // significado; sin él, el recall va solo por palabras.
+        let modelo = std::cell::OnceCell::new();
+        let mut abrir = || modelo.get_or_init(|| modelos::abrir_actual().ok().flatten()).as_ref();
+        ("UserPromptSubmit", recall::al_preguntar_abriendo(&mut db, &project, &e, &mut abrir)?)
     };
     if let Some(t) = texto {
         println!("{}", recall::salida_en(formato, evento, &t));

@@ -280,6 +280,50 @@ impl Ambito {
 }
 
 pub(crate) const AHORA: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+
+/// `INDEXED BY memory_ambito` para juntar `memory m` por `n` con otra tabla (`memory_fts`,
+/// `memory_vec`) y filtrar por ámbito sin leer la fila entera de cada memoria; nada si la conexión no
+/// tiene el índice (ver `db::LOCALES`). Solo cambia por dónde lee SQLite, no lo que sale.
+pub(crate) fn por_ambito(db: &Connection) -> &'static str {
+    let hay = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_ambito')", [], |f| f.get::<_, bool>(0))
+        .unwrap_or(false);
+    if hay { "INDEXED BY memory_ambito" } else { "" }
+}
+
+/// Si desde `ambito` se ven todas las memorias y el índice de palabras tiene una fila por memoria (las
+/// dos cuentas cuadran). Entonces contar o puntuar en `memory_fts` sin juntarlo con `memory` da lo
+/// mismo que filtrando por el ámbito, y cuesta mucho menos: con 100.000 memorias, contar en cuántas
+/// sale una palabra pasa de 3 a 0,3 ms. Es lo normal desde la carpeta del usuario (se ven todas) o con
+/// un solo proyecto. Ante la duda (sin las cuentas, o no cuadran), `false`: se junta, como siempre.
+pub(crate) fn ve_todas(db: &Connection, ambito: &Ambito) -> bool {
+    let cuentas = || -> Option<bool> {
+        let todas: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |f| f.get(0)).ok()?;
+        let aqui: i64 = match ambito {
+            Ambito::Todos => todas,
+            a => db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql()), [], |f| f.get(0)).ok()?,
+        };
+        Some(aqui == todas && filas_fts(db)? == todas)
+    };
+    cuentas().unwrap_or(false)
+}
+
+/// Cuántas filas tiene `memory_fts`: el primer número del registro de medias de FTS5 (`id = 1` de
+/// `memory_fts_data`, un varint como los de SQLite), el que usa para BM25. Sin leer el índice.
+fn filas_fts(db: &Connection) -> Option<i64> {
+    let b: Vec<u8> = db.query_row("SELECT block FROM memory_fts_data WHERE id = 1", [], |f| f.get(0)).ok()?;
+    let mut v: u64 = 0;
+    for (i, x) in b.iter().enumerate().take(9) {
+        if i == 8 {
+            return Some(((v << 8) | u64::from(*x)) as i64);
+        }
+        v = (v << 7) | u64::from(x & 0x7f);
+        if x & 0x80 == 0 {
+            return Some(v as i64);
+        }
+    }
+    None
+}
 /// Las columnas de una memoria, sobre `memory m`. Lo del proyecto y el espacio, con subconsultas por
 /// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`).
 pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '')";
@@ -1114,9 +1158,26 @@ pub(crate) fn historiales(db: &Connection) -> Result<std::collections::HashMap<S
 
 /// Las últimas guardadas o cambiadas.
 pub fn recientes(db: &Connection, ambito: &Ambito, kind: Option<Tipo>, limite: usize) -> Result<Vec<Memoria>> {
+    // Con tipo, `m.kind = ?1` a secas: con el `IS NULL OR` SQLite no usa el tipo del índice
+    // `memory_scope` y lee todas las del ámbito (las recetas del recall, en cada mensaje).
+    let tipo = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
+    // Sin tipo, por `memory_reciente` (ver `db::LOCALES`), que va ya en el orden pedido: se para en
+    // las `limite` primeras del ámbito y solo esas se leen enteras.
+    let hay_indice = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_reciente')", [], |f| f.get::<_, bool>(0))
+        .unwrap_or(false);
+    if kind.is_none() && hay_indice {
+        let mut q = db.prepare(&format!(
+            "SELECT m.n FROM memory m INDEXED BY memory_reciente WHERE {} ORDER BY m.updated_at DESC, m.id DESC LIMIT ?1",
+            ambito.sql()
+        ))?;
+        let ns: Vec<i64> = q.query_map([limite as i64], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let mut fila = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
+        return Ok(ns.into_iter().map(|n| fila.query_row([n], de_fila)).collect::<rusqlite::Result<_>>()?);
+    }
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM memory m
-         WHERE {} AND (?1 IS NULL OR m.kind = ?1)
+         WHERE {} AND {tipo}
          ORDER BY m.updated_at DESC, m.id DESC LIMIT ?2",
         ambito.sql()
     ))?;
@@ -1130,14 +1191,18 @@ pub const ESTADO: &str = "status";
 /// En qué punto se quedó cada proyecto: la memoria más reciente con la etiqueta [`ESTADO`] de cada
 /// uno (las globales cuentan como un proyecto más), de la más nueva a la más vieja.
 pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
+    // Solo las que tienen la palabra en las etiquetas según el índice de palabras (todas las que llevan
+    // la etiqueta, y quizá alguna más, que el resto de la condición quita): sin él, mirar las etiquetas
+    // de cada memoria leía la tabla entera, contenido incluido (500 ms con 100.000 memorias).
     let mut q = db.prepare(&format!(
-        "SELECT {COLUMNAS} FROM memory m
+        "SELECT {COLUMNAS} FROM (SELECT rowid AS n FROM memory_fts WHERE memory_fts MATCH ?3) e CROSS JOIN memory m ON m.n = e.n
          WHERE {} AND m.tags LIKE ?2 AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?1)
          ORDER BY m.updated_at DESC, m.id DESC",
         ambito.sql()
     ))?;
     // El `LIKE` descarta sin leer el JSON lo que no lleva la etiqueta.
-    let todas: Vec<Memoria> = q.query_map(params![ESTADO, format!("%\"{ESTADO}\"%")], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let todas: Vec<Memoria> =
+        q.query_map(params![ESTADO, format!("%\"{ESTADO}\"%"), format!("tags : \"{ESTADO}\"")], de_fila)?.collect::<rusqlite::Result<_>>()?;
     let mut v: Vec<Memoria> = Vec::new();
     for m in todas {
         // Una por proyecto; las de espacio, una por espacio, y las globales, una.
@@ -1166,9 +1231,13 @@ pub fn contexto(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<M
     Ok(v)
 }
 
-/// Cuántas memorias se ven desde un ámbito.
+/// Cuántas memorias se ven desde un ámbito. Con la cuenta por proyecto y espacio que llevan los
+/// disparadores (`db::LOCALES`), sin recorrer la tabla; contando, en una conexión sin ella.
 pub fn cuantas(db: &Connection, ambito: &Ambito) -> Result<i64> {
-    Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", ambito.sql()), [], |f| f.get(0))?)
+    match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", ambito.sql()), [], |f| f.get(0)) {
+        Ok(n) => Ok(n),
+        Err(_) => Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", ambito.sql()), [], |f| f.get(0))?),
+    }
 }
 
 #[cfg(test)]

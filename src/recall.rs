@@ -172,11 +172,16 @@ fn esta(t: &str, fichas: &BTreeSet<String>) -> bool {
 fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f64, Vec<f64>)> {
     let ambito = Ambito::de(db, project)?;
     let n = memoria::cuantas(db, &ambito)?;
-    let mut q = db.prepare(&format!(
-        "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND {}",
-        ambito.sql()
-    ))?;
+    let mut q = if memoria::ve_todas(db, &ambito) {
+        db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
+    } else {
+        db.prepare(&format!(
+            "SELECT count(*) FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
+             WHERE memory_fts MATCH ?1 AND {}",
+            memoria::por_ambito(db),
+            ambito.sql()
+        ))?
+    };
     let mut df = Vec::with_capacity(terminos.len());
     for t in terminos {
         let consulta = if t.chars().count() >= PREFIJO_MIN { format!("\"{t}\"*") } else { format!("\"{t}\"") };
@@ -189,16 +194,22 @@ fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f
 /// `relevantes`). La usa también el aviso de duplicados.
 pub fn cobertura<'a>(db: &Connection, project: &str, texto: &str, memorias: impl Iterator<Item = &'a Memoria>) -> Result<Vec<f64>> {
     let terminos = utiles(texto);
-    let (n, df) = frecuencias(db, project, &terminos)?;
+    let frecuencias = frecuencias(db, project, &terminos)?;
+    Ok(cobertura_con(&terminos, &frecuencias, memorias))
+}
+
+/// `cobertura` con las frecuencias de `terminos` (las de `utiles(texto)`) ya calculadas.
+fn cobertura_con<'a>(terminos: &[String], (n, df): &(f64, Vec<f64>), memorias: impl Iterator<Item = &'a Memoria>) -> Vec<f64> {
+    let n = *n;
     let idf: Vec<f64> = df.iter().map(|d| (1.0 + (n - d.max(1.0) + 0.5) / (d.max(1.0) + 0.5)).ln()).collect();
     let total: f64 = idf.iter().sum();
-    Ok(memorias
+    memorias
         .map(|m| {
             let f = fichas(m);
             let dentro: f64 = terminos.iter().zip(&idf).filter(|(t, _)| esta(t, &f)).map(|(_, i)| i).sum();
             if total > 0.0 { dentro / total } else { 0.0 }
         })
-        .collect())
+        .collect()
 }
 
 /// Las memorias que tienen que ver con `prompt`, de la más a la menos, con su cobertura.
@@ -207,7 +218,13 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     if terminos.len() < TERMINOS_MIN {
         return Ok(Vec::new());
     }
-    let (n, df) = frecuencias(db, project, &terminos)?;
+    let frecuencias = frecuencias(db, project, &terminos)?;
+    relevantes_con(db, project, &terminos, &frecuencias)
+}
+
+/// `relevantes` con los términos del mensaje (al menos `TERMINOS_MIN`) y sus frecuencias ya calculados.
+fn relevantes_con(db: &mut Connection, project: &str, terminos: &[String], (n, df): &(f64, Vec<f64>)) -> Result<Vec<(Memoria, f64)>> {
+    let n = *n;
     // IDF de Lucene, siempre positivo: con la de BM25 clásica, en una base de una o dos memorias todo
     // pesa cero y no se inyectaría nada justo cuando alguien empieza.
     // Una palabra que no está en ninguna memoria pesa como una que estuviera en una sola, no más: con
@@ -224,6 +241,11 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     let leer = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
     let cobertura_min = leer("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(COBERTURA_MIN);
     let raros_min = leer("OMOIKANE_CALIBRAR_RAROS").map_or(RAROS_MIN, |v| v as usize);
+    // Si el mensaje no tiene tantas palabras raras, ninguna memoria puede compartirlas: no hace falta
+    // buscar candidatas.
+    if df.iter().filter(|d| **d <= raro).count() < raros_min {
+        return Ok(Vec::new());
+    }
     // 30 candidatas: una nota larga que es justo la del tema puede quedar lejos en BM25.
     let o = Opciones { ambito: Ambito::de(db, project)?, kind: None, tags: vec![], limite: 30 };
     // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
@@ -255,20 +277,35 @@ pub fn relevantes(db: &mut Connection, project: &str, prompt: &str) -> Result<Ve
     Ok(v.into_iter().map(|(m, c, _)| (m, c)).collect())
 }
 
+/// Si el canal por significado mira este mensaje (ver `SIMILITUD_RECALL`): si no, ni hace falta abrir
+/// el modelo.
+fn mira_significado(prompt: &str) -> bool {
+    let sim_min = std::env::var("OMOIKANE_CALIBRAR_SIM_RECALL").ok().and_then(|v| v.parse::<f64>().ok()).map_or(SIMILITUD_RECALL, |v| v as f32);
+    sim_min <= 1.0 && prompt.chars().count() <= LARGO_MAX_CON_VECTOR && utiles(prompt).len() >= TERMINOS_MIN
+}
+
 /// Las que se parecen al mensaje por significado y comparten parte de sus palabras (ver
 /// `SIMILITUD_RECALL`), de la más a la menos parecida.
 pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Modelo) -> Result<Vec<Memoria>> {
+    por_significado_con(db, project, prompt, modelo, None)
+}
+
+/// `por_significado`, con las frecuencias de `utiles(prompt)` si ya se calcularon.
+fn por_significado_con(db: &Connection, project: &str, prompt: &str, modelo: &Modelo, frecuencias: Option<&(f64, Vec<f64>)>) -> Result<Vec<Memoria>> {
+    if !mira_significado(prompt) {
+        return Ok(Vec::new());
+    }
     let leer = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
     let sim_min = leer("OMOIKANE_CALIBRAR_SIM_RECALL").map_or(SIMILITUD_RECALL, |v| v as f32);
     let cob_min = leer("OMOIKANE_CALIBRAR_COB_VECTOR").unwrap_or(COBERTURA_CON_VECTOR);
-    if sim_min > 1.0 || prompt.chars().count() > LARGO_MAX_CON_VECTOR || utiles(prompt).len() < TERMINOS_MIN {
-        return Ok(Vec::new());
-    }
     let v = crate::vectores::parecidas_en(db, modelo, prompt, &Ambito::de(db, project)?, None, sim_min, MAXIMO)?;
     if v.is_empty() {
         return Ok(Vec::new());
     }
-    let c = cobertura(db, project, prompt, v.iter().map(|x| &x.0))?;
+    let c = match frecuencias {
+        Some(f) => cobertura_con(&utiles(prompt), f, v.iter().map(|x| &x.0)),
+        None => cobertura(db, project, prompt, v.iter().map(|x| &x.0))?,
+    };
     Ok(v.into_iter().zip(c).filter(|(_, c)| *c >= cob_min).map(|((m, _), _)| m).collect())
 }
 
@@ -276,6 +313,18 @@ pub fn por_significado(db: &Connection, project: &str, prompt: &str, modelo: &Mo
 /// fichero si tiene al menos 5 caracteres).
 pub fn por_rutas(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Memoria>> {
     let texto = prompt.to_lowercase().replace('\\', "/");
+    let sale = |ruta: &str| {
+        let ruta = ruta.to_lowercase();
+        let nombre = ruta.rsplit('/').next().unwrap_or(&ruta);
+        texto.contains(&ruta) || (nombre.chars().count() >= 5 && texto.contains(nombre))
+    };
+    // Lo normal es que ninguna ruta salga en el mensaje: se mira solo en `memory_path`, sin juntarla con
+    // `memory` (que recorre las memorias del ámbito: 90 ms con 100.000).
+    let mut todas = db.prepare("SELECT DISTINCT path FROM memory_path")?;
+    let alguna = todas.query_map([], |f| f.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|r| sale(r));
+    if !alguna {
+        return Ok(Vec::new());
+    }
     let mut q = db.prepare(&format!(
         "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id
          WHERE {}",
@@ -284,10 +333,7 @@ pub fn por_rutas(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Mem
     let rutas: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut ids: Vec<String> = Vec::new();
     for (id, ruta) in rutas {
-        let ruta = ruta.to_lowercase();
-        let nombre = ruta.rsplit('/').next().unwrap_or(&ruta);
-        let sale = texto.contains(&ruta) || (nombre.chars().count() >= 5 && texto.contains(nombre));
-        if sale && !ids.contains(&id) {
+        if sale(&ruta) && !ids.contains(&id) {
             ids.push(id);
         }
     }
@@ -549,22 +595,45 @@ fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria
 }
 
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
+    al_preguntar_abriendo(db, project, e, &mut || modelo)
+}
+
+/// `al_preguntar`, abriendo el modelo solo si hace falta (`modelo` se llama como mucho una vez): la
+/// mayoría de los mensajes no llegan al canal por significado, y abrirlo cuesta unos milisegundos.
+pub fn al_preguntar_abriendo<'m>(
+    db: &mut Connection,
+    project: &str,
+    e: &Entrada,
+    modelo: &mut dyn FnMut() -> Option<&'m Modelo>,
+) -> Result<Option<String>> {
     let propio = autor_propio(db);
     let actual = proyecto_actual(db, project);
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
     let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id));
-    let por_significado = match modelo {
-        Some(m) => por_significado(db, project, &e.prompt, m)?,
-        None => Vec::new(),
-    };
-    for m in por_rutas(db, project, &e.prompt)?
-        .into_iter()
-        .chain(relevantes(db, project, &e.prompt)?.into_iter().map(|x| x.0))
-        .chain(por_significado)
-    {
+    let elegir = |m: Memoria, elegidas: &mut Vec<Memoria>| {
         if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && la_receta.as_ref().is_none_or(|r| r.id != m.id) && elegidas.len() < maximo() {
             elegidas.push(m);
+        }
+    };
+    // Las frecuencias de las palabras del mensaje, una vez para las palabras y el significado.
+    let terminos = utiles(&e.prompt);
+    let frecuencias = if terminos.len() >= TERMINOS_MIN { Some(frecuencias(db, project, &terminos)?) } else { None };
+    let por_palabras = match &frecuencias {
+        Some(f) => relevantes_con(db, project, &terminos, f)?,
+        None => Vec::new(),
+    };
+    for m in por_rutas(db, project, &e.prompt)?.into_iter().chain(por_palabras.into_iter().map(|x| x.0)) {
+        elegir(m, &mut elegidas);
+    }
+    // El canal por significado va detrás: si las rutas y las palabras ya llenan el cupo, lo que traiga
+    // no entraría y no hace falta mirarlo (ni leer los vectores).
+    if elegidas.len() < maximo()
+        && mira_significado(&e.prompt)
+        && let Some(modelo) = modelo()
+    {
+        for m in por_significado_con(db, project, &e.prompt, modelo, frecuencias.as_ref())? {
+            elegir(m, &mut elegidas);
         }
     }
     // Una memoria enlazada con las elegidas, si es una trampa o una preferencia y tiene que ver (7.4).
@@ -608,7 +677,8 @@ pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Opt
 /// `MINUTOS_ANTES_DE_RECORDAR` y `MENSAJES_ANTES_DE_RECORDAR` mensajes, ninguna memoria del proyecto
 /// (ni global) guardada o cambiada desde que empezó, y sin otro recordatorio en los últimos
 /// `MINUTOS_ENTRE_RECORDATORIOS`. Una sesión que no pasó por `SessionStart` (hooks añadidos a
-/// medias) empieza a contar aquí.
+/// medias) empieza a contar aquí. Por `memory_updated`: las cambiadas desde que empezó la sesión son
+/// pocas, y por el índice del ámbito SQLite leía todas las del proyecto (25 ms con 100.000).
 fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
     if sesion.is_empty() {
         return Ok(false);
@@ -626,7 +696,7 @@ fn toca_recordar(db: &Connection, project: &str, sesion: &str) -> Result<bool> {
             "SELECT s.prompts >= ?2
                     AND s.started_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3)
                     AND (s.reminded_at IS NULL OR s.reminded_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
-                    AND NOT EXISTS (SELECT 1 FROM memory m WHERE {} AND m.updated_at >= s.started_at)
+                    AND NOT EXISTS (SELECT 1 FROM memory m INDEXED BY memory_updated WHERE {} AND m.updated_at >= s.started_at)
              FROM session s WHERE s.session = ?1",
             Ambito::de(db, project)?.sql()
         ),

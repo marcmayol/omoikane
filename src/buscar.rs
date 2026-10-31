@@ -1,7 +1,7 @@
 //! Búsqueda: palabras (FTS5 con BM25) y, como rescate, significado (vectores centrados).
 
 use crate::embeber::Modelo;
-use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, NCOL, Tipo, de_fila};
+use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, Tipo, de_fila, por_ambito, ve_todas};
 use crate::vectores;
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -141,11 +141,16 @@ fn cobertura_idf(terminos: &[String], m: &Memoria, idf: &std::collections::HashM
 /// IDF de Lucene de cada término (sin tildes) en el ámbito, contando por el índice como la búsqueda.
 fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<std::collections::HashMap<String, f64>> {
     let n: f64 = crate::memoria::cuantas(db, &o.ambito)? as f64;
-    let mut q = db.prepare(&format!(
-        "SELECT count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
-         WHERE memory_fts MATCH ?1 AND {}",
-        o.ambito.sql()
-    ))?;
+    let mut q = if ve_todas(db, &o.ambito) {
+        db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
+    } else {
+        db.prepare(&format!(
+            "SELECT count(*) FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
+             WHERE memory_fts MATCH ?1 AND {}",
+            por_ambito(db),
+            o.ambito.sql()
+        ))?
+    };
     let mut v = std::collections::HashMap::new();
     for t in terminos {
         let t = sin_tildes(t);
@@ -370,20 +375,33 @@ fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apunta
 fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize, f64)>> {
     let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
     let terminos = terminos(texto);
-    let mut q = db.prepare(&format!(
-        "SELECT {COLUMNAS}, -bm25(memory_fts, {PESOS}) AS relevancia
-         FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
+    // Primero solo el `n` y la puntuación, y luego las filas de las que quedan: con las columnas en la
+    // misma consulta, SQLite leía entera (con su contenido) cada memoria que tuviera alguna palabra
+    // antes de ordenar. El orden y el corte son los mismos: la misma consulta, con menos columnas. Si
+    // se ven todas (`ve_todas`) y no se pide tipo, ni siquiera hace falta juntarla con `memory`.
+    let juntar = format!(
+        "SELECT m.n, -bm25(memory_fts, {PESOS}) AS relevancia
+         FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1
            AND {}
            AND (?2 IS NULL OR m.kind = ?2)
          ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?3",
+        por_ambito(db),
         o.ambito.sql()
-    ))?;
-    let mut v: Vec<(Memoria, f64)> = q
-        .query_map(params![consulta, o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| {
-            Ok((de_fila(f)?, f.get::<_, f64>(NCOL)?))
-        })?
+    );
+    let sola = format!(
+        "SELECT rowid, -bm25(memory_fts, {PESOS}) AS relevancia
+         FROM memory_fts
+         WHERE memory_fts MATCH ?1 AND ?2 IS NULL
+         ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?3"
+    );
+    let mut q = db.prepare(if o.kind.is_none() && ve_todas(db, &o.ambito) { &sola } else { &juntar })?;
+    let puestos: Vec<(i64, f64)> = q
+        .query_map(params![consulta, o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| Ok((f.get(0)?, f.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    let mut fila = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
+    let mut v: Vec<(Memoria, f64)> =
+        puestos.into_iter().map(|(n, r)| Ok((fila.query_row([n], de_fila)?, r))).collect::<rusqlite::Result<_>>()?;
     // Con IDF, una paráfrasis más de 70 en primer puesto y mejor MRR, sin perder nada en 310
     // preguntas a ciegas; `OMOIKANE_CALIBRAR_COB_IDF=0` vuelve a la cobertura sin pesos.
     if !std::env::var("OMOIKANE_CALIBRAR_COB_IDF").is_ok_and(|x| x == "0") {
