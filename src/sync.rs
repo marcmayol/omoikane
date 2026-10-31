@@ -98,8 +98,6 @@ pub struct Rutas {
     pub espacio: Option<String>,
     /// La clave de `meta` donde la base apunta el último commit leído de este repositorio.
     pub(crate) marca_commit: String,
-    /// La base de la que son estas rutas.
-    pub(crate) db: PathBuf,
 }
 
 /// Las rutas del repositorio general.
@@ -128,7 +126,6 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
             cerrojo: f("sync.lock"),
             espacio: None,
             marca_commit: "sync_commit".into(),
-            db: db.to_path_buf(),
         },
         Some(e) => {
             let d = f(CARPETA_ESPACIOS).join(e);
@@ -142,8 +139,7 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
                 cerrojo: f("sync.lock"),
                 espacio: Some(e.to_string()),
                 marca_commit: format!("sync_commit:{e}"),
-                db: db.to_path_buf(),
-            }
+                }
         }
     }
 }
@@ -573,7 +569,7 @@ const CAMPOS_MEMORIA: &[&str] = &[
 const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "space_key", "machine"];
 const CAMPOS_VEREDICTO: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
 const CAMPOS_PAPELERA: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
-const CAMPOS_PROYECTO: &[&str] = &["type", "key", "name", "space_key", "hlc", "person", "machine"];
+const CAMPOS_PROYECTO: &[&str] = &["type", "key", "name", "space_key", "hlc", "moved", "machine"];
 
 /// `extra` sin lo que esta versión ya conoce (lo guardó una versión anterior que no lo conocía).
 fn solo_desconocidos(mut extra: Extra, conocidos: &[&str]) -> Extra {
@@ -820,22 +816,27 @@ pub(crate) enum Linea {
         extra: Extra,
     },
     /// El espacio de un proyecto (desde la 1.0): cada equipo escribe una por proyecto cuyo espacio se
-    /// haya cambiado alguna vez (`project.hlc`), en el repositorio general y en el de su espacio. Gana
-    /// el `hlc` más nuevo por `key`, pero solo se aplica la que llega por el repositorio general y es
-    /// de la persona de esta base (sus otros equipos): así `omoi projects move web --space acme` en un
-    /// equipo pasa `web` a acme en los demás sin resellar sus memorias, y el general deja de llevarlo.
-    /// La que llega por el repositorio de un espacio, o de otra persona, no cambia nada: se avisa.
+    /// haya cambiado alguna vez (`project.hlc`), solo en el repositorio que lleva ese espacio (el
+    /// general, los que no son de ninguno). En el general, la de un proyecto que está en un espacio no
+    /// lo nombra: va con `moved` y, como `key`, el nombre opaco del proyecto (`Cifra::carpeta`), sin
+    /// nombre ni espacio; solo dice «otro equipo lo pasó a un espacio».
+    ///
+    /// Nunca cambia el espacio de nada: quien tenga la clave de un repositorio puede escribirla (la
+    /// persona y el equipo van en claro). Si dice otro espacio que el de aquí y es más nueva que lo que
+    /// este equipo sabía del proyecto, el proyecto queda en pausa (`proyecto::Pausa`): ni se sube ni se
+    /// acepta nada suyo hasta que la persona decida aquí. Lo peor que puede hacer es pausar, nunca
+    /// sacar lo de un cliente a otro repositorio.
     Project {
         key: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         name: String,
         /// El espacio (su clave); vacío: ninguno.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         space_key: String,
         hlc: String,
-        /// La persona del equipo que la escribió (la de sus claves `dir:`).
-        #[serde(default)]
-        person: String,
+        /// Solo en el general: el proyecto está en un espacio que el general no lleva (`key` es opaca).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        moved: bool,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         machine: String,
         #[serde(flatten)]
@@ -1361,8 +1362,13 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let mut carpetas: HashMap<String, String> = HashMap::new();
     // El historial de todas, en una consulta (una por memoria eran 50.000 con una base grande).
     let mut historiales = crate::memoria::historiales(db)?;
+    // Lo de un proyecto en pausa no va a ningún repositorio hasta que la persona decida.
+    let en_pausa: HashSet<String> = {
+        let mut q = db.prepare("SELECT key FROM project WHERE paused != ''")?;
+        q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
     for (m, hlc, content_hlc, extra) in todas(db)? {
-        if !config.comparte(&m) {
+        if !config.comparte(&m) || (!m.project_key.is_empty() && en_pausa.contains(&m.project_key)) {
             continue;
         }
         let carpeta = if !m.project_key.is_empty() {
@@ -1398,11 +1404,11 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let l = Linea::veredicto(v, equipo);
         ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
     }
-    // El espacio de cada proyecto que lo cambió alguna vez (`project.hlc`): en el general, el de todos
-    // los que comparte (así sus otros equipos lo mueven igual y el general deja de llevarlo); en el de
-    // un espacio, el de los suyos.
+    // El espacio de cada proyecto que lo cambió alguna vez (`project.hlc`), en el repositorio que lo
+    // lleva. En el general, de los que están en un espacio que no lleva, solo que se movieron (sin
+    // nombrarlos): así el equipo que aún lo tiene sin espacio lo pausa, sin que el general diga de qué
+    // cliente es.
     {
-        let persona = crate::db::persona_de(db);
         let mut q = db.prepare(
             "SELECT p.key, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc FROM project p
              WHERE p.id != 0 AND p.key != '' AND p.hlc != '' ORDER BY p.key",
@@ -1410,11 +1416,17 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
         let proyectos: Vec<(String, String, String, String)> =
             q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
         for (key, name, espacio, hlc) in proyectos {
-            if config.projects.as_ref().is_some_and(|p| !p.contains(&key)) || (config.space.is_some() && !va_al_repo(config, &espacio)) {
+            if config.projects.as_ref().is_some_and(|p| !p.contains(&key)) {
                 continue;
             }
-            let extra = solo_desconocidos(extra_proyecto(db, &key)?, CAMPOS_PROYECTO);
-            let l = Linea::Project { key, name, space_key: espacio, hlc, person: persona.clone(), machine: equipo.to_string(), extra };
+            let l = if va_al_repo(config, &espacio) {
+                let extra = solo_desconocidos(extra_proyecto(db, &key)?, CAMPOS_PROYECTO);
+                Linea::Project { key, name, space_key: espacio, hlc, moved: false, machine: equipo.to_string(), extra }
+            } else if config.space.is_none() {
+                Linea::Project { key: cifra.carpeta(&key), name: String::new(), space_key: String::new(), hlc, moved: true, machine: equipo.to_string(), extra: Extra::new() }
+            } else {
+                continue;
+            };
             ficheros.entry("proyectos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
@@ -1523,6 +1535,9 @@ pub struct Resumen {
     /// de un veredicto o un olvido) o llegan por un repositorio que no lleva su espacio: nada de un
     /// cliente entra en otro ni cambia de espacio por lo que llega. No se aplican.
     pub conflictos_de_espacio: usize,
+    /// Líneas de memorias de un proyecto en pausa aquí (`proyecto::Pausa`): no se aplican hasta que la
+    /// persona decida, y entonces se vuelven a leer.
+    pub en_pausa: usize,
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
@@ -1532,29 +1547,24 @@ pub struct Resumen {
     /// Lo mismo con las rechazadas por ser de otro espacio.
     #[serde(skip)]
     pub conflictos: BTreeMap<String, usize>,
+    /// Lo mismo con las de un proyecto en pausa.
+    #[serde(skip)]
+    pub pausadas: BTreeMap<String, usize>,
     /// Por fichero leído, los proyectos que allí están en otro espacio (`Choque`).
     #[serde(skip)]
     pub choques: BTreeMap<String, BTreeSet<Choque>>,
     /// Los de la línea que se está aplicando (`importar` los pasa a `choques`, con su fichero).
     #[serde(skip)]
     pendientes: Vec<Choque>,
-    /// Los proyectos que pasaron a otro espacio por una línea `project` (nombre, espacio).
-    #[serde(skip)]
-    movidos: Vec<(String, String)>,
-    /// Los avisos de unirse al repositorio del espacio al que pasó un proyecto (una vez: en esta
-    /// sincronización y en su estado hasta la siguiente).
-    #[serde(skip)]
-    unirse: Vec<String>,
-    /// Lo que conviene decir: esos avisos y, por proyecto, los que están en otro espacio en otro equipo
-    /// con la orden que lo arregla.
+    /// Lo que conviene decir: por proyecto, los que están en otro espacio en otro equipo con la orden
+    /// que lo arregla, y los que están en pausa con las dos órdenes que la deciden.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub avisos: Vec<String>,
 }
 
-/// Un proyecto que aquí está en un espacio y en otro equipo en otro: lo que llega de él no se aplica
-/// (o, con `moved`, una línea `project` que no se aplicó porque llegó por el repositorio de un espacio
-/// o de otra persona). Se avisa con la orden que lo arregla, y desaparece en cuanto los dos coinciden:
-/// los ficheros con alguno se vuelven a leer en cada sincronización.
+/// Un proyecto que aquí está en un espacio y en otro equipo en otro: lo que llega de él no se aplica.
+/// Se avisa con la orden que lo arregla, y desaparece en cuanto los dos coinciden: los ficheros con
+/// alguno se vuelven a leer en cada sincronización.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Choque {
     pub key: String,
@@ -1563,10 +1573,8 @@ pub struct Choque {
     pub here: String,
     /// El que trae la línea (vacío: ninguno).
     pub there: String,
-    /// El equipo que lo tiene así (o que lo movió).
+    /// El equipo que lo tiene así.
     pub machine: String,
-    #[serde(default)]
-    pub moved: bool,
 }
 
 /// Un nombre de proyecto como argumento de una orden (entre comillas si hace falta).
@@ -1583,7 +1591,6 @@ impl Choque {
         match (self.there.is_empty(), self.here.is_empty()) {
             (false, true) => format!("omoi projects move {n} --space {}", self.there),
             (false, false) => format!("omoi projects move {n} --space {} --force", self.there),
-            (true, _) if self.moved => format!("omoi space unassign {n}"),
             (true, _) => format!("omoi projects move {n} --space {}", self.here),
         }
     }
@@ -1595,16 +1602,14 @@ impl Choque {
         } else {
             (format!("in {}", self.here), format!("en {}", self.here))
         };
-        match (self.moved, self.there.is_empty()) {
-            (true, false) => tr!("{m} moved {n} to the space {}: `{o}`", "{m} movió {n} al espacio {}: `{o}`", self.there),
-            (true, true) => tr!("{m} took {n} out of its space: `{o}`", "{m} sacó {n} de su espacio: `{o}`"),
-            (false, false) => tr!(
+        match self.there.is_empty() {
+            false => tr!(
                 "{n} is in the space {} on {m} and {aqui_en} here, so its changes are not applied; if it is the same project and belongs in {}: `{o}`",
                 "{n} está en el espacio {} en {m} y aquí {aqui_es}, así que sus cambios no se aplican; si es el mismo proyecto y va en {}: `{o}`",
                 self.there,
                 self.there
             ),
-            (false, true) => tr!(
+            true => tr!(
                 "{n} is in the space {} here but {m} still has it in no space (through the general repository), so its changes are not applied: on {m}, `{o}`",
                 "{n} está aquí en el espacio {} pero {m} aún lo tiene sin espacio (por el repositorio general), así que sus cambios no se aplican: en {m}, `{o}`",
                 self.here
@@ -1613,13 +1618,85 @@ impl Choque {
     }
 }
 
-/// Los choques de varios ficheros, uno por proyecto y situación (sin repetir el de cada equipo, y el de
-/// las memorias que no se aplican antes que el de la línea `project` que lo movió, que pide lo mismo).
+/// Los choques de varios ficheros, uno por proyecto y situación (sin repetir el de cada equipo).
 pub fn sin_repetir<'a>(choques: impl IntoIterator<Item = &'a Choque>) -> Vec<Choque> {
-    let mut v: Vec<&Choque> = choques.into_iter().collect();
-    v.sort_by_key(|c| c.moved);
     let mut vistos = HashSet::new();
-    v.into_iter().filter(|c| vistos.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
+    choques.into_iter().filter(|c| vistos.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
+}
+
+/// La orden que acepta lo que dice la línea que pausó el proyecto: pasarlo a ese espacio (con
+/// `--force` si sale de otro; sin espacio, sacarlo del suyo). Si no se sabe a cuál, con `<space>`.
+pub fn orden_aceptar(p: &crate::proyecto::EnPausa) -> String {
+    let n = argumento(&p.name);
+    match (p.pausa.unknown, p.pausa.space.is_empty(), p.here.is_empty()) {
+        (true, _, _) => format!("omoi projects move {n} --space <space>"),
+        (false, true, _) => format!("omoi space unassign {n} --force"),
+        (false, false, true) => format!("omoi projects move {n} --space {}", p.pausa.space),
+        (false, false, false) => format!("omoi projects move {n} --space {} --force", p.pausa.space),
+    }
+}
+
+/// La orden que lo deja donde está (`omoi projects keep`).
+pub fn orden_quedarse(p: &crate::proyecto::EnPausa) -> String {
+    format!("omoi projects keep {}", argumento(&p.name))
+}
+
+/// Lo que se dice de un proyecto en pausa, con las dos órdenes (`omoi sync`, `sync status`, `doctor`,
+/// `review` y Revisar).
+pub fn texto_pausa(ruta_db: &Path, p: &crate::proyecto::EnPausa) -> String {
+    let (n, m, si, no) = (&p.name, &p.pausa.machine, orden_aceptar(p), orden_quedarse(p));
+    let (aqui_en, aqui_es) = if p.here.is_empty() { ("in no space".to_string(), "en ninguno".to_string()) } else { (format!("in {}", p.here), format!("en {}", p.here)) };
+    let mut t = if p.pausa.unknown {
+        tr!(
+            "{n} is paused: {m} moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` or, to leave it where it is, `{no}`",
+            "{n} está en pausa: {m} lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` o, para dejarlo donde está, `{no}`"
+        )
+    } else if p.pausa.space.is_empty() {
+        tr!(
+            "{n} is paused: {m} says it is in no space; here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` (its memories would go to the general repository) or `{no}`",
+            "{n} está en pausa: {m} dice que no es de ningún espacio; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` (sus memorias irían al repositorio general) o `{no}`"
+        )
+    } else {
+        tr!(
+            "{n} is paused: {m} says it belongs to the space {}; here it is {aqui_en}. Nothing of it is synced until you decide: `{si}` or `{no}`",
+            "{n} está en pausa: {m} dice que es del espacio {}; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas: `{si}` o `{no}`",
+            p.pausa.space
+        )
+    };
+    // Si va a un espacio cuyo repositorio este equipo no tiene: cómo unirse.
+    if !p.pausa.space.is_empty() && repo_de_espacio(ruta_db, &p.pausa.space).is_none() {
+        let e = &p.pausa.space;
+        t.push_str(&tr!(
+            " (to sync it in {e}, join its repository: `omoi sync join --space {e} <code>`; `omoi sync code --space {e}` on a computer that has it gives the code)",
+            " (para sincronizarlo en {e}, únete a su repositorio: `omoi sync join --space {e} <código>`; el código lo da `omoi sync code --space {e}` en un equipo que ya lo tenga)"
+        ));
+    }
+    t
+}
+
+/// Los avisos de los proyectos en pausa de esta base.
+pub fn avisos_de_pausa(db: &Connection, ruta_db: &Path) -> Vec<String> {
+    crate::proyecto::en_pausa(db).unwrap_or_default().iter().map(|p| texto_pausa(ruta_db, p)).collect()
+}
+
+/// Para el agente, al empezar la sesión: una línea por proyecto en pausa, con lo que tiene que hacer.
+pub fn aviso_de_pausa_agente(db: &Connection) -> Option<String> {
+    let v = crate::proyecto::en_pausa(db).ok()?;
+    let lineas: Vec<String> = v
+        .iter()
+        .map(|p| {
+            let (si, no) = (orden_aceptar(p), orden_quedarse(p));
+            let dice = if p.pausa.unknown {
+                "another computer moved it to another space (the general repository doesn't say which: ask the user which one)".to_string()
+            } else if p.pausa.space.is_empty() {
+                "another computer says it is in no space".to_string()
+            } else {
+                format!("another computer says it belongs to the space {}", p.pausa.space)
+            };
+            format!("The project {} is paused: {dice}. Nothing of it is synced until the user decides: ask the user, then run `{si}` or `{no}`.", p.name)
+        })
+        .collect();
+    (!lineas.is_empty()).then(|| lineas.join("\n"))
 }
 
 impl Resumen {
@@ -1633,6 +1710,7 @@ impl Resumen {
         self.ilegibles += o.ilegibles;
         self.de_version_nueva += o.de_version_nueva;
         self.conflictos_de_espacio += o.conflictos_de_espacio;
+        self.en_pausa += o.en_pausa;
         self.avisos.extend(o.avisos);
     }
 }
@@ -1698,6 +1776,9 @@ fn no_menor(a: &str, b: &str) -> bool {
 pub(crate) struct Aplicador<'a> {
     config: Option<&'a Config>,
     person: String,
+    /// Los nombres opacos de los proyectos de aquí (`Cifra::carpeta`, con cada clave del repositorio)
+    /// y su clave: con ellos se reconoce la línea `project` con `moved` del general.
+    opacos: HashMap<String, String>,
 }
 
 impl<'a> Aplicador<'a> {
@@ -1708,7 +1789,19 @@ impl<'a> Aplicador<'a> {
         if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
             crate::proyecto::registrar(db, a)?;
         }
-        Ok(Aplicador { config, person })
+        Ok(Aplicador { config, person, opacos: HashMap::new() })
+    }
+
+    /// Apunta los nombres opacos de los proyectos de aquí con las claves de este repositorio.
+    fn con_opacos(&mut self, db: &Connection, cifra: &Cifra) -> Result<()> {
+        let mut q = db.prepare("SELECT key FROM project WHERE id != 0 AND key != ''")?;
+        let claves: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for k in claves {
+            for clave in cifra.claves.values() {
+                self.opacos.insert(format!("p-{}", opaco(clave, &[k.as_bytes()])), k.clone());
+            }
+        }
+        Ok(())
     }
 
     /// Aplica una línea. `Err` es una línea que no se pudo aplicar (se cuenta y se sigue). Las
@@ -1716,60 +1809,75 @@ impl<'a> Aplicador<'a> {
     pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
         match l {
             Linea::Header { .. } | Linea::End { .. } => Ok(()),
-            Linea::Project { key, name, space_key, hlc, person, extra, .. } => {
+            Linea::Project { key, name, space_key, hlc, moved, extra, .. } => {
                 // En un import no se aplica: el espacio de un proyecto nuevo lo traen sus memorias, y uno
                 // de aquí no cambia de espacio por una copia.
                 let Some(c) = self.config else { return Ok(()) };
+                // Una de más de una hora en el futuro no se aplica (se cuenta como no válida): con ese
+                // sello, quedarse el proyecto (`keep`) lo dejaría sordo a los movimientos de verdad.
+                ensure!(!reloj::del_futuro(&hlc), "project: {hlc}");
+                // La del general sin nombre: el proyecto de aquí con ese nombre opaco (si no hay, nada).
+                let key = match moved {
+                    true => match self.opacos.get(&key) {
+                        Some(k) => k.clone(),
+                        None => return Ok(()),
+                    },
+                    false => key,
+                };
                 if c.projects.as_ref().is_some_and(|p| !p.contains(&key)) {
                     return Ok(());
                 }
                 let local: Option<(i64, String, String, String)> = db
                     .query_row(
-                        "SELECT p.id, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc FROM project p WHERE p.key = ?1",
+                        "SELECT p.id, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc, p.paused FROM project p WHERE p.key = ?1",
                         [&key],
                         |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)),
                     )
                     .optional()?;
-                // Gana el sello más nuevo por proyecto.
-                if local.as_ref().is_some_and(|(_, _, _, h)| no_menor(h, &hlc)) {
-                    return Ok(());
-                }
-                // Quién lo movió: el equipo del sello (otro equipo puede haber reescrito la línea).
-                let quien = reloj::partes(&hlc).2.to_string();
-                // Solo mueve un proyecto la que llega por el repositorio general y es de esta misma
-                // persona (sus otros equipos). La de un repositorio de espacio (un cliente no decide qué
-                // es de otro, ni qué deja de serlo) o de otra persona solo se avisa.
-                if c.space.is_some() || person.is_empty() || person != self.person {
-                    if let Some((_, nombre, aqui, _)) = local
-                        && aqui != space_key
-                    {
-                        r.pendientes.push(Choque { key, name: nombre, here: aqui, there: space_key, machine: quien, moved: true });
+                let Some((id, aqui, sello, pausa)) = local else {
+                    // Un proyecto que aquí aún no está: se apunta en su espacio solo si lo dice el
+                    // repositorio de ese espacio (una carpeta suya que aparezca aquí entra en él). Sin
+                    // espacio, o por otro repositorio, nada que apuntar.
+                    if moved || space_key.is_empty() || !va_al_repo(c, &space_key) {
+                        return Ok(());
                     }
-                    return Ok(());
-                }
-                let (id, nombre, antes) = match local {
-                    Some((id, nombre, aqui, _)) => (id, nombre, aqui),
-                    // Un proyecto que aquí aún no está y no es de ningún espacio: nada que apuntar.
-                    None if space_key.is_empty() => return Ok(()),
-                    // Si no, se apunta ya en su espacio: una carpeta suya que aparezca aquí entra en él.
-                    None => {
-                        let id = crate::proyecto::de_clave(db, &key, "", &self.person, false)?;
-                        if !name.trim().is_empty() {
-                            db.execute("UPDATE project SET name = ?2 WHERE id = ?1", params![id, name.trim()])?;
-                        }
-                        let nombre = db.query_row("SELECT name FROM project WHERE id = ?1", [id], |f| f.get(0))?;
-                        (id, nombre, String::new())
+                    let id = crate::proyecto::de_clave(db, &key, "", &self.person, false)?;
+                    if !name.trim().is_empty() {
+                        db.execute("UPDATE project SET name = ?2 WHERE id = ?1", params![id, name.trim()])?;
                     }
+                    let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
+                    db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
+                    guardar_extra_proyecto(db, &key, &extra)?;
+                    reloj::recibir(db, &hlc)?;
+                    return Ok(());
                 };
-                // Sin volver a sellar sus memorias: su espacio sale del proyecto, y cada una sigue con su
-                // sello (así ningún cambio más viejo gana a uno más nuevo por haberse movido).
-                let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
-                db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
-                guardar_extra_proyecto(db, &key, &extra)?;
-                reloj::recibir(db, &hlc)?;
-                if antes != space_key && !space_key.is_empty() {
-                    r.movidos.push((nombre, space_key));
+                // Lo que este equipo ya sabía del proyecto: su sello, o el de la línea que lo pausó. Una
+                // línea que no es más nueva no cambia nada (salvo que diga a qué espacio va el que se
+                // pausó sin saberlo: la misma decisión, ahora con nombre).
+                let pausa = crate::proyecto::Pausa::de(&pausa);
+                let sabido = match &pausa {
+                    Some(p) if reloj::mayor(&p.hlc, &sello) => p.hlc.clone(),
+                    _ => sello,
+                };
+                let con_nombre = pausa.as_ref().is_some_and(|p| p.unknown && !moved && p.hlc == hlc);
+                if no_menor(&sabido, &hlc) && !con_nombre {
+                    return Ok(());
                 }
+                // Dice lo mismo que hay aquí: nada que hacer. Ni su sello se apunta (una línea escrita a mano
+                // no deja el proyecto sordo a los movimientos que vengan después), ni saca de la pausa (de
+                // ella solo se sale decidiendo aquí).
+                if !moved && space_key == aqui {
+                    return Ok(());
+                }
+                // «Se movió a un espacio» de uno que aquí ya está en uno: puede ser el mismo; no se sabe.
+                if moved && !aqui.is_empty() {
+                    return Ok(());
+                }
+                // Otro espacio: ni se mueve ni se sigue sincronizando; en pausa hasta que se decida aquí.
+                let quien = reloj::partes(&hlc).2.to_string();
+                let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: quien, at: String::new() };
+                crate::proyecto::pausar(db, id, &p)?;
+                reloj::recibir(db, &p.hlc)?;
                 Ok(())
             }
             Linea::Tombstone { id, deleted_at, hlc, space_key, extra, .. } => {
@@ -1831,6 +1939,19 @@ impl<'a> Aplicador<'a> {
                         return Ok(());
                     }
                 }
+                // Lo de un proyecto en pausa no entra (de ningún repositorio) hasta que se decida: se cuenta,
+                // y el fichero se vuelve a leer entonces.
+                if self.config.is_some() {
+                    let pausada: bool = if project_key.is_empty() { false } else { crate::proyecto::pausado(db, &project_key)? };
+                    let suya_pausada: bool = db
+                        .query_row("SELECT p.paused != '' FROM memory m JOIN project p ON p.id = m.project_id WHERE m.id = ?1", [&id], |f| f.get(0))
+                        .optional()?
+                        .unwrap_or(false);
+                    if pausada || suya_pausada {
+                        r.en_pausa += 1;
+                        return Ok(());
+                    }
+                }
                 // Lo olvidado no vuelve; por la sincronización, solo lo para un olvido de su mismo espacio.
                 let olvido = if self.config.is_some() { hlc_olvido_en(db, &id, &space_key)? } else { hlc_olvido(db, &id)? };
                 if olvido.is_some_and(|h| no_menor(&h, &hlc)) {
@@ -1851,7 +1972,7 @@ impl<'a> Aplicador<'a> {
                         // De qué proyecto, para decir qué orden lo arregla.
                         if let Some(aqui) = proyecto_fuera {
                             let name = db.query_row("SELECT name FROM project WHERE key = ?1", [&project_key], |f| f.get(0))?;
-                            r.pendientes.push(Choque { key: project_key, name, here: aqui, there: space_key, machine: origen.to_string(), moved: false });
+                            r.pendientes.push(Choque { key: project_key, name, here: aqui, there: space_key, machine: origen.to_string() });
                         }
                         return Ok(());
                     }
@@ -1971,6 +2092,7 @@ impl<'a> Aplicador<'a> {
 #[allow(clippy::too_many_arguments)]
 fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Config, cifra: &Cifra, actual: Option<&str>, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
     let mut aplicador = Aplicador::nuevo(db, Some(config), actual)?;
+    aplicador.con_opacos(db, cifra)?;
     // (equipo de origen, fichero, línea)
     let mut lineas: Vec<(String, String, Linea)> = Vec::new();
     for f in ficheros {
@@ -1979,6 +2101,7 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
         r.malos.insert(relativo.clone(), 0);
         r.futuros.insert(relativo.clone(), 0);
         r.conflictos.insert(relativo.clone(), 0);
+        r.pausadas.insert(relativo.clone(), 0);
         for l in texto.lines().filter(|l| !l.trim().is_empty()) {
             // Una etiqueta que no es de clave (`x1:…`) es de un formato futuro.
             if partir(l).is_none() {
@@ -2027,12 +2150,15 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
     };
     lineas.sort_by(|(_, _, x), (_, _, y)| orden(x).cmp(&orden(y)).then_with(|| reloj::comparar(&sello(y), &sello(x))));
     for (origen, fichero, l) in lineas {
-        let antes = r.conflictos_de_espacio;
+        let (antes, en_pausa) = (r.conflictos_de_espacio, r.en_pausa);
         if aplicador.aplicar(db, &origen, l, modelo, r).is_err() {
             *r.malos.entry(fichero.clone()).or_default() += 1;
         }
         if r.conflictos_de_espacio > antes {
             *r.conflictos.entry(fichero.clone()).or_default() += r.conflictos_de_espacio - antes;
+        }
+        if r.en_pausa > en_pausa {
+            *r.pausadas.entry(fichero.clone()).or_default() += r.en_pausa - en_pausa;
         }
         for c in std::mem::take(&mut r.pendientes) {
             r.choques.entry(fichero.clone()).or_default().insert(c);
@@ -2077,6 +2203,8 @@ pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
             }
         }
     }
+    // Los proyectos en pausa (de este repositorio o de otro): una vez, con sus órdenes.
+    total.avisos.extend(avisos_de_pausa(db, ruta_db));
     match fallo {
         Some(e) => Err(e),
         None => Ok(total),
@@ -2111,33 +2239,24 @@ fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Opt
         retirar_viejos(&r.clon, &equipo, &cifra)?;
         let mut ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
         // Los ficheros con líneas rechazadas por estar su proyecto en otro espacio (o con un aviso de
-        // proyecto) se vuelven a leer siempre, aunque no hayan cambiado: si aquí el proyecto ya está
-        // donde dicen (se movió a mano o por una línea `project`), sus cambios entran ahora, y si no,
-        // el aviso se vuelve a calcular. Los que ya no existen se dejan de contar.
+        // proyecto) o en pausa se vuelven a leer siempre, aunque no hayan cambiado: si aquí el proyecto
+        // ya está donde dicen (se movió a mano, o se decidió su pausa), sus cambios entran ahora, y si
+        // no, el aviso se vuelve a calcular. Los que ya no existen se dejan de contar.
         let e = leer_estado_de(r);
-        for f in e.ficheros_conflicto.keys().chain(e.ficheros_choques.keys()).chain(e.ficheros_malos.keys()).chain(e.ficheros_futuros.keys()) {
+        let releer = |f: &String| e.ficheros_conflicto.contains_key(f) || e.ficheros_choques.contains_key(f) || e.ficheros_en_pausa.contains_key(f);
+        for f in e.ficheros_conflicto.keys().chain(e.ficheros_choques.keys()).chain(e.ficheros_en_pausa.keys()).chain(e.ficheros_malos.keys()).chain(e.ficheros_futuros.keys()) {
             let ruta = r.clon.join(f);
             if !ruta.exists() {
-                for cuentas in [&mut res.malos, &mut res.futuros, &mut res.conflictos] {
+                for cuentas in [&mut res.malos, &mut res.futuros, &mut res.conflictos, &mut res.pausadas] {
                     cuentas.insert(f.clone(), 0);
                 }
-            } else if (e.ficheros_conflicto.contains_key(f) || e.ficheros_choques.contains_key(f)) && !ficheros.contains(&ruta) {
+            } else if releer(f) && !ficheros.contains(&ruta) {
                 ficheros.push(ruta);
             }
         }
         ficheros.sort();
         importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
-        // Un proyecto que pasó a un espacio cuyo repositorio no tiene este equipo: que se una.
-        for (nombre, espacio) in std::mem::take(&mut res.movidos) {
-            if repo_de_espacio(&r.db, &espacio).is_none() {
-                res.unirse.push(tr!(
-                    "{nombre} is now in the space {espacio} (it was moved on another computer): join its repository with `omoi sync join --space {espacio} <code>` (`omoi sync code --space {espacio}` on a computer that has it gives the code)",
-                    "{nombre} está ahora en el espacio {espacio} (se movió en otro equipo): únete a su repositorio con `omoi sync join --space {espacio} <código>` (el código lo da `omoi sync code --space {espacio}` en un equipo que ya lo tenga)"
-                ));
-            }
-        }
-        res.avisos = res.unirse.clone();
-        res.avisos.extend(sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto));
+        res.avisos = sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto).collect();
         // Si esta versión se saltó líneas nuevas y la base la usó antes una más nueva (se volvió a una
         // vieja), esa tendrá que releerlas cuando vuelva.
         if res.de_version_nueva > 0 {
@@ -2469,6 +2588,10 @@ pub struct Estado {
     /// Lo mismo con las líneas rechazadas por tocar algo de otro espacio (`Resumen::conflictos_de_espacio`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_conflicto: BTreeMap<String, usize>,
+    /// Lo mismo con las de un proyecto en pausa (`Resumen::en_pausa`): se vuelven a leer en cada
+    /// sincronización, para que entren en cuanto se decida.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ficheros_en_pausa: BTreeMap<String, usize>,
     /// Por fichero, los proyectos que allí están en otro espacio (`Choque`): se vuelven a leer en cada
     /// sincronización hasta que no quede ninguno.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2524,7 +2647,9 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
             e.ultimo_ok = Some(ahora());
             e.ultimo_error = None;
             e.error_desde = None;
-            for (cuentas, nuevas) in [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros), (&mut e.ficheros_conflicto, &r.conflictos)] {
+            for (cuentas, nuevas) in
+                [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros), (&mut e.ficheros_conflicto, &r.conflictos), (&mut e.ficheros_en_pausa, &r.pausadas)]
+            {
                 for (f, n) in nuevas {
                     if *n == 0 {
                         cuentas.remove(f);
@@ -2561,9 +2686,16 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
                     conflictos
                 ));
             }
-            // Qué proyecto y qué orden lo arregla; y si alguno pasó a un espacio que aquí no se sincroniza.
+            let en_pausa: usize = e.ficheros_en_pausa.values().sum();
+            if en_pausa > 0 {
+                avisos.push(tr!(
+                    "{} shared line(s) held back: their project is paused here (they come in once you decide)",
+                    "{} línea(s) compartidas en espera: su proyecto está aquí en pausa (entran en cuanto decidas)",
+                    en_pausa
+                ));
+            }
+            // Qué proyecto y qué orden lo arregla.
             avisos.extend(e.choques().iter().map(Choque::texto));
-            avisos.extend(r.unirse.iter().cloned());
             e.aviso = (!avisos.is_empty()).then(|| avisos.join(" · "));
         }
         Err(err) => {

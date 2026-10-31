@@ -221,6 +221,15 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                             v["command"] = x.orden().into();
                             v
                         }).collect::<Vec<_>>(),
+                        // Los que están en pausa (una línea `project` dice otro espacio), con las dos
+                        // órdenes que la deciden.
+                        "paused": crate::proyecto::en_pausa(&db)?.iter().map(|x| {
+                            let mut v = serde_json::to_value(x).unwrap_or_default();
+                            v["text"] = crate::sync::texto_pausa(&ruta, x).into();
+                            v["accept"] = crate::sync::orden_aceptar(x).into();
+                            v["keep"] = crate::sync::orden_quedarse(x).into();
+                            v
+                        }).collect::<Vec<_>>(),
                     });
                     Ok(json(200, cuerpo.to_string()))
                 }

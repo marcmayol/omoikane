@@ -358,6 +358,12 @@ enum AccionProyectos {
         #[arg(long)]
         force: bool,
     },
+    /// A paused project (another computer says it is in another space) stays where it is here, and
+    /// syncs again. To accept the other space instead: `omoi projects move <project> --space <space>`.
+    Keep {
+        /// The project: its folder, or its name or part of it.
+        proyecto: String,
+    },
     /// Forget the projects without memories (a folder you work in again comes back by itself).
     Prune,
     /// Merge project A into B: A's memories (with their ids, history and verdicts) and folders go to B.
@@ -817,9 +823,15 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             // Los proyectos que ya no están en su carpeta, o cuyo `origin` cambió (de los que se ven desde aquí).
             let filtro = if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) };
-            // Y los que están en otro espacio en otro equipo de la sincronización, con la orden.
+            // Y los que están en otro espacio en otro equipo de la sincronización, con la orden, y los
+            // que están en pausa, con las dos.
             let choques = omoikane::sync::choques(&ruta_db(c));
+            let pausados = proyecto::en_pausa(&db)?;
             for p in proyecto::lista(&db, None, filtro, usize::MAX)? {
+                if let Some(x) = pausados.iter().find(|x| x.key == p.key) {
+                    println!("{:<12}  {}  {}", "project_paused", p.name, p.path);
+                    println!("{:<12}  {}", "", omoikane::sync::texto_pausa(&ruta_db(c), x));
+                }
                 if p.gone {
                     println!("{:<12}  {}  {}", "project_gone", p.name, p.path);
                     println!("{:<12}  {}", "", tr!("the folder no longer exists: `omoi projects move {} <new folder>`", "la carpeta ya no existe: `omoi projects move {} <carpeta nueva>`", p.name));
@@ -834,7 +846,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 }
             }
             let cs = omoikane::candidatas::todas(&db)?;
-            if v.is_empty() && cs.is_empty() {
+            if v.is_empty() && cs.is_empty() && pausados.is_empty() {
                 println!("{}", tr!("nothing to review", "nada que revisar"));
             }
             if !cs.is_empty() {
@@ -1259,8 +1271,17 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
         AccionProyectos::Move { proyecto: p, carpeta, space, force } => {
             let id = proyecto::buscar(&db, &p)?;
             // De un espacio a otro, solo con --force (como merge y move por carpeta): lo de un cliente
-            // pasaría al repositorio de otro. De ninguno a uno, no hace falta.
-            let destino = space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?;
+            // pasaría al repositorio de otro. De ninguno a uno, no hace falta. El espacio que dice la
+            // línea que pausó el proyecto se crea aquí si aún no está.
+            let clave = proyecto::clave_de(&db, id)?;
+            let pausa = proyecto::en_pausa(&db)?.into_iter().find(|x| x.key == clave);
+            let destino = match space.as_deref() {
+                Some(s) if pausa.as_ref().is_some_and(|x| !x.pausa.space.is_empty() && x.pausa.space == proyecto::clave_de_espacio(s)) => {
+                    proyecto::espacio_de_clave(&db, &proyecto::clave_de_espacio(s))?
+                }
+                Some(s) => Some(proyecto::buscar_espacio(&db, s)?),
+                None => None,
+            };
             if let (Some(antes), Some(d)) = (proyecto::espacio_de(&db, id)?, destino)
                 && antes != d
                 && !force
@@ -1284,7 +1305,20 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             if let (Some(s), Some(d)) = (space, destino) {
                 proyecto::asignar_espacio(&db, id, Some(d))?;
                 println!("{}", tr!("in the space «{s}» now", "ahora en el espacio «{s}»"));
+                if pausa.is_some() {
+                    println!("{}", tr!("it is no longer paused: it syncs again", "ya no está en pausa: vuelve a sincronizarse"));
+                }
             }
+            Ok(())
+        }
+        AccionProyectos::Keep { proyecto: p } => {
+            let id = proyecto::buscar(&db, &p)?;
+            match proyecto::quedarse(&db, id)? {
+                None => println!("{}", tr!("it is not paused: nothing to do", "no está en pausa: nada que hacer")),
+                Some(e) if e.is_empty() => println!("{}", tr!("it stays in no space and syncs again", "se queda sin espacio y vuelve a sincronizarse")),
+                Some(e) => println!("{}", tr!("it stays in the space «{e}» and syncs again", "se queda en el espacio «{e}» y vuelve a sincronizarse")),
+            }
+            omoikane::sync::programar(&ruta_db(c));
             Ok(())
         }
         AccionProyectos::Prune => {
@@ -1495,6 +1529,9 @@ fn doctor(c: &Comun) -> Result<()> {
         println!("{}", tr!("database   {r} ({memorias}, {proyectos}, schema {v})", "base       {r} ({memorias}, {proyectos}, esquema {v})"));
         for x in proyecto::lista(&base, None, None, usize::MAX)?.into_iter().filter(|x| x.gone) {
             println!("{}", tr!("project    {} is gone from {}: `omoi projects move {} <new folder>`", "proyecto   {} ya no está en {}: `omoi projects move {} <carpeta nueva>`", x.name, x.path, x.name));
+        }
+        for a in omoikane::sync::avisos_de_pausa(&base, &ruta) {
+            println!("{}{a}", tr!("paused     ", "en pausa   "));
         }
         let papelera: i64 = base.query_row("SELECT count(*) FROM forgotten", [], |f| f.get(0))?;
         let copias = omoikane::copia::copias(&ruta);
@@ -1852,6 +1889,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
             });
             let general = sync::rutas(&ruta);
             let espacios = sync::espacios(&ruta);
+            let pausados = if ruta.exists() { proyecto::en_pausa(&db::abrir(&ruta)?)? } else { Vec::new() };
             if c.json {
                 let claves = |r: &sync::Rutas| {
                     let (ids, vigente) = sync::claves_de(r);
@@ -1872,11 +1910,19 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
                     "config": config,
                     "state": sync::leer_estado(&ruta),
                     "pending": sync::pendiente(&ruta),
+                    "paused": pausados.iter().map(|x| {
+                        let mut v = serde_json::to_value(x).unwrap_or_default();
+                        v["text"] = sync::texto_pausa(&ruta, x).into();
+                        v
+                    }).collect::<Vec<_>>(),
                     "keys": config.as_ref().map(|_| claves(&general)),
                     "spaces": de_espacios,
                 }));
             }
             println!("{}", estado_sync(&ruta, None));
+            for x in &pausados {
+                println!("{}{}", tr!("paused     ", "en pausa   "), sync::texto_pausa(&ruta, x));
+            }
             for e in &espacios {
                 let r = sync::rutas_de(&ruta, Some(e));
                 println!("{}{}", tr!("space {e}: ", "espacio {e}: "), estado_sync(&ruta, Some(e)));

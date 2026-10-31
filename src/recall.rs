@@ -418,6 +418,11 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         params![e.session_id, project, e.source],
     )?;
     let mut s = String::from("<omoikane>\n");
+    // Un proyecto en pausa no se sincroniza hasta que la persona decida: que no se olvide.
+    if let Some(p) = crate::sync::aviso_de_pausa_agente(db) {
+        s.push_str(&p);
+        s.push('\n');
+    }
     if let Some(vieja) = &movido {
         s.push_str(&format!("This project used to be in {vieja}, which no longer exists: its memories follow this folder now (same git origin). Tell the user once.\n"));
     }

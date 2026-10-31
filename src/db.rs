@@ -137,12 +137,15 @@ fn asegurar_persona(db: &Connection) -> Result<String> {
 }
 
 /// Una base del esquema 10 de una versión sin publicar a la que le falta `project.hlc` (el sello del
-/// último cambio de espacio del proyecto, que viaja en las líneas `project`): se añade, vacío.
+/// último cambio de espacio del proyecto, que viaja en las líneas `project`) o `project.paused` (la
+/// pausa en la que lo deja una línea `project` que dice otro espacio): se añaden, vacías.
 fn al_dia_10(db: &Connection) -> Result<()> {
     if version(db)? == 10 {
-        let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project') WHERE name = 'hlc')", [], |f| f.get(0))?;
-        if !tiene {
-            db.execute_batch("ALTER TABLE project ADD COLUMN hlc TEXT NOT NULL DEFAULT ''")?;
+        for columna in ["hlc", "paused"] {
+            let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project') WHERE name = ?1)", [columna], |f| f.get(0))?;
+            if !tiene {
+                db.execute_batch(&format!("ALTER TABLE project ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"))?;
+            }
         }
     }
     Ok(())
@@ -282,7 +285,9 @@ fn migrar_copiando(db: &mut Connection, hasta: i64, copia: Option<String>) -> Re
 /// - `review` vuelve a ser solo caché (sin `dismissed_at`, que ya vivía en `verdict`), y
 ///   `remote_project` pasa a `project_path`.
 /// - `project.hlc`: el sello del último cambio de espacio del proyecto (vacío si nunca cambió), con el
-///   que su espacio viaja como línea `project` y gana el cambio más nuevo.
+///   que su espacio viaja como línea `project`. Esa línea nunca cambia el espacio de nada: si dice otro,
+///   el proyecto queda en pausa (`project.paused`, local: JSON con el espacio que dice, su sello y qué
+///   equipo) hasta que la persona decida aquí (`omoi projects move` o `omoi projects keep`).
 /// - `tombstone.space_key`: el espacio de lo olvidado, para que cada olvido vaya solo al repositorio de
 ///   su espacio (los de antes, vacío: al general). Y `meta('persona')`, la de las claves `dir:`.
 /// - Locales, que no viajan: el proyecto desde el que se recibió cada memoria (`recall_log.project_id`)
@@ -301,7 +306,8 @@ CREATE TABLE project (
   path       TEXT NOT NULL DEFAULT '',
   space_id   INTEGER REFERENCES space(id),
   created_at TEXT NOT NULL,
-  hlc        TEXT NOT NULL DEFAULT ''
+  hlc        TEXT NOT NULL DEFAULT '',
+  paused     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX project_name ON project(name);
 CREATE INDEX project_space ON project(space_id) WHERE space_id IS NOT NULL;

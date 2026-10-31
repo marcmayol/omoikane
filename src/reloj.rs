@@ -133,27 +133,38 @@ pub fn sello(db: &Connection) -> Result<String> {
 
 /// Un sello nuevo, también posterior a `previo` (el sello de la memoria que se cambia u olvida): un
 /// cambio hecho aquí después de ver una versión siempre le gana, aunque esa versión venga de un equipo
-/// con la hora adelantada.
+/// con la hora adelantada. Pero un `previo` de más de una hora en el futuro no adelanta el reloj (como
+/// en `recibir`): ese cambio le gana, y los siguientes de este equipo siguen en la hora de aquí.
 pub fn sello_tras(db: &Connection, previo: &str) -> Result<String> {
     let equipo = equipo(db)?;
     let u = ultimo(db)?;
     let (mut ms, mut c, _) = partes(&u);
     let (ms_p, c_p, _) = partes(previo);
-    if (ms_p, c_p) > (ms, c) {
+    let ahora = ahora_ms();
+    let lejano = ms_p > ahora.saturating_add(FUTURO_MAX_MS);
+    if !lejano && (ms_p, c_p) > (ms, c) {
         (ms, c) = (ms_p, c_p);
     }
-    let ahora = ahora_ms();
     let (ms, c) = if ahora > ms { (ahora, 0) } else { (ms, c + 1) };
     let s = formato(ms, c, &equipo);
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('hlc', ?1)", params![s])?;
+    if lejano && (ms_p, c_p) >= (ms, c) {
+        // Justo detrás del previo, sin apuntarlo como el último del reloj.
+        return Ok(formato(ms_p, c_p + 1, &equipo));
+    }
     Ok(s)
+}
+
+/// Si un sello va más de una hora por delante de la hora de aquí.
+pub fn del_futuro(sello: &str) -> bool {
+    partes(sello).0 > ahora_ms().saturating_add(FUTURO_MAX_MS)
 }
 
 /// Anota un sello que llegó de otro equipo: los cambios de aquí irán después. Uno de más de una hora en
 /// el futuro no se anota (devuelve `false`).
 pub fn recibir(db: &Connection, remoto: &str) -> Result<bool> {
     let (ms_r, c_r, _) = partes(remoto);
-    if ms_r > ahora_ms().saturating_add(FUTURO_MAX_MS) {
+    if del_futuro(remoto) {
         return Ok(false);
     }
     let (ms_u, c_u, _) = partes(&ultimo(db)?);
@@ -201,8 +212,13 @@ mod tests {
         assert!(!recibir(&db, &lejos).unwrap());
         let s = sello(&db).unwrap();
         assert!(partes(&s).0 <= ahora_ms() + 1000, "el reloj sigue en la hora de aquí: {s}");
-        // Pero un cambio sobre una memoria con ese sello le gana igual.
-        assert!(mayor(&sello_tras(&db, &lejos).unwrap(), &lejos));
+        // Pero un cambio sobre una memoria con ese sello le gana igual, sin adelantar el reloj: el sello
+        // siguiente vuelve a la hora de aquí.
+        let tras = sello_tras(&db, &lejos).unwrap();
+        assert!(mayor(&tras, &lejos));
+        assert!(mayor(&sello_tras(&db, &tras).unwrap(), &tras), "y otro cambio sobre esa misma memoria, también");
+        let s = sello(&db).unwrap();
+        assert!(partes(&s).0 <= ahora_ms() + 1000, "el reloj no se envenena: {s}");
         // Uno cercano sí se anota.
         let cerca = formato(ahora_ms() + 60_000, 3, "otro");
         assert!(recibir(&db, &cerca).unwrap());

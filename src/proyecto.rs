@@ -5,7 +5,7 @@
 use crate::tr;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Proyecto de la carpeta actual.
@@ -639,15 +639,102 @@ pub fn espacios(db: &Connection) -> Result<Vec<Espacio>> {
 /// Mete un proyecto en un espacio (o lo saca, con `None`). El proyecto se lleva un sello nuevo
 /// (`project.hlc`), con el que la sincronización lleva su espacio a los demás equipos en una línea
 /// `project`; sus memorias no cambian de sello (si cambiaran, una versión vieja de aquí ganaría a
-/// una más nueva de otro equipo solo por haberse movido). Devuelve cuántas memorias tiene.
+/// una más nueva de otro equipo solo por haberse movido). Si estaba en pausa (`Pausa`), es la decisión
+/// de la persona: sale de ella, con un sello posterior al de la línea que lo pausó (así esa línea ya
+/// no vuelve a pausarlo). Devuelve cuántas memorias tiene.
 pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> Result<usize> {
     anyhow::ensure!(proyecto != 0, tr!("global memories have no project to put in a space", "las memorias globales no tienen proyecto que meter en un espacio"));
-    let (antes, previo): (Option<i64>, String) = db.query_row("SELECT space_id, hlc FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?)))?;
-    if antes != espacio || previo.is_empty() {
+    let (antes, previo, pausa): (Option<i64>, String, String) =
+        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
+    let pausada = !pausa.is_empty();
+    if antes != espacio || previo.is_empty() || pausada {
+        let previo = match Pausa::de(&pausa) {
+            Some(p) if crate::reloj::mayor(&p.hlc, &previo) => p.hlc,
+            _ => previo,
+        };
         let hlc = crate::reloj::sello_tras(db, &previo)?;
-        db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![proyecto, espacio, hlc])?;
+        db.execute("UPDATE project SET space_id = ?2, hlc = ?3, paused = '' WHERE id = ?1", params![proyecto, espacio, hlc])?;
     }
     Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [proyecto], |f| f.get::<_, i64>(0))? as usize)
+}
+
+/// Un proyecto en pausa: una línea `project` (de otro equipo, o escrita a mano por quien tenga la clave
+/// de un repositorio) dice que está en otro espacio. Esa línea no cambia nada: hasta que la persona
+/// decida aquí (`omoi projects move` o `omoi projects keep`), sus memorias no se suben a ningún
+/// repositorio ni se aceptan las que lleguen de él. Es local (`project.paused`, en JSON): no viaja.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pausa {
+    /// El espacio que dice la línea (su clave; vacío: ninguno).
+    #[serde(default)]
+    pub space: String,
+    /// La línea solo dice que otro equipo lo pasó a un espacio, sin decir a cuál (la que va por el
+    /// repositorio general, que no nombra clientes).
+    #[serde(default)]
+    pub unknown: bool,
+    /// El sello de esa línea.
+    #[serde(default)]
+    pub hlc: String,
+    /// El equipo de su sello (el que lo movió).
+    #[serde(default)]
+    pub machine: String,
+    /// Cuándo se pausó aquí.
+    #[serde(default)]
+    pub at: String,
+}
+
+impl Pausa {
+    /// La pausa guardada en `project.paused` (`None` si no hay, o no se entiende).
+    pub fn de(texto: &str) -> Option<Pausa> {
+        if texto.is_empty() { None } else { serde_json::from_str(texto).ok() }
+    }
+}
+
+/// Deja el proyecto en pausa (sin tocar su espacio ni su sello).
+pub fn pausar(db: &Connection, proyecto: i64, pausa: &Pausa) -> Result<()> {
+    let p = Pausa { at: ahora(db)?, ..pausa.clone() };
+    db.execute("UPDATE project SET paused = ?2 WHERE id = ?1", params![proyecto, serde_json::to_string(&p)?])?;
+    Ok(())
+}
+
+/// Un proyecto en pausa, como lo enseñan `omoi sync`, `doctor`, `review` y Revisar.
+#[derive(Clone, Debug, Serialize)]
+pub struct EnPausa {
+    pub key: String,
+    pub name: String,
+    /// Su espacio aquí (su clave; vacío: ninguno).
+    pub here: String,
+    #[serde(flatten)]
+    pub pausa: Pausa,
+}
+
+/// Los proyectos en pausa, por nombre.
+pub fn en_pausa(db: &Connection) -> Result<Vec<EnPausa>> {
+    let mut q = db.prepare(
+        "SELECT p.key, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.paused FROM project p WHERE p.paused != '' ORDER BY p.name, p.key",
+    )?;
+    let filas: Vec<(String, String, String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(filas
+        .into_iter()
+        .map(|(key, name, here, t)| EnPausa { key, name, here, pausa: Pausa::de(&t).unwrap_or_default() })
+        .collect())
+}
+
+/// Si el proyecto de esta clave está en pausa.
+pub fn pausado(db: &Connection, clave: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT paused != '' FROM project WHERE key = ?1", [clave], |f| f.get(0)).optional()?.unwrap_or(false))
+}
+
+/// `omoi projects keep`: el proyecto se queda en su espacio y sale de la pausa; su sello pasa por
+/// delante del de la línea que lo pausó, para que no vuelva a pausarlo (y los demás equipos sepan que
+/// aquí se quedó donde estaba). `None` si no estaba en pausa; si no, su espacio (su clave).
+pub fn quedarse(db: &Connection, proyecto: i64) -> Result<Option<String>> {
+    let pausa: Option<String> = db.query_row("SELECT paused FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?;
+    if pausa.as_deref().is_none_or(str::is_empty) {
+        return Ok(None);
+    }
+    let espacio = espacio_de(db, proyecto)?;
+    asignar_espacio(db, proyecto, espacio)?;
+    Ok(Some(clave_espacio(db, espacio)?))
 }
 
 /// Un sello nuevo para cada memoria del proyecto (sin tocar su contenido ni `content_hlc`): así viaja
