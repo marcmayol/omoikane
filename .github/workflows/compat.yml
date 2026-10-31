@@ -1,0 +1,64 @@
+name: compat
+
+# Que la 1.x siga entendiéndose con la 1.0.0 (PLAN.md, Fase 9, §9.1): baja el `omoi` 1.0.0 de la
+# Release v1.0.0, comprueba su SHA-256 y corre `cargo test --test compat` contra el de este commit
+# (sync por el mismo repositorio en los dos sentidos, la base y `omoi export`). Si falla, la 1.x ha
+# roto lo que prometió la 1.0. `release.yml` lo llama antes de publicar.
+on:
+  # En las ramas; en un tag lo corre release.yml antes de publicar.
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+jobs:
+  compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Las sumas, fijas: son las de la Release v1.0.0 (su SHA256SUMS, firmado). Si alguien cambiara
+          # los ficheros de la Release, esto no pasaría.
+          - os: ubuntu-latest
+            paquete: omoi-x86_64-unknown-linux-gnu.tar.gz
+            sha256: 307044e710693951125d11857ed0c4eed656b650819877002a33c2f93fcc1f99
+          - os: windows-latest
+            paquete: omoi-x86_64-pc-windows-msvc.zip
+            sha256: 33d7b1606d8093a6aa8e6004b15d5a32f61f9bb375ca8b2e9448ca57c57ea929
+          - os: macos-latest
+            paquete: omoi-aarch64-apple-darwin.tar.gz
+            sha256: 9793111b8fdf0e9755e20a7542437ba47cb5027ed4d6fc5386427ee35813e100
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: compat
+
+      - name: Bajar omoi 1.0.0
+        run: |
+          d="$RUNNER_TEMP/omoi-1.0.0"
+          mkdir -p "$d/bin"
+          cd "$d"
+          base=https://github.com/marcmayol/omoikane/releases/download/v1.0.0
+          curl -sSfL --retry 3 -o "${{ matrix.paquete }}" "$base/${{ matrix.paquete }}"
+          curl -sSfL --retry 3 -o SHA256SUMS "$base/SHA256SUMS"
+          suma() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+          tiene=$(suma "${{ matrix.paquete }}")
+          # La del fichero, contra la fija y contra la de SHA256SUMS de la Release.
+          test "$tiene" = "${{ matrix.sha256 }}" || { echo "SHA-256 distinto: $tiene"; exit 1; }
+          grep -qx "$tiene  ${{ matrix.paquete }}" SHA256SUMS || { echo "no coincide con SHA256SUMS"; exit 1; }
+          case "${{ matrix.paquete }}" in
+            *.zip) 7z x -y -obin "${{ matrix.paquete }}" >/dev/null; bin="$d/bin/omoi.exe" ;;
+            *) tar -xzf "${{ matrix.paquete }}" -C bin; bin="$d/bin/omoi" ;;
+          esac
+          "$bin" --version | grep -qx "omoi 1.0.0"
+          echo "OMOIKANE_COMPAT_BIN=$bin" >> "$GITHUB_ENV"
+
+      - run: cargo test --locked --test compat -- --nocapture
