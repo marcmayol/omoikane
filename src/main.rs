@@ -387,11 +387,17 @@ enum AccionEspacio {
         espacio: String,
         /// The project: its folder, or its name or part of it.
         proyecto: Option<String>,
+        /// Move it even if it is already in another space (its memories go to that space's repository).
+        #[arg(long)]
+        force: bool,
     },
     /// Take a project out of its space (by default, this folder's project).
     Unassign {
         /// The project: its folder, or its name or part of it.
         proyecto: Option<String>,
+        /// Do it: without a space, its memories go to the general (personal) repository.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -1323,15 +1329,39 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
             println!("{}", tr!("space «{}» created; put projects in it with `omoi space assign {}`", "espacio «{}» creado; mete proyectos con `omoi space assign {}`", proyecto::clave_de_espacio(&nombre), proyecto::clave_de_espacio(&nombre)));
             Ok(())
         }
-        AccionEspacio::Assign { espacio, proyecto: p } => {
+        AccionEspacio::Assign { espacio, proyecto: p, force } => {
             let s = proyecto::buscar_espacio(&db, &espacio)?;
             let id = elegido(p)?;
+            // De un espacio a otro, solo con --force, como `projects move --space`: lo de un cliente
+            // pasaría al repositorio de otro.
+            if let Some(antes) = proyecto::espacio_de(&db, id)?
+                && antes != s
+                && !force
+            {
+                bail!(tr!(
+                    "the project is in the space «{}»: moving it to «{}» sends its memories to that space's sync repository. Add --force if that is what you want",
+                    "el proyecto está en el espacio «{}»: moverlo a «{}» manda sus memorias al repositorio de ese espacio. Añade --force si es lo que quieres",
+                    proyecto::clave_espacio(&db, Some(antes))?,
+                    proyecto::clave_espacio(&db, Some(s))?
+                ));
+            }
             proyecto::asignar_espacio(&db, id, Some(s))?;
             println!("{}", tr!("done: its memories are now seen only from the space «{espacio}» (and the home folder)", "hecho: sus memorias ya solo se ven desde el espacio «{espacio}» (y desde la carpeta de usuario)"));
             Ok(())
         }
-        AccionEspacio::Unassign { proyecto: p } => {
+        AccionEspacio::Unassign { proyecto: p, force } => {
             let id = elegido(p)?;
+            // Sacarlo de su espacio manda sus memorias al repositorio general, el personal: lo de un
+            // cliente acabaría ahí. Solo con --force.
+            if let Some(antes) = proyecto::espacio_de(&db, id)?
+                && !force
+            {
+                bail!(tr!(
+                    "the project is in the space «{}»: without a space, its memories go to the general (personal) sync repository. Add --force if that is what you want",
+                    "el proyecto está en el espacio «{}»: sin espacio, sus memorias van al repositorio general (el personal). Añade --force si es lo que quieres",
+                    proyecto::clave_espacio(&db, Some(antes))?
+                ));
+            }
             proyecto::asignar_espacio(&db, id, None)?;
             println!("{}", tr!("done: the project is no longer in a space", "hecho: el proyecto ya no está en ningún espacio"));
             Ok(())
