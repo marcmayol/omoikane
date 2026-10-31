@@ -1303,6 +1303,12 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             if let Some(d) = destino {
                 pausado_sin_espacio_exige_force(&db, id, d, pausa.is_some(), force)?;
             }
+            if destino.is_some() && proyecto::espacio_de(&db, id)?.is_none() && personal_decidido(&db, id)? && !force {
+                bail!(tr!(
+                    "this project was made personal on purpose (`omoi space unassign --force`): add --force to put it in a space",
+                    "este proyecto se hizo personal a propósito (`omoi space unassign --force`): añade --force para meterlo en un espacio"
+                ));
+            }
             if let (Some(antes), Some(d)) = (proyecto::espacio_de(&db, id)?, destino)
                 && antes != d
                 && !force
@@ -1325,6 +1331,7 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
             }
             if let (Some(s), Some(d)) = (space, destino) {
                 proyecto::asignar_espacio(&db, id, Some(d))?;
+                db.execute("DELETE FROM meta WHERE k = 'personal:' || ?1", [id])?;
                 println!("{}", tr!("in the space «{s}» now", "ahora en el espacio «{s}»"));
                 if pausa.is_some() {
                     println!("{}", tr!("it is no longer paused: it syncs again", "ya no está en pausa: vuelve a sincronizarse"));
@@ -1402,7 +1409,14 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
                     proyecto::clave_espacio(&db, Some(s))?
                 ));
             }
+            if personal_decidido(&db, id)? && !force {
+                bail!(tr!(
+                    "this project was made personal on purpose (`omoi space unassign --force`): add --force to put it in «{espacio}»",
+                    "este proyecto se hizo personal a propósito (`omoi space unassign --force`): añade --force para meterlo en «{espacio}»"
+                ));
+            }
             proyecto::asignar_espacio(&db, id, Some(s))?;
+            db.execute("DELETE FROM meta WHERE k = 'personal:' || ?1", [id])?;
             println!("{}", tr!("done: its memories are now seen only from the space «{espacio}» (and the home folder)", "hecho: sus memorias ya solo se ven desde el espacio «{espacio}» (y desde la carpeta de usuario)"));
             Ok(())
         }
@@ -1430,6 +1444,9 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
                 )?;
             }
             proyecto::asignar_espacio(&db, id, None)?;
+            // La persona ha decidido que es personal: volver a meterlo en un espacio pedirá --force,
+            // aunque un repositorio de cliente lo siga proponiendo.
+            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('personal:' || ?1, '1')", [id])?;
             println!("{}", tr!("done: the project is no longer in a space", "hecho: el proyecto ya no está en ningún espacio"));
             if quedan > 0 {
                 println!(
@@ -1443,6 +1460,11 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Si la persona sacó el proyecto de su espacio a propósito (`space unassign --force`).
+fn personal_decidido(db: &Connection, id: i64) -> Result<bool> {
+    Ok(db.query_row("SELECT count(*) FROM meta WHERE k = 'personal:' || ?1", [id], |f| f.get::<_, i64>(0))? > 0)
 }
 
 fn texto_o_entrada(t: Option<String>) -> Result<String> {

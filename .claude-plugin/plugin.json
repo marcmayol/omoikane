@@ -1,7 +1,7 @@
 {
   "name": "omoikane",
   "displayName": "Omoikane",
-  "version": "0.19.1",
+  "version": "1.0.0",
   "description": "Long-term memory for Claude Code: what it learns in one session comes back in the next. Local SQLite, search by words and meaning, duplicate detection, and automatic recall of the memories that matter for each prompt. Installing the plugin is all: it downloads the `omoi` binary on first use.",
   "author": {
     "name": "Marc Mayol",

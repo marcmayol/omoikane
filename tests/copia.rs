@@ -474,3 +474,22 @@ fn cambiar_de_espacio_o_sacarlo_pide_force() {
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--force"), "{}", String::from_utf8_lossy(&o.stderr));
     e.ok("o.db", &["space", "unassign", "--force"]);
 }
+
+/// Un proyecto que se hizo personal a propósito no vuelve a un espacio sin `--force`, aunque un
+/// repositorio de cliente siga proponiéndolo (la orden que sugiere el aviso lleva `--force`).
+#[test]
+fn lo_hecho_personal_no_vuelve_a_un_espacio_sin_force() {
+    let e = Entorno::nuevo("personal");
+    e.id("o.db", "fact", "Algo mío", "Para que exista.");
+    e.ok("o.db", &["space", "add", "acme"]);
+    e.ok("o.db", &["space", "assign", "acme"]);
+    e.ok("o.db", &["space", "unassign", "--force"]);
+    for args in [vec!["space", "assign", "acme"], vec!["projects", "move", ".", "--space", "acme"]] {
+        let o = e.omoi("o.db", &args, None);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("personal on purpose"), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    e.ok("o.db", &["space", "assign", "acme", "--force"]);
+    // Una vez dentro otra vez, la marca se va: sacarlo y volver a meterlo pide lo de siempre.
+    e.ok("o.db", &["space", "unassign", "--force"]);
+    e.ok("o.db", &["projects", "move", ".", "--space", "acme", "--force"]);
+}
