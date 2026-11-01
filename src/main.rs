@@ -519,15 +519,18 @@ enum AccionModelo {
     },
     /// Delete installed models that are not in use.
     Clean,
-    /// Turn the meaning model (EmbeddingGemma) on or off. Off, Omoikane uses only the light model, as
-    /// before 1.2: faster and less memory, but it misses questions asked with other words.
+    /// Whether the meaning model (EmbeddingGemma) is in use and why. Unless you choose, it turns on by
+    /// itself once the memory is large (1,500 memories): below that, words alone are as good and faster.
     Semantic {
-        /// Turn it on.
-        #[arg(long, conflicts_with = "off")]
+        /// Use it even with a small memory (downloads it in the background if it is missing).
+        #[arg(long, conflicts_with_all = ["off", "auto"])]
         on: bool,
-        /// Turn it off and close its service.
-        #[arg(long)]
+        /// Never use it, whatever the size, and close its service.
+        #[arg(long, conflicts_with = "auto")]
         off: bool,
+        /// Let the size of the memory decide again (the default).
+        #[arg(long)]
+        auto: bool,
     },
     /// The service that keeps the meaning model loaded (Omoikane starts it by itself).
     #[command(hide = true)]
@@ -1194,6 +1197,95 @@ fn abrir_con_modelo(c: &Comun) -> Result<(Connection, Option<Modelo>)> {
     Ok((db, modelo))
 }
 
+/// En qué estado está el modelo de significado para la base `ruta` y por qué, en JSON y en líneas para
+/// `omoi doctor` y `omoi model semantic`.
+fn significado_informe(ruta: &std::path::Path) -> Result<(serde_json::Value, Vec<String>)> {
+    use omoikane::significado::{self as s, Porque};
+    let db = if ruta.exists() { Some(db::abrir(ruta)?) } else { None };
+    let e = match &db {
+        Some(db) => s::estado(db),
+        // Sin base aún: el entorno y la elección valen igual; si no hay ninguno, 0 memorias.
+        None => match (std::env::var("OMOIKANE_SEMANTIC"), s::preferencia()) {
+            (Ok(v), _) if !v.is_empty() => s::Estado { on: v != "0", reason: Porque::Env, memories: 0, threshold: s::umbral() },
+            (_, Some(p)) => s::Estado { on: p, reason: Porque::Chosen, memories: 0, threshold: s::umbral() },
+            _ => s::Estado { on: false, reason: Porque::Size, memories: 0, threshold: s::umbral() },
+        },
+    };
+    let instalado = s::modelo();
+    let descargando = instalado.is_none() && s::descargando();
+    let vivo = if e.on && instalado.is_some() { s::vivo(std::time::Duration::from_millis(300)) } else { None };
+    let (hechas, total) = match (&db, e.on && instalado.is_some()) {
+        (Some(db), true) => s::cobertura(db)?,
+        _ => (0, e.memories),
+    };
+    let (consultas, sin_respuesta, ultimo) = db.as_ref().map(omoikane::recall::consultas_al_modelo).unwrap_or((0, 0, None));
+    let (n, u) = (e.memories, e.threshold);
+    let porque = match e.reason {
+        Porque::Env => "OMOIKANE_SEMANTIC".to_string(),
+        Porque::Chosen => tr!("you turned it on", "lo encendiste tú"),
+        Porque::Size => tr!("{n} memories; it turns on by itself from {u}", "{n} memorias; se enciende solo desde {u}"),
+    };
+    let primera = match (e.on, e.reason, &instalado) {
+        (false, Porque::Env, _) => tr!("off: OMOIKANE_SEMANTIC=0", "apagado: OMOIKANE_SEMANTIC=0"),
+        (false, Porque::Chosen, _) => tr!(
+            "off: you turned it off (`omoi model semantic --auto` lets the size of the memory decide, `--on` uses it now)",
+            "apagado: lo apagaste tú (`omoi model semantic --auto` deja que decida el tamaño de la memoria, `--on` lo usa ya)"
+        ),
+        (false, _, i) => {
+            let idle = if i.is_some() { tr!(" It is installed but idle.", " Está instalado, sin usar.") } else { String::new() };
+            tr!(
+                "not in use yet: {n} memories, it turns on by itself from {u} (below that, words alone are as good and faster). `omoi model semantic --on` uses it now, `--off` never.{idle}",
+                "aún sin usar: {n} memorias, se enciende solo desde {u} (por debajo, las palabras solas aciertan igual y van más rápido). `omoi model semantic --on` lo usa ya, `--off` nunca.{idle}"
+            )
+        }
+        (true, _, None) if descargando => tr!(
+            "on ({porque}): downloading EmbeddingGemma (about 450 MB) in the background; until then, words only",
+            "encendido ({porque}): descargando EmbeddingGemma (unos 450 MB) en segundo plano; mientras, solo palabras"
+        ),
+        (true, _, None) => tr!(
+            "on ({porque}), but not installed: it downloads at the next session start (`omoi model install --semantic` does it now, about 450 MB)",
+            "encendido ({porque}), pero sin instalar: se descarga al empezar la próxima sesión (`omoi model install --semantic` lo hace ya, unos 450 MB)"
+        ),
+        (true, _, Some(_)) => match vivo.as_ref().map(|r| r.pid) {
+            Some(pid) => tr!(
+                "on ({porque}): EmbeddingGemma, {hechas} of {total} memories with a vector; service running (pid {pid})",
+                "encendido ({porque}): EmbeddingGemma, {hechas} de {total} memorias con vector; servicio en marcha (pid {pid})"
+            ),
+            None => tr!(
+                "on ({porque}): EmbeddingGemma, {hechas} of {total} memories with a vector; the service starts with the next search",
+                "encendido ({porque}): EmbeddingGemma, {hechas} de {total} memorias con vector; el servicio arranca con la próxima búsqueda"
+            ),
+        },
+    };
+    let mut lineas = vec![primera];
+    if consultas > 0 {
+        let ultimo = ultimo.clone().unwrap_or_default();
+        lineas.push(if sin_respuesta > 0 {
+            tr!(
+                "recall asked it {consultas} times; {sin_respuesta} got no answer in time and went by words only, as in 1.1 (last: {ultimo})",
+                "el recall le preguntó {consultas} veces; {sin_respuesta} sin respuesta a tiempo, que fueron solo por palabras, como en la 1.1 (la última: {ultimo})"
+            )
+        } else {
+            tr!("recall asked it {consultas} times, always answered in time", "el recall le preguntó {consultas} veces, siempre respondió a tiempo")
+        });
+    }
+    let j = serde_json::json!({
+        "on": e.on,
+        "reason": e.reason,
+        "memories": e.memories,
+        "threshold": e.threshold,
+        "choice": s::preferencia(),
+        "installed": instalado.as_ref().map(|d| d.display().to_string()),
+        "downloading": descargando,
+        "with_vector": hechas,
+        "service_pid": vivo.as_ref().map(|r| r.pid),
+        "recall_asked": consultas,
+        "recall_no_answer": sin_respuesta,
+        "recall_last_no_answer": ultimo,
+    });
+    Ok((j, lineas))
+}
+
 fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
     match accion {
         AccionModelo::Status => {
@@ -1217,7 +1309,14 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             Ok(())
         }
         AccionModelo::Install { from, semantic: true } => {
-            let dir = omoikane::significado::instalar(from.as_deref(), &mut |linea| eprintln!("{linea}"))?;
+            use omoikane::significado as s;
+            let dir = s::instalar(from.as_deref(), &mut |linea| eprintln!("{linea}"))?;
+            s::descarga_hecha();
+            // Si esta base lo usa, que el servicio empiece ya a calcular sus vectores.
+            let ruta = ruta_db(c);
+            if s::en_uso_en(&ruta) {
+                s::avisar(&ruta);
+            }
             if c.json {
                 return json(&serde_json::json!({ "semantic_model": dir.display().to_string() }));
             }
@@ -1238,7 +1337,7 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             println!("{}", tr!("model ready: {id} ({n} vectors computed)", "modelo listo: {id} ({n} vectores calculados)"));
             Ok(())
         }
-        AccionModelo::ServeSemantic => omoikane::significado::servir(),
+        AccionModelo::ServeSemantic => omoikane::significado::servir(c.db.as_deref()),
         AccionModelo::IndexSemantic => {
             use omoikane::significado as s;
             let dir = s::modelo().context(tr!("the meaning model is not installed (`omoi model install --semantic`)", "el modelo de significado no está instalado (`omoi model install --semantic`)"))?;
@@ -1258,34 +1357,22 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             println!("{}", tr!("{n} vectors computed; {hechas} of {total} memories have one", "{n} vectores calculados; {hechas} de {total} memorias tienen el suyo"));
             Ok(())
         }
-        AccionModelo::Semantic { on, off } => {
+        AccionModelo::Semantic { on, off, auto } => {
             use omoikane::significado as s;
-            if on || off {
-                s::fijar(on)?;
+            if on || off || auto {
+                s::fijar(if auto { None } else { Some(on) })?;
             }
-            let modelo = s::modelo();
-            let vivo = s::vivo(std::time::Duration::from_millis(300));
+            let ruta = ruta_db(c);
+            let (j, lineas) = significado_informe(&ruta)?;
+            // Encendido (a mano, o por el tamaño al volver a `--auto`) y sin instalar: se descarga ya.
+            if (on || auto) && j["on"].as_bool() == Some(true) && s::modelo().is_none() {
+                s::descargar_aparte(&ruta);
+            }
             if c.json {
-                return json(&serde_json::json!({
-                    "on": s::activado(),
-                    "installed": modelo.as_ref().map(|d| d.display().to_string()),
-                    "service_pid": vivo.as_ref().map(|r| r.pid),
-                }));
+                return json(&j);
             }
-            let estado = match (s::activado(), &modelo) {
-                (false, _) => tr!(
-                    "meaning model: off (only the light model: faster, less memory). `omoi model semantic --on` turns it on",
-                    "modelo de significado: apagado (solo el modelo ligero: más rápido y con menos memoria). `omoi model semantic --on` lo enciende"
-                ),
-                (true, None) => tr!("meaning model: on, but not installed", "modelo de significado: encendido, pero no está instalado"),
-                (true, Some(_)) => tr!(
-                    "meaning model: on. `omoi model semantic --off` goes back to the light model only",
-                    "modelo de significado: encendido. `omoi model semantic --off` vuelve a usar solo el modelo ligero"
-                ),
-            };
-            println!("{estado}");
-            if let Some(r) = vivo {
-                println!("{}", tr!("service running (pid {})", "servicio en marcha (pid {})", r.pid));
+            for l in lineas {
+                println!("{l}");
             }
             Ok(())
         }
@@ -1745,24 +1832,8 @@ fn doctor(c: &Comun) -> Result<()> {
             tr!("model      not installed (`omoi model install`): search by words only", "modelo     no instalado (`omoi model install`): búsqueda solo por palabras")
         ),
     }
-    {
-        use omoikane::significado as s;
-        let linea = match (s::activado(), s::modelo()) {
-            (false, _) => tr!("meaning    off (`omoi model semantic --on`)", "significado apagado (`omoi model semantic --on`)"),
-            (true, None) => tr!(
-                "meaning    not installed (`omoi model install --semantic`, about 450 MB): misses questions asked with other words",
-                "significado no instalado (`omoi model install --semantic`, unos 450 MB): no entiende lo que se pregunta con otras palabras"
-            ),
-            (true, Some(_)) => {
-                let (hechas, total) = if ruta.exists() { s::cobertura(&db::abrir(&ruta)?)? } else { (0, 0) };
-                let servicio = s::vivo(std::time::Duration::from_millis(300)).map(|r| r.pid);
-                match servicio {
-                    Some(pid) => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; service running (pid {pid})", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; servicio en marcha (pid {pid})"),
-                    None => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; the service starts with the next search", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; el servicio arranca con la próxima búsqueda"),
-                }
-            }
-        };
-        println!("{linea}");
+    for (k, l) in significado_informe(&ruta)?.1.into_iter().enumerate() {
+        println!("{}{l}", if k == 0 { tr!("meaning    ", "significado ") } else { "           ".to_string() });
     }
     if let Ok(p) = proyecto_de(c) {
         println!("{}{p}", tr!("project    ", "proyecto   "));

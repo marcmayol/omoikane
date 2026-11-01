@@ -57,11 +57,11 @@ fn servicio_de_significado() {
     }
 
     // Apagado: tampoco hay vector, aunque el modelo esté.
-    s::fijar(false).unwrap();
-    assert!(!s::activado());
+    s::fijar(Some(false)).unwrap();
+    assert!(!s::permitido());
     assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
-    s::fijar(true).unwrap();
-    assert!(s::activado());
+    s::fijar(Some(true)).unwrap();
+    assert!(s::permitido());
 
     // Encendido y sin servicio: quien pide no espera a que cargue (2 s); el servicio lo arranca el
     // binario (en los tests `current_exe` es el test, así que se lanza a mano como haría `arrancar`).
@@ -123,9 +123,9 @@ fn servicio_de_significado() {
     assert!(l.contains("bad token"), "{l}");
 
     // `--off` lo cierra.
-    s::fijar(false).unwrap();
+    s::fijar(Some(false)).unwrap();
     assert!(esperar(Duration::from_secs(5), || hijo.try_wait().unwrap().is_some()), "--off no cerró el servicio");
-    s::fijar(true).unwrap();
+    s::fijar(Some(true)).unwrap();
 
     // Y sin uso se cierra solo (aquí, a los 4 s) y borra su registro.
     let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();

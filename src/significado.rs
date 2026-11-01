@@ -72,27 +72,164 @@ pub fn preferencia() -> Option<bool> {
     }
 }
 
-/// Guarda la elección. Apagarlo cierra también el servicio si está abierto: el vigía ve que el
+/// Guarda la elección: `Some(true)` (`--on`), `Some(false)` (`--off`) o `None` (`--auto`: que mande el
+/// tamaño de la memoria). Apagarlo cierra también el servicio si está abierto: el vigía ve que el
 /// registro ya no es suyo y sale. Con él apagado todo va como antes de la 1.2: solo palabras y potion.
-pub fn fijar(on: bool) -> Result<()> {
+pub fn fijar(eleccion: Option<bool>) -> Result<()> {
     let c = carpeta().context("no home folder")?;
     std::fs::create_dir_all(&c)?;
-    std::fs::write(c.join(PREFERENCIA), if on { "on
-" } else { "off
-" })?;
-    if !on {
+    match eleccion {
+        Some(on) => std::fs::write(c.join(PREFERENCIA), if on { "on\n" } else { "off\n" })?,
+        None => {
+            let _ = std::fs::remove_file(c.join(PREFERENCIA));
+        }
+    }
+    if eleccion == Some(false) {
         let _ = std::fs::remove_file(c.join(REGISTRO));
     }
     Ok(())
 }
 
-/// ¿Se usa el canal por significado? `OMOIKANE_SEMANTIC=0`/`1` manda; si no, la preferencia; y si no
-/// hay ninguna, encendido (solo hace algo si el modelo está instalado).
-pub fn activado() -> bool {
+/// Desde cuántas memorias se enciende solo el modelo de significado, si nadie eligió nada.
+///
+/// Con pocas memorias no compensa: el veto del recall casi no quita ruido por debajo de unas 1.000
+/// (`omoi-revision-12/2-cuando.md`: con 150-1.000 el ruido es el mismo con y sin modelo; con 3.000
+/// baja del 40 % al 7,5 %) y cuesta ~450 MB de disco, un servicio residente e indexar cada memoria.
+/// Provisional (1.500): lo calibra la medición final entre 1.000 y 3.000. `OMOIKANE_SEMANTIC_THRESHOLD`
+/// lo cambia (pruebas, calibración).
+///
+/// Cuentan todas las memorias de la base, no las del ámbito de la sesión. El modelo, su descarga, el
+/// servicio y los vectores son de la base entera (no de un proyecto), y la decisión tiene que ser la
+/// misma desde cualquier carpeta: si dependiera del ámbito, se encendería y apagaría al cambiar de
+/// proyecto, y la base se indexaría a medias. Además, desde una carpeta general el recall y la búsqueda
+/// ven todas, y en una base grande el ruido de palabras sube también dentro de cada proyecto (lo
+/// arrastran las memorias globales). Cuesta una lectura de `memory_cuenta` (microsegundos).
+pub const UMBRAL_MEMORIAS: usize = 1500;
+
+pub fn umbral() -> usize {
+    std::env::var("OMOIKANE_SEMANTIC_THRESHOLD").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(UMBRAL_MEMORIAS)
+}
+
+/// Por qué el modelo está encendido o apagado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Porque {
+    /// `OMOIKANE_SEMANTIC=0`/`1`.
+    Env,
+    /// `omoi model semantic --on/--off`.
+    Chosen,
+    /// Nadie eligió nada: manda el tamaño de la memoria (`UMBRAL_MEMORIAS`).
+    Size,
+}
+
+/// En qué estado está el modelo de significado para una base, y por qué.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Estado {
+    pub on: bool,
+    pub reason: Porque,
+    pub memories: usize,
+    pub threshold: usize,
+}
+
+/// ¿Lo ha prohibido alguien? `OMOIKANE_SEMANTIC=0` o `--off`. No dice si está encendido (eso depende
+/// también del tamaño, ver `estado`): el servicio y quien lo arranca solo miran esto.
+pub fn permitido() -> bool {
     match std::env::var("OMOIKANE_SEMANTIC") {
         Ok(v) if !v.is_empty() => v != "0",
-        _ => preferencia().unwrap_or(true),
+        _ => preferencia() != Some(false),
     }
+}
+
+/// `OMOIKANE_SEMANTIC` manda; si no, lo que eligió el usuario; y si no eligió nada, el tamaño: desde
+/// `umbral()` memorias en la base, encendido.
+pub fn estado(db: &rusqlite::Connection) -> Estado {
+    let memories = crate::memoria::cuantas(db, &crate::memoria::Ambito::Todos).unwrap_or(0).max(0) as usize;
+    let threshold = umbral();
+    let (on, reason) = match std::env::var("OMOIKANE_SEMANTIC") {
+        Ok(v) if !v.is_empty() => (v != "0", Porque::Env),
+        _ => match preferencia() {
+            Some(p) => (p, Porque::Chosen),
+            None => (memories >= threshold, Porque::Size),
+        },
+    };
+    Estado { on, reason, memories, threshold }
+}
+
+/// ¿Se usa el modelo con esta base? Encendido (`estado`) e instalado.
+pub fn en_uso(db: &rusqlite::Connection) -> bool {
+    permitido() && modelo().is_some() && estado(db).on
+}
+
+/// `en_uso` con la ruta de la base (abre una conexión solo si el modelo está instalado y permitido).
+pub fn en_uso_en(ruta: &std::path::Path) -> bool {
+    if !permitido() || modelo().is_none() || !ruta.exists() {
+        return false;
+    }
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    rusqlite::Connection::open_with_flags(ruta, flags).is_ok_and(|c| estado(&c).on)
+}
+
+const DESCARGANDO: &str = "significado.descargando";
+const AVISADO: &str = "significado.avisado";
+/// Tras lanzar una descarga, no se lanza otra hasta pasado esto (si falló, se reintenta entonces).
+const REINTENTO_DESCARGA: u64 = 3600;
+
+/// ¿Hay una descarga del modelo en marcha (lanzada hace menos de `REINTENTO_DESCARGA`)?
+pub fn descargando() -> bool {
+    carpeta()
+        .and_then(|c| std::fs::read_to_string(c.join(DESCARGANDO)).ok())
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .is_some_and(|t| ahora().saturating_sub(t) < REINTENTO_DESCARGA)
+}
+
+/// Lanza aparte `omoi model install --semantic` para `db` (que, al acabar, deja el servicio indexando
+/// esa base), salvo si ya hay una descarga en marcha. No espera.
+pub fn descargar_aparte(db: &std::path::Path) {
+    if !permitido() || modelo().is_some() || descargando() {
+        return;
+    }
+    let Some(c) = carpeta() else { return };
+    let _ = std::fs::create_dir_all(&c);
+    if std::fs::write(c.join(DESCARGANDO), ahora().to_string()).is_ok() {
+        let db = db.to_string_lossy();
+        crate::sync::lanzar_aparte(&["--db", &db, "model", "install", "--semantic"]);
+    }
+}
+
+/// La descarga acabó (bien): quita la marca.
+pub fn descarga_hecha() {
+    if let Some(c) = carpeta() {
+        let _ = std::fs::remove_file(c.join(DESCARGANDO));
+    }
+}
+
+/// Al empezar sesión: si el modelo está encendido para esta base y falta, lo descarga en segundo
+/// plano; si está y la base aún no tiene sus vectores, deja el servicio indexándola. Devuelve el aviso
+/// para el agente la primera vez que se enciende solo por el tamaño (una vez por usuario).
+pub fn al_empezar(db: &rusqlite::Connection) -> Option<String> {
+    if !permitido() {
+        return None;
+    }
+    let e = estado(db);
+    let ruta = db.path().filter(|p| !p.is_empty()).map(PathBuf::from)?;
+    if !e.on {
+        return None;
+    }
+    if modelo().is_none() {
+        descargar_aparte(&ruta);
+        let c = carpeta()?;
+        if e.reason == Porque::Size && !c.join(AVISADO).exists() && std::fs::write(c.join(AVISADO), ahora().to_string()).is_ok() {
+            return Some(format!(
+                "Omoikane now holds {} memories (from {} on, words alone bring more noise): it is downloading its meaning model (EmbeddingGemma, about 450 MB) in the background and will then index the memories, so searches find what is asked with other words and recall injects less noise. Until it finishes everything works as before. `omoi model semantic --off` stops it for good. Tell the user once.",
+                e.memories, e.threshold
+            ));
+        }
+        return None;
+    }
+    if !listo(db) {
+        avisar(&ruta);
+    }
+    None
 }
 
 /// La carpeta de EmbeddingGemma si está instalado: `OMOIKANE_SEMANTIC_MODEL`, o
@@ -474,10 +611,38 @@ struct Busqueda {
     ids: Vec<String>,
 }
 
+/// Por qué el servicio no dio las parecidas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fallo {
+    /// Apagado (`--off`, `OMOIKANE_SEMANTIC=0`) o sin instalar.
+    Apagado,
+    /// No hay servicio (o no escucha): se deja arrancando para la próxima vez.
+    SinServicio,
+    /// No respondió dentro del presupuesto (CPU ocupada, texto largo).
+    Tarde,
+    /// La base aún no tiene vectores para casi todo (indexando).
+    Indexando,
+    /// Cualquier otro error (respuesta rota, token…).
+    Error,
+}
+
+impl Fallo {
+    pub fn como_texto(self) -> &'static str {
+        match self {
+            Fallo::Apagado => "off",
+            Fallo::SinServicio => "no_service",
+            Fallo::Tarde => "timeout",
+            Fallo::Indexando => "indexing",
+            Fallo::Error => "error",
+        }
+    }
+}
+
 /// Las memorias más parecidas a `texto` en `ambito`, calculadas por el servicio (que tiene el modelo
 /// y los vectores en memoria), y el coseno de `ids`. `None` si el modelo está apagado o sin
 /// instalar, el servicio no está o no responde en `presupuesto`, o la base aún no tiene vectores
-/// para casi todo: entonces se sigue por palabras.
+/// para casi todo: entonces se sigue por palabras. Quien llama decide antes si el modelo está
+/// encendido para esta base (`en_uso`): aquí solo se mira que no esté prohibido.
 pub fn parecidas(
     db: &std::path::Path,
     texto: &str,
@@ -487,12 +652,25 @@ pub fn parecidas(
     ids: &[String],
     presupuesto: Duration,
 ) -> Option<Parecidas> {
-    if !activado() || modelo().is_none() {
-        return None;
+    parecidas_o_fallo(db, texto, ambito, kind, k, ids, presupuesto).ok()
+}
+
+/// `parecidas`, diciendo por qué no llegaron.
+pub fn parecidas_o_fallo(
+    db: &std::path::Path,
+    texto: &str,
+    ambito: &crate::memoria::Ambito,
+    kind: Option<crate::memoria::Tipo>,
+    k: usize,
+    ids: &[String],
+    presupuesto: Duration,
+) -> std::result::Result<Parecidas, Fallo> {
+    if !permitido() || modelo().is_none() {
+        return Err(Fallo::Apagado);
     }
     let Some(r) = registro() else {
-        arrancar();
-        return None;
+        arrancar(Some(db));
+        return Err(Fallo::SinServicio);
     };
     let p = Peticion {
         token: r.token.clone(),
@@ -508,13 +686,19 @@ pub fn parecidas(
         ..Default::default()
     };
     match pedir(&r, &p, presupuesto) {
-        Ok(v) => serde_json::from_value::<Parecidas>(v).ok().filter(|p| p.listo),
-        Err(e) => {
-            if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused) {
-                arrancar();
+        Ok(v) => match serde_json::from_value::<Parecidas>(v) {
+            Ok(p) if p.listo => Ok(p),
+            Ok(_) => Err(Fallo::Indexando),
+            Err(_) => Err(Fallo::Error),
+        },
+        Err(e) => match e.downcast_ref::<std::io::Error>().map(|e| e.kind()) {
+            Some(std::io::ErrorKind::ConnectionRefused) => {
+                arrancar(Some(db));
+                Err(Fallo::SinServicio)
             }
-            None
-        }
+            Some(std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Err(Fallo::Tarde),
+            _ => Err(Fallo::Error),
+        },
     }
 }
 
@@ -532,7 +716,7 @@ pub fn vector_consulta(db: &std::path::Path, texto: &str, presupuesto: Duration)
 /// Avisa al servicio de que `db` ha cambiado para que calcule los vectores que falten, sin esperar
 /// (lo arranca si no está). Para `remember`, `update`, `import` y la sincronización.
 pub fn avisar(db: &std::path::Path) {
-    if !activado() || modelo().is_none() {
+    if !en_uso_en(db) {
         return;
     }
     let _ = vectores_en(Some(db), &[], Tipo::Documento, Duration::from_millis(100));
@@ -574,9 +758,10 @@ pub fn vivo(presupuesto: Duration) -> Option<Registro> {
     (v.get("pid").and_then(|p| p.as_u64()) == Some(r.pid as u64)).then_some(r)
 }
 
-/// Lanza el servicio aparte si hay modelo y no se lanzó hace poco. No espera a que cargue.
-pub fn arrancar() {
-    if !activado() || modelo().is_none() {
+/// Lanza el servicio aparte si hay modelo y no se lanzó hace poco, con la base que lo pide (`db`) para
+/// que empiece a indexarla en cuanto cargue. No espera a que cargue.
+pub fn arrancar(db: Option<&std::path::Path>) {
+    if !permitido() || modelo().is_none() {
         return;
     }
     let Some(c) = carpeta() else { return };
@@ -587,7 +772,10 @@ pub fn arrancar() {
     }
     let _ = std::fs::create_dir_all(&c);
     if std::fs::write(&marca, ahora().to_string()).is_ok() {
-        crate::sync::lanzar_aparte(&["model", "serve-semantic"]);
+        match db {
+            Some(d) => crate::sync::lanzar_aparte(&["--db", &d.to_string_lossy(), "model", "serve-semantic"]),
+            None => crate::sync::lanzar_aparte(&["model", "serve-semantic"]),
+        }
     }
 }
 
@@ -598,11 +786,11 @@ pub fn vectores(textos: &[&str], tipo: Tipo, presupuesto: Duration) -> Option<Ve
 }
 
 fn vectores_en(db: Option<&std::path::Path>, textos: &[&str], tipo: Tipo, presupuesto: Duration) -> Option<Vec<Vec<f32>>> {
-    if !activado() || modelo().is_none() {
+    if !permitido() || modelo().is_none() {
         return None;
     }
     let Some(r) = registro() else {
-        arrancar();
+        arrancar(db);
         return None;
     };
     let p = Peticion {
@@ -620,7 +808,7 @@ fn vectores_en(db: Option<&std::path::Path>, textos: &[&str], tipo: Tipo, presup
             // otra vez. Un plazo agotado es solo lentitud: no se lanza otro.
             let caido = e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused);
             if caido {
-                arrancar();
+                arrancar(db);
             }
             None
         }
@@ -673,9 +861,10 @@ fn atender(s: TcpStream, modelo: &Gemma, token: &str, nombre: &str, uso: &Atomic
     Ok(())
 }
 
-/// El servicio (`omoi model serve-semantic`). Si ya hay uno respondiendo, sale sin hacer nada.
-pub fn servir() -> Result<()> {
-    if !activado() {
+/// El servicio (`omoi model serve-semantic`). Si ya hay uno respondiendo, sale sin hacer nada. `db`:
+/// la base que lo arrancó, para indexarla en cuanto cargue el modelo.
+pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
+    if !permitido() {
         bail!("the meaning model is off (`omoi model semantic --on` turns it on)");
     }
     if vivo(Duration::from_millis(500)).is_some() {
@@ -697,6 +886,9 @@ pub fn servir() -> Result<()> {
     std::fs::write(&tmp, serde_json::to_string(&yo)?)?;
     std::fs::rename(&tmp, c.join(REGISTRO))?;
     let _ = std::fs::remove_file(c.join(ARRANCANDO));
+    if let Some(d) = db {
+        bases_pedidas().lock().map(|mut b| b.insert(d.to_path_buf())).ok();
+    }
     let uso = Arc::new(AtomicU64::new(ahora()));
     let ocioso = std::env::var("OMOIKANE_SEMANTIC_IDLE").ok().and_then(|s| s.parse().ok()).unwrap_or(OCIOSO_POR_DEFECTO);
     {
