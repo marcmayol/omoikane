@@ -35,6 +35,7 @@ Las palabras encuentran una memoria cuando preguntas con las palabras que usa. S
 - **Si no responde a tiempo** (250 ms en el recuerdo, por ejemplo con la CPU ocupada), el recuerdo sigue solo con palabras, como en la 1.1. No pasa en silencio: `omoi doctor` dice cuántas veces le preguntó el recuerdo y cuántas se quedaron sin respuesta, y `OMOIKANE_TRAZA=1` escribe cada paso de un recuerdo en stderr.
 - **Lo que cuesta**: unos 60 ms más por búsqueda y en los mensajes en que el recuerdo le pregunta, unos 450 MB en disco y calcular una vez el vector de cada memoria, en segundo plano.
 - **Cómo funciona**: en Rust puro dentro de `omoi`, en la CPU. Lo mantiene abierto un servicio propio (uno por usuario, solo en `127.0.0.1` y con token) que se cierra tras 30 minutos sin uso. Nadie espera a que cargue: hasta que está, y hasta que casi todas las memorias tienen su vector, todo va por palabras como antes. `omoi model install --semantic` lo descarga ya y comprueba el SHA-256 de cada fichero.
+- **RAM al indexar**: el servicio calcula los vectores de las memorias nuevas por lotes; `omoi model semantic --ram <MB>` pone tope a la RAM de esos lotes (con más va algo más rápido; `0` vuelve al de por defecto). `omoi model semantic` y `omoi doctor` enseñan el tope en uso.
 
 ## Busca en tu idioma
 

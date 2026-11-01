@@ -2,6 +2,7 @@
 
 pub mod actualizar;
 pub mod agentes;
+pub mod bpe;
 pub mod buscar;
 pub mod candidatas;
 pub mod copia;
@@ -16,6 +17,7 @@ pub mod mcp;
 pub mod memoria;
 pub mod modelos;
 pub mod proyecto;
+pub mod rapido;
 pub mod recall;
 pub mod reloj;
 pub mod revisar;

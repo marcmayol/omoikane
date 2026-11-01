@@ -531,6 +531,10 @@ enum AccionModelo {
         /// Let the size of the memory decide again (the default).
         #[arg(long)]
         auto: bool,
+        /// RAM the indexing may use, in MB (0: back to the default). Bigger indexes faster in batches;
+        /// `OMOIKANE_SEMANTIC_RAM` overrides it.
+        #[arg(long, value_name = "MB")]
+        ram: Option<u64>,
     },
     /// The service that keeps the meaning model loaded (Omoikane starts it by itself).
     #[command(hide = true)]
@@ -1269,6 +1273,8 @@ fn significado_informe(ruta: &std::path::Path) -> Result<(serde_json::Value, Vec
             tr!("recall asked it {consultas} times, always answered in time", "el recall le preguntó {consultas} veces, siempre respondió a tiempo")
         });
     }
+    let (ram_mb, ram_origen) = s::tope_ram();
+    lineas.push(ram_en_uso(ram_mb, ram_origen));
     let j = serde_json::json!({
         "on": e.on,
         "reason": e.reason,
@@ -1282,6 +1288,8 @@ fn significado_informe(ruta: &std::path::Path) -> Result<(serde_json::Value, Vec
         "recall_asked": consultas,
         "recall_no_answer": sin_respuesta,
         "recall_last_no_answer": ultimo,
+        "indexing_ram_mb": ram_mb,
+        "indexing_ram_from": ram_origen,
     });
     Ok((j, lineas))
 }
@@ -1357,10 +1365,13 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             println!("{}", tr!("{n} vectors computed; {hechas} of {total} memories have one", "{n} vectores calculados; {hechas} de {total} memorias tienen el suyo"));
             Ok(())
         }
-        AccionModelo::Semantic { on, off, auto } => {
+        AccionModelo::Semantic { on, off, auto, ram } => {
             use omoikane::significado as s;
             if on || off || auto {
                 s::fijar(if auto { None } else { Some(on) })?;
+            }
+            if let Some(mb) = ram {
+                s::fijar_ram((mb > 0).then_some(mb))?;
             }
             let ruta = ruta_db(c);
             let (j, lineas) = significado_informe(&ruta)?;
@@ -1737,6 +1748,17 @@ fn historial(m: &Memoria, v: &[Version]) {
         println!("  {}  {}", x.kind, x.title);
         println!("  {}", una_linea(&x.content, 300));
     }
+}
+
+/// «indexing RAM: 64 MB (default)…», para `omoi model semantic` y `omoi doctor`.
+fn ram_en_uso(mb: u64, origen: omoikane::significado::OrigenRam) -> String {
+    use omoikane::significado::{OrigenRam, RAM_MINIMA_MB};
+    let de = match origen {
+        OrigenRam::Entorno => tr!("from OMOIKANE_SEMANTIC_RAM", "de OMOIKANE_SEMANTIC_RAM"),
+        OrigenRam::Elegido => tr!("chosen with `omoi model semantic --ram`", "elegido con `omoi model semantic --ram`"),
+        OrigenRam::PorDefecto => tr!("default; `omoi model semantic --ram <MB>` changes it", "por defecto; `omoi model semantic --ram <MB>` lo cambia"),
+    };
+    tr!("indexing RAM: up to {mb} MB ({de}; minimum {RAM_MINIMA_MB})", "RAM al indexar: hasta {mb} MB ({de}; mínimo {RAM_MINIMA_MB})")
 }
 
 fn doctor(c: &Comun) -> Result<()> {
@@ -2372,6 +2394,7 @@ fn en_espanol(c: Command) -> Command {
                 s.about("Enciende o apaga el modelo de significado (EmbeddingGemma). Apagado, Omoikane usa solo el modelo ligero, como antes de la 1.2: más rápido y con menos memoria, pero no entiende las preguntas hechas con otras palabras.")
                     .mut_arg("on", |a| a.help("Encenderlo."))
                     .mut_arg("off", |a| a.help("Apagarlo y cerrar su servicio."))
+                    .mut_arg("ram", |a| a.help("La RAM que puede usar al indexar, en MB (0: volver a la de por defecto). Con más, indexa más rápido por lotes; OMOIKANE_SEMANTIC_RAM manda por encima."))
             })
     });
     let opciones_sync = |s: Command| {

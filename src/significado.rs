@@ -342,6 +342,9 @@ pub fn instalar(desde: Option<&std::path::Path>, aviso: &mut dyn FnMut(&str)) ->
             }
         }
         std::fs::write(temporal.join("NOTICE"), AVISO_LICENCIA)?;
+        // El tokenizer compilado (`bpe`), aquí y no en la descarga: los ficheros publicados y sus
+        // SHA-256 no cambian. Si fallase, se compila la primera vez que se cargue el modelo.
+        let _ = crate::bpe::compilar(&temporal.join("tokenizer.json"), &temporal.join(crate::bpe::FICHERO));
         // Si otro proceso lo instaló a la vez, vale el suyo.
         if std::fs::rename(&temporal, &destino).is_err() && !gemma::es_modelo(&destino) {
             bail!(tr!("can't move the model into {}", "no se puede mover el modelo a {}", destino.display()));
@@ -447,23 +450,110 @@ pub fn cosenos(db: &rusqlite::Connection, consulta: &[f32], ambito: &crate::memo
     Ok(v)
 }
 
-/// Calcula los vectores que faltan en `db`, de `lote` en `lote`, hasta acabar o hasta que `seguir`
-/// diga que no. `aviso` recibe cuántas lleva. Devuelve cuántas calculó.
+// ------------------------------------------------------------------ tope de RAM al indexar
+
+/// Lo que ocupa en RAM cada token de un lote mientras se calcula (los vectores intermedios de las
+/// capas; medido: 35-41 KB, ver `fix-motor.md` de la revisión). Los pesos no cuentan: van mapeados del
+/// disco y son los mismos indexe o no.
+const KB_POR_TOKEN: u64 = 40;
+/// Tope por defecto de la RAM del indexado: lotes de unos 3.300 tokens (25-30 notas cortas, o 2-5
+/// memorias largas). Con más ya no va más rápido (medido con lotes de 1.024 a 4.096 tokens).
+pub const RAM_POR_DEFECTO_MB: u64 = 128;
+/// El mínimo: lo que necesita la memoria más larga (2.048 tokens) para calcularse sola. Con menos no
+/// se podría indexar alguna.
+pub const RAM_MINIMA_MB: u64 = (crate::gemma::MAX_TOKENS as u64 * KB_POR_TOKEN).div_ceil(1024);
+const FICHERO_RAM: &str = "semantic-ram";
+
+/// De dónde sale el tope de RAM en uso.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+pub enum OrigenRam {
+    /// `OMOIKANE_SEMANTIC_RAM`.
+    #[serde(rename = "env")]
+    Entorno,
+    /// `omoi model semantic --ram`.
+    #[serde(rename = "chosen")]
+    Elegido,
+    #[serde(rename = "default")]
+    PorDefecto,
+}
+
+/// El tope de RAM del indexado en MB y de dónde sale: `OMOIKANE_SEMANTIC_RAM` manda; si no, lo que
+/// se eligió con `omoi model semantic --ram`; si no, `RAM_POR_DEFECTO_MB`. Nunca por debajo de
+/// `RAM_MINIMA_MB`.
+pub fn tope_ram() -> (u64, OrigenRam) {
+    let leer = |s: &str| s.trim().parse::<u64>().ok().filter(|&n| n > 0);
+    let (mb, origen) = if let Some(n) = std::env::var("OMOIKANE_SEMANTIC_RAM").ok().as_deref().and_then(leer) {
+        (n, OrigenRam::Entorno)
+    } else if let Some(n) = carpeta().and_then(|c| std::fs::read_to_string(c.join(FICHERO_RAM)).ok()).as_deref().and_then(leer) {
+        (n, OrigenRam::Elegido)
+    } else {
+        (RAM_POR_DEFECTO_MB, OrigenRam::PorDefecto)
+    };
+    (mb.max(RAM_MINIMA_MB), origen)
+}
+
+/// Guarda el tope (`None`: volver al de por defecto). Lo lee el indexado antes de cada tanda: no
+/// hace falta reiniciar el servicio. Devuelve el que queda en uso (subido al mínimo si hacía falta).
+pub fn fijar_ram(mb: Option<u64>) -> Result<u64> {
+    let c = carpeta().context("no home folder")?;
+    std::fs::create_dir_all(&c)?;
+    match mb {
+        Some(mb) => std::fs::write(c.join(FICHERO_RAM), format!("{}\n", mb.max(RAM_MINIMA_MB)))?,
+        None => {
+            let _ = std::fs::remove_file(c.join(FICHERO_RAM));
+        }
+    }
+    Ok(tope_ram().0)
+}
+
+/// Tokens por lote al indexar con el tope de RAM en uso. Varias memorias en una sola pasada del
+/// modelo: cada multiplicación se hace de una vez para todas (más rápido que de una en una, y el mismo
+/// vector). El tope acota la RAM y lo que espera una consulta que llegue a mitad de un lote (como
+/// mucho un paso del lote: ver `ceder`). Una memoria más larga que el lote va sola.
+pub fn tokens_por_lote() -> usize {
+    (tope_ram().0 * 1024 / KB_POR_TOKEN) as usize
+}
+
+/// Consultas que el servicio está atendiendo ahora mismo: mientras haya alguna, el indexado se para
+/// entre paso y paso (`ceder`) para no quitarle la CPU.
+static CONSULTAS: AtomicU64 = AtomicU64::new(0);
+
+/// Lo que llama el modelo entre paso y paso mientras indexa: espera a que no haya consultas.
+fn ceder() {
+    while CONSULTAS.load(Ordering::Relaxed) > 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Calcula los vectores que faltan en `db`, de `lote` en `lote` memorias leídas y por lotes de hasta
+/// `tokens_por_lote` tokens, hasta acabar o hasta que `seguir` diga que no. `aviso` recibe cuántas
+/// lleva. Devuelve cuántas calculó.
 pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, lote: usize, seguir: &mut dyn FnMut() -> bool, aviso: &mut dyn FnMut(usize)) -> Result<usize> {
     let mut hechas = 0;
     loop {
+        // Cada tanda vuelve a mirar el tope: `omoi model semantic --ram` vale sin reiniciar.
+        let tope = tokens_por_lote();
         let p = pendientes(db, lote)?;
         if p.is_empty() {
             return Ok(hechas);
         }
-        for (id, hlc, texto) in p {
+        let ids = p.iter().map(|(_, _, t)| gemma.ids(t, Tipo::Documento)).collect::<Result<Vec<_>>>()?;
+        let mut i = 0;
+        while i < p.len() {
             if !seguir() {
                 return Ok(hechas);
             }
-            let v = gemma.vector(&texto, Tipo::Documento)?;
-            guardar(db, &id, &hlc, &v)?;
-            hechas += 1;
-            aviso(hechas);
+            let (mut j, mut suma) = (i, 0);
+            while j < p.len() && (j == i || suma + ids[j].len() <= tope) {
+                suma += ids[j].len();
+                j += 1;
+            }
+            for ((id, hlc, _), v) in p[i..j].iter().zip(gemma.vectores_de_ids(&ids[i..j], &ceder)?) {
+                guardar(db, id, hlc, &v)?;
+                hechas += 1;
+                aviso(hechas);
+            }
+            i = j;
         }
     }
 }
@@ -832,6 +922,15 @@ fn atender(s: TcpStream, modelo: &Gemma, token: &str, nombre: &str, uso: &Atomic
             Ok(p) if p.token != token => serde_json::json!({ "error": "bad token" }),
             Ok(p) if p.ping => serde_json::json!({ "pid": std::process::id(), "modelo": nombre }),
             Ok(p) => {
+                // Mientras se atiende, el indexado espera (`ceder`).
+                CONSULTAS.fetch_add(1, Ordering::Relaxed);
+                struct Hecha;
+                impl Drop for Hecha {
+                    fn drop(&mut self) {
+                        CONSULTAS.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _hecha = Hecha;
                 if let Some(db) = &p.db {
                     bases_pedidas().lock().map(|mut b| b.insert(PathBuf::from(db))).ok();
                 }
@@ -874,6 +973,10 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
     let c = carpeta().context("no home folder")?;
     std::fs::create_dir_all(&c)?;
     let gemma = Arc::new(Gemma::cargar(&dir)?);
+    {
+        let g = gemma.clone();
+        std::thread::spawn(move || g.precalentar());
+    }
     let escucha = TcpListener::bind(("127.0.0.1", 0))?;
     let yo = Registro {
         puerto: escucha.local_addr()?.port(),
@@ -911,8 +1014,9 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
     }
     {
         // Indexador: calcula los vectores que falten en las bases que han pedido algo, solo cuando
-        // lleva un segundo sin peticiones (comparten la CPU) y de una memoria en una. Mientras le
-        // quede trabajo, cuenta como uso: el servicio no se cierra a medias.
+        // lleva un segundo sin peticiones (comparten la CPU), por lotes (`indexar`), y parándose entre
+        // paso y paso si entra una consulta (`ceder`). Mientras le quede trabajo, cuenta como uso: el
+        // servicio no se cierra a medias.
         let (gemma, uso) = (gemma.clone(), uso.clone());
         std::thread::spawn(move || {
             let mut abiertas: std::collections::BTreeMap<PathBuf, rusqlite::Connection> = Default::default();
@@ -940,7 +1044,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
                     let mut hecha = |_| {
                         uso.fetch_max(ahora().saturating_sub(1), Ordering::Relaxed);
                     };
-                    match indexar(db, &gemma, 8, &mut seguir, &mut hecha) {
+                    match indexar(db, &gemma, 64, &mut seguir, &mut hecha) {
                         Ok(0) => {
                             // Al día: se saca de la lista hasta que alguien vuelva a pedir algo.
                             bases_pedidas().lock().map(|mut b| b.remove(&ruta)).ok();

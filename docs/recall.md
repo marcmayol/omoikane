@@ -35,6 +35,7 @@ Words find a memory when you ask with the words it uses. When you ask the same t
 - **When it doesn't answer in time** (250 ms in recall, for example with the CPU busy), recall goes on with words only, as in 1.1. It isn't silent: `omoi doctor` shows how many times recall asked it and how many got no answer, and `OMOIKANE_TRAZA=1` writes every step of a recall to stderr.
 - **What it costs**: about 60 ms more per search and on the prompts where recall asks it, about 450 MB on disk, and computing each memory's vector once, in the background.
 - **How it runs**: in pure Rust inside `omoi`, on the CPU. A service of its own keeps it loaded (one per user, `127.0.0.1` only, with a token) and closes after 30 minutes without use. Nobody waits for it to load: until it's there, and until most memories have their vector, everything works by words as before. `omoi model install --semantic` downloads it right away and checks every file's SHA-256.
+- **RAM while indexing**: the service computes the vectors of new memories in batches; `omoi model semantic --ram <MB>` caps the RAM those batches use (more is a bit faster; `0` goes back to the default). `omoi model semantic` and `omoi doctor` show the cap in use.
 
 ## It searches in your language
 

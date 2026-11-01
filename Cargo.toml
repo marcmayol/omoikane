@@ -19,6 +19,9 @@ anyhow = "1.0.104"
 candle-core = "0.11.1"
 candle-nn = "0.11.1"
 clap = { version = "4.6.7", features = ["derive"] }
+# Pesos en f16 y los hilos del motor rápido de EmbeddingGemma (`rapido`); ya venían con candle.
+half = "2.7.1"
+rayon = "1.12.0"
 memmap2 = "0.9.12"
 rmcp = { version = "3.8.0", features = ["server", "macros", "transport-io"] }
 safetensors = "0.5.3"

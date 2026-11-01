@@ -48,5 +48,6 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_SEMANTIC_THRESHOLD` | from how many memories the meaning model turns on by itself (1500) |
 | `OMOIKANE_TRAZA=1` | recall writes each step to stderr: candidates, scores and what the meaning model did, or why it wasn't asked |
 | `OMOIKANE_SEMANTIC_IDLE` | seconds without use before the meaning service closes (1800) |
+| `OMOIKANE_SEMANTIC_RAM` | MB of RAM the meaning model may use while indexing (over `omoi model semantic --ram`; default 128, minimum 80) |
 | `OMOIKANE_SEMANTIC_MODEL` | a folder with EmbeddingGemma to use instead of the installed one |
 | `OMOIKANE_SEMANTIC_SOURCE` | where `omoi model install --semantic` downloads from (comma-separated) |
