@@ -194,7 +194,7 @@ pub struct Version {
 
 /// Qué memorias se ven. Desde un proyecto, las suyas, las de su espacio y las globales; nunca las de
 /// otro espacio. Desde una carpeta general (la del usuario, ver `proyecto::es_general`), todas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ambito {
     /// Un proyecto (`id`; -1 si aún no tiene nada) y su espacio.
     Proyecto { id: i64, space: Option<i64> },

@@ -78,3 +78,43 @@ fn vectores_en_la_base() {
     drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// El servicio filtra el ámbito en memoria (`parecidas_en_base`); tiene que ver lo mismo que el SQL de
+/// `Ambito::sql` (`cosenos`), con proyectos con y sin espacio, memorias de espacio y globales.
+#[test]
+fn el_ambito_en_memoria_es_el_de_sql() {
+    let (mut db, dir) = base("ambito");
+    let acme = omoikane::proyecto::crear_espacio(&db, "acme").unwrap();
+    let globex = omoikane::proyecto::crear_espacio(&db, "globex").unwrap();
+    let mut ids = Vec::new();
+    for (i, p) in ["/a1", "/a2", "/g1", "/suelto", ""].iter().enumerate() {
+        let m = memoria::guardar(&mut db, nueva(p, &format!("m{i}"), &format!("contenido {i}")), None).unwrap();
+        ids.push(m.id);
+    }
+    for (p, s) in [("/a1", acme), ("/a2", acme), ("/g1", globex)] {
+        let id = omoikane::proyecto::resolver(&db, p).unwrap().unwrap().0;
+        omoikane::proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
+    }
+    for (s, t) in [(acme, "de acme"), (globex, "de globex")] {
+        let m = memoria::guardar(&mut db, Nueva { space_id: Some(s), kind: Some(Tipo::Fact), title: t.into(), content: t.into(), ..Default::default() }, None).unwrap();
+        ids.push(m.id);
+    }
+    for (k, (id, hlc, _)) in s::pendientes(&db, 100).unwrap().into_iter().enumerate() {
+        s::guardar(&db, &id, &hlc, &eje(k % 700, 700 + k % 60)).unwrap();
+    }
+    let q = eje(3, 701);
+    let mut ambitos = vec![Ambito::Todos, Ambito::Espacio(None), Ambito::Espacio(Some(acme)), Ambito::Espacio(Some(globex))];
+    for p in ["/a1", "/a2", "/g1", "/suelto", "/nuevo"] {
+        ambitos.push(Ambito::de(&db, p).unwrap());
+    }
+    for a in ambitos {
+        let mut sql: Vec<String> = s::cosenos(&db, &q, &a, None).unwrap().into_iter().map(|x| x.0).collect();
+        let mut mem: Vec<String> = s::parecidas_en_base(&db, &q, &a, None, 100).unwrap().into_iter().map(|x| x.0).collect();
+        sql.sort();
+        mem.sort();
+        assert_eq!(sql, mem, "{a:?}");
+        assert!(!sql.is_empty(), "{a:?}");
+    }
+    drop(db);
+    let _ = std::fs::remove_dir_all(&dir);
+}

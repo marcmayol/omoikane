@@ -52,6 +52,9 @@ struct Peticion {
     /// La base de quien pide: el servicio calcula en segundo plano los vectores que le falten.
     #[serde(default)]
     db: Option<String>,
+    /// Buscar en el servicio (`parecidas`) en vez de pedir vectores.
+    #[serde(default)]
+    buscar: Option<Busqueda>,
 }
 
 fn carpeta() -> Option<PathBuf> {
@@ -328,6 +331,193 @@ pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, lote: usize, seguir: &m
     }
 }
 
+// ------------------------------------------------------------------ buscar dentro del servicio
+
+/// Memorias con su coseno, de mayor a menor.
+pub type Cosenos = Vec<(String, f32)>;
+
+/// Lo que el servicio tiene en memoria de una base para comparar sin leerla en cada mensaje: cada
+/// recall es un proceso nuevo, y leer los vectores de todas las memorias (77 MB con 100.000) le
+/// costaba más que el propio modelo.
+struct Indice {
+    huella: (i64, i64, String, String, i64),
+    filas: Vec<Fila>,
+    /// El espacio de cada proyecto (para `Ambito::Espacio`).
+    espacio_de: std::collections::HashMap<i64, Option<i64>>,
+    memorias: i64,
+}
+
+struct Fila {
+    id: String,
+    project_id: i64,
+    space_id: Option<i64>,
+    kind: String,
+    v: Vec<u8>,
+}
+
+/// Cambia si cambia algún vector, alguna memoria (texto, ámbito o tipo) o algún proyecto.
+fn huella(db: &rusqlite::Connection) -> Result<(i64, i64, String, String, i64)> {
+    Ok(db.query_row(
+        "SELECT (SELECT count(*) FROM memory_sig), (SELECT COALESCE(max(rowid), 0) FROM memory_sig),
+                (SELECT COALESCE(max(hlc), '') FROM memory), (SELECT COALESCE(max(hlc), '') FROM project),
+                (SELECT count(*) FROM memory)",
+        [],
+        |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)),
+    )?)
+}
+
+impl Indice {
+    fn cargar(db: &rusqlite::Connection) -> Result<Indice> {
+        let huella = huella(db)?;
+        let mut q = db.prepare(
+            "SELECT s.id, m.project_id, m.space_id, m.kind, s.v FROM memory_sig s JOIN memory m ON m.id = s.id AND m.content_hlc = s.hlc",
+        )?;
+        let filas = q
+            .query_map([], |f| Ok(Fila { id: f.get(0)?, project_id: f.get(1)?, space_id: f.get(2)?, kind: f.get(3)?, v: f.get(4)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut p = db.prepare("SELECT id, space_id FROM project")?;
+        let espacio_de = p.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        Ok(Indice { memorias: huella.4, huella, filas, espacio_de })
+    }
+
+    /// `Ambito::sql`, en memoria (hay un test que comprueba que dan lo mismo).
+    fn ve(&self, a: &crate::memoria::Ambito, f: &Fila) -> bool {
+        use crate::memoria::Ambito;
+        let espacio = |s: Option<i64>| f.project_id != 0 || f.space_id.is_none() || (s.is_some() && f.space_id == s);
+        match *a {
+            Ambito::Proyecto { id, space } => (f.project_id == id || f.project_id == 0) && espacio(space),
+            Ambito::Espacio(Some(s)) => (f.project_id == 0 || self.espacio_de.get(&f.project_id) == Some(&Some(s))) && espacio(Some(s)),
+            Ambito::Espacio(None) => self.espacio_de.get(&f.project_id) == Some(&None) && espacio(None),
+            Ambito::Todos => true,
+        }
+    }
+
+    /// Los `k` más parecidos a `q` en el ámbito (de mayor a menor) y el coseno de `pedidas`.
+    fn buscar(&self, q: &[f32], a: &crate::memoria::Ambito, kind: Option<&str>, k: usize, pedidas: &[String]) -> (Cosenos, Cosenos) {
+        let mut todos: Vec<(usize, f32)> = self
+            .filas
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| kind.is_none_or(|k| f.kind == k) && self.ve(a, f))
+            .map(|(i, f)| (i, coseno(q, &f.v)))
+            .collect();
+        let pedido: std::collections::HashSet<&str> = pedidas.iter().map(|s| s.as_str()).collect();
+        let de_pedidas = todos.iter().filter(|(i, _)| pedido.contains(self.filas[*i].id.as_str())).map(|(i, c)| (self.filas[*i].id.clone(), *c)).collect();
+        let k = k.min(todos.len());
+        if k > 0 {
+            todos.select_nth_unstable_by(k - 1, |a, b| b.1.total_cmp(&a.1));
+            todos.truncate(k);
+        }
+        todos.sort_by(|a, b| b.1.total_cmp(&a.1));
+        (todos.into_iter().map(|(i, c)| (self.filas[i].id.clone(), c)).collect(), de_pedidas)
+    }
+
+    fn listo(&self) -> bool {
+        self.memorias > 0 && self.filas.len() as f64 >= 0.95 * self.memorias as f64
+    }
+}
+
+/// Lo que el servicio respondería para el vector `q`, sin servicio: carga el índice de `db` y busca
+/// (para los tests, que comparan con `cosenos`, que filtra el ámbito en SQL).
+pub fn parecidas_en_base(db: &rusqlite::Connection, q: &[f32], ambito: &crate::memoria::Ambito, kind: Option<crate::memoria::Tipo>, k: usize) -> Result<Vec<(String, f32)>> {
+    let i = Indice::cargar(db)?;
+    Ok(i.buscar(q, ambito, kind.map(|k| k.as_str()), k, &[]).0)
+}
+
+/// Los índices del servicio, por base, con su conexión.
+fn indices() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (rusqlite::Connection, Indice)>> {
+    static I: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (rusqlite::Connection, Indice)>>> = std::sync::OnceLock::new();
+    I.get_or_init(Default::default)
+}
+
+/// Lo que responde el servicio a una búsqueda: si la base tiene vectores para casi todo, los `k` más
+/// parecidos y el coseno de las memorias pedidas.
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Parecidas {
+    pub listo: bool,
+    #[serde(default)]
+    pub top: Vec<(String, f32)>,
+    #[serde(default)]
+    pub pedidas: Vec<(String, f32)>,
+}
+
+fn buscar_en_servicio(gemma: &Gemma, b: &Busqueda) -> Result<Parecidas> {
+    let ruta = PathBuf::from(&b.db);
+    // El vector de la pregunta primero, sin el candado: es lo que más tarda.
+    let q = gemma.vector(&b.texto, Tipo::Pregunta)?;
+    let mut ix = indices().lock().map_err(|_| anyhow!("index lock"))?;
+    if !ix.contains_key(&ruta) {
+        let c = crate::db::abrir(&ruta)?;
+        let i = Indice::cargar(&c)?;
+        ix.insert(ruta.clone(), (c, i));
+    }
+    let (c, i) = ix.get_mut(&ruta).expect("recién puesto");
+    if huella(c)? != i.huella {
+        *i = Indice::cargar(c)?;
+    }
+    if !i.listo() {
+        return Ok(Parecidas::default());
+    }
+    let (top, pedidas) = i.buscar(&q, &b.ambito, b.kind.as_deref(), b.k, &b.ids);
+    Ok(Parecidas { listo: true, top, pedidas })
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Busqueda {
+    db: String,
+    texto: String,
+    ambito: crate::memoria::Ambito,
+    #[serde(default)]
+    kind: Option<String>,
+    k: usize,
+    #[serde(default)]
+    ids: Vec<String>,
+}
+
+/// Las memorias más parecidas a `texto` en `ambito`, calculadas por el servicio (que tiene el modelo
+/// y los vectores en memoria), y el coseno de `ids`. `None` si el modelo está apagado o sin
+/// instalar, el servicio no está o no responde en `presupuesto`, o la base aún no tiene vectores
+/// para casi todo: entonces se sigue por palabras.
+pub fn parecidas(
+    db: &std::path::Path,
+    texto: &str,
+    ambito: &crate::memoria::Ambito,
+    kind: Option<crate::memoria::Tipo>,
+    k: usize,
+    ids: &[String],
+    presupuesto: Duration,
+) -> Option<Parecidas> {
+    if !activado() || modelo().is_none() {
+        return None;
+    }
+    let Some(r) = registro() else {
+        arrancar();
+        return None;
+    };
+    let p = Peticion {
+        token: r.token.clone(),
+        db: Some(db.to_string_lossy().into_owned()),
+        buscar: Some(Busqueda {
+            db: db.to_string_lossy().into_owned(),
+            texto: texto.to_string(),
+            ambito: *ambito,
+            kind: kind.map(|k| k.as_str().to_string()),
+            k,
+            ids: ids.to_vec(),
+        }),
+        ..Default::default()
+    };
+    match pedir(&r, &p, presupuesto) {
+        Ok(v) => serde_json::from_value::<Parecidas>(v).ok().filter(|p| p.listo),
+        Err(e) => {
+            if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused) {
+                arrancar();
+            }
+            None
+        }
+    }
+}
+
 /// Las bases que el servicio indexa: las que le han pedido algo.
 fn bases_pedidas() -> &'static std::sync::Mutex<std::collections::BTreeSet<PathBuf>> {
     static B: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>> = std::sync::OnceLock::new();
@@ -421,6 +611,7 @@ fn vectores_en(db: Option<&std::path::Path>, textos: &[&str], tipo: Tipo, presup
         textos: textos.iter().map(|t| t.to_string()).collect(),
         ping: false,
         db: db.map(|d| d.to_string_lossy().into_owned()),
+        buscar: None,
     };
     match pedir(&r, &p, presupuesto) {
         Ok(v) => serde_json::from_value(v.get("vectores")?.clone()).ok(),
@@ -455,6 +646,17 @@ fn atender(s: TcpStream, modelo: &Gemma, token: &str, nombre: &str, uso: &Atomic
             Ok(p) => {
                 if let Some(db) = &p.db {
                     bases_pedidas().lock().map(|mut b| b.insert(PathBuf::from(db))).ok();
+                }
+                if let Some(b) = &p.buscar {
+                    let r = match buscar_en_servicio(modelo, b) {
+                        Ok(r) => serde_json::to_value(r).unwrap_or_default(),
+                        Err(e) => serde_json::json!({ "error": e.to_string() }),
+                    };
+                    let mut salida = r.to_string();
+                    salida.push('\n');
+                    (&s).write_all(salida.as_bytes())?;
+                    linea.clear();
+                    continue;
                 }
                 let tipo = if p.tipo.as_deref() == Some("documento") { Tipo::Documento } else { Tipo::Pregunta };
                 match p.textos.iter().map(|t| modelo.vector(t, tipo)).collect::<Result<Vec<_>>>() {

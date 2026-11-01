@@ -610,21 +610,24 @@ fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria
     Ok(recetas.into_iter().find(|m| disparadores(m).iter().any(|w| tiene(w))))
 }
 
-/// Los cosenos de EmbeddingGemma del mensaje con las memorias del ámbito, de mayor a menor, si el
-/// modelo está encendido e instalado, la base tiene vectores para casi todo y el servicio responde
-/// dentro de `PRESUPUESTO_GEMMA`. Si no, `None`: recall va como antes.
-fn cosenos_gemma(db: &Connection, project: &str, prompt: &str) -> Result<Option<Vec<(String, f32)>>> {
+/// Cuántas memorias más parecidas pide el recall al servicio: las 3 del veto, la 1.ª y la 2.ª para
+/// añadir, y el coseno de casi cualquiera que traigan las palabras (las demás cuentan como 0).
+const PARECIDAS_RECALL: usize = 40;
+
+/// Pide al servicio de significado, en otro hilo, las memorias del ámbito más parecidas al mensaje,
+/// para que se calculen mientras se busca por palabras (el recall tarda lo que la más lenta de las
+/// dos, no la suma). `None` si el mensaje no mira el significado o el modelo está apagado o sin
+/// instalar; el hilo devuelve `None` si el servicio no responde en `PRESUPUESTO_GEMMA` o la base aún
+/// no tiene vectores: entonces el recall va como antes.
+fn pedir_gemma(db: &Connection, project: &str, prompt: &str) -> Result<Option<std::thread::JoinHandle<Option<crate::significado::Cosenos>>>> {
     use crate::significado as s;
-    if !s::activado() || s::modelo().is_none() {
+    if !mira_significado(prompt) || !s::activado() || s::modelo().is_none() {
         return Ok(None);
     }
     let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(None) };
-    if !s::listo(db) {
-        s::avisar(&ruta);
-        return Ok(None);
-    }
-    let Some(q) = s::vector_consulta(&ruta, prompt, PRESUPUESTO_GEMMA) else { return Ok(None) };
-    Ok(Some(s::cosenos(db, &q, &Ambito::de(db, project)?, None)?))
+    let ambito = Ambito::de(db, project)?;
+    let prompt = prompt.to_string();
+    Ok(Some(std::thread::spawn(move || s::parecidas(&ruta, &prompt, &ambito, None, PARECIDAS_RECALL, &[], PRESUPUESTO_GEMMA).map(|p| p.top))))
 }
 
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
@@ -639,6 +642,7 @@ pub fn al_preguntar_abriendo<'m>(
     e: &Entrada,
     modelo: &mut dyn FnMut() -> Option<&'m Modelo>,
 ) -> Result<Option<String>> {
+    let gemma = pedir_gemma(db, project, &e.prompt)?;
     let propio = autor_propio(db);
     let actual = proyecto_actual(db, project);
     let vistas = ya_inyectadas(db, &e.session_id)?;
@@ -671,15 +675,24 @@ pub fn al_preguntar_abriendo<'m>(
             elegir(m, &mut elegidas);
         }
     }
-    if mira_significado(&e.prompt)
-        && let Some(cosenos) = cosenos_gemma(db, project, &e.prompt)?
+    if let Some(h) = gemma
+        && let Ok(Some(cosenos)) = h.join()
     {
         let de: std::collections::HashMap<&str, f32> = cosenos.iter().map(|(id, c)| (id.as_str(), *c)).collect();
         // Un mensaje corto son palabras clave: ahí el significado se queda corto y el veto quitaba la
         // nota buena (del 94 % al 88 % en el benchmark) sin quitar ruido.
         let corto = e.prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= buscar::CORTA;
         let arriba: BTreeSet<&str> = cosenos.iter().take(VETO_PUESTO).map(|(id, _)| id.as_str()).collect();
-        elegidas.retain(|m| corto || de_rutas.contains(&m.id) || !de.contains_key(m.id.as_str()) || arriba.contains(m.id.as_str()));
+        // Sin vector al día (recién guardada o cambiada, aún sin calcular) no se puede juzgar: se queda.
+        let sin_vector = |id: &str| -> bool {
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_sig s JOIN memory m ON m.id = s.id AND m.content_hlc = s.hlc WHERE s.id = ?1)",
+                [id],
+                |f| f.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        };
+        elegidas.retain(|m| corto || de_rutas.contains(&m.id) || arriba.contains(m.id.as_str()) || sin_vector(&m.id));
         if let [(id, c1), (_, c2), ..] = cosenos.as_slice()
             && *c1 >= ANADIR_GEMMA
             && c1 - c2 >= VENTAJA_GEMMA

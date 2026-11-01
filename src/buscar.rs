@@ -252,7 +252,8 @@ fn buscar_base(
     let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
 
     let por_palabras: Vec<(Memoria, usize, f64)> = palabras(db, texto, o)?.into_iter().filter(|(m, _, _)| con_tags(m)).collect();
-    if con_significado && let Some(cosenos) = cosenos_de(db, texto, o)? {
+    let ids: Vec<String> = por_palabras.iter().map(|x| x.0.id.clone()).collect();
+    if con_significado && let Some(cosenos) = cosenos_de(db, texto, o, &ids) {
         let v = con_gemma(db, texto, por_palabras, cosenos, &con_tags)?;
         return ordenar(db, v, o, apuntar);
     }
@@ -372,18 +373,21 @@ const PRESUPUESTO_SIGNIFICADO: std::time::Duration = std::time::Duration::from_m
 
 /// Los cosenos de EmbeddingGemma de la consulta con las memorias del ámbito, si el modelo está
 /// encendido e instalado, la base tiene vectores para casi todo y el servicio responde a tiempo.
-fn cosenos_de(db: &Connection, texto: &str, o: &Opciones) -> Result<Option<Vec<(String, f32)>>> {
-    use crate::significado as s;
-    if texto.trim().is_empty() || !s::activado() || s::modelo().is_none() {
-        return Ok(None);
+/// Los compara el servicio, que tiene el modelo y los vectores en memoria: las `CANDIDATOS` más
+/// parecidas y el coseno de las que trajeron las palabras (`ids`).
+fn cosenos_de(db: &Connection, texto: &str, o: &Opciones, ids: &[String]) -> Option<Vec<(String, f32)>> {
+    if texto.trim().is_empty() {
+        return None;
     }
-    let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(None) };
-    if !s::listo(db) {
-        s::avisar(&ruta);
-        return Ok(None);
+    let ruta = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from)?;
+    let p = crate::significado::parecidas(&ruta, texto, &o.ambito, o.kind, CANDIDATOS.max(o.limite), ids, PRESUPUESTO_SIGNIFICADO)?;
+    let mut v = p.top;
+    for x in p.pedidas {
+        if !v.iter().any(|y| y.0 == x.0) {
+            v.push(x);
+        }
     }
-    let Some(q) = s::vector_consulta(&ruta, texto, PRESUPUESTO_SIGNIFICADO) else { return Ok(None) };
-    Ok(Some(s::cosenos(db, &q, &o.ambito, o.kind)?))
+    Some(v)
 }
 
 /// La fusión con EmbeddingGemma: candidatas por palabras y las más parecidas por significado, cada
