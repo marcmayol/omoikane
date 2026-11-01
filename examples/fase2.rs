@@ -93,7 +93,7 @@ fn resumen(nombre: &str, v: &[(String, f32)]) {
 }
 
 fn duplicados() -> Result<()> {
-    let dir = dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi");
+    let dir = std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi");
     let m = Modelo::abrir(&dir)?;
     let pares: Vec<(String, String, String)> = include_str!("../tests/pares_duplicados.tsv")
         .lines()
@@ -218,7 +218,7 @@ fn vectores(n: usize) -> Result<()> {
 }
 
 fn modelo() -> Result<Modelo> {
-    Modelo::abrir(&dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))
+    Modelo::abrir(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))
 }
 
 /// Guarda las memorias de tests/busquedas.tsv y mide, para cada umbral, cuántas consultas sacan su

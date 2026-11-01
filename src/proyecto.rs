@@ -34,7 +34,7 @@ pub fn es_general(project: &str) -> bool {
 /// cuesta un par de milisegundos, y el recall de cada mensaje pregunta varias veces por el ámbito.
 fn carpeta_personal() -> Option<&'static str> {
     static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| dirs::home_dir().and_then(|h| de(&h).ok())).as_deref()
+    HOME.get_or_init(|| std::env::home_dir().and_then(|h| de(&h).ok())).as_deref()
 }
 
 fn general_en(project: &str, home: &Path) -> bool {
@@ -57,7 +57,7 @@ pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> (String, Vec
     if !es_general(actual) {
         return (actual.to_string(), paths.to_vec());
     }
-    let home = dirs::home_dir().and_then(|h| de(&h).ok()).unwrap_or_default();
+    let home = std::env::home_dir().and_then(|h| de(&h).ok()).unwrap_or_default();
     let home = Path::new(&home);
     let mut repos: Vec<String> = paths
         .iter()

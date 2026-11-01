@@ -11,7 +11,7 @@ use std::path::PathBuf;
 fn modelo_int8() -> Option<PathBuf> {
     let dir = std::env::var_os("OMOI_MODELO_INT8")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
+        .or_else(|| std::env::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
     dir.join("model.safetensors").exists().then_some(dir)
 }
 

@@ -619,7 +619,7 @@ fn por_id_tampoco_se_cruza_de_espacio() {
     let (t, error) = llamar(&b_web, "get", serde_json::json!({ "id": globex }));
     assert!(!error && t.contains("9931") && !t.contains("Cambiada"), "{t}");
     // Desde la carpeta del usuario, todo; pero un veredicto (o un absorb) entre espacios distintos, nunca.
-    let home = dirs::home_dir().unwrap().display().to_string();
+    let home = std::env::home_dir().unwrap().display().to_string();
     let (t, error) = llamar(&home, "get", serde_json::json!({ "id": globex }));
     assert!(!error && t.contains("9931"), "{t}");
     let (t, error) = llamar(&home, "update", serde_json::json!({ "id": acme, "supersedes": [globex], "reason": "cruzado" }));

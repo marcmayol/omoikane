@@ -467,7 +467,7 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     if id.is_empty() || id.contains(['/', '\\', '.']) {
         return None;
     }
-    let casa = dirs::home_dir()?;
+    let casa = std::env::home_dir()?;
     let copilot = std::env::var_os("COPILOT_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| casa.join(".copilot"));
     [
         copilot.join("session-state").join(id).join("events.jsonl"),

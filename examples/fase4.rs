@@ -94,7 +94,7 @@ fn elegir(r: &[Resultado], minimo: usize, sim: f32, max: usize) -> Vec<&Resultad
 }
 
 fn recall(dir_notas: &Path, dir_trans: &Path) -> Result<()> {
-    let m = Modelo::abrir(&dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))?;
+    let m = Modelo::abrir(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))?;
     let notas = notas(dir_notas)?;
     let tmp = std::env::temp_dir().join(format!("omoi-fase4-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);

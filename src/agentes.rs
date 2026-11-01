@@ -73,7 +73,7 @@ fn casa() -> Result<PathBuf> {
     if let Some(h) = std::env::var_os("OMOIKANE_SETUP_HOME") {
         return Ok(PathBuf::from(h));
     }
-    dirs::home_dir().context(tr!("can't find the home folder", "no se encuentra la carpeta personal"))
+    std::env::home_dir().context(tr!("can't find the home folder", "no se encuentra la carpeta personal"))
 }
 
 /// El binario que se registra: el que se está ejecutando, con barras normales (vale en las shells de

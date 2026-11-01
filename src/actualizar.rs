@@ -27,7 +27,7 @@ const CADA: u64 = 24 * 3600;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn carpeta() -> Option<PathBuf> {
-    std::env::var_os("OMOIKANE_HOME").map(PathBuf::from).or_else(|| dirs::home_dir().map(|h| h.join(".omoikane")))
+    std::env::var_os("OMOIKANE_HOME").map(PathBuf::from).or_else(|| std::env::home_dir().map(|h| h.join(".omoikane")))
 }
 
 fn fichero(nombre: &str) -> Option<PathBuf> {

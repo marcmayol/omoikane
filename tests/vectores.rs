@@ -15,7 +15,7 @@ fn modelo() -> Option<Modelo> {
     let dir = DIR.get_or_init(|| {
         let int8 = std::env::var_os("OMOI_MODELO_INT8")
             .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
+            .or_else(|| std::env::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
         if !int8.join("model.safetensors").exists() {
             return None;
         }
