@@ -1,4 +1,4 @@
-//! EmbeddingGemma 300M en Rust puro (candle, CPU), para el canal por significado.
+//! EmbeddingGemma 300M en Rust puro, para el canal por significado.
 //!
 //! Reproduce lo que hace sentence-transformers con `google/embeddinggemma-300m` (validado contra él
 //! con coseno 1,00000 en float32): prompt + texto → tokenizer → Gemma 3 con atención bidireccional →
@@ -8,18 +8,24 @@
 //! (`MultiHeadAttention`, `RotaryEmbedding`…) que solo entiende ONNX Runtime, y Omoikane no depende
 //! de nada fuera del binario (PLAN.md, 9.2).
 //!
-//! Tarda unos 2 s en cargar y ~60 ms por consulta en CPU: no cabe en un hook que arranca en cada
-//! mensaje. Lo carga un proceso que se queda abierto (`significado`).
+//! Dos motores dan el mismo vector:
+//! - `rapido` (por defecto): pesos en f16 leídos del fichero mapeado, multiplicaciones propias con
+//!   AVX2 (o el camino genérico sin él). Carga en ~0,1 s y ~30 ms por pregunta en 8 hilos.
+//! - candle (`OMOIKANE_GEMMA_RAPIDO=0`, y el que se compara en los tests): pesos en f32 en RAM.
 //!
-//! Lee dos formatos. El de sentence-transformers (1,2 GB en float32), para probar y para convertir.
-//! Y el compacto, el que se instala (`compactar`): la tabla de 262.144 tokens, que son 805 de los
-//! 1.200 MB, en int8 con una escala por fila y mapeada del disco (solo se leen las filas de los
-//! tokens que salen); el resto de pesos, en float16 (se pasan a float32 al cargar).
+//! Y dos tokenizers que dan los mismos ids: el compilado (`bpe`, se mapea en milisegundos) y, si no
+//! se puede compilar, `tokenizers` (1,3-1,6 s en leer el `tokenizer.json`).
+//!
+//! Lee dos formatos de modelo. El de sentence-transformers (1,2 GB en float32), para probar y para
+//! convertir. Y el compacto, el que se instala (`compactar`): la tabla de 262.144 tokens, que son
+//! 805 de los 1.200 MB, en int8 con una escala por fila y mapeada del disco (solo se leen las filas de
+//! los tokens que salen); el resto de pesos, en float16.
 
 use anyhow::{Context, Result, anyhow, ensure};
 use candle_core::{D, DType, Device, Tensor};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const DIM: usize = 768;
 const PROMPT_PREGUNTA: &str = "task: search result | query: ";
@@ -28,12 +34,21 @@ const PROMPT_DOCUMENTO: &str = "title: none | text: ";
 /// textos de más de 257 tokens daban otro vector que el de referencia (coseno 0,996 a 0,987 con él;
 /// en una memoria real, 0,22 en vez de 0,26 con su pregunta, y otro orden). Con la máscara de
 /// `vector`: 0,9992 con 376 tokens y 0,99997 con textos cortos.
-const MAX_TOKENS: usize = 2048;
+pub const MAX_TOKENS: usize = 2048;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tipo {
     Pregunta,
     Documento,
+}
+
+impl Tipo {
+    fn prompt(self) -> &'static str {
+        match self {
+            Tipo::Pregunta => PROMPT_PREGUNTA,
+            Tipo::Documento => PROMPT_DOCUMENTO,
+        }
+    }
 }
 
 /// Ficheros del formato compacto.
@@ -52,16 +67,60 @@ impl Tabla {
     fn filas(&self, ids: &[u32]) -> Result<Tensor> {
         match self {
             Tabla::F32(t) => Ok(t.index_select(&Tensor::new(ids, &Device::Cpu)?, 0)?),
+            Tabla::Int8 { ancho, .. } => Ok(Tensor::from_vec(self.filas_vec(ids)?, (ids.len(), *ancho), &Device::Cpu)?),
+        }
+    }
+
+    fn filas_vec(&self, ids: &[u32]) -> Result<Vec<f32>> {
+        match self {
+            Tabla::F32(_) => Ok(self.filas(ids)?.flatten_all()?.to_vec1::<f32>()?),
             Tabla::Int8 { filas, escalas, ancho } => {
                 let mut v = Vec::with_capacity(ids.len() * ancho);
                 for &id in ids {
-                    let i = id as usize;
-                    ensure!(i < escalas.len(), "token {i} out of the table");
+                    // `<image_soft_token>` (262.144) es un token añadido que no está en la tabla: escrito
+                    // tal cual en una memoria, sentence-transformers fallaría. Aquí cuenta como `<unk>`
+                    // (3), para que esa memoria no pare el indexado de las demás.
+                    let i = if (id as usize) < escalas.len() { id as usize } else { 3 };
                     let e = escalas[i];
                     v.extend(filas[i * ancho..(i + 1) * ancho].iter().map(|&b| f32::from(b as i8) * e));
                 }
-                Ok(Tensor::from_vec(v, (ids.len(), *ancho), &Device::Cpu)?)
+                Ok(v)
             }
+        }
+    }
+}
+
+/// El tokenizer: el compilado (`bpe`) o, si no se pudo, el de `tokenizers`.
+enum Tok {
+    Bpe(crate::bpe::Bpe),
+    Hf(Box<tokenizers::Tokenizer>),
+}
+
+impl Tok {
+    /// El compilado si la carpeta es del formato compacto (lo compila la primera vez y lo deja al
+    /// lado; `OMOIKANE_GEMMA_BPE=0` no lo usa). En una de sentence-transformers no escribe nada.
+    fn cargar(dir: &Path, compacto: bool) -> Result<Tok> {
+        let json = dir.join("tokenizer.json");
+        if compacto && std::env::var("OMOIKANE_GEMMA_BPE").as_deref() != Ok("0") {
+            match crate::bpe::Bpe::abrir_o_compilar(&json, &dir.join(crate::bpe::FICHERO)) {
+                Ok(b) => return Ok(Tok::Bpe(b)),
+                Err(e) => eprintln!("omoi: {}: {e:#}; using tokenizer.json", crate::bpe::FICHERO),
+            }
+        }
+        Self::hf(&json)
+    }
+
+    fn hf(json: &Path) -> Result<Tok> {
+        let mut tok = tokenizers::Tokenizer::from_file(json).map_err(|e| anyhow!("tokenizer.json: {e}"))?;
+        tok.with_truncation(Some(tokenizers::TruncationParams { max_length: MAX_TOKENS, ..Default::default() })).map_err(|e| anyhow!("{e}"))?;
+        tok.with_padding(None);
+        Ok(Tok::Hf(Box::new(tok)))
+    }
+
+    fn ids(&self, texto: &str) -> Result<Vec<u32>> {
+        match self {
+            Tok::Bpe(b) => Ok(b.codificar(texto, MAX_TOKENS)),
+            Tok::Hf(t) => Ok(t.encode(texto, true).map_err(|e| anyhow!("{e}"))?.get_ids().to_vec()),
         }
     }
 }
@@ -84,13 +143,25 @@ struct Capa {
     local: bool,
 }
 
-pub struct Gemma {
-    tokens: Tabla,
+/// El modelo en candle, en f32.
+struct Candle {
     capas: Vec<Capa>,
     norma: Tensor,
     densa1: Tensor,
     densa2: Tensor,
-    tok: tokenizers::Tokenizer,
+}
+
+enum Motor {
+    Rapido(crate::rapido::Rapido, rayon::ThreadPool),
+    Candle(Candle),
+}
+
+pub struct Gemma {
+    /// `pesos.safetensors` mapeado, si el motor rápido lee de él (para `precalentar`).
+    mapa: Option<Arc<memmap2::Mmap>>,
+    tokens: Tabla,
+    tok: Tok,
+    motor: Motor,
     eps: f64,
     cabezas: usize,
     cabezas_kv: usize,
@@ -177,18 +248,251 @@ fn lineal(x: &Tensor, w: &Tensor) -> Result<Tensor> {
     Ok(x.broadcast_matmul(&w.t()?)?)
 }
 
-impl Gemma {
-    pub fn cargar(dir: &Path) -> Result<Self> {
-        ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
-        let dev = Device::Cpu;
+/// Lo que se lee de `config.json`.
+struct Cfg {
+    eps: f64,
+    cabezas: usize,
+    cabezas_kv: usize,
+    dim_cabeza: usize,
+    escala: f64,
+    escala_tokens: f64,
+    base_local: f64,
+    base_global: f64,
+    ventana: usize,
+    ancho: usize,
+    /// Por capa: ¿es de ventana deslizante?
+    locales: Vec<bool>,
+}
+
+impl Cfg {
+    fn leer(dir: &Path) -> Result<Cfg> {
         let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json"))?)?;
         let num = |k: &str| cfg[k].as_f64().ok_or_else(|| anyhow!("config.json: missing {k}"));
+        let tipos = cfg["layer_types"].as_array().context("config.json: missing layer_types")?;
+        let ancho = num("hidden_size")?;
+        Ok(Cfg {
+            eps: num("rms_norm_eps")?,
+            cabezas: num("num_attention_heads")? as usize,
+            cabezas_kv: num("num_key_value_heads")? as usize,
+            dim_cabeza: num("head_dim")? as usize,
+            escala: num("query_pre_attn_scalar")?.powf(-0.5),
+            escala_tokens: ancho.sqrt(),
+            base_local: num("rope_local_base_freq")?,
+            base_global: num("rope_theta")?,
+            ventana: num("sliding_window")? as usize,
+            ancho: ancho as usize,
+            locales: tipos.iter().map(|t| t.as_str() == Some("sliding_attention")).collect(),
+        })
+    }
+}
+
+/// De dónde saca `rapido` los pesos: `pesos.safetensors` mapeado (el formato compacto, en f16: las
+/// matrices se usan ahí mismo, sin copiarlas) o tensores ya cargados (sentence-transformers).
+enum Fuente {
+    Mapa { mapa: Arc<memmap2::Mmap>, tensores: HashMap<String, (usize, Vec<usize>, safetensors::Dtype)> },
+    Tensores(HashMap<String, Tensor>),
+}
+
+impl Fuente {
+    fn mapa(ruta: &Path) -> Result<Fuente> {
+        // SAFETY: el fichero no se toca después de instalarlo (`modelos` instala en otra carpeta).
+        let mapa = Arc::new(unsafe { memmap2::Mmap::map(&std::fs::File::open(ruta)?)? });
+        let st = safetensors::SafeTensors::deserialize(&mapa[..])?;
+        let base = mapa.as_ptr() as usize;
+        let tensores = st.tensors().into_iter().map(|(n, v)| (n, (v.data().as_ptr() as usize - base, v.shape().to_vec(), v.dtype()))).collect();
+        Ok(Fuente::Mapa { mapa, tensores })
+    }
+
+    fn f32s(&mut self, k: &str) -> Result<(Vec<f32>, Vec<usize>)> {
+        match self {
+            Fuente::Mapa { mapa, tensores } => {
+                let (ini, forma, tipo) = tensores.get(k).with_context(|| format!("{PESOS}: missing {k}"))?;
+                let n: usize = forma.iter().product();
+                let b = &mapa[*ini..];
+                let v = match tipo {
+                    safetensors::Dtype::F16 => b[..2 * n].as_chunks::<2>().0.iter().map(|x| half::f16::from_le_bytes(*x).to_f32()).collect(),
+                    safetensors::Dtype::F32 => b[..4 * n].as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect(),
+                    t => anyhow::bail!("{PESOS}: {k} is {t:?}"),
+                };
+                Ok((v, forma.clone()))
+            }
+            Fuente::Tensores(t) => {
+                let t = t.remove(k).with_context(|| format!("model.safetensors: missing {k}"))?.to_dtype(DType::F32)?;
+                Ok((t.flatten_all()?.to_vec1::<f32>()?, t.dims().to_vec()))
+            }
+        }
+    }
+
+    /// Una norma de Gemma con el `1 +` ya sumado.
+    fn norma(&mut self, k: &str) -> Result<Vec<f32>> {
+        Ok(self.f32s(k)?.0.into_iter().map(|x| x + 1.0).collect())
+    }
+
+    /// Las matrices `ks` una tras otra. Del fichero mapeado en f16, sin copiarlas.
+    fn mat(&mut self, ks: &[String], simd: bool) -> Result<crate::rapido::Mat> {
+        use crate::rapido::Mat;
+        if let Fuente::Mapa { mapa, tensores } = self
+            && ks.iter().all(|k| tensores.get(k).is_some_and(|t| t.2 == safetensors::Dtype::F16 && t.1.len() == 2 && t.0 % 2 == 0))
+        {
+            let cols = tensores[&ks[0]].1[1];
+            let mut partes = Vec::new();
+            for k in ks {
+                let (ini, forma, _) = &tensores[k];
+                ensure!(forma[1] == cols, "{PESOS}: {k} has {} columns, not {cols}", forma[1]);
+                // SAFETY: dentro del fichero (lo comprobó `deserialize`), par y en f16.
+                partes.push((unsafe { mapa.as_ptr().add(*ini) } as *const u16, forma[0], mapa.clone() as Arc<dyn Send + Sync>));
+            }
+            // SAFETY: cada parte son filas·cols f16 del mapa, que va como dueño y no cambia.
+            return Ok(unsafe { Mat::de_partes(partes, cols, simd) });
+        }
+        let mut datos = Vec::new();
+        let (mut filas, mut cols) = (0, 0);
+        for k in ks {
+            let (v, forma) = self.f32s(k)?;
+            ensure!(forma.len() == 2, "{k}: not a matrix");
+            filas += forma[0];
+            cols = forma[1];
+            datos.extend(v);
+        }
+        Ok(Mat::de_f32(&datos, filas, cols, simd))
+    }
+}
+
+impl Gemma {
+    /// Con el motor rápido (`rapido`) si la CPU tiene AVX2/FMA/F16C; si no (CPU antiguas, ARM), con
+    /// candle: el camino genérico del rápido da el mismo vector pero es más lento que candle (medido:
+    /// 56 frente a 42 ms con 16 tokens, el doble con textos largos). `OMOIKANE_GEMMA_RAPIDO=0` fuerza
+    /// candle y `=1` el rápido (genérico, si no hay AVX2).
+    pub fn cargar(dir: &Path) -> Result<Self> {
+        let simd = crate::rapido::simd_disponible();
+        match std::env::var("OMOIKANE_GEMMA_RAPIDO").as_deref() {
+            Ok("0") => Self::cargar_candle(dir),
+            Ok("1") => Self::cargar_rapido(dir, Self::hilos_por_defecto(), simd),
+            _ if simd => Self::cargar_rapido(dir, Self::hilos_por_defecto(), true),
+            _ => Self::cargar_candle(dir),
+        }
+    }
+
+    /// Lee una vez los pesos mapeados, para que la primera consulta no pague los fallos de página
+    /// (~30 ms con el disco en caché). El servicio lo llama en un hilo aparte nada más cargar.
+    pub fn precalentar(&self) {
+        if let Some(m) = &self.mapa {
+            let mut s = 0u8;
+            for i in (0..m.len()).step_by(4096) {
+                s = s.wrapping_add(m[i]);
+            }
+            std::hint::black_box(s);
+        }
+    }
+
+    /// Hilos del motor rápido: `OMOIKANE_GEMMA_HILOS` o los de la CPU.
+    pub fn hilos_por_defecto() -> usize {
+        std::env::var("OMOIKANE_GEMMA_HILOS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+    }
+
+    /// ¿Va con el motor rápido?
+    pub fn es_rapido(&self) -> bool {
+        matches!(self.motor, Motor::Rapido(..))
+    }
+
+    /// ¿Usa el tokenizer compilado?
+    pub fn tokenizer_compilado(&self) -> bool {
+        matches!(self.tok, Tok::Bpe(_))
+    }
+
+    fn con_motor(dir: &Path, cfg: Cfg, tokens: Tabla, compacto: bool, motor: Motor) -> Result<Self> {
+        Ok(Gemma {
+            mapa: None,
+            tokens,
+            tok: Tok::cargar(dir, compacto)?,
+            motor,
+            eps: cfg.eps,
+            cabezas: cfg.cabezas,
+            cabezas_kv: cfg.cabezas_kv,
+            dim_cabeza: cfg.dim_cabeza,
+            escala: cfg.escala,
+            escala_tokens: cfg.escala_tokens,
+            base_local: cfg.base_local,
+            base_global: cfg.base_global,
+            ventana: cfg.ventana,
+        })
+    }
+
+    fn tabla_int8(dir: &Path, ancho: usize) -> Result<Tabla> {
+        // SAFETY: el fichero no se toca después de instalarlo (`modelos` instala en otra carpeta).
+        let filas = unsafe { memmap2::Mmap::map(&std::fs::File::open(dir.join(TABLA))?)? };
+        let escalas: Vec<f32> = std::fs::read(dir.join(ESCALAS))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        ensure!(filas.len() == escalas.len() * ancho, "{TABLA}: {} bytes for {} rows of {ancho}", filas.len(), escalas.len());
+        Ok(Tabla::Int8 { filas, escalas, ancho })
+    }
+
+    /// El motor rápido con `hilos` hilos; `simd` con AVX2/FMA/F16C (`rapido::simd_disponible`).
+    pub fn cargar_rapido(dir: &Path, hilos: usize, simd: bool) -> Result<Self> {
+        use crate::rapido::{Capa as C, Rapido, tabla_rope};
+        ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
+        let cfg = Cfg::leer(dir)?;
+        let compacto = !es_sentence_transformers(dir);
+        let mut f = if compacto { Fuente::mapa(&dir.join(PESOS))? } else { Fuente::Tensores(pesos_sentence_transformers(dir)?) };
+        let mut capas = Vec::with_capacity(cfg.locales.len());
+        for (i, &local) in cfg.locales.iter().enumerate() {
+            let p = |s: &str| format!("layers.{i}.{s}.weight");
+            capas.push(C {
+                ne: f.norma(&p("input_layernorm"))?,
+                nta: f.norma(&p("post_attention_layernorm"))?,
+                nam: f.norma(&p("pre_feedforward_layernorm"))?,
+                ntm: f.norma(&p("post_feedforward_layernorm"))?,
+                nq: f.norma(&p("self_attn.q_norm"))?,
+                nk: f.norma(&p("self_attn.k_norm"))?,
+                qkv: f.mat(&[p("self_attn.q_proj"), p("self_attn.k_proj"), p("self_attn.v_proj")], simd)?,
+                o: f.mat(&[p("self_attn.o_proj")], simd)?,
+                gu: f.mat(&[p("mlp.gate_proj"), p("mlp.up_proj")], simd)?,
+                bajar: f.mat(&[p("mlp.down_proj")], simd)?,
+                local,
+            });
+        }
+        let tokens = match &mut f {
+            Fuente::Mapa { .. } => Self::tabla_int8(dir, cfg.ancho)?,
+            Fuente::Tensores(t) => Tabla::F32(t.remove("embed_tokens.weight").context("model.safetensors: missing embed_tokens.weight")?.to_dtype(DType::F32)?),
+        };
+        let r = Rapido {
+            capas,
+            norma: f.norma("norm.weight")?,
+            densa1: f.mat(&["densa1.weight".into()], simd)?,
+            densa2: f.mat(&["densa2.weight".into()], simd)?,
+            eps: cfg.eps as f32,
+            cabezas: cfg.cabezas,
+            cabezas_kv: cfg.cabezas_kv,
+            dim_cabeza: cfg.dim_cabeza,
+            escala: cfg.escala as f32,
+            medio: cfg.ventana / 2,
+            rope_local: tabla_rope(MAX_TOKENS, cfg.dim_cabeza, cfg.base_local),
+            rope_global: tabla_rope(MAX_TOKENS, cfg.dim_cabeza, cfg.base_global),
+            simd,
+        };
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(hilos.max(1)).thread_name(|i| format!("gemma-{i}")).build()?;
+        let mapa = match f {
+            Fuente::Mapa { mapa, .. } => Some(mapa),
+            Fuente::Tensores(_) => None,
+        };
+        let mut g = Self::con_motor(dir, cfg, tokens, compacto, Motor::Rapido(r, pool))?;
+        g.mapa = mapa;
+        Ok(g)
+    }
+
+    /// Con candle, en f32 (como hasta la 1.2.0).
+    pub fn cargar_candle(dir: &Path) -> Result<Self> {
+        ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
+        let dev = Device::Cpu;
+        let cfg = Cfg::leer(dir)?;
         let compacto = !es_sentence_transformers(dir);
         let mut pesos = if compacto { candle_core::safetensors::load(dir.join(PESOS), &dev)? } else { pesos_sentence_transformers(dir)? };
         let mut sacar = |k: String| -> Result<Tensor> { Ok(pesos.remove(&k).ok_or_else(|| anyhow!("model.safetensors: missing {k}"))?.to_dtype(DType::F32)?) };
-        let tipos = cfg["layer_types"].as_array().context("config.json: missing layer_types")?;
-        let mut capas = Vec::with_capacity(tipos.len());
-        for (i, tipo) in tipos.iter().enumerate() {
+        let mut capas = Vec::with_capacity(cfg.locales.len());
+        for (i, &local) in cfg.locales.iter().enumerate() {
             let p = |s: &str| format!("layers.{i}.{s}.weight");
             capas.push(Capa {
                 norma_entrada: sacar(p("input_layernorm"))?,
@@ -204,43 +508,51 @@ impl Gemma {
                 puerta: sacar(p("mlp.gate_proj"))?,
                 subir: sacar(p("mlp.up_proj"))?,
                 bajar: sacar(p("mlp.down_proj"))?,
-                local: tipo.as_str() == Some("sliding_attention"),
+                local,
             });
         }
-        let tokens = if compacto {
-            let ancho = num("hidden_size")? as usize;
-            // SAFETY: el fichero no se toca después de instalarlo (`modelos` instala en otra carpeta).
-            let filas = unsafe { memmap2::Mmap::map(&std::fs::File::open(dir.join(TABLA))?)? };
-            let escalas: Vec<f32> = std::fs::read(dir.join(ESCALAS))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-            ensure!(filas.len() == escalas.len() * ancho, "{TABLA}: {} bytes for {} rows of {ancho}", filas.len(), escalas.len());
-            Tabla::Int8 { filas, escalas, ancho }
-        } else {
-            Tabla::F32(sacar("embed_tokens.weight".into())?)
-        };
-        let norma = sacar("norm.weight".into())?;
-        let densa1 = sacar("densa1.weight".into())?;
-        let densa2 = sacar("densa2.weight".into())?;
-        let mut tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| anyhow!("tokenizer.json: {e}"))?;
-        tok.with_truncation(Some(tokenizers::TruncationParams { max_length: MAX_TOKENS, ..Default::default() })).map_err(|e| anyhow!("{e}"))?;
-        tok.with_padding(None);
-        let ancho = num("hidden_size")?;
-        Ok(Gemma {
-            tokens,
-            capas,
-            norma,
-            densa1,
-            densa2,
-            tok,
-            eps: num("rms_norm_eps")?,
-            cabezas: num("num_attention_heads")? as usize,
-            cabezas_kv: num("num_key_value_heads")? as usize,
-            dim_cabeza: num("head_dim")? as usize,
-            escala: num("query_pre_attn_scalar")?.powf(-0.5),
-            escala_tokens: ancho.sqrt(),
-            base_local: num("rope_local_base_freq")?,
-            base_global: num("rope_theta")?,
-            ventana: num("sliding_window")? as usize,
-        })
+        let tokens = if compacto { Self::tabla_int8(dir, cfg.ancho)? } else { Tabla::F32(sacar("embed_tokens.weight".into())?) };
+        let c = Candle { capas, norma: sacar("norm.weight".into())?, densa1: sacar("densa1.weight".into())?, densa2: sacar("densa2.weight".into())? };
+        Self::con_motor(dir, cfg, tokens, compacto, Motor::Candle(c))
+    }
+
+    /// Los ids de `texto` con el prompt de su tipo (con `<bos>` y `<eos>`, hasta `MAX_TOKENS`).
+    pub fn ids(&self, texto: &str, tipo: Tipo) -> Result<Vec<u32>> {
+        self.tok.ids(&format!("{}{texto}", tipo.prompt()))
+    }
+
+    /// El vector (768, normalizado) de `texto`, con el prompt de su tipo.
+    pub fn vector(&self, texto: &str, tipo: Tipo) -> Result<Vec<f32>> {
+        let ids = self.ids(texto, tipo)?;
+        Ok(self.vectores_de_ids(&[ids], &|| {})?.pop().unwrap_or_default())
+    }
+
+    /// Los vectores de varios textos (con el motor rápido, de una vez: el mismo resultado que de
+    /// uno en uno, más rápido).
+    pub fn vectores(&self, textos: &[&str], tipo: Tipo) -> Result<Vec<Vec<f32>>> {
+        let ids = textos.iter().map(|t| self.ids(t, tipo)).collect::<Result<Vec<_>>>()?;
+        self.vectores_de_ids(&ids, &|| {})
+    }
+
+    /// Los vectores de textos ya tokenizados (`ids`). `ceder` se llama entre paso y paso: quien
+    /// indexa lo usa para dejar pasar antes una consulta.
+    pub fn vectores_de_ids(&self, ids: &[Vec<u32>], ceder: &dyn Fn()) -> Result<Vec<Vec<f32>>> {
+        match &self.motor {
+            Motor::Rapido(r, pool) => {
+                let todos: Vec<u32> = ids.iter().flatten().copied().collect();
+                let e = self.escala_tokens as f32;
+                let x = self.tokens.filas_vec(&todos)?.into_iter().map(|v| v * e).collect();
+                let largos: Vec<usize> = ids.iter().map(Vec::len).collect();
+                Ok(r.vectores(x, &largos, pool, ceder))
+            }
+            Motor::Candle(c) => ids
+                .iter()
+                .map(|i| {
+                    ceder();
+                    self.vector_candle(c, i)
+                })
+                .collect(),
+        }
     }
 
     /// Cosenos y senos de RoPE para `n` posiciones con base `base`.
@@ -253,16 +565,10 @@ impl Gemma {
         Ok((f.cos()?, f.sin()?))
     }
 
-    /// El vector (768, normalizado) de `texto`, con el prompt de su tipo.
-    pub fn vector(&self, texto: &str, tipo: Tipo) -> Result<Vec<f32>> {
-        let prompt = match tipo {
-            Tipo::Pregunta => PROMPT_PREGUNTA,
-            Tipo::Documento => PROMPT_DOCUMENTO,
-        };
-        let enc = self.tok.encode(format!("{prompt}{texto}"), true).map_err(|e| anyhow!("{e}"))?;
-        let n = enc.get_ids().len();
+    fn vector_candle(&self, c: &Candle, ids: &[u32]) -> Result<Vec<f32>> {
+        let n = ids.len();
         let (h, hd, kv) = (self.cabezas, self.dim_cabeza, self.cabezas_kv);
-        let mut x = (self.tokens.filas(enc.get_ids())? * self.escala_tokens)?.unsqueeze(0)?;
+        let mut x = (self.tokens.filas(ids)? * self.escala_tokens)?.unsqueeze(0)?;
         let local = self.rope(n, self.base_local)?;
         let global = self.rope(n, self.base_global)?;
         // Máscara de las capas locales: cada token ve a los que están a media ventana o menos, a cada
@@ -276,7 +582,7 @@ impl Gemma {
         } else {
             None
         };
-        for c in &self.capas {
+        for c in &c.capas {
             let e = rms(&x, &c.norma_entrada, self.eps)?;
             let q = rms(&lineal(&e, &c.q)?.reshape((1, n, h, hd))?, &c.norma_q, self.eps)?.transpose(1, 2)?.contiguous()?;
             let k = rms(&lineal(&e, &c.k)?.reshape((1, n, kv, hd))?, &c.norma_k, self.eps)?.transpose(1, 2)?.contiguous()?;
@@ -299,8 +605,8 @@ impl Gemma {
             let m = lineal(&(lineal(&e, &c.puerta)?.gelu()? * lineal(&e, &c.subir)?)?, &c.bajar)?;
             x = (x + rms(&m, &c.norma_tras_mlp, self.eps)?)?;
         }
-        let x = rms(&x, &self.norma, self.eps)?.mean(1)?;
-        let x = lineal(&lineal(&x, &self.densa1)?, &self.densa2)?;
+        let x = rms(&x, &c.norma, self.eps)?.mean(1)?;
+        let x = lineal(&lineal(&x, &c.densa1)?, &c.densa2)?;
         let x = x.broadcast_div(&x.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?)?;
         Ok(x.squeeze(0)?.to_vec1()?)
     }
