@@ -14,8 +14,8 @@
 
 Your agent learns things every session: a bug that only shows up on Windows, why the team chose ULIDs, that you want short commits in English. Then the session ends and all of it is gone. Omoikane keeps those as short, typed memories in a local SQLite file, and does the rest by itself.
 
-- **It recalls by itself, and almost always stays quiet.** When what you type relates to something saved, a hook hands the agent that memory in about 20 ms. If nothing relates, it hands over nothing, as with 93 % of real prompts. It also saves what the agent forgot to, when the session ends.
-- **Search that understands questions**, in 101 languages, accents or not: on questions written blind it finds the right memory first 90 % of the time.
+- **It recalls by itself, and almost always stays quiet.** When what you type relates to something saved, a hook hands the agent that memory in about 100 ms (35 ms with the meaning model off). If nothing relates, it hands over nothing, as with 93 % of real prompts. It also saves what the agent forgot to, when the session ends.
+- **It understands what you ask, even with other words**, in 101 languages, accents or not. On the [public benchmark](https://github.com/marcmayol/omoikane-bench) (250 questions written blind), the right memory comes first for 89 % of questions and 55 % of paraphrases; engram 3.6, 71 % and 6 %.
 - **Nothing gets lost.** No duplicates, history with reasons, stale memories flagged, secrets redacted, a trash everything comes back from and a copy of the database every day.
 - **From you alone to a whole company.** The same memory on all your computers and with teammates, through a git repository of yours, encrypted. Spaces keep each client's memories apart.
 - **15 agents, one memory.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode and the rest; `omoi setup <agent>` gets each one ready. Two are tested by hand, the rest going by their documentation.
@@ -32,7 +32,7 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 
 Automatic updates come off. `omoi setup claude` and the one-line installers ask whether you want them (no answer leaves them off) and, if you say yes, turn on the plugin's update too; `omoi upgrade --on` turns them on any time. For the plugin's, if you only ran the two commands above: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
 
-On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then the embedding model (~150 MB, once) in the background; until it arrives, search works by words. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
+On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then, in the background, the light embedding model (~150 MB) and the meaning model (EmbeddingGemma, ~450 MB), once; until they arrive, search works by words. `omoi model semantic --off` skips the meaning model. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
 
 **Without Claude Code**, or to use `omoi` from the terminal or another MCP client, install the binary with one line:
 
@@ -52,7 +52,7 @@ Or `cargo install omoikane`. The installers also add the Claude Code plugin if C
 
 Throughout 1.x, the database, the sync line and the `omoi export` format don't change in any way that breaks things: a 1.3 and a 1.0 sync with each other, and a computer on 1.0 keeps and passes on what it doesn't understand from a newer version. The 8 tools and their parameters don't break either; things only get added. If something ever has to break, that will be 2.0, with a migration and a warning.
 
-Version 1.1.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 1.2.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Measured
 

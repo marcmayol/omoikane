@@ -148,6 +148,20 @@ async function prepare($: any): Promise<Listo | undefined> {
           () => $.ui.toast('Omoikane: the model didn\'t install; search works by words'),
         )
     }
+    // The meaning model (EmbeddingGemma, ~450 MB) too, unless it was turned off with
+    // `omoi model semantic --off`; until it arrives, everything works as before.
+    const sig = await $.process.run([omoi, '--json', 'model', 'semantic'])
+    if (sig.exitCode === 0) {
+      const s = JSON.parse(sig.stdout)
+      if (s.on && !s.installed) {
+        $.process
+          .run([omoi, 'model', 'install', '--semantic'], { timeoutMs: 3_600_000 })
+          .then(
+            (r: any) => $.ui.toast(r.exitCode === 0 ? 'Omoikane: meaning model installed, questions asked with other words are found now' : 'Omoikane: the meaning model didn\'t install; it will try again next session'),
+            () => $.ui.toast('Omoikane: the meaning model didn\'t install; it will try again next session'),
+          )
+      }
+    }
 
     const lista = await $.process.run([omoi, 'tool'])
     if (lista.exitCode !== 0) throw new Error(lista.stderr.trim())

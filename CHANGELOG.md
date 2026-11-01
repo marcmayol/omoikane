@@ -6,6 +6,8 @@ The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Unreleased
 
+## 1.2.0 (2026-11-01)
+
 Omoikane understands what you ask with other words. Until 1.1, a question that didn't share words with the memory that answers it almost never found it, and engram 3.6 doesn't either. 1.2 adds a second model, EmbeddingGemma 300M, for meaning.
 
 ### Measured
@@ -24,7 +26,7 @@ On the public benchmark ([omoikane-bench](https://github.com/marcmayol/omoikane-
 What it costs: about 60 ms more per search and per prompt, about 450 MB on disk, and computing each memory's vector once (about 0.25 s each on 8 CPU threads, in the background). Not measured yet at 100,000 memories.
 
 ### Added
-- **The meaning model**: EmbeddingGemma 300M in pure Rust (candle), with no ONNX Runtime or anything else outside the binary. It gives the same vectors as Google's reference (cosine 0.999 or better, up to 2,048 tokens). It is installed in a compact format of about 450 MB, with its 262,144-token table in int8 read straight from disk, so it loads in 1.4 s. `omoi model install --semantic` downloads it and checks every file's SHA-256; `--from` takes it from a folder, and converts the one sentence-transformers leaves.
+- **The meaning model**: EmbeddingGemma 300M in pure Rust (candle), with no ONNX Runtime or anything else outside the binary. It gives the same vectors as Google's reference (cosine 0.999 or better, up to 2,048 tokens). It is installed in a compact format of about 450 MB, with its 262,144-token table in int8 read straight from disk, so it loads in 1.4 s. `omoi model install --semantic` downloads it (from [Hugging Face](https://huggingface.co/natzx94/embeddinggemma-300m-omoikane), or this repo's Releases if that fails) and checks every file's SHA-256; `--from` takes it from a folder, and converts the one sentence-transformers leaves. The Claude Code plugin and the one-line installers download it by themselves, once, unless it was turned off.
 - **It lives in a service of its own**, one per user, that Omoikane starts by itself the first time it's needed (`127.0.0.1` only, with a token) and that closes after 30 minutes without use. Whoever asks never waits for it to load: without the service, everything works as in 1.1.
 - **Vectors computed in the background**: the service computes the vectors a database is missing when it is idle, and every change tells it. They live in a local table that is not synced and that 1.0 ignores. `omoi doctor` shows how many memories have one.
 - **Search joins words and meaning**: each candidate scores its similarity in meaning plus a share of its word score. Short queries (five words or fewer, keywords) give words more weight.

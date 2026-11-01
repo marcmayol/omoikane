@@ -14,8 +14,8 @@
 
 Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qué se eligieron ULID, que quieres los commits cortos y en inglés. Se cierra la sesión y se pierde todo. Omoikane lo guarda como memorias cortas y tipadas en un SQLite local, y hace lo demás solo.
 
-- **Recuerda solo, y casi siempre calla.** Cuando lo que escribes tiene que ver con algo guardado, un hook le pasa al agente esa memoria en unos 20 ms. Si no tiene que ver, no le pasa nada, y así fue en el 93 % de los mensajes reales. Y al cerrar la sesión guarda lo que al agente se le olvidó.
-- **Busca entendiendo la pregunta**, en 101 idiomas, con tildes o sin ellas: con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces.
+- **Recuerda solo, y casi siempre calla.** Cuando lo que escribes tiene que ver con algo guardado, un hook le pasa al agente esa memoria en unos 100 ms (35 ms con el modelo de significado apagado). Si no tiene que ver, no le pasa nada, y así fue en el 93 % de los mensajes reales. Y al cerrar la sesión guarda lo que al agente se le olvidó.
+- **Entiende lo que preguntas, aunque lo digas con otras palabras**, en 101 idiomas, con tildes o sin ellas. En el [benchmark público](https://github.com/marcmayol/omoikane-bench) (250 preguntas escritas a ciegas), la memoria buena sale la primera en el 89 % de las preguntas y en el 55 % de las paráfrasis; engram 3.6, en el 71 % y el 6 %.
 - **Nada se pierde.** Sin duplicados, con historial y motivo, lo viejo marcado, los secretos tachados, una papelera desde la que todo vuelve y una copia de la base cada día.
 - **De ti solo a una empresa entera.** La misma memoria en todos tus equipos y con compañeros, por un repositorio git tuyo y cifrada. Los espacios separan las memorias de cada cliente.
 - **15 agentes, una sola memoria.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode y los demás; `omoi setup <agente>` deja cada uno listo. Dos están probados a mano, el resto según su documentación.
@@ -32,7 +32,7 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 
 La actualización automática viene apagada. `omoi setup claude` y los instaladores de una línea preguntan si la quieres (si no contestas, se queda apagada) y, si dices que sí, encienden también la del plugin; `omoi upgrade --on` la enciende cuando quieras. Para la del plugin, si solo has usado los dos comandos de arriba: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
 
-En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano, el modelo de embeddings (~150 MB, una vez); mientras llega, la búsqueda va por palabras. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
+En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano y una sola vez, el modelo de embeddings ligero (~150 MB) y el de significado (EmbeddingGemma, ~450 MB); mientras llegan, la búsqueda va por palabras. `omoi model semantic --off` se salta el de significado. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
 
 **Sin Claude Code**, o para usar `omoi` desde la terminal u otro cliente MCP, instala el binario con una línea:
 
@@ -52,7 +52,7 @@ O `cargo install omoikane`. Los instaladores también añaden el plugin si Claud
 
 Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las 8 herramientas y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
 
-Versión 1.1.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 1.2.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Medido
 

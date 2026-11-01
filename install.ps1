@@ -4,7 +4,7 @@
 # Optional variables:
 #   OMOIKANE_INSTALL_DIR   where the binary goes (default %LOCALAPPDATA%\Programs\omoikane)
 #   OMOIKANE_VERSION       a specific version, e.g. v0.1.0 (default: the latest)
-#   OMOIKANE_NO_MODEL=1    don't download the model (~150 MB; without it, search by words only)
+#   OMOIKANE_NO_MODEL=1    don't download the models (~150 MB light + ~450 MB meaning; without them, search by words only)
 #   OMOIKANE_NO_SETUP=1    don't touch Claude Code
 #   OMOIKANE_NO_AUTO_UPDATE=1  don't turn on the automatic update (omoi's daily one and the plugin's)
 #   OMOIKANE_NO_PATH=1     don't add the folder to the user PATH
@@ -52,6 +52,8 @@ try {
     if (-not $env:OMOIKANE_NO_MODEL) {
         & $exe model install
         if ($LASTEXITCODE -ne 0) { Write-Warning "couldn't install the model; try again with: omoi model install" }
+        & $exe model install --semantic
+        if ($LASTEXITCODE -ne 0) { Write-Warning "couldn't install the meaning model; try again with: omoi model install --semantic" }
     }
     if (-not $env:OMOIKANE_NO_SETUP) {
         if ($env:OMOIKANE_NO_AUTO_UPDATE) { & $exe setup claude --yes --no-auto-update } else { & $exe setup claude --yes }
