@@ -6,6 +6,18 @@ The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Unreleased
 
+Omoikane is light again until the memory needs more. In 1.2 the meaning model (EmbeddingGemma, ~450 MB) came with every install and was asked on most prompts, taking recall from ~35 ms to ~100 ms. With a small memory it barely helped: below about 1,000 memories recall injected the same noise with it and without it.
+
+- **The meaning model comes in with the size of the memory.** Below 1,500 memories (every memory in the database counts, so the decision is the same from every folder) Omoikane works as 1.1 did: words and the light model, no download, no service. Once the memory passes 1,500, Omoikane downloads the model in the background, indexes the memories and says so once at the start of a session. The Claude Code plugin and the one-line installers no longer download it. `omoi model semantic --on` uses it with a small memory, `--off` never, `--auto` lets the size decide again; `omoi model semantic` and `omoi doctor` say whether it is in use and why. 1,500 is provisional: it will be calibrated with the final measurements, between 1,000 and 3,000 (`OMOIKANE_SEMANTIC_THRESHOLD` changes it).
+- **Recall asks the meaning model only to keep quiet.** Only when the words already brought something, on a prompt of more than five words and at most 300 characters, and only to take out what isn't among the three memories closest in meaning. On 1,161 of the author's real prompts it is asked on 60; on the public benchmark (3,000 memories) recall injects something on 7.5 % of the questions with no answer, as in 1.2. It no longer adds a memory the words didn't find (search still finds paraphrases).
+- **Preferences are never vetoed**: a preference applies without resembling the prompt ("open it in Creality Print" and the preference of not using Orca). On the author's real prompts, a quarter of the vetoed preferences were useful.
+- **When the model doesn't answer in time**, recall goes on with words, as before, but it is no longer silent: `omoi doctor` shows how many times recall asked it and how many got no answer, with the last one. `OMOIKANE_TRAZA=1` writes every step of a recall to stderr.
+- **Search can come back empty.** What only meaning brings, with no word in common with the query, needs a similarity of 0.35. With 1.2 a search never came back empty and often showed something unrelated first; now that happens on 6 % of the author's prompts instead of 21 %, with the same first results on the public benchmark.
+- **A procedure needs more than one loose word.** "publish a post on LinkedIn" brought "Publish a release" because `publish` is in its `when:` line. Now a single word only brings it inside its own project, or with a word of its title or project ("publish the release", "publish omoikane"); a phrase from `when:` or two of its words still bring it anywhere.
+
+**Compatibility**: same as 1.2.0. The database schema, the sync lines and the export format don't change; the recall counters go in the local `meta` table.
+
+
 ## 1.2.0 (2026-11-01)
 
 Omoikane understands what you ask with other words. Until 1.1, a question that didn't share words with the memory that answers it almost never found it, and engram 3.6 doesn't either. 1.2 adds a second model, EmbeddingGemma 300M, for meaning.

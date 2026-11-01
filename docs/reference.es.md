@@ -43,8 +43,10 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_AUTO_UPDATE=0` | apaga la actualización automática |
 | `OMOIKANE_HTTP_TOKEN` | token que pide `omoi serve` por HTTP |
 | `OMOIKANE_NO_SETUP=1` | los instaladores no añaden el plugin de Claude Code |
-| `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo |
-| `OMOIKANE_SEMANTIC=0` / `1` | apaga o enciende el modelo de significado (por encima de `omoi model semantic`) |
+| `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo ligero (el de significado no lo bajan nunca) |
+| `OMOIKANE_SEMANTIC=0` / `1` | apaga o enciende el modelo de significado (por encima de `omoi model semantic` y del tamaño de la memoria) |
+| `OMOIKANE_SEMANTIC_THRESHOLD` | desde cuántas memorias se enciende solo el modelo de significado (1500) |
+| `OMOIKANE_TRAZA=1` | el recuerdo escribe cada paso en stderr: candidatas, puntuaciones y qué hizo el modelo de significado, o por qué no se le preguntó |
 | `OMOIKANE_SEMANTIC_IDLE` | segundos sin uso antes de que se cierre el servicio de significado (1800) |
 | `OMOIKANE_SEMANTIC_MODEL` | una carpeta con EmbeddingGemma para usarla en vez de la instalada |
 | `OMOIKANE_SEMANTIC_SOURCE` | de dónde descarga `omoi model install --semantic` (separadas por comas) |
