@@ -26,7 +26,7 @@ fn tope_de_ram() {
         std::env::set_var("OMOIKANE_HOME", &home);
         std::env::remove_var("OMOIKANE_SEMANTIC_RAM");
     }
-    assert!(RAM_MINIMA_MB <= RAM_POR_DEFECTO_MB);
+    const { assert!(RAM_MINIMA_MB <= RAM_POR_DEFECTO_MB) };
     // Con el mínimo cabe sola la memoria más larga.
     assert_eq!(s::tope_ram(), (RAM_POR_DEFECTO_MB, OrigenRam::PorDefecto));
     assert_eq!(s::fijar_ram(Some(1)).unwrap(), RAM_MINIMA_MB);

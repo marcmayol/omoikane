@@ -226,9 +226,8 @@ pub fn simd_disponible() -> bool {
 /// Producto escalar con 8 sumas parciales (el compilador lo vectoriza con lo que tenga la CPU base).
 fn punto_generico(a: &[f32], b: &[f32]) -> f32 {
     let mut s = [0f32; 8];
-    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
-    let (ra, rb) = (ca.remainder(), cb.remainder());
-    for (x, y) in ca.zip(cb) {
+    let ((ca, ra), (cb, rb)) = (a.as_chunks::<8>(), b.as_chunks::<8>());
+    for (x, y) in ca.iter().zip(cb) {
         for i in 0..8 {
             s[i] += x[i] * y[i];
         }
