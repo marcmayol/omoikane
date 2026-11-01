@@ -27,7 +27,7 @@ pub fn ruta_por_defecto() -> PathBuf {
         let r = PathBuf::from(r);
         return std::path::absolute(&r).unwrap_or(r);
     }
-    dirs::home_dir().unwrap_or_default().join(".omoikane").join("omoikane.db")
+    std::env::home_dir().unwrap_or_default().join(".omoikane").join("omoikane.db")
 }
 
 /// Registra sqlite-vec en todas las conexiones que se abran después. Basta con una vez por proceso.
@@ -55,6 +55,14 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     db.busy_timeout(Duration::from_secs(5))?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
+    // Sin pasar el WAL a la base al cerrar. Casi todo `omoi` es un proceso corto (el hook de cada
+    // mensaje) y casi siempre la única conexión: al cerrarla, SQLite pasaba el WAL a la base, la
+    // sincronizaba con el disco y borraba el WAL, y el siguiente proceso lo volvía a crear y a
+    // sincronizar al escribir la primera página. Cada sincronización son 30-70 ms en Windows: el recall
+    // sin el modelo de significado tardaba 185 ms en vez de 34. El WAL queda en disco (es la base:
+    // nadie debe copiar `omoikane.db` sin él; las copias van por `VACUUM INTO`) y se pasa a la base
+    // cuando llega a `wal_autocheckpoint` páginas, como con varias conexiones abiertas.
+    db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
     // Las claves ajenas, después de migrar: reconstruir `memory` (esquema 10) pide tenerlas apagadas, y
     // `PRAGMA foreign_keys` no cambia dentro de una transacción (lang_altertable.html, paso 1).
     migrar(&mut db)?;
@@ -934,6 +942,24 @@ mod tests {
         let db = abrir(&ruta).unwrap();
         let modo: String = db.query_row("PRAGMA journal_mode", [], |f| f.get(0)).unwrap();
         assert_eq!(modo, "wal");
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Al cerrar, el WAL no se pasa a la base (cada `omoi` pagaba dos sincronizaciones con el disco) y
+    /// lo escrito sigue ahí al volver a abrir, aunque el WAL no se haya pasado.
+    #[test]
+    fn cerrar_no_pasa_el_wal() {
+        let dir = std::env::temp_dir().join(format!("omoi-db-wal-{}", std::process::id()));
+        let ruta = dir.join("o.db");
+        let db = abrir(&ruta).unwrap();
+        assert!(db.db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE).unwrap());
+        db.execute("INSERT INTO meta(k, v) VALUES ('prueba-wal', 'sí')", []).unwrap();
+        drop(db);
+        assert!(dir.join("o.db-wal").metadata().unwrap().len() > 0);
+        let db = abrir(&ruta).unwrap();
+        let v: String = db.query_row("SELECT v FROM meta WHERE k = 'prueba-wal'", [], |f| f.get(0)).unwrap();
+        assert_eq!(v, "sí");
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
     }
