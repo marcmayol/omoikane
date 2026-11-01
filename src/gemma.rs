@@ -90,7 +90,9 @@ impl Tabla {
     }
 }
 
-/// El tokenizer: el compilado (`bpe`) o, si no se pudo, el de `tokenizers`.
+/// El tokenizer: el compilado (`bpe`) o, si no se pudo, el de `tokenizers`. Hay uno por modelo
+/// cargado: lo que ocupe la variante grande da igual.
+#[allow(clippy::large_enum_variant)]
 enum Tok {
     Bpe(crate::bpe::Bpe),
     Hf(Box<tokenizers::Tokenizer>),
@@ -151,6 +153,8 @@ struct Candle {
     densa2: Tensor,
 }
 
+/// Uno por modelo cargado: lo que ocupe la variante grande da igual.
+#[allow(clippy::large_enum_variant)]
 enum Motor {
     Rapido(crate::rapido::Rapido, rayon::ThreadPool),
     Candle(Candle),

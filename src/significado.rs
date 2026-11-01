@@ -254,7 +254,17 @@ fn coseno(q: &[f32], b: &[u8]) -> f32 {
         return 0.0;
     }
     let e = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    e * q.iter().zip(&b[4..]).map(|(x, &y)| x * f32::from(y as i8)).sum::<f32>()
+    // De 8 en 8 con sumas parciales: así el compilador lo vectoriza (con una sola suma no puede
+    // reordenarla). Con 10.000 memorias, comparar pasaba de 8,2 a 2,0 ms (revisión de velocidad).
+    let mut s = [0f32; 8];
+    let ((cq, rq), (cb, rb)) = (q.as_chunks::<8>(), b[4..].as_chunks::<8>());
+    for (x, y) in cq.iter().zip(cb) {
+        for i in 0..8 {
+            s[i] += x[i] * f32::from(y[i] as i8);
+        }
+    }
+    let resto: f32 = rq.iter().zip(rb).map(|(x, &y)| x * f32::from(y as i8)).sum();
+    e * (s.iter().sum::<f32>() + resto)
 }
 
 /// El texto que se convierte en vector: el título y el contenido, como en el benchmark que lo midió.
