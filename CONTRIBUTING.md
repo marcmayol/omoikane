@@ -21,7 +21,7 @@ These come from the 1.0 promise ("Stable since 1.0" in the README) and from what
 2. **Nothing crosses between spaces.** A memory, verdict, tombstone or project line of one client never reaches another client's repository, search or recall. Changes here get an extra review that tries to break them.
 3. **No LLM inside Omoikane.** It runs offline, fast and the same on every machine. The agent is the one with the language model; Omoikane gives it tools.
 4. **Eight MCP tools.** Every extra tool costs every user context on every session. New behaviour goes into an existing tool's parameters, or into the CLI.
-5. **Recall stays fast.** The hook runs on every message: under 30 ms on a normal memory, measured, not estimated.
+5. **Recall stays fast.** The hook runs on every message. By words alone, under 40 ms (process start included); the meaning model adds about 60 ms and never more than 250 ms, after which recall goes on without it. Measured, not estimated: a change that slows either path says how much.
 6. **Local and private.** No telemetry, no accounts, no server of ours. The network is used only to download the model, to update when the user said yes, and to sync with the user's own git repository.
 7. **Windows, Linux and macOS alike.** CI runs on all three; paths, line endings and file locking are the usual traps.
 

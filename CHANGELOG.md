@@ -6,14 +6,33 @@ The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Unreleased
 
-## Unreleased
+Omoikane understands what you ask with other words. Until 1.1, a question that didn't share words with the memory that answers it almost never found it, and engram 3.6 doesn't either. 1.2 adds a second model, EmbeddingGemma 300M, for meaning.
+
+### Measured
+On the public benchmark ([omoikane-bench](https://github.com/marcmayol/omoikane-bench), 250 questions written blind), with 3,000 and 10,000 memories:
+
+| | 1.2 | 1.2 with the meaning model off (as 1.1) | engram 3.6, best mode |
+|---|---|---|---|
+| right memory first, paraphrases | **55 % / 53 %** | 9 % / 8 % | 6 % / 4 % |
+| right memory first, questions | **89 % / 88 %** | 85 % / 84 % | 71 % / 71 % |
+| right memory first, keywords | 96 % / 94 % | 94 % / 92 % | 88 % / 86 % |
+| recall injects something on a question with no answer | **8 % / 15 %** | 40 % / 70 % | – |
+| recall brings the right memory, questions | 94 % / 94 % | 93 % / 94 % | – |
+| search, P50 | 101 / 126 ms | 37 / 45 ms | 205 / 337 ms |
+| recall, P50 | 99 / 126 ms | 35 / 40 ms | – |
+
+What it costs: about 60 ms more per search and per prompt, about 450 MB on disk, and computing each memory's vector once (about 0.25 s each on 8 CPU threads, in the background). Not measured yet at 100,000 memories.
 
 ### Added
-- **The meaning model, first piece** (EmbeddingGemma 300M, for questions asked with other words; see PLAN.md 9.2). It runs in pure Rust with candle, with no ONNX Runtime or anything else outside the binary, and gives the same vectors as Google's reference (cosine 1.00000). Loading it takes about 2 s, so it lives in a service of its own that Omoikane starts by itself the first time it's needed (`127.0.0.1` only, with a token) and that closes after 30 minutes without use. Whoever asks never waits for it to load: without the service, everything works as in 1.1. Search and recall don't use it yet.
+- **The meaning model**: EmbeddingGemma 300M in pure Rust (candle), with no ONNX Runtime or anything else outside the binary. It gives the same vectors as Google's reference (cosine 0.999 or better, up to 2,048 tokens). It is installed in a compact format of about 450 MB, with its 262,144-token table in int8 read straight from disk, so it loads in 1.4 s. `omoi model install --semantic` downloads it and checks every file's SHA-256; `--from` takes it from a folder, and converts the one sentence-transformers leaves.
+- **It lives in a service of its own**, one per user, that Omoikane starts by itself the first time it's needed (`127.0.0.1` only, with a token) and that closes after 30 minutes without use. Whoever asks never waits for it to load: without the service, everything works as in 1.1.
+- **Vectors computed in the background**: the service computes the vectors a database is missing when it is idle, and every change tells it. They live in a local table that is not synced and that 1.0 ignores. `omoi doctor` shows how many memories have one.
+- **Search joins words and meaning**: each candidate scores its similarity in meaning plus a share of its word score. Short queries (five words or fewer, keywords) give words more weight.
+- **Recall uses meaning to keep quiet**: what the words bring stays out if it isn't among the three memories closest in meaning, and the closest one comes in when it clearly stands out from the second. Both thresholds are relative (a position and a lead, not a fixed similarity), because similarity changes with the language and with how people write: in the benchmark the right memory sits around 0.7; in real prompts in Spanish with typos, around 0.35. Checked by hand on the author's last 300 real prompts: 5 change, all for the better.
 - `omoi model semantic --off` turns it off and closes its service: Omoikane goes back to the light model only, as in 1.1, faster and with less memory. `--on` turns it back on; `OMOIKANE_SEMANTIC=0` overrides both.
 
 ### Compatibility
-- Same as 1.1.0: the database, the sync lines and the export format don't change.
+- Same as 1.1.0: the database schema (10), the sync lines and the export format don't change. The meaning vectors are a new local table (`memory_sig`) that 1.0 opens and ignores; checked against 1.0.0 on every commit.
 
 ## 1.1.0 (2026-10-31)
 

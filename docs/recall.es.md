@@ -24,6 +24,16 @@ Al empezar la sesión sí llega más: tus preferencias, lo que has fijado, en qu
 
 engram, la alternativa con la que se compara Omoikane, no inyecta memorias en cada mensaje. Con lo viejo hace otra cosa: cada vez que guarda, propone las memorias parecidas y le pide al agente que juzgue qué relación tienen (`mem_judge`). Omoikane no pide nada. Detecta él la contradicción, la marca en el recall con el motivo y deja al agente juzgar solo cuando sabe algo que Omoikane no puede ver (`supersedes`, `contradicts`, `compatible`). Cómo funcionan esos veredictos está en [memory-care.es.md](memory-care.es.md#veredictos).
 
+## Entiende lo que preguntas con otras palabras
+
+Las palabras encuentran una memoria cuando preguntas con las palabras que usa. Si preguntas lo mismo de otra forma («¿cómo recupero una versión que retiré?» para una memoria sobre `cargo yank --undo`), las palabras no la encuentran, y el modelo ligero casi nunca. Desde la 1.2 un segundo modelo, [EmbeddingGemma 300M](https://huggingface.co/google/embeddinggemma-300m), compara el significado:
+
+- **En la búsqueda**, cada candidata suma su parecido en significado y una parte de su puntuación por palabras; con cinco palabras o menos (palabras clave) pesan más las palabras. En el benchmark público, con 3.000 memorias, la memoria buena sale la primera en el 55 % de las paráfrasis (9 % sin él, 6 % engram), el 89 % de las preguntas y el 96 % de las búsquedas por palabras clave.
+- **En el recuerdo sirve sobre todo para callar**: lo que traen las palabras se queda fuera si no está entre las tres memorias más parecidas en significado, y la más parecida entra cuando destaca claramente. En las preguntas sin respuesta, el recuerdo mete algo el 8 % de las veces con 3.000 memorias y el 15 % con 10.000 (40 % y 70 % sin él). Las dos reglas son relativas, un puesto y una ventaja, porque el parecido depende del idioma y de cómo escribe cada uno.
+- **Lo que cuesta**: unos 60 ms más por búsqueda y por mensaje (nunca más de 250 ms en el recuerdo: pasado eso, sigue sin él), unos 450 MB en disco y calcular una vez el vector de cada memoria, un cuarto de segundo cada una, en segundo plano.
+- **Cómo funciona**: en Rust puro dentro de `omoi`, en la CPU. Cargarlo tarda 1,4 s, así que lo mantiene abierto un servicio propio (uno por usuario, solo en `127.0.0.1` y con token) que se cierra tras 30 minutos sin uso. Nadie espera a que cargue: hasta que está, y hasta que casi todas las memorias tienen su vector, todo va por palabras como antes. `omoi doctor` dice cuántas lo tienen.
+- **Instalarlo y apagarlo**: `omoi model install --semantic` lo descarga y comprueba el SHA-256 de cada fichero. `omoi model semantic --off` vuelve a usar solo el modelo ligero (más rápido y con menos memoria) y cierra el servicio; `--on` lo vuelve a encender.
+
 ## Busca en tu idioma
 
 La búsqueda empieza por palabras: le dan igual las tildes, mira también las rutas de fichero y da más peso a lo poco frecuente. Después, un modelo de embeddings local que abre en 2,7 ms rescata lo que se parece mucho aunque no comparta ninguna palabra. Dónde busca depende de dónde estés. Desde un proyecto, en él y en lo global; desde tu carpeta de usuario, en todo.

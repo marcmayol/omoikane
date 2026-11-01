@@ -61,6 +61,7 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
     al_dia_10(&db)?;
     asegurar_persona(&db)?;
     locales(&mut db)?;
+    crate::significado::crear_tabla(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }

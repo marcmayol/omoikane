@@ -2784,6 +2784,9 @@ pub fn aviso(ruta_db: &Path) -> Option<String> {
 /// Tras un cambio: si la sincronización está configurada, deja una marca de pendiente nueva y lanza
 /// `omoi sync --background` aparte, sin esperar. No falla nunca (lo peor es no sincronizar ahora).
 pub fn programar(ruta_db: &Path) {
+    // Lo que ha cambiado necesita también su vector de significado (si el modelo está): que el
+    // servicio lo calcule ya, en segundo plano.
+    crate::significado::avisar(ruta_db);
     let r = rutas(ruta_db);
     // `OMOIKANE_SYNC_AUTO=0`: solo a mano (`omoi sync`).
     if (!r.config.exists() && espacios(ruta_db).is_empty()) || std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") {

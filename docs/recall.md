@@ -24,6 +24,16 @@ At session start more does arrive: your preferences, what you pinned, where each
 
 engram, the alternative Omoikane is compared with, doesn't inject memories on each prompt. With stale ones it does something else: every save proposes similar memories and asks the agent to judge how they relate (`mem_judge`). Omoikane asks for nothing. It detects the contradiction itself, flags it in the recall with the reason, and lets the agent judge only when it knows something Omoikane can't see (`supersedes`, `contradicts`, `compatible`). How those verdicts work is in [memory-care.md](memory-care.md#verdicts).
 
+## It understands what you ask with other words
+
+Words find a memory when you ask with the words it uses. When you ask the same thing differently ("how do I bring back a release I pulled?" for a memory about `cargo yank --undo`), words don't find it, and the light model rarely does. From 1.2 a second model, [EmbeddingGemma 300M](https://huggingface.co/google/embeddinggemma-300m), compares meaning:
+
+- **In search**, each candidate scores its similarity in meaning plus a share of its word score; with five words or fewer (keywords) words weigh more. On the public benchmark, with 3,000 memories, the right memory comes first for 55 % of paraphrases (9 % without it, 6 % for engram), 89 % of questions and 96 % of keyword searches.
+- **In recall it mostly keeps quiet**: what the words bring stays out if it isn't among the three memories closest in meaning, and the closest one comes in when it clearly stands out. On questions with no answer, recall injects something 8 % of the time with 3,000 memories and 15 % with 10,000 (40 % and 70 % without it). Both rules are relative, a position and a lead, because similarity depends on the language and on how people write.
+- **What it costs**: about 60 ms more per search and per prompt (never more than 250 ms in recall: past that it goes on without it), about 450 MB on disk, and computing each memory's vector once, about a quarter of a second each, in the background.
+- **How it runs**: in pure Rust inside `omoi`, on the CPU. Loading it takes 1.4 s, so a service of its own keeps it loaded (one per user, `127.0.0.1` only, with a token) and closes after 30 minutes without use. Nobody waits for it to load: until it's there, and until most memories have their vector, everything works by words as before. `omoi doctor` shows how many have one.
+- **Installing and turning it off**: `omoi model install --semantic` downloads it and checks every file's SHA-256. `omoi model semantic --off` goes back to the light model only (faster, less memory) and closes the service; `--on` turns it back on.
+
 ## It searches in your language
 
 Search starts with words: accents don't matter, file paths count too, and rare words weigh more. Then a local embedding model, which opens in 2.7 ms, finds what is very close in meaning even with no word in common. Where it searches depends on where you are: from a project, that project and the global memories; from your home folder, everything.

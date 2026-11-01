@@ -184,7 +184,7 @@ fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
 /// Búsqueda: manda el orden por palabras (BM25); el vector añade detrás lo que se parece mucho y
 /// las palabras no encontraron. Después pesan la fijada y la recencia. Sin modelo, solo palabras.
 pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
-    buscar_con(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION)
+    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, true, true)
 }
 
 /// Cómo se juntan la lista por palabras y la lista por significado.
@@ -217,13 +217,13 @@ const LARGO_RAIZ: usize = 6;
 /// Solo por palabras y sin contar los resultados como recuperados: para quien filtra después (el
 /// recall), que apunta solo lo que de verdad usa.
 pub fn buscar_sin_apuntar(db: &mut Connection, texto: &str, o: &Opciones) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false)
+    buscar_base(db, texto, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false, false)
 }
 
 /// `buscar` con otra similitud mínima y otra fusión (para calibrarlas).
 /// Como `buscar`, sin contar los resultados como recuperados: para mirar (el visor).
 pub fn buscar_sin_apuntar_con(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, false)
+    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, false, true)
 }
 
 pub fn buscar_con(
@@ -234,9 +234,10 @@ pub fn buscar_con(
     similitud_minima: f32,
     fusion_elegida: Fusion,
 ) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, modelo, similitud_minima, fusion_elegida, true)
+    buscar_base(db, texto, o, modelo, similitud_minima, fusion_elegida, true, false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn buscar_base(
     db: &mut Connection,
     texto: &str,
@@ -245,11 +246,16 @@ fn buscar_base(
     similitud_minima: f32,
     fusion_elegida: Fusion,
     apuntar: bool,
+    con_significado: bool,
 ) -> Result<Vec<Resultado>> {
     let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
     let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
 
     let por_palabras: Vec<(Memoria, usize, f64)> = palabras(db, texto, o)?.into_iter().filter(|(m, _, _)| con_tags(m)).collect();
+    if con_significado && let Some(cosenos) = cosenos_de(db, texto, o)? {
+        let v = con_gemma(db, texto, por_palabras, cosenos, &con_tags)?;
+        return ordenar(db, v, o, apuntar);
+    }
     let por_significado: Vec<(Memoria, f32)> = match modelo {
         Some(modelo) if !texto.trim().is_empty() => vectores::parecidas_en(
             db,
@@ -350,6 +356,68 @@ fn buscar_base(
         }
     }
     ordenar(db, fusion, o, apuntar)
+}
+
+/// Cuánto pesan las palabras junto al significado: el coseno de EmbeddingGemma más este peso por la
+/// puntuación por palabras (dividida por la de la mejor) a la cuarta, para que solo cuente cerca de
+/// la mejor. Las consultas cortas (`CORTA` palabras o menos) son palabras clave, como en un buscador:
+/// ahí las palabras pesan más. Elegido con las 250 preguntas a ciegas de `omoikane-bench`, ajustando
+/// con la mitad y comprobando con la otra: con 3.000 notas, el primer acierto pasa de 0,94 / 0,85 /
+/// 0,09 (palabras clave / preguntas / paráfrasis, solo palabras) a 0,92 / 0,89 / 0,55.
+const PESO_PALABRAS: f64 = 0.05;
+const PESO_PALABRAS_CORTA: f64 = 0.3;
+pub const CORTA: usize = 5;
+/// Cuánto se espera al servicio de significado en una búsqueda antes de seguir solo con palabras.
+const PRESUPUESTO_SIGNIFICADO: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Los cosenos de EmbeddingGemma de la consulta con las memorias del ámbito, si el modelo está
+/// encendido e instalado, la base tiene vectores para casi todo y el servicio responde a tiempo.
+fn cosenos_de(db: &Connection, texto: &str, o: &Opciones) -> Result<Option<Vec<(String, f32)>>> {
+    use crate::significado as s;
+    if texto.trim().is_empty() || !s::activado() || s::modelo().is_none() {
+        return Ok(None);
+    }
+    let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(None) };
+    if !s::listo(db) {
+        s::avisar(&ruta);
+        return Ok(None);
+    }
+    let Some(q) = s::vector_consulta(&ruta, texto, PRESUPUESTO_SIGNIFICADO) else { return Ok(None) };
+    Ok(Some(s::cosenos(db, &q, &o.ambito, o.kind)?))
+}
+
+/// La fusión con EmbeddingGemma: candidatas por palabras y las más parecidas por significado, cada
+/// una con su coseno más el peso de sus palabras (ver `PESO_PALABRAS`).
+fn con_gemma(
+    db: &Connection,
+    texto: &str,
+    por_palabras: Vec<(Memoria, usize, f64)>,
+    cosenos: Vec<(String, f32)>,
+    con_tags: &dyn Fn(&Memoria) -> bool,
+) -> Result<Vec<Resultado>> {
+    let palabras_consulta = texto.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count();
+    let peso = if palabras_consulta <= CORTA { PESO_PALABRAS_CORTA } else { PESO_PALABRAS };
+    let coseno: std::collections::HashMap<&str, f32> = cosenos.iter().map(|(id, c)| (id.as_str(), *c)).collect();
+    let mejor = por_palabras.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
+    let mut v: Vec<Resultado> = por_palabras
+        .into_iter()
+        .map(|(m, n, r)| {
+            let c = coseno.get(m.id.as_str()).copied();
+            let score = f64::from(c.unwrap_or(0.0)) + peso * (r / mejor).max(0.0).powi(4);
+            Resultado { memoria: m, score, similarity: c, matched_words: n }
+        })
+        .collect();
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.id = ?1"))?;
+    for (id, c) in cosenos.iter().take(CANDIDATOS) {
+        if v.iter().any(|r| r.memoria.id == *id) {
+            continue;
+        }
+        let m = q.query_row([id], de_fila)?;
+        if con_tags(&m) {
+            v.push(Resultado { memoria: m, score: f64::from(*c), similarity: Some(*c), matched_words: 0 });
+        }
+    }
+    Ok(v)
 }
 
 /// Recencia y fijadas, orden final, límite y, si toca, apuntarlas como recuperadas.

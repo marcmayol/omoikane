@@ -95,9 +95,14 @@ fn descargar(destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
 
 /// `aviso` recibe una línea por fichero.
 fn descargar_de(origen: &str, destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
+    descargar_ficheros(origen, &FICHEROS, destino, aviso)
+}
+
+/// Descarga `ficheros` de `origen` a `destino` (cada uno a `.part` y renombrado al llegar entero).
+pub(crate) fn descargar_ficheros(origen: &str, ficheros: &[&str], destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
     std::fs::create_dir_all(destino)?;
     let host = origen.split('/').nth(2).unwrap_or(origen);
-    for f in FICHEROS {
+    for &f in ficheros {
         let url = format!("{origen}/{f}");
         let resp = ureq::get(&url).call().with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
         let total: Option<u64> =

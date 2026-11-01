@@ -85,6 +85,34 @@ fn servicio_de_significado() {
     let c = coseno(&q[0], &d[0]);
     assert!((c - 0.6904).abs() < 0.002, "coseno {c}");
 
+    // El servicio calcula en segundo plano los vectores de la base de quien le pide algo.
+    use omoikane::memoria::{self, Ambito, Nueva, Tipo as Kind};
+    let ruta = dir.join("o.db");
+    {
+        let mut db = omoikane::db::abrir(&ruta).unwrap();
+        for (t, c) in [("Cargo yank", "Cargo yank --undo restores a yanked version so it can be used again."), ("Gradle", "Two Gradle daemons at once corrupt the build cache.")] {
+            memoria::guardar(&mut db, Nueva { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+        }
+    }
+    let _ = s::vector_consulta(&ruta, "hola", Duration::from_secs(5));
+    assert!(
+        esperar(Duration::from_secs(120), || s::cobertura(&omoikane::db::abrir(&ruta).unwrap()).unwrap() == (2, 2)),
+        "el servicio no calculó los vectores de la base"
+    );
+
+    // Y la búsqueda encuentra lo que se pregunta con otras palabras, que por palabras no sale.
+    let mut db = omoikane::db::abrir(&ruta).unwrap();
+    let o = omoikane::buscar::Opciones { ambito: Ambito::de(&db, "/p").unwrap(), kind: None, tags: vec![], limite: 5 };
+    let pregunta = "how do I bring back a release I pulled from the registry?";
+    let r = omoikane::buscar::buscar(&mut db, pregunta, &o, None).unwrap();
+    assert_eq!(r.first().map(|x| x.memoria.title.as_str()), Some("Cargo yank"), "{r:?}");
+    assert!(r[0].similarity.is_some());
+    // Apagado, como en la 1.1: solo palabras, y por palabras no hay nada.
+    unsafe { std::env::set_var("OMOIKANE_SEMANTIC", "0") };
+    assert!(omoikane::buscar::buscar(&mut db, pregunta, &o, None).unwrap().iter().all(|x| x.memoria.title != "Cargo yank" || x.similarity.is_none()));
+    unsafe { std::env::remove_var("OMOIKANE_SEMANTIC") };
+    drop(db);
+
     // Un token equivocado no recibe vectores.
     let r = s::registro().unwrap();
     let mut tcp = std::net::TcpStream::connect(("127.0.0.1", r.puerto)).unwrap();
@@ -104,5 +132,16 @@ fn servicio_de_significado() {
     assert!(esperar(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()));
     assert!(esperar(Duration::from_secs(15), || hijo.try_wait().unwrap().is_some()), "no se cerró sin uso");
     assert!(s::registro().is_none());
+    // El formato compacto (el que se instala) da el mismo vector que el de sentence-transformers.
+    let compacto = dir.join("compacto");
+    omoikane::gemma::compactar(&modelo, &compacto).unwrap();
+    assert!(omoikane::gemma::es_compacto(&compacto));
+    let (g1, g2) = (omoikane::gemma::Gemma::cargar(&modelo).unwrap(), omoikane::gemma::Gemma::cargar(&compacto).unwrap());
+    for (t, tipo) in [("How do I undo a cargo yank?", Tipo::Pregunta), ("Two Gradle daemons at once corrupt the build cache.", Tipo::Documento)] {
+        let c = coseno(&g1.vector(t, tipo).unwrap(), &g2.vector(t, tipo).unwrap());
+        assert!(c > 0.9999, "compacto: coseno {c}");
+    }
+    drop((g1, g2));
+
     let _ = std::fs::remove_dir_all(&dir);
 }

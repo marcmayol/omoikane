@@ -49,6 +49,9 @@ struct Peticion {
     textos: Vec<String>,
     #[serde(default)]
     ping: bool,
+    /// La base de quien pide: el servicio calcula en segundo plano los vectores que le falten.
+    #[serde(default)]
+    db: Option<String>,
 }
 
 fn carpeta() -> Option<PathBuf> {
@@ -97,6 +100,252 @@ pub fn modelo() -> Option<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::modelos::carpeta().join(NOMBRE_MODELO));
     crate::gemma::es_modelo(&dir).then_some(dir)
+}
+
+/// De dónde se descarga el formato compacto (`gemma::compactar`), en orden. `OMOIKANE_SEMANTIC_SOURCE`
+/// las sustituye (una o varias separadas por comas).
+pub const ORIGENES: [&str; 2] = [
+    "https://huggingface.co/natzx94/embeddinggemma-300m-omoikane/resolve/main",
+    "https://github.com/marcmayol/omoikane/releases/download/modelo-embeddinggemma-300m-v1",
+];
+
+/// SHA-256 de cada fichero del formato compacto publicado: lo que se descarga tiene que ser
+/// exactamente esto, venga del espejo que venga.
+const SUMAS: [(&str, &str); 5] = [
+    ("config.json", "8f863f76e2d9c710cc833dc92efa898c9adfd41031c786507cc6b0e49c2e3e68"),
+    ("tokenizer.json", "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e"),
+    ("tokens.escala", "ffba8e813e1ce38f96a360df3f70f7c2dd14b30c462c5a869da5def52abd5e1a"),
+    ("pesos.safetensors", "29c6f8b54070cc8889f1f0f335dbf9d2e5a6957f2c01830ab9e5284f832b7aec"),
+    ("tokens.i8", "02c0fd1158bf4195f15f5db815f67f1de120e0852d010a0f2a74917167fc2465"),
+];
+
+/// El aviso que pide la licencia de Gemma a quien lo redistribuye; va en la carpeta del modelo.
+const AVISO_LICENCIA: &str = "EmbeddingGemma 300M (google/embeddinggemma-300m), converted by Omoikane to a compact format\n\
+(token table in int8, the rest in float16).\n\n\
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n\
+Its use is restricted by the Gemma Prohibited Use Policy: ai.google.dev/gemma/prohibited_use_policy\n";
+
+fn suma(f: &std::path::Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut h = Sha256::new();
+    let mut r = std::fs::File::open(f)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Instala EmbeddingGemma en `~/.omoikane/models/embeddinggemma-300m`. Sin `desde`, descarga el
+/// formato compacto (unos 450 MB) y comprueba su SHA-256; con `desde`, lo toma de una carpeta, en
+/// formato compacto o de sentence-transformers (que convierte). Si ya está instalado, no hace nada.
+/// Devuelve la carpeta.
+pub fn instalar(desde: Option<&std::path::Path>, aviso: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+    use crate::gemma;
+    use crate::tr;
+    let base = crate::modelos::carpeta();
+    let destino = base.join(NOMBRE_MODELO);
+    if gemma::es_modelo(&destino) {
+        return Ok(destino);
+    }
+    std::fs::create_dir_all(&base)?;
+    let temporal = base.join(format!(".instalando-significado-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temporal);
+    let hecho = (|| -> Result<()> {
+        match desde {
+            Some(d) if gemma::es_compacto(d) => {
+                std::fs::create_dir_all(&temporal)?;
+                for f in gemma::FICHEROS_COMPACTO {
+                    std::fs::copy(d.join(f), temporal.join(f))?;
+                }
+            }
+            Some(d) if gemma::es_sentence_transformers(d) => {
+                aviso(&tr!("converting the model to the compact format (a few seconds)", "convirtiendo el modelo al formato compacto (unos segundos)"));
+                gemma::compactar(d, &temporal)?;
+            }
+            Some(d) => bail!(tr!("{}: no EmbeddingGemma there", "{}: ahí no hay EmbeddingGemma", d.display())),
+            None => {
+                let origenes: Vec<String> = match std::env::var("OMOIKANE_SEMANTIC_SOURCE") {
+                    Ok(o) if !o.trim().is_empty() => o.split(',').map(|x| x.trim().trim_end_matches('/').to_string()).filter(|x| !x.is_empty()).collect(),
+                    _ => ORIGENES.iter().map(|o| o.to_string()).collect(),
+                };
+                let mut fallos = Vec::new();
+                for o in origenes {
+                    let r = crate::modelos::descargar_ficheros(&o, &gemma::FICHEROS_COMPACTO, &temporal, aviso).and_then(|()| {
+                        for (f, esperada) in SUMAS {
+                            let s = suma(&temporal.join(f))?;
+                            if s != esperada {
+                                bail!(tr!("{f}: wrong SHA-256 ({s})", "{f}: SHA-256 equivocado ({s})"));
+                            }
+                        }
+                        Ok(())
+                    });
+                    match r {
+                        Ok(()) => {
+                            fallos.clear();
+                            break;
+                        }
+                        Err(e) => {
+                            aviso(&tr!("failed: {e:#}", "falló: {e:#}"));
+                            fallos.push(format!("{o}: {e:#}"));
+                        }
+                    }
+                }
+                if !fallos.is_empty() {
+                    bail!(tr!("couldn't download the meaning model:\n{}", "no se pudo descargar el modelo de significado:\n{}", fallos.join("\n")));
+                }
+            }
+        }
+        std::fs::write(temporal.join("NOTICE"), AVISO_LICENCIA)?;
+        // Si otro proceso lo instaló a la vez, vale el suyo.
+        if std::fs::rename(&temporal, &destino).is_err() && !gemma::es_modelo(&destino) {
+            bail!(tr!("can't move the model into {}", "no se puede mover el modelo a {}", destino.display()));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&temporal);
+    hecho.map(|()| destino)
+}
+
+// ------------------------------------------------------------------ los vectores en la base
+
+/// Los vectores de EmbeddingGemma de cada memoria: una tabla local, como `vec_bloque` (no se
+/// sincroniza, una 1.0 la ignora y no sube `lector_minimo`). Por `id` y no por `n`: una migración que
+/// rehaga `memory` puede renumerar. `hlc` es el `content_hlc` de la memoria cuando se calculó: si
+/// el texto cambia, deja de coincidir y se vuelve a calcular. `v`: escala (f32) y 768 int8.
+const TABLA: &str = "CREATE TABLE IF NOT EXISTS memory_sig (id TEXT PRIMARY KEY, hlc TEXT NOT NULL, v BLOB NOT NULL)";
+
+/// Qué modelo y qué cálculo hicieron los vectores guardados: si cambia, se borran y se recalculan.
+const VERSION_VECTORES: &str = "embeddinggemma-300m/2048";
+
+pub fn crear_tabla(db: &rusqlite::Connection) -> Result<()> {
+    db.execute_batch(TABLA)?;
+    let hecha: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'sig_version'", [], |f| f.get(0)).ok();
+    if hecha.as_deref() != Some(VERSION_VECTORES) {
+        db.execute("DELETE FROM memory_sig", [])?;
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('sig_version', ?1)", [VERSION_VECTORES])?;
+    }
+    Ok(())
+}
+
+fn a_blob(v: &[f32]) -> Vec<u8> {
+    let max = v.iter().fold(0f32, |m, x| m.max(x.abs()));
+    let e = if max > 0.0 { max / 127.0 } else { 1.0 };
+    let mut b = Vec::with_capacity(4 + v.len());
+    b.extend_from_slice(&e.to_le_bytes());
+    b.extend(v.iter().map(|x| (x / e).round().clamp(-127.0, 127.0) as i8 as u8));
+    b
+}
+
+/// Coseno entre la consulta (normalizada) y un vector guardado (normalizado al guardarlo).
+fn coseno(q: &[f32], b: &[u8]) -> f32 {
+    if b.len() != 4 + q.len() {
+        return 0.0;
+    }
+    let e = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    e * q.iter().zip(&b[4..]).map(|(x, &y)| x * f32::from(y as i8)).sum::<f32>()
+}
+
+/// El texto que se convierte en vector: el título y el contenido, como en el benchmark que lo midió.
+pub fn texto_de(titulo: &str, contenido: &str) -> String {
+    format!("{titulo}\n{contenido}")
+}
+
+/// Hasta `max` memorias sin vector (o con el texto cambiado desde que se calculó): `(id, hlc, texto)`.
+pub fn pendientes(db: &rusqlite::Connection, max: usize) -> Result<Vec<(String, String, String)>> {
+    let mut q = db.prepare(
+        "SELECT m.id, m.content_hlc, m.title, m.content FROM memory m LEFT JOIN memory_sig s ON s.id = m.id
+         WHERE s.id IS NULL OR s.hlc <> m.content_hlc LIMIT ?1",
+    )?;
+    let filas = q.query_map([max as i64], |f| Ok((f.get(0)?, f.get(1)?, texto_de(&f.get::<_, String>(2)?, &f.get::<_, String>(3)?))))?;
+    Ok(filas.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn guardar(db: &rusqlite::Connection, id: &str, hlc: &str, v: &[f32]) -> Result<()> {
+    db.execute("INSERT OR REPLACE INTO memory_sig(id, hlc, v) VALUES (?1, ?2, ?3)", rusqlite::params![id, hlc, a_blob(v)])?;
+    Ok(())
+}
+
+/// Cuántas memorias tienen su vector al día, y cuántas hay. Borra de paso los de memorias que ya no
+/// están (olvidadas o purgadas).
+pub fn cobertura(db: &rusqlite::Connection) -> Result<(usize, usize)> {
+    let _ = db.execute("DELETE FROM memory_sig WHERE id NOT IN (SELECT id FROM memory)", []);
+    let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0))?;
+    let hechas: i64 = db.query_row("SELECT count(*) FROM memory_sig s JOIN memory m ON m.id = s.id AND m.content_hlc = s.hlc", [], |f| f.get(0))?;
+    Ok((hechas as usize, total as usize))
+}
+
+/// ¿Hay vectores para casi todo? Mientras se indexa (los primeros minutos tras instalar el modelo),
+/// mezclar significado con memorias sin vector las hundiría: se sigue como antes.
+pub fn listo(db: &rusqlite::Connection) -> bool {
+    let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0)).unwrap_or(0);
+    if total == 0 {
+        return false;
+    }
+    let hechas: i64 = db.query_row("SELECT count(*) FROM memory_sig", [], |f| f.get(0)).unwrap_or(0);
+    hechas as f64 >= 0.95 * total as f64
+}
+
+/// El coseno de `consulta` con cada memoria del ámbito que tiene vector, de mayor a menor.
+pub fn cosenos(db: &rusqlite::Connection, consulta: &[f32], ambito: &crate::memoria::Ambito, kind: Option<crate::memoria::Tipo>) -> Result<Vec<(String, f32)>> {
+    let mut q = db.prepare(&format!(
+        "SELECT s.id, s.v FROM memory_sig s JOIN memory m ON m.id = s.id WHERE {} AND (?1 IS NULL OR m.kind = ?1)",
+        ambito.sql()
+    ))?;
+    let mut filas = q.query(rusqlite::params![kind.map(crate::memoria::Tipo::as_str)])?;
+    let mut v = Vec::new();
+    while let Some(f) = filas.next()? {
+        let c = coseno(consulta, f.get_ref(1)?.as_blob()?);
+        v.push((f.get::<_, String>(0)?, c));
+    }
+    v.sort_by(|a, b| b.1.total_cmp(&a.1));
+    Ok(v)
+}
+
+/// Calcula los vectores que faltan en `db`, de `lote` en `lote`, hasta acabar o hasta que `seguir`
+/// diga que no. `aviso` recibe cuántas lleva. Devuelve cuántas calculó.
+pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, lote: usize, seguir: &mut dyn FnMut() -> bool, aviso: &mut dyn FnMut(usize)) -> Result<usize> {
+    let mut hechas = 0;
+    loop {
+        let p = pendientes(db, lote)?;
+        if p.is_empty() {
+            return Ok(hechas);
+        }
+        for (id, hlc, texto) in p {
+            if !seguir() {
+                return Ok(hechas);
+            }
+            let v = gemma.vector(&texto, Tipo::Documento)?;
+            guardar(db, &id, &hlc, &v)?;
+            hechas += 1;
+            aviso(hechas);
+        }
+    }
+}
+
+/// Las bases que el servicio indexa: las que le han pedido algo.
+fn bases_pedidas() -> &'static std::sync::Mutex<std::collections::BTreeSet<PathBuf>> {
+    static B: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>> = std::sync::OnceLock::new();
+    B.get_or_init(Default::default)
+}
+
+/// El vector de una consulta para buscar en `db` (que el servicio apunta para indexarla).
+pub fn vector_consulta(db: &std::path::Path, texto: &str, presupuesto: Duration) -> Option<Vec<f32>> {
+    vectores_en(Some(db), &[texto], Tipo::Pregunta, presupuesto)?.into_iter().next()
+}
+
+/// Avisa al servicio de que `db` ha cambiado para que calcule los vectores que falten, sin esperar
+/// (lo arranca si no está). Para `remember`, `update`, `import` y la sincronización.
+pub fn avisar(db: &std::path::Path) {
+    if !activado() || modelo().is_none() {
+        return;
+    }
+    let _ = vectores_en(Some(db), &[], Tipo::Documento, Duration::from_millis(100));
 }
 
 fn ahora() -> u64 {
@@ -155,6 +404,10 @@ pub fn arrancar() {
 /// Los vectores de `textos`, si el servicio los da dentro de `presupuesto`. Si no hay servicio, lo
 /// deja arrancando y devuelve `None`: quien llama sigue sin significado.
 pub fn vectores(textos: &[&str], tipo: Tipo, presupuesto: Duration) -> Option<Vec<Vec<f32>>> {
+    vectores_en(None, textos, tipo, presupuesto)
+}
+
+fn vectores_en(db: Option<&std::path::Path>, textos: &[&str], tipo: Tipo, presupuesto: Duration) -> Option<Vec<Vec<f32>>> {
     if !activado() || modelo().is_none() {
         return None;
     }
@@ -167,6 +420,7 @@ pub fn vectores(textos: &[&str], tipo: Tipo, presupuesto: Duration) -> Option<Ve
         tipo: Some(if tipo == Tipo::Pregunta { "pregunta" } else { "documento" }.into()),
         textos: textos.iter().map(|t| t.to_string()).collect(),
         ping: false,
+        db: db.map(|d| d.to_string_lossy().into_owned()),
     };
     match pedir(&r, &p, presupuesto) {
         Ok(v) => serde_json::from_value(v.get("vectores")?.clone()).ok(),
@@ -199,6 +453,9 @@ fn atender(s: TcpStream, modelo: &Gemma, token: &str, nombre: &str, uso: &Atomic
             Ok(p) if p.token != token => serde_json::json!({ "error": "bad token" }),
             Ok(p) if p.ping => serde_json::json!({ "pid": std::process::id(), "modelo": nombre }),
             Ok(p) => {
+                if let Some(db) = &p.db {
+                    bases_pedidas().lock().map(|mut b| b.insert(PathBuf::from(db))).ok();
+                }
                 let tipo = if p.tipo.as_deref() == Some("documento") { Tipo::Documento } else { Tipo::Pregunta };
                 match p.textos.iter().map(|t| modelo.vector(t, tipo)).collect::<Result<Vec<_>>>() {
                     Ok(v) => serde_json::json!({ "vectores": v }),
@@ -254,6 +511,53 @@ pub fn servir() -> Result<()> {
                 if ahora().saturating_sub(uso.load(Ordering::Relaxed)) >= ocioso {
                     let _ = std::fs::remove_file(c.join(REGISTRO));
                     std::process::exit(0);
+                }
+            }
+        });
+    }
+    {
+        // Indexador: calcula los vectores que falten en las bases que han pedido algo, solo cuando
+        // lleva un segundo sin peticiones (comparten la CPU) y de una memoria en una. Mientras le
+        // quede trabajo, cuenta como uso: el servicio no se cierra a medias.
+        let (gemma, uso) = (gemma.clone(), uso.clone());
+        std::thread::spawn(move || {
+            let mut abiertas: std::collections::BTreeMap<PathBuf, rusqlite::Connection> = Default::default();
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                let bases: Vec<PathBuf> = bases_pedidas().lock().map(|b| b.iter().cloned().collect()).unwrap_or_default();
+                for ruta in bases {
+                    if ahora().saturating_sub(uso.load(Ordering::Relaxed)) < 1 {
+                        break;
+                    }
+                    if !abiertas.contains_key(&ruta) {
+                        match crate::db::abrir(&ruta) {
+                            Ok(c) => {
+                                abiertas.insert(ruta.clone(), c);
+                            }
+                            Err(_) => {
+                                bases_pedidas().lock().map(|mut b| b.remove(&ruta)).ok();
+                                continue;
+                            }
+                        }
+                    }
+                    let db = &abiertas[&ruta];
+                    let mut seguir = || ahora().saturating_sub(uso.load(Ordering::Relaxed)) >= 1;
+                    // Cada memoria hecha cuenta como uso (un segundo atrás, para no frenarse a sí mismo).
+                    let mut hecha = |_| {
+                        uso.fetch_max(ahora().saturating_sub(1), Ordering::Relaxed);
+                    };
+                    match indexar(db, &gemma, 8, &mut seguir, &mut hecha) {
+                        Ok(0) => {
+                            // Al día: se saca de la lista hasta que alguien vuelva a pedir algo.
+                            bases_pedidas().lock().map(|mut b| b.remove(&ruta)).ok();
+                            abiertas.remove(&ruta);
+                        }
+                        Ok(_) => {}
+                        Err(_) => {
+                            bases_pedidas().lock().map(|mut b| b.remove(&ruta)).ok();
+                            abiertas.remove(&ruta);
+                        }
+                    }
                 }
             }
         });

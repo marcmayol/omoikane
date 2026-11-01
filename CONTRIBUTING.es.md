@@ -21,7 +21,7 @@ Salen de la promesa de la 1.0 («Estable desde la 1.0» en el README) y de lo qu
 2. **Nada cruza de un espacio a otro.** Una memoria, un veredicto, una lápida o una línea de proyecto de un cliente nunca llega al repositorio, la búsqueda o el recuerdo de otro. Los cambios aquí pasan una revisión extra que intenta romperlos.
 3. **Ningún LLM dentro de Omoikane.** Funciona sin conexión, rápido e igual en todas las máquinas. El modelo de lenguaje lo pone el agente; Omoikane le da herramientas.
 4. **Ocho herramientas MCP.** Cada herramienta de más le cuesta contexto a cada usuario en cada sesión. Lo nuevo va en parámetros de una herramienta que ya existe, o en la CLI.
-5. **El recuerdo sigue siendo rápido.** El hook salta en cada mensaje: menos de 30 ms con una memoria normal, medido y no estimado.
+5. **El recuerdo sigue siendo rápido.** El hook salta en cada mensaje. Solo por palabras, menos de 40 ms (contando el arranque del proceso); el modelo de significado añade unos 60 ms y nunca más de 250 ms, pasados los cuales el recuerdo sigue sin él. Medido y no estimado: un cambio que frene cualquiera de los dos caminos dice cuánto.
 6. **Local y privado.** Sin telemetría, sin cuentas, sin servidor nuestro. La red se usa solo para bajar el modelo, para actualizarse cuando el usuario ha dicho que sí y para sincronizar con el repositorio git del propio usuario.
 7. **Windows, Linux y macOS por igual.** La CI pasa en los tres; las rutas, los finales de línea y el bloqueo de ficheros son las trampas de siempre.
 

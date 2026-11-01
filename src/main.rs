@@ -512,6 +512,10 @@ enum AccionModelo {
         /// Take it from a folder with the int8 model instead of downloading it.
         #[arg(long, value_name = "DIR")]
         from: Option<PathBuf>,
+        /// Install the meaning model (EmbeddingGemma, about 450 MB) instead of the light one. With
+        /// --from, a folder with it in the compact format or as sentence-transformers leaves it.
+        #[arg(long)]
+        semantic: bool,
     },
     /// Delete installed models that are not in use.
     Clean,
@@ -528,6 +532,10 @@ enum AccionModelo {
     /// The service that keeps the meaning model loaded (Omoikane starts it by itself).
     #[command(hide = true)]
     ServeSemantic,
+    /// Compute now, in this process, the meaning vectors this database is missing (the service does it
+    /// by itself in the background; this is for scripts and benchmarks that need to wait for it).
+    #[command(hide = true)]
+    IndexSemantic,
 }
 
 fn main() -> Result<()> {
@@ -1208,7 +1216,15 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             println!("{}", modelos::carpeta().display());
             Ok(())
         }
-        AccionModelo::Install { from } => {
+        AccionModelo::Install { from, semantic: true } => {
+            let dir = omoikane::significado::instalar(from.as_deref(), &mut |linea| eprintln!("{linea}"))?;
+            if c.json {
+                return json(&serde_json::json!({ "semantic_model": dir.display().to_string() }));
+            }
+            println!("{}", tr!("meaning model ready: {}", "modelo de significado listo: {}", dir.display()));
+            Ok(())
+        }
+        AccionModelo::Install { from, semantic: false } => {
             let id = modelos::instalar(from.as_deref(), &mut |linea| eprintln!("{linea}"))?;
             // Los vectores de la base se calculan ya, para que la primera búsqueda no los espere.
             let mut db = abrir(c)?;
@@ -1223,6 +1239,25 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             Ok(())
         }
         AccionModelo::ServeSemantic => omoikane::significado::servir(),
+        AccionModelo::IndexSemantic => {
+            use omoikane::significado as s;
+            let dir = s::modelo().context(tr!("the meaning model is not installed (`omoi model install --semantic`)", "el modelo de significado no está instalado (`omoi model install --semantic`)"))?;
+            let gemma = omoikane::gemma::Gemma::cargar(&dir)?;
+            let db = abrir(c)?;
+            let (_, total) = s::cobertura(&db)?;
+            let inicio = std::time::Instant::now();
+            let n = s::indexar(&db, &gemma, 64, &mut || true, &mut |n| {
+                if n % 100 == 0 {
+                    eprintln!("{n}/{total} ({:.0} s)", inicio.elapsed().as_secs_f64());
+                }
+            })?;
+            let (hechas, total) = s::cobertura(&db)?;
+            if c.json {
+                return json(&serde_json::json!({ "computed": n, "with_vector": hechas, "memories": total, "seconds": inicio.elapsed().as_secs_f64() }));
+            }
+            println!("{}", tr!("{n} vectors computed; {hechas} of {total} memories have one", "{n} vectores calculados; {hechas} de {total} memorias tienen el suyo"));
+            Ok(())
+        }
         AccionModelo::Semantic { on, off } => {
             use omoikane::significado as s;
             if on || off {
@@ -1709,6 +1744,25 @@ fn doctor(c: &Comun) -> Result<()> {
             "{}",
             tr!("model      not installed (`omoi model install`): search by words only", "modelo     no instalado (`omoi model install`): búsqueda solo por palabras")
         ),
+    }
+    {
+        use omoikane::significado as s;
+        let linea = match (s::activado(), s::modelo()) {
+            (false, _) => tr!("meaning    off (`omoi model semantic --on`)", "significado apagado (`omoi model semantic --on`)"),
+            (true, None) => tr!(
+                "meaning    not installed (`omoi model install --semantic`, about 450 MB): misses questions asked with other words",
+                "significado no instalado (`omoi model install --semantic`, unos 450 MB): no entiende lo que se pregunta con otras palabras"
+            ),
+            (true, Some(_)) => {
+                let (hechas, total) = if ruta.exists() { s::cobertura(&db::abrir(&ruta)?)? } else { (0, 0) };
+                let servicio = s::vivo(std::time::Duration::from_millis(300)).map(|r| r.pid);
+                match servicio {
+                    Some(pid) => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; service running (pid {pid})", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; servicio en marcha (pid {pid})"),
+                    None => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; the service starts with the next search", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; el servicio arranca con la próxima búsqueda"),
+                }
+            }
+        };
+        println!("{linea}");
     }
     if let Ok(p) = proyecto_de(c) {
         println!("{}{p}", tr!("project    ", "proyecto   "));
@@ -2237,6 +2291,9 @@ fn en_espanol(c: Command) -> Command {
             .mut_subcommand("install", |s| {
                 s.about("Descarga el modelo (unos 150 MB, una vez) y lo compila.").mut_arg("from", |a| {
                     a.help("Tomarlo de una carpeta con el modelo int8 en vez de descargarlo.").value_name("CARPETA")
+                })
+                .mut_arg("semantic", |a| {
+                    a.help("Instalar el modelo de significado (EmbeddingGemma, unos 450 MB) en vez del ligero. Con --from, una carpeta con él en formato compacto o como lo deja sentence-transformers.")
                 })
             })
             .mut_subcommand("clean", |s| s.about("Borra los modelos instalados que no se usan."))

@@ -43,6 +43,22 @@ pub const RELATIVO_A_LA_MEJOR: f64 = 0.85;
 pub const SIMILITUD_RECALL: f32 = 0.35;
 pub const COBERTURA_CON_VECTOR: f64 = 0.25;
 pub const LARGO_MAX_CON_VECTOR: usize = 500;
+/// Con EmbeddingGemma (`significado`), en los mensajes que miran el significado (`mira_significado`):
+/// lo que traen las palabras o el modelo ligero se queda fuera si no está entre las `VETO_PUESTO` más
+/// parecidas al mensaje, y la más parecida entra si llega a `ANADIR_GEMMA` y le saca `VENTAJA_GEMMA`
+/// a la segunda. Los dos, relativos: por puesto y por ventaja, no por un coseno fijo, que cambia con
+/// el idioma y la forma de escribir (en el benchmark, inglés de documentación, la nota buena ronda
+/// 0,7; en los mensajes reales de Marc, español con erratas, 0,35, y un veto en 0,5 quitaba lo útil).
+/// Lo que sale por una ruta del mensaje no se toca. Elegido con las 250 preguntas a ciegas de
+/// `omoikane-bench` (3.000 notas), ajustando con la mitad y comprobando con la otra, y revisado a
+/// mano con los 300 últimos mensajes reales: la nota buena en preguntas pasa del 93 % al 94 %, en
+/// paráfrasis del 5 % al 29 %, y en las preguntas sin respuesta mete algo el 8 % de las veces en vez
+/// del 40 %.
+pub const VETO_PUESTO: usize = 3;
+pub const ANADIR_GEMMA: f32 = 0.6;
+pub const VENTAJA_GEMMA: f32 = 0.03;
+/// Cuánto se espera al servicio de significado en cada mensaje; si tarda más, recall sigue sin él.
+const PRESUPUESTO_GEMMA: std::time::Duration = std::time::Duration::from_millis(250);
 /// Como mucho, tantas memorias por mensaje.
 pub const MAXIMO: usize = 2;
 /// Desde cuántas letras una palabra cuenta también como prefijo («memoria» → «memorias»). Con menos,
@@ -594,6 +610,23 @@ fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria
     Ok(recetas.into_iter().find(|m| disparadores(m).iter().any(|w| tiene(w))))
 }
 
+/// Los cosenos de EmbeddingGemma del mensaje con las memorias del ámbito, de mayor a menor, si el
+/// modelo está encendido e instalado, la base tiene vectores para casi todo y el servicio responde
+/// dentro de `PRESUPUESTO_GEMMA`. Si no, `None`: recall va como antes.
+fn cosenos_gemma(db: &Connection, project: &str, prompt: &str) -> Result<Option<Vec<(String, f32)>>> {
+    use crate::significado as s;
+    if !s::activado() || s::modelo().is_none() {
+        return Ok(None);
+    }
+    let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(None) };
+    if !s::listo(db) {
+        s::avisar(&ruta);
+        return Ok(None);
+    }
+    let Some(q) = s::vector_consulta(&ruta, prompt, PRESUPUESTO_GEMMA) else { return Ok(None) };
+    Ok(Some(s::cosenos(db, &q, &Ambito::de(db, project)?, None)?))
+}
+
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
     al_preguntar_abriendo(db, project, e, &mut || modelo)
 }
@@ -623,7 +656,9 @@ pub fn al_preguntar_abriendo<'m>(
         Some(f) => relevantes_con(db, project, &terminos, f)?,
         None => Vec::new(),
     };
-    for m in por_rutas(db, project, &e.prompt)?.into_iter().chain(por_palabras.into_iter().map(|x| x.0)) {
+    let rutas = por_rutas(db, project, &e.prompt)?;
+    let de_rutas: BTreeSet<String> = rutas.iter().map(|m| m.id.clone()).collect();
+    for m in rutas.into_iter().chain(por_palabras.into_iter().map(|x| x.0)) {
         elegir(m, &mut elegidas);
     }
     // El canal por significado va detrás: si las rutas y las palabras ya llenan el cupo, lo que traiga
@@ -634,6 +669,36 @@ pub fn al_preguntar_abriendo<'m>(
     {
         for m in por_significado_con(db, project, &e.prompt, modelo, frecuencias.as_ref())? {
             elegir(m, &mut elegidas);
+        }
+    }
+    if mira_significado(&e.prompt)
+        && let Some(cosenos) = cosenos_gemma(db, project, &e.prompt)?
+    {
+        let de: std::collections::HashMap<&str, f32> = cosenos.iter().map(|(id, c)| (id.as_str(), *c)).collect();
+        // Un mensaje corto son palabras clave: ahí el significado se queda corto y el veto quitaba la
+        // nota buena (del 94 % al 88 % en el benchmark) sin quitar ruido.
+        let corto = e.prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= buscar::CORTA;
+        let arriba: BTreeSet<&str> = cosenos.iter().take(VETO_PUESTO).map(|(id, _)| id.as_str()).collect();
+        elegidas.retain(|m| corto || de_rutas.contains(&m.id) || !de.contains_key(m.id.as_str()) || arriba.contains(m.id.as_str()));
+        if let [(id, c1), (_, c2), ..] = cosenos.as_slice()
+            && *c1 >= ANADIR_GEMMA
+            && c1 - c2 >= VENTAJA_GEMMA
+        {
+            // Con el cupo lleno, sustituye a la que menos se parece (salvo las de rutas).
+            if elegidas.len() >= maximo() && !elegidas.iter().any(|m| m.id == *id) {
+                let peor = elegidas
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| !de_rutas.contains(&m.id))
+                    .map(|(i, m)| (i, de.get(m.id.as_str()).copied().unwrap_or(0.0)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((i, c)) = peor
+                    && c < *c1
+                {
+                    elegidas.remove(i);
+                }
+            }
+            elegir(memoria::obtener(db, id)?, &mut elegidas);
         }
     }
     // Una memoria enlazada con las elegidas, si es una trampa o una preferencia y tiene que ver (7.4).

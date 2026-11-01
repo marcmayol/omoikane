@@ -44,3 +44,7 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_HTTP_TOKEN` | token that `omoi serve` requires over HTTP |
 | `OMOIKANE_NO_SETUP=1` | the installers don't add the Claude Code plugin |
 | `OMOIKANE_NO_MODEL=1` | the installers don't download the model |
+| `OMOIKANE_SEMANTIC=0` / `1` | turns the meaning model off or on (over `omoi model semantic`) |
+| `OMOIKANE_SEMANTIC_IDLE` | seconds without use before the meaning service closes (1800) |
+| `OMOIKANE_SEMANTIC_MODEL` | a folder with EmbeddingGemma to use instead of the installed one |
+| `OMOIKANE_SEMANTIC_SOURCE` | where `omoi model install --semantic` downloads from (comma-separated) |
