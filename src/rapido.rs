@@ -116,35 +116,47 @@ impl Mat {
         let x = if np == n {
             x
         } else {
-            let mut v = x.to_vec();
+            let mut v = Vec::with_capacity(np * k);
+            v.extend_from_slice(x);
             v.resize(np * k, 0.0);
             relleno = v;
             &relleno[..]
         };
-        let mut yt = vec![0f32; self.filas * np];
+        // La salida va directamente token a token (n × filas): cada tarea escribe su bloque de filas
+        // de su tramo de tokens, sin solaparse con ninguna otra.
+        let mut y = vec![0f32; np * self.filas];
         let hilos = pool.current_num_threads().max(1);
-        // Bloques de filas que quepan en la L2 (~128 KB de pesos), al menos dos por hilo, y pares.
+        // Bloques de filas que quepan en la L2 (~128 KB de pesos), al menos dos por hilo, y pares; y
+        // tramos de tokens, para que con lotes grandes haya trabajo para todos los hilos.
         let bloque = (self.filas.div_ceil(hilos * 2).min((128 << 10) / (k * 2)).max(2) + 1) & !1;
-        let hacer = |(b, trozo): (usize, &mut [f32])| {
-            let r0 = b * bloque;
-            let filas = trozo.len() / np;
-            for t0 in (0..np).step_by(T) {
-                for r in (0..filas).step_by(2) {
-                    // SAFETY: AVX2/FMA/F16C comprobados al cargar; r0 + r es par y su parte tiene
-                    // filas pares, así que la fila siguiente está justo detrás; t0 + T <= np.
+        let tramo = 16 * T;
+        let (nb, nt) = (self.filas.div_ceil(bloque), np.div_ceil(tramo));
+        let salida = Puntero(y.as_mut_ptr());
+        let filas_total = self.filas;
+        let hacer = |tarea: usize| {
+            let (b, c) = (tarea % nb, tarea / nb);
+            let (r0, r1) = (b * bloque, ((b + 1) * bloque).min(filas_total));
+            let (t0, t1) = (c * tramo, ((c + 1) * tramo).min(np));
+            let salida = &salida;
+            for t in (t0..t1).step_by(T) {
+                for r in (r0..r1).step_by(2) {
+                    // SAFETY: AVX2/FMA/F16C comprobados al cargar; r es par y su parte tiene filas
+                    // pares, así que la fila siguiente está justo detrás; t + T <= np; cada tarea
+                    // escribe solo sus filas de sus tokens.
                     unsafe {
-                        let w = self.fila_ptr(r0 + r);
-                        x86::bloque_f16(w, k, x.as_ptr().add(t0 * k), k, k, trozo.as_mut_ptr().add(r * np + t0), np);
+                        let w = self.fila_ptr(r);
+                        x86::bloque_f16(w, k, x.as_ptr().add(t * k), k, k, salida.0.add(t * filas_total + r), 1, filas_total);
                     }
                 }
             }
         };
         if hilos == 1 || np * self.filas < 4096 {
-            yt.chunks_mut(bloque * np).enumerate().for_each(hacer);
+            (0..nb * nt).for_each(hacer);
         } else {
-            pool.install(|| yt.par_chunks_mut(bloque * np).enumerate().for_each(hacer));
+            pool.install(|| (0..nb * nt).into_par_iter().for_each(hacer));
         }
-        trasponer(&yt, self.filas, np, n)
+        y.truncate(n * self.filas);
+        y
     }
 
     /// Fila a fila (el camino sin AVX2): cada fila se pasa a f32 y se multiplica por cada token.
@@ -174,6 +186,12 @@ impl Mat {
         trasponer(&yt, self.filas, n, n)
     }
 }
+
+/// Un puntero que se puede compartir entre hilos que escriben en sitios distintos.
+struct Puntero(*mut f32);
+// SAFETY: cada tarea escribe en posiciones suyas (ver `por_bloques`).
+unsafe impl Send for Puntero {}
+unsafe impl Sync for Puntero {}
 
 /// `yt` es filas × paso (por fila, sus tokens); devuelve los `n` primeros tokens × filas.
 fn trasponer(yt: &[f32], filas: usize, paso: usize, n: usize) -> Vec<f32> {
@@ -234,10 +252,11 @@ mod x86 {
 
     macro_rules! bloque {
         ($nombre:ident, $t:ty, $feat:literal, $carga:expr) => {
-            /// `out[i·paso + t] = w[i] · x[t]` para 2 filas de `w` (la segunda `sw` detrás de la
+            /// `out[i·si + t·st] = w[i] · x[t]` para 2 filas de `w` (la segunda `sw` detrás de la
             /// primera) y `T` filas de `x` (separadas `sx`), de `k` valores (múltiplo de 8).
             #[target_feature(enable = $feat)]
-            pub unsafe fn $nombre(w: *const $t, sw: usize, x: *const f32, sx: usize, k: usize, out: *mut f32, paso: usize) {
+            #[allow(clippy::too_many_arguments)]
+            pub unsafe fn $nombre(w: *const $t, sw: usize, x: *const f32, sx: usize, k: usize, out: *mut f32, si: usize, st: usize) {
                 unsafe {
                     let carga = $carga;
                     let mut a = [[_mm256_setzero_ps(); T]; 2];
@@ -254,7 +273,7 @@ mod x86 {
                     }
                     for i in 0..2 {
                         for t in 0..T {
-                            *out.add(i * paso + t) = suma(a[i][t]);
+                            *out.add(i * si + t * st) = suma(a[i][t]);
                         }
                     }
                 }
@@ -322,10 +341,28 @@ fn rms_en(x: &mut [f32], w: &[f32], eps: f32) {
     x.iter_mut().zip(w).for_each(|(v, w)| *v = *v * r * w);
 }
 
-fn rms_filas(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
+fn rms_filas(x: &[f32], w: &[f32], eps: f32, pool: &rayon::ThreadPool) -> Vec<f32> {
     let mut y = x.to_vec();
-    y.chunks_mut(w.len()).for_each(|f| rms_en(f, w, eps));
+    if x.len() / w.len() < 64 {
+        y.chunks_mut(w.len()).for_each(|f| rms_en(f, w, eps));
+    } else {
+        pool.install(|| y.par_chunks_mut(w.len()).for_each(|f| rms_en(f, w, eps)));
+    }
     y
+}
+
+/// `x += rms(o)` fila a fila (el residuo tras la atención o el MLP).
+fn sumar_rms(x: &mut [f32], o: &mut [f32], w: &[f32], eps: f32, pool: &rayon::ThreadPool) {
+    let d = w.len();
+    let f = |(x, o): (&mut [f32], &mut [f32])| {
+        rms_en(o, w, eps);
+        x.iter_mut().zip(o.iter()).for_each(|(x, o)| *x += o);
+    };
+    if x.len() / d < 64 {
+        x.chunks_mut(d).zip(o.chunks_mut(d)).for_each(f);
+    } else {
+        pool.install(|| x.par_chunks_mut(d).zip(o.par_chunks_mut(d)).for_each(f));
+    }
 }
 
 fn rope_en(v: &mut [f32], cos: &[f32], sin: &[f32]) {
@@ -377,10 +414,10 @@ impl Rapido {
         let mut atn = vec![0f32; total * dq];
         for c in &self.capas {
             ceder();
-            let e = rms_filas(&x, &c.ne, self.eps);
+            let e = rms_filas(&x, &c.ne, self.eps, pool);
             let mut qkv = c.qkv.por(&e, total, pool);
             let (cos, sin) = if c.local { &self.rope_local } else { &self.rope_global };
-            for (t, f) in qkv.chunks_mut(ancho).enumerate() {
+            let rope_fila = |(t, f): (usize, &mut [f32])| {
                 let p = pos[t];
                 let (cs, sn) = (&cos[p * mitad..(p + 1) * mitad], &sin[p * mitad..(p + 1) * mitad]);
                 for j in 0..h + kv {
@@ -388,14 +425,18 @@ impl Rapido {
                     rms_en(v, if j < h { &c.nq } else { &c.nk }, self.eps);
                     rope_en(v, cs, sn);
                 }
+            };
+            if total < 64 {
+                qkv.chunks_mut(ancho).enumerate().for_each(rope_fila);
+            } else {
+                pool.install(|| qkv.par_chunks_mut(ancho).enumerate().for_each(rope_fila));
             }
             ceder();
             self.atencion(&qkv, &tramos, c.local, &mut atn, pool);
             ceder();
-            let o = c.o.por(&atn, total, pool);
-            let o = rms_filas(&o, &c.nta, self.eps);
-            x.iter_mut().zip(&o).for_each(|(x, o)| *x += o);
-            let e = rms_filas(&x, &c.nam, self.eps);
+            let mut o = c.o.por(&atn, total, pool);
+            sumar_rms(&mut x, &mut o, &c.nta, self.eps, pool);
+            let e = rms_filas(&x, &c.nam, self.eps, pool);
             ceder();
             let gu = c.gu.por(&e, total, pool);
             let inter = c.gu.filas / 2;
@@ -410,11 +451,10 @@ impl Rapido {
             };
             pool.install(|| m.par_chunks_mut(256).enumerate().for_each(gelu_trozo));
             ceder();
-            let b = c.bajar.por(&m, total, pool);
-            let b = rms_filas(&b, &c.ntm, self.eps);
-            x.iter_mut().zip(&b).for_each(|(x, b)| *x += b);
+            let mut b = c.bajar.por(&m, total, pool);
+            sumar_rms(&mut x, &mut b, &c.ntm, self.eps, pool);
         }
-        let x = rms_filas(&x, &self.norma, self.eps);
+        let x = rms_filas(&x, &self.norma, self.eps, pool);
         let mut medias = vec![0f32; largos.len() * d];
         for (tr, media) in tramos.iter().zip(medias.chunks_mut(d)) {
             for f in x[tr.ini * d..(tr.ini + tr.n) * d].chunks(d) {
@@ -562,7 +602,7 @@ impl Rapido {
                 // Puntos: st[j·T + t] = k[j0 + j] · q[t].
                 for j in (0..largo).step_by(2) {
                     // SAFETY: AVX2/FMA comprobados; j0 + j + 1 < n8 filas de k; T filas de q desde t0 < nq.
-                    unsafe { x86::bloque_f32(kc.as_ptr().add((j0 + j) * hd), hd, q.as_ptr(), hd, hd, st.as_mut_ptr().add(j * T), T) };
+                    unsafe { x86::bloque_f32(kc.as_ptr().add((j0 + j) * hd), hd, q.as_ptr(), hd, hd, st.as_mut_ptr().add(j * T), T, 1) };
                 }
                 // Softmax de cada consulta sobre las claves que ve; lo demás, a cero.
                 for t in 0..T {
@@ -588,7 +628,7 @@ impl Rapido {
                 // Salida: o[d·T + t] = vᵀ[d][j0..] · pr[t].
                 for dd in (0..hd).step_by(2) {
                     // SAFETY: AVX2/FMA comprobados; dd + 1 < hd filas de vᵀ de n8 columnas, j0 + largo <= n8.
-                    unsafe { x86::bloque_f32(vt.as_ptr().add(dd * p.n8 + j0), p.n8, pr.as_ptr(), largo, largo, o.as_mut_ptr().add(dd * T), T) };
+                    unsafe { x86::bloque_f32(vt.as_ptr().add(dd * p.n8 + j0), p.n8, pr.as_ptr(), largo, largo, o.as_mut_ptr().add(dd * T), T, 1) };
                 }
                 for t in 0..reales {
                     for dd in 0..hd {

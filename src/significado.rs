@@ -315,13 +315,13 @@ pub fn cosenos(db: &rusqlite::Connection, consulta: &[f32], ambito: &crate::memo
 
 // ------------------------------------------------------------------ tope de RAM al indexar
 
-/// Lo que ocupa en RAM cada token de un lote mientras se calcula (los vectores intermedios de todas
-/// las capas; medido: ver `fix-motor.md`). Los pesos no cuentan: van mapeados del disco y son los
-/// mismos indexe o no.
-const KB_POR_TOKEN: u64 = 48;
-/// Tope por defecto de la RAM del indexado: lotes de unos 1.300 tokens (8-10 notas cortas, o 1-2
-/// memorias largas), donde ya rinde casi lo mismo que con lotes más grandes.
-pub const RAM_POR_DEFECTO_MB: u64 = 64;
+/// Lo que ocupa en RAM cada token de un lote mientras se calcula (los vectores intermedios de las
+/// capas; medido: 35-41 KB, ver `fix-motor.md` de la revisión). Los pesos no cuentan: van mapeados del
+/// disco y son los mismos indexe o no.
+const KB_POR_TOKEN: u64 = 40;
+/// Tope por defecto de la RAM del indexado: lotes de unos 3.300 tokens (25-30 notas cortas, o 2-5
+/// memorias largas). Con más ya no va más rápido (medido con lotes de 1.024 a 4.096 tokens).
+pub const RAM_POR_DEFECTO_MB: u64 = 128;
 /// El mínimo: lo que necesita la memoria más larga (2.048 tokens) para calcularse sola. Con menos no
 /// se podría indexar alguna.
 pub const RAM_MINIMA_MB: u64 = (crate::gemma::MAX_TOKENS as u64 * KB_POR_TOKEN).div_ceil(1024);
