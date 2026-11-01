@@ -376,7 +376,7 @@ const PRESUPUESTO_SIGNIFICADO: std::time::Duration = std::time::Duration::from_m
 /// Los compara el servicio, que tiene el modelo y los vectores en memoria: las `CANDIDATOS` más
 /// parecidas y el coseno de las que trajeron las palabras (`ids`).
 fn cosenos_de(db: &Connection, texto: &str, o: &Opciones, ids: &[String]) -> Option<Vec<(String, f32)>> {
-    if texto.trim().is_empty() {
+    if texto.trim().is_empty() || !crate::significado::en_uso(db) {
         return None;
     }
     let ruta = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from)?;
@@ -389,6 +389,19 @@ fn cosenos_de(db: &Connection, texto: &str, o: &Opciones, ids: &[String]) -> Opt
     }
     Some(v)
 }
+
+/// Lo que solo trae el significado (sin ninguna palabra de la consulta) entra si su coseno llega a
+/// esto. Sin él la búsqueda con modelo nunca volvía vacía y, con 3.000 notas ajenas en el ámbito,
+/// ponía primera una sin relación en 84 de 1.161 mensajes reales frente a 39 sin el modelo
+/// (`4-valor.md`). Calibrado el 1-nov-2026 con los 1.161 mensajes reales sobre su base más 3.000 notas
+/// inglesas (`omoi-revision-12/fix-politica.md`), ajustando con los pares y comprobando con los
+/// impares: con 0,35, la primera sin ninguna palabra pasa del 21 % al 6 % de los mensajes (casi todo
+/// charla que no pide nada: «me encanta» → una nota de impresión 3D) y la búsqueda vuelve vacía en el
+/// 4 %; en las 250 preguntas del benchmark y los 540 casos en inglés, español, catalán y con erratas
+/// no cambia ningún primer acierto (la buena sin palabras ronda 0,6; su percentil 5, 0,50). Con 0,4
+/// se iban ya memorias propias que sí venían a cuento (0,38: «¿ya se me puede considerar micro
+/// influencer?» → los 10.000 seguidores).
+pub const SUELO_GEMMA: f32 = 0.35;
 
 /// La fusión con EmbeddingGemma: candidatas por palabras y las más parecidas por significado, cada
 /// una con su coseno más el peso de sus palabras (ver `PESO_PALABRAS`).
@@ -412,8 +425,9 @@ fn con_gemma(
         })
         .collect();
     let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.id = ?1"))?;
+    let suelo = std::env::var("OMOIKANE_CALIBRAR_SUELO").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(SUELO_GEMMA);
     for (id, c) in cosenos.iter().take(CANDIDATOS) {
-        if v.iter().any(|r| r.memoria.id == *id) {
+        if *c < suelo || v.iter().any(|r| r.memoria.id == *id) {
             continue;
         }
         let m = q.query_row([id], de_fila)?;

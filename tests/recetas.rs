@@ -33,3 +33,28 @@ fn la_receta_llega_entera_cuando_se_pide_y_solo_entonces() {
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Una palabra suelta de `when:` («publica») vale para muchas cosas: con una receta global (o de otro
+/// proyecto, vista desde una carpeta general), hace falta algo más que diga que es esa receta.
+#[test]
+fn una_palabra_suelta_no_basta_fuera_de_su_proyecto() {
+    let dir = std::env::temp_dir().join(format!("omoi-recetas-sueltas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let n = Nueva { project: String::new(), kind: Some(Tipo::Procedure), title: "Publicar una versión de Lumbre".into(), content: PASOS.into(), ..Default::default() };
+    memoria::guardar(&mut db, n, None).unwrap();
+    let pide = |db: &mut rusqlite::Connection, sesion: &str, p: &str| {
+        let e = Entrada { session_id: sesion.into(), prompt: p.into(), ..Default::default() };
+        recall::al_preguntar(db, "/q", &e, None).unwrap().is_some_and(|t| t.contains("A saved procedure"))
+    };
+    // Lo que no es publicar una versión: el ruido que traía «publica» en los mensajes reales.
+    for (i, p) in ["publica un post en linkedin sobre el paper", "pues publica", "vale me encanta como esta publica", "Publícalo tú dentro de 10 minutos"].iter().enumerate() {
+        assert!(!pide(&mut db, &format!("n{i}"), p), "no debería traer la receta: {p}");
+    }
+    // Lo que sí: una palabra de su título o su proyecto, una frase de `when:` o dos de sus palabras.
+    for (i, p) in ["publica la versión nueva", "publica lumbre ya", "saca versión cuando puedas", "publica la release de hoy"].iter().enumerate() {
+        assert!(pide(&mut db, &format!("s{i}"), p), "debería traer la receta: {p}");
+    }
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
