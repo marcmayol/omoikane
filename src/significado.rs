@@ -58,7 +58,7 @@ struct Peticion {
 }
 
 fn carpeta() -> Option<PathBuf> {
-    std::env::var_os("OMOIKANE_HOME").filter(|r| !r.is_empty()).map(PathBuf::from).or_else(|| dirs::home_dir().map(|h| h.join(".omoikane")))
+    std::env::var_os("OMOIKANE_HOME").filter(|r| !r.is_empty()).map(PathBuf::from).or_else(|| std::env::home_dir().map(|h| h.join(".omoikane")))
 }
 
 const PREFERENCIA: &str = "semantic";

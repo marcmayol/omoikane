@@ -8,7 +8,7 @@ fn ms(t: Instant) -> f64 {
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir = dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8");
+    let dir = std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8");
 
     let t = Instant::now();
     let tok_b = std::fs::read(dir.join("tokenizer.json"))?;

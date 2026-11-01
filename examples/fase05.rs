@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn modelos() -> PathBuf {
-    dirs::home_dir().unwrap().join(".omoikane/models")
+    std::env::home_dir().unwrap().join(".omoikane/models")
 }
 
 fn ms(t: Instant) -> f64 {

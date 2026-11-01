@@ -23,7 +23,7 @@ fn main() -> Result<()> {
 }
 
 fn dir_int8() -> PathBuf {
-    dirs::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8")
+    std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-int8")
 }
 
 fn ms(t: Instant) -> f64 {
@@ -143,7 +143,7 @@ fn cuantizar() -> Result<()> {
 fn hf_hub_dir() -> Result<PathBuf> {
     // from_pretrained con el id del repo descarga a la caché; luego buscamos el snapshot para leer los ficheros.
     StaticModel::from_pretrained(REPO, None, None, None)?;
-    let base = dirs::home_dir().unwrap().join(".cache/huggingface/hub/models--minishlab--potion-multilingual-128M/snapshots");
+    let base = std::env::home_dir().unwrap().join(".cache/huggingface/hub/models--minishlab--potion-multilingual-128M/snapshots");
     let snap = std::fs::read_dir(&base)?.next().context("sin snapshot")??.path();
     Ok(snap)
 }

@@ -29,7 +29,7 @@ pub fn carpeta() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_MODELS").filter(|r| !r.is_empty()) {
         return PathBuf::from(r);
     }
-    dirs::home_dir().unwrap_or_default().join(".omoikane").join("models")
+    std::env::home_dir().unwrap_or_default().join(".omoikane").join("models")
 }
 
 /// Carpeta del modelo en uso, si hay uno instalado y completo.
