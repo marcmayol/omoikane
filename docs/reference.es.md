@@ -46,5 +46,6 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo |
 | `OMOIKANE_SEMANTIC=0` / `1` | apaga o enciende el modelo de significado (por encima de `omoi model semantic`) |
 | `OMOIKANE_SEMANTIC_IDLE` | segundos sin uso antes de que se cierre el servicio de significado (1800) |
+| `OMOIKANE_SEMANTIC_RAM` | MB de RAM que puede usar el modelo de significado al indexar (por encima de `omoi model semantic --ram`; 64 por defecto, mínimo 96) |
 | `OMOIKANE_SEMANTIC_MODEL` | una carpeta con EmbeddingGemma para usarla en vez de la instalada |
 | `OMOIKANE_SEMANTIC_SOURCE` | de dónde descarga `omoi model install --semantic` (separadas por comas) |

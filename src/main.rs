@@ -528,6 +528,10 @@ enum AccionModelo {
         /// Turn it off and close its service.
         #[arg(long)]
         off: bool,
+        /// RAM the indexing may use, in MB (0: back to the default). Bigger indexes faster in batches;
+        /// `OMOIKANE_SEMANTIC_RAM` overrides it.
+        #[arg(long, value_name = "MB")]
+        ram: Option<u64>,
     },
     /// The service that keeps the meaning model loaded (Omoikane starts it by itself).
     #[command(hide = true)]
@@ -1258,11 +1262,15 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
             println!("{}", tr!("{n} vectors computed; {hechas} of {total} memories have one", "{n} vectores calculados; {hechas} de {total} memorias tienen el suyo"));
             Ok(())
         }
-        AccionModelo::Semantic { on, off } => {
+        AccionModelo::Semantic { on, off, ram } => {
             use omoikane::significado as s;
             if on || off {
                 s::fijar(on)?;
             }
+            if let Some(mb) = ram {
+                s::fijar_ram((mb > 0).then_some(mb))?;
+            }
+            let (ram_mb, ram_origen) = s::tope_ram();
             let modelo = s::modelo();
             let vivo = s::vivo(std::time::Duration::from_millis(300));
             if c.json {
@@ -1270,6 +1278,8 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
                     "on": s::activado(),
                     "installed": modelo.as_ref().map(|d| d.display().to_string()),
                     "service_pid": vivo.as_ref().map(|r| r.pid),
+                    "indexing_ram_mb": ram_mb,
+                    "indexing_ram_from": ram_origen,
                 }));
             }
             let estado = match (s::activado(), &modelo) {
@@ -1284,6 +1294,7 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
                 ),
             };
             println!("{estado}");
+            println!("{}", ram_en_uso(ram_mb, ram_origen));
             if let Some(r) = vivo {
                 println!("{}", tr!("service running (pid {})", "servicio en marcha (pid {})", r.pid));
             }
@@ -1652,6 +1663,17 @@ fn historial(m: &Memoria, v: &[Version]) {
     }
 }
 
+/// «indexing RAM: 64 MB (default)…», para `omoi model semantic` y `omoi doctor`.
+fn ram_en_uso(mb: u64, origen: omoikane::significado::OrigenRam) -> String {
+    use omoikane::significado::{OrigenRam, RAM_MINIMA_MB};
+    let de = match origen {
+        OrigenRam::Entorno => tr!("from OMOIKANE_SEMANTIC_RAM", "de OMOIKANE_SEMANTIC_RAM"),
+        OrigenRam::Elegido => tr!("chosen with `omoi model semantic --ram`", "elegido con `omoi model semantic --ram`"),
+        OrigenRam::PorDefecto => tr!("default; `omoi model semantic --ram <MB>` changes it", "por defecto; `omoi model semantic --ram <MB>` lo cambia"),
+    };
+    tr!("indexing RAM: up to {mb} MB ({de}; minimum {RAM_MINIMA_MB})", "RAM al indexar: hasta {mb} MB ({de}; mínimo {RAM_MINIMA_MB})")
+}
+
 fn doctor(c: &Comun) -> Result<()> {
     db::registrar_sqlite_vec();
     let prueba = Connection::open_in_memory()?;
@@ -1756,10 +1778,12 @@ fn doctor(c: &Comun) -> Result<()> {
             (true, Some(_)) => {
                 let (hechas, total) = if ruta.exists() { s::cobertura(&db::abrir(&ruta)?)? } else { (0, 0) };
                 let servicio = s::vivo(std::time::Duration::from_millis(300)).map(|r| r.pid);
-                match servicio {
+                let linea = match servicio {
                     Some(pid) => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; service running (pid {pid})", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; servicio en marcha (pid {pid})"),
                     None => tr!("meaning    EmbeddingGemma, {hechas} of {total} memories with a vector; the service starts with the next search", "significado EmbeddingGemma, {hechas} de {total} memorias con vector; el servicio arranca con la próxima búsqueda"),
-                }
+                };
+                let (mb, origen) = s::tope_ram();
+                format!("{linea}\n           {}", ram_en_uso(mb, origen))
             }
         };
         println!("{linea}");
@@ -2301,6 +2325,7 @@ fn en_espanol(c: Command) -> Command {
                 s.about("Enciende o apaga el modelo de significado (EmbeddingGemma). Apagado, Omoikane usa solo el modelo ligero, como antes de la 1.2: más rápido y con menos memoria, pero no entiende las preguntas hechas con otras palabras.")
                     .mut_arg("on", |a| a.help("Encenderlo."))
                     .mut_arg("off", |a| a.help("Apagarlo y cerrar su servicio."))
+                    .mut_arg("ram", |a| a.help("La RAM que puede usar al indexar, en MB (0: volver a la de por defecto). Con más, indexa más rápido por lotes; OMOIKANE_SEMANTIC_RAM manda por encima."))
             })
     });
     let opciones_sync = |s: Command| {

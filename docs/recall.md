@@ -33,6 +33,7 @@ Words find a memory when you ask with the words it uses. When you ask the same t
 - **What it costs**: about 60 ms more per search and per prompt (never more than 250 ms in recall: past that it goes on without it), about 450 MB on disk, and computing each memory's vector once, about a quarter of a second each, in the background.
 - **How it runs**: in pure Rust inside `omoi`, on the CPU. Loading it takes 1.4 s, so a service of its own keeps it loaded (one per user, `127.0.0.1` only, with a token) and closes after 30 minutes without use. Nobody waits for it to load: until it's there, and until most memories have their vector, everything works by words as before. `omoi doctor` shows how many have one.
 - **Installing and turning it off**: `omoi model install --semantic` downloads it and checks every file's SHA-256. `omoi model semantic --off` goes back to the light model only (faster, less memory) and closes the service; `--on` turns it back on.
+- **RAM while indexing**: the service computes the vectors of new memories in batches; `omoi model semantic --ram <MB>` caps the RAM those batches use (more is a bit faster; `0` goes back to the default). `omoi model semantic` and `omoi doctor` show the cap in use.
 
 ## It searches in your language
 

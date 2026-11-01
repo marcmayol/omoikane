@@ -33,6 +33,7 @@ Las palabras encuentran una memoria cuando preguntas con las palabras que usa. S
 - **Lo que cuesta**: unos 60 ms más por búsqueda y por mensaje (nunca más de 250 ms en el recuerdo: pasado eso, sigue sin él), unos 450 MB en disco y calcular una vez el vector de cada memoria, un cuarto de segundo cada una, en segundo plano.
 - **Cómo funciona**: en Rust puro dentro de `omoi`, en la CPU. Cargarlo tarda 1,4 s, así que lo mantiene abierto un servicio propio (uno por usuario, solo en `127.0.0.1` y con token) que se cierra tras 30 minutos sin uso. Nadie espera a que cargue: hasta que está, y hasta que casi todas las memorias tienen su vector, todo va por palabras como antes. `omoi doctor` dice cuántas lo tienen.
 - **Instalarlo y apagarlo**: `omoi model install --semantic` lo descarga y comprueba el SHA-256 de cada fichero. `omoi model semantic --off` vuelve a usar solo el modelo ligero (más rápido y con menos memoria) y cierra el servicio; `--on` lo vuelve a encender.
+- **RAM al indexar**: el servicio calcula los vectores de las memorias nuevas por lotes; `omoi model semantic --ram <MB>` pone tope a la RAM de esos lotes (con más va algo más rápido; `0` vuelve al de por defecto). `omoi model semantic` y `omoi doctor` enseñan el tope en uso.
 
 ## Busca en tu idioma
 
