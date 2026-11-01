@@ -5,7 +5,7 @@
 # Optional variables:
 #   OMOIKANE_INSTALL_DIR   where the binary goes (default ~/.local/bin)
 #   OMOIKANE_VERSION       a specific version, e.g. v0.1.0 (default: the latest)
-#   OMOIKANE_NO_MODEL=1    don't download the models (~150 MB light + ~450 MB meaning; without them, search by words only)
+#   OMOIKANE_NO_MODEL=1    don't download the light model (~150 MB; without it, search by words only). The meaning model (~450 MB) is never downloaded here: omoi fetches it by itself once the memory reaches 1,500 memories
 #   OMOIKANE_NO_SETUP=1    don't touch Claude Code
 #   OMOIKANE_NO_AUTO_UPDATE=1  don't turn on the automatic update (omoi's daily one and the plugin's)
 set -eu
@@ -60,7 +60,6 @@ esac
 
 if [ -z "${OMOIKANE_NO_MODEL:-}" ]; then
   "$dir/omoi" model install || echo "omoikane: couldn't install the model; try again with: omoi model install" >&2
-  "$dir/omoi" model install --semantic || echo "omoikane: couldn't install the meaning model; try again with: omoi model install --semantic" >&2
 fi
 if [ -z "${OMOIKANE_NO_SETUP:-}" ]; then
   if [ -n "${OMOIKANE_NO_AUTO_UPDATE:-}" ]; then sin="--no-auto-update"; else sin=""; fi

@@ -57,8 +57,18 @@ pub const LARGO_MAX_CON_VECTOR: usize = 500;
 pub const VETO_PUESTO: usize = 3;
 pub const ANADIR_GEMMA: f32 = 0.6;
 pub const VENTAJA_GEMMA: f32 = 0.03;
-/// Cuánto se espera al servicio de significado en cada mensaje; si tarda más, recall sigue sin él.
+/// Cuánto se espera al servicio de significado en cada mensaje. Si tarda más (CPU ocupada), el
+/// recall sigue solo con palabras, como en la 1.1: esperar más haría lento cada mensaje para quitar,
+/// en el mejor caso, una memoria de ruido. No es en silencio: se apunta (`apuntar_consulta`) y lo
+/// enseñan `omoi doctor` y la traza (`OMOIKANE_TRAZA`).
 const PRESUPUESTO_GEMMA: std::time::Duration = std::time::Duration::from_millis(250);
+/// Política D (`omoi-revision-12/2-cuando.md`): el modelo grande solo se consulta para **vetar** lo
+/// que ya trajeron las palabras, en mensajes de más de `buscar::CORTA` palabras y de hasta
+/// `LARGO_MAX_GEMMA` caracteres. Con los 300 mensajes reales de Marc, de 237 consultas a 20 con los
+/// mismos 6 cambios; en el benchmark (3.000) el mismo ruido (7,5 %), a cambio del rescate de
+/// paráfrasis en el recall (0,29 → 0,09), que sigue en la búsqueda. Por encima de ~300 caracteres el
+/// vector no llega dentro de `PRESUPUESTO_GEMMA` (37 de 237 mensajes reales esperaban 250 ms para nada).
+pub const LARGO_MAX_GEMMA: usize = 300;
 /// Como mucho, tantas memorias por mensaje.
 pub const MAXIMO: usize = 2;
 /// Desde cuántas letras una palabra cuenta también como prefijo («memoria» → «memorias»). Con menos,
@@ -70,6 +80,20 @@ pub const MENSAJES_ANTES_DE_RECORDAR: i64 = 10;
 pub const MINUTOS_ANTES_DE_RECORDAR: i64 = 15;
 pub const MINUTOS_ENTRE_RECORDATORIOS: i64 = 30;
 pub const RECORDATORIO: &str = "Reminder: nothing has been saved to long-term memory (Omoikane) in this session yet. If you have learned something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, including where unfinished work was left (what is done, what is next; tag `status`, and `update` the project's existing one). If not, ignore this.";
+
+/// Con `OMOIKANE_TRAZA` puesta, el recall escribe en stderr una línea `TRAZA <paso> <json>` por paso:
+/// lo que vio, cómo lo puntuó y qué hizo con el modelo de significado (y por qué no lo consultó, o
+/// por qué no llegó su respuesta). Para medir y para entender un caso; sin la variable no cuesta nada.
+fn trazando() -> bool {
+    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *T.get_or_init(|| std::env::var_os("OMOIKANE_TRAZA").is_some_and(|v| !v.is_empty()))
+}
+
+fn traza(etiqueta: &str, valor: impl FnOnce() -> serde_json::Value) {
+    if trazando() {
+        eprintln!("TRAZA {etiqueta} {}", valor());
+    }
+}
 
 /// `MAXIMO` y `RELATIVO_A_LA_MEJOR`, salvo al calibrar (`examples`, bancos de pruebas).
 fn maximo() -> usize {
@@ -253,6 +277,7 @@ fn relevantes_con(db: &mut Connection, project: &str, terminos: &[String], (n, d
         return Ok(Vec::new());
     }
     let raro = (FRACCION_RARA * n).max(1.0);
+    traza("terminos", || serde_json::json!({"n": n, "terminos": terminos, "df": df, "idf": idf, "raros_msg": df.iter().filter(|d| **d <= raro).count()}));
     // Solo para calibrar (`examples/fase4.rs`): sin estas variables valen las constantes.
     let leer = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
     let cobertura_min = leer("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(COBERTURA_MIN);
@@ -267,6 +292,7 @@ fn relevantes_con(db: &mut Connection, project: &str, terminos: &[String], (n, d
     // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
     // cuesta más. Así el hook tampoco abre el modelo.
     let candidatos = buscar::buscar_sin_apuntar(db, &terminos.join(" "), &o)?;
+    let mut traza_c: Vec<serde_json::Value> = Vec::new();
     let mut v: Vec<(Memoria, f64, usize)> = candidatos
         .into_iter()
         .filter_map(|r| {
@@ -283,9 +309,13 @@ fn relevantes_con(db: &mut Connection, project: &str, terminos: &[String], (n, d
             // Cuántas palabras del mensaje están en el título: desempata a favor de la memoria que es
             // justo del tema («building my future» → la nota de Building My Future).
             let en_titulo = terminos.iter().filter(|t| esta(t, &titulo)).count();
+            if trazando() {
+                traza_c.push(serde_json::json!({"id": r.memoria.id, "bm25": r.score, "pal": r.matched_words, "cob": cobertura, "raros": raros, "tit": en_titulo, "largo": r.memoria.content.chars().count()}));
+            }
             (raros >= raros_min && cobertura >= cobertura_min).then_some((r.memoria, cobertura, en_titulo))
         })
         .collect();
+    traza("candidatas", || serde_json::Value::Array(traza_c));
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)));
     let mejor = v.first().map(|x| x.1).unwrap_or(0.0);
     v.retain(|x| x.1 >= relativo() * mejor);
@@ -549,6 +579,12 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         s.push_str(a);
         s.push('\n');
     }
+    // El modelo de significado, si la memoria ya lo necesita: lo descarga o lo deja indexando, y la
+    // primera vez que se enciende solo lo dice.
+    if let Some(a) = crate::significado::al_empezar(db) {
+        s.push_str(&a);
+        s.push('\n');
+    }
     s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
@@ -597,8 +633,15 @@ pub fn disparadores(m: &Memoria) -> Vec<String> {
         .collect()
 }
 
-/// La receta que pide el mensaje: una `procedure` del ámbito con una palabra de su `when:` en él (palabra
-/// entera: «publica» no es «publicación»).
+/// La receta que pide el mensaje: una `procedure` del ámbito con una de sus palabras `when:` en él
+/// (palabra entera: «publica» no es «publicación») y algo más que diga que es esa receta. Una palabra
+/// suelta vale para muchas cosas: en los mensajes reales de Marc, «publica un post en LinkedIn» o
+/// «pues publica» traían «Publicar una versión de Omoikane» (9 de los 19 ruidos que quedaban con el
+/// modelo, `4-valor.md`). Basta con una de estas:
+/// - una frase de su `when:` («saca versión») o dos palabras distintas de la lista;
+/// - que la receta sea del proyecto de la sesión (en la carpeta de Omoikane, «publica» es publicarlo);
+/// - que el mensaje diga además algo de su título, sus etiquetas o su proyecto («publica la versión»,
+///   «publica omoikane»), sin contar las propias palabras `when:`.
 fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria>> {
     let n = sin_tildes(&prompt.to_lowercase());
     let tiene = |w: &str| {
@@ -607,27 +650,102 @@ fn receta(db: &Connection, project: &str, prompt: &str) -> Result<Option<Memoria
         })
     };
     let recetas = memoria::recientes(db, &Ambito::de(db, project)?, Some(memoria::Tipo::Procedure), 200)?;
-    Ok(recetas.into_iter().find(|m| disparadores(m).iter().any(|w| tiene(w))))
+    if recetas.is_empty() {
+        return Ok(None);
+    }
+    let actual = proyecto_actual(db, project);
+    let del_mensaje = utiles(prompt);
+    Ok(recetas.into_iter().find(|m| {
+        let lista = disparadores(m);
+        let dichas: Vec<&String> = lista.iter().filter(|w| tiene(w)).collect();
+        if dichas.is_empty() {
+            return false;
+        }
+        // Cada palabra por su raíz (5 letras): «publica» y «publicar» son la misma.
+        let raiz = |w: &str| w.chars().take(PREFIJO_MIN).collect::<String>();
+        let distintas: BTreeSet<String> = dichas.iter().map(|w| raiz(w)).collect();
+        if dichas.iter().any(|w| w.contains(' ')) || distintas.len() >= 2 || (actual > 0 && m.project_id == actual) {
+            return true;
+        }
+        let raices: BTreeSet<String> = lista.iter().filter(|w| !w.contains(' ')).map(|w| raiz(w)).collect();
+        let es_disparador = |p: &str| raices.iter().any(|r| p.starts_with(r.as_str()));
+        let de_que_es: BTreeSet<String> = {
+            let nombre = if m.project_id > 0 { crate::proyecto::nombre_de(&m.project, &m.project_key) } else { String::new() };
+            let solo = Memoria { content: nombre, paths: vec![], ..m.clone() };
+            fichas(&solo).into_iter().filter(|p| !es_disparador(p)).collect()
+        };
+        del_mensaje.iter().any(|t| !es_disparador(t) && esta(t, &de_que_es))
+    }))
 }
 
 /// Cuántas memorias más parecidas pide el recall al servicio: las 3 del veto, la 1.ª y la 2.ª para
 /// añadir, y el coseno de casi cualquiera que traigan las palabras (las demás cuentan como 0).
 const PARECIDAS_RECALL: usize = 40;
 
-/// Pide al servicio de significado, en otro hilo, las memorias del ámbito más parecidas al mensaje,
-/// para que se calculen mientras se busca por palabras (el recall tarda lo que la más lenta de las
-/// dos, no la suma). `None` si el mensaje no mira el significado o el modelo está apagado o sin
-/// instalar; el hilo devuelve `None` si el servicio no responde en `PRESUPUESTO_GEMMA` o la base aún
-/// no tiene vectores: entonces el recall va como antes.
-fn pedir_gemma(db: &Connection, project: &str, prompt: &str) -> Result<Option<std::thread::JoinHandle<Option<crate::significado::Cosenos>>>> {
-    use crate::significado as s;
-    if !mira_significado(prompt) || !s::activado() || s::modelo().is_none() {
-        return Ok(None);
+/// Por qué no se consulta el modelo grande en este mensaje (política D, ver `LARGO_MAX_GEMMA`), o
+/// `None` si se consulta: solo cuando hay algo que vetar.
+fn sin_gemma(prompt: &str, elegidas: &[Memoria], de_rutas: &BTreeSet<String>) -> Option<&'static str> {
+    if prompt.chars().count() > LARGO_MAX_GEMMA {
+        Some("long")
+    } else if prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= buscar::CORTA {
+        // Un mensaje corto son palabras clave: ahí el significado se queda corto y el veto quitaba la
+        // nota buena (del 94 % al 88 % en el benchmark) sin quitar ruido.
+        Some("short")
+    } else if !elegidas.iter().any(|m| vetable(m, de_rutas)) {
+        Some("nothing_to_veto")
+    } else {
+        None
     }
-    let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(None) };
+}
+
+/// Lo que el modelo puede quitar: lo que no sale por una ruta del mensaje ni es una preferencia. Una
+/// preferencia se aplica sin parecerse al mensaje («lamina en Creality Print, no en Orca» con «ábrelo
+/// en creality»): en los mensajes reales de Marc, el 22-27 % de las preferencias vetadas eran útiles,
+/// frente al 6-7 % de los hechos (`4-valor.md`).
+fn vetable(m: &Memoria, de_rutas: &BTreeSet<String>) -> bool {
+    !de_rutas.contains(&m.id) && m.kind != memoria::Tipo::Preference
+}
+
+type Respuesta = std::result::Result<crate::significado::Cosenos, crate::significado::Fallo>;
+
+/// Pide al servicio de significado las memorias del ámbito más parecidas al mensaje (y el coseno de
+/// `ids`), dentro de `PRESUPUESTO_GEMMA`.
+fn pedir_gemma(db: &Connection, project: &str, prompt: &str, ids: &[String]) -> Result<Respuesta> {
+    use crate::significado as s;
+    let Some(ruta) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(Err(s::Fallo::Apagado)) };
     let ambito = Ambito::de(db, project)?;
-    let prompt = prompt.to_string();
-    Ok(Some(std::thread::spawn(move || s::parecidas(&ruta, &prompt, &ambito, None, PARECIDAS_RECALL, &[], PRESUPUESTO_GEMMA).map(|p| p.top))))
+    Ok(s::parecidas_o_fallo(&ruta, prompt, &ambito, None, PARECIDAS_RECALL, ids, PRESUPUESTO_GEMMA).map(|p| {
+        let mut v = p.top;
+        for x in p.pedidas {
+            if !v.iter().any(|y| y.0 == x.0) {
+                v.push(x);
+            }
+        }
+        v
+    }))
+}
+
+/// Apunta en la base (`meta`, local) cada consulta del recall al modelo y las que no tuvieron
+/// respuesta, con la última y su motivo, para que `omoi doctor` lo enseñe: sin respuesta a tiempo el
+/// recall va solo por palabras, y eso no debe pasar en silencio. Nunca falla el recall por esto.
+fn apuntar_consulta(db: &Connection, fallo: Option<crate::significado::Fallo>) {
+    let sumar = "INSERT INTO meta(k, v) VALUES (?1, '1') ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1";
+    let _ = db.execute(sumar, ["sig_recall_consultas"]);
+    if let Some(f) = fallo {
+        let _ = db.execute(sumar, ["sig_recall_sin_respuesta"]);
+        let _ = db.execute(
+            &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('sig_recall_ultimo_fallo', {} || ' ' || ?1)", memoria::AHORA),
+            [f.como_texto()],
+        );
+    }
+}
+
+/// Cuántas veces consultó el recall el modelo en esta base, cuántas no tuvo respuesta y la última que
+/// no (fecha y motivo).
+pub fn consultas_al_modelo(db: &Connection) -> (i64, i64, Option<String>) {
+    let leer = |k: &str| db.query_row("SELECT v FROM meta WHERE k = ?1", [k], |f| f.get::<_, String>(0)).ok();
+    let n = |k: &str| leer(k).and_then(|v| v.parse().ok()).unwrap_or(0);
+    (n("sig_recall_consultas"), n("sig_recall_sin_respuesta"), leer("sig_recall_ultimo_fallo"))
 }
 
 pub fn al_preguntar(db: &mut Connection, project: &str, e: &Entrada, modelo: Option<&Modelo>) -> Result<Option<String>> {
@@ -642,7 +760,6 @@ pub fn al_preguntar_abriendo<'m>(
     e: &Entrada,
     modelo: &mut dyn FnMut() -> Option<&'m Modelo>,
 ) -> Result<Option<String>> {
-    let gemma = pedir_gemma(db, project, &e.prompt)?;
     let propio = autor_propio(db);
     let actual = proyecto_actual(db, project);
     let vistas = ya_inyectadas(db, &e.session_id)?;
@@ -675,13 +792,40 @@ pub fn al_preguntar_abriendo<'m>(
             elegir(m, &mut elegidas);
         }
     }
-    if let Some(h) = gemma
-        && let Ok(Some(cosenos)) = h.join()
-    {
+    traza("antes_gemma", || serde_json::json!({"elegidas": elegidas.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), "rutas": de_rutas, "mira": mira_significado(&e.prompt)}));
+    // El modelo grande, solo para vetar (política D) y después de las palabras.
+    let cosenos = match sin_gemma(&e.prompt, &elegidas, &de_rutas) {
+        Some(motivo) => {
+            traza("gemma", || serde_json::json!({"asked": false, "why": motivo}));
+            None
+        }
+        None if !crate::significado::en_uso(db) => {
+            traza("gemma", || {
+                let e = crate::significado::estado(db);
+                serde_json::json!({"asked": false, "why": "not_in_use", "state": e, "installed": crate::significado::modelo().is_some()})
+            });
+            None
+        }
+        None => {
+            let ids: Vec<String> = elegidas.iter().map(|m| m.id.clone()).collect();
+            let r = pedir_gemma(db, project, &e.prompt, &ids)?;
+            apuntar_consulta(db, r.as_ref().err().copied());
+            match r {
+                Ok(c) => {
+                    traza("gemma", || serde_json::json!({"asked": true, "cosines": c}));
+                    Some(c)
+                }
+                Err(f) => {
+                    // Sin respuesta (CPU ocupada, servicio arrancando o indexando): solo palabras, como
+                    // en la 1.1. Queda apuntado para `omoi doctor`.
+                    traza("gemma", || serde_json::json!({"asked": true, "failed": f.como_texto()}));
+                    None
+                }
+            }
+        }
+    };
+    if let Some(cosenos) = cosenos {
         let de: std::collections::HashMap<&str, f32> = cosenos.iter().map(|(id, c)| (id.as_str(), *c)).collect();
-        // Un mensaje corto son palabras clave: ahí el significado se queda corto y el veto quitaba la
-        // nota buena (del 94 % al 88 % en el benchmark) sin quitar ruido.
-        let corto = e.prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= buscar::CORTA;
         let arriba: BTreeSet<&str> = cosenos.iter().take(VETO_PUESTO).map(|(id, _)| id.as_str()).collect();
         // Sin vector al día (recién guardada o cambiada, aún sin calcular) no se puede juzgar: se queda.
         let sin_vector = |id: &str| -> bool {
@@ -692,7 +836,7 @@ pub fn al_preguntar_abriendo<'m>(
             )
             .unwrap_or(false)
         };
-        elegidas.retain(|m| corto || de_rutas.contains(&m.id) || arriba.contains(m.id.as_str()) || sin_vector(&m.id));
+        elegidas.retain(|m| !vetable(m, &de_rutas) || arriba.contains(m.id.as_str()) || sin_vector(&m.id));
         if let [(id, c1), (_, c2), ..] = cosenos.as_slice()
             && *c1 >= ANADIR_GEMMA
             && c1 - c2 >= VENTAJA_GEMMA
@@ -714,6 +858,7 @@ pub fn al_preguntar_abriendo<'m>(
             elegir(memoria::obtener(db, id)?, &mut elegidas);
         }
     }
+    traza("final", || serde_json::json!(elegidas.iter().map(|m| m.id.clone()).collect::<Vec<_>>()));
     // Una memoria enlazada con las elegidas, si es una trampa o una preferencia y tiene que ver (7.4).
     let vecina = if elegidas.is_empty() { None } else { crate::enlaces::vecina_para(db, project, &e.prompt, &elegidas, &vistas, LISTON_ENLAZADA, LISTON_VECINA)? };
     let recordar = toca_recordar(db, project, &e.session_id)?;
