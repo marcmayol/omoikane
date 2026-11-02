@@ -58,7 +58,7 @@ jobs:
             *.zip) 7z x -y -obin "${{ matrix.paquete }}" >/dev/null; bin="$d/bin/omoi.exe" ;;
             *) tar -xzf "${{ matrix.paquete }}" -C bin; bin="$d/bin/omoi" ;;
           esac
-          "$bin" --version | grep -qx "omoi 1.0.0"
+          "$bin" --version | grep -x "omoi 1.0.0" >/dev/null
           echo "OMOIKANE_COMPAT_BIN=$bin" >> "$GITHUB_ENV"
 
       - run: cargo test --locked --test compat -- --nocapture

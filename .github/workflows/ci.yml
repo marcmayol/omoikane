@@ -47,7 +47,7 @@ jobs:
           export OMOIKANE_DB="$RUNNER_TEMP/humo.db"
           ./target/release/omoi doctor
           ./target/release/omoi remember -k gotcha -t "Bug en auth" "Fallo de autenticación: el token caduca."
-          ./target/release/omoi search "fallo de autenticación" | grep -q "Bug en auth"
+          ./target/release/omoi search "fallo de autenticación" | grep "Bug en auth" >/dev/null
           export OMOIKANE_MODELS="$RUNNER_TEMP/modelos"
           ./target/release/omoi model install --from "$OMOI_MODELO_INT8"
-          ./target/release/omoi search "token caduca" --json | grep -q '"similarity"'
+          ./target/release/omoi search "token caduca" --json | grep '"similarity"' >/dev/null
