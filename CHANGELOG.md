@@ -6,17 +6,42 @@ The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Unreleased
 
-Omoikane is light again until the memory needs more. In 1.2 the meaning model (EmbeddingGemma, ~450 MB) came with every install and was asked on most prompts, taking recall from ~35 ms to ~100 ms. With a small memory it barely helped: below about 1,000 memories recall injected the same noise with it and without it.
+## 1.3.0 (2026-11-02)
 
-- **The meaning model comes in with the size of the memory.** Below 1,500 memories (every memory in the database counts, so the decision is the same from every folder) Omoikane works as 1.1 did: words and the light model, no download, no service. Once the memory passes 1,500, Omoikane downloads the model in the background, indexes the memories and says so once at the start of a session. The Claude Code plugin and the one-line installers no longer download it. `omoi model semantic --on` uses it with a small memory, `--off` never, `--auto` lets the size decide again; `omoi model semantic` and `omoi doctor` say whether it is in use and why. 1,500 is provisional: it will be calibrated with the final measurements, between 1,000 and 3,000 (`OMOIKANE_SEMANTIC_THRESHOLD` changes it).
+Fast and light again, and still understanding what you ask with other words. 1.2 brought the meaning model to every install and asked it on most prompts; a review in five parts (speed, when to use it, weight, real value, GPU) showed it paid off only with large memories and cost too much in speed and weight. 1.3 keeps the quality and takes the cost back.
+
+### Measured
+On the public benchmark ([omoikane-bench](https://github.com/marcmayol/omoikane-bench), 250 questions written blind), interleaved, with 3,000 / 10,000 memories:
+
+| | 1.3 | 1.2 | 1.3 with the meaning model off | engram 3.6 (best mode) |
+|---|---|---|---|---|
+| recall, P50 | **32 / 54 ms** | 99 / 126 ms | 27 / 31 ms | – |
+| search, P50 | **64 / 64 ms** | 101 / 126 ms | 31 / 34 ms | 236 / 347 ms |
+| right memory first, paraphrases (search) | 55 % / 53 % | 55 % / 53 % | 9 % / 8 % | 6 % / 4 % |
+| right memory first, questions (search) | 89 % / 88 % | 89 % / 88 % | 85 % / 84 % | 71 % / 71 % |
+| recall injects something on a question with no answer | 7.5 % / 15 % | 7.5 % / 15 % | 40 % / 70 % | – |
+| recall brings the right memory, questions | 94 % / 94 % | 94 % / 94 % | 93 % / 94 % | – |
+| computing the meaning vectors | 453 / 1,827 s | 730 / 2,437 s | – | – |
+
+What got worse: recall no longer adds by itself a memory the words didn't find, so paraphrases in recall go from 29 % to 9-11 % (search still finds 53-55 % of them first). The first recall right after the meaning service starts takes ~0.2 s.
+
+### Faster for everyone
+- **Every `omoi` call no longer flushes the database's write-ahead log on exit.** On Windows, when the recall hook was the last process with the database open (the normal case without the meaning service), SQLite moved the log into the database and synced the disk on every prompt: recall took ~170-270 ms in 1.1 and 1.2 with the meaning model off, not the ~35 ms measured with another connection open. Now it takes ~30 ms. About once every ~240 prompts one call pays the flush (~0.5 s). The `-wal` file (up to ~4 MB) stays next to the database: Omoikane's own copies (`omoi backup`, the daily copy, `omoi export`) are unaffected, but a database copied by hand needs its `-wal` too.
+- Faster process start on Windows (17.4 → 13.5 ms): the home folder comes from the standard library, and the TUI's libraries load only when the TUI opens.
+
+### The meaning model: light and only when it helps
+- **The meaning model comes in with the size of the memory.** Below 1,000 memories (every memory in the database counts, so the decision is the same from every folder) Omoikane works as 1.1 did: words and the light model, no download, no service. Once the memory passes 1,000, Omoikane downloads the model in the background, indexes the memories and says so once at the start of a session. The Claude Code plugin and the one-line installers no longer download it. `omoi model semantic --on` uses it with a small memory, `--off` never, `--auto` lets the size decide again; `omoi model semantic` and `omoi doctor` say whether it is in use and why. 1,000 comes from the measurements: with 1,000 memories the model already finds 36 % of paraphrases first in search (8 % without it) and takes recall noise from 30 % to 22.5 %; below that, recall doesn't gain and the download isn't worth it (`OMOIKANE_SEMANTIC_THRESHOLD` changes it).
 - **Recall asks the meaning model only to keep quiet.** Only when the words already brought something, on a prompt of more than five words and at most 300 characters, and only to take out what isn't among the three memories closest in meaning. On 1,161 of the author's real prompts it is asked on 60; on the public benchmark (3,000 memories) recall injects something on 7.5 % of the questions with no answer, as in 1.2. It no longer adds a memory the words didn't find (search still finds paraphrases).
 - **Preferences are never vetoed**: a preference applies without resembling the prompt ("open it in Creality Print" and the preference of not using Orca). On the author's real prompts, a quarter of the vetoed preferences were useful.
 - **When the model doesn't answer in time**, recall goes on with words, as before, but it is no longer silent: `omoi doctor` shows how many times recall asked it and how many got no answer, with the last one. `OMOIKANE_TRAZA=1` writes every step of a recall to stderr.
 - **Search can come back empty.** What only meaning brings, with no word in common with the query, needs a similarity of 0.35. With 1.2 a search never came back empty and often showed something unrelated first; now that happens on 6 % of the author's prompts instead of 21 %, with the same first results on the public benchmark.
 - **A procedure needs more than one loose word.** "publish a post on LinkedIn" brought "Publish a release" because `publish` is in its `when:` line. Now a single word only brings it inside its own project, or with a word of its title or project ("publish the release", "publish omoikane"); a phrase from `when:` or two of its words still bring it anywhere.
+- **Its own engine**: the meaning model runs on f16 weights read straight from the mapped file (AVX2), with a compiled tokenizer. The service is ready in ~26 ms instead of 1.4 s and uses ~13 MB of its own RAM instead of ~490 MB; a vector takes ~21 ms instead of ~42 (16 tokens). Same vectors (cosine 1.000000). CPUs without AVX2 keep using candle.
+- **Indexing in batches that give way**: vectors are computed in batches that pause while a query is being served (a query during indexing: 66 ms instead of ~300), up to 3.8× faster per memory, with a RAM cap: `omoi model semantic --ram <MB>` (default 128 MB, minimum 80; `OMOIKANE_SEMANTIC_RAM` overrides it), shown by `omoi model semantic` and `omoi doctor`.
+- **The service compares the vectors itself**, kept in memory, so recall and search no longer read every vector from the database on each call.
 
-**Compatibility**: same as 1.2.0. The database schema, the sync lines and the export format don't change; the recall counters go in the local `meta` table.
-
+### Compatibility
+- Same as 1.2.0: the database schema (10), the sync lines and the export format don't change. The recall counters go in the local `meta` table, and the compiled tokenizer (`tokenizer.omoi`) is generated locally next to the model; the published model files and their SHA-256 don't change. Checked against 1.0.0 on every commit.
 
 ## 1.2.0 (2026-11-01)
 

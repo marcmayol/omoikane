@@ -32,7 +32,7 @@ En Claude Code (2.1.310 o más nuevo), dos comandos y nada más:
 
 La actualización automática viene apagada. `omoi setup claude` y los instaladores de una línea preguntan si la quieres (si no contestas, se queda apagada) y, si dices que sí, encienden también la del plugin; `omoi upgrade --on` la enciende cuando quieras. Para la del plugin, si solo has usado los dos comandos de arriba: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code la deja apagada en los marketplaces de terceros).
 
-En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano y una sola vez, el modelo de embeddings ligero (~150 MB); mientras llega, la búsqueda va por palabras. El de significado (EmbeddingGemma, ~450 MB) solo llega cuando la memoria pasa de 1.500 memorias: entonces Omoikane lo descarga solo y lo dice. `omoi model semantic --on` lo trae antes, `--off` nunca. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
+En la primera sesión el plugin descarga de las Releases de este repo el binario `omoi` de tu sistema (comprobando su SHA-256) en `~/.omoikane/bin` y después, en segundo plano y una sola vez, el modelo de embeddings ligero (~150 MB); mientras llega, la búsqueda va por palabras. El de significado (EmbeddingGemma, ~450 MB) solo llega cuando la memoria pasa de 1.000 memorias: entonces Omoikane lo descarga solo y lo dice. `omoi model semantic --on` lo trae antes, `--off` nunca. Cuando el plugin se actualiza, baja el binario de su misma versión. Binarios compilados: Windows x64, Linux x64/ARM64 (glibc 2.35 o más nueva), macOS Apple Silicon e Intel; en cualquier otro, `cargo install omoikane` y el plugin usa el `omoi` del PATH (o pon `OMOIKANE_BIN`). Si prefieres no ejecutar un binario que no has compilado tú, haz lo mismo: `cargo install omoikane` lo compila desde el código publicado en crates.io.
 
 **Sin Claude Code**, o para usar `omoi` desde la terminal u otro cliente MCP, instala el binario con una línea:
 
@@ -52,7 +52,7 @@ O `cargo install omoikane`. Los instaladores también añaden el plugin si Claud
 
 Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las 8 herramientas y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
 
-Versión 1.2.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
+Versión 1.3.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. El diseño completo y cada decisión están en [PLAN.md](PLAN.md).
 
 ## Medido
 

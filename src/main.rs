@@ -520,7 +520,7 @@ enum AccionModelo {
     /// Delete installed models that are not in use.
     Clean,
     /// Whether the meaning model (EmbeddingGemma) is in use and why. Unless you choose, it turns on by
-    /// itself once the memory is large (1,500 memories): below that, words alone are as good and faster.
+    /// itself once the memory is large (1,000 memories): below that, words alone are as good and faster.
     Semantic {
         /// Use it even with a small memory (downloads it in the background if it is missing).
         #[arg(long, conflicts_with_all = ["off", "auto"])]

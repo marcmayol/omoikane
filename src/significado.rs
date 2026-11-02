@@ -95,8 +95,11 @@ pub fn fijar(eleccion: Option<bool>) -> Result<()> {
 /// Con pocas memorias no compensa: el veto del recall casi no quita ruido por debajo de unas 1.000
 /// (`omoi-revision-12/2-cuando.md`: con 150-1.000 el ruido es el mismo con y sin modelo; con 3.000
 /// baja del 40 % al 7,5 %) y cuesta ~450 MB de disco, un servicio residente e indexar cada memoria.
-/// Provisional (1.500): lo calibra la medición final entre 1.000 y 3.000. `OMOIKANE_SEMANTIC_THRESHOLD`
-/// lo cambia (pruebas, calibración).
+/// 1.000, calibrado el 2-nov-2026: con 1.000 memorias el modelo ya da (búsqueda: paráfrasis a la
+/// primera 0,08 → 0,36; recall: ruido en preguntas sin respuesta 30 % → 22,5 %; `2-cuando.md`), y desde
+/// el motor propio (`rapido`) cuesta poco más que el disco: carga en ~26 ms, 13 MB de RAM propia,
+/// indexar ~76-640 ms por memoria una vez. Por debajo de 1.000 la búsqueda también ganaría paráfrasis,
+/// pero el recall no, y la descarga no compensa. `OMOIKANE_SEMANTIC_THRESHOLD` lo cambia.
 ///
 /// Cuentan todas las memorias de la base, no las del ámbito de la sesión. El modelo, su descarga, el
 /// servicio y los vectores son de la base entera (no de un proyecto), y la decisión tiene que ser la
@@ -104,7 +107,7 @@ pub fn fijar(eleccion: Option<bool>) -> Result<()> {
 /// proyecto, y la base se indexaría a medias. Además, desde una carpeta general el recall y la búsqueda
 /// ven todas, y en una base grande el ruido de palabras sube también dentro de cada proyecto (lo
 /// arrastran las memorias globales). Cuesta una lectura de `memory_cuenta` (microsegundos).
-pub const UMBRAL_MEMORIAS: usize = 1500;
+pub const UMBRAL_MEMORIAS: usize = 1000;
 
 pub fn umbral() -> usize {
     std::env::var("OMOIKANE_SEMANTIC_THRESHOLD").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(UMBRAL_MEMORIAS)

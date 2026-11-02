@@ -32,7 +32,7 @@ In Claude Code (2.1.310 or newer), two commands and nothing else:
 
 Automatic updates come off. `omoi setup claude` and the one-line installers ask whether you want them (no answer leaves them off) and, if you say yes, turn on the plugin's update too; `omoi upgrade --on` turns them on any time. For the plugin's, if you only ran the two commands above: `/plugin` → **Marketplaces** → **drac** → **Enable auto-update** (Claude Code leaves it off for third-party marketplaces).
 
-On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then, in the background and once, the light embedding model (~150 MB); until it arrives, search works by words. The meaning model (EmbeddingGemma, ~450 MB) only comes when the memory passes 1,500 memories: Omoikane downloads it by itself then and says so. `omoi model semantic --on` brings it earlier, `--off` never. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
+On the first session the plugin downloads the `omoi` binary for your system from this repo's Releases (checking its SHA-256) into `~/.omoikane/bin`, then, in the background and once, the light embedding model (~150 MB); until it arrives, search works by words. The meaning model (EmbeddingGemma, ~450 MB) only comes when the memory passes 1,000 memories: Omoikane downloads it by itself then and says so. `omoi model semantic --on` brings it earlier, `--off` never. When the plugin updates, it fetches the matching binary. Prebuilt binaries: Windows x64, Linux x64/ARM64 (glibc 2.35 or newer), macOS Apple Silicon and Intel; anywhere else, `cargo install omoikane` and the plugin uses the `omoi` on your PATH (or set `OMOIKANE_BIN`). If you'd rather not run a binary you didn't build, do the same: `cargo install omoikane` builds it from the source published on crates.io.
 
 **Without Claude Code**, or to use `omoi` from the terminal or another MCP client, install the binary with one line:
 
@@ -52,7 +52,7 @@ Or `cargo install omoikane`. The installers also add the Claude Code plugin if C
 
 Throughout 1.x, the database, the sync line and the `omoi export` format don't change in any way that breaks things: a 1.3 and a 1.0 sync with each other, and a computer on 1.0 keeps and passes on what it doesn't understand from a newer version. The 8 tools and their parameters don't break either; things only get added. If something ever has to break, that will be 2.0, with a migration and a warning.
 
-Version 1.2.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+Version 1.3.0, on crates.io and in the Releases, with CI on Windows, Linux and macOS. Used every day on Windows and Linux. The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
 
 ## Measured
 
