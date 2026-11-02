@@ -172,6 +172,59 @@ fn export_jsonl() {
 }
 
 #[test]
+fn export_a_obsidian() {
+    let e = Entorno::nuevo("obsidian");
+    let a = e.json(&["remember", "-k", "gotcha", "-t", "Cuidado con X", "--tag", "nota-a", "--path", "src/x.rs", "Ver [[nota-b]], [[no-existe]] y el rojo #d62828."]);
+    let b = e.json(&["remember", "-k", "decision", "-t", "Usamos Y", "--tag", "nota-b", "--path", "src/x.rs", "Porque sí."]);
+    e.ok(&["remember", "-k", "preference", "-t", "Commits en inglés", "--global", "Una línea."]);
+    e.ok(&["space", "add", "acme"]);
+    e.ok(&["remember", "-k", "fact", "-t", "Del cliente", "--space=acme", "Solo de acme."]);
+    let vault = e.dir.join("vault");
+    let raiz = vault.join("omoikane");
+    let fin = |id: &serde_json::Value| id.as_str().unwrap()[18..].to_lowercase();
+    let (fa, fb) = (format!("cuidado-con-x-{}", fin(&a["id"])), format!("usamos-y-{}", fin(&b["id"])));
+    e.ok(&["export", "--obsidian", vault.to_str().unwrap()]);
+    let nota_a = std::fs::read_to_string(raiz.join("repo").join(format!("{fa}.md"))).unwrap();
+    assert!(nota_a.starts_with("---\nomoikane: "), "{nota_a}");
+    assert!(nota_a.contains(&format!("[[{fb}|nota-b]]")), "{nota_a}");
+    assert!(nota_a.contains("no-existe") && !nota_a.contains("[[no-existe"), "un enlace roto va en texto: {nota_a}");
+    assert!(nota_a.contains("\\#d62828") && nota_a.contains("tags: [\"gotcha\", \"nota-a\"]"), "{nota_a}");
+    assert!(nota_a.contains("[[proyecto-repo]]"));
+    assert!(raiz.join("repo").join("proyecto-repo.md").exists() && raiz.join("_global").exists());
+    assert_eq!(std::fs::read_dir(raiz.join("_ficheros")).unwrap().count(), 1, "src/x.rs, citado dos veces");
+    assert!(vault.join(".obsidian").join("graph.json").exists());
+    let todo = |d: &Path| -> String {
+        let mut s = String::new();
+        let mut pila = vec![d.to_path_buf()];
+        while let Some(p) = pila.pop() {
+            for x in std::fs::read_dir(&p).unwrap().flatten() {
+                if x.path().is_dir() { pila.push(x.path()) } else { s += &std::fs::read_to_string(x.path()).unwrap_or_default() }
+            }
+        }
+        s
+    };
+    assert!(!todo(&raiz).contains("Solo de acme"), "nada de un espacio en el vault personal");
+
+    // Un espacio, en su vault: solo lo suyo, sin lo global.
+    let otro = e.dir.join("vault-acme");
+    e.ok(&["export", "--obsidian", otro.to_str().unwrap(), "--space", "acme"]);
+    let t = todo(&otro.join("omoikane"));
+    assert!(t.contains("Solo de acme") && !t.contains("Commits en inglés") && !t.contains("Cuidado con X"));
+
+    // Lo olvidado desaparece, el enlace a ello queda en texto y lo que no es de Omoikane se queda.
+    std::fs::write(raiz.join("repo").join("mia.md"), "---\ntitle: mía\n---\nNota mía.\n").unwrap();
+    e.ok(&["forget", b["id"].as_str().unwrap(), "--yes"]);
+    let n = e.json(&["export", "--obsidian", vault.to_str().unwrap()]);
+    assert!(n["deleted"].as_u64().unwrap() >= 2, "la nota y la del fichero: {n}");
+    assert!(!raiz.join("repo").join(format!("{fb}.md")).exists() && raiz.join("repo").join("mia.md").exists());
+    let nota_a = std::fs::read_to_string(raiz.join("repo").join(format!("{fa}.md"))).unwrap();
+    assert!(nota_a.contains("nota-b") && !nota_a.contains("[[usamos-y"), "{nota_a}");
+    // Sin cambios, no se escribe nada.
+    let n = e.json(&["export", "--obsidian", vault.to_str().unwrap()]);
+    assert_eq!((n["created"].as_u64(), n["updated"].as_u64(), n["deleted"].as_u64()), (Some(0), Some(0), Some(0)));
+}
+
+#[test]
 fn ayuda_en_ingles_y_en_espanol() {
     let e = Entorno::nuevo("idioma");
     let en = String::from_utf8(e.omoi(&["remember", "--help"]).stdout).unwrap();

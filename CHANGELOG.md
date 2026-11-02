@@ -6,6 +6,12 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+### Seeing the memory in Obsidian
+- `omoi export --obsidian <vault>` writes one Markdown note per memory in `<vault>/omoikane/`, linked to its project, to the memories it names with `[[name]]`, to the ones it supersedes or contradicts and to the files it shares with others, so that Obsidian's graph view shows how everything connects. It is a mirror: rebuilt on every export, it only touches its own notes. By default, the personal projects and the global memories; `--space` exports one client alone, without the global ones. `--watch` keeps it up to date.
+
+### Compatibility
+- Same as 1.3.0: the database schema (10), the sync lines and the export format don't change. The Obsidian notes are a new output, not a format anything reads back. Checked against 1.0.0 on every commit.
+
 ## 1.3.0 (2026-11-02)
 
 Fast and light again, and still understanding what you ask with other words. 1.2 brought the meaning model to every install and asked it on most prompts; a review in five parts (speed, when to use it, weight, real value, GPU) showed it paid off only with large memories and cost too much in speed and weight. 1.3 keeps the quality and takes the cost back.

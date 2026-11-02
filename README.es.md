@@ -72,7 +72,7 @@ El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). Un
 
 - [Recall y búsqueda](docs/recall.es.md): cuándo habla y cuándo calla, lo que se queda viejo, la búsqueda en 101 idiomas y qué tiene frente a CLAUDE.md.
 - [Qué es una memoria y cómo se guarda](docs/saving.es.md): tipos, duplicados, `/omoikane`, guardar al cerrar la sesión, secretos, recetas y enlaces.
-- [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, copia diaria e importar de engram.
+- [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, verla en Obsidian, copia diaria e importar de engram.
 - [Sincronización, proyectos y espacios](docs/sync-and-spaces.es.md): compartir entre equipos y con compañeros, el cifrado y un espacio por cliente.
 - [Agentes](docs/agents.es.md): el plugin de Claude Code, `omoi setup` y qué funciona en cada uno de los 15 agentes.
 - [Terminal, vista web, HTTP y actualizaciones](docs/reference.es.md): la CLI, la TUI y la vista web, la API HTTP, la actualización automática y las variables de entorno.

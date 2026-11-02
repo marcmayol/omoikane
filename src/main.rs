@@ -244,11 +244,23 @@ enum Orden {
     /// A faithful copy: every memory with its history, forget marks, verdicts and the trash, one JSON line each (`omoi import` restores it exactly).
     Export {
         /// From every project (default: this one and the global ones).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "obsidian")]
         all: bool,
         /// Encrypt every line with the sync key (AES-SIV), to keep the copy anywhere.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "obsidian")]
         encrypt: bool,
+        /// Instead: one Markdown note per memory in <vault>/omoikane/, for Obsidian's graph view (a mirror: rewritten on every export). Personal projects and the global ones by default.
+        #[arg(long, value_name = "VAULT")]
+        obsidian: Option<PathBuf>,
+        /// With --obsidian: only this space (a client), without the global memories. Give each space its own vault.
+        #[arg(long, requires = "obsidian")]
+        space: Option<String>,
+        /// With --obsidian: keep the vault up to date, exporting again when the database changes.
+        #[arg(long, requires = "obsidian")]
+        watch: bool,
+        /// With --watch: seconds between checks.
+        #[arg(long, requires = "watch", default_value_t = 60, value_parser = clap::value_parser!(u64).range(5..))]
+        interval: u64,
     },
     /// Copy the database now to <its folder>/backups/omoikane-<date>.db (it also happens by itself once a day; OMOIKANE_BACKUPS copies are kept, 7 by default).
     Backup {
@@ -960,7 +972,40 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             );
             Ok(())
         }
-        Orden::Export { all, encrypt } => {
+        Orden::Export { obsidian: Some(vault), space, watch, interval, .. } => {
+            let db = abrir(c)?;
+            let que = match space {
+                Some(s) => omoikane::obsidian::Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+                None => omoikane::obsidian::Que::Personal,
+            };
+            let json_salida = c.json;
+            let avisar = |n: &omoikane::obsidian::Cuenta| {
+                if json_salida {
+                    println!("{}", serde_json::to_string(n).unwrap_or_default());
+                } else {
+                    eprintln!(
+                        "{}",
+                        tr!(
+                            "{} memories in {}: {} new, {} changed, {} unchanged, {} deleted ({} group and file notes)",
+                            "{} memorias en {}: {} nuevas, {} cambiadas, {} iguales, {} borradas ({} notas de grupo y de fichero)",
+                            n.memories,
+                            vault.join(omoikane::obsidian::CARPETA).display(),
+                            n.created,
+                            n.updated,
+                            n.unchanged,
+                            n.deleted,
+                            n.hubs
+                        )
+                    );
+                }
+            };
+            if watch {
+                return omoikane::obsidian::vigilar(&db, &vault, que, std::time::Duration::from_secs(interval), avisar);
+            }
+            avisar(&omoikane::obsidian::exportar(&db, &vault, que)?);
+            Ok(())
+        }
+        Orden::Export { all, encrypt, .. } => {
             let mut salida = std::io::BufWriter::new(std::io::stdout().lock());
             let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
             let db = abrir(c)?;
@@ -2335,6 +2380,10 @@ fn en_espanol(c: Command) -> Command {
         ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
             ("encrypt", "Cifra cada línea con la clave de la sincronización (AES-SIV), para guardar la copia en cualquier sitio."),
+            ("obsidian", "En su lugar: una nota Markdown por memoria en <vault>/omoikane/, para la vista de grafo de Obsidian (un espejo: se rehace en cada exportación). Por defecto, los proyectos personales y las globales."),
+            ("space", "Con --obsidian: solo este espacio (un cliente), sin las globales. Cada espacio, en su propio vault."),
+            ("watch", "Con --obsidian: mantener el vault al día, exportando otra vez cuando cambie la base."),
+            ("interval", "Con --watch: segundos entre comprobaciones."),
         ]),
         ("backup", "Copia la base ahora en <su carpeta>/backups/omoikane-<fecha>.db (también se hace sola una vez al día; se conservan OMOIKANE_BACKUPS copias, 7 por defecto).", &[("list", "Solo enseñar las copias que hay.")]),
         ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),

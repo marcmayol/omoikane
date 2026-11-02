@@ -72,7 +72,7 @@ Full method and every number: [BENCHMARK.md](BENCHMARK.md). A public, reproducib
 
 - [Recall and search](docs/recall.md): when it speaks and when it keeps quiet, stale memories, search in 101 languages, and how it compares with CLAUDE.md.
 - [What a memory is and how it gets saved](docs/saving.md): kinds, duplicates, `/omoikane`, saving at session end, secrets, procedures and links.
-- [Keeping it right and never losing it](docs/memory-care.md): stale detection, verdicts, merging, review dates, history, trash, export, daily copy, importing from engram.
+- [Keeping it right and never losing it](docs/memory-care.md): stale detection, verdicts, merging, review dates, history, trash, export, seeing it in Obsidian, daily copy, importing from engram.
 - [Sync, projects and spaces](docs/sync-and-spaces.md): sharing between computers and teammates, encryption, one space per client.
 - [Agents](docs/agents.md): the Claude Code plugin, `omoi setup` and what works in each of the 15 agents.
 - [Terminal, web view, HTTP and updates](docs/reference.md): the CLI, the TUI and the web view, the HTTP API, automatic updates and environment variables.
