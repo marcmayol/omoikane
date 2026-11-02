@@ -3,7 +3,7 @@
 //! - Al empezar (o tras compactar): las preferencias y las fijadas del proyecto y globales.
 //! - En cada mensaje: las memorias que de verdad tienen que ver con él, o ninguna. Inyectar de más
 //!   ensucia el contexto del agente, así que el criterio es estricto y está calibrado con mensajes
-//!   reales (PLAN.md §6): el mensaje tiene que tener al menos `TERMINOS_MIN` palabras útiles, la
+//!   reales: el mensaje tiene que tener al menos `TERMINOS_MIN` palabras útiles, la
 //!   memoria tiene que compartir al menos `RAROS_MIN` palabras poco frecuentes en la base, y esas
 //!   palabras tienen que pesar (por IDF) al menos `COBERTURA_MIN` de lo que pesa el mensaje.
 //! - Además, las memorias cuyas rutas se mencionan en el mensaje (los `gotcha` de un fichero).
@@ -289,7 +289,7 @@ fn relevantes_con(db: &mut Connection, project: &str, terminos: &[String], (n, d
     }
     // 30 candidatas: una nota larga que es justo la del tema puede quedar lejos en BM25.
     let o = Opciones { ambito: Ambito::de(db, project)?, kind: None, tags: vec![], limite: 30 };
-    // Solo palabras: el vector no mejoró la búsqueda de forma medible (PLAN.md §5) y aquí el ruido
+    // Solo palabras: el vector no mejoró la búsqueda de forma medible y aquí el ruido
     // cuesta más. Así el hook tampoco abre el modelo.
     let candidatos = buscar::buscar_sin_apuntar(db, &terminos.join(" "), &o)?;
     let mut traza_c: Vec<serde_json::Value> = Vec::new();

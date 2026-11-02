@@ -1,6 +1,6 @@
 name: compat
 
-# Que la 1.x siga entendiéndose con la 1.0.0 (PLAN.md, Fase 9, §9.1): baja el `omoi` 1.0.0 de la
+# Que la 1.x siga entendiéndose con la 1.0.0: baja el `omoi` 1.0.0 de la
 # Release v1.0.0, comprueba su SHA-256 y corre `cargo test --test compat` contra el de este commit
 # (sync por el mismo repositorio en los dos sentidos, la base y `omoi export`). Si falla, la 1.x ha
 # roto lo que prometió la 1.0. `release.yml` lo llama antes de publicar.

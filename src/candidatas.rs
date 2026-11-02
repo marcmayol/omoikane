@@ -12,7 +12,7 @@
 //! publicación). Nada que parezca un secreto, nada que ya esté guardado, como mucho 5 (más los hitos).
 //!
 //! Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI y Cursor, y un JSONL
-//! genérico (Kiro, el plugin de OpenCode): ver `turnos` y la Fase 7.5 del PLAN.
+//! genérico (Kiro, el plugin de OpenCode): ver `turnos`.
 
 use crate::memoria::{AHORA, Ambito};
 use anyhow::Result;

@@ -1,4 +1,4 @@
-//! Fase 0.5 del PLAN.md: cargar el modelo en milisegundos sin cambiar ni un vector.
+//! Fase 0.5: cargar el modelo en milisegundos sin cambiar ni un vector.
 //!
 //!   cargo run --release --example fase05 -- compilar        int8 → formato mapeable
 //!   cargo run --release --example fase05 -- abrir           abrir + primer vector (medir en frío)

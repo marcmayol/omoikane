@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use std::str::FromStr;
 
-/// Cada tipo cambia cómo se recupera la memoria (ver PLAN.md §3). Un tipo que esta versión no conoce
+/// Cada tipo cambia cómo se recupera la memoria. Un tipo que esta versión no conoce
 /// (de una versión futura, por la sincronización) se guarda tal cual en la base y se trata como `fact`
 /// (ver `Memoria::kind_text`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

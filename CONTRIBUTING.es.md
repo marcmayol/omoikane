@@ -11,7 +11,7 @@ Quien participa sigue el [código de conducta](CODE_OF_CONDUCT.md) (en inglés).
 - **Arreglos pequeños** (una errata, un mensaje más claro, un fallo de causa evidente): abre el pull request directamente.
 - **Todo lo demás** (una función nueva, un comando o herramienta MCP nuevos, un cambio en la búsqueda o el recuerdo, cualquier cosa que toque la base de datos, la sincronización o el formato de exportación): abre antes una issue y cuenta qué problema quieres resolver. Así no trabajas en algo que choca con las reglas de abajo.
 - **Problemas de seguridad**: no abras una issue pública. Mira [SECURITY.md](SECURITY.md).
-- Las preguntas sobre cómo funciona algo también valen como issue; puede que ya las respondan [docs/](docs/) o [PLAN.md](PLAN.md).
+- Las preguntas sobre cómo funciona algo también valen como issue; puede que ya las responda [docs/](docs/).
 
 ## Reglas que no se doblan
 

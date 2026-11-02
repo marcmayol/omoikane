@@ -6,7 +6,7 @@
 //!
 //! Sin ONNX Runtime a propósito: el ONNX publicado usa operaciones propias de Microsoft
 //! (`MultiHeadAttention`, `RotaryEmbedding`…) que solo entiende ONNX Runtime, y Omoikane no depende
-//! de nada fuera del binario (PLAN.md, 9.2).
+//! de nada fuera del binario.
 //!
 //! Dos motores dan el mismo vector:
 //! - `rapido` (por defecto): pesos en f16 leídos del fichero mapeado, multiplicaciones propias con

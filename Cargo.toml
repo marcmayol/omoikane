@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-# EmbeddingGemma en Rust puro, sin ONNX Runtime (PLAN.md 9.2): solo CPU, sin dependencias fuera del binario.
+# EmbeddingGemma en Rust puro, sin ONNX Runtime: solo CPU, sin dependencias fuera del binario.
 candle-core = "0.11.1"
 candle-nn = "0.11.1"
 clap = { version = "4.6.7", features = ["derive"] }

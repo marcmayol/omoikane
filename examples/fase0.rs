@@ -1,4 +1,4 @@
-//! Fase 0 del PLAN.md: medir antes de decidir.
+//! Fase 0: medir antes de decidir.
 //!
 //!   cargo run --release --example fase0 -- cuantizar   descarga el modelo f32, escribe el int8 propio y compara
 //!   cargo run --release --example fase0 -- cargar DIR  carga un modelo y codifica una frase (para medir en frío)

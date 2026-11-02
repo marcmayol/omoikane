@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// Similitud mínima (vectores centrados) para que la búsqueda añada una memoria que no salió por
 /// palabras. Calibrada en la fase 2 con `tests/busquedas.tsv` y con 127 notas reales: desde 0,25
 /// las consultas sin respuesta no devuelven nada. Con un modelo estático el rescate rara vez
-/// aporta: está para cuando la similitud es alta de verdad (ver PLAN.md §5).
+/// aporta: está para cuando la similitud es alta de verdad.
 pub const SIMILITUD_BUSQUEDA: f32 = 0.25;
 
 /// Cuándo guardar propone actualizar la memoria que ya existe: si el parecido (vectores centrados)

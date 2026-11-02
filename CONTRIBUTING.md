@@ -11,7 +11,7 @@ Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 - **Small fixes** (a typo, a clearer message, a bug with an obvious cause): open the pull request directly.
 - **Anything else** (a new feature, a new command or MCP tool, a change to search or recall, anything that touches the database, sync or export formats): open an issue first and say what problem you want to solve. It saves you work that might not fit the rules below.
 - **Security problems**: don't open a public issue. See [SECURITY.md](SECURITY.md).
-- Questions on how something works are welcome as issues too; [docs/](docs/) and [PLAN.md](PLAN.md) may already answer them.
+- Questions on how something works are welcome as issues too; [docs/](docs/) may already answer them.
 
 ## Rules that don't bend
 

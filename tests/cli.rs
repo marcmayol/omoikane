@@ -67,7 +67,7 @@ fn existe(p: &Path) -> bool {
     p.exists()
 }
 
-/// El criterio de «hecho» de la fase 1 (PLAN.md §11).
+/// El criterio de «hecho» de la fase 1.
 #[test]
 fn remember_y_search_encuentran_bug_en_auth() {
     let e = Entorno::nuevo("hecho");

@@ -1,6 +1,6 @@
 //! Compatibilidad con la 1.0.0 (Fase 9, §9.1): un `omoi` 1.0.0 fijo y el de este commit comparten un
 //! repositorio git desnudo local, una base y las copias de `omoi export`, y se tienen que entender en
-//! los dos sentidos. Es lo que promete la 1.0 (PLAN.md, «### 1.0.0»): la base, la línea de sync y el
+//! los dos sentidos. Es lo que promete la 1.0: la base, la línea de sync y el
 //! export no cambian de forma incompatible en la 1.x; una 1.0 guarda y reenvía lo que no entiende
 //! (`extra`), cuenta aparte las líneas de un tipo nuevo, se aparta de un repositorio que pide un lector
 //! más nuevo (`omoikane.format`) y abre una base que solo añade (`lector_minimo`).

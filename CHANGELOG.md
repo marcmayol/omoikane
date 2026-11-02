@@ -2,7 +2,7 @@
 
 What changes in each version of Omoikane. The release workflow publishes the section of each version as the notes of its GitHub Release, and won't publish a version that has no section here. Every section ends with **Compatibility**: which versions it understands and which ones understand it.
 
-The full design and every decision are in [PLAN.md](PLAN.md) (Spanish).
+How it works is in [docs/](docs/).
 
 ## Unreleased
 
