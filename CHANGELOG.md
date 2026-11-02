@@ -6,6 +6,8 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.3.1 (2026-11-03)
+
 ### Seeing the memory in Obsidian
 - `omoi export --obsidian <vault>` writes one Markdown note per memory in `<vault>/omoikane/`, linked to its project, to the memories it names with `[[name]]`, to the ones it supersedes or contradicts and to the files it shares with others, so that Obsidian's graph view shows how everything connects. It is a mirror: rebuilt on every export, it only touches its own notes. By default, the personal projects and the global memories; `--space` exports one client alone, without the global ones. `--watch` keeps it up to date.
 
