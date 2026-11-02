@@ -37,6 +37,8 @@ pub struct Mat {
     pub filas: usize,
     cols: usize,
     partes: Vec<Parte>,
+    // Solo se lee en x86_64 (AVX2); en ARM el camino es el genérico.
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     simd: bool,
     _dueños: Vec<Dueño>,
 }
@@ -90,6 +92,7 @@ impl Mat {
     }
 
     /// ¿Van todas las partes por pares de filas? (el bloque de AVX2 lee dos filas seguidas).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     fn pares(&self) -> bool {
         self.partes.iter().all(|p| p.filas.is_multiple_of(2))
     }
@@ -188,6 +191,7 @@ impl Mat {
 }
 
 /// Un puntero que se puede compartir entre hilos que escriben en sitios distintos.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 struct Puntero(*mut f32);
 // SAFETY: cada tarea escribe en posiciones suyas (ver `por_bloques`).
 unsafe impl Send for Puntero {}
