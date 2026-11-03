@@ -4,12 +4,15 @@
 //!
 //! - Una carpeta por proyecto (`_global` para lo global, `_<espacio>` para lo de un espacio sin
 //!   proyecto), plana: el tipo va en las etiquetas, que es lo que colorea el grafo.
-//! - Cada nota enlaza a la de su proyecto (`proyecto-<nombre>`), a las memorias que nombra con
+//! - Cada nota enlaza a la de su proyecto (`proyecto-<nombre>`; lo global, a ninguna: casi todo es
+//!   global para quien trabaja desde su carpeta personal, y una sola nota para todo lo convertía en
+//!   el centro de una estrella que tapaba los enlaces de verdad), a las memorias que nombra con
 //!   `[[nombre]]` (resueltos con las reglas de `enlaces`, pero solo entre lo exportado), a las que
 //!   sustituye o contradice (veredictos vigentes, `veredictos::parejas`) y a una nota por fichero
 //!   citado por dos memorias o más (`_ficheros/`).
-//! - Los nombres de fichero llevan el final del id, que no cambia: retitular una memoria la mueve de
-//!   nombre, y la vieja se borra. Solo se escribe lo que cambia y solo se borra lo que lleva la marca
+//! - Cada nota se llama como el título de su memoria (es lo que Obsidian enseña como título), con el
+//!   final del id detrás solo si otra se llamaría igual: retitular una memoria la mueve de nombre, y
+//!   la vieja se borra. Solo se escribe lo que cambia y solo se borra lo que lleva la marca
 //!   `omoikane:` en la cabecera (lo que haya puesto otra persona en la carpeta se queda).
 //! - Ámbito: por defecto lo personal (proyectos sin espacio) y lo global; con un espacio, solo lo de
 //!   ese cliente, sin lo global. Nunca dos espacios en el mismo vault.
@@ -68,7 +71,7 @@ pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
     let grupo = |m: &Memoria| -> Grupo {
         if m.project_id == 0 {
             return if m.space.is_empty() {
-                Grupo { carpeta: "_global".into(), nota: "omoikane-global".into(), titulo: tr!("Global", "Global").to_string() }
+                Grupo { carpeta: "_global".into(), nota: String::new(), titulo: tr!("Global", "Global").to_string() }
             } else {
                 let s = slug(&m.space, 40);
                 Grupo { carpeta: format!("_{s}"), nota: format!("espacio-{s}"), titulo: m.space.clone() }
@@ -82,7 +85,8 @@ pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
         Grupo { carpeta: s.clone(), nota: format!("proyecto-{s}"), titulo: nombre }
     };
 
-    let ficheros = nota_por_id(&todas);
+    let ocupados: BTreeSet<String> = todas.iter().map(|m| grupo(m).nota.to_lowercase()).filter(|n| !n.is_empty()).collect();
+    let ficheros = nota_por_id(&todas, &ocupados);
     // Los `[[nombre]]`, como en `enlaces::recalcular`, pero solo entre lo exportado.
     let mut por_nombre: HashMap<String, Vec<&str>> = HashMap::new();
     for m in &todas {
@@ -136,7 +140,9 @@ pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
         let texto = nota(m, &g, &ficheros, &destinos, &nota_fichero, &sustituida_por, &sustituye_a, &contradice);
         escribir(&ruta, &texto, &mut c)?;
         escritos.insert(ruta);
-        grupos.insert(g.nota.clone(), g);
+        if !g.nota.is_empty() {
+            grupos.insert(g.nota.clone(), g);
+        }
     }
     for g in grupos.values() {
         let texto = format!(
@@ -171,9 +177,39 @@ struct Grupo {
     titulo: String,
 }
 
-/// El nombre de la nota de cada memoria: su título y el final de su id (la parte que no se repite).
-fn nota_por_id(todas: &[Memoria]) -> HashMap<String, String> {
-    todas.iter().map(|m| (m.id.clone(), format!("{}-{}", slug(&m.title, 60), corto(&m.id)))).collect()
+/// El nombre de la nota de cada memoria: su título, que es lo que Obsidian enseña como título de la
+/// nota. Obsidian resuelve los enlaces por nombre en todo el vault sin distinguir mayúsculas, así que
+/// si dos memorias (o una memoria y una nota de grupo) se llamarían igual, llevan detrás el final de
+/// su id, que no cambia.
+fn nota_por_id(todas: &[Memoria], ocupados: &BTreeSet<String>) -> HashMap<String, String> {
+    let mut veces: HashMap<String, usize> = HashMap::new();
+    for m in todas {
+        *veces.entry(titulo_de_fichero(&m.title).to_lowercase()).or_default() += 1;
+    }
+    todas
+        .iter()
+        .map(|m| {
+            let t = titulo_de_fichero(&m.title);
+            let k = t.to_lowercase();
+            let repetido = veces[&k] > 1 || ocupados.contains(&k) || reservado(&k);
+            (m.id.clone(), if repetido { format!("{t} ({})", corto(&m.id)) } else { t })
+        })
+        .collect()
+}
+
+/// Un título que vale como nombre de fichero en Windows, macOS y Linux y como enlace de Obsidian: sin
+/// `\ / : * ? " < > |` (Windows) ni `# ^ [ ]` (Obsidian), sin espacios repetidos ni punto o espacio
+/// al final (Windows), y como mucho 100 caracteres.
+fn titulo_de_fichero(titulo: &str) -> String {
+    let limpio: String = titulo.chars().map(|c| if c.is_control() || "\\/:*?\"<>|#^[]".contains(c) { ' ' } else { c }).collect();
+    let r: String = limpio.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(100).collect();
+    let r = r.trim_end_matches(['.', ' ']).trim_start_matches(['.', ' ']).to_string();
+    if r.is_empty() { "Nota".into() } else { r }
+}
+
+/// Los nombres que Windows no deja usar como fichero.
+fn reservado(k: &str) -> bool {
+    matches!(k, "con" | "prn" | "aux" | "nul") || (k.len() == 4 && (k.starts_with("com") || k.starts_with("lpt")) && k.as_bytes()[3].is_ascii_digit())
 }
 
 fn corto(s: &str) -> String {
@@ -246,7 +282,8 @@ fn nota(
     if !m.author.is_empty() {
         s += &format!("author: {}\n", q(&m.author));
     }
-    s += &format!("created: {}\nupdated: {}\n---\n\n# {}\n\n", q(&m.created_at), q(&m.updated_at), m.title.trim());
+    // Sin el título como encabezado: Obsidian ya enseña el nombre del fichero, que es el título.
+    s += &format!("created: {}\nupdated: {}\n---\n\n", q(&m.created_at), q(&m.updated_at));
 
     // El contenido, con cada `[[nombre]]` llevado a la nota que toca (o en texto si no lleva a nada
     // exportado: así no salen nodos fantasma) y sin que un `#d62828` se vuelva etiqueta.
@@ -267,7 +304,9 @@ fn nota(
             *s += &format!("- {rotulo}: {}\n", v.iter().map(enlace).collect::<Vec<_>>().join(", "));
         }
     };
-    s += &format!("- {}: [[{}]]\n", tr!("Group", "Grupo"), g.nota);
+    if !g.nota.is_empty() {
+        s += &format!("- {}: [[{}]]\n", tr!("Group", "Grupo"), g.nota);
+    }
     linea(&mut s, &tr!("Superseded by", "Sustituida por"), sustituida_por.get(&m.id));
     linea(&mut s, &tr!("Supersedes", "Sustituye a"), sustituye_a.get(&m.id));
     linea(&mut s, &tr!("Contradicts", "Contradice a"), contradice.get(&m.id));
@@ -441,6 +480,9 @@ mod tests {
     fn nombres_y_texto() {
         assert_eq!(slug("¿Publicar 1.3.0 en crates.io?", 60), "publicar-1-3-0-en-crates-io");
         assert_eq!(slug("***", 60), "nota");
+        assert_eq!(titulo_de_fichero("Su \"Netflix casero\": C:\\Users\\x [beta] #1."), "Su Netflix casero C Users x beta 1");
+        assert_eq!(titulo_de_fichero("..."), "Nota");
+        assert!(reservado("con") && reservado("com1") && !reservado("comer"));
         assert_eq!(etiqueta("project status"), "project-status");
         assert_eq!(etiqueta("2026"), "");
         assert_eq!(cambiar_enlaces("ver [[a-b|texto]] y [[c]]", |e| format!("<{e}>")), "ver <a-b> y <c>");

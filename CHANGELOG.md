@@ -6,6 +6,13 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+### Obsidian
+- Each note is now named after its memory's title, which is what Obsidian shows as the note's title, instead of a lowercase slug with part of the id. The id goes after the title only when two notes would have the same name. The title is no longer repeated as a heading in the body.
+- Global memories no longer hang from a single "global" note. For anyone who works from their home folder almost everything is global, so that note became the centre of a star that hid the real links between memories.
+
+### Compatibility
+- Same as 1.3.1. The next export renames the notes in the vault and deletes the old ones (only Omoikane's own notes).
+
 ## 1.3.1 (2026-11-03)
 
 ### Seeing the memory in Obsidian

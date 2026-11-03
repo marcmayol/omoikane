@@ -174,16 +174,24 @@ fn export_jsonl() {
 #[test]
 fn export_a_obsidian() {
     let e = Entorno::nuevo("obsidian");
-    let a = e.json(&["remember", "-k", "gotcha", "-t", "Cuidado con X", "--tag", "nota-a", "--path", "src/x.rs", "Ver [[nota-b]], [[no-existe]] y el rojo #d62828."]);
+    e.ok(&["remember", "-k", "gotcha", "-t", "Cuidado con X", "--tag", "nota-a", "--path", "src/x.rs", "Ver [[nota-b]], [[no-existe]] y el rojo #d62828."]);
     let b = e.json(&["remember", "-k", "decision", "-t", "Usamos Y", "--tag", "nota-b", "--path", "src/x.rs", "Porque sí."]);
     e.ok(&["remember", "-k", "preference", "-t", "Commits en inglés", "--global", "Una línea."]);
     e.ok(&["space", "add", "acme"]);
     e.ok(&["remember", "-k", "fact", "-t", "Del cliente", "--space=acme", "Solo de acme."]);
     let vault = e.dir.join("vault");
     let raiz = vault.join("omoikane");
+    // Dos memorias con el mismo título: las dos llevan el final de su id.
+    let r1 = e.json(&["remember", "-k", "fact", "-t", "Repetida", "--global", "Una."]);
+    let r2 = e.json(&["remember", "-k", "fact", "-t", "Repetida", "--global", "--force", "Otra."]);
     let fin = |id: &serde_json::Value| id.as_str().unwrap()[18..].to_lowercase();
-    let (fa, fb) = (format!("cuidado-con-x-{}", fin(&a["id"])), format!("usamos-y-{}", fin(&b["id"])));
+    let (fa, fb) = ("Cuidado con X".to_string(), "Usamos Y".to_string());
     e.ok(&["export", "--obsidian", vault.to_str().unwrap()]);
+    for r in [&r1, &r2] {
+        let global = std::fs::read_to_string(raiz.join("_global").join(format!("Repetida ({}).md", fin(&r["id"])))).unwrap();
+        assert!(!global.contains("[[omoikane-global") && !global.contains("
+# "), "lo global no cuelga de ninguna nota de grupo: {global}");
+    }
     let nota_a = std::fs::read_to_string(raiz.join("repo").join(format!("{fa}.md"))).unwrap();
     assert!(nota_a.starts_with("---\nomoikane: "), "{nota_a}");
     assert!(nota_a.contains(&format!("[[{fb}|nota-b]]")), "{nota_a}");
@@ -218,7 +226,7 @@ fn export_a_obsidian() {
     assert!(n["deleted"].as_u64().unwrap() >= 2, "la nota y la del fichero: {n}");
     assert!(!raiz.join("repo").join(format!("{fb}.md")).exists() && raiz.join("repo").join("mia.md").exists());
     let nota_a = std::fs::read_to_string(raiz.join("repo").join(format!("{fa}.md"))).unwrap();
-    assert!(nota_a.contains("nota-b") && !nota_a.contains("[[usamos-y"), "{nota_a}");
+    assert!(nota_a.contains("nota-b") && !nota_a.contains("[[Usamos Y"), "{nota_a}");
     // Sin cambios, no se escribe nada.
     let n = e.json(&["export", "--obsidian", vault.to_str().unwrap()]);
     assert_eq!((n["created"].as_u64(), n["updated"].as_u64(), n["deleted"].as_u64()), (Some(0), Some(0), Some(0)));
