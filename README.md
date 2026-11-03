@@ -6,6 +6,8 @@
 
 **Local memory for AI coding agents. One binary, one SQLite file, and the agent doesn't have to remember to look things up.**
 
+<p align="center"><img src="assets/demo.gif" alt="Omoikane recalling a saved gotcha on a new session, and staying quiet when nothing is related" width="100%"></p>
+
 [Español](README.es.md)
 
 > Omoikane (思兼, "the one who gathers thoughts") is the kami the other gods consult when a decision has to be made: he remembers everything that is known and puts it together. That is what this program does for an agent.

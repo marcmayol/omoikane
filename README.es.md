@@ -6,6 +6,8 @@
 
 **Memoria local para agentes de programación. Un binario, un fichero SQLite, y el agente no tiene que acordarse de buscar.**
 
+<p align="center"><img src="assets/demo.gif" alt="Omoikane recuerda una trampa guardada en una sesión nueva, y calla cuando nada tiene que ver" width="100%"></p>
+
 [English](README.md)
 
 > Omoikane (思兼, «el que reúne pensamientos») es el kami al que los demás dioses consultan cuando hay que decidir: recuerda todo lo que se sabe y lo junta. Eso es lo que hace este programa por un agente.
