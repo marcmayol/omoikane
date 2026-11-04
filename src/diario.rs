@@ -345,8 +345,43 @@ pub fn leer(ruta: &Path, raiz: &str) -> Result<Lectura> {
     Ok(l)
 }
 
-/// `f` relativo a `raiz` si cae dentro, con `/`; si no, tal cual (con `/`). Sin tocar el disco.
+/// `f` relativo a `raiz` si cae dentro, con `/`; si no, tal cual (con `/`). Primero comparando el
+/// texto; si no encaja, con las rutas reales del disco, porque la misma carpeta puede llegar escrita de
+/// otra forma: en Windows con su nombre corto (`C:/Users/RUNNER~1/…`), o por un enlace.
 fn relativo(f: &str, raiz: &str) -> String {
+    let r = relativo_texto(f, raiz);
+    if r != f.replace('\\', "/") || raiz.is_empty() || !std::path::Path::new(f).is_absolute() {
+        return r;
+    }
+    match (real(std::path::Path::new(f)), real(std::path::Path::new(raiz))) {
+        (Some(rf), Some(rr)) => {
+            let x = relativo_texto(&rf, &rr);
+            if x != rf.replace('\\', "/") { x } else { r }
+        }
+        _ => r,
+    }
+}
+
+/// La ruta real de `p` (la de su carpeta más cercana que exista, si `p` ya no está), sin el `\\?\` de
+/// Windows.
+fn real(p: &std::path::Path) -> Option<String> {
+    let mut resto = Vec::new();
+    let mut actual = p;
+    loop {
+        if let Ok(mut c) = std::fs::canonicalize(actual) {
+            for parte in resto.iter().rev() {
+                c.push(parte);
+            }
+            let t = c.to_string_lossy().into_owned();
+            return Some(t.strip_prefix(r"\\?\").map(String::from).unwrap_or(t));
+        }
+        resto.push(actual.file_name()?.to_os_string());
+        actual = actual.parent()?;
+    }
+}
+
+/// `relativo` sin tocar el disco: solo el texto.
+fn relativo_texto(f: &str, raiz: &str) -> String {
     let f = f.replace('\\', "/");
     let raiz = raiz.replace('\\', "/");
     let raiz = raiz.trim_end_matches('/');

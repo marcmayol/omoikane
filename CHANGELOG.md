@@ -6,6 +6,14 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.4.1 (2026-11-04)
+
+### Fixed
+- The session diary kept the whole path of a file when the folder reached it written another way, for example with its short Windows name (`C:/Users/RUNNER~1/…`) or through a link. When the text doesn't match, it now compares the real paths on disk, so the file is listed relative to its project. It made the Windows CI fail for 1.4.0, which therefore has no Release with binaries; it is on crates.io.
+
+### Compatibility
+- Same as 1.4.0: the database schema (10), the sync lines and the export format don't change.
+
 ## 1.4.0 (2026-11-04)
 
 Always up to date: what other computers save arrives in the middle of a session, what subagents find isn't lost, the memory says when it needs a look, and each session leaves one line in a local diary.
