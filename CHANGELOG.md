@@ -19,9 +19,13 @@ How it works is in [docs/](docs/).
 - **Measured on 60 real Claude Code conversations**: 142 bytes per session at the median, 716 on average, 4.6 KB at most. Interleaved over 25 rounds, the diary adds no measurable time to `omoi recall --session-end` on a 1.4 MB conversation (median difference −0.4 ms, noise) and 97 ms on a 73 MB one (577 → 676 ms, within the hook's 1.2 s) (it reads the file once more; only the lines that call a file-writing tool or Omoikane are parsed). Nothing is added to the recall of each prompt: the table isn't even created when the database opens.
 - **Local, kept for a year.** The file paths say a lot about what you do and the history belongs to each computer, so the diary is neither synced nor in `omoi export`; it is in the daily backup, which copies the whole database. At this size a year is about 2 MB at ten sessions a day; older lines are deleted when a new one is written.
 
+### Maintenance that speaks up
+- When the review piles up (20 pending items, or 10% of the memories in scope if that is more), the session starts with a three-line notice for the agent: how many there are of each kind and an instruction to look at them with `omoi review` and propose concrete actions (update, `absorb`, `forget`, `supersedes`/`compatible`, fix the links), never acting without the user's OK. Omoikane still carries no language model: the agent decides with the user. It shows once a day per database, and again the same day only if the number grows by at least 5 (or 10%). Agents without session hooks get the same text as `review_notice` in the `context` tool.
+- The count at session start reads the cached review, the verdicts and the small columns of each memory, not its contents or the disk, and is cached per day until something is written. Broken paths and possible secrets stay in the full review. On the real 178-memory database the start is as fast as before (P50 22.8 ms against 22.2 ms).
+
 ### Compatibility
 - The database schema stays at 10 and `lector_minimo` doesn't change: the diary is a new local table (`diary`), created with the first line, which 1.0 ignores. The sync lines and the export format don't change.
-
+- The notice keeps its state in the local `meta` table (`revision_aviso`, `revision_aviso_cifras`), which doesn't travel.
 
 ## 1.3.2 (2026-11-03)
 
