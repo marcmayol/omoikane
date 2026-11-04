@@ -189,7 +189,9 @@ fn las_rutas_rotas_no_repiten_el_aviso_en_context() {
     let (mut db, dir) = base("aviso-rutas");
     let carpeta = dir.join("proyecto");
     std::fs::create_dir_all(&carpeta).unwrap();
-    let p = carpeta.to_string_lossy().to_string();
+    // La ruta como la resuelve Omoikane: en Windows, la carpeta temporal puede llegar con su nombre
+    // corto (`RUNNER~1`) y `context` la resuelve con el largo.
+    let p = omoikane::proyecto::de(&carpeta).unwrap();
     largas(&mut db, 0, revisar::AVISO_MINIMO);
     assert!(aviso_al_empezar(&mut db, "s1").is_some(), "al empezar");
     for i in 0..6 {
