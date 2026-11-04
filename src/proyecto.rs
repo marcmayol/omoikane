@@ -374,7 +374,9 @@ fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Optio
 /// carpeta en la que se vuelva a trabajar se crea otra vez solo. Devuelve cuántos.
 pub fn podar(db: &Connection) -> Result<usize> {
     db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
-    Ok(db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?)
+    let n = db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
+    crate::diario::soltar_podados(db)?;
+    Ok(n)
 }
 
 /// El proyecto de una clave que llega de otro equipo (o de un fichero de `omoi export`), creándolo con
