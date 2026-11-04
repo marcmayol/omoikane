@@ -572,7 +572,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     if !cs.is_empty() {
         s.push_str("From your previous sessions here, possibly worth keeping (Omoikane picked them without understanding them: save the ones that are worth it with `remember`, in the user's own words and language, merging into existing memories where they fit; ask the user if unsure; ignore the rest, they won't come back):\n");
         for c in &cs {
-            s.push_str(&format!("- [{}] {} ({})\n", c.kind, c.text.chars().take(400).collect::<String>(), c.created_at.get(..10).unwrap_or("")));
+            s.push_str(&format!("- [{}] {} ({})\n", c.kind, c.text.chars().take(900).collect::<String>(), c.created_at.get(..10).unwrap_or("")));
         }
     }
     // La revisión, si se ha acumulado (una vez al día): el agente propone, el usuario decide.

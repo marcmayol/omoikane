@@ -204,6 +204,15 @@ fn aparta_el_informe_de_cada_subagente() {
     let en_marcha = [lado(usuario("Revisa el sync")), lado(pide)];
     std::fs::write(sub.join("agent-a3.jsonl"), en_marcha.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
     assert!(candidatas::de_subagente(&sub.join("agent-a3.jsonl")).unwrap().is_none(), "uno que no ha acabado no se aparta");
+    // Uno grande (aquí 1 MB de herramientas en medio): solo se leen el principio y el final.
+    let relleno = lado(resultado("b1", &"x".repeat(1000)));
+    let mut grande = vec![lado(usuario("Revisa el benchmark entero")), lado(herramienta("b1", "Bash", json!({"command": "ls"})))];
+    grande.extend(std::iter::repeat_n(relleno, 1000));
+    grande.push(lado(asistente("Hecho: el benchmark da 89 %.")));
+    std::fs::write(sub.join("agent-a4.jsonl"), grande.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    let (g, _) = candidatas::de_subagente(&sub.join("agent-a4.jsonl")).unwrap().unwrap();
+    assert_eq!(g.text, "Revisa el benchmark entero → Hecho: el benchmark da 89 %.");
+    std::fs::remove_file(sub.join("agent-a4.jsonl")).unwrap();
 
     let (c, solo) = candidatas::de_subagente(&sub.join("agent-a1.jsonl")).unwrap().unwrap();
     assert_eq!(c.kind, candidatas::SUBAGENTE);

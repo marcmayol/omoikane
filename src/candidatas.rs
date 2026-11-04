@@ -505,18 +505,19 @@ pub fn subagentes_de(conversacion: &Path) -> Vec<std::path::PathBuf> {
 /// que el agente principal lee una vez y casi nunca guarda. En las 142 conversaciones de subagentes de
 /// Marc (4-nov-2026) el informe mide 3.459 caracteres de mediana; la otra señal que se pensó, «un
 /// comando falla y luego el mismo funciona», no apareció ni una vez (y con el mismo programa y otros
-/// argumentos, dos veces, las dos ruido), así que no se usa. Devuelve la candidata y el informe solo,
-/// para comparar con lo que ya está guardado.
+/// argumentos, dos veces, las dos ruido), así que no se usa. Devuelve la candidata y lo que se propone
+/// del informe, para comparar con lo que ya está guardado.
 pub fn de_subagente(ruta: &Path) -> Result<Option<(Candidata, String)>> {
-    let texto = std::fs::read_to_string(ruta)?;
-    let lineas: Vec<&str> = texto.lines().collect();
-    let encargo = lineas.iter().find_map(|l| {
+    // Solo hacen falta su primer mensaje y el último: se lee el principio y el final del fichero, no
+    // entero (los hay de 50 MB, y SessionEnd tiene poco más de un segundo).
+    let (inicio, final_) = extremos(ruta)?;
+    let encargo = inicio.lines().find_map(|l| {
         let d: serde_json::Value = serde_json::from_str(l).ok()?;
         (d["type"] == "user").then(|| texto_partes(&d["message"]["content"]))
     });
     // Su último mensaje, si es el final (`end_turn`): uno que aún está trabajando (al compactar la
     // sesión con subagentes en marcha) acaba en una llamada a herramienta y aún no ha informado de nada.
-    let ultimo: Option<serde_json::Value> = lineas.iter().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok().filter(|d| d["type"] == "assistant"));
+    let ultimo: Option<serde_json::Value> = final_.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok().filter(|d| d["type"] == "assistant"));
     let informe = ultimo.filter(|d| d["message"]["stop_reason"] != "tool_use").and_then(|d| {
         d["message"]["content"].as_array()?.iter().rev().find_map(|b| b["text"].as_str().filter(|t| b["type"] == "text" && !t.trim().is_empty()).map(String::from))
     });
@@ -526,8 +527,36 @@ pub fn de_subagente(ruta: &Path) -> Result<Option<(Candidata, String)>> {
         return Ok(None);
     }
     let corto: String = if informe.chars().count() > INFORME { format!("{}…", informe.chars().take(INFORME).collect::<String>()) } else { informe.clone() };
-    let text = if encargo.is_empty() { corto } else { format!("{encargo} → {corto}") };
-    Ok(Some((Candidata { kind: SUBAGENTE, text, puntos: 0.0 }, informe)))
+    // Lo ya guardado se compara con lo que se propone (el principio del informe), no con el informe
+    // entero: es más barato y una memoria que lo resume se parece más a eso.
+    let text = if encargo.is_empty() { corto.clone() } else { format!("{encargo} → {corto}") };
+    Ok(Some((Candidata { kind: SUBAGENTE, text, puntos: 0.0 }, corto)))
+}
+
+/// Cuánto del final de la conversación de un subagente se lee para encontrar su último mensaje.
+const COLA: u64 = 256 * 1024;
+
+/// Las primeras líneas (hasta 64 KB) y el final (las últimas `COLA` bytes, sin la primera línea, que
+/// puede estar cortada) de un fichero; si es pequeño, el fichero entero en los dos.
+fn extremos(ruta: &Path) -> Result<(String, String)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(ruta)?;
+    let largo = f.metadata()?.len();
+    if largo <= COLA {
+        let mut b = Vec::new();
+        f.read_to_end(&mut b)?;
+        let t = String::from_utf8_lossy(&b).into_owned();
+        return Ok((t.clone(), t));
+    }
+    let mut cabeza = vec![0; 64 * 1024];
+    let n = f.read(&mut cabeza)?;
+    cabeza.truncate(n);
+    f.seek(SeekFrom::Start(largo - COLA))?;
+    let mut cola = Vec::new();
+    f.read_to_end(&mut cola)?;
+    let cola = String::from_utf8_lossy(&cola);
+    let cola = cola.split_once('\n').map(|(_, r)| r).unwrap_or("").to_string();
+    Ok((String::from_utf8_lossy(&cabeza).into_owned(), cola))
 }
 
 /// Al cerrar o compactar: aparta las candidatas de la conversación y los informes de sus subagentes

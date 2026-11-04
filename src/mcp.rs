@@ -668,7 +668,7 @@ impl Servidor {
                 // Windsurf…) solo llega por aquí. Se enseña una vez, como en el recall.
                 let apartadas = crate::candidatas::para_empezar(db, proyecto, "")?;
                 if !apartadas.is_empty() {
-                    r["set_aside"] = serde_json::json!(apartadas.iter().map(|c| format!("[{}] {}", c.kind, c.text.chars().take(400).collect::<String>())).collect::<Vec<_>>());
+                    r["set_aside"] = serde_json::json!(apartadas.iter().map(|c| format!("[{}] {}", c.kind, c.text.chars().take(900).collect::<String>())).collect::<Vec<_>>());
                     r["set_aside_hint"] = serde_json::json!("From earlier sessions here, possibly worth keeping (picked without understanding them): save the ones worth it with `remember`, in the user's words and language, merging into existing memories where they fit; ignore the rest, they won't come back.");
                 }
                 Ok(r)
