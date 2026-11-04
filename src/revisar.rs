@@ -1137,8 +1137,10 @@ pub fn aviso_al_empezar(db: &Connection, ambito: &Ambito, memorias: usize) -> Re
 /// El aviso para estas cifras en un ámbito de `memorias` memorias, si llegan al umbral y no se dio ya
 /// hoy (o han crecido desde entonces). Si sale, lo apunta en `meta`: es de este equipo, no viaja.
 pub fn aviso(db: &Connection, cifras: &BTreeMap<&'static str, usize>, memorias: usize) -> Result<Option<String>> {
-    let total: usize = cifras.values().sum();
-    // Un posible secreto avisa siempre: viaja con la sincronización y las copias.
+    // Los posibles secretos no cuentan en el total que se compara y se guarda: el inicio de sesión no
+    // los cuenta, y `context` volvería a avisar en la misma sesión. Pero uno avisa siempre: viaja con
+    // la sincronización y las copias.
+    let total: usize = cifras.iter().filter(|(k, _)| **k != SECRETO).map(|(_, n)| n).sum();
     if total < umbral_aviso(memorias) && cifras.get(SECRETO).is_none_or(|n| *n == 0) {
         return Ok(None);
     }

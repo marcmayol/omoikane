@@ -201,7 +201,8 @@ fn consulta_de_cursor(t: &str) -> Option<String> {
 /// Gemini CLI, Qwen Code, Copilot CLI, Cursor), o de un JSONL genérico con `role`/`type` y
 /// `text`/`content`/`parts` (Kiro, el que escribe el plugin de OpenCode, formatos nuevos).
 pub fn turnos(ruta: &Path) -> Result<Vec<Turno>> {
-    let texto = std::fs::read_to_string(ruta)?;
+    // En bytes: al compactar, la conversación puede estar cortada a media letra.
+    let texto = String::from_utf8_lossy(&std::fs::read(ruta)?).into_owned();
     // Gemini CLI antes de junio de 2026: un JSON entero con `messages`.
     if let Ok(todo) = serde_json::from_str::<serde_json::Value>(&texto)
         && let Some(ms) = todo["messages"].as_array()

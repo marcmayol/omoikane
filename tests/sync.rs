@@ -2430,6 +2430,13 @@ fn una_bajada_que_falla_no_se_repite_si_el_remoto_no_se_mueve() {
     borrar_error();
     b.ok(&["sync", "--pull"]);
     assert_eq!(error(), "marca de la prueba", "el mismo commit del remoto: no lo repite");
+    // Empezar una sesión deja una marca de pendiente, que un fallo nunca da por hecha: cuenta una vez.
+    std::fs::write(b.dir.join("o.sync.pendiente"), "MARCA-DE-INICIO").unwrap();
+    b.ok(&["sync", "--pull"]);
+    assert!(error().as_str().is_some_and(|e| e.contains("newer version")), "la marca nueva, una vez: {}", error());
+    borrar_error();
+    b.ok(&["sync", "--pull"]);
+    assert_eq!(error(), "marca de la prueba", "la misma marca y el mismo remoto: no lo repite");
     // El remoto se mueve: otro intento.
     p.subir_a_mano("otra.txt", "algo\n");
     b.ok(&["sync", "--pull"]);

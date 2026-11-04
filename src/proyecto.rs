@@ -373,6 +373,7 @@ fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Optio
 /// `omoi projects prune`: los proyectos sin memorias (y sus carpetas apuntadas) se borran. El de una
 /// carpeta en la que se vuelva a trabajar se crea otra vez solo. Devuelve cuántos.
 pub fn podar(db: &Connection) -> Result<usize> {
+    crate::diario::antes_de_podar(db)?;
     db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
     let n = db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
     crate::diario::soltar_podados(db)?;

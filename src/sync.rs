@@ -3156,11 +3156,35 @@ fn marca_intentado(r: &Rutas) -> String {
     r.marca_commit.replacen("sync_commit", "sync_intentado", 1)
 }
 
+/// Cada cuánto se reintenta lo mismo (el mismo commit del remoto, la misma marca de pendiente) tras un
+/// intento que no lo resolvió: un corte de red pasajero no lo deja parado hasta que algo cambie.
+const REINTENTO_SEGUNDOS: u64 = 30 * 60;
+
+/// Si ya se intentó `valor` en `clave` hace menos de `REINTENTO_SEGUNDOS` (`meta`: `valor@segundos`).
+fn ya_intentado(db: &Connection, clave: &str, valor: &str) -> bool {
+    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [clave], |f| f.get(0)).optional().ok().flatten();
+    v.and_then(|v| {
+        let (antes, cuando) = v.rsplit_once('@')?;
+        let cuando: u64 = cuando.parse().ok()?;
+        Some(antes == valor && ahora.saturating_sub(cuando) < REINTENTO_SEGUNDOS && cuando <= ahora)
+    })
+    .unwrap_or(false)
+}
+
+fn apuntar_intento(db: &Connection, clave: &str, valor: &str) {
+    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, format!("{valor}@{ahora}")]);
+}
+
+/// La clave de `meta` con la marca de pendiente que intentó subir una bajada.
+const PENDIENTE_INTENTADO: &str = "sync_pendiente_intentado";
+
 /// `omoi sync --pull`: si no hay otra sincronización en marcha, mira cada repositorio con un `git
 /// fetch`; solo si alguno trae algo (o hay cambios de aquí sin subir) hace la sincronización completa.
-/// Si ya se intentó para ese mismo commit del remoto y falló (pide una versión más nueva, un choque
-/// que no se resuelve solo), no se repite cada 2 minutos: hasta que el remoto se mueva o haya algo de
-/// aquí que subir.
+/// Lo que ya se intentó y no se resolvió (el mismo commit del remoto, la misma marca de pendiente: pide
+/// una versión más nueva, un choque que no se resuelve solo) no se repite cada 2 minutos, sino cuando
+/// cambie o pasada media hora.
 pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
     // Si hay otra en marcha, esa ya baja lo nuevo.
     let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
@@ -3169,13 +3193,21 @@ pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<(
     for r in repos(ruta_db) {
         let Some(remoto) = algo_nuevo(&db, &r) else { continue };
         let clave = marca_intentado(&r);
-        let intentado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).optional().ok().flatten();
-        if intentado.as_deref() != Some(remoto.as_str()) {
+        if !ya_intentado(&db, &clave, &remoto) {
             nuevo = true;
-            let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, remoto]);
+            apuntar_intento(&db, &clave, &remoto);
         }
     }
-    if !nuevo && !pendiente(ruta_db) {
+    // La marca de pendiente la deja cada cambio de aquí y también cada inicio de sesión; si la
+    // sincronización falla nunca se da por hecha, así que cuenta como nueva solo una vez.
+    if pendiente(ruta_db)
+        && let Ok(marca) = std::fs::read_to_string(&rutas(ruta_db).pendiente)
+        && !ya_intentado(&db, PENDIENTE_INTENTADO, marca.trim())
+    {
+        nuevo = true;
+        apuntar_intento(&db, PENDIENTE_INTENTADO, marca.trim());
+    }
+    if !nuevo {
         return Ok(());
     }
     // Como en `en_segundo_plano`: un cambio de aquí que llegue mientras tanto no lanza otra (este

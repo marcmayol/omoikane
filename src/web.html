@@ -854,7 +854,7 @@ function pintarRevisar() {
     };
     el.querySelector('[data-r="dejar"]').onclick = () => accion(dejar);
     el.querySelector('[data-r="guardar"]').onclick = () => accion(async () => {
-      const respuesta = c.text.split(' → ').pop();
+      const respuesta = c.kind === 'subagent' ? c.text.split(' → ').slice(1).join(' → ') || c.text : c.text.split(' → ').pop();
       const args = { title: respuesta.slice(0, 90), content: c.text, kind: c.kind === 'milestone' || c.kind === 'subagent' ? 'fact' : c.kind, force: true };
       if (c.project) args.project = c.project; else args.global = true;
       await herramienta('remember', args);

@@ -6,15 +6,20 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.4.0 (2026-11-04)
+
+Always up to date: what other computers save arrives in the middle of a session, what subagents find isn't lost, the memory says when it needs a look, and each session leaves one line in a local diary.
+
 ### Subagents
 - When a Claude Code session ends or compacts, Omoikane also reads its subagents' conversations (`<session>/subagents/`) and sets aside, for the next session, the final report of each one that finished (its first 700 characters), with what it was asked to do. A subagent still working, one with something that looks like a secret, and one whose report a saved memory already covers are skipped; at most the 5 newest each time the session ends or compacts. Only the start and the end of each conversation are read: some are over 50 MB. The other signal considered, a command that fails and then works, didn't show up once in 142 real subagent conversations, so it isn't used.
 - Measured against 1.3.2, interleaved: the recall of each prompt (P50 29.0 against 28.4 ms) and the start of a session (22.8 against 22.3 ms) don't change. Ending the largest real session (a 73 MB conversation with 74 subagents), with the diary and the subagents, takes 590 ms against 374 ms, within the hook's 1.2 s.
 
 ### Sync
 - What other computers push now arrives in the middle of a session, not only when one starts. With each message, at most every 2 minutes, `omoi recall` starts `omoi sync --pull` on the side and doesn't wait for it: a `git fetch` and a comparison when there is nothing new, a full sync only when there is. Several sessions at once start one pull between them (the time of the last one is kept in the local `meta` table), and it never runs alongside another sync. `omoi serve` does the same on a 2-minute timer. On most messages it costs one `meta` read, too little to measure; starting the pull adds about 8-10 ms (P50) once every 2 minutes. Without sync set up nothing runs. `OMOIKANE_SYNC_EVERY` (seconds) changes the interval; `OMOIKANE_SYNC_AUTO=0` turns it off with the rest of the automatic sync.
+- A pull that fails for a reason that doesn't fix itself (the repository asks for a newer version, a conflict) isn't retried every 2 minutes: only when the remote moves, when something new here is waiting to go up, or after half an hour.
 
 ### Session diary
-- **One line per session**, written when the session ends or compacts (`omoi recall --session-end`, which already reads the conversation): when it started and ended, the project, the files edited or written (Edit, Write, MultiEdit and NotebookEdit in Claude Code, and the equivalents in Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor and Grok Build; relative to the repository, up to 50), the memories recall brought into it and the ones saved or changed in it, counting what its Claude Code subagents did (the 10 newest, up to 16 MB each). Not the conversation. It answers "what did I do on Tuesday in X?" or "when did we last touch `sync.rs`?", which the `status` memory can't, since it only keeps the latest picture.
+- **One line per session**, written when the session ends or compacts (`omoi recall --session-end`, which already reads the conversation): when it started and ended, the project, the files edited or written (Edit, Write, MultiEdit and NotebookEdit in Claude Code, and the equivalents in Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor and Grok Build; relative to the repository, up to 50), the memories recall brought into it and the ones saved or changed in it, counting what its Claude Code subagents did (the 10 newest, up to 16 MB each and 32 MB in all). Not the conversation. It answers "what did I do on Tuesday in X?" or "when did we last touch `sync.rs`?", which the `status` memory can't, since it only keeps the latest picture.
 - **Saved means its id came back from `remember` or `update` in that conversation**, and the memory still exists. A time window would claim what another session in the same project saved meanwhile. Preferences and pinned memories don't count as recalled: they reach every session.
 - **`omoi diary`** reads it, newest first, with `--since` (a date or `7d`), `--until`, `--file <part of a path>`, `--project`, `--space`, `--all` and `--json`. The agent gets the same through `recent` with `sessions: true` (and `since`, `until`, `file`): optional parameters of an existing tool, still 8 tools.
 - **Measured on 60 real Claude Code conversations**: 142 bytes per session at the median, 716 on average, 4.6 KB at most. Interleaved over 25 rounds, the diary adds no measurable time to `omoi recall --session-end` on a 1.4 MB conversation (median difference −0.4 ms, noise) and 97 ms on a 73 MB one (577 → 676 ms, within the hook's 1.2 s) (it reads the file once more; only the lines that call a file-writing tool or Omoikane are parsed). Reading its 10 newest subagents (15.8 MB) adds 22 ms more (diary write alone, median of 12 interleaved rounds: 89 → 111 ms). Nothing is added to the recall of each prompt: the table isn't even created when the database opens.
@@ -26,7 +31,7 @@ How it works is in [docs/](docs/).
 
 ### Compatibility
 - The database schema stays at 10 and `lector_minimo` doesn't change: the diary is a new local table (`diary`), created with the first line, which 1.0 ignores. The sync lines and the export format don't change.
-- The notice keeps its state in the local `meta` table (`revision_aviso`, `revision_aviso_cifras`), which doesn't travel.
+- The notice and the mid-session pull keep their state in the local `meta` table (`revision_aviso`, `revision_aviso_cifras`, `sync_traido`, `sync_intentado`, `sync_pendiente_intentado`), which doesn't travel.
 
 ## 1.3.2 (2026-11-03)
 

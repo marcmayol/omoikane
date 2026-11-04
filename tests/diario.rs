@@ -284,6 +284,16 @@ fn lineas_sin_proyecto_y_podados() {
     assert_eq!(desde(&repo), vec!["despues", "antes"]);
     let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert!(v.iter().all(|l| !l.project.is_empty()), "{v:?}");
+    // Un proyecto de un cliente que se poda se lleva sus líneas: sin proyecto se verían desde lo personal.
+    let cliente = d.join("cliente");
+    std::fs::create_dir_all(cliente.join(".git")).unwrap();
+    let ruta_cliente = omoikane::proyecto::de(&cliente).unwrap();
+    let del_cliente = omoikane::proyecto::registrar(&db, &ruta_cliente).unwrap();
+    db.execute("INSERT INTO space(key, name, created_at) VALUES ('acme', 'acme', '2026-11-04T00:00:00.000Z')", []).unwrap();
+    db.execute("UPDATE project SET space_id = (SELECT id FROM space WHERE key = 'acme') WHERE id = ?1", [del_cliente]).unwrap();
+    diario::apuntar(&db, &ruta_cliente, "del-cliente", None).unwrap();
+    omoikane::proyecto::podar(&db).unwrap();
+    assert_eq!(db.query_row("SELECT count(*) FROM diary WHERE session = 'del-cliente'", [], |f| f.get::<_, i64>(0)).unwrap(), 0);
     drop(db);
     let _ = std::fs::remove_dir_all(d);
 }

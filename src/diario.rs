@@ -47,6 +47,8 @@ pub const DIAS: i64 = 365;
 /// qué tamaño: el hook de cierre tiene poco más de un segundo y después aún aparta candidatas.
 pub const MAX_SUBAGENTES: usize = 10;
 pub const MAX_BYTES_SUBAGENTE: u64 = 16 << 20;
+/// Y todos los subagentes de una sesión juntos.
+const MAX_BYTES_SUBAGENTES: u64 = 32 * 1024 * 1024;
 
 /// La tabla se crea al escribir la primera línea, no al abrir la base: el recall de cada mensaje no
 /// hace ni eso de más.
@@ -394,10 +396,14 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversacion: Opti
     };
     // Lo que hicieron sus subagentes (Claude Code los guarda aparte): sus ficheros y sus memorias son de
     // la sesión. Uno que no se puede leer no estropea la línea.
+    let mut leidos = 0u64;
     for sub in conversacion.map(crate::candidatas::subagentes_de).unwrap_or_default().into_iter().take(MAX_SUBAGENTES) {
-        if std::fs::metadata(&sub).map(|m| m.len() > MAX_BYTES_SUBAGENTE).unwrap_or(true) {
+        let largo = std::fs::metadata(&sub).map(|m| m.len()).unwrap_or(u64::MAX);
+        // Cada uno con su tope, y todos juntos con otro: el hook de cierre tiene poco más de un segundo.
+        if largo > MAX_BYTES_SUBAGENTE || leidos + largo > MAX_BYTES_SUBAGENTES {
             continue;
         }
+        leidos += largo;
         if let Ok(l) = leer(&sub, raiz) {
             lectura.ficheros = juntar(std::mem::take(&mut lectura.ficheros), l.ficheros, MAX_FICHEROS);
             lectura.guardadas.extend(l.guardadas);
@@ -602,6 +608,19 @@ pub fn soltar_podados(db: &Connection) -> Result<()> {
     // Si la misma sesión ya tenía una línea sin proyecto, se queda esa.
     db.execute(&format!("UPDATE OR IGNORE diary SET project_id = 0 WHERE {huerfanas}"), [])?;
     db.execute(&format!("DELETE FROM diary WHERE {huerfanas}"), [])?;
+    Ok(())
+}
+
+/// Antes de podar: las líneas de los proyectos de un espacio que se van a borrar se borran con ellos.
+/// Sin proyecto se verían desde lo personal, y el diario nunca cruza de un cliente a otro.
+pub fn antes_de_podar(db: &Connection) -> Result<()> {
+    if !hay_tabla(db)? {
+        return Ok(());
+    }
+    db.execute(
+        "DELETE FROM diary WHERE project_id IN (SELECT id FROM project WHERE id != 0 AND space_id IS NOT NULL AND id NOT IN (SELECT DISTINCT project_id FROM memory))",
+        [],
+    )?;
     Ok(())
 }
 
