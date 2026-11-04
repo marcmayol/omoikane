@@ -1257,8 +1257,12 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     let (evento, texto) = if al_empezar {
         // Una vez al día: la copia de la base y la purga de la papelera.
         omoikane::copia::diaria(&db, &ruta);
-        if let Ok(Some(_)) = omoikane::sync::leer_config(&ruta) {
+        let general = matches!(omoikane::sync::leer_config(&ruta), Ok(Some(_)));
+        if general {
             let _ = omoikane::sync::adoptar(&db, &project);
+        }
+        // Con el repositorio general o con el de algún espacio (aunque solo haya espacios).
+        if general || !omoikane::sync::espacios(&ruta).is_empty() {
             omoikane::sync::programar(&ruta);
             // Esa sincronización ya trae lo nuevo: el primer mensaje no lanza otra.
             omoikane::sync::apuntar_traido(&db);
@@ -2164,6 +2168,10 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
     use omoikane::sync;
     use std::io::IsTerminal;
     let ruta = ruta_db(c);
+    // Son las de Omoikane por dentro: con una acción, una de las dos partes se ignoraría sin decirlo.
+    if (pull || background) && accion.is_some() {
+        bail!(tr!("`--pull` and `--background` don't go with an action: use them with `omoi sync` alone", "`--pull` y `--background` no van con una acción: úsalos solo con `omoi sync`"));
+    }
     if pull {
         return sync::traer(&ruta, || abrir(c));
     }
