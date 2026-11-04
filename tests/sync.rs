@@ -2405,3 +2405,59 @@ fn sin_sincronizacion_un_mensaje_no_lanza_nada() {
     d.ok_en(&d.dir, &["recall", "--format", "plain"], &[("USER_PROMPT", "hola servidor"), ("OMOIKANE_SYNC_EVERY", "0")]);
     assert_eq!(marca_traido(&d), None);
 }
+
+/// Si la sincronización completa falla siempre (el repositorio pide un omoi más nuevo), la bajada no
+/// la repite cada 2 minutos para el mismo commit del remoto: solo cuando el remoto se mueve.
+#[test]
+fn una_bajada_que_falla_no_se_repite_si_el_remoto_no_se_mueve() {
+    let p = Prueba::nueva("traer-falla");
+    let (a, b) = dos(&p, &[], &[]);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    a.guardar(&a.dir, "fact", "Una cualquiera", "Para que haya algo.", &["--global"]);
+    a.sync();
+    b.sync();
+    p.subir_a_mano("omoikane.format", &(cifrar_linea(&clave, &serde_json::json!({ "min_reader": 2 })) + "\n"));
+    let estado = b.dir.join("o.sync-estado.json");
+    let error = || serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&estado).unwrap()).unwrap()["ultimo_error"].clone();
+    // Lo que la siguiente sincronización completa volvería a escribir.
+    let borrar_error = || {
+        let mut e: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&estado).unwrap()).unwrap();
+        e["ultimo_error"] = serde_json::json!("marca de la prueba");
+        std::fs::write(&estado, e.to_string()).unwrap();
+    };
+    b.ok(&["sync", "--pull"]);
+    assert!(error().as_str().is_some_and(|e| e.contains("newer version")), "lo intentó: {}", error());
+    borrar_error();
+    b.ok(&["sync", "--pull"]);
+    assert_eq!(error(), "marca de la prueba", "el mismo commit del remoto: no lo repite");
+    // El remoto se mueve: otro intento.
+    p.subir_a_mano("otra.txt", "algo\n");
+    b.ok(&["sync", "--pull"]);
+    assert!(error().as_str().is_some_and(|e| e.contains("newer version")), "con el remoto movido, sí: {}", error());
+}
+
+/// Con solo el repositorio de un espacio, empezar la sesión también lanza la sincronización y apunta
+/// la bajada: el primer mensaje no lanza otra que choque con ella.
+#[test]
+fn con_solo_un_espacio_empezar_apunta_la_bajada() {
+    let p = Prueba::nueva("traer-espacio");
+    let a = p.equipo("pc-a");
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    assert!(!a.dir.join("o.sync.json").exists(), "sin repositorio general");
+    a.ok_en(&a.dir, &["recall", "--session-start", "--format", "plain"], &[("OMOIKANE_SYNC_AUTO", "1")]);
+    assert!(marca_traido(&a).is_some());
+    assert!(hasta(30, || !a.dir.join("o.sync.lock").exists()));
+}
+
+/// `--pull` (y `--background`) con una acción: un error claro, no la acción ignorada.
+#[test]
+fn pull_con_una_accion_es_un_error() {
+    let p = Prueba::nueva("traer-accion");
+    let (_a, b) = dos(&p, &[], &[]);
+    for args in [["sync", "--pull", "status"], ["sync", "--background", "status"]] {
+        let o = b.omoi_en(&b.dir, &args, &[]);
+        assert!(!o.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("don't go with an action"), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+}

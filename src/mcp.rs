@@ -661,7 +661,12 @@ impl Servidor {
                 let proyectos = proyecto::lista(db, None, filtro, 50)?;
                 let mut r = serde_json::json!({ "project": actual, "projects": proyectos, "memories": memorias, "review": review });
                 // El aviso de la revisión acumulada, como al empezar la sesión (y sin repetirlo si ya salió hoy).
-                if let Some(a) = crate::revisar::aviso(db, &crate::revisar::cifras(&review), memoria::cuantas(db, &ambito)? as usize)? {
+                // Con las mismas cifras que al empezar: sin las rutas rotas (allí no se cuentan), o
+                // tener unas cuantas haría «crecer» la cuenta y repetiría el aviso en la misma sesión.
+                // Los secretos sí, que avisan siempre. Es opcional: si falla, solo se pierde el aviso.
+                let mut cifras = crate::revisar::cifras(&review);
+                cifras.remove(crate::revisar::RUTA_ROTA);
+                if let Some(a) = crate::revisar::aviso(db, &cifras, memoria::cuantas(db, &ambito)? as usize).ok().flatten() {
                     r["review_notice"] = serde_json::json!(a);
                 }
                 // Lo apartado al cerrar otras sesiones: en los agentes sin recall al empezar (Grok,

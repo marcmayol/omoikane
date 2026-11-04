@@ -575,8 +575,9 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push_str(&format!("- [{}] {} ({})\n", c.kind, c.text.chars().take(900).collect::<String>(), c.created_at.get(..10).unwrap_or("")));
         }
     }
-    // La revisión, si se ha acumulado (una vez al día): el agente propone, el usuario decide.
-    if let Some(a) = crate::revisar::aviso_al_empezar(db, &ambito, total as usize)? {
+    // La revisión, si se ha acumulado (una vez al día): el agente propone, el usuario decide. Es
+    // opcional: si falla (la base ocupada por una sync larga), solo se pierde el aviso, no el bloque.
+    if let Some(a) = crate::revisar::aviso_al_empezar(db, &ambito, total as usize).ok().flatten() {
         s.push_str(&a);
         s.push('\n');
     }

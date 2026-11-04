@@ -182,6 +182,36 @@ fn el_aviso_tambien_en_context() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `context` cuenta como al empezar, sin las rutas rotas: tener unas cuantas no hace «crecer» la
+/// cuenta ni repite el aviso en la misma sesión.
+#[test]
+fn las_rutas_rotas_no_repiten_el_aviso_en_context() {
+    let (mut db, dir) = base("aviso-rutas");
+    let carpeta = dir.join("proyecto");
+    std::fs::create_dir_all(&carpeta).unwrap();
+    let p = carpeta.to_string_lossy().to_string();
+    largas(&mut db, 0, revisar::AVISO_MINIMO);
+    assert!(aviso_al_empezar(&mut db, "s1").is_some(), "al empezar");
+    for i in 0..6 {
+        let n = Nueva {
+            project: p.clone(),
+            kind: Some(Tipo::Gotcha),
+            title: format!("Trampa {i} del lector"),
+            content: format!("Cuidado con el orden {i}."),
+            paths: vec![format!("src/borrado{i}.rs")],
+            ..Default::default()
+        };
+        memoria::guardar(&mut db, n, None).unwrap();
+    }
+    let (t, error) = omoikane::mcp::herramienta(dir.join("o.db"), Some(carpeta.clone()), Some("context"), "", "test").unwrap();
+    assert!(!error, "{t}");
+    let r: serde_json::Value = serde_json::from_str(&t).unwrap();
+    assert!(r["review"].as_array().unwrap().iter().filter(|a| a["kind"] == revisar::RUTA_ROTA).count() >= 5, "{r}");
+    assert!(r.get("review_notice").is_none(), "{r}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Al empezar se cuenta sin leer las memorias enteras (`pendientes`): da lo mismo que la revisión
 /// entera, salvo las rutas rotas y los secretos, que solo salen en ella.
 #[test]

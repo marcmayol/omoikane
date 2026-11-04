@@ -3138,26 +3138,43 @@ pub fn traer_si_toca(db: &Connection, ruta_db: &Path) -> bool {
 }
 
 /// Si el remoto de un repositorio tiene commits que esta base aún no ha leído: un `git fetch` y
-/// comparar con el último commit leído. Ante cualquier duda (sin clon, sin red), que no.
-fn hay_algo_nuevo(db: &Connection, r: &Rutas) -> bool {
+/// comparar con el último commit leído. Da ese commit del remoto, o nada ante cualquier duda (sin
+/// clon, sin red).
+fn algo_nuevo(db: &Connection, r: &Rutas) -> Option<String> {
     if !r.clon.join(".git").exists() || !matches!(leer_config_de(r), Ok(Some(_))) {
-        return false;
+        return None;
     }
-    if git(&r.clon, &["fetch", "--quiet", "origin"]).is_err() {
-        return false;
-    }
-    let Ok(remoto) = git(&r.clon, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{RAMA}")]) else { return false };
+    git(&r.clon, &["fetch", "--quiet", "origin"]).ok()?;
+    let remoto = git(&r.clon, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{RAMA}")]).ok()?.trim().to_string();
     let leido: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&r.marca_commit], |f| f.get(0)).optional().ok().flatten();
-    leido.as_deref().map(str::trim) != Some(remoto.trim())
+    (leido.as_deref().map(str::trim) != Some(remoto.as_str())).then_some(remoto)
+}
+
+/// La clave de `meta` con el último commit del remoto para el que se intentó una sincronización
+/// completa desde una bajada (`sync_intentado`, `sync_intentado:<espacio>`).
+fn marca_intentado(r: &Rutas) -> String {
+    r.marca_commit.replacen("sync_commit", "sync_intentado", 1)
 }
 
 /// `omoi sync --pull`: si no hay otra sincronización en marcha, mira cada repositorio con un `git
 /// fetch`; solo si alguno trae algo (o hay cambios de aquí sin subir) hace la sincronización completa.
+/// Si ya se intentó para ese mismo commit del remoto y falló (pide una versión más nueva, un choque
+/// que no se resuelve solo), no se repite cada 2 minutos: hasta que el remoto se mueva o haya algo de
+/// aquí que subir.
 pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
     // Si hay otra en marcha, esa ya baja lo nuevo.
     let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
     let mut db = abrir()?;
-    let nuevo = repos(ruta_db).iter().any(|r| hay_algo_nuevo(&db, r));
+    let mut nuevo = false;
+    for r in repos(ruta_db) {
+        let Some(remoto) = algo_nuevo(&db, &r) else { continue };
+        let clave = marca_intentado(&r);
+        let intentado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).optional().ok().flatten();
+        if intentado.as_deref() != Some(remoto.as_str()) {
+            nuevo = true;
+            let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, remoto]);
+        }
+    }
     if !nuevo && !pendiente(ruta_db) {
         return Ok(());
     }
