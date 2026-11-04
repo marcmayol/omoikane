@@ -162,6 +162,14 @@ pub struct Recent {
     project: Option<String>,
     /// From this space instead.
     space: Option<String>,
+    /// Instead of memories, the session diary: one line per past session (when, files touched, memories recalled and saved), newest first. Answers "what did we do on Tuesday?" or "when did we last touch sync.rs?".
+    sessions: Option<bool>,
+    /// With sessions: only those that ended on or after this date (2026-11-03, or 7d for the last 7 days).
+    since: Option<String>,
+    /// With sessions: only those that started on or before this date.
+    until: Option<String>,
+    /// With sessions: only those that touched a file whose path contains this.
+    file: Option<String>,
 }
 
 // --- Respuestas ------------------------------------------------------------------------------------
@@ -665,14 +673,23 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "The latest saved or changed memories in this project (its space's and the global ones), or in `project`, `space` or every project of the space (all_projects).")]
+    #[tool(description = "The latest saved or changed memories in this project (its space's and the global ones), or in `project`, `space` or every project of the space (all_projects). With sessions=true, the session diary instead (this computer's past sessions: when, files touched, memories recalled and saved).")]
     async fn recent(&self, Parameters(p): Parameters<Recent>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, proyecto| {
                 let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
                 let todos = !matches!(ambito, Ambito::Proyecto { .. });
+                if p.sessions.unwrap_or(false) {
+                    let filtro = crate::diario::Filtro {
+                        desde: p.since.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
+                        hasta: p.until.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
+                        fichero: p.file,
+                        limite: limite(p.limit),
+                    };
+                    return Ok(serde_json::to_value(crate::diario::lineas(db, &ambito, &filtro)?)?);
+                }
                 let v = memoria::recientes(db, &ambito, tipo(p.kind)?, limite(p.limit))?;
-                Ok(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())
+                Ok(serde_json::to_value(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())?)
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))

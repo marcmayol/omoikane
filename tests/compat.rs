@@ -725,3 +725,28 @@ fn export_del_commit_lo_importa_la_10_y_al_reves() {
     llenar(&viejo2, &proyecto, "1.0");
     copia_de_uno_a_otro(&p, &viejo2, &nuevo2, &proyecto);
 }
+
+/// 1.4: el diario de sesiones es una tabla local nueva. Una 1.0 abre la base que la tiene, guarda y
+/// busca como siempre, y la línea sigue ahí para el commit.
+#[test]
+fn la_10_abre_una_base_con_diario() {
+    let Some(v10) = binario_10() else { return };
+    let p = Prueba::nueva("diario");
+    let nuevo = p.equipo_en("base", "pc-pruebas", Path::new(NUEVO));
+    let viejo = p.equipo_en("base", "pc-pruebas", &v10);
+    let proyecto = nuevo.proyecto("tienda", "git@github.com:marc/tienda.git");
+    nuevo.guardar(&proyecto, "fact", "Puerto", "Escucha en el 8010", &[]);
+    let conv = nuevo.dir.join("sesion.jsonl");
+    let linea = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": proyecto.join("src").join("main.rs")}}]}});
+    std::fs::write(&conv, linea.to_string()).unwrap();
+    let entrada = serde_json::json!({"session_id": "s1", "transcript_path": conv, "cwd": proyecto}).to_string();
+    let mut hijo = nuevo.comando(&proyecto).args(["recall", "--session-end"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    std::io::Write::write_all(&mut hijo.stdin.take().unwrap(), entrada.as_bytes()).unwrap();
+    assert!(hijo.wait_with_output().unwrap().status.success());
+    assert_eq!(nuevo.json_en(&proyecto, &["diary"])[0]["files"][0], "src/main.rs");
+    // La 1.0, sobre la misma base.
+    viejo.guardar(&proyecto, "fact", "Otra", "Guardada por la 1.0", &[]);
+    assert_eq!(viejo.json_en(&proyecto, &["recent"]).as_array().map(Vec::len), Some(2));
+    assert!(viejo.ok_en(&proyecto, &["search", "8010"]).contains("Puerto"));
+    assert_eq!(nuevo.json_en(&proyecto, &["diary"])[0]["files"][0], "src/main.rs");
+}

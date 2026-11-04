@@ -7,6 +7,7 @@ pub mod buscar;
 pub mod candidatas;
 pub mod copia;
 pub mod db;
+pub mod diario;
 pub mod embeber;
 pub mod enlaces;
 pub mod gemma;

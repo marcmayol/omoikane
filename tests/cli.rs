@@ -713,3 +713,57 @@ fn servidor_http() {
     hijo.kill().unwrap();
     let _ = hijo.wait();
 }
+
+/// 1.4: al cerrar la sesión queda una línea en el diario, que se lee con `omoi diary` y con la
+/// herramienta `recent` (`sessions: true`), sin una herramienta más.
+#[test]
+fn el_diario_apunta_la_sesion_al_cerrar() {
+    let e = Entorno::nuevo("diario");
+    let repo = e.dir.join("repo");
+    e.ok(&["remember", "--kind", "fact", "--title", "Puerto del servidor", "Escucha en el 8010"]);
+    let id = e.json(&["recent"])[0]["id"].as_str().unwrap().to_string();
+    let ruta = |f: &str| repo.join(f).to_string_lossy().into_owned();
+    let lineas = [
+        serde_json::json!({"type": "user", "timestamp": "2026-11-03T09:00:00.000Z", "message": {"role": "user", "content": "arregla la sync"}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": ruta("src/sync.rs")}}]}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "mcp__omoikane__update", "input": {"id": id, "append": "y en el 8011"}}]}}),
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": serde_json::json!({"id": id, "kind": "fact"}).to_string()}]}}),
+    ];
+    let conv = e.dir.join("sesion.jsonl");
+    std::fs::write(&conv, lineas.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    let entrada = serde_json::json!({"session_id": "sesion-1", "transcript_path": conv, "cwd": repo, "hook_event_name": "SessionEnd"}).to_string();
+    let o = e.omoi_con(&["recall", "--session-end"], Some(&entrada), &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v = e.json(&["diary"]);
+    assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(v[0]["session"], "sesion-1");
+    assert_eq!(v[0]["files"], serde_json::json!(["src/sync.rs"]));
+    assert_eq!(v[0]["saved"][0]["title"], "Puerto del servidor", "{v}");
+    assert_eq!(v[0]["first_at"], "2026-11-03T09:00:00.000Z");
+    // Filtros.
+    assert_eq!(e.json(&["diary", "--file", "sync.rs"]).as_array().map(Vec::len), Some(1));
+    assert_eq!(e.json(&["diary", "--file", "otro.rs"]).as_array().map(Vec::len), Some(0));
+    // Una sesión que empezó el martes y acabó hoy cuenta para el martes; para el lunes, no.
+    assert_eq!(e.json(&["diary", "--since", "2026-11-03", "--until", "2026-11-03"]).as_array().map(Vec::len), Some(1));
+    assert_eq!(e.json(&["diary", "--until", "2026-11-02"]).as_array().map(Vec::len), Some(0));
+    assert_eq!(e.json(&["diary", "--since", "7d"]).as_array().map(Vec::len), Some(1));
+    assert!(!e.omoi(&["diary", "--since", "martes"]).status.success());
+    let t = e.ok(&["diary"]);
+    assert!(t.contains("2026-11-03") && t.contains("src/sync.rs") && t.contains("Puerto del servidor"), "{t}");
+    // Para el agente: `recent` con `sessions`, sin herramienta nueva.
+    let tool = |args: &str| {
+        let o = e.omoi_con(&["--dir", repo.to_str().unwrap(), "tool", "recent"], Some(args), &[]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()
+    };
+    let r = tool(r#"{"sessions":true,"file":"sync"}"#);
+    assert_eq!(r[0]["files"][0], "src/sync.rs", "{r}");
+    assert_eq!(tool(r#"{"sessions":true,"file":"nada"}"#).as_array().map(Vec::len), Some(0));
+    // Sin `sessions`, `recent` sigue siendo lo de siempre.
+    assert_eq!(tool("{}")[0]["title"], "Puerto del servidor");
+    let lista: serde_json::Value = serde_json::from_str(&e.ok(&["tool"])).unwrap();
+    assert_eq!(lista["tools"].as_array().map(Vec::len), Some(8));
+    // Ni la sincronización ni `omoi export` lo llevan: es de este equipo.
+    let export = e.ok(&["export", "--all"]);
+    assert!(!export.contains("sesion-1") && !export.contains("sync.rs"), "{export}");
+}
