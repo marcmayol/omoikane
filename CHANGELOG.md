@@ -6,6 +6,9 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+### Subagents
+- When a Claude Code session ends or compacts, Omoikane also reads its subagents' conversations (`<session>/subagents/`) and sets aside, for the next session, the final report of each one that finished, with what it was asked to do. One still working, one with something that looks like a secret, and one already saved are skipped; at most 5 per session. The other signal considered, a command that fails and then works, didn't show up once in 142 real subagent conversations, so it isn't used.
+
 ## 1.3.2 (2026-11-03)
 
 ### Obsidian

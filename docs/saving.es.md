@@ -26,6 +26,8 @@ Cada memoria tiene un tipo que decide cuándo vuelve: `fact` y `decision` por re
 
 Al cerrar o compactar una sesión, Omoikane lee la conversación y aparta lo que quizá valga la pena guardar: lo que respondiste a las preguntas del agente (con la pregunta), tus preferencias y correcciones, y el último commit o publicación. La sesión siguiente en ese proyecto lo recibe una vez, y el agente guarda lo que valga con tus palabras; la pestaña Revisar también lo enseña. Nada que parezca un secreto ni lo que ya está guardado. Son propuestas, y caducan a los 7 días si nadie las guarda.
 
+En Claude Code lee también los subagentes de la sesión. De cada uno que haya terminado aparta su informe final con lo que se le encargó, porque el agente principal lo lee una vez y casi nunca lo guarda. Uno que sigue trabajando se salta, igual que uno con algo que parezca un secreto, y lo ya guardado no se vuelve a proponer.
+
 Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode y Grok Build (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar. En los agentes sin recall al empezar, como Grok, lo apartado llega con la herramienta `context`.
 
 ## No guarda secretos

@@ -170,3 +170,63 @@ fn se_proponen_una_vez_en_la_sesion_siguiente_y_no_lo_ya_guardado() {
     drop(db);
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// 1.4: el informe final de cada subagente, que Claude Code guarda en `<sesión>/subagents/`, se aparta
+/// con su encargo; uno con un secreto, no; y lo de la sesión principal sigue saliendo igual.
+#[test]
+fn aparta_el_informe_de_cada_subagente() {
+    let d = dir("subagentes");
+    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    let sesion = conversacion(&d);
+    let sub = d.join("sesion").join("subagents");
+    std::fs::create_dir_all(&sub).unwrap();
+    let lado = |mut v: serde_json::Value| {
+        v["isSidechain"] = json!(true);
+        v
+    };
+    let informe = "El cuello de botella no era el modelo: SQLite hacía el checkpoint del WAL al cerrar cada conexión.";
+    let lineas = [
+        lado(usuario("Eres el agente «velocidad» de una revisión.\n\nMide el recall con la base de prueba.")),
+        lado(asistente("Empiezo por medir.")),
+        lado(herramienta("b1", "Bash", json!({"command": "cargo build --release"}))),
+        lado(resultado("b1", "Finished")),
+        lado(asistente(informe)),
+        lado(json!({"type": "api-request", "message": {}})),
+    ];
+    std::fs::write(sub.join("agent-a1.jsonl"), lineas.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    let secreto = [lado(usuario("Prueba la API")), lado(asistente("Funciona con password: hunter2"))];
+    std::fs::write(sub.join("agent-a2.jsonl"), secreto.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    std::fs::write(sub.join("notas.txt"), "no es una conversación").unwrap();
+    // Uno que sigue trabajando (se compacta con él en marcha): su último mensaje pide una herramienta.
+    let mut pide = herramienta("b2", "Bash", json!({"command": "cargo test"}));
+    pide["message"]["content"].as_array_mut().unwrap().insert(0, json!({"type": "text", "text": "Ahora los tests."}));
+    pide["message"]["stop_reason"] = json!("tool_use");
+    let en_marcha = [lado(usuario("Revisa el sync")), lado(pide)];
+    std::fs::write(sub.join("agent-a3.jsonl"), en_marcha.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    assert!(candidatas::de_subagente(&sub.join("agent-a3.jsonl")).unwrap().is_none(), "uno que no ha acabado no se aparta");
+
+    let (c, solo) = candidatas::de_subagente(&sub.join("agent-a1.jsonl")).unwrap().unwrap();
+    assert_eq!(c.kind, candidatas::SUBAGENTE);
+    assert_eq!(c.text, format!("Eres el agente «velocidad» de una revisión. → {informe}"));
+    assert_eq!(solo, informe);
+    assert!(candidatas::de_subagente(&sub.join("agent-a2.jsonl")).unwrap().is_none(), "con un secreto no se aparta");
+
+    candidatas::apartar(&db, "/web", "s1", &sesion).unwrap();
+    let todas = candidatas::todas(&db).unwrap();
+    assert_eq!(todas.iter().filter(|c| c.kind == "subagent").count(), 1, "{todas:?}");
+    assert!(todas.iter().any(|c| c.text.contains("sin el fondo verde")), "lo de la sesión principal sigue: {todas:?}");
+    // PreCompact y luego SessionEnd: no se duplica.
+    let n = todas.len();
+    candidatas::apartar(&db, "/web", "s1", &sesion).unwrap();
+    assert_eq!(candidatas::todas(&db).unwrap().len(), n);
+    let t = recall::al_empezar(&mut db, "/web", &Entrada { session_id: "s2".into(), ..Default::default() }).unwrap().unwrap();
+    assert!(t.contains("[subagent] Eres el agente «velocidad»") && t.contains("checkpoint del WAL"), "{t}");
+    // Un informe ya guardado como memoria no se vuelve a proponer.
+    let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
+    let ya = Nueva { project: "/web".into(), kind: Some(Tipo::Gotcha), title: "El recall lento era el checkpoint del WAL".into(), content: informe.into(), ..Default::default() };
+    memoria::guardar(&mut db2, ya, None).unwrap();
+    candidatas::apartar(&db2, "/web", "s1", &sesion).unwrap();
+    assert!(!candidatas::todas(&db2).unwrap().iter().any(|c| c.kind == "subagent"));
+    drop((db, db2));
+    let _ = std::fs::remove_dir_all(d);
+}

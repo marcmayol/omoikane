@@ -26,6 +26,8 @@ Every memory has a kind that decides when it comes back: `fact` and `decision` b
 
 When a session ends or compacts, Omoikane reads the conversation and sets aside what may be worth keeping: your answers to the agent's questions (with the question), your preferences and corrections, and the last commit or release. The next session in that project gets them once, and the agent saves the ones worth it in your words; the Review tab lists them too. Nothing that looks like a secret, nothing already saved. They are proposals, and they expire after 7 days if nobody saves them.
 
+In Claude Code it also reads the session's subagents. For each one that finished, it sets aside its final report with what it was asked to do, because the main agent reads it once and hardly ever saves it. One still working is skipped, as is one with something that looks like a secret, and what is already saved isn't proposed again.
+
 It reads the conversation of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode and Grok Build (`omoi setup <agent>` adds the end-of-session hooks); not Antigravity, whose conversations are stored in an undocumented binary format. In agents with no recall at session start, such as Grok, what was set aside arrives through the `context` tool.
 
 ## It doesn't keep secrets

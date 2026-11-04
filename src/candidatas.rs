@@ -23,6 +23,10 @@ use std::path::Path;
 pub const DECISION: &str = "decision";
 pub const PREFERENCIA: &str = "preference";
 pub const HITO: &str = "milestone";
+/// El informe final de un subagente (1.4).
+pub const SUBAGENTE: &str = "subagent";
+/// Hasta cuántos caracteres del informe de un subagente van en la candidata.
+const INFORME: usize = 700;
 
 /// Cuántas se proponen por sesión (sin contar los hitos).
 pub const MAXIMO: usize = 5;
@@ -483,14 +487,75 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-/// Al cerrar o compactar: aparta las candidatas de la conversación que no estén ya guardadas.
+/// Los subagentes de una sesión de Claude Code, que guarda sus conversaciones junto a la de la sesión
+/// (`<carpeta>/<id de la sesión>/subagents/*.jsonl`), del más reciente al más antiguo.
+pub fn subagentes_de(conversacion: &Path) -> Vec<std::path::PathBuf> {
+    let (Some(dir), Some(id)) = (conversacion.parent(), conversacion.file_stem()) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir.join(id).join("subagents")) else { return Vec::new() };
+    let mut v: Vec<(std::time::SystemTime, std::path::PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path()))
+        .collect();
+    v.sort();
+    v.into_iter().rev().map(|(_, p)| p).collect()
+}
+
+/// Lo que se le encargó a un subagente (la primera línea de su primer mensaje) y su informe final,
+/// que el agente principal lee una vez y casi nunca guarda. En las 142 conversaciones de subagentes de
+/// Marc (4-nov-2026) el informe mide 3.459 caracteres de mediana; la otra señal que se pensó, «un
+/// comando falla y luego el mismo funciona», no apareció ni una vez (y con el mismo programa y otros
+/// argumentos, dos veces, las dos ruido), así que no se usa. Devuelve la candidata y el informe solo,
+/// para comparar con lo que ya está guardado.
+pub fn de_subagente(ruta: &Path) -> Result<Option<(Candidata, String)>> {
+    let texto = std::fs::read_to_string(ruta)?;
+    let lineas: Vec<&str> = texto.lines().collect();
+    let encargo = lineas.iter().find_map(|l| {
+        let d: serde_json::Value = serde_json::from_str(l).ok()?;
+        (d["type"] == "user").then(|| texto_partes(&d["message"]["content"]))
+    });
+    // Su último mensaje, si es el final (`end_turn`): uno que aún está trabajando (al compactar la
+    // sesión con subagentes en marcha) acaba en una llamada a herramienta y aún no ha informado de nada.
+    let ultimo: Option<serde_json::Value> = lineas.iter().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok().filter(|d| d["type"] == "assistant"));
+    let informe = ultimo.filter(|d| d["message"]["stop_reason"] != "tool_use").and_then(|d| {
+        d["message"]["content"].as_array()?.iter().rev().find_map(|b| b["text"].as_str().filter(|t| b["type"] == "text" && !t.trim().is_empty()).map(String::from))
+    });
+    let Some(informe) = informe.map(|t| una_linea(&t)) else { return Ok(None) };
+    let encargo: String = encargo.as_deref().unwrap_or("").lines().map(|l| l.trim_matches(|c: char| "*_`#> ".contains(c))).find(|l| !l.is_empty()).unwrap_or("").chars().take(120).collect();
+    if parece_secreto(&informe) || parece_secreto(&encargo) {
+        return Ok(None);
+    }
+    let corto: String = if informe.chars().count() > INFORME { format!("{}…", informe.chars().take(INFORME).collect::<String>()) } else { informe.clone() };
+    let text = if encargo.is_empty() { corto } else { format!("{encargo} → {corto}") };
+    Ok(Some((Candidata { kind: SUBAGENTE, text, puntos: 0.0 }, informe)))
+}
+
+/// Al cerrar o compactar: aparta las candidatas de la conversación y los informes de sus subagentes
+/// que no estén ya guardados.
 pub fn apartar(db: &Connection, project: &str, session: &str, ruta: &Path) -> Result<usize> {
-    let cs = de_conversacion(ruta)?;
+    let mut cs: Vec<(Candidata, String)> = de_conversacion(ruta)?
+        .into_iter()
+        .map(|c| {
+            let respuesta = c.text.rsplit(" → ").next().unwrap_or(&c.text).to_string();
+            (c, respuesta)
+        })
+        .collect();
+    // Los `MAXIMO` informes más recientes de subagentes que han acabado, mirando como mucho el doble de
+    // conversaciones (SessionEnd tiene poco más de un segundo).
+    let mut informes = 0;
+    for s in subagentes_de(ruta).into_iter().take(2 * MAXIMO) {
+        if informes == MAXIMO {
+            break;
+        }
+        if let Ok(Some(c)) = de_subagente(&s) {
+            cs.push(c);
+            informes += 1;
+        }
+    }
     let memorias = crate::memoria::recientes(db, &Ambito::de(db, project)?, None, usize::MAX >> 1)?;
     let mut n = 0;
-    for c in cs {
-        let respuesta = c.text.rsplit(" → ").next().unwrap_or(&c.text);
-        let cubierta = crate::recall::cobertura(db, project, respuesta, memorias.iter())?.into_iter().fold(0.0, f64::max);
+    for (c, respuesta) in cs {
+        let cubierta = crate::recall::cobertura(db, project, &respuesta, memorias.iter())?.into_iter().fold(0.0, f64::max);
         if c.kind != HITO && cubierta >= YA_GUARDADA {
             continue;
         }
