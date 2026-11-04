@@ -714,6 +714,27 @@ fn servidor_http() {
     let _ = hijo.wait();
 }
 
+/// 1.4: una sesión en una carpeta general (la del usuario) no es de un proyecto: el diario dice su
+/// carpeta, no una vacía (el proyecto 0 existe con la ruta vacía).
+#[test]
+fn el_diario_de_una_carpeta_general_dice_la_carpeta() {
+    let e = Entorno::nuevo("diario-general");
+    let casa = e.dir.join("casa");
+    std::fs::create_dir_all(&casa).unwrap();
+    let casa_s = casa.to_string_lossy().into_owned();
+    let env = [("USERPROFILE", casa_s.as_str()), ("HOME", casa_s.as_str())];
+    e.ok(&["remember", "--kind", "fact", "--title", "Algo", "Para que exista la base"]);
+    let entrada = serde_json::json!({"session_id": "general-1", "cwd": casa, "hook_event_name": "SessionEnd"}).to_string();
+    let o = e.omoi_con(&["recall", "--session-end"], Some(&entrada), &env);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.omoi_con(&["--dir", &casa_s, "diary", "--all", "--json"], None, &env);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
+    let carpeta = v[0]["project"].as_str().unwrap().replace('\\', "/").to_lowercase();
+    assert!(carpeta.ends_with("/casa"), "{v}");
+}
+
 /// 1.4: al cerrar la sesión queda una línea en el diario, que se lee con `omoi diary` y con la
 /// herramienta `recent` (`sessions: true`), sin una herramienta más.
 #[test]

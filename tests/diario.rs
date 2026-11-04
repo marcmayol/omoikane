@@ -62,7 +62,8 @@ fn una_linea_por_sesion_con_ficheros_y_memorias() {
         // Lo que guarda y cambia el agente con las herramientas de Omoikane (con su id en la respuesta).
         herramienta("t7", "mcp__omoikane__remember", json!({"kind": "fact", "title": "El puerto es el 8010", "content": "…"})),
         resultado("t7", &serde_json::to_string_pretty(&json!({"saved": true, "id": nueva, "project": repo, "related": [{"id": usada, "title": "x"}]})).unwrap()),
-        herramienta("t8", "mcp__omoikane__update", json!({"id": &cambiada[..10], "append": "y más"})),
+        // 16 letras: las 10 primeras son el milisegundo, que pueden compartir con otra de las de aquí.
+        herramienta("t8", "mcp__omoikane__update", json!({"id": &cambiada[..16], "append": "y más"})),
         herramienta("t9", "mcp__omoikane__remember", json!({"kind": "fact", "title": "Ya estaba", "content": "…"})),
         resultado("t9", &json!({"saved": false, "duplicate_of": {"id": duplicada}}).to_string()),
         // Otra herramienta que se llama `update` pero no es de Omoikane, y un id que no existe aquí.
@@ -205,6 +206,116 @@ fn filtros_y_caducidad() {
     db.execute("UPDATE diary SET last_at = '2020-01-01T00:00:00.000Z' WHERE session = 'martes'", []).unwrap();
     diario::apuntar(&db, &repo, "hoy", None).unwrap();
     assert_eq!(sesiones(&proyecto, Filtro { limite: 10, ..Default::default() }), vec!["hoy"]);
+    drop(db);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// Lo que hicieron los subagentes (`<sesión>/subagents/*.jsonl`, con `isSidechain`) también es de la
+/// sesión; uno demasiado grande se salta.
+#[test]
+fn cuenta_lo_de_los_subagentes() {
+    let d = dir("subagentes");
+    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
+    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let suya = guardar(&mut db, &repo, "Lo guardó el subagente", false);
+    let conv = d.join("s1.jsonl");
+    escribir(&conv, &[herramienta("t1", "Edit", json!({"file_path": format!("{repo}/src/main.rs")}))]);
+    let subs = d.join("s1").join("subagents");
+    std::fs::create_dir_all(&subs).unwrap();
+    let lateral = |mut v: serde_json::Value| {
+        v["isSidechain"] = json!(true);
+        v
+    };
+    escribir(
+        &subs.join("agent-a1.jsonl"),
+        &[
+            lateral(herramienta("u1", "Write", json!({"file_path": format!("{repo}/src/sub.rs")}))),
+            lateral(herramienta("u2", "Edit", json!({"file_path": format!("{repo}/src/main.rs")}))),
+            lateral(herramienta("u3", "mcp__omoikane__remember", json!({"title": "Lo guardó el subagente"}))),
+            lateral(resultado("u3", &json!({"saved": true, "id": suya}).to_string())),
+        ],
+    );
+    // Más de 16 MB: no se lee (el hook de cierre tiene poco tiempo).
+    let grande = herramienta("g1", "Write", json!({"file_path": format!("{repo}/src/grande.rs")})).to_string();
+    std::fs::write(subs.join("agent-grande.jsonl"), format!("{grande}\n{}", " ".repeat(17 << 20))).unwrap();
+    diario::apuntar(&db, &repo, "s1", Some(&conv)).unwrap();
+    let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    assert_eq!(v[0].files, vec!["src/main.rs", "src/sub.rs"], "{v:?}");
+    assert_eq!(v[0].saved.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![suya.as_str()]);
+    drop(db);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// Una sesión en una carpeta que aún no es un proyecto (un agente que solo tiene el hook de cierre)
+/// queda sin proyecto, y se ve desde esa carpeta: antes y después de que lo sea. Al podar un proyecto,
+/// sus líneas pasan a no tener proyecto: el que reutilice su id no las hereda.
+#[test]
+fn lineas_sin_proyecto_y_podados() {
+    let d = dir("podados");
+    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
+    let db = db::abrir(&d.join("o.db")).unwrap();
+    let conv = d.join("c.jsonl");
+    escribir(&conv, &[herramienta("t1", "Edit", json!({"file_path": format!("{repo}/src/a.rs")}))]);
+    diario::apuntar(&db, &repo, "antes", Some(&conv)).unwrap();
+    diario::apuntar(&db, &d.join("otra").to_string_lossy(), "otra", None).unwrap();
+    let desde = |carpeta: &str| {
+        let f = Filtro { carpeta: Some(carpeta.into()), limite: 10, ..Default::default() };
+        diario::lineas(&db, &Ambito::de(&db, carpeta).unwrap(), &f).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
+    };
+    assert_eq!(desde(&repo), vec!["antes"]);
+    // Ya es un proyecto: se ve por sus carpetas, aunque no se diga desde dónde se mira.
+    let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
+    diario::apuntar(&db, &repo, "despues", None).unwrap();
+    db.execute("UPDATE diary SET last_at = '2026-11-01T10:00:00.000Z' WHERE session = 'antes'", []).unwrap();
+    let solo = |id: i64| {
+        diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &Filtro { limite: 10, ..Default::default() }).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
+    };
+    assert_eq!(solo(id), vec!["despues", "antes"]);
+    // Se poda (no tiene memorias) y otra carpeta coge su id.
+    assert_eq!(omoikane::proyecto::podar(&db).unwrap(), 1);
+    assert_eq!(db.query_row("SELECT count(*) FROM diary WHERE project_id != 0", [], |f| f.get::<_, i64>(0)).unwrap(), 0);
+    let nueva = d.join("nueva");
+    std::fs::create_dir_all(nueva.join(".git")).unwrap();
+    let otro = omoikane::proyecto::registrar(&db, &omoikane::proyecto::de(&nueva).unwrap()).unwrap();
+    assert_eq!(otro, id, "SQLite reutiliza el id");
+    assert!(solo(otro).is_empty());
+    // Y desde su carpeta siguen estando, con la carpeta como proyecto.
+    assert_eq!(desde(&repo), vec!["despues", "antes"]);
+    let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    assert!(v.iter().all(|l| !l.project.is_empty()), "{v:?}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// Una conversación cortada a mitad de un carácter se lee igual.
+#[test]
+fn conversacion_cortada() {
+    let d = dir("cortada");
+    let ruta = d.join("c.jsonl");
+    let mut bytes = herramienta("t1", "Edit", json!({"file_path": "/w/repo/src/ñ.rs"})).to_string().into_bytes();
+    bytes.extend_from_slice(b"\n{\"type\":\"user\",\"message\":\"caf\xC3");
+    std::fs::write(&ruta, bytes).unwrap();
+    assert_eq!(diario::leer(&ruta, "/w/repo").unwrap().ficheros, vec!["src/ñ.rs"]);
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// `--file` compara en minúsculas también lo que no es ASCII, y `-n` cuenta después de filtrar.
+#[test]
+fn fichero_unicode_y_limite() {
+    let d = dir("unicode");
+    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
+    let db = db::abrir(&d.join("o.db")).unwrap();
+    let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let conv = d.join("c.jsonl");
+    escribir(&conv, &[herramienta("t1", "Edit", json!({"file_path": format!("{repo}/src/Ñandú.rs")}))]);
+    diario::apuntar(&db, &repo, "uno", Some(&conv)).unwrap();
+    escribir(&conv, &[herramienta("t1", "Edit", json!({"file_path": format!("{repo}/src/b.rs")}))]);
+    diario::apuntar(&db, &repo, "dos", Some(&conv)).unwrap();
+    db.execute("UPDATE diary SET last_at = '2026-11-01T10:00:00.000Z' WHERE session = 'uno'", []).unwrap();
+    let f = Filtro { fichero: Some("ñandú".into()), limite: 1, ..Default::default() };
+    let v = diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &f).unwrap();
+    assert_eq!(v.iter().map(|l| l.session.as_str()).collect::<Vec<_>>(), vec!["uno"]);
     drop(db);
     let _ = std::fs::remove_dir_all(d);
 }

@@ -1218,9 +1218,13 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
         (None, true) => proyecto::actual()?,
     };
     let db = db::abrir(&ruta_db)?;
-    // El diario primero: es lo más rápido, y si el hook se corta, queda apuntado.
-    if let Err(err) = omoikane::diario::apuntar(&db, &project, &e.session_id, conversacion) {
-        eprintln!("omoikane: {err:#}");
+    // El diario primero: es lo más rápido, y si el hook se corta, queda apuntado. Ni un error ni un
+    // pánico suyo cortan el hook ni dejan sin apartar las candidatas.
+    let diario = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| omoikane::diario::apuntar(&db, &project, &e.session_id, conversacion)));
+    match diario {
+        Ok(Err(err)) => eprintln!("omoikane: {err:#}"),
+        Err(_) => eprintln!("omoikane: the session diary failed"),
+        Ok(Ok(_)) => {}
     }
     if let Some(ruta) = conversacion
         && let Err(err) = omoikane::candidatas::apartar(&db, &project, &e.session_id, ruta)
@@ -1524,6 +1528,8 @@ fn diario_cli(c: &Comun, d: Diario) -> Result<()> {
         desde: since.as_deref().map(|d| diario::fecha(&db, d)).transpose()?,
         hasta: until.as_deref().map(|d| diario::fecha(&db, d)).transpose()?,
         fichero: file,
+        // Sin `--project`, desde la carpeta: sus líneas de antes de ser un proyecto también.
+        carpeta: if project.is_none() { Some(proyecto_de(c)?) } else { None },
         limite: limit,
     };
     let v = diario::lineas(&db, &ambito, &filtro)?;

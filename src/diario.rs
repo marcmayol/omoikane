@@ -43,6 +43,10 @@ pub const MAX_FICHEROS: usize = 50;
 /// Cuántos días se guarda una línea. Con unos cientos de bytes por sesión, un año de diez sesiones al
 /// día son un par de MB: cabe de sobra, y más allá casi nadie pregunta.
 pub const DIAS: i64 = 365;
+/// De cuántos subagentes de la sesión se leen los ficheros y las memorias (los más recientes), y hasta
+/// qué tamaño: el hook de cierre tiene poco más de un segundo y después aún aparta candidatas.
+pub const MAX_SUBAGENTES: usize = 10;
+pub const MAX_BYTES_SUBAGENTE: u64 = 16 << 20;
 
 /// La tabla se crea al escribir la primera línea, no al abrir la base: el recall de cada mensaje no
 /// hace ni eso de más.
@@ -290,8 +294,9 @@ fn hora_de(linea: &str) -> Option<String> {
                 continue;
             }
             match v.len() {
-                20 => return Some(format!("{}.000Z", &v[..19])),
-                n if n >= 24 && b[19] == b'.' => return Some(format!("{}Z", &v[..23])),
+                // Con `get`: un carácter de varios bytes en medio no es una hora, y no debe romper el hook.
+                20 => return v.get(..19).map(|h| format!("{h}.000Z")),
+                n if n >= 24 && b[19] == b'.' => return v.get(..23).map(|h| format!("{h}Z")),
                 _ => continue,
             }
         }
@@ -302,7 +307,9 @@ fn hora_de(linea: &str) -> Option<String> {
 /// Lo que dice la conversación: los ficheros tocados y las memorias guardadas o cambiadas. `raiz` es
 /// la carpeta del proyecto: los ficheros de dentro quedan relativos a ella.
 pub fn leer(ruta: &Path, raiz: &str) -> Result<Lectura> {
-    let texto = std::fs::read_to_string(ruta)?;
+    // Sin exigir UTF-8: una conversación cortada a mitad de un carácter (el agente aún escribe) se lee igual.
+    let bytes = std::fs::read(ruta)?;
+    let texto = String::from_utf8_lossy(&bytes);
     let mut lector = Lector { l: Lectura::default(), pendientes: HashMap::new() };
     // Gemini CLI antes de junio de 2026: un JSON entero con `messages`.
     if let Ok(todo) = serde_json::from_str::<serde_json::Value>(&texto)
@@ -344,9 +351,13 @@ fn relativo(f: &str, raiz: &str) -> String {
     if raiz.is_empty() {
         return f;
     }
-    let (fc, rc) = (crate::proyecto::comparable(&f), crate::proyecto::comparable(raiz));
-    match fc.strip_prefix(&rc) {
-        Some(resto) if resto.starts_with('/') && resto.len() > 1 => f[raiz.len() + 1..].to_string(),
+    // Se compara el principio de `f` tal cual y no `f` en minúsculas: pasar a minúsculas puede cambiar
+    // cuántos bytes ocupa un carácter, y cortar por ahí rompería.
+    let n = raiz.len();
+    match (f.get(..n), f.get(n..)) {
+        (Some(cabeza), Some(resto)) if resto.len() > 1 && resto.starts_with('/') && crate::proyecto::comparable(cabeza) == crate::proyecto::comparable(raiz) => {
+            resto[1..].to_string()
+        }
         _ => f,
     }
 }
@@ -376,10 +387,23 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversacion: Opti
     crear_tabla(db)?;
     let general = crate::proyecto::es_general(project);
     let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0) };
-    let lectura = match conversacion {
-        Some(c) => leer(c, if general { "" } else { project })?,
+    let raiz = if general { "" } else { project };
+    let mut lectura = match conversacion {
+        Some(c) => leer(c, raiz)?,
         None => Lectura::default(),
     };
+    // Lo que hicieron sus subagentes (Claude Code los guarda aparte): sus ficheros y sus memorias son de
+    // la sesión. Uno que no se puede leer no estropea la línea.
+    for sub in conversacion.map(crate::candidatas::subagentes_de).unwrap_or_default().into_iter().take(MAX_SUBAGENTES) {
+        if std::fs::metadata(&sub).map(|m| m.len() > MAX_BYTES_SUBAGENTE).unwrap_or(true) {
+            continue;
+        }
+        if let Ok(l) = leer(&sub, raiz) {
+            lectura.ficheros = juntar(std::mem::take(&mut lectura.ficheros), l.ficheros, MAX_FICHEROS);
+            lectura.guardadas.extend(l.guardadas);
+            lectura.pedidas.extend(l.pedidas);
+        }
+    }
     // Las recibidas por relevancia: las preferencias y las fijadas llegan en todas las sesiones y no
     // dicen nada de esta.
     let mut q = db.prepare(
@@ -449,6 +473,9 @@ pub struct Filtro {
     pub hasta: Option<String>,
     /// Las que tocaron un fichero cuya ruta contiene esto.
     pub fichero: Option<String>,
+    /// La carpeta desde la que se mira, si es la del proyecto que se pide: sus líneas sin proyecto (la
+    /// carpeta aún no lo era al cerrar la sesión, o el proyecto se podó) también son suyas.
+    pub carpeta: Option<String>,
     pub limite: usize,
 }
 
@@ -471,10 +498,16 @@ pub fn fecha(db: &Connection, texto: &str) -> Result<String> {
 fn donde(ambito: &Ambito) -> String {
     match ambito {
         Ambito::Todos => "1".into(),
-        Ambito::Proyecto { id, .. } => format!("d.project_id = {id}"),
+        // Las de `project_id` 0, solo si son de una de sus carpetas (se mira después, en `lineas`).
+        Ambito::Proyecto { id, .. } => format!("d.project_id IN ({id}, 0)"),
         Ambito::Espacio(Some(s)) => format!("d.project_id IN (SELECT id FROM project WHERE space_id = {s})"),
         Ambito::Espacio(None) => "(d.project_id = 0 OR d.project_id IN (SELECT id FROM project WHERE space_id IS NULL))".into(),
     }
+}
+
+/// Cómo se compara la carpeta de una línea con la de un proyecto.
+fn carpeta_cmp(ruta: &str) -> String {
+    crate::proyecto::comparable(ruta.replace('\\', "/").trim_end_matches('/'))
 }
 
 /// Las líneas del diario que se ven desde `ambito`, de la más reciente a la más vieja.
@@ -482,8 +515,20 @@ pub fn lineas(db: &Connection, ambito: &Ambito, f: &Filtro) -> Result<Vec<Linea>
     if !hay_tabla(db)? {
         return Ok(Vec::new());
     }
+    // Desde un proyecto, las líneas sin proyecto que son de sus carpetas (o de la carpeta desde la que se
+    // mira, si aún no es un proyecto).
+    let carpetas: Option<BTreeSet<String>> = match ambito {
+        Ambito::Proyecto { id, .. } if *id != 0 => {
+            let mut c: BTreeSet<String> = lista_de(db, "SELECT path FROM project_path WHERE project_id = ?1", [id])?.iter().map(|p| carpeta_cmp(p)).collect();
+            c.extend(f.carpeta.as_deref().filter(|x| !x.is_empty()).map(carpeta_cmp));
+            Some(c)
+        }
+        _ => None,
+    };
+    // El proyecto 0 existe con la ruta vacía: sin el `NULLIF`, una línea sin proyecto no diría su carpeta.
     let mut sql = format!(
-        "SELECT d.session, COALESCE((SELECT path FROM project WHERE id = d.project_id), d.folder), d.first_at, d.last_at, d.files, d.recalled, d.saved
+        "SELECT d.session, d.project_id, d.folder, COALESCE(NULLIF((SELECT path FROM project WHERE id = d.project_id), ''), d.folder),
+                d.first_at, d.last_at, d.files, d.recalled, d.saved
          FROM diary d WHERE {}",
         donde(ambito)
     );
@@ -496,32 +541,68 @@ pub fn lineas(db: &Connection, ambito: &Ambito, f: &Filtro) -> Result<Vec<Linea>
         valores.push(h.clone());
         sql.push_str(&format!(" AND substr(d.first_at, 1, length(?{n})) <= ?{n}", n = valores.len()));
     }
-    if let Some(x) = f.fichero.as_deref().map(|x| x.trim().replace('\\', "/")).filter(|x| !x.is_empty()) {
-        valores.push(x.to_lowercase());
-        sql.push_str(&format!(" AND instr(lower(d.files), ?{}) > 0", valores.len()));
-    }
-    sql.push_str(&format!(" ORDER BY d.last_at DESC LIMIT {}", f.limite.max(1)));
+    // El fichero y el límite, aquí y no en SQL: el `lower()` de SQLite solo sabe de ASCII, y el límite
+    // va después del filtro para que `-n` dé tantas como haya.
+    sql.push_str(" ORDER BY d.last_at DESC");
+    let fichero = f.fichero.as_deref().map(|x| x.trim().replace('\\', "/").to_lowercase()).filter(|x| !x.is_empty());
+    let limite = f.limite.max(1);
     let mut q = db.prepare(&sql)?;
-    let filas: Vec<(String, String, String, String, String, String, String)> = q
-        .query_map(rusqlite::params_from_iter(valores.iter()), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut filas = q.query(rusqlite::params_from_iter(valores.iter()))?;
     let mut titulo = db.prepare("SELECT title FROM memory WHERE id = ?1")?;
     let mut nombrar = |texto: &str| -> Result<Vec<Nombrada>> {
         let ids: Vec<String> = serde_json::from_str(texto).unwrap_or_default();
         ids.into_iter().map(|id| Ok(Nombrada { title: titulo.query_row([&id], |r| r.get(0)).optional()?, id })).collect()
     };
     let mut r = Vec::new();
-    for (session, project, first_at, last_at, files, recalled, saved) in filas {
-        let files: Vec<String> = serde_json::from_str(&files).unwrap_or_default();
-        // El fragmento puede caer en dos ficheros a la vez en el JSON (`a.rs","b`): se mira uno a uno.
-        if let Some(x) = f.fichero.as_deref().map(|x| x.trim().replace('\\', "/").to_lowercase()).filter(|x| !x.is_empty())
-            && !files.iter().any(|p| p.to_lowercase().contains(&x))
+    while r.len() < limite
+        && let Some(fila) = filas.next()?
+    {
+        let (project_id, folder): (i64, String) = (fila.get(1)?, fila.get(2)?);
+        if project_id == 0
+            && let Some(c) = &carpetas
+            && !c.contains(&carpeta_cmp(&folder))
         {
             continue;
         }
-        r.push(Linea { session, project, first_at, last_at, files, recalled: nombrar(&recalled)?, saved: nombrar(&saved)? });
+        // Fichero a fichero: el fragmento puede caer en dos a la vez en el JSON (`a.rs","b`).
+        let files: Vec<String> = serde_json::from_str(&fila.get::<_, String>(6)?).unwrap_or_default();
+        if let Some(x) = &fichero
+            && !files.iter().any(|p| p.to_lowercase().contains(x))
+        {
+            continue;
+        }
+        r.push(Linea {
+            session: fila.get(0)?,
+            project: fila.get(3)?,
+            first_at: fila.get(4)?,
+            last_at: fila.get(5)?,
+            files,
+            recalled: nombrar(&fila.get::<_, String>(7)?)?,
+            saved: nombrar(&fila.get::<_, String>(8)?)?,
+        });
     }
     Ok(r)
+}
+
+fn lista_de(db: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<String>> {
+    let mut q = db.prepare(sql)?;
+    let v = q.query_map(p, |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(v)
+}
+
+/// Tras `omoi projects prune`: las líneas de un proyecto que ya no existe pasan a no tener proyecto
+/// (y siguen viéndose desde su carpeta). Si se quedaran con su id, un proyecto nuevo que lo
+/// reutilizara (sin `AUTOINCREMENT`, SQLite puede volver a dar el id) heredaría unas líneas que no
+/// son suyas, quizá de otro espacio.
+pub fn soltar_podados(db: &Connection) -> Result<()> {
+    if !hay_tabla(db)? {
+        return Ok(());
+    }
+    let huerfanas = "project_id != 0 AND project_id NOT IN (SELECT id FROM project)";
+    // Si la misma sesión ya tenía una línea sin proyecto, se queda esa.
+    db.execute(&format!("UPDATE OR IGNORE diary SET project_id = 0 WHERE {huerfanas}"), [])?;
+    db.execute(&format!("DELETE FROM diary WHERE {huerfanas}"), [])?;
+    Ok(())
 }
 
 /// Al juntar dos proyectos (`proyecto::juntar`): las líneas de `de` pasan a `en`.
@@ -553,6 +634,10 @@ mod tests {
         assert_eq!(relativo("/w/repo2/a.rs", "/w/repo"), "/w/repo2/a.rs");
         assert_eq!(relativo("src/a.rs", "/w/repo"), "src/a.rs");
         assert_eq!(relativo(r"D:\Omoikane\src\sync.rs", r"D:\Omoikane"), "src/sync.rs");
+        // Caracteres que cambian de tamaño al pasar a minúsculas (`İ` ocupa 2 bytes, `i̇` 3): sin pánico.
+        assert_eq!(relativo("/w/İİ/a.rs", "/w/ii"), "/w/İİ/a.rs");
+        assert_eq!(relativo("/w/ii/a.rs", "/w/İİ"), "/w/ii/a.rs");
+        assert_eq!(relativo("/w/ña/a.rs", "/w/ña"), "a.rs");
     }
 
     #[test]
@@ -560,6 +645,8 @@ mod tests {
         assert_eq!(hora_de(r#"{"timestamp":"2026-11-04T10:00:00.123Z","x":1}"#).as_deref(), Some("2026-11-04T10:00:00.123Z"));
         assert_eq!(hora_de(r#"{"timestamp":"2026-11-04T10:00:00Z"}"#).as_deref(), Some("2026-11-04T10:00:00.000Z"));
         assert_eq!(hora_de(r#"{"timestamp":"ayer"}"#), None);
+        // Con letras de varios bytes donde va la hora: no es una hora, y no rompe.
+        assert_eq!(hora_de(r#"{"timestamp":"2026-11-04T10:00:00.12ñZ"}"#), None);
         let db = Connection::open_in_memory().unwrap();
         assert_eq!(fecha(&db, "2026-11-03").unwrap(), "2026-11-03");
         assert_eq!(fecha(&db, "7d").unwrap().len(), 10);

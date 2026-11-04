@@ -688,6 +688,7 @@ impl Servidor {
                         desde: p.since.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
                         hasta: p.until.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
                         fichero: p.file,
+                        carpeta: p.project.is_none().then(|| proyecto.to_string()),
                         limite: limite(p.limit),
                     };
                     return Ok(serde_json::to_value(crate::diario::lineas(db, &ambito, &filtro)?)?);
