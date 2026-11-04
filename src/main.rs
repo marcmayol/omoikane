@@ -33,6 +33,33 @@ struct Comun {
     json: bool,
 }
 
+// `omoi diary`, con sus opciones aparte: dentro de `Orden`, la función que arma la ayuda de clap
+// crecía tanto que desbordaba la pila (1 MB en Windows) en la compilación de depuración.
+#[derive(Args)]
+struct Diario {
+    /// How many.
+    #[arg(short = 'n', long, default_value_t = 20)]
+    limit: usize,
+    /// Sessions that ended on or after this date (2026-11-03, or 7d for the last 7 days).
+    #[arg(long, value_name = "DATE")]
+    since: Option<String>,
+    /// Sessions that started on or before this date.
+    #[arg(long, value_name = "DATE")]
+    until: Option<String>,
+    /// Only sessions that touched a file whose path contains this.
+    #[arg(long, value_name = "PATH")]
+    file: Option<String>,
+    /// From every project (of this space, if the project is in one).
+    #[arg(long)]
+    all: bool,
+    /// From this project instead: its folder, or its name or part of it.
+    #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+    project: Option<String>,
+    /// From this space instead.
+    #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+    space: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Orden {
     /// Save a memory. The content goes as an argument or through standard input.
@@ -197,6 +224,8 @@ enum Orden {
         #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
         space: Option<String>,
     },
+    /// The session diary: one line per session (when, which project, files touched, memories recalled and saved), newest first. Only on this computer.
+    Diary(Diario),
     /// Projects with memories (without an action, the list): move one to its new folder, or merge two.
     Projects {
         #[command(subcommand)]
@@ -336,8 +365,9 @@ enum Orden {
         /// At session start (or after compacting): preferences and pinned memories.
         #[arg(long)]
         session_start: bool,
-        /// When a session ends or compacts: set aside what may be worth saving from the conversation
-        /// (`transcript_path`), for the agent of the next session. Prints nothing.
+        /// When a session ends or compacts: note it in the session diary (`omoi diary`) and set aside what
+        /// may be worth saving from the conversation (`transcript_path`), for the agent of the next
+        /// session. Prints nothing.
         #[arg(long, conflicts_with = "session_start")]
         session_end: bool,
         /// The agent's hook format: claude (also Codex and Qwen), gemini, cursor, copilot, antigravity or plain.
@@ -851,6 +881,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
+        Orden::Diary(d) => diario_cli(c, d),
         Orden::Review { all, dismiss, kind, other } => {
             let db = abrir(c)?;
             if let Some(id) = dismiss {
@@ -1159,7 +1190,8 @@ fn setup(agente: &str, si: bool, simulacro: bool, sin_auto_update: bool) -> Resu
     Ok(())
 }
 
-/// `omoi recall --session-end`: aparta candidatas de la conversación. Un fallo nunca molesta.
+/// `omoi recall --session-end`: apunta la sesión en el diario y aparta candidatas de la conversación.
+/// Un fallo nunca molesta.
 fn recall_al_cerrar(c: &Comun) -> Result<()> {
     let mut entrada = String::new();
     std::io::stdin().read_to_string(&mut entrada)?;
@@ -1176,7 +1208,8 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     {
         e.transcript_path = p.to_string_lossy().into_owned();
     }
-    if e.transcript_path.is_empty() || !std::path::Path::new(&e.transcript_path).exists() || !ruta_db.exists() {
+    let conversacion = Some(std::path::Path::new(&e.transcript_path)).filter(|p| !e.transcript_path.is_empty() && p.exists());
+    if (conversacion.is_none() && e.session_id.trim().is_empty()) || !ruta_db.exists() {
         return Ok(());
     }
     let project = match (&c.dir, e.cwd.is_empty()) {
@@ -1185,7 +1218,13 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
         (None, true) => proyecto::actual()?,
     };
     let db = db::abrir(&ruta_db)?;
-    if let Err(err) = omoikane::candidatas::apartar(&db, &project, &e.session_id, std::path::Path::new(&e.transcript_path)) {
+    // El diario primero: es lo más rápido, y si el hook se corta, queda apuntado.
+    if let Err(err) = omoikane::diario::apuntar(&db, &project, &e.session_id, conversacion) {
+        eprintln!("omoikane: {err:#}");
+    }
+    if let Some(ruta) = conversacion
+        && let Err(err) = omoikane::candidatas::apartar(&db, &project, &e.session_id, ruta)
+    {
         eprintln!("omoikane: {err:#}");
     }
     Ok(())
@@ -1467,6 +1506,56 @@ fn proyecto_de(c: &Comun) -> Result<String> {
 
 /// Lo que se ve desde la carpeta (`--dir` o la actual), o lo que se pida (`--all`, `--project`,
 /// `--space`), sin salir de su espacio.
+/// `omoi diary`.
+fn diario_cli(c: &Comun, d: Diario) -> Result<()> {
+    use omoikane::diario;
+    let Diario { limit, since, until, file, all, project, space } = d;
+    let ruta = ruta_db(c);
+    if !ruta.exists() {
+        if c.json {
+            return json(&Vec::<diario::Linea>::new());
+        }
+        println!("{}", tr!("nothing yet", "nada todavía"));
+        return Ok(());
+    }
+    let db = db::abrir(&ruta)?;
+    let ambito = ambito_pedido(c, &db, all, project.as_deref(), space.as_deref())?;
+    let filtro = diario::Filtro {
+        desde: since.as_deref().map(|d| diario::fecha(&db, d)).transpose()?,
+        hasta: until.as_deref().map(|d| diario::fecha(&db, d)).transpose()?,
+        fichero: file,
+        limite: limit,
+    };
+    let v = diario::lineas(&db, &ambito, &filtro)?;
+    if c.json {
+        return json(&v);
+    }
+    if v.is_empty() {
+        println!("{}", tr!("nothing yet", "nada todavía"));
+    }
+    let varios = !matches!(ambito, Ambito::Proyecto { .. });
+    for l in &v {
+        let hora = |t: &str| t.get(11..16).unwrap_or("").to_string();
+        let dia = l.first_at.get(..10).unwrap_or("");
+        let fin = if l.last_at.get(..10) == Some(dia) { hora(&l.last_at) } else { format!("{} {}", l.last_at.get(..10).unwrap_or(""), hora(&l.last_at)) };
+        let donde = if varios { format!("  {}", proyecto::nombre_de(&l.project, "")) } else { String::new() };
+        println!("{dia} {}–{fin} UTC{donde}  [{}]", hora(&l.first_at), l.session.chars().take(8).collect::<String>());
+        if !l.files.is_empty() {
+            println!("  {} {}", tr!("files:", "ficheros:"), l.files.join(", "));
+        }
+        for (que, ms) in [(tr!("recalled:", "recibidas:"), &l.recalled), (tr!("saved:", "guardadas:"), &l.saved)] {
+            for m in ms.iter() {
+                let corto: String = m.id.chars().take(12).collect();
+                match &m.title {
+                    Some(t) => println!("  {que} {corto} {t}"),
+                    None => println!("  {que} {corto} {}", tr!("(forgotten)", "(olvidada)")),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>, space: Option<&str>) -> Result<Ambito> {
     let base = Ambito::de(db, &proyecto_de(c)?)?;
     let pedido = if let Some(s) = space {
@@ -2390,6 +2479,15 @@ fn en_espanol(c: Command) -> Command {
             ("kind", "Solo de este tipo."),
             ("all", "De todos los proyectos."),
         ]),
+        ("diary", "El diario de sesiones: una línea por sesión (cuándo, en qué proyecto, ficheros tocados, memorias recibidas y guardadas), de la más reciente a la más vieja. Solo de este equipo.", &[
+            ("limit", "Cuántas."),
+            ("since", "Sesiones que acabaron ese día o después (2026-11-03, o 7d para los últimos 7 días)."),
+            ("until", "Sesiones que empezaron ese día o antes."),
+            ("file", "Solo las sesiones que tocaron un fichero cuya ruta contiene esto."),
+            ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "De este espacio."),
+        ]),
         ("projects", "Proyectos con memorias.", &[]),
         ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
@@ -2428,7 +2526,7 @@ fn en_espanol(c: Command) -> Command {
             ("session_start", "Al empezar la sesión (o tras compactar): preferencias y memorias fijadas."),
             (
                 "session_end",
-                "Al cerrar o compactar una sesión: aparta lo que quizá valga la pena guardar de la conversación (`transcript_path`) para el agente de la sesión siguiente. No escribe nada.",
+                "Al cerrar o compactar una sesión: la apunta en el diario de sesiones (`omoi diary`) y aparta lo que quizá valga la pena guardar de la conversación (`transcript_path`) para el agente de la sesión siguiente. No escribe nada en la salida.",
             ),
         ]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),

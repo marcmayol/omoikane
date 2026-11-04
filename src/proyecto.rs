@@ -855,6 +855,7 @@ fn juntar(db: &Connection, de: i64, en: i64) -> Result<usize> {
     let n = db.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
     db.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
     db.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
+    crate::diario::mover(db, de, en)?;
     db.execute(
         "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
          ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",
