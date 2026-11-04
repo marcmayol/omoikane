@@ -664,7 +664,15 @@ fn servidor_http() {
     let e = Entorno::nuevo("http");
     e.ok(&["remember", "-k", "fact", "-t", "Puerto del servidor", "Escucha en el 8010"]);
     let puerto = 7400 + (std::process::id() % 500) as u16;
-    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi"))
+    // El servidor se cierra aunque el test falle: uno huérfano deja bloqueado el binario en Windows.
+    struct Cerrar(std::process::Child);
+    impl Drop for Cerrar {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _hijo = Cerrar(Command::new(env!("CARGO_BIN_EXE_omoi"))
         .args(["serve", "--port", &puerto.to_string()])
         .current_dir(e.dir.join("repo").join("src"))
         .env("OMOIKANE_DB", e.dir.join("o.db"))
@@ -672,14 +680,16 @@ fn servidor_http() {
         .env("OMOIKANE_HTTP_TOKEN", "secreto")
         .stderr(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap());
     let pedir = |peticion: &str| -> String {
         for _ in 0..50 {
             if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", puerto)) {
                 s.write_all(peticion.as_bytes()).unwrap();
-                let mut r = String::new();
-                s.read_to_string(&mut r).unwrap();
-                return r;
+                // En bytes: la página va en trozos (chunked) y una letra con tilde puede quedar partida
+                // entre dos, con la cabecera del trozo en medio.
+                let mut v = Vec::new();
+                s.read_to_end(&mut v).unwrap();
+                return String::from_utf8_lossy(&v).into_owned();
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -710,8 +720,6 @@ fn servidor_http() {
         "POST /tools/forget HTTP/1.1\r\n{h}\r\nOrigin: https://malo.example\r\nAuthorization: Bearer secreto\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{{\"id\":\"x\"}}"
     ));
     assert!(ajena.starts_with("HTTP/1.1 403"), "{ajena}");
-    hijo.kill().unwrap();
-    let _ = hijo.wait();
 }
 
 /// 1.4: una sesión en una carpeta general (la del usuario) no es de un proyecto: el diario dice su
