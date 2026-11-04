@@ -9,6 +9,12 @@ How it works is in [docs/](docs/).
 ### Subagents
 - When a Claude Code session ends or compacts, Omoikane also reads its subagents' conversations (`<session>/subagents/`) and sets aside, for the next session, the final report of each one that finished, with what it was asked to do. One still working, one with something that looks like a secret, and one already saved are skipped; at most 5 per session. The other signal considered, a command that fails and then works, didn't show up once in 142 real subagent conversations, so it isn't used.
 
+### Sync
+- What other computers push now arrives in the middle of a session, not only when one starts. With each message, at most every 2 minutes, `omoi recall` starts `omoi sync --pull` on the side and doesn't wait for it: a `git fetch` and a comparison when there is nothing new, a full sync only when there is. Several sessions at once start one pull between them (the time of the last one is kept in the local `meta` table), and it never runs alongside another sync. `omoi serve` does the same on a 2-minute timer. Without sync set up nothing runs. `OMOIKANE_SYNC_EVERY` (seconds) changes the interval; `OMOIKANE_SYNC_AUTO=0` turns it off with the rest of the automatic sync.
+
+### Compatibility
+- The database schema (10), the sync lines and the export format don't change.
+
 ## 1.3.2 (2026-11-03)
 
 ### Obsidian

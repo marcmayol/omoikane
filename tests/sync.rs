@@ -2316,3 +2316,92 @@ fn un_companero_que_se_une_a_un_cliente_confirma_el_proyecto() {
     }
     assert_eq!(t.marcas()[0], ["PERSONALSEC"], "nada de acme en el general");
 }
+
+// --- Traer a mitad de sesión (`omoi sync --pull` desde el recall de cada mensaje) -------------------
+
+/// Espera hasta `max` a que se cumpla `cond`.
+fn hasta(max_s: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let inicio = std::time::Instant::now();
+    while inicio.elapsed() < std::time::Duration::from_secs(max_s) {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    cond()
+}
+
+/// La marca de la última bajada en la base de un equipo (`meta('sync_traido')`).
+fn marca_traido(e: &Equipo) -> Option<String> {
+    let db = rusqlite::Connection::open(e.dir.join("o.db")).unwrap();
+    db.query_row("SELECT v FROM meta WHERE k = 'sync_traido'", [], |f| f.get(0)).ok()
+}
+
+/// Un mensaje en B (el hook UserPromptSubmit) con la sincronización automática y el intervalo dado.
+fn mensaje(e: &Equipo, cada: &str) -> String {
+    e.ok_en(&e.dir, &["recall", "--format", "plain"], &[("USER_PROMPT", "sigamos con lo del servidor"), ("OMOIKANE_SYNC_AUTO", "1"), ("OMOIKANE_SYNC_EVERY", cada)])
+}
+
+#[test]
+fn lo_de_otro_equipo_llega_a_mitad_de_sesion() {
+    let p = Prueba::nueva("traer");
+    let (a, b) = dos(&p, &[], &[]);
+    let id = a.guardar(&a.dir, "fact", "El servidor nuevo usa el puerto 8443", "Desde hoy, 8443.", &["--global"]);
+    a.sync();
+    assert!(b.get(&id).is_none());
+    // Un mensaje en B, sin empezar sesión ni `omoi sync`: lo trae en segundo plano.
+    mensaje(&b, "120");
+    assert!(hasta(30, || b.get(&id).is_some()), "llegó a B desde el recall de un mensaje");
+    assert!(marca_traido(&b).is_some());
+
+    // Antes de 2 minutos no se vuelve a mirar: lo siguiente de A no llega con otro mensaje.
+    let otra = a.guardar(&a.dir, "fact", "El servidor nuevo reinicia los martes", "A las 5:00.", &["--global"]);
+    a.sync();
+    let marca = marca_traido(&b);
+    mensaje(&b, "120");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(b.get(&otra).is_none(), "no vuelve a bajar antes de tiempo");
+    assert_eq!(marca_traido(&b), marca, "ni toca la marca");
+    // Pasado el intervalo, sí.
+    mensaje(&b, "0");
+    assert!(hasta(30, || b.get(&otra).is_some()), "pasado el intervalo, llega");
+    let estado = b.ok(&["sync", "status"]);
+    assert!(!estado.contains("FAILING"), "{estado}");
+}
+
+#[test]
+fn si_no_hay_nada_nuevo_solo_mira() {
+    let p = Prueba::nueva("traer-nada");
+    let (a, b) = dos(&p, &[], &[]);
+    a.sync();
+    b.sync();
+    let estado = || std::fs::read_to_string(b.dir.join("o.sync-estado.json")).unwrap();
+    let antes = estado();
+    let commits = p.commits();
+    let fetch = || std::fs::metadata(b.dir.join("o.sync").join(".git").join("FETCH_HEAD")).and_then(|m| m.modified()).ok();
+    let fetch_antes = fetch();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    mensaje(&b, "0");
+    // Lanzado (hace el fetch) y terminado (sin cerrojo), sin sincronización completa: el estado, que
+    // apunta la hora de cada una, sigue igual, y no se sube nada.
+    assert!(hasta(30, || fetch() != fetch_antes), "miró el remoto");
+    assert!(hasta(30, || !b.dir.join("o.sync.lock").exists()));
+    assert_eq!(estado(), antes, "solo un fetch, sin aplicar nada");
+    assert_eq!(p.commits(), commits);
+}
+
+#[test]
+fn sin_sincronizacion_un_mensaje_no_lanza_nada() {
+    let p = Prueba::nueva("traer-sin");
+    let a = p.equipo("pc-a");
+    a.guardar(&a.dir, "fact", "Algo que recordar del servidor", "Para que haya base.", &["--global"]);
+    mensaje(&a, "0");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(marca_traido(&a), None, "ni se apunta");
+    assert!(!a.dir.join("o.sync.lock").exists() && !a.dir.join("o.sync-estado.json").exists());
+    // Y con la sincronización apagada a mano (`OMOIKANE_SYNC_AUTO=0`), tampoco.
+    let q = Prueba::nueva("traer-manual");
+    let (_c, d) = dos(&q, &[], &[]);
+    d.ok_en(&d.dir, &["recall", "--format", "plain"], &[("USER_PROMPT", "hola servidor"), ("OMOIKANE_SYNC_EVERY", "0")]);
+    assert_eq!(marca_traido(&d), None);
+}

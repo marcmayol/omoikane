@@ -30,6 +30,10 @@
 //!   la persona y el nombre de la carpeta), y cada equipo guarda la memoria con su propia ruta.
 //! - **Automático:** después de cada cambio, `programar` lanza `omoi sync --background` aparte; espera
 //!   unos segundos para juntar cambios y solo corre uno a la vez por equipo.
+//! - **A mitad de sesión:** con cada mensaje (y en `omoi serve`, con un temporizador), cada 2 minutos
+//!   como mucho, `traer_si_toca` lanza `omoi sync --pull` aparte: un `git fetch` y comparar con lo
+//!   último leído; la sincronización completa, solo si el remoto trae algo. La hora del último intento
+//!   va en `meta('sync_traido')`.
 //!
 //! Todo vive junto a la base: `sync.json` (configuración), `sync.key` (claves), `sync/` (el clon),
 //! `sync-estado.json`, `sync.pendiente`, `sync.hecho` y `sync.lock`. Cada espacio con repositorio
@@ -2831,8 +2835,16 @@ pub fn programar(ruta_db: &Path) {
 /// Lanza `omoi <args>` aparte, sin ventana, sin esperarlo y sin que se quede con las salidas de quien
 /// llama (un hook las lee hasta el final). Lo usa la actualización diaria (`actualizar`).
 pub(crate) fn lanzar_aparte(args: &[&str]) {
+    lanzar(args, None);
+}
+
+/// Como `lanzar_aparte`, y con `ruta_db` el hijo abre esa base (`OMOIKANE_DB`), no la de por defecto.
+fn lanzar(args: &[&str], ruta_db: Option<&Path>) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = std::process::Command::new(exe);
+    if let Some(r) = ruta_db {
+        c.env("OMOIKANE_DB", r);
+    }
     c.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
@@ -3073,6 +3085,96 @@ pub fn ahora_mismo(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, mo
             return Ok(res);
         }
     }
+}
+
+// --- Traer lo de otros a mitad de sesión -----------------------------------------------------------
+
+/// La clave de `meta` con la última vez (segundos Unix) que se lanzó una bajada desde aquí.
+const MARCA_TRAER: &str = "sync_traido";
+
+/// Cada cuánto se mira, como mucho, si el remoto trae algo (`OMOIKANE_SYNC_EVERY`, en segundos; 120).
+pub fn cada_cuanto() -> Duration {
+    Duration::from_secs(std::env::var("OMOIKANE_SYNC_EVERY").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120))
+}
+
+/// Si la sincronización está configurada y es automática (sin `OMOIKANE_SYNC_AUTO=0`). Solo mira si
+/// existen unos ficheros: sin sincronización no cuesta nada.
+pub fn automatica(ruta_db: &Path) -> bool {
+    !std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") && (rutas(ruta_db).config.exists() || !espacios(ruta_db).is_empty())
+}
+
+/// Apunta que se acaba de traer (o de lanzar una sincronización completa, al empezar la sesión).
+pub fn apuntar_traido(db: &Connection) {
+    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![MARCA_TRAER, ahora()]);
+}
+
+/// En cada mensaje (y en `omoi serve` con un temporizador): si la sincronización es automática y hace
+/// más de `cada_cuanto` que no se mira, lanza `omoi sync --pull` aparte y vuelve enseguida. La marca
+/// de `meta` se toma con una escritura condicionada, así que con varias sesiones a la vez solo una
+/// lanza el proceso. No falla nunca: lo peor es que lo nuevo llegue en el siguiente intento.
+pub fn traer_si_toca(db: &Connection, ruta_db: &Path) -> bool {
+    if !automatica(ruta_db) {
+        return false;
+    }
+    let ahora = segundos(&ahora()) as i64;
+    let cada = cada_cuanto().as_secs() as i64;
+    // Lo normal es que aún no toque: una lectura y nada más.
+    let ultima: Option<i64> = db.query_row("SELECT v FROM meta WHERE k = ?1", [MARCA_TRAER], |f| f.get::<_, String>(0)).optional().ok().flatten().and_then(|v| v.trim().parse().ok());
+    // Una marca en el futuro (el reloj volvió atrás) tampoco debe parar la bajada para siempre.
+    if ultima.is_some_and(|u| u <= ahora && ahora - u < cada) {
+        return false;
+    }
+    let tomada = db
+        .execute(
+            "INSERT INTO meta(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v
+             WHERE CAST(meta.v AS INTEGER) <= ?3 OR CAST(meta.v AS INTEGER) > ?4",
+            params![MARCA_TRAER, ahora.to_string(), ahora - cada, ahora],
+        )
+        .is_ok_and(|n| n == 1);
+    if tomada {
+        lanzar(&["sync", "--pull"], Some(ruta_db));
+    }
+    tomada
+}
+
+/// Si el remoto de un repositorio tiene commits que esta base aún no ha leído: un `git fetch` y
+/// comparar con el último commit leído. Ante cualquier duda (sin clon, sin red), que no.
+fn hay_algo_nuevo(db: &Connection, r: &Rutas) -> bool {
+    if !r.clon.join(".git").exists() || !matches!(leer_config_de(r), Ok(Some(_))) {
+        return false;
+    }
+    if git(&r.clon, &["fetch", "--quiet", "origin"]).is_err() {
+        return false;
+    }
+    let Ok(remoto) = git(&r.clon, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{RAMA}")]) else { return false };
+    let leido: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&r.marca_commit], |f| f.get(0)).optional().ok().flatten();
+    leido.as_deref().map(str::trim) != Some(remoto.trim())
+}
+
+/// `omoi sync --pull`: si no hay otra sincronización en marcha, mira cada repositorio con un `git
+/// fetch`; solo si alguno trae algo (o hay cambios de aquí sin subir) hace la sincronización completa.
+pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
+    // Si hay otra en marcha, esa ya baja lo nuevo.
+    let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
+    let mut db = abrir()?;
+    let nuevo = repos(ruta_db).iter().any(|r| hay_algo_nuevo(&db, r));
+    if !nuevo && !pendiente(ruta_db) {
+        return Ok(());
+    }
+    // Como en `en_segundo_plano`: un cambio de aquí que llegue mientras tanto no lanza otra (este
+    // tiene el cerrojo), así que se repite mientras la marca de pendiente avance.
+    let r = rutas(ruta_db);
+    for _ in 0..5 {
+        let marca = std::fs::read_to_string(&r.pendiente).ok();
+        if sincronizar(&mut db, ruta_db, None, None).is_err() {
+            break;
+        }
+        hecho(&r, marca.as_deref());
+        if !pendiente(ruta_db) {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
