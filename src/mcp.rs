@@ -652,6 +652,10 @@ impl Servidor {
                 };
                 let proyectos = proyecto::lista(db, None, filtro, 50)?;
                 let mut r = serde_json::json!({ "project": actual, "projects": proyectos, "memories": memorias, "review": review });
+                // El aviso de la revisión acumulada, como al empezar la sesión (y sin repetirlo si ya salió hoy).
+                if let Some(a) = crate::revisar::aviso(db, &crate::revisar::cifras(&review), memoria::cuantas(db, &ambito)? as usize)? {
+                    r["review_notice"] = serde_json::json!(a);
+                }
                 // Lo apartado al cerrar otras sesiones: en los agentes sin recall al empezar (Grok,
                 // Windsurf…) solo llega por aquí. Se enseña una vez, como en el recall.
                 let apartadas = crate::candidatas::para_empezar(db, proyecto, "")?;

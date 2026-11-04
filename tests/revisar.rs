@@ -118,3 +118,93 @@ fn rutas_rotas_y_largas() {
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- El aviso al empezar la sesión ------------------------------------------------------------------
+
+/// `n` memorias globales demasiado largas para el recall: cada una, un aviso `too_long`.
+fn largas(db: &mut Connection, desde: usize, n: usize) {
+    for i in desde..desde + n {
+        guardar(db, "", &format!("Bitácora larga número {i}"), &format!("Registro {i} del horno. {}", format!("cocción {i} ").repeat(700)), &[]);
+    }
+}
+
+fn aviso_al_empezar(db: &mut Connection, sesion: &str) -> Option<String> {
+    let t = recall::al_empezar(db, "/p", &Entrada { session_id: sesion.into(), ..Default::default() }).unwrap().unwrap();
+    t.lines().find(|l| l.starts_with("Memory review:")).map(String::from)
+}
+
+/// Por debajo del umbral no dice nada; al llegar, una vez: con las cifras de los tipos que hay y que
+/// proponga sin tocar nada.
+#[test]
+fn avisa_de_la_revision_al_pasar_el_umbral_y_una_vez() {
+    let (mut db, dir) = base("aviso");
+    largas(&mut db, 0, revisar::AVISO_MINIMO - 1);
+    assert_eq!(aviso_al_empezar(&mut db, "s1"), None, "por debajo del umbral");
+    largas(&mut db, 100, 1);
+    let a = aviso_al_empezar(&mut db, "s2").expect("al llegar al umbral");
+    assert!(a.contains("20 items pending (20 too long)") && !a.contains("outdated"), "{a}");
+    assert!(a.contains("omoi review") && a.contains("absorb") && a.contains("without the user's OK"), "{a}");
+    // El mismo día, no otra vez; tampoco si crece poco.
+    assert_eq!(aviso_al_empezar(&mut db, "s3"), None, "dos veces el mismo día");
+    largas(&mut db, 200, 4);
+    assert_eq!(aviso_al_empezar(&mut db, "s4"), None, "4 más no es bastante");
+    // Si crece bastante, sí, con la cifra nueva.
+    largas(&mut db, 300, 1);
+    let a = aviso_al_empezar(&mut db, "s5").expect("al crecer");
+    assert!(a.contains("25 items pending"), "{a}");
+    // Otro día, otra vez aunque no haya crecido.
+    db.execute("UPDATE meta SET v = '2000-01-01|25' WHERE k = 'revision_aviso'", []).unwrap();
+    assert!(aviso_al_empezar(&mut db, "s6").is_some(), "al día siguiente");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// La herramienta `context` (los agentes sin recall al empezar) da el mismo aviso, y comparte con el
+/// recall el «ya se dijo hoy».
+#[test]
+fn el_aviso_tambien_en_context() {
+    let (mut db, dir) = base("aviso-context");
+    let carpeta = dir.join("proyecto");
+    std::fs::create_dir_all(&carpeta).unwrap();
+    largas(&mut db, 0, revisar::AVISO_MINIMO);
+    let ruta = dir.join("o.db");
+    let context = || {
+        let (t, error) = omoikane::mcp::herramienta(ruta.clone(), Some(carpeta.clone()), Some("context"), "", "test").unwrap();
+        assert!(!error, "{t}");
+        serde_json::from_str::<serde_json::Value>(&t).unwrap()
+    };
+    let r = context();
+    let a = r["review_notice"].as_str().expect("el aviso");
+    assert!(a.starts_with("Memory review: 20 items pending (20 too long)"), "{a}");
+    assert!(context().get("review_notice").is_none(), "una vez al día");
+    assert_eq!(aviso_al_empezar(&mut db, "s1"), None, "ya se dijo hoy por context");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Al empezar se cuenta sin leer las memorias enteras (`pendientes`): da lo mismo que la revisión
+/// entera, salvo las rutas rotas y los secretos, que solo salen en ella.
+#[test]
+fn las_cifras_rapidas_cuadran_con_la_revision() {
+    let (mut db, dir) = base("cifras");
+    let vieja = guardar(&mut db, "/p", "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026.", &[]);
+    guardar(&mut db, "/p", "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub.", &["status"]);
+    guardar(&mut db, "/p", "Horno del taller", "Ver [[manual_que_no_existe]] antes de abrirlo.", &[]);
+    largas(&mut db, 0, 2);
+    let otra = guardar(&mut db, "/otro", "Cosa de otro proyecto", "Ver [[tampoco_existe]].", &[]);
+    // Una vieja y sin uso: `unused`, y lo que la revisión diga de ella por la fecha.
+    db.execute("UPDATE memory SET created_at = '2020-01-01T00:00:00.000Z', updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1", [&vieja]).unwrap();
+    // Un estado de hace años con cambios después: `stale_status`.
+    let estado = guardar(&mut db, "/p", "Horno: en qué punto quedó", "Faltaba calibrar el termopar.", &["status"]);
+    db.execute("UPDATE memory SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1", [&estado]).unwrap();
+    // Un descarte cuenta en las dos.
+    revisar::descartar(&db, &otra, revisar::ENLACE_ROTO, "").unwrap();
+    for ambito in [Ambito::Todos, Ambito::de(&db, "/p").unwrap()] {
+        let rapidas = revisar::pendientes(&db, &ambito).unwrap();
+        let enteras = revisar::cifras(&revisar::avisos(&db, &ambito).unwrap());
+        assert_eq!(rapidas, enteras);
+        assert!(rapidas.len() >= 5 && rapidas.contains_key(revisar::ESTADO_VIEJO), "{rapidas:?}");
+    }
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}

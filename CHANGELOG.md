@@ -6,6 +6,13 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+### Maintenance that speaks up
+- When the review piles up (20 pending items, or 10% of the memories in scope if that is more), the session starts with a three-line notice for the agent: how many there are of each kind and an instruction to look at them with `omoi review` and propose concrete actions (update, `absorb`, `forget`, `supersedes`/`compatible`, fix the links), never acting without the user's OK. Omoikane still carries no language model: the agent decides with the user. It shows once a day per database, and again the same day only if the number grows by at least 5 (or 10%). Agents without session hooks get the same text as `review_notice` in the `context` tool.
+- The count at session start reads the cached review, the verdicts and the small columns of each memory, not its contents or the disk, and is cached per day until something is written. Broken paths and possible secrets stay in the full review. On the real 178-memory database the start is as fast as before (P50 22.8 ms against 22.2 ms).
+
+### Compatibility
+- The database schema (10), the sync lines and the export format don't change. The notice keeps its state in the local `meta` table (`revision_aviso`, `revision_aviso_cifras`), which doesn't travel.
+
 ## 1.3.2 (2026-11-03)
 
 ### Obsidian

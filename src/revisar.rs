@@ -959,6 +959,228 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
 
 }
 
+// --- El aviso al empezar la sesión ------------------------------------------------------------------
+//
+// La revisión solo sirve si alguien la abre. Cuando se acumula, el agente recibe al empezar un párrafo
+// corto con las cifras y la instrucción de proponer qué hacer: decide él con el usuario, Omoikane no
+// lleva modelo de lenguaje. Una vez al día por base, o de nuevo el mismo día si la cifra crece bastante.
+//
+// Calibrado con la memoria real de Marc del 4-nov-2026 (178 memorias): desde la carpeta personal salen
+// 33 sin contar las rutas (21 demasiado largas, 9 enlaces rotos, 3 desfasadas), casi una de cada cinco
+// memorias: avisa. Desde D:\Omoikane, 15 de 135 (9 largas, 4 enlaces, 2 desfasadas): no. Con 10.000
+// memorias de un equipo, las que nadie ha recordado en 30 días ya son cientos: un número fijo avisaría
+// siempre, así que el umbral es también una proporción.
+//
+// Contar con `avisos` cuesta medio segundo con 10.000 memorias (leerlas enteras y buscar secretos en
+// cada una), así que al empezar se cuenta con `pendientes`: lo guardado en `review`, los veredictos y
+// las columnas pequeñas de `memory`, sin el contenido ni el disco. Las rutas rotas y los secretos solo
+// salen en la revisión entera (`omoi review`, la herramienta `context`).
+
+/// Pendientes a partir de las que se avisa, con pocas memorias.
+pub const AVISO_MINIMO: usize = 20;
+/// La parte de las memorias del ámbito que tiene que estar pendiente, con muchas (un 10 %).
+pub const AVISO_PROPORCION: f64 = 0.10;
+/// Dónde se apunta el último aviso: `día|cuántas`.
+const CLAVE_AVISO: &str = "revision_aviso";
+
+/// El umbral para un ámbito con `memorias` memorias.
+pub fn umbral_aviso(memorias: usize) -> usize {
+    AVISO_MINIMO.max((memorias as f64 * AVISO_PROPORCION).ceil() as usize)
+}
+
+/// Cuánto tiene que crecer la cifra para repetir el aviso el mismo día: 5, o un 10 % si es más.
+fn crecio(antes: usize, ahora: usize) -> bool {
+    ahora >= antes + 5.max(antes / 10)
+}
+
+/// Dónde se guardan las últimas cifras de `pendientes`: `clave\tJSON`.
+const CLAVE_CIFRAS: &str = "revision_aviso_cifras";
+
+/// El día de quien lo lee, no el UTC.
+fn hoy(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0))?)
+}
+
+/// Cuántas hay de cada tipo en el ámbito, lo mismo que contaría `avisos` salvo las rutas rotas y los
+/// secretos, sin leer el contenido de las memorias. Se guardan en `meta` por día, ámbito, huella de
+/// `memory` y veredictos: hasta que algo se escriba, las siguientes sesiones del día no cuentan. Lo
+/// que cambia solo con recordar (sin uso, por revisar) solo baja, y espera a mañana.
+pub fn pendientes(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
+    al_dia(db)?;
+    let huella: String = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?.unwrap_or_default();
+    let (n, sello): (i64, String) = db.query_row("SELECT count(*), COALESCE(max(hlc), '') FROM verdict", [], |f| Ok((f.get(0)?, f.get(1)?)))?;
+    let clave = format!("{}|{huella}|{n}|{sello}|{}", hoy(db)?, ambito.sql());
+    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_CIFRAS], |f| f.get(0)).optional()?;
+    if let Some((k, json)) = guardado.as_deref().and_then(|v| v.split_once('\t'))
+        && k == clave
+        && let Ok(m) = serde_json::from_str::<BTreeMap<String, usize>>(json)
+    {
+        return Ok(m.into_iter().filter_map(|(k, n)| TIPOS.iter().find(|t| **t == k).map(|t| (*t, n))).collect());
+    }
+    let r = contar(db, ambito)?;
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_CIFRAS, &format!("{clave}\t{}", serde_json::to_string(&r)?)])?;
+    Ok(r)
+}
+
+fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
+    let fuera = descartados(db)?;
+    // Solo las columnas pequeñas, y el largo solo de las que pasan de bytes (un carácter es al menos
+    // un byte): `octet_length` no recorre el texto. El espacio va por su número, no por su clave.
+    let mut q = db.prepare(&format!(
+        "SELECT m.id, m.kind, m.tags, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.project_id,
+                COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id), 0),
+                CASE WHEN octet_length(m.content) > {LARGO_PARA_RECALL} THEN length(m.content) ELSE 0 END
+         FROM memory m WHERE {}",
+        ambito.sql()
+    ))?;
+    let todas: Vec<(Memoria, usize)> = q
+        .query_map([], |f| {
+            let m = Memoria {
+                id: f.get(0)?,
+                kind: f.get::<_, String>(1)?.parse().unwrap_or(crate::memoria::Tipo::Fact),
+                tags: serde_json::from_str(&f.get::<_, String>(2)?).unwrap_or_default(),
+                created_at: f.get(3)?,
+                updated_at: f.get(4)?,
+                recalled_at: f.get(5)?,
+                recall_count: f.get(6)?,
+                project_id: f.get(7)?,
+                space: f.get::<_, i64>(8)?.to_string(),
+                ..Default::default()
+            };
+            Ok((m, f.get::<_, i64>(9)? as usize))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let en_ambito: HashSet<&str> = todas.iter().map(|(m, _)| m.id.as_str()).collect();
+    let mut r: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut sumar = |k: &'static str| *r.entry(k).or_insert(0) += 1;
+    {
+        let mut q = db.prepare("SELECT memory_id, other_id FROM review WHERE kind = ?1")?;
+        let filas: Vec<(String, String)> = q.query_map([DESFASADA], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (vieja, nueva) in filas {
+            if en_ambito.contains(vieja.as_str()) && en_ambito.contains(nueva.as_str()) && !fuera.contains(&(vieja, DESFASADA.to_string(), nueva)) {
+                sumar(DESFASADA);
+            }
+        }
+    }
+    for v in crate::veredictos::parejas(db)?.into_values() {
+        if v.relation == crate::veredictos::COMPATIBLE {
+            continue;
+        }
+        let mut otra = v.other_id.clone();
+        if v.relation == SUSTITUIDA
+            && let Some(fin) = crate::veredictos::cadena(db, &v.memory_id)?
+            && fin.saltos > 1
+        {
+            otra = fin.id;
+        }
+        if en_ambito.contains(v.memory_id.as_str()) && en_ambito.contains(otra.as_str()) {
+            sumar(if v.relation == SUSTITUIDA { SUSTITUIDA } else { CONTRADICE });
+        }
+    }
+    {
+        let mut q = db.prepare("SELECT memory_id FROM review WHERE kind = ?1")?;
+        let filas: Vec<String> = q.query_map([ENLACE_ROTO], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for id in filas {
+            if en_ambito.contains(id.as_str()) && !fuera.contains(&(id, ENLACE_ROTO.to_string(), String::new())) {
+                sumar(ENLACE_ROTO);
+            }
+        }
+    }
+    let ahora = chrono_ahora(db)?;
+    let revisadas = crate::veredictos::oks(db, false)?;
+    // El último cambio de cada proyecto (y espacio): un estado se ha quedado atrás si hay otro después.
+    let mut ultimo: HashMap<(i64, &str), &str> = HashMap::new();
+    for (m, _) in &todas {
+        let u = ultimo.entry((m.project_id, m.space.as_str())).or_insert(m.updated_at.as_str());
+        if m.updated_at.as_str() > *u {
+            *u = m.updated_at.as_str();
+        }
+    }
+    for (m, largo) in &todas {
+        let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
+        if sin_revisar(m, &revisadas, &ahora).is_some() {
+            sumar(POR_REVISAR);
+        }
+        if m.tags.iter().any(|t| t == crate::memoria::ESTADO)
+            && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO
+            && !descartado(ESTADO_VIEJO)
+            && ultimo.get(&(m.project_id, m.space.as_str())).is_some_and(|u| *u > m.updated_at.as_str())
+        {
+            sumar(ESTADO_VIEJO);
+        }
+        if m.recall_count == 0 && m.recalled_at.is_none() && dias_entre(&m.created_at, &ahora) > DIAS_SIN_USO && !descartado(SIN_USO) {
+            sumar(SIN_USO);
+        }
+        if *largo > LARGO_PARA_RECALL && !descartado(LARGA) {
+            sumar(LARGA);
+        }
+    }
+    Ok(r)
+}
+
+/// Las cifras de una revisión ya hecha (la de `avisos`), por tipo.
+pub fn cifras(avisos: &[Aviso]) -> BTreeMap<&'static str, usize> {
+    let mut r = BTreeMap::new();
+    for a in avisos {
+        if let Some(k) = TIPOS.iter().find(|k| **k == a.kind) {
+            *r.entry(*k).or_insert(0) += 1;
+        }
+    }
+    r
+}
+
+/// Al empezar la sesión (el recall): el aviso, si toca.
+pub fn aviso_al_empezar(db: &Connection, ambito: &Ambito, memorias: usize) -> Result<Option<String>> {
+    aviso(db, &pendientes(db, ambito)?, memorias)
+}
+
+/// El aviso para estas cifras en un ámbito de `memorias` memorias, si llegan al umbral y no se dio ya
+/// hoy (o han crecido desde entonces). Si sale, lo apunta en `meta`: es de este equipo, no viaja.
+pub fn aviso(db: &Connection, cifras: &BTreeMap<&'static str, usize>, memorias: usize) -> Result<Option<String>> {
+    let total: usize = cifras.values().sum();
+    // Un posible secreto avisa siempre: viaja con la sincronización y las copias.
+    if total < umbral_aviso(memorias) && cifras.get(SECRETO).is_none_or(|n| *n == 0) {
+        return Ok(None);
+    }
+    let hoy = hoy(db)?;
+    let antes: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_AVISO], |f| f.get(0)).optional()?;
+    if let Some(n) = antes.as_deref().and_then(|v| v.split_once('|')).filter(|(d, _)| *d == hoy).and_then(|(_, n)| n.parse::<usize>().ok())
+        && !crecio(n, total)
+    {
+        return Ok(None);
+    }
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_AVISO, &format!("{hoy}|{total}")])?;
+    Ok(Some(texto_aviso(cifras)))
+}
+
+/// Cómo se llama cada tipo en el aviso.
+fn nombre_aviso(kind: &str) -> &'static str {
+    match kind {
+        SECRETO => "possible secrets",
+        SUSTITUIDA => "superseded",
+        CONTRADICE => "contradictions",
+        DESFASADA => "outdated",
+        ENLACE_ROTO => "broken [[links]]",
+        ESTADO_VIEJO => "stale status",
+        POR_REVISAR => "due for a check",
+        RUTA_ROTA => "broken paths",
+        SIN_USO => "never recalled",
+        LARGA => "too long",
+        _ => "other",
+    }
+}
+
+/// El párrafo para el agente, en inglés como el resto del recall: las cifras de los tipos que hay, en
+/// el orden de la revisión, y qué hacer con ellas.
+pub fn texto_aviso(cifras: &BTreeMap<&'static str, usize>) -> String {
+    let partes: Vec<String> = TIPOS.iter().filter_map(|k| cifras.get(k).filter(|n| **n > 0).map(|n| format!("{n} {}", nombre_aviso(k)))).collect();
+    format!(
+        "Memory review: {} items pending ({}). Look at them (`omoi review`, or `review` in the `context` tool) and propose concrete actions to the user: update, merge with `absorb`, `forget`, mark `supersedes`/`compatible`, fix the links. Change nothing without the user's OK.",
+        cifras.values().sum::<usize>(),
+        partes.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
