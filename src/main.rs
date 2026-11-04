@@ -312,6 +312,10 @@ enum Orden {
         /// Run in the background after a change (Omoikane launches it itself).
         #[arg(long, hide = true)]
         background: bool,
+        /// Bring in what other computers pushed, if anything (Omoikane launches it itself, at most every
+        /// 2 minutes while you work).
+        #[arg(long, hide = true)]
+        pull: bool,
     },
     /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
     Setup {
@@ -614,7 +618,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Setup { agente, yes, dry_run, no_auto_update } => setup(&agente, yes, dry_run, no_auto_update),
         Orden::Upgrade { check, on, off, background, after } => upgrade(check, on, off, background, after),
-        Orden::Sync { accion, background } => sync(c, accion, background),
+        Orden::Sync { accion, background, pull } => sync(c, accion, background, pull),
         Orden::Recall { session_end: true, .. } => recall_al_cerrar(c),
         Orden::Recall { session_start, format, .. } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
@@ -1217,6 +1221,8 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
         if let Ok(Some(_)) = omoikane::sync::leer_config(&ruta) {
             let _ = omoikane::sync::adoptar(&db, &project);
             omoikane::sync::programar(&ruta);
+            // Esa sincronización ya trae lo nuevo: el primer mensaje no lanza otra.
+            omoikane::sync::apuntar_traido(&db);
         }
         let texto = recall::al_empezar(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&ruta) {
             Some(a) => t.replacen("</omoikane>", &format!("{a}\n</omoikane>"), 1),
@@ -1232,6 +1238,11 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     };
     if let Some(t) = texto {
         println!("{}", recall::salida_en(formato, evento, &t));
+    }
+    // Lo que otros equipos subieron a mitad de sesión: cada 2 minutos como mucho, aparte y sin
+    // esperarlo (sin sincronización, nada).
+    if !al_empezar {
+        omoikane::sync::traer_si_toca(&db, &ruta);
     }
     Ok(())
 }
@@ -2060,10 +2071,13 @@ fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
     Ok(e)
 }
 
-fn sync(c: &Comun, accion: Option<AccionSync>, background: bool) -> Result<()> {
+fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> Result<()> {
     use omoikane::sync;
     use std::io::IsTerminal;
     let ruta = ruta_db(c);
+    if pull {
+        return sync::traer(&ruta, || abrir(c));
+    }
     if background {
         // Sin el modelo: lo que llegue sin vector lo completa la siguiente orden que lo abra.
         return sync::en_segundo_plano(&ruta, || Ok((abrir(c)?, None)));

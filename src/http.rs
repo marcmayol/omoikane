@@ -128,6 +128,22 @@ fn parametros(consulta: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Mientras sirve, lo que otros equipos suben llega como en una sesión: cada `cada_cuanto` (2
+/// minutos) como mucho, con la misma marca que los mensajes (así no se juntan dos). Se mira cada
+/// cuarto de intervalo; sin sincronización no se abre ni la base.
+fn traer_cada_poco(ruta: PathBuf) {
+    std::thread::spawn(move || {
+        loop {
+            if crate::sync::automatica(&ruta)
+                && let Ok(db) = db::abrir(&ruta)
+            {
+                crate::sync::traer_si_toca(&db, &ruta);
+            }
+            std::thread::sleep((crate::sync::cada_cuanto() / 4).max(std::time::Duration::from_secs(1)));
+        }
+    });
+}
+
 /// Atiende peticiones hasta que se cierre el proceso. Con `abrir`, abre la vista en el navegador; si
 /// ya hay un servidor en ese puerto, solo la abre.
 pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Result<()> {
@@ -149,6 +165,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
     if abrir {
         abrir_navegador(&url);
     }
+    traer_cada_poco(db.clone());
     let anfitriones = [format!("127.0.0.1:{puerto}"), format!("localhost:{puerto}")];
     let origenes = anfitriones.iter().map(|a| format!("http://{a}")).collect::<Vec<_>>();
     for mut peticion in servidor.incoming_requests() {
