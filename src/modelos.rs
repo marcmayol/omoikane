@@ -101,11 +101,20 @@ fn descargar_de(origen: &str, destino: &Path, aviso: &mut dyn FnMut(&str)) -> Re
 /// El cliente HTTP de todas las descargas (el modelo, las actualizaciones): con los certificados raíz
 /// del sistema, y no solo los de Mozilla que trae ureq. En la red de una empresa que inspecciona el
 /// HTTPS, su certificado raíz está en el almacén del sistema (por eso Git y PowerShell conectan) y no
-/// en la lista de Mozilla. No se pierde seguridad: el modelo se comprueba por su SHA-256 y las
-/// actualizaciones por su firma Ed25519.
-pub fn cliente() -> ureq::Agent {
+/// en la lista de Mozilla. Las actualizaciones se siguen comprobando por su firma Ed25519.
+fn cliente() -> ureq::Agent {
     let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
     ureq::Agent::config_builder().tls_config(tls).build().new_agent()
+}
+
+/// GET con los certificados del sistema y, si falla sin que el servidor llegue a responder, otra vez
+/// con la lista de Mozilla: un Linux mínimo sin `ca-certificates` no tiene almacén del sistema.
+pub fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let ua = format!("omoi/{}", env!("CARGO_PKG_VERSION"));
+    match cliente().get(url).header("User-Agent", &ua).call() {
+        Err(e) if !matches!(e, ureq::Error::StatusCode(_)) => ureq::get(url).header("User-Agent", &ua).call(),
+        r => r,
+    }
 }
 
 /// Descarga `ficheros` de `origen` a `destino` (cada uno a `.part` y renombrado al llegar entero).
@@ -114,7 +123,7 @@ pub(crate) fn descargar_ficheros(origen: &str, ficheros: &[&str], destino: &Path
     let host = origen.split('/').nth(2).unwrap_or(origen);
     for &f in ficheros {
         let url = format!("{origen}/{f}");
-        let resp = cliente().get(&url).call().with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
+        let resp = get(&url).with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
         let total: Option<u64> =
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
         aviso(&match total {

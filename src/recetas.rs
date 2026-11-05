@@ -136,8 +136,14 @@ pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
             ts.push(t);
         }
         // Lo que va delante (`bash -lc …`, `cmd /c …`, `sudo …`) no es el programa.
+        let mut delante = false;
         while ts.first().and_then(|t| programa(t)).is_some_and(|p| DELANTE.contains(&p.as_str())) {
             ts.remove(0);
+            delante = true;
+        }
+        // `powershell -Command "…"`: lo de dentro de las comillas no se ve, así que no es un paso.
+        if delante && ts.first().is_some_and(|t| t.starts_with('\u{1}')) {
+            continue;
         }
         let Some(prog) = ts.first().and_then(|t| programa(t)) else { continue };
         if TRIVIALES.contains(&prog.as_str()) || es_cmdlet(&prog) {
@@ -303,6 +309,8 @@ mod tests {
         assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
         assert_eq!(pasos_de_orden("bash -lc cargo test && git push"), ["cargo test", "git push"]);
         assert_eq!(pasos_de_orden("cmd /c npm run build"), ["npm run"]);
+        assert!(pasos_de_orden(r#"powershell -Command "Remove-Item -Recurse D:\tmp\build""#).is_empty());
+        assert!(pasos_de_orden(r#"bash -c "cargo test --manifest-path a/Cargo.toml""#).is_empty());
         assert_eq!(pasos_de_orden("git -C D:/Omoikane diff && gh -R o/r pr list"), ["gh pr"]);
         assert_eq!(pasos_de_orden("python - <<'EOF'\nimport json\nEOF"), Vec::<String>::new());
         assert_eq!(pasos_de_orden("\"/c/Program Files/GitHub CLI/gh.exe\" pr list"), ["gh pr"]);
