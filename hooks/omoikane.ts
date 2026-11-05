@@ -211,8 +211,7 @@ async function install($: any, version: string, windows: boolean, carpeta: strin
   if (windows) await $.process.run(['cmd', '/c', 'mkdir', carpeta.replaceAll('/', '\\')])
   else await $.process.run(['mkdir', '-p', carpeta])
   const archivo = `${carpeta}/${paquete}`
-  const bajada = await $.process.run(['curl', '-fsSL', '--retry', '2', '-o', archivo, `${base}/${paquete}`], { timeoutMs: 300_000 })
-  if (bajada.exitCode !== 0) throw new Error(`can't download ${paquete}: ${bajada.stderr.trim()}`)
+  await download($, `${base}/${paquete}`, archivo, windows)
 
   const real = await sha256($, archivo, windows)
   if (real !== esperada.toLowerCase()) {
@@ -225,6 +224,34 @@ async function install($: any, version: string, windows: boolean, carpeta: strin
   const abrir = await $.process.run([tar, '-xf', archivo, '-C', carpeta])
   await remove($, archivo, windows)
   if (abrir.exitCode !== 0) throw new Error(`can't unpack ${paquete}: ${abrir.stderr.trim()}`)
+}
+
+// Downloads `url` to `archivo`. On Windows, curl.exe (Schannel) gives up on networks where it can't
+// check whether GitHub's certificate was revoked, which is common behind company proxies
+// (CRYPT_E_NO_REVOCATION_CHECK): then it tries again with --ssl-revoke-best-effort, which still checks
+// but doesn't block when the check can't be done, and last with PowerShell. The SHA-256 is checked
+// afterwards either way.
+async function download($: any, url: string, archivo: string, windows: boolean): Promise<void> {
+  const intentos: string[][] = [['curl', '-fsSL', '--retry', '2', '-o', archivo, url]]
+  if (windows) {
+    intentos.push(['curl', '-fsSL', '--retry', '2', '--ssl-revoke-best-effort', '-o', archivo, url])
+    const ruta = archivo.replaceAll('/', '\\').replaceAll("'", "''")
+    intentos.push([
+      'powershell', '-NoProfile', '-NonInteractive', '-Command',
+      `$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri '${url.replaceAll("'", "''")}' -OutFile '${ruta}'`,
+    ])
+  }
+  let error = ''
+  for (const orden of intentos) {
+    try {
+      const r = await $.process.run(orden, { timeoutMs: 300_000 })
+      if (r.exitCode === 0) return
+      error = (r.stderr || r.stdout || '').trim()
+    } catch (err) {
+      error = String((err as Error)?.message ?? err)
+    }
+  }
+  throw new Error(`can't download ${url.split('/').pop()}: ${error.slice(0, 300)}`)
 }
 
 async function sha256($: any, archivo: string, windows: boolean): Promise<string> {

@@ -13,6 +13,9 @@ How it works is in [docs/](docs/).
 - Measured on 120 real sessions: it proposes five sequences, the first `git fetch → gh issue → gh pr` (10 sessions). Without leaving out the looking-around steps and asking for two programs, the top ones were `git add → git commit → git push`, which everybody does. The conversation is read once for the proposals and the steps: ending the largest real session takes 46 ms more than in 1.4.1 (681 against 635 ms).
 - The other idea planned with it, recall from other projects of the same space as a last resort, stays out: on 168 real prompts written inside a project with nothing recalled, only one would have got a memory from another project, and it was noise.
 
+### Fixed
+- On Windows the plugin couldn't install `omoi` on networks where `curl.exe` can't check whether GitHub's certificate was revoked, which is common behind company proxies (`CRYPT_E_NO_REVOCATION_CHECK`): the download failed and Omoikane didn't start, after installing and after every plugin update. It now tries again with `--ssl-revoke-best-effort`, which still checks but doesn't block when the check can't be done, and last with PowerShell. The SHA-256 is still checked. The binary's own updates and the model download use rustls and weren't affected.
+
 ### Compatibility
 - Same as 1.4.1: the database schema (10), the sync lines and the export format don't change. `session_steps` is a new local table created with the first session that has steps, which 1.0 ignores; the proposals that were made are kept in the local `meta` table (`receta_propuesta:…`).
 
