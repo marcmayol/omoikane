@@ -593,6 +593,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     }
     s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
+    crate::documentos::al_empezar(db, project, &e.session_id);
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids, ambito.proyecto().unwrap_or(0))?;
     Ok(Some(s))
@@ -868,7 +869,8 @@ pub fn al_preguntar_abriendo<'m>(
     // Una memoria enlazada con las elegidas, si es una trampa o una preferencia y tiene que ver (7.4).
     let vecina = if elegidas.is_empty() { None } else { crate::enlaces::vecina_para(db, project, &e.prompt, &elegidas, &vistas, LISTON_ENLAZADA, LISTON_VECINA)? };
     let recordar = toca_recordar(db, project, &e.session_id)?;
-    if elegidas.is_empty() && !recordar && la_receta.is_none() {
+    let docs = crate::documentos::al_preguntar(db, project, &e.session_id, &e.prompt);
+    if elegidas.is_empty() && !recordar && la_receta.is_none() && docs.is_none() {
         return Ok(None);
     }
     let mut s = String::from("<omoikane>\n");
@@ -891,6 +893,9 @@ pub fn al_preguntar_abriendo<'m>(
         if let Some((v, de)) = &vecina {
             s.push_str(&format!("{} (linked from {})\n", linea(v, actual, propio.as_deref()), de.chars().take(12).collect::<String>()));
         }
+    }
+    if let Some(d) = &docs {
+        s.push_str(d);
     }
     if recordar {
         s.push_str(RECORDATORIO);

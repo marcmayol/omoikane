@@ -156,7 +156,7 @@ fn repo_de_ruta(ruta: &str, home: &Path) -> Option<String> {
     (Path::new(&raiz) != home && !oculto).then_some(raiz)
 }
 
-fn canonica(p: &Path) -> Result<PathBuf> {
+pub(crate) fn canonica(p: &Path) -> Result<PathBuf> {
     let c = std::fs::canonicalize(p).with_context(|| tr!("{} doesn't exist", "no existe {}", p.display()))?;
     // En Windows, canonicalize devuelve `\\?\C:\…`: se quita el prefijo para guardar la ruta normal.
     #[cfg(windows)]
@@ -172,7 +172,7 @@ fn canonica(p: &Path) -> Result<PathBuf> {
     Ok(c)
 }
 
-fn texto(p: &Path) -> String {
+pub(crate) fn texto(p: &Path) -> String {
     let s = p.to_string_lossy().into_owned();
     // La letra de unidad en mayúscula: así coinciden las rutas que llegan de sitios distintos.
     #[cfg(windows)]

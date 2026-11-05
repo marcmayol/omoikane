@@ -43,6 +43,21 @@ Search starts with words: accents don't matter, file paths count too, and rare w
 
 It works in 101 languages, accents or not. On questions written blind it finds the right memory first 90 % of the time and within the top three 97 %, with a median of 43 ms, and stays as accurate at 3,183 memories (50 ms per search). Four processes share the model at 13 MB of memory each. The model is [potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M) (int8), and it opens in 2.7 ms instead of 1.78 s. Until it has downloaded (~150 MB, once), search works by words.
 
+## It reads your docs too
+
+If the project already keeps its documentation in Markdown (a `docs/` folder, an LLM wiki, an Obsidian vault), tell Omoikane where it is:
+
+```sh
+omoi docs add docs                               # indexes it now
+omoi docs list
+omoi docs test "how do I roll back a deploy?"    # what recall would bring for that
+omoi docs remove docs
+```
+
+From then on, next to the memories, recall can bring the section of that documentation that fits the prompt: one at most, about 700 characters with its file and heading, each once per session. If the agent needs more, it opens the file. The rule is the one memories follow: the section has to share two words that are rare in the documentation and cover half of the prompt's weight, so a prompt that isn't about the documentation gets nothing from it.
+
+Nothing is copied into memory and the files are never written. Omoikane keeps an index of them, split by headings (`#`, `##`, `###`), and brings it up to date when a session starts, reading only the files whose date or size changed (at most 250 ms each time; whatever is left goes in at the next one). The folders belong to the project you run `omoi docs add` from, and both they and the index stay on this computer: they aren't synced or exported. A project without docs pays nothing for it.
+
 ## What about CLAUDE.md?
 
 For a small project with twenty things to remember, a good CLAUDE.md is enough. Omoikane pays off where CLAUDE.md stops reaching:

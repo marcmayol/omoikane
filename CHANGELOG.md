@@ -6,6 +6,15 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.6.0 (sin fecha)
+
+### Recall from your docs
+- A project that already keeps its documentation in Markdown (a `docs/` folder, an LLM wiki, an Obsidian vault) can tell Omoikane where it is: `omoi docs add <folder>` indexes it at once, `omoi docs list` shows the folders with how many files and sections are indexed, `omoi docs remove <folder>` drops one, `omoi docs refresh` brings the index up to date now and `omoi docs test "<prompt>"` shows what recall would bring for that prompt. The folders belong to the project you run it from.
+- From then on, next to the memories, recall can bring the section of that documentation that fits the prompt: one at most, with its file (relative to the project) and its heading, about 700 characters, each section once per session. It is not copied into memory and the files are never written. The rule is the one memories follow (useful words, two rare ones, a share of the prompt's weight), with the bar a little higher (60 % instead of 50 %) because a section is longer than a memory. With Omoikane's own docs and 785 more Markdown files (14,548 sections), on 302 real prompts it brought something once (a borderline case); on hand-written prompts about the docs it brought the right section, and on four that weren't about them, nothing.
+- The index splits each `.md` by its `#`, `##` and `###` headings (not inside code blocks; Obsidian's YAML header left out) into sections of at most 2,000 characters, in an FTS5 table with the same tokenizer as the memories. Hidden folders (`.git`, `.obsidian`), `node_modules` and `target` are skipped, and so are files over 2 MB. It is brought up to date when a session starts, reading only the files whose date or size changed and dropping those that are gone, with a 250 ms budget: whatever doesn't fit goes in at the next session. An error never stops the session from starting.
+- Measured against 1.5.0, interleaved, on a copy of a real database (about 200 memories): the recall of each prompt without docs doesn't change (P50 39.6 against 39.0 ms, noise; the machine was busy); with the 12 files of Omoikane's docs, +0.6 ms; with 797 files, +2.6 ms. Session start with nothing changed: +1.9 ms with 12 files, +43 ms with 797 files spread over some 600 folders (walking them). With every file to index again, the start takes about 100 ms with 12 files and around 0.9 s with 797 (it stops at the budget, but saving the last batch can trigger moving the WAL into the database). `omoi docs add` with 785 files took 3.2 s.
+- Compatibility: the database schema (10), the sync lines and the export format don't change. The docs live in four new local tables (`docs_folder`, `docs_file`, `docs_fts`, `docs_seen`), created by the first `omoi docs add` and not when the database opens, which 1.0 ignores; they aren't synced or exported (the documentation has its own repository and the paths are this computer's).
+
 ## 1.5.0 (2026-11-05)
 
 ### Proposed recipes
