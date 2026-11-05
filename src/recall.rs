@@ -495,7 +495,10 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         tx.execute(&format!("DELETE FROM recall_log WHERE {caduca}"), [&e.session_id])?;
         tx.commit()?;
     }
-    crate::riesgo::al_empezar(db, &e.session_id)?;
+    // El historial de ficheros es opcional: si falla, la sesión empieza igual.
+    if let Err(x) = crate::riesgo::al_empezar(db, &e.session_id) {
+        eprintln!("omoikane: history: {x:#}");
+    }
     let total = memoria::cuantas(db, &ambito)?;
     let contexto = memoria::contexto(db, &ambito, 30)?;
     // Tras compactar sigue siendo la misma sesión: no se reinicia el reloj del recordatorio.
@@ -553,7 +556,12 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     }
     // Las decisiones que esperan a la persona (etiqueta `open`): salen en cada sesión hasta que decida.
     // Tampoco cuentan como inyectadas: el recall aún puede traerlas enteras cuando toque.
-    let abiertas: Vec<Memoria> = memoria::abiertas(db, &ambito, usize::MAX)?
+    // Opcional como el historial: un error solo deja la sesión sin la lista.
+    let abiertas: Vec<Memoria> = memoria::abiertas(db, &ambito, usize::MAX)
+        .unwrap_or_else(|x| {
+            eprintln!("omoikane: open decisions: {x:#}");
+            Vec::new()
+        })
         .into_iter()
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
         .collect();
@@ -561,10 +569,10 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         s.push_str("Decisions waiting for the user (decisions tagged `open`, newest first; mention them to the user at a natural moment; when they decide, `update` the memory with the answer and drop the `open` tag):\n");
         for m in abiertas.iter().take(ABIERTAS) {
             let linea = linea_corta(m, actual, propio.as_deref());
-            s.push_str(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ABIERTA)));
+            s.push_str(&citado(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ABIERTA))));
         }
         if abiertas.len() > ABIERTAS {
-            s.push_str(&format!("…and {} more (`search` for `open` with the tag `open`).\n", abiertas.len() - ABIERTAS));
+            s.push_str(&format!("…and {} more (`search` with the tag `open` for the rest).\n", abiertas.len() - ABIERTAS));
         }
     }
     // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
@@ -615,6 +623,24 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids, ambito.proyecto().unwrap_or(0))?;
     Ok(Some(s))
+}
+
+/// Texto que no escribe Omoikane (un fichero de la documentación, una memoria) dentro del bloque
+/// `<omoikane>`: sus `<omoikane` y `</omoikane`, en mayúsculas o minúsculas, pasan a `‹omoikane`, para
+/// que no puedan cerrar el bloque ni abrir otro.
+pub fn citado(t: &str) -> String {
+    let mut s = String::with_capacity(t.len());
+    let mut resto = t;
+    while let Some(i) = resto.find('<') {
+        s.push_str(&resto[..i]);
+        let tras = &resto[i + 1..];
+        let tras = tras.strip_prefix('/').unwrap_or(tras);
+        let etiqueta = tras.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("omoikane"));
+        s.push(if etiqueta { '‹' } else { '<' });
+        resto = &resto[i + 1..];
+    }
+    s.push_str(resto);
+    s
 }
 
 /// Cuántas memorias recientes se enseñan al empezar la sesión.
@@ -893,7 +919,11 @@ pub fn al_preguntar_abriendo<'m>(
     let vecina = if elegidas.is_empty() { None } else { crate::enlaces::vecina_para(db, project, &e.prompt, &elegidas, &vistas, LISTON_ENLAZADA, LISTON_VECINA)? };
     let recordar = toca_recordar(db, project, &e.session_id)?;
     // El historial de los ficheros que nombra el mensaje, sacado del diario (`riesgo`).
-    let historia = crate::riesgo::al_preguntar(db, project, &e.session_id, &e.prompt)?;
+    // Opcional, como la documentación: si falla, el recall sigue sin él.
+    let historia = crate::riesgo::al_preguntar(db, project, &e.session_id, &e.prompt).unwrap_or_else(|x| {
+        eprintln!("omoikane: history: {x:#}");
+        None
+    });
     let docs = crate::documentos::al_preguntar(db, project, &e.session_id, &e.prompt);
     if elegidas.is_empty() && !recordar && la_receta.is_none() && historia.is_none() && docs.is_none() {
         return Ok(None);

@@ -1022,19 +1022,31 @@ function abiertasHTML() {
     </div>`).join('')}
   </div>`;
 }
-// Decidir: la respuesta se añade al final de la memoria y se quita la etiqueta `open`.
+// Decidir: la respuesta se añade al final de la memoria y se quita la etiqueta `open`. El botón se
+// apaga mientras tanto (dos clics añadían la respuesta dos veces), y las etiquetas se leen de la memoria
+// justo antes: las de la página pueden ser viejas, y mandarlas pisaría las que se pusieron después.
 function conectarAbiertas() {
   for (const el of $('vista').querySelectorAll('[data-abierta]')) {
-    const m = todas.find(x => x.id === el.dataset.abierta);
-    el.querySelector('[data-r="decidir"]').onclick = () => {
+    const id = el.dataset.abierta;
+    const boton = el.querySelector('[data-r="decidir"]');
+    boton.onclick = async () => {
       const respuesta = el.querySelector('textarea').value.trim();
       if (!respuesta) { el.querySelector('textarea').focus(); return; }
-      accion(() => herramienta('update', {
-        id: m.id,
-        append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${respuesta}`,
-        tags: m.tags.filter(t => t !== ABIERTA),
-        reason: T.decididoMotivo,
-      }));
+      boton.disabled = true;
+      try {
+        await accion(async () => {
+          const actual = await herramienta('get', { id });
+          await herramienta('update', {
+            id,
+            append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${respuesta}`,
+            tags: (actual.tags || []).filter(t => t !== ABIERTA),
+            reason: T.decididoMotivo,
+          });
+        });
+      } finally {
+        // Si salió bien, la página ya se pintó de nuevo sin ella; si no, se puede volver a intentar.
+        boton.disabled = false;
+      }
     };
   }
 }

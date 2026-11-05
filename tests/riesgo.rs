@@ -159,3 +159,18 @@ fn con_el_nombre_solo_el_que_mas_se_mueve() {
     drop(db);
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// El historial es opcional: si falla (aquí, una `diary_hint` que no es la suya), el recall del mensaje
+/// y el arranque de la sesión siguen, sin él.
+#[test]
+fn si_falla_el_historial_el_recall_sigue() {
+    let (mut db, repo, _, d) = proyecto("falla");
+    db.execute_batch("CREATE TABLE diary_hint (otra TEXT)").unwrap();
+    assert!(riesgo::al_preguntar(&db, &repo, "s1", "mira src/sync.rs").is_err(), "la tabla rota hace fallar el historial");
+    let t = recall::al_preguntar(&mut db, &repo, &entrada("s1", "mira src/sync.rs"), None).unwrap().expect("las memorias siguen llegando");
+    assert!(t.contains("El push de sync pierde el orden"), "{t}");
+    assert!(!t.contains("History of"), "{t}");
+    assert!(recall::al_empezar(&mut db, &repo, &entrada("s2", "")).unwrap().is_some());
+    drop(db);
+    let _ = std::fs::remove_dir_all(d);
+}

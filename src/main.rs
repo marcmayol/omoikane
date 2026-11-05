@@ -1318,7 +1318,11 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
             omoikane::sync::apuntar_traido(&db);
         }
         let texto = recall::al_empezar(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&ruta) {
-            Some(a) => t.replacen("</omoikane>", &format!("{a}\n</omoikane>"), 1),
+            // Antes del cierre del bloque, que es el último `</omoikane>`.
+            Some(a) => match t.rfind("</omoikane>") {
+                Some(i) => format!("{}{a}\n{}", &t[..i], &t[i..]),
+                None => t,
+            },
             None => t,
         });
         ("SessionStart", texto)
@@ -1620,10 +1624,19 @@ fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
     use omoikane::documentos as d;
     let project = proyecto_de(c)?;
     let ruta = ruta_db(c);
+    // Una ruta relativa es relativa a `--dir`, si se da (como el proyecto).
+    let junto_a_dir = |p: &std::path::Path| match &c.dir {
+        Some(d) if p.is_relative() => d.join(p),
+        _ => p.to_path_buf(),
+    };
     // Mirar no crea la base.
     if !ruta.exists() && matches!(accion, AccionDocs::List | AccionDocs::Remove { .. } | AccionDocs::Refresh | AccionDocs::Test { .. }) {
         if c.json {
-            return json(&Vec::<d::Carpeta>::new());
+            return match accion {
+                AccionDocs::Remove { .. } => json(&serde_json::json!({ "removed": false })),
+                AccionDocs::Test { .. } => json(&None::<d::Encontrado>),
+                _ => json(&Vec::<d::Carpeta>::new()),
+            };
         }
         println!("{}", tr!("no documentation folders yet (`omoi docs add <folder>`)", "aún no hay carpetas de documentación (`omoi docs add <carpeta>`)"));
         return Ok(());
@@ -1644,7 +1657,7 @@ fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
             Ok(())
         }
         AccionDocs::Add { carpeta } => {
-            let (folder, r) = d::anadir(&db, &project, &carpeta)?;
+            let (folder, r) = d::anadir(&db, &project, &junto_a_dir(&carpeta))?;
             if c.json {
                 return json(&serde_json::json!({ "folder": folder, "refresh": r }));
             }
@@ -1655,7 +1668,7 @@ fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
             Ok(())
         }
         AccionDocs::Remove { carpeta } => {
-            let estaba = d::quitar(&db, &project, &carpeta)?;
+            let estaba = d::quitar(&db, &project, &junto_a_dir(std::path::Path::new(&carpeta)).to_string_lossy())?;
             if c.json {
                 return json(&serde_json::json!({ "removed": estaba }));
             }
@@ -1667,16 +1680,24 @@ fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
             Ok(())
         }
         AccionDocs::Refresh => {
-            let mut v = Vec::new();
-            for folder in d::carpetas(&db, &project)? {
-                let r = d::refrescar(&db, &folder, None)?;
-                v.push(serde_json::json!({ "folder": folder, "refresh": r }));
-                if !c.json {
-                    println!("{}", tr!("{folder}: {} indexed, {} removed, {} unchanged", "{folder}: {} indexados, {} quitados, {} sin cambios", r.indexed, r.removed, r.unchanged));
+            let Some(hechos) = d::refrescar_proyecto(&db, &project)? else {
+                // Otro refresco del proyecto (el del arranque de una sesión, o uno a mano) aún no acabó.
+                let ocupado = tr!(
+                    "the docs of this project are already being refreshed (try again in a few minutes)",
+                    "ya se está poniendo al día la documentación de este proyecto (prueba en unos minutos)"
+                );
+                if c.json {
+                    eprintln!("{ocupado}");
+                    return json(&Vec::<serde_json::Value>::new());
                 }
-            }
+                println!("{ocupado}");
+                return Ok(());
+            };
             if c.json {
-                return json(&v);
+                return json(&hechos.iter().map(|(folder, r)| serde_json::json!({ "folder": folder, "refresh": r })).collect::<Vec<_>>());
+            }
+            for (folder, r) in &hechos {
+                println!("{}", tr!("{folder}: {} indexed, {} removed, {} unchanged", "{folder}: {} indexados, {} quitados, {} sin cambios", r.indexed, r.removed, r.unchanged));
             }
             Ok(())
         }

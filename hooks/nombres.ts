@@ -1,6 +1,6 @@
 import type { Register } from 'claude-code'
 
-// (Era el plugin agent-names; desde la 1.6 va dentro de Omoikane.) With several sessions open at once, a subagent named after its task alone doesn't say which
+// (It was the agent-names plugin; since 1.6 it comes with Omoikane.) With several sessions open at once, a subagent named after its task alone doesn't say which
 // session it belongs to. This mod asks for "Project: task": it tells the model up front, in the
 // tool's description, and refuses the call when the name doesn't fit.
 //
