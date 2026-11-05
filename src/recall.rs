@@ -611,6 +611,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     }
     s.push_str(CONTINUAR);
     s.push_str("</omoikane>");
+    crate::documentos::al_empezar(db, project, &e.session_id);
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids, ambito.proyecto().unwrap_or(0))?;
     Ok(Some(s))
@@ -893,7 +894,8 @@ pub fn al_preguntar_abriendo<'m>(
     let recordar = toca_recordar(db, project, &e.session_id)?;
     // El historial de los ficheros que nombra el mensaje, sacado del diario (`riesgo`).
     let historia = crate::riesgo::al_preguntar(db, project, &e.session_id, &e.prompt)?;
-    if elegidas.is_empty() && !recordar && la_receta.is_none() && historia.is_none() {
+    let docs = crate::documentos::al_preguntar(db, project, &e.session_id, &e.prompt);
+    if elegidas.is_empty() && !recordar && la_receta.is_none() && historia.is_none() && docs.is_none() {
         return Ok(None);
     }
     let mut s = String::from("<omoikane>\n");
@@ -920,6 +922,9 @@ pub fn al_preguntar_abriendo<'m>(
     if let Some(h) = &historia {
         s.push_str(h);
         s.push('\n');
+    }
+    if let Some(d) = &docs {
+        s.push_str(d);
     }
     if recordar {
         s.push_str(RECORDATORIO);

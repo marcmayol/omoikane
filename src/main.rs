@@ -226,6 +226,11 @@ enum Orden {
     },
     /// The session diary: one line per session (when, which project, files touched, memories recalled and saved), newest first. Only on this computer.
     Diary(Diario),
+    /// The project's own Markdown documentation (a docs/ folder, a wiki, an Obsidian vault), read-only: recall brings the section that fits a prompt. Without an action, the list.
+    Docs {
+        #[command(subcommand)]
+        accion: Option<AccionDocs>,
+    },
     /// Projects with memories (without an action, the list): move one to its new folder, or merge two.
     Projects {
         #[command(subcommand)]
@@ -547,6 +552,29 @@ struct OpcionesSync {
     /// The author written on each memory (by default, git's user.name).
     #[arg(long)]
     author: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum AccionDocs {
+    /// The documentation folders of this project, with what is indexed (the default).
+    List,
+    /// Add a folder of Markdown files and index it now. Nothing is copied into memory, and the files are never written.
+    Add {
+        /// The folder (docs/, a wiki, an Obsidian vault).
+        carpeta: PathBuf,
+    },
+    /// Stop using a folder (its index goes too).
+    Remove {
+        /// The folder, as `omoi docs list` shows it.
+        carpeta: String,
+    },
+    /// Bring the index up to date now (it also happens when each session starts).
+    Refresh,
+    /// Which section recall would bring for this text, without noting it as given.
+    Test {
+        /// The prompt to try.
+        texto: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -882,6 +910,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             Ok(())
         }
         Orden::Diary(d) => diario_cli(c, d),
+        Orden::Docs { accion } => docs_cli(c, accion.unwrap_or(AccionDocs::List)),
         Orden::Review { all, dismiss, kind, other } => {
             let db = abrir(c)?;
             if let Some(id) = dismiss {
@@ -1581,6 +1610,85 @@ fn diario_cli(c: &Comun, d: Diario) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `omoi docs`.
+fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
+    use omoikane::documentos as d;
+    let project = proyecto_de(c)?;
+    let ruta = ruta_db(c);
+    // Mirar no crea la base.
+    if !ruta.exists() && matches!(accion, AccionDocs::List | AccionDocs::Remove { .. } | AccionDocs::Refresh | AccionDocs::Test { .. }) {
+        if c.json {
+            return json(&Vec::<d::Carpeta>::new());
+        }
+        println!("{}", tr!("no documentation folders yet (`omoi docs add <folder>`)", "aún no hay carpetas de documentación (`omoi docs add <carpeta>`)"));
+        return Ok(());
+    }
+    let db = db::abrir(&ruta)?;
+    match accion {
+        AccionDocs::List => {
+            let v = d::listar(&db, &project)?;
+            if c.json {
+                return json(&v);
+            }
+            if v.is_empty() {
+                println!("{}", tr!("no documentation folders yet (`omoi docs add <folder>`)", "aún no hay carpetas de documentación (`omoi docs add <carpeta>`)"));
+            }
+            for x in &v {
+                println!("{}  {}", x.folder, tr!("({} files, {} sections)", "({} ficheros, {} apartados)", x.files, x.chunks));
+            }
+            Ok(())
+        }
+        AccionDocs::Add { carpeta } => {
+            let (folder, r) = d::anadir(&db, &project, &carpeta)?;
+            if c.json {
+                return json(&serde_json::json!({ "folder": folder, "refresh": r }));
+            }
+            println!("{}", tr!("added {folder}: {} files indexed", "añadida {folder}: {} ficheros indexados", r.indexed + r.unchanged));
+            if r.skipped > 0 {
+                println!("{}", tr!("  {} skipped (over 2 MB, unreadable, or past {} files)", "  {} sin indexar (más de 2 MB, ilegibles o pasados {} ficheros)", r.skipped, d::MAX_FICHEROS));
+            }
+            Ok(())
+        }
+        AccionDocs::Remove { carpeta } => {
+            let estaba = d::quitar(&db, &project, &carpeta)?;
+            if c.json {
+                return json(&serde_json::json!({ "removed": estaba }));
+            }
+            if estaba {
+                println!("{}", tr!("removed {carpeta}", "quitada {carpeta}"));
+            } else {
+                println!("{}", tr!("{carpeta} is not a documentation folder of this project (see `omoi docs list`)", "{carpeta} no es una carpeta de documentación de este proyecto (mira `omoi docs list`)"));
+            }
+            Ok(())
+        }
+        AccionDocs::Refresh => {
+            let mut v = Vec::new();
+            for folder in d::carpetas(&db, &project)? {
+                let r = d::refrescar(&db, &folder, None)?;
+                v.push(serde_json::json!({ "folder": folder, "refresh": r }));
+                if !c.json {
+                    println!("{}", tr!("{folder}: {} indexed, {} removed, {} unchanged", "{folder}: {} indexados, {} quitados, {} sin cambios", r.indexed, r.removed, r.unchanged));
+                }
+            }
+            if c.json {
+                return json(&v);
+            }
+            Ok(())
+        }
+        AccionDocs::Test { texto } => {
+            let e = d::buscar(&db, &project, &texto, &Default::default())?;
+            if c.json {
+                return json(&e);
+            }
+            match e {
+                Some(e) => println!("{} › {}  ({} {:.2})\n{}", e.path, e.title, tr!("coverage", "cobertura"), e.coverage, e.excerpt),
+                None => println!("{}", tr!("nothing: recall would bring no documentation for this", "nada: el recall no traería documentación con esto")),
+            }
+            Ok(())
+        }
+    }
 }
 
 fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>, space: Option<&str>) -> Result<Ambito> {
@@ -2519,6 +2627,7 @@ fn en_espanol(c: Command) -> Command {
             ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
             ("space", "De este espacio."),
         ]),
+        ("docs", "La documentación propia del proyecto en Markdown (una carpeta docs/, una wiki, una bóveda de Obsidian), en solo lectura: el recall trae el apartado que toca con cada mensaje. Sin acción, la lista.", &[]),
         ("projects", "Proyectos con memorias.", &[]),
         ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
@@ -2597,6 +2706,21 @@ fn en_espanol(c: Command) -> Command {
             .mut_arg("no_author", |a| a.help("No apuntar autor en cada memoria."))
             .mut_arg("author", |a| a.help("El autor que se apunta en cada memoria (por defecto, el user.name de git)."))
     };
+    let c = c.mut_subcommand("docs", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("list", |s| s.about("Las carpetas de documentación de este proyecto, con lo que tienen indexado (por defecto)."))
+            .mut_subcommand("add", |s| {
+                s.about("Añade una carpeta de ficheros Markdown y la indexa ya. No se copia nada a la memoria ni se escribe nunca en los ficheros.")
+                    .mut_arg("carpeta", |a| a.help("La carpeta (docs/, una wiki, una bóveda de Obsidian)."))
+            })
+            .mut_subcommand("remove", |s| {
+                s.about("Deja de usar una carpeta (y se borra su índice).").mut_arg("carpeta", |a| a.help("La carpeta, como sale en `omoi docs list`."))
+            })
+            .mut_subcommand("refresh", |s| s.about("Pone el índice al día ahora (también se hace al empezar cada sesión)."))
+            .mut_subcommand("test", |s| {
+                s.about("Qué apartado traería el recall con este texto, sin apuntarlo como dado.").mut_arg("texto", |a| a.help("El mensaje que quieres probar."))
+            })
+    });
     let c = c.mut_subcommand("sync", |m| {
         m.subcommand_help_heading("Acciones")
             .mut_subcommand("init", |s| {
@@ -2639,7 +2763,7 @@ fn en_espanol(c: Command) -> Command {
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
     let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));
-    ["model", "sync"].iter().fold(c, |c, sub| {
+    ["model", "sync", "docs"].iter().fold(c, |c, sub| {
         c.mut_subcommand(*sub, |m| {
             let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
             acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))

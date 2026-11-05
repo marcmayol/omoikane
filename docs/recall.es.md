@@ -43,6 +43,21 @@ La búsqueda empieza por palabras: le dan igual las tildes, mira también las ru
 
 Funciona en 101 idiomas, con tildes o sin ellas. Con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces y entre las tres primeras el 97 %, con una mediana de 43 ms, y sigue igual de precisa con 3.183 memorias (50 ms por búsqueda). Cuatro procesos comparten el modelo con 13 MB de memoria cada uno. El modelo es [potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M) (int8), y abre en 2,7 ms en lugar de 1,78 s. Hasta que se descarga (~150 MB, una vez), la búsqueda va por palabras.
 
+## También lee tu documentación
+
+Si el proyecto ya tiene su documentación en Markdown (una carpeta `docs/`, una wiki para LLM, una bóveda de Obsidian), dile a Omoikane dónde está:
+
+```sh
+omoi docs add docs                                   # la indexa en el momento
+omoi docs list
+omoi docs test "¿cómo vuelvo atrás un despliegue?"   # lo que traería el recall con eso
+omoi docs remove docs
+```
+
+Desde entonces, junto a las memorias, el recall puede traer el apartado de esa documentación que toca con el mensaje: uno como mucho, unos 700 caracteres con su fichero y su título, y cada uno una vez por sesión. Si el agente necesita más, abre el fichero. La regla es la de las memorias: el apartado tiene que compartir dos palabras raras en la documentación y cubrir la mitad del peso del mensaje, así que un mensaje que no va de ella no recibe nada.
+
+No se copia nada a la memoria ni se escribe en los ficheros. Omoikane guarda un índice, partido por títulos (`#`, `##`, `###`), y lo pone al día al empezar cada sesión leyendo solo los ficheros que cambiaron de fecha o de tamaño (como mucho 250 ms cada vez; lo que no quepa entra en la siguiente). Las carpetas son del proyecto desde el que haces `omoi docs add`, y tanto ellas como el índice se quedan en este equipo: no se sincronizan ni se exportan. Un proyecto sin documentación no paga nada por esto.
+
 ## ¿Y CLAUDE.md?
 
 Con un proyecto pequeño y veinte cosas que recordar, un buen CLAUDE.md basta. Omoikane compensa donde CLAUDE.md deja de llegar:
