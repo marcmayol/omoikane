@@ -38,6 +38,8 @@ Si un token, una clave privada o una contraseña se cuela en una memoria, se cam
 
 Cambiar una memoria guarda la versión anterior y, si el agente lo dice, por qué cambió. `omoi history` las enseña todas.
 
+**Lo que queda fuera.** Un agente rellena los huecos de lo que le pides: «que el login sea seguro» puede acabar con un doble factor que nadie pidió. Cuando decidas qué entra y qué no, guárdalo como `decision`, con lo que queda fuera escrito tal cual: «El login es email y contraseña, con recuperar contraseña y entrar con Google. Sin doble factor por ahora: no lo pide nadie y complica el alta». Las decisiones vuelven por relevancia: cuando un mensaje hable del login, el agente la tendrá delante antes de ponerse a añadir cosas. Escríbela con las palabras que usarías al pedirlo («seguridad del login», «doble factor»): son las que la traen de vuelta. Si cambias de idea, `update` con el motivo y la versión anterior se queda en el historial.
+
 ## Recetas y memorias conectadas
 
 **Recetas.** Una memoria de tipo `procedure` es algo que se repite (publicar una versión, desplegar): pasos numerados y una línea `when: publica, release`. Cuando un mensaje la pide, vuelve entera («publica la 0.14.1» trae la lista entera), y el agente la corrige cuando un paso falla o cambia.

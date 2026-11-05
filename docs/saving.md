@@ -38,6 +38,8 @@ If a token, a private key or a password slips into a memory, it becomes `[redact
 
 Changing a memory keeps the previous version and, if the agent says so, why it changed. `omoi history` shows them all.
 
+**What stays out.** An agent fills the gaps in what you ask for: "make the login secure" can end with a second factor nobody asked for. When you decide what goes in and what doesn't, save it as a `decision`, with what stays out written plainly: "Login is email and password, with password recovery and sign-in with Google. No second factor for now: nobody asks for it and it makes signing up harder." Decisions come back by relevance: when a message is about the login, the agent has it in front of it before it starts adding things. Write it with the words you would use when asking ("login security", "second factor"): those are what bring it back. If you change your mind, `update` it with the reason; the previous version stays in its history.
+
 ## Procedures and linked memories
 
 **Procedures.** A memory of kind `procedure` is a recipe you repeat (publishing a release, a deploy): numbered steps and a line `when: publish, release`. When a message asks for it, it comes back whole ("publish 0.14.1" brings the whole checklist), and the agent updates it when a step fails or changes.
