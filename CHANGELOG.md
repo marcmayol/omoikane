@@ -8,11 +8,19 @@ How it works is in [docs/](docs/).
 
 ## 1.6.0 (sin fecha)
 
+### Open decisions
+- When the agent runs into a product or business decision that is the user's to make and can't ask right then, it saves it as a `decision` memory tagged `open` (the question, the options and what it assumed meanwhile) and keeps working. The instructions for the agent (MCP, session start and `/omoikane`) say so, and ask it to tell the user which ones it left when it finishes a long piece of work.
+- Every session starts with the open decisions of the project, its space and the global ones, newest first, one line each with a short excerpt (up to 10, and how many more there are), until the user decides: then the agent `update`s the memory with the answer and drops the `open` tag. They don't count as injected, so recall can still bring them in full.
+- In `omoi serve`, the projects page lists the open decisions above the projects; writing the answer and pressing Decide appends it to the memory (with the date) and drops the `open` tag. `omoi search … --tag open` already finds them from the terminal.
+
 ### File history
 - When a prompt names a file that shows up in the project's session diary (the whole path, or the file name if it has at least 5 characters, as with the gotchas found by path), the recall of that prompt adds one line about it: in how many sessions it changed and when last, which files usually change together with it, and how many gotchas mention it. For example: ``History of `src/recall.rs`: changed in 30 sessions (last 2026-11-04); it usually changes together with `src/main.rs` (18 of 30), `Cargo.toml` (12) and `src/mcp.rs` (12).`` It comes from this computer's sessions, not from a model's guess, so the agent knows how much a file moves before touching it.
 - Only for files changed in at least 3 sessions. A file counts as changing together when it shares at least 3 of those sessions and at least 40 % of them; at most 3 are named, and at most 2 files per prompt. When only the name is given and several files share it, the one that changed most. Each file once per session (again after compacting), noted in a new local table, `diary_hint`, kept 7 days: it doesn't count as a recalled memory.
 - Most prompts name no file, and that is decided from the text alone, without reading the database: those prompts cost nothing more. Names without an extension (`Makefile`) count only with a folder in front. Measured against 1.5.0, interleaved, on a copy of a real database with a year-sized diary (3,766 sessions, 1.7 MB of file lists): the recall of a prompt that names no file doesn't change (P50 38.5 against 40.2 ms, and 44.3 against 46.4 in a second pass), and one that names a file takes about 5 ms more (44.5 against 40.1, and 49.2 against 43.9).
-- `diary_hint` is created with the first line given, like `diary`; the database schema (10), the sync lines and the export format don't change.
+
+### Compatibility
+- Same as 1.5.0: the database schema (10), the sync lines and the export format don't change; `open` is a tag like any other, so older versions sync and show these memories as plain decisions.
+- `diary_hint`, kept by the file history, is a new local table created with the first line given, like `diary`, which older versions ignore.
 
 ## 1.5.0 (2026-11-05)
 
