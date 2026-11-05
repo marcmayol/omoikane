@@ -104,7 +104,7 @@ pub fn pasos_de_turnos(turnos: &[crate::candidatas::Turno]) -> Vec<String> {
     let mut r: Vec<String> = Vec::new();
     for t in turnos {
         if let crate::candidatas::Turno::Comando(c) = t {
-            for p in pasos_de_orden(&c) {
+            for p in pasos_de_orden(c) {
                 if r.last() != Some(&p) {
                     r.push(p);
                 }
