@@ -24,6 +24,7 @@ pub mod recall;
 pub mod recetas;
 pub mod reloj;
 pub mod revisar;
+pub mod riesgo;
 pub mod secretos;
 pub mod setup;
 pub mod significado;

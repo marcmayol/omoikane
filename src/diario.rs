@@ -57,7 +57,7 @@ pub fn crear_tabla(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn hay_tabla(db: &Connection) -> Result<bool> {
+pub(crate) fn hay_tabla(db: &Connection) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'diary')", [], |f| f.get(0))?)
 }
 
@@ -547,7 +547,7 @@ fn donde(ambito: &Ambito) -> String {
 }
 
 /// Cómo se compara la carpeta de una línea con la de un proyecto.
-fn carpeta_cmp(ruta: &str) -> String {
+pub(crate) fn carpeta_cmp(ruta: &str) -> String {
     crate::proyecto::comparable(ruta.replace('\\', "/").trim_end_matches('/'))
 }
 
