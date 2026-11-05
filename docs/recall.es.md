@@ -56,7 +56,7 @@ omoi docs remove docs
 
 Desde entonces, junto a las memorias, el recall puede traer el apartado de esa documentación que toca con el mensaje: uno como mucho, unos 700 caracteres con su fichero y su título, y cada uno una vez por sesión. Si el agente necesita más, abre el fichero. La regla es la de las memorias: el apartado tiene que compartir dos palabras raras en la documentación y cubrir la mitad del peso del mensaje, así que un mensaje que no va de ella no recibe nada.
 
-No se copia nada a la memoria ni se escribe en los ficheros. Omoikane guarda un índice, partido por títulos (`#`, `##`, `###`), y lo pone al día al empezar cada sesión leyendo solo los ficheros que cambiaron de fecha o de tamaño (como mucho 250 ms cada vez; lo que no quepa entra en la siguiente). Las carpetas son del proyecto desde el que haces `omoi docs add`, y tanto ellas como el índice se quedan en este equipo: no se sincronizan ni se exportan. Un proyecto sin documentación no paga nada por esto.
+No se copia nada a la memoria ni se escribe en los ficheros. Omoikane guarda un índice, partido por títulos (`#`, `##`, `###`), y lo pone al día al empezar cada sesión leyendo solo los ficheros que cambiaron de fecha o de tamaño. Lo hace aparte, así que la sesión no lo espera, ni siquiera al cambiar a una rama donde han cambiado cientos de ficheros; mientras tanto, el recuerdo usa el índice que había. Las carpetas son del proyecto desde el que haces `omoi docs add`, y tanto ellas como el índice se quedan en este equipo: no se sincronizan ni se exportan. Un proyecto sin documentación no paga nada por esto.
 
 ## ¿Y CLAUDE.md?
 

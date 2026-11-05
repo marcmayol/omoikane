@@ -56,7 +56,7 @@ omoi docs remove docs
 
 From then on, next to the memories, recall can bring the section of that documentation that fits the prompt: one at most, about 700 characters with its file and heading, each once per session. If the agent needs more, it opens the file. The rule is the one memories follow: the section has to share two words that are rare in the documentation and cover half of the prompt's weight, so a prompt that isn't about the documentation gets nothing from it.
 
-Nothing is copied into memory and the files are never written. Omoikane keeps an index of them, split by headings (`#`, `##`, `###`), and brings it up to date when a session starts, reading only the files whose date or size changed (at most 250 ms each time; whatever is left goes in at the next one). The folders belong to the project you run `omoi docs add` from, and both they and the index stay on this computer: they aren't synced or exported. A project without docs pays nothing for it.
+Nothing is copied into memory and the files are never written. Omoikane keeps an index of them, split by headings (`#`, `##`, `###`), and brings it up to date when a session starts, reading only the files whose date or size changed. That runs on the side, so the session doesn't wait for it, even after switching to a branch where hundreds of files changed; until it finishes, recall uses the index as it was. The folders belong to the project you run `omoi docs add` from, and both they and the index stay on this computer: they aren't synced or exported. A project without docs pays nothing for it.
 
 ## What about CLAUDE.md?
 

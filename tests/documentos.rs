@@ -120,7 +120,7 @@ fn trae_el_apartado_que_toca_una_vez_por_sesion() {
 
 #[test]
 fn refresca_lo_que_cambia_y_quita_lo_que_ya_no_esta() {
-    let (base, project, mut db) = preparar("refresco");
+    let (base, project, db) = preparar("refresco");
     let docs = base.join("repo").join("docs");
     let (folder, _) = d::anadir(&db, &project, &docs).unwrap();
     let r = d::refrescar(&db, &folder, None).unwrap();
@@ -130,8 +130,9 @@ fn refresca_lo_que_cambia_y_quita_lo_que_ya_no_esta() {
     escribir(&docs.join("despliegue.md"), "# Despliegue\n\n## Canary\n\nEl canary con Argo Rollouts manda el 5 % del tráfico a la réplica nueva durante diez minutos.\n");
     std::fs::remove_file(docs.join("guias").join("pagos.md")).unwrap();
     escribir(&docs.join("guias").join("colas.md"), "# Colas\n\nRabbitMQ reintenta cada mensaje tres veces y después lo manda a la cola muerta `dlq.pedidos`.\n");
-    let e = Entrada { session_id: "nueva".into(), ..Default::default() };
-    recall::al_empezar(&mut db, &project, &e).unwrap();
+    // Al empezar la sesión, el refresco va aparte (`omoi docs refresh`); aquí se llama directamente.
+    let r = d::refrescar(&db, &folder, None).unwrap();
+    assert_eq!((r.indexed, r.removed, r.unchanged), (2, 1, 0), "{r:?}");
     let l = d::listar(&db, &project).unwrap();
     assert_eq!(l[0].files, 2);
 

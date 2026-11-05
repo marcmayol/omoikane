@@ -568,7 +568,7 @@ enum AccionDocs {
         /// The folder, as `omoi docs list` shows it.
         carpeta: String,
     },
-    /// Bring the index up to date now (it also happens when each session starts).
+    /// Bring the index up to date now (it also happens, on the side, when each session starts).
     Refresh,
     /// Which section recall would bring for this text, without noting it as given.
     Test {
@@ -1336,6 +1336,9 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     // esperarlo (sin sincronización, nada).
     if !al_empezar {
         omoikane::sync::traer_si_toca(&db, &ruta);
+    } else {
+        // Y el índice de la documentación del proyecto, también aparte.
+        omoikane::documentos::refrescar_aparte(&db, &project, &ruta);
     }
     Ok(())
 }

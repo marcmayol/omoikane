@@ -25,7 +25,7 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Instant, UNIX_EPOCH};
 
 /// `docs_folder`: qué carpetas tiene cada proyecto (el texto de `proyecto::de`, como `session.project`).
 /// `docs_file`: cada fichero indexado, por carpeta y ruta relativa, con su fecha y tamaño para saber si
@@ -77,11 +77,6 @@ pub const FRAGMENTO: usize = 700;
 /// indexa (un volcado, no documentación).
 pub const MAX_FICHEROS: usize = 5000;
 pub const MAX_BYTES_FICHERO: u64 = 2 << 20;
-/// Cuánto puede tardar el refresco al empezar la sesión. Sin cambios son unos milisegundos (fecha y
-/// tamaño de cada fichero); con muchos cambios (un `git pull` grande), lo que no quepa se indexa en la
-/// sesión siguiente. Se mira entre fichero y fichero, así que puede pasarse lo que tarde guardar la
-/// última tanda: casi siempre unos milisegundos, pero si toca pasar el WAL a la base, cientos.
-pub const PRESUPUESTO_AL_EMPEZAR: Duration = Duration::from_millis(250);
 /// Parte del peso IDF del mensaje que tiene que cubrir un trozo. Más que la de las memorias
 /// (`recall::COBERTURA_MIN`, 0,50): un apartado es más largo que una memoria y contiene más palabras.
 /// Mirado con la documentación de Omoikane sola y con 785 `.md` más (14.548 trozos), sobre 302 mensajes
@@ -454,25 +449,39 @@ pub fn refrescar(db: &Connection, folder: &str, hasta: Option<Instant>) -> Resul
     Ok(r)
 }
 
-/// Al empezar la sesión (o tras compactar): lo que se trajo en ella puede volver, y el índice del
-/// proyecto se pone al día dentro de `PRESUPUESTO_AL_EMPEZAR`. Sin carpetas no hace nada; nunca falla
-/// ni corta el arranque.
-pub fn al_empezar(db: &Connection, project: &str, sesion: &str) {
+/// Al empezar la sesión (o tras compactar): lo que se trajo en ella puede volver. Sin carpetas no
+/// hace nada; nunca falla ni corta el arranque. El índice no se pone al día aquí, sino aparte
+/// ([`refrescar_aparte`]): con cientos de ficheros cambiados (otra rama) tardaba casi un segundo.
+pub fn al_empezar(db: &Connection, _project: &str, sesion: &str) {
     if !hay(db, "docs_folder") {
         return;
     }
-    let hecho = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-        db.execute("DELETE FROM docs_seen WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')", [sesion])?;
-        let hasta = Instant::now() + PRESUPUESTO_AL_EMPEZAR;
-        for folder in carpetas(db, project)? {
-            refrescar(db, &folder, Some(hasta))?;
-        }
-        Ok(())
-    }));
-    match hecho {
-        Ok(Err(e)) => eprintln!("omoikane: docs: {e:#}"),
-        Err(_) => eprintln!("omoikane: docs: refreshing the index failed"),
-        Ok(Ok(())) => {}
+    if let Err(e) = db.execute("DELETE FROM docs_seen WHERE session = ?1 OR at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')", [sesion]) {
+        eprintln!("omoikane: docs: {e:#}");
+    }
+}
+
+/// Cada cuánto se pone al día como mucho el índice de un proyecto al empezar sesiones.
+const REFRESCO_CADA: i64 = 60;
+
+/// Al empezar la sesión, si el proyecto tiene carpetas de documentación: lanza `omoi docs refresh`
+/// aparte, sin esperarlo, como la bajada de la sincronización. Una vez por minuto y proyecto como
+/// mucho (varias sesiones a la vez lanzan uno). Mientras tanto el recall usa el índice que haya.
+pub fn refrescar_aparte(db: &Connection, project: &str, ruta_db: &Path) {
+    if !hay(db, "docs_folder") || carpetas(db, project).map(|v| v.is_empty()).unwrap_or(true) {
+        return;
+    }
+    let ahora = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let marca = format!("docs_refrescado:{project}");
+    let tomada = db
+        .execute(
+            "INSERT INTO meta(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v
+             WHERE CAST(meta.v AS INTEGER) <= ?3 OR CAST(meta.v AS INTEGER) > ?4",
+            params![marca, ahora.to_string(), ahora - REFRESCO_CADA, ahora],
+        )
+        .is_ok_and(|n| n == 1);
+    if tomada {
+        crate::sync::lanzar(&["docs", "refresh", "--dir", project], Some(ruta_db));
     }
 }
 

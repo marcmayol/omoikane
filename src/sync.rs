@@ -2839,7 +2839,7 @@ pub(crate) fn lanzar_aparte(args: &[&str]) {
 }
 
 /// Como `lanzar_aparte`, y con `ruta_db` el hijo abre esa base (`OMOIKANE_DB`), no la de por defecto.
-fn lanzar(args: &[&str], ruta_db: Option<&Path>) {
+pub(crate) fn lanzar(args: &[&str], ruta_db: Option<&Path>) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = std::process::Command::new(exe);
     if let Some(r) = ruta_db {
