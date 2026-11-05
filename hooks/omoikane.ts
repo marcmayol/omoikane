@@ -7,6 +7,8 @@
 // macOS and Linux.
 import type { Register } from 'claude-code'
 
+import { register as nombres } from './nombres'
+
 const REPO = 'marcmayol/omoikane'
 
 // What `/omoikane` asks the agent to do.
@@ -19,6 +21,8 @@ type Listo = { omoi: string; instrucciones: string }
 let listo: Promise<Listo | undefined> | undefined
 
 export const register: Register = on => {
+  // Subagents named "Project: task" (it was the agent-names plugin): see nombres.ts.
+  nombres(on)
   on('session.start', async ($, e, next) => {
     const l = await ready($)
     if (l !== undefined) await registerTools($, l)
