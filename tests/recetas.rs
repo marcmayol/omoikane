@@ -1,60 +1,77 @@
-//! Fase 7.3: recetas (`procedure`) que vuelven enteras cuando el mensaje las pide.
+//! 1.5: proponer recetas. Una secuencia de órdenes que funcionaron y se repite en `MIN_SESIONES`
+//! sesiones sale como candidata una vez; la que ya cubre una receta guardada, no.
 
-use omoikane::db;
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
+use omoikane::{candidatas, db, recetas};
+use serde_json::json;
+use std::path::PathBuf;
 
-const PASOS: &str = "1. Subir la versión en Cargo.toml y plugin.json.\n2. `git tag -a vX.Y.Z` y push del tag.\n3. `cargo publish`.\n4. En Windows, renombrar omoi.exe antes de instalar: está bloqueado.\n5. Actualizar el plugin.\n\nwhen: publica, publicar, release, saca versión";
-
-#[test]
-fn la_receta_llega_entera_cuando_se_pide_y_solo_entonces() {
-    let dir = std::env::temp_dir().join(format!("omoi-recetas-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let n = Nueva { project: "/p".into(), kind: Some(Tipo::Procedure), title: "Publicar una versión de Lumbre".into(), content: PASOS.into(), ..Default::default() };
-    let receta = memoria::guardar(&mut db, n, None).unwrap();
-    assert_eq!(recall::disparadores(&receta), ["publica", "publicar", "release", "saca version"]);
-    let e = |s: &str, p: &str| Entrada { session_id: s.into(), prompt: p.into(), ..Default::default() };
-
-    // La pide: llega entera, con todos los pasos, aunque el mensaje no comparta palabras raras.
-    let t = recall::al_preguntar(&mut db, "/p", &e("s1", "publica la 0.10.1"), None).unwrap().expect("la receta");
-    assert!(t.contains("A saved procedure for this") && t.contains("5. Actualizar el plugin") && t.contains("renombrar omoi.exe"), "{t}");
-    // En la misma sesión no se repite.
-    assert!(recall::al_preguntar(&mut db, "/p", &e("s1", "publica también la 0.10.2"), None).unwrap().is_none_or(|t| !t.contains("A saved procedure")));
-
-    // Hablar de una publicación no es pedirla («publicación» no es «publica»).
-    let t = recall::al_preguntar(&mut db, "/p", &e("s2", "qué tal fue la publicación de ayer"), None).unwrap();
-    assert!(t.is_none_or(|t| !t.contains("A saved procedure")), "no debería traer la receta");
-    // Dos palabras: «saca versión» con tilde también vale.
-    let t = recall::al_preguntar(&mut db, "/p", &e("s3", "saca versión nueva cuando puedas"), None).unwrap().expect("la receta");
-    assert!(t.contains("A saved procedure"), "{t}");
-    // Otro proyecto no la ve.
-    assert!(recall::al_preguntar(&mut db, "/otro", &e("s4", "publica la web"), None).unwrap().is_none_or(|t| !t.contains("A saved procedure")));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
+fn dir(nombre: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("omoi-recetas-{nombre}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
 }
 
-/// Una palabra suelta de `when:` («publica») vale para muchas cosas: con una receta global (o de otro
-/// proyecto, vista desde una carpeta general), hace falta algo más que diga que es esa receta.
+/// Una conversación de Claude Code con estas órdenes, todas bien.
+fn conversacion(d: &std::path::Path, nombre: &str, ordenes: &[&str]) -> PathBuf {
+    let mut lineas = vec![json!({"type": "user", "message": {"role": "user", "content": "vamos"}})];
+    for (i, o) in ordenes.iter().enumerate() {
+        let id = format!("t{i}");
+        lineas.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": o}}]}}));
+        lineas.push(json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}}));
+    }
+    // Una que falla no cuenta.
+    lineas.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "f", "name": "Bash", "input": {"command": "cargo bench"}}]}}));
+    lineas.push(json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "f", "content": "Exit code 101", "is_error": true}]}}));
+    let ruta = d.join(format!("{nombre}.jsonl"));
+    std::fs::write(&ruta, lineas.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    ruta
+}
+
 #[test]
-fn una_palabra_suelta_no_basta_fuera_de_su_proyecto() {
-    let dir = std::env::temp_dir().join(format!("omoi-recetas-sueltas-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let n = Nueva { project: String::new(), kind: Some(Tipo::Procedure), title: "Publicar una versión de Lumbre".into(), content: PASOS.into(), ..Default::default() };
-    memoria::guardar(&mut db, n, None).unwrap();
-    let pide = |db: &mut rusqlite::Connection, sesion: &str, p: &str| {
-        let e = Entrada { session_id: sesion.into(), prompt: p.into(), ..Default::default() };
-        recall::al_preguntar(db, "/q", &e, None).unwrap().is_some_and(|t| t.contains("A saved procedure"))
+fn propone_una_vez_lo_que_se_repite_y_no_lo_ya_guardado() {
+    let d = dir("propone");
+    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    let revisar_prs = ["git fetch origin", "git status --short", "gh issue list -R x/y", "gh pr view 3 -R x/y --json state"];
+    for i in 0..recetas::MIN_SESIONES - 1 {
+        let c = conversacion(&d, &format!("s{i}"), &revisar_prs);
+        recetas::apuntar(&db, &format!("s{i}"), &recetas::pasos(&c).unwrap()).unwrap();
+        assert!(!recetas::proponer(&db, "/web", &format!("s{i}")).unwrap(), "con {} sesiones aún no", i + 1);
+    }
+    let c = conversacion(&d, "ultima", &revisar_prs);
+    let pasos = recetas::pasos(&c).unwrap();
+    assert_eq!(pasos, ["git fetch", "gh issue", "gh pr"], "sin lo que solo mira ni lo que falló");
+    recetas::apuntar(&db, "ultima", &pasos).unwrap();
+    assert!(recetas::proponer(&db, "/web", "ultima").unwrap());
+    // Una vez: la siguiente sesión que acaba no la vuelve a proponer.
+    recetas::apuntar(&db, "otra", &pasos).unwrap();
+    assert!(!recetas::proponer(&db, "/web", "otra").unwrap());
+    let todas = candidatas::todas(&db).unwrap();
+    let r: Vec<_> = todas.iter().filter(|c| c.kind == recetas::RECETA).collect();
+    assert_eq!(r.len(), 1, "{todas:?}");
+    assert!(r[0].text.contains("`git fetch` → `gh issue` → `gh pr`") && r[0].text.contains(&format!("{} sessions", recetas::MIN_SESIONES)), "{}", r[0].text);
+    // Llega a la sesión siguiente, como las demás candidatas.
+    let t = recall::al_empezar(&mut db, "/web", &Entrada { session_id: "nueva".into(), ..Default::default() }).unwrap().unwrap();
+    assert!(t.contains("[recipe] steps repeated"), "{t}");
+
+    // Otra secuencia, ya cubierta por una receta guardada: no se propone.
+    let publicar = ["cargo test -q", "git tag -a v1 -m 1", "git push origin v1", "cargo publish"];
+    let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
+    let receta = Nueva {
+        project: "/web".into(),
+        kind: Some(Tipo::Procedure),
+        title: "Publicar una versión".into(),
+        content: "1. cargo test.\n2. git tag -a y git push del tag.\n3. cargo publish.\n\nwhen: publica".into(),
+        ..Default::default()
     };
-    // Lo que no es publicar una versión: el ruido que traía «publica» en los mensajes reales.
-    for (i, p) in ["publica un post en linkedin sobre el paper", "pues publica", "vale me encanta como esta publica", "Publícalo tú dentro de 10 minutos"].iter().enumerate() {
-        assert!(!pide(&mut db, &format!("n{i}"), p), "no debería traer la receta: {p}");
+    memoria::guardar(&mut db2, receta, None).unwrap();
+    for i in 0..recetas::MIN_SESIONES {
+        let c = conversacion(&d, &format!("p{i}"), &publicar);
+        recetas::apuntar(&db2, &format!("p{i}"), &recetas::pasos(&c).unwrap()).unwrap();
     }
-    // Lo que sí: una palabra de su título o su proyecto, una frase de `when:` o dos de sus palabras.
-    for (i, p) in ["publica la versión nueva", "publica lumbre ya", "saca versión cuando puedas", "publica la release de hoy"].iter().enumerate() {
-        assert!(pide(&mut db, &format!("s{i}"), p), "debería traer la receta: {p}");
-    }
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
+    assert!(!recetas::proponer(&db2, "/web", "p").unwrap(), "la cubre la receta guardada: {:?}", candidatas::todas(&db2).unwrap());
+    drop((db, db2));
+    let _ = std::fs::remove_dir_all(d);
 }

@@ -54,7 +54,7 @@ O `cargo install omoikane`. Los instaladores también añaden el plugin si Claud
 
 Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las 8 herramientas y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
 
-Versión 1.4.1, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. Cómo funciona está en [docs/](docs/), y lo que cambia en cada versión, en el [CHANGELOG](CHANGELOG.md).
+Versión 1.5.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. Cómo funciona está en [docs/](docs/), y lo que cambia en cada versión, en el [CHANGELOG](CHANGELOG.md).
 
 ## Medido
 

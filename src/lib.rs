@@ -21,6 +21,7 @@ pub mod obsidian;
 pub mod proyecto;
 pub mod rapido;
 pub mod recall;
+pub mod recetas;
 pub mod reloj;
 pub mod revisar;
 pub mod secretos;

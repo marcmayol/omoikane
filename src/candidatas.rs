@@ -397,11 +397,16 @@ fn turno_generico(d: &serde_json::Value, r: &mut Vec<Turno>) {
 
 /// Las candidatas de una conversación, de la más a la menos prometedora.
 pub fn de_conversacion(ruta: &Path) -> Result<Vec<Candidata>> {
+    Ok(de_turnos(turnos(ruta)?))
+}
+
+/// `de_conversacion` con los turnos ya leídos (al cerrar se leen una vez para todo).
+pub fn de_turnos(turnos: Vec<Turno>) -> Vec<Candidata> {
     let mut r: Vec<Candidata> = Vec::new();
     let mut ultimo_texto = String::new();
     let mut commit = None;
     let mut publicado = None;
-    for turno in turnos(ruta)? {
+    for turno in turnos {
         match turno {
             Turno::Agente(t) => {
                 if !t.trim().is_empty() {
@@ -462,7 +467,7 @@ pub fn de_conversacion(ruta: &Path) -> Result<Vec<Candidata>> {
             salida.push(Candidata { kind: HITO, text: h, puntos: 0.0 });
         }
     }
-    Ok(salida)
+    salida
 }
 
 /// Dónde está la conversación de una sesión cuando el hook no da la ruta (Copilot en `sessionEnd`,
@@ -563,7 +568,12 @@ fn extremos(ruta: &Path) -> Result<(String, String)> {
 /// Al cerrar o compactar: aparta las candidatas de la conversación y los informes de sus subagentes
 /// que no estén ya guardados.
 pub fn apartar(db: &Connection, project: &str, session: &str, ruta: &Path) -> Result<usize> {
-    let mut cs: Vec<(Candidata, String)> = de_conversacion(ruta)?
+    apartar_con(db, project, session, ruta, turnos(ruta)?)
+}
+
+/// `apartar` con los turnos de la conversación ya leídos.
+pub fn apartar_con(db: &Connection, project: &str, session: &str, ruta: &Path, turnos: Vec<Turno>) -> Result<usize> {
+    let mut cs: Vec<(Candidata, String)> = de_turnos(turnos)
         .into_iter()
         .map(|c| {
             let respuesta = c.text.rsplit(" → ").next().unwrap_or(&c.text).to_string();

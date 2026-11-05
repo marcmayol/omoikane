@@ -1226,10 +1226,27 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
         Err(_) => eprintln!("omoikane: the session diary failed"),
         Ok(Ok(_)) => {}
     }
-    if let Some(ruta) = conversacion
-        && let Err(err) = omoikane::candidatas::apartar(&db, &project, &e.session_id, ruta)
+    // La conversación se lee una vez para las candidatas y para los pasos de las recetas.
+    let turnos = conversacion.and_then(|r| omoikane::candidatas::turnos(r).map_err(|err| eprintln!("omoikane: {err:#}")).ok());
+    let pasos = turnos.as_deref().map(omoikane::recetas::pasos_de_turnos).unwrap_or_default();
+    if let (Some(ruta), Some(t)) = (conversacion, turnos)
+        && let Err(err) = omoikane::candidatas::apartar_con(&db, &project, &e.session_id, ruta, t)
     {
         eprintln!("omoikane: {err:#}");
+    }
+    // Lo último: los pasos de la sesión y, si alguna secuencia ya se repite lo bastante, una receta
+    // propuesta para la siguiente. Tampoco corta nunca el hook.
+    if conversacion.is_some() {
+        let recetas = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            omoikane::recetas::apuntar(&db, &e.session_id, &pasos)?;
+            omoikane::recetas::proponer(&db, &project, &e.session_id)?;
+            Ok(())
+        }));
+        match recetas {
+            Ok(Err(err)) => eprintln!("omoikane: {err:#}"),
+            Err(_) => eprintln!("omoikane: proposing recipes failed"),
+            Ok(Ok(())) => {}
+        }
     }
     Ok(())
 }

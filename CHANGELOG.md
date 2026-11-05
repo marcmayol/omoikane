@@ -6,6 +6,16 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.5.0 (2026-11-05)
+
+### Proposed recipes
+- When a session ends, Omoikane notes the steps that worked (program and subcommand, like `cargo test` or `git tag`; read from the conversation of any of the agents it already reads, leaving out what only looks around, such as `git status` or `git log`, and what failed) in a new local table, `session_steps`, kept 90 days. When a sequence of 3 to 6 steps with at least two different programs has come up in 5 sessions, no saved recipe names all its steps and it wasn't proposed before, it is set aside (kind `recipe`) for the next session, and the agent asks the user whether to save it as a recipe. One per session at most, each sequence once.
+- Measured on 120 real sessions: it proposes five sequences, the first `git fetch → gh issue → gh pr` (10 sessions). Without leaving out the looking-around steps and asking for two programs, the top ones were `git add → git commit → git push`, which everybody does. The conversation is read once for the proposals and the steps: ending the largest real session takes 46 ms more than in 1.4.1 (681 against 635 ms).
+- The other idea planned with it, recall from other projects of the same space as a last resort, stays out: on 168 real prompts written inside a project with nothing recalled, only one would have got a memory from another project, and it was noise.
+
+### Compatibility
+- Same as 1.4.1: the database schema (10), the sync lines and the export format don't change. `session_steps` is a new local table created with the first session that has steps, which 1.0 ignores; the proposals that were made are kept in the local `meta` table (`receta_propuesta:…`).
+
 ## 1.4.1 (2026-11-04)
 
 ### Fixed
