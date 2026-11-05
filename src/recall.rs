@@ -550,12 +550,29 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push_str(&format!("{linea}{}: {}\n", nota(&notas, m), fragmento(&m.content, FRAGMENTO_ESTADO)));
         }
     }
+    // Las decisiones que esperan a la persona (etiqueta `open`): salen en cada sesión hasta que decida.
+    // Tampoco cuentan como inyectadas: el recall aún puede traerlas enteras cuando toque.
+    let abiertas: Vec<Memoria> = memoria::abiertas(db, &ambito, usize::MAX)?
+        .into_iter()
+        .filter(|m| !contexto.iter().any(|c| c.id == m.id))
+        .collect();
+    if !abiertas.is_empty() {
+        s.push_str("Decisions waiting for the user (decisions tagged `open`, newest first; mention them to the user at a natural moment; when they decide, `update` the memory with the answer and drop the `open` tag):\n");
+        for m in abiertas.iter().take(ABIERTAS) {
+            let linea = linea_corta(m, actual, propio.as_deref());
+            s.push_str(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ABIERTA)));
+        }
+        if abiertas.len() > ABIERTAS {
+            s.push_str(&format!("…and {} more (`search` for `open` with the tag `open`).\n", abiertas.len() - ABIERTAS));
+        }
+    }
     // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
     // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
     // Un estado que ya no es el último de su proyecto tampoco sale: llevaría a retomar desde lo viejo.
     let ultimas: Vec<Memoria> = memoria::recientes(db, &ambito, None, 50)?
         .into_iter()
         .filter(|m| !contexto.iter().any(|c| c.id == m.id) && !m.tags.iter().any(|t| t == memoria::ESTADO))
+        .filter(|m| !abiertas.iter().any(|a| a.id == m.id))
         .take(RECIENTES)
         .collect();
     if !ultimas.is_empty() {
@@ -601,8 +618,13 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
 /// Cuántas memorias recientes se enseñan al empezar la sesión.
 pub const RECIENTES: usize = 5;
 
+/// Cuántas decisiones abiertas se enseñan al empezar la sesión; del resto solo se dice cuántas son.
+pub const ABIERTAS: usize = 10;
+/// Fragmento de cada decisión abierta: lo justo para recordar la pregunta.
+const FRAGMENTO_ABIERTA: usize = 160;
+
 /// Qué hacer con una petición ambigua y cuándo dejar dicho en qué punto se quedó algo.
-const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another.\n";
+const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another. When a product or business decision is the user's and you can't ask now, save it as kind decision with the tag `open` (question, options, what you assumed meanwhile), keep working, and when you finish a long piece of work tell the user which ones you left.\n";
 
 /// Una memoria en una línea, sin contenido: fecha, tipo, proyecto si no es el de la sesión, título e id.
 fn linea_corta(m: &Memoria, actual: i64, propio: Option<&str>) -> String {

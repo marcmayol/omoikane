@@ -262,6 +262,8 @@ button.chip:hover { border-color: var(--accent); }
 .par .lb.nueva { color: var(--accent); }
 .par .md { max-height: 320px; overflow-y: auto; font-size: 13px; }
 .av textarea.fusion { width: 100%; min-height: 220px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
+.abiertas { margin-bottom: 22px; }
+.abiertas .av textarea { width: 100%; min-height: 64px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
 
 #aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 9; }
@@ -317,6 +319,7 @@ const T = ES ? {
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
   juntar: 'Juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web',
+  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
   papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito', subagent: 'subagente', recipe: 'receta' },
@@ -345,6 +348,7 @@ const T = ES ? {
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
   juntar: 'Merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view',
+  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
   papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone', subagent: 'subagent', recipe: 'recipe' },
@@ -992,9 +996,47 @@ function pintarProyectos() {
         <div class="stat"><b>${Object.keys(es).length}</b><span>${esc(T.conEstado)}</span></div>
       </div>
     </div>
+    ${abiertasHTML()}
     ${conEspacios ? cuerpo : `<div class="grid">${pjs.map(tarjeta).join('')}</div>`}
     <div class="leyenda">${TIPOS.map(t => `<span><i class="k ${t}"></i>${t}</span>`).join('')}</div>
   </div>`;
+  conectarAbiertas();
+}
+
+/* ---------- Decisiones abiertas ---------- */
+// Las decisiones que esperan a la persona (etiqueta `open`), de la más nueva a la más vieja: las mismas
+// que recibe el agente al empezar sesión.
+const ABIERTA = 'open';
+const abiertas = () => todas.filter(m => m.kind === 'decision' && m.tags.includes(ABIERTA) && enEspacio(m));
+function abiertasHTML() {
+  const ds = abiertas();
+  if (!ds.length) return '';
+  return `<div class="abiertas">
+    <div class="gsp"><h2>${esc(T.abiertasTitulo)}</h2><span>${esc(String(ds.length))}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${T.abiertasSub}</p>
+    ${ds.map(m => `<div class="av" data-abierta="${esc(m.id)}">
+      <div class="cab"><span class="t">${esc(m.title)}</span>${pastilla(ambito(m))}<span class="what">${esc(corta(m.updated_at))}</span></div>
+      <div class="md">${md(m.content)}</div>
+      <textarea placeholder="${esc(T.respuesta)}" rows="2"></textarea>
+      <div><button class="btn pri" data-r="decidir">${esc(T.decidir)}</button></div>
+    </div>`).join('')}
+  </div>`;
+}
+// Decidir: la respuesta se añade al final de la memoria y se quita la etiqueta `open`.
+function conectarAbiertas() {
+  for (const el of $('vista').querySelectorAll('[data-abierta]')) {
+    const m = todas.find(x => x.id === el.dataset.abierta);
+    el.querySelector('[data-r="decidir"]').onclick = () => {
+      const respuesta = el.querySelector('textarea').value.trim();
+      if (!respuesta) { el.querySelector('textarea').focus(); return; }
+      accion(() => herramienta('update', {
+        id: m.id,
+        append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${respuesta}`,
+        tags: m.tags.filter(t => t !== ABIERTA),
+        reason: T.decididoMotivo,
+      }));
+    };
+  }
 }
 
 let elegidaPanel = null;

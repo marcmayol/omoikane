@@ -6,6 +6,16 @@ How it works is in [docs/](docs/).
 
 ## Unreleased
 
+## 1.6.0 (sin fecha)
+
+### Open decisions
+- When the agent runs into a product or business decision that is the user's to make and can't ask right then, it saves it as a `decision` memory tagged `open` (the question, the options and what it assumed meanwhile) and keeps working. The instructions for the agent (MCP, session start and `/omoikane`) say so, and ask it to tell the user which ones it left when it finishes a long piece of work.
+- Every session starts with the open decisions of the project, its space and the global ones, newest first, one line each with a short excerpt (up to 10, and how many more there are), until the user decides: then the agent `update`s the memory with the answer and drops the `open` tag. They don't count as injected, so recall can still bring them in full.
+- In `omoi serve`, the projects page lists the open decisions above the projects; writing the answer and pressing Decide appends it to the memory (with the date) and drops the `open` tag. `omoi search … --tag open` already finds them from the terminal.
+
+### Compatibility
+- Same as 1.5.0: the database schema (10), the sync lines and the export format don't change; `open` is a tag like any other, so older versions sync and show these memories as plain decisions.
+
 ## 1.5.0 (2026-11-05)
 
 ### Proposed recipes

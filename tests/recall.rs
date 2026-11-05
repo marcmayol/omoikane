@@ -92,6 +92,93 @@ fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Las líneas de la sección de decisiones abiertas al empezar sesión (vacío si no está).
+fn lineas_abiertas(t: &str) -> Vec<String> {
+    match t.split_once("Decisions waiting for the user") {
+        Some((_, r)) => r.lines().skip(1).take_while(|l| l.starts_with("- ") || l.starts_with('…')).map(str::to_string).collect(),
+        None => Vec::new(),
+    }
+}
+
+#[test]
+fn al_empezar_recuerda_las_decisiones_abiertas() {
+    let (mut db, dir) = base("abiertas");
+    con_memorias(&mut db);
+    let decision = |project: &str, title: &str, kind: Tipo, tags: &[&str]| Nueva {
+        project: project.into(),
+        kind: Some(kind),
+        title: title.into(),
+        content: format!("{title}: ¿cobramos por usuario o por equipo? Opciones: A, B. Asumido: por equipo hasta que decida. {}", "más ".repeat(80)),
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        ..Default::default()
+    };
+    let vieja = memoria::guardar(&mut db, decision("/p", "Precio del plan Pro", Tipo::Decision, &["Open", "precios"]), None).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    memoria::guardar(&mut db, decision("", "Licencia de las plantillas", Tipo::Decision, &["open"]), None).unwrap();
+    // Ni un hecho con la etiqueta, ni una decisión sin ella, ni la de otro proyecto.
+    memoria::guardar(&mut db, decision("/p", "Hecho etiquetado open", Tipo::Fact, &["open"]), None).unwrap();
+    memoria::guardar(&mut db, decision("/p", "Decisión ya tomada", Tipo::Decision, &[]), None).unwrap();
+    memoria::guardar(&mut db, decision("/otro", "Decisión de otro proyecto", Tipo::Decision, &["open"]), None).unwrap();
+
+    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
+    let l = lineas_abiertas(&t);
+    // De la más nueva a la más vieja (la global cuenta), con un fragmento corto del contenido.
+    assert_eq!(l.len(), 2, "{t}");
+    assert!(l[0].contains("Licencia de las plantillas") && l[1].contains("Precio del plan Pro"), "{t}");
+    assert!(l[1].contains("Asumido: por equipo") && l[1].ends_with('…') && l[1].chars().count() < 300, "{t}");
+    assert!(!l.iter().any(|x| x.contains("Hecho") || x.contains("Decisión")), "{t}");
+    assert!(t.contains("drop the `open` tag"), "{t}");
+    // No se repiten en «Last worked on», que sigue con sus 5.
+    let (_, ultimas) = t.split_once("Last worked on").unwrap();
+    let ultimas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(ultimas.len(), recall::RECIENTES, "{t}");
+    assert!(!ultimas.iter().any(|l| l.contains("Precio del plan Pro") || l.contains("Licencia de las plantillas")), "{t}");
+    // No cuentan como inyectadas: siguen solo la preferencia y la fijada.
+    assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
+
+    // Cuando la persona decide: se añade la respuesta y se quita la etiqueta, y deja de salir.
+    let c = memoria::Cambios { append: Some("Decidido: por usuario.".into()), tags: Some(vec!["precios".into()]), ..Default::default() };
+    memoria::actualizar(&mut db, &vieja.id, c, None).unwrap();
+    let t = recall::al_empezar(&mut db, "/p", &entrada("s2", "")).unwrap().unwrap();
+    let l = lineas_abiertas(&t);
+    assert_eq!(l.len(), 1, "{t}");
+    assert!(l[0].contains("Licencia de las plantillas"), "{t}");
+
+    // Sin ninguna abierta, no hay sección.
+    let ultima = memoria::abiertas(&db, &memoria::Ambito::Todos, 10).unwrap();
+    assert_eq!(ultima.len(), 2, "la global y la de /otro");
+    for m in ultima {
+        memoria::actualizar(&mut db, &m.id, memoria::Cambios { tags: Some(Vec::new()), ..Default::default() }, None).unwrap();
+    }
+    let t = recall::al_empezar(&mut db, "/p", &entrada("s3", "")).unwrap().unwrap();
+    assert!(!t.contains("Decisions waiting for the user"), "{t}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn al_empezar_cuenta_las_decisiones_abiertas_que_no_caben() {
+    let (mut db, dir) = base("abiertas-muchas");
+    let temas = ["precios", "licencia", "logotipo", "dominio", "idiomas", "soporte", "pagos", "correo", "nube", "móvil", "datos", "marca", "equipo"];
+    for tema in temas {
+        let n = Nueva {
+            project: "/p".into(),
+            kind: Some(Tipo::Decision),
+            title: format!("Qué hacer con {tema}"),
+            content: format!("Pregunta abierta sobre {tema}; asumido lo de siempre."),
+            tags: vec!["open".into()],
+            ..Default::default()
+        };
+        memoria::guardar(&mut db, n, None).unwrap();
+    }
+    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
+    let l = lineas_abiertas(&t);
+    assert_eq!(l.iter().filter(|x| x.starts_with("- ")).count(), recall::ABIERTAS, "{t}");
+    assert!(l.last().unwrap().contains(&format!("{} more", temas.len() - recall::ABIERTAS)), "{t}");
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn cada_mensaje_trae_lo_que_toca_o_nada() {
     let (mut db, dir) = base("mensaje");

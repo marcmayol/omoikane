@@ -1191,6 +1191,29 @@ pub const ESTADO: &str = "status";
 /// En qué punto se quedó cada proyecto: la memoria más reciente con la etiqueta [`ESTADO`] de cada
 /// uno (las globales cuentan como un proyecto más), de la más nueva a la más vieja.
 pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
+    let mut v: Vec<Memoria> = Vec::new();
+    for m in con_etiqueta(db, ambito, ESTADO)? {
+        // Una por proyecto; las de espacio, una por espacio, y las globales, una.
+        if v.len() < limite && !v.iter().any(|x| x.project_id == m.project_id && (m.project_id != 0 || x.space == m.space)) {
+            v.push(m);
+        }
+    }
+    Ok(v)
+}
+
+/// La etiqueta de las decisiones que le tocan a la persona y siguen sin respuesta: el agente dejó la
+/// pregunta, las opciones y lo que asumió mientras tanto, y siguió trabajando.
+pub const ABIERTA: &str = "open";
+
+/// Las decisiones abiertas del ámbito (de tipo decisión y con la etiqueta [`ABIERTA`]), de la más nueva
+/// a la más vieja; como mucho `limite`.
+pub fn abiertas(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
+    Ok(con_etiqueta(db, ambito, ABIERTA)?.into_iter().filter(|m| m.kind == Tipo::Decision).take(limite).collect())
+}
+
+/// Todas las memorias del ámbito con esta etiqueta (ya en minúsculas, como se guardan), de la más
+/// nueva a la más vieja.
+fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<Memoria>> {
     // Solo las que tienen la palabra en las etiquetas según el índice de palabras (todas las que llevan
     // la etiqueta, y quizá alguna más, que el resto de la condición quita): sin él, mirar las etiquetas
     // de cada memoria leía la tabla entera, contenido incluido (500 ms con 100.000 memorias).
@@ -1201,15 +1224,9 @@ pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Me
         ambito.sql()
     ))?;
     // El `LIKE` descarta sin leer el JSON lo que no lleva la etiqueta.
-    let todas: Vec<Memoria> =
-        q.query_map(params![ESTADO, format!("%\"{ESTADO}\"%"), format!("tags : \"{ESTADO}\"")], de_fila)?.collect::<rusqlite::Result<_>>()?;
-    let mut v: Vec<Memoria> = Vec::new();
-    for m in todas {
-        // Una por proyecto; las de espacio, una por espacio, y las globales, una.
-        if v.len() < limite && !v.iter().any(|x| x.project_id == m.project_id && (m.project_id != 0 || x.space == m.space)) {
-            v.push(m);
-        }
-    }
+    let v = q
+        .query_map(params![etiqueta, format!("%\"{etiqueta}\"%"), format!("tags : \"{etiqueta}\"")], de_fila)?
+        .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
