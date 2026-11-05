@@ -1239,7 +1239,7 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     if conversacion.is_some() {
         let recetas = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             omoikane::recetas::apuntar(&db, &e.session_id, &pasos)?;
-            omoikane::recetas::proponer(&db, &project, &e.session_id)?;
+            omoikane::recetas::proponer(&db, &project, &e.session_id, &pasos)?;
             Ok(())
         }));
         match recetas {

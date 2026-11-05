@@ -34,7 +34,9 @@ tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
 ulid = "3.0.0"
 # Para descargar el modelo; Rust puro con rustls. Fijada a una versión de hace más de un mes.
-ureq = "=3.4.2"
+# Con `platform-verifier`, las raíces del sistema (Windows, macOS, Linux) y no solo las de Mozilla:
+# detrás del proxy de una empresa que inspecciona el HTTPS, su certificado raíz está en el sistema.
+ureq = { version = "=3.4.2", features = ["platform-verifier"] }
 ratatui = "0.29"
 crossterm = "0.28"
 tiny_http = "0.12"

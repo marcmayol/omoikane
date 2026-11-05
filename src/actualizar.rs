@@ -138,7 +138,7 @@ fn base() -> Option<String> {
 }
 
 fn bajar(url: &str) -> Result<Vec<u8>> {
-    let r = ureq::get(url).header("User-Agent", &format!("omoi/{VERSION}")).call().with_context(|| url.to_string())?;
+    let r = crate::modelos::cliente().get(url).header("User-Agent", &format!("omoi/{VERSION}")).call().with_context(|| url.to_string())?;
     Ok(r.into_body().with_config().limit(200 * 1024 * 1024).read_to_vec()?)
 }
 

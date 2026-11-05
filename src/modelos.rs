@@ -98,13 +98,23 @@ fn descargar_de(origen: &str, destino: &Path, aviso: &mut dyn FnMut(&str)) -> Re
     descargar_ficheros(origen, &FICHEROS, destino, aviso)
 }
 
+/// El cliente HTTP de todas las descargas (el modelo, las actualizaciones): con los certificados raíz
+/// del sistema, y no solo los de Mozilla que trae ureq. En la red de una empresa que inspecciona el
+/// HTTPS, su certificado raíz está en el almacén del sistema (por eso Git y PowerShell conectan) y no
+/// en la lista de Mozilla. No se pierde seguridad: el modelo se comprueba por su SHA-256 y las
+/// actualizaciones por su firma Ed25519.
+pub fn cliente() -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+    ureq::Agent::config_builder().tls_config(tls).build().new_agent()
+}
+
 /// Descarga `ficheros` de `origen` a `destino` (cada uno a `.part` y renombrado al llegar entero).
 pub(crate) fn descargar_ficheros(origen: &str, ficheros: &[&str], destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
     std::fs::create_dir_all(destino)?;
     let host = origen.split('/').nth(2).unwrap_or(origen);
     for &f in ficheros {
         let url = format!("{origen}/{f}");
-        let resp = ureq::get(&url).call().with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
+        let resp = cliente().get(&url).call().with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
         let total: Option<u64> =
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
         aviso(&match total {

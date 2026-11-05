@@ -854,8 +854,18 @@ function pintarRevisar() {
     };
     el.querySelector('[data-r="dejar"]').onclick = () => accion(dejar);
     el.querySelector('[data-r="guardar"]').onclick = () => accion(async () => {
-      const respuesta = c.kind === 'subagent' ? c.text.split(' → ').slice(1).join(' → ') || c.text : c.text.split(' → ').pop();
-      const args = { title: respuesta.slice(0, 90), content: c.text, kind: c.kind === 'recipe' ? 'procedure' : c.kind === 'milestone' || c.kind === 'subagent' ? 'fact' : c.kind, force: true };
+      let args;
+      if (c.kind === 'recipe') {
+        // Una receta de verdad: los pasos numerados y una línea `when:` con sus programas, para
+        // editarla luego con lo que falte (el texto de la candidata es una instrucción para el agente).
+        const pasos = (c.text.match(/`[^`]+`/g) || []).map(s => s.slice(1, -1)).filter(s => !s.startsWith('when'));
+        // Los pasos enteros como disparadores (con solo `git` saltaría en cualquier mensaje sobre git).
+        const cuando = pasos.join(', ');
+        args = { title: pasos.join(' → ').slice(0, 90), content: pasos.map((p, i) => `${i + 1}. ${p}`).join('\n') + `\n\nwhen: ${cuando}`, kind: 'procedure', force: true };
+      } else {
+        const respuesta = c.kind === 'subagent' ? c.text.split(' → ').slice(1).join(' → ') || c.text : c.text.split(' → ').pop();
+        args = { title: respuesta.slice(0, 90), content: c.text, kind: c.kind === 'milestone' || c.kind === 'subagent' ? 'fact' : c.kind, force: true };
+      }
       if (c.project) args.project = c.project; else args.global = true;
       await herramienta('remember', args);
       await dejar();
