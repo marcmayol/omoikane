@@ -1,0 +1,91 @@
+# Casos del recall para el comparador (`examples/eval.rs`). Escrito a mano para Omoikane; público.
+# m	clave	título	contenido	[tipo	[etiquetas]]   → una memoria (global); en el contenido, \n es un salto de línea
+# q	esperadas	mensaje                         → lo que debería inyectar el recall (claves separadas por |), o - si nada
+# Hay mensajes que comparten palabras con su memoria, otros en el otro idioma (ES ↔ EN), paráfrasis y
+# mensajes que no tienen memoria (charla, otro tema, o palabras de otra cosa que un glosario podría confundir).
+m	auth	Bug en auth: el token caduca antes de tiempo	El middleware compara la hora local con la caducidad del token, que va en UTC. Arreglado convirtiendo todo a UTC.	gotcha
+m	login	Seguridad del login: bloqueo tras cinco intentos y segundo factor para administradores	Decidido el 3-nov: tras cinco intentos fallidos la cuenta se bloquea 15 minutos; los administradores entran siempre con TOTP.	decision
+m	deploy	The deploy script must run from the repo root	It uses relative paths to the build folder and silently uploads nothing when run from elsewhere.	gotcha
+m	node	El build necesita Node 20	Con Node 18 falla la compilación por el uso de fetch global en los scripts de build.
+m	puerto	El servidor escucha en el 8765	Puerto por defecto del servidor de desarrollo. Se cambia con la variable PORT.
+m	ratelimit	Límite de la API: 100 peticiones por minuto	Al pasarse, la API responde 429 con la cabecera Retry-After. El cliente reintenta con espera exponencial.
+m	tests	Los tests de integración necesitan DATABASE_URL	Sin esa variable de entorno los tests de integración se saltan; en la CI la pone el workflow.	gotcha
+m	pihole	Pi-hole bloqueaba la subida de vídeos a LinkedIn	La lista HaGeZi bloqueaba el dominio de antibots de LinkedIn y la subida se quedaba colgada. Está en la lista blanca.	gotcha
+m	tabs	Indentación con cuatro espacios	En todo el proyecto, nunca tabuladores. El formateador lo aplica al guardar.	preference
+m	pr	Keep pull requests small	Prefer PRs under 300 changed lines; big ones get split before review.	preference
+m	migraciones	Las migraciones van antes de arrancar	La aplicación falla al arrancar si el esquema de la base no está al día: primero migrar, luego levantar el servicio.	gotcha
+m	powershell	En PowerShell -replace ignora mayúsculas	Para renombrar paquetes distinguiendo mayúsculas hay que usar -creplace.	gotcha
+m	brim	Brim para piezas finas en la impresora	Las piezas finas se despegan de la cama sin brim; con 50 grados de cama basta para PLA.
+m	sesion	La sesión expira a los 30 minutos sin actividad	El frontend avisa un minuto antes y renueva si el usuario sigue en la página.
+m	logs	Los logs van a /var/log/app	Rotan cada día y se guardan 14 días. En desarrollo salen por la consola.
+m	backups	Nightly database backups go to the NAS	A cron job dumps Postgres at 03:00 to /mnt/nas/backups and keeps 30 days. Restore with pg_restore --clean.
+m	email	Transactional emails are sent through Postmark	Password resets and invoices go through Postmark; the API token lives in POSTMARK_TOKEN. Marketing mail is not sent from the app.
+m	redis	La caché de sesiones vive en Redis	Las sesiones se guardan en Redis con caducidad de 30 minutos; si Redis cae, todos los usuarios tienen que volver a entrar.
+m	i18n	Translations live in locales/*.json	Every user-facing string goes through t(); missing keys fall back to English. Spanish and Catalan are maintained by hand.	decision
+m	imagenes	Las imágenes de producto van a S3 con miniaturas	Al subir una imagen se generan tres miniaturas (128, 512 y 1024 px) con un worker; el original no se sirve nunca al navegador.
+m	search	Product search uses Postgres full-text, not Elasticsearch	We dropped Elasticsearch: tsvector columns with a GIN index are fast enough for 2M products and one less service to run.	decision
+m	pagos	La pasarela de pago es Stripe con webhooks idempotentes	Cada webhook de Stripe se guarda por su id antes de procesarlo; si llega dos veces, el segundo no cobra ni envía nada.	decision
+m	movil	La app móvil se compila con Expo y se publica con EAS	Los builds de Android e iOS salen de EAS; las actualizaciones pequeñas van por OTA sin pasar por las tiendas.
+m	sentry	Errors are reported to Sentry with the release version	The release name is the git tag, so a stack trace points to the exact build. Source maps are uploaded in CI.
+m	argon	Passwords are hashed with Argon2id	Parameters m=64MB, t=3, p=1. Old bcrypt hashes are rehashed on the next successful login.	decision
+m	carpetas	Estructura de carpetas: un módulo por dominio	Cada dominio (pedidos, clientes, facturas) tiene su carpeta con rutas, servicio y repositorio; nada de carpetas por tipo de fichero.	preference
+m	cron	Las tareas programadas corren en un solo worker	Los cron jobs viven en el worker de colas, nunca en el servidor web: con varias réplicas se ejecutarían varias veces.	gotcha
+m	facturas	Invoices are generated as PDF at month end	A scheduled job builds each customer's PDF invoice on the last day of the month and stores it next to the order.
+m	ssh	Al servidor de staging se entra con clave SSH y bastión	No hay contraseña: la clave pública va en el bastión y desde ahí se salta al servidor de staging.
+m	feature	Feature flags live in the database, not in env vars	Flags are rows in the flags table so they can change without a redeploy; the admin panel toggles them.	decision
+# Comparten palabras con su memoria (la línea base ya debería traerlas)
+q	auth	el token de auth caduca antes de tiempo otra vez
+q	tests	los tests de integración se saltan en la CI, falta alguna variable
+q	pihole	la subida de vídeos a linkedin se queda colgada otra vez
+q	node	con node 18 falla la compilación de los scripts del build
+q	login	cuántos intentos fallidos antes del bloqueo de la cuenta en el login
+q	deploy	where should the deploy script run from, the build folder or the repo root
+q	argon	how are the passwords hashed, argon2id or bcrypt
+q	backups	restore last night's database backup from the NAS
+q	redis	si se cae redis se pierden las sesiones de los usuarios
+q	pagos	el webhook de stripe llega dos veces y cobra doble
+q	movil	cómo publico la app móvil con expo y eas
+q	sentry	sentry no muestra la versión del release en los errores
+q	imagenes	las miniaturas de las imágenes de producto no se generan en s3
+q	cron	los cron jobs se ejecutan varias veces con varias réplicas
+q	feature	where do the feature flags live, env vars or database
+q	powershell	el -replace de powershell ignora las mayúsculas al renombrar
+q	migraciones	la aplicación falla al arrancar, ¿hay que migrar el esquema antes?
+q	ratelimit	la api responde 429 con retry-after, demasiadas peticiones por minuto
+# En el otro idioma que su memoria
+q	backups	dónde se guardan las copias de seguridad nocturnas de la base de datos
+q	deploy	desde qué carpeta hay que lanzar el script de despliegue
+q	argon	cómo se cifran las contraseñas de los usuarios en la base de datos
+q	email	los correos de restablecer la contraseña no llegan a los usuarios
+q	i18n	faltan traducciones en catalán de algunos textos de la interfaz
+q	search	el buscador de productos va lento, ¿metemos elasticsearch?
+q	facturas	las facturas en pdf de final de mes no se generan
+q	feature	los interruptores de funcionalidades están en variables de entorno o en la base de datos
+q	login	how many failed login attempts before the account gets locked
+q	pihole	linkedin video uploads get stuck forever
+q	tests	integration tests are skipped because a variable is missing
+q	ssh	how do I log into the staging server, is there a password
+q	carpetas	how should I organize the folder structure for a new domain module
+q	pagos	the payment gateway charges twice when a webhook is repeated
+# Paráfrasis (mismo idioma, otras palabras)
+q	login	haz que el login sea más seguro para los administradores
+q	sesion	me echa de la aplicación al rato de no tocar nada
+q	migraciones	la app no arranca por culpa de la base de datos
+q	brim	la pieza fina se despega de la cama de la impresora
+q	pagos	el cobro con tarjeta se repite a veces dos veces
+q	puerto	en qué puerto arranca el servidor de desarrollo
+# Sin memoria: charla, otro tema y palabras que un glosario podría confundir
+q	-	receta de paella valenciana para el domingo con la familia
+q	-	qué tiempo hará mañana en palma de mallorca por la tarde
+q	-	cómo se llama el perro del vecino de enfrente
+q	-	machine learning model fine-tuning hyperparameters for vision
+q	-	vale perfecto gracias, sigue con lo siguiente cuando puedas
+q	-	kubernetes ingress controller configuration example with nginx
+q	-	recomiéndame una película de ciencia ficción para esta noche
+q	-	busca vuelos baratos a japón para diciembre desde palma
+q	-	haz una copia de seguridad de las fotos del móvil en google drive
+q	-	mi correo personal está lleno de spam de tiendas online
+q	-	la cuenta del restaurante de anoche salió carísima para cuatro
+q	-	sube a instagram la foto del gato durmiendo en el sofá
+q	-	el seguro del coche vence el mes que viene, hay que renovarlo
+q	-	ordena la carpeta de descargas del portátil por fecha
