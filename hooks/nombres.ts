@@ -10,7 +10,7 @@ import type { Register } from 'claude-code'
 const MAX = 60
 const FORMA = /^\S[^:\n]{0,29}: \S/u
 
-const REGLA = `Name it "Project: task": the project or request this session is working on, a colon, then the task in a few plain words, in the user's language. Use the name the user knows the project by, never a path. Under ${MAX} characters. Examples: "LinkedIn: reply to Edwin", "Billing app: review login".`
+const REGLA = `Name it "Project: task": the project or request this session is working on, a colon, then the task in a few plain words, in the user's language. Use the name the user knows the project by, never a path. Under ${MAX} characters. Examples: "Billing app: review login", "Docs site: fix broken links".`
 
 export const esValido = (nombre: string) => nombre.length <= MAX && FORMA.test(nombre)
 

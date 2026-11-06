@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.6.0 (unreleased)
+## 1.6.0 (2026-11-06)
 
 ### Open decisions
 - When the agent runs into a product or business decision that is the user's to make and can't ask right then, it saves it as a `decision` memory tagged `open` (the question, the options and what it assumed meanwhile) and keeps working. The instructions for the agent (MCP, session start and `/omoikane`) say so, and ask it to tell the user which ones it left when it finishes a long piece of work.
@@ -23,7 +23,7 @@ How it works is in [docs/](docs/).
 - Measured against 1.5.0, interleaved, on a copy of a real database (about 200 memories): the recall of each prompt without docs doesn't change (P50 39.6 against 39.0 ms, noise; the machine was busy); with the 12 files of Omoikane's docs, +0.6 ms; with 797 files, +2.6 ms. The session start no longer walks the folders itself: with 797 files and all of them to index again, it took a P50 of 54 ms against 44 ms for 1.5.0 without docs, and the refresh it launched on the side had the index up to date 1.7 s later. Doing it inside the start, as first written, took about 0.9 s in that case. `omoi docs add` with 785 files took 3 to 7 s.
 
 ### Subagent names
-- The Claude Code plugin now has subagents named "Project: task" (`LinkedIn: reply to Edwin`, `Billing app: review login`), so with several sessions open you can tell which one each agent belongs to. It was the separate `agent-names` plugin; it comes with Omoikane now. The rule goes in the description of the `Agent` tool, and a name that doesn't fit, or runs over 60 characters, is refused with the rule so the model tries again. It only checks the shape, and if the check itself fails the subagent still starts. If you had `agent-names@drac` installed, uninstall it: with both, the model reads the rule twice.
+- The Claude Code plugin now has subagents named "Project: task" (`Billing app: review login`, `Docs site: fix broken links`), so with several sessions open you can tell which one each agent belongs to. It was the separate `agent-names` plugin; it comes with Omoikane now. The rule goes in the description of the `Agent` tool, and a name that doesn't fit, or runs over 60 characters, is refused with the rule so the model tries again. It only checks the shape, and if the check itself fails the subagent still starts. The `agent-names` plugin is retired from the drac marketplace; if you had it installed, uninstall it (`claude plugin uninstall agent-names@drac`): with both, the model reads the rule twice.
 
 ### Compatibility
 - Same as 1.5.0: the database schema (10), the sync lines and the export format don't change; `open` is a tag like any other, so older versions sync and show these memories as plain decisions.

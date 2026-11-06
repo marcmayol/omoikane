@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { esValido } from './nombres'
 
 test('accepts "Project: task"', () => {
-  for (const nombre of ['LinkedIn: responder a Edwin', 'Faltis: revisar el login', 'humanizar: probar el log', 'Contestar LinkedIn: buscar comentarios']) {
+  for (const nombre of ['Billing app: review login', 'Docs site: arreglar enlaces', 'API: probar el log', 'Responder issues: buscar duplicados']) {
     expect(esValido(nombre)).toBe(true)
   }
 })
@@ -11,12 +11,12 @@ test('accepts "Project: task"', () => {
 test('refuses a name without a project, or too long', () => {
   for (const nombre of [
     'Review the login flow',
-    'LinkedIn:responder',
+    'Billing:review',
     ': responder',
-    ' LinkedIn: responder',
-    'LinkedIn: ',
+    ' Billing: review',
+    'Billing: ',
     'Un nombre de proyecto larguísimo que no acaba nunca: tarea',
-    `LinkedIn: ${'x'.repeat(60)}`,
+    `Billing: ${'x'.repeat(60)}`,
   ]) {
     expect(esValido(nombre)).toBe(false)
   }
