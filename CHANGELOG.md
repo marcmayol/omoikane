@@ -4,7 +4,18 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.6.0 (2026-11-06)
+## 1.7.0 (unreleased)
+
+### Memory for whoever joins a client
+- The first session in a project of a space on a computer (a new teammate after `omoi sync join`, or anyone opening one of the client's projects there for the first time) brings a short welcome, once: the space's other projects with where their work was left (their latest `status`, up to 8), the decisions still open in them (up to 5) and who writes in the space, with how many memories each. Before, the agent only saw what belonged to the project it was opened in, so the state of the client's other repositories and their open questions didn't reach it. It comes again after compacting that first session, not in later ones; not at all if everything in the space was written by the same person, and never from projects without a space. Only that space: nothing of another client.
+- `omoi sync join <code>` for a space ends by saying what arrived (memories, projects, pinned, open decisions) and that the agent will have it at its next session in those projects.
+- Preferences saved for a whole space (`remember --space`) now travel through that space's repository even when preferences aren't shared: they were the team's, and a newcomer didn't get them. Personal (global) preferences still don't.
+- Someone who syncs only a space's repository (no general one) now writes its `--author` on their memories, so teammates see `[by Ana]` and the welcome can say who writes. Before, only the general repository's author counted.
+- A project that arrived through sync without a folder on this computer was named `api]` in some lines; now `api`.
+- Measured against 1.6.0, interleaved, three passes of 30 session starts on a base with a two-project space (158 memories, whole process): later sessions pay one more query, a P50 of 28.8 against 28.3 ms (28.1/27.6, 28.9/28.2), noise; the first session in a project takes 1 to 3 ms more (30.6 against 29.4, 32.2/29.0, 30.2/27.9) and its block grows by about 600 bytes.
+
+### Compatibility
+- The database schema (10), the sync lines and the export format don't change. A space preference uploaded from 1.7.0 is dropped by a 1.6.0 computer that doesn't share preferences, as before; once it updates, it gets the ones changed after that.
 
 ### Open decisions
 - When the agent runs into a product or business decision that is the user's to make and can't ask right then, it saves it as a `decision` memory tagged `open` (the question, the options and what it assumed meanwhile) and keeps working. The instructions for the agent (MCP, session start and `/omoikane`) say so, and ask it to tell the user which ones it left when it finishes a long piece of work.

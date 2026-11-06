@@ -20,7 +20,7 @@ A recall that injects too much is worse than none: it fills the context with noi
 - **Mistakes get fixed, not carried.** Only what the agent saves goes into memory. What Omoikane sets aside when a session closes are proposals, and they expire after 7 days if nobody saves them. Fixing one is `update` with a reason, and the previous version stays in the history. `forget` deletes it, and it doesn't come back from your other machines. What a teammate saved arrives marked `[by Ana]`.
 - **Measured.** Every threshold comes from questions written blind by another agent, 20 of them with no answer in the notes: on those it injected something twice. The numbers are in [BENCHMARK.md](../BENCHMARK.md).
 
-At session start more does arrive: your preferences, what you pinned, where each project stands and what was touched last. Preferences and pins are what you want the agent to always know.
+At session start more does arrive: your preferences, what you pinned, where each project stands and what was touched last. Preferences and pins are what you want the agent to always know. The first session in a client's project also tells it what the rest of that client's team has ([Someone new joins a client](sync-and-spaces.md#someone-new-joins-a-client)).
 
 engram, the alternative Omoikane is compared with, doesn't inject memories on each prompt. With stale ones it does something else: every save proposes similar memories and asks the agent to judge how they relate (`mem_judge`). Omoikane asks for nothing. It detects the contradiction itself, flags it in the recall with the reason, and lets the agent judge only when it knows something Omoikane can't see (`supersedes`, `contradicts`, `compatible`). How those verdicts work is in [memory-care.md](memory-care.md#verdicts).
 

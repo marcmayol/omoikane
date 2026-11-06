@@ -2444,7 +2444,15 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
             sync::unirse(&mut db, &ruta, &config, id, &clave)?;
             sync::adoptar_persona(&mut db, &ruta, &config.person)?;
             drop(db);
-            primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))
+            primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))?;
+            // Lo que acaba de llegar del espacio, y que el agente lo tendrá en su próxima sesión.
+            if !c.json
+                && let Some(espacio) = &config.space
+                && let Some(t) = omoikane::llegada::al_unirse(&abrir(c)?, espacio)?
+            {
+                println!("{t}");
+            }
+            Ok(())
         }
         Some(AccionSync::Code { space }) => {
             println!("{}", sync::codigo(&ruta, espacio_de(space)?.as_deref())?);

@@ -465,6 +465,10 @@ fn fragmento(texto: &str, n: usize) -> String {
 /// Al empezar la sesión (o tras compactar): el contexto que el agente debe tener siempre.
 /// El autor de este equipo, si la sincronización lo apunta: con él se distingue lo de otras personas.
 fn autor_propio(db: &Connection) -> Option<String> {
+    // El que se apunta en cada memoria (el del repositorio general o, sin él, el de un espacio).
+    if let Some(a) = memoria::autor(db).ok().filter(|a| !a.is_empty()) {
+        return Some(a);
+    }
     let ruta = db.path().filter(|p| !p.is_empty())?;
     crate::sync::leer_config(std::path::Path::new(ruta)).ok().flatten().and_then(|c| c.author)
 }
@@ -501,6 +505,12 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     }
     let total = memoria::cuantas(db, &ambito)?;
     let contexto = memoria::contexto(db, &ambito, 30)?;
+    // La primera sesión aquí en un proyecto de un espacio: lo que tiene el equipo (antes de apuntar la
+    // sesión, que es lo que dice si es la primera). Opcional: un error solo deja la sesión sin él.
+    let llegada = crate::llegada::bienvenida(db, &ambito, &e.session_id, propio.as_deref()).unwrap_or_else(|x| {
+        eprintln!("omoikane: welcome: {x:#}");
+        None
+    });
     // Tras compactar sigue siendo la misma sesión: no se reinicia el reloj del recordatorio.
     db.execute(
         &format!(
@@ -530,6 +540,9 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         s.push_str(&format!(
             "Long-term memory (Omoikane) holds {total} memories for this project and globally. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\n"
         ));
+    }
+    if let Some(l) = &llegada {
+        s.push_str(l);
     }
     if !contexto.is_empty() {
         let notas = crate::revisar::notas(db, &contexto.iter().collect::<Vec<_>>())?;

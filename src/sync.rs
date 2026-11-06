@@ -228,7 +228,10 @@ impl Config {
     /// A qué repositorio va cada una lo decide `va_al_repo`.
     fn acepta(&self, kind: &str, clave: &str, espacio: &str) -> bool {
         let kind = kind.parse::<Tipo>().unwrap_or(Tipo::Fact);
-        if !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
+        // Una preferencia guardada para todo un espacio (`remember --space`) es del equipo, no de la
+        // persona: va siempre por el repositorio de ese espacio, aunque no se compartan preferencias.
+        let del_equipo = kind == Tipo::Preference && clave.is_empty() && !espacio.is_empty() && self.space.is_some();
+        if !del_equipo && !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
             return false;
         }
         if clave.is_empty() {
@@ -2396,8 +2399,10 @@ fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) ->
     }
     guardar_claves(r, cifra)?;
     escribir_privado(&r.config, &serde_json::to_string_pretty(config)?)?;
-    // El autor de la base es el del repositorio general.
-    if r.espacio.is_none() {
+    // El autor de la base es el del repositorio general; sin él (quien solo trabaja para clientes), el
+    // del repositorio del espacio, para que su equipo sepa quién escribió cada memoria.
+    let sin_general = || db.path().filter(|p| !p.is_empty()).is_some_and(|p| leer_config(Path::new(p)).ok().flatten().is_none());
+    if r.espacio.is_none() || (config.author.is_some() && sin_general()) {
         match &config.author {
             Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
             None => db.execute("DELETE FROM meta WHERE k = 'autor'", [])?,
