@@ -7,6 +7,8 @@
 //! `OMOIKANE_AUDITAR_DB=<copia.db> cargo test --test secretos -- --ignored --nocapture` recorre una base
 //! y enseña cada hallazgo, para calibrar con memorias reales (siempre sobre una copia).
 
+mod comun;
+
 use omoikane::secretos::{self, hallazgos, tipos};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -324,13 +326,12 @@ fn auditar_base() {
 const TOKEN: &str = concat!("gh", "p_abcdefghijklmnopqrstuvwxyz0123456789");
 
 struct Entorno {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Entorno {
     fn nuevo(nombre: &str) -> Entorno {
-        let dir = std::env::temp_dir().join(format!("omoi-secretos-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = comun::Temporal::nueva(&format!("secretos-{nombre}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         Entorno { dir }
     }
@@ -378,12 +379,6 @@ impl Entorno {
 
     fn avisos_secret(&self) -> Vec<serde_json::Value> {
         self.json(&["review"], &[]).as_array().unwrap().iter().filter(|a| a["kind"] == "secret").cloned().collect()
-    }
-}
-
-impl Drop for Entorno {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

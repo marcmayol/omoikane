@@ -1,18 +1,19 @@
 //! Fase 1: guardar, buscar, cambiar con historial, olvidar y que la tabla y los índices no se
 //! separen nunca.
 
+mod comun;
+
 use omoikane::buscar::{self, Opciones};
 use omoikane::db;
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use rusqlite::Connection;
-use std::path::PathBuf;
 
 /// Base nueva en un fichero temporal (no en memoria: así se prueba también WAL).
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-nucleo-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("nucleo-{nombre}"));
     let ruta = dir.join("o.db");
-    (db::abrir(&ruta).unwrap(), dir)
+    let db = db::abrir(&ruta).unwrap();
+    (dir, db)
 }
 
 fn nueva(project: &str, kind: Tipo, title: &str, content: &str) -> Nueva {
@@ -30,7 +31,7 @@ fn cuenta(db: &Connection, sql: &str) -> i64 {
 
 #[test]
 fn encuentra_con_y_sin_tildes() {
-    let (mut db, dir) = base("tildes");
+    let (_dir, mut db) = base("tildes");
     memoria::guardar(
         &mut db,
         nueva("/p", Tipo::Gotcha, "Bug en auth", "Fallo de autenticación: el token caduca antes de tiempo."), None,
@@ -45,12 +46,11 @@ fn encuentra_con_y_sin_tildes() {
     assert_eq!(buscar(&mut db, p(), "autentica"), ["Bug en auth"]);
     assert_eq!(buscar(&mut db, p(), "tokens"), ["Bug en auth"]);
     assert!(buscar(&mut db, p(), "kubernetes").is_empty());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn ordena_por_cuantas_palabras_coinciden() {
-    let (mut db, dir) = base("orden");
+    let (_dir, mut db) = base("orden");
     for (t, c) in [
         ("Uno", "fallo en el login"),
         ("Dos", "fallo de autenticación en el login"),
@@ -61,12 +61,11 @@ fn ordena_por_cuantas_palabras_coinciden() {
     let r = buscar(&mut db, Ambito::Todos, "fallo autenticación login");
     assert_eq!(r[0], "Dos");
     assert_eq!(r.len(), 3);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn update_guarda_la_version_anterior_y_reindexa() {
-    let (mut db, dir) = base("update");
+    let (_dir, mut db) = base("update");
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Decision, "Usamos UUID", "Por compatibilidad."), None).unwrap();
     let c = Cambios {
         title: Some("Usamos ULID".into()),
@@ -89,12 +88,11 @@ fn update_guarda_la_version_anterior_y_reindexa() {
     memoria::actualizar(&mut db, &m.id, Cambios { kind: Some(Tipo::Fact), ..Default::default() }, None).unwrap();
     let h = memoria::historial(&db, &m.id).unwrap();
     assert_eq!(h.iter().map(|v| v.version).collect::<Vec<_>>(), [2, 1]);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn fijar_no_crea_version_ni_cambia_la_fecha() {
-    let (mut db, dir) = base("fijar");
+    let (_dir, mut db) = base("fijar");
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Preference, "Tabs", "Cuatro espacios."), None).unwrap();
     let m2 = memoria::actualizar(&mut db, &m.id, Cambios { pinned: Some(true), ..Default::default() }, None).unwrap();
     assert!(m2.pinned);
@@ -103,12 +101,11 @@ fn fijar_no_crea_version_ni_cambia_la_fecha() {
     // Sin cambios reales, tampoco.
     memoria::actualizar(&mut db, &m.id, Cambios { title: Some("Tabs".into()), ..Default::default() }, None).unwrap();
     assert!(memoria::historial(&db, &m.id).unwrap().is_empty());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn forget_borra_todo() {
-    let (mut db, dir) = base("forget");
+    let (_dir, mut db) = base("forget");
     let mut n = nueva("/p", Tipo::Gotcha, "Trampa", "No borres la caché a mano.");
     n.paths = vec!["src/cache.rs".into()];
     let m = memoria::guardar(&mut db, n, None).unwrap();
@@ -120,12 +117,11 @@ fn forget_borra_todo() {
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_fts_docsize"), 0);
     assert!(buscar(&mut db, Ambito::Todos, "caché nunca trampa").is_empty());
     assert!(memoria::obtener(&db, &m.id).is_err());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn ambitos_proyecto_global_y_todos() {
-    let (mut db, dir) = base("ambitos");
+    let (_dir, mut db) = base("ambitos");
     memoria::guardar(&mut db, nueva("/a", Tipo::Fact, "De A", "compartida palabra"), None).unwrap();
     memoria::guardar(&mut db, nueva("/b", Tipo::Fact, "De B", "compartida palabra"), None).unwrap();
     memoria::guardar(&mut db, nueva("", Tipo::Preference, "Global", "compartida palabra"), None).unwrap();
@@ -139,12 +135,11 @@ fn ambitos_proyecto_global_y_todos() {
     // Los proyectos (lo global no es uno).
     let p = omoikane::proyecto::lista(&db, None, None, usize::MAX).unwrap();
     assert_eq!(p.len(), 2);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn filtros_de_tipo_y_etiquetas() {
-    let (mut db, dir) = base("filtros");
+    let (_dir, mut db) = base("filtros");
     let mut n = nueva("/p", Tipo::Gotcha, "Con etiqueta", "despliegue roto");
     n.tags = vec!["#Deploy".into(), "ci".into()];
     memoria::guardar(&mut db, n, None).unwrap();
@@ -161,12 +156,11 @@ fn filtros_de_tipo_y_etiquetas() {
     assert_eq!(titulos(&mut db, o(None, &["deploy"])), ["Con etiqueta"]);
     assert_eq!(titulos(&mut db, o(None, &["deploy", "otra"])), Vec::<String>::new());
     assert_eq!(titulos(&mut db, o(Some(Tipo::Fact), &[])), ["Sin etiqueta"]);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn ids_por_prefijo() {
-    let (mut db, dir) = base("ids");
+    let (_dir, mut db) = base("ids");
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "Una", "uno"), None).unwrap();
     memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "Otra", "dos"), None).unwrap();
     assert_eq!(memoria::obtener(&db, &m.id).unwrap().title, "Una");
@@ -175,12 +169,11 @@ fn ids_por_prefijo() {
     assert!(memoria::obtener(&db, &m.id[..4]).is_err());
     assert!(memoria::obtener(&db, "ZZZZZZZZ").is_err());
     assert!(memoria::obtener(&db, "a'b--").is_err());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn la_busqueda_cuenta_como_recuperada() {
-    let (mut db, dir) = base("recuperada");
+    let (_dir, mut db) = base("recuperada");
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "Puerto", "El servidor escucha en el 8765."), None).unwrap();
     assert_eq!(m.recall_count, 0);
     buscar(&mut db, Ambito::Todos, "servidor puerto");
@@ -188,12 +181,11 @@ fn la_busqueda_cuenta_como_recuperada() {
     let m = memoria::obtener(&db, &m.id).unwrap();
     assert_eq!(m.recall_count, 2);
     assert!(m.recalled_at.is_some());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn exporta_con_historial() {
-    let (mut db, dir) = base("export");
+    let (dir, mut db) = base("export");
     let m = memoria::guardar(&mut db, nueva("/p", Tipo::Fact, "A", "uno"), None).unwrap();
     memoria::actualizar(&mut db, &m.id, Cambios { content: Some("dos".into()), ..Default::default() }, None).unwrap();
     memoria::guardar(&mut db, nueva("/otro", Tipo::Fact, "B", "tres"), None).unwrap();
@@ -208,14 +200,13 @@ fn exporta_con_historial() {
     assert_eq!(lineas[1]["versions"][0]["content"], "uno");
     let mut todo = Vec::new();
     assert_eq!(omoikane::copia::exportar(&db, &ruta, &Ambito::Todos, false, &mut todo).unwrap().memories, 2);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Tras cientos de operaciones al azar, la tabla, el índice FTS y las rutas siguen cuadrando, y
 /// cada memoria se encuentra por su palabra única.
 #[test]
 fn coherencia_tras_operaciones_al_azar() {
-    let (mut db, dir) = base("coherencia");
+    let (_dir, mut db) = base("coherencia");
     let mut r = 0x2545F4914F6CDD1Du64;
     let mut azar = move |n: u64| {
         r ^= r << 13;
@@ -264,14 +255,13 @@ fn coherencia_tras_operaciones_al_azar() {
         let r = buscar::buscar(&mut db, &format!("marca{marca}"), &o, None).unwrap();
         assert_eq!(r.first().map(|r| r.memoria.id.as_str()), Some(id.as_str()), "marca{marca}");
     }
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Cuatro conexiones (como cuatro sesiones de agente) escribiendo a la vez en el mismo fichero:
 /// ningún SQLITE_BUSY tiene que llegar hasta aquí.
 #[test]
 fn escrituras_concurrentes() {
-    let (db0, dir) = base("concurrencia");
+    let (dir, db0) = base("concurrencia");
     drop(db0);
     let ruta = dir.join("o.db");
     let hilos: Vec<_> = (0..4)
@@ -296,8 +286,6 @@ fn escrituras_concurrentes() {
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory"), 200);
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_fts_docsize"), 200);
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_version"), 40);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// El visor (`omoi tui`) dibujado en memoria: lista, búsqueda, fijar, historial y olvidar.
@@ -306,7 +294,7 @@ fn visor() {
     use omoikane::tui::{Estado, Vista, dibujar};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
-    let (mut db, dir) = base_visor();
+    let (_dir, mut db) = base_visor();
     for (t, c) in [("Puerto del servidor", "Escucha en el 8010"), ("Pasarela de pago", "Redsys y no Stripe")] {
         omoikane::memoria::guardar(&mut db, omoikane::memoria::Nueva { project: "/p".into(), kind: Some(omoikane::memoria::Tipo::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
     }
@@ -347,13 +335,10 @@ fn visor() {
     tecla(&mut e, &mut db, KeyCode::Char('d'));
     tecla(&mut e, &mut db, KeyCode::Char('s'));
     assert!(e.memorias.is_empty());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
-fn base_visor() -> (rusqlite::Connection, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-visor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    (omoikane::db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn base_visor() -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva("visor");
+    let db = omoikane::db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }

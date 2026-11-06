@@ -1,6 +1,8 @@
 //! Fase 7.2: candidatas sacadas de una conversación de Claude Code (un `.jsonl` inventado con la
 //! forma del de verdad).
 
+mod comun;
+
 use omoikane::candidatas;
 use omoikane::db;
 use omoikane::memoria::{self, Nueva, Tipo};
@@ -8,11 +10,8 @@ use omoikane::recall::{self, Entrada};
 use serde_json::json;
 use std::path::PathBuf;
 
-fn dir(nombre: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("omoi-cand-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn dir(nombre: &str) -> comun::Temporal {
+    comun::Temporal::nueva(&format!("cand-{nombre}"))
 }
 
 fn asistente(texto: &str) -> serde_json::Value {
@@ -125,7 +124,6 @@ fn lee_la_conversacion_de_cada_agente() {
     std::fs::write(&ruta, json!({"sessionId": "s", "messages": [{"type": "gemini", "content": pregunta}, {"type": "user", "content": respuesta}]}).to_string()).unwrap();
     let cs = candidatas::de_conversacion(&ruta).unwrap();
     assert!(cs.iter().any(|c| c.text.ends_with(&esperada)), "{cs:?}");
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
@@ -141,7 +139,6 @@ fn saca_decisiones_preferencias_e_hitos_sin_secretos() {
     assert!(todo.contains("[milestone] last commit: Portada nueva con la segunda opción"), "{todo}");
     // Nada trivial, nada con secretos, nada de lo que mete el sistema.
     assert!(!todo.contains("→ vale") && !todo.contains("ghp_") && !todo.contains("no cuenta"), "{todo}");
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
@@ -167,8 +164,6 @@ fn se_proponen_una_vez_en_la_sesion_siguiente_y_no_lo_ya_guardado() {
     let t = recall::al_empezar(&mut db, "/web", &e("s3")).unwrap().unwrap();
     assert!(!t.contains("possibly worth keeping"), "{t}");
     // Otro proyecto no las ve.
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// 1.4: el informe final de cada subagente, que Claude Code guarda en `<sesión>/subagents/`, se aparta
@@ -236,6 +231,4 @@ fn aparta_el_informe_de_cada_subagente() {
     memoria::guardar(&mut db2, ya, None).unwrap();
     candidatas::apartar(&db2, "/web", "s1", &sesion).unwrap();
     assert!(!candidatas::todas(&db2).unwrap().iter().any(|c| c.kind == "subagent"));
-    drop((db, db2));
-    let _ = std::fs::remove_dir_all(d);
 }

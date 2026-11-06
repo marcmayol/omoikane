@@ -1,5 +1,7 @@
 //! Fase 7.4: memorias conectadas con `[[nombre]]`.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::enlaces;
 use omoikane::memoria::{self, Ambito, Nueva, Tipo};
@@ -8,8 +10,7 @@ use omoikane::revisar;
 
 #[test]
 fn enlaces_rotos_y_la_vecina_en_el_recall() {
-    let dir = std::env::temp_dir().join(format!("omoi-enlaces-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("enlaces");
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
     let mut guardar = |kind, title: &str, content: &str, tag: &str| {
         let n = Nueva { project: String::new(), kind: Some(kind), title: title.into(), content: content.into(), tags: vec![tag.into()], ..Default::default() };
@@ -42,6 +43,4 @@ fn enlaces_rotos_y_la_vecina_en_el_recall() {
     let t = recall::al_preguntar(&mut db, "", &e, None).unwrap().expect("algo");
     assert!(t.contains("Horno de cerámica Ondina"), "{t}");
     assert!(t.contains("80 grados"), "la preferencia enlazada debería venir: {t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

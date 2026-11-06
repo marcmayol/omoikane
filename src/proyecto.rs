@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn raiz_git_desde_una_subcarpeta() {
-        let base = std::env::temp_dir().join(format!("omoi-proyecto-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("proyecto");
         let sub = base.join("repo").join("src").join("dentro");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(base.join("repo").join(".git")).unwrap();
@@ -1002,12 +1002,11 @@ mod tests {
         let suelta = base.join("suelta");
         std::fs::create_dir_all(&suelta).unwrap();
         assert!(de(&suelta).unwrap().ends_with("suelta"));
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn carpeta_general() {
-        let base = std::env::temp_dir().join(format!("omoi-general-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("general");
         let home = base.join("usuario");
         std::fs::create_dir_all(home.join("repo").join(".git")).unwrap();
         std::fs::create_dir_all(home.join("suelta")).unwrap();
@@ -1018,12 +1017,11 @@ mod tests {
         assert!(!general_en(&t(&home.join("repo")), &home_c));
         assert!(!general_en(&t(&home.join("suelta")), &home_c), "una carpeta suelta sigue siendo su proyecto");
         assert!(!general_en("", &home_c));
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn repo_de_una_ruta() {
-        let base = std::env::temp_dir().join(format!("omoi-rutas-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("rutas");
         let repo = base.join("web");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();
@@ -1040,12 +1038,11 @@ mod tests {
         let clon = base.join(".claude").join("plugins").join("x");
         std::fs::create_dir_all(clon.join(".git")).unwrap();
         assert_eq!(r(&clon.display().to_string()), None, "un clon en una carpeta oculta no es un proyecto");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn rutas_con_espacios() {
-        let base = std::env::temp_dir().join(format!("omoi-espacios-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("espacios");
         let repo = base.join("the codex");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("app")).unwrap();
@@ -1059,12 +1056,11 @@ mod tests {
         assert!(v.iter().all(|r| repo_de_ruta(r, &home) == Some(esperado.clone())), "{v:?}");
         // Sin el repositorio, la palabra suelta no basta.
         assert_eq!(repo_de_ruta(&base.join("the").display().to_string(), &home), None);
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn rutas_relativas_al_repo() {
-        let base = std::env::temp_dir().join(format!("omoi-relativas-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("relativas");
         let repo = base.join("web");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();
@@ -1078,16 +1074,14 @@ mod tests {
         assert_eq!(relativa_a(&fuera, &raiz, &home), fuera, "fuera del repo, tal cual");
         assert_eq!(relativa_a("src/main.rs", &raiz, &home), "src/main.rs");
         assert_eq!(relativa_a("~/web/src/a.rs", &raiz, &home), "src/a.rs");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn worktree_con_fichero_git() {
         // En un worktree, `.git` es un fichero, no una carpeta.
-        let base = std::env::temp_dir().join(format!("omoi-worktree-{}", std::process::id()));
+        let base = crate::comun::Temporal::nueva("worktree");
         std::fs::create_dir_all(base.join("a")).unwrap();
         std::fs::write(base.join(".git"), "gitdir: /otro/sitio").unwrap();
         assert_eq!(de(&base.join("a")).unwrap(), de(&base).unwrap());
-        let _ = std::fs::remove_dir_all(base);
     }
 }

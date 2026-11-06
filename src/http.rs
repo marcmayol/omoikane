@@ -477,8 +477,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     Ok(json(200, serde_json::json!({ "dismissed": true }).to_string()))
                 }
                 (Method::Get, "/api/sync") => {
-                    let config = crate::sync::leer_config(&ruta_db)?;
-                    let e = crate::sync::leer_estado(&ruta_db);
+                    // Desde un cliente (espacio), solo el repositorio de ese espacio: ni la URL ni el
+                    // autor del general (el personal) ni los de otros espacios. Desde la carpeta del
+                    // usuario o un proyecto sin espacio, el general.
+                    let repo = if m.todo || m.espacio.is_empty() {
+                        Some(crate::sync::rutas(&ruta_db))
+                    } else {
+                        crate::sync::repo_de_espacio(&ruta_db, &m.espacio)
+                    };
+                    let config = match &repo {
+                        Some(r) => crate::sync::leer_config_de(r)?,
+                        None => None,
+                    };
+                    let e = repo.as_ref().map(crate::sync::leer_estado_de).unwrap_or_default();
                     Ok(json(
                         200,
                         serde_json::json!({

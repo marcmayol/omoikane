@@ -824,7 +824,8 @@ pub fn vector_consulta(db: &std::path::Path, texto: &str, presupuesto: Duration)
 /// Avisa al servicio de que `db` ha cambiado para que calcule los vectores que falten, sin esperar
 /// (lo arranca si no está). Para `remember`, `update`, `import` y la sincronización.
 pub fn avisar(db: &std::path::Path) {
-    if !en_uso_en(db) {
+    // Sin nadie delante, nada que se quede indexando después del proceso (`arrancar`).
+    if crate::entorno::desatendido() || !en_uso_en(db) {
         return;
     }
     let _ = vectores_en(Some(db), &[], Tipo::Documento, Duration::from_millis(100));
@@ -868,8 +869,12 @@ pub fn vivo(presupuesto: Duration) -> Option<Registro> {
 
 /// Lanza el servicio aparte si hay modelo y no se lanzó hace poco, con la base que lo pide (`db`) para
 /// que empiece a indexarla en cuanto cargue. No espera a que cargue.
+///
+/// Sin nadie delante (`OMOIKANE_NONINTERACTIVE=1`) no lo lanza: viviría media hora más que el proceso
+/// (en una CI, alargando el trabajo o muriendo con él). Si ya hay uno en marcha, se usa; si no, todo va
+/// por palabras.
 pub fn arrancar(db: Option<&std::path::Path>) {
-    if !permitido() || modelo().is_none() {
+    if !permitido() || modelo().is_none() || crate::entorno::desatendido() {
         return;
     }
     let Some(c) = carpeta() else { return };

@@ -36,3 +36,8 @@ pub mod sync;
 pub mod tui;
 pub mod vectores;
 pub mod veredictos;
+
+/// La carpeta temporal que se borra sola, la misma de los tests de `tests/`.
+#[cfg(test)]
+#[path = "../tests/comun/mod.rs"]
+pub(crate) mod comun;

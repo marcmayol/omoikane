@@ -23,7 +23,7 @@ With `OMOIKANE_NONINTERACTIVE=1`, `omoi sync --pull` waits for any other sync, d
 
 A CI starts from an empty database every run. The folder it checks out is new to it, but the space's repository says that project belongs to the client. On a person's computer that pauses the project until they confirm it (`omoi projects keep`): a client's repository could claim a folder that isn't theirs. In a CI there is nobody to confirm. With `OMOIKANE_NONINTERACTIVE=1` and the space's code in `OMOIKANE_SYNC_CODE`, the variable is the confirmation, and a checkout whose git `origin` is exactly that of one of the space's projects joins the space, brings its memories and uploads what it saves. All four must hold: nobody at the keyboard, that space's repository joined with a code from the variable, a git remote on the project (without one, a folder is only a name) and no memories of it saved on that computer before. If any fails, it is paused as usual and what is saved in it stays on that computer.
 
-Not yet unattended-aware, coming in 1.7.1: the `/api/sync` endpoint of `omoi serve` and the meaning model's service.
+With `OMOIKANE_NONINTERACTIVE=1`, `omoi` doesn't start the meaning model's service by itself either (it would outlive the job by half an hour): if one is already running, for example started with `omoi model serve-semantic` on a server, it's used; if not, search and recall go by words.
 
 ## GitHub Actions
 

@@ -1,17 +1,18 @@
 //! Fase 7.1: lo que conviene revisar. Los casos salen de las memorias reales con las que se calibró
 //! (contados con palabras inventadas: el repositorio es público).
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
 use omoikane::revisar;
 use rusqlite::Connection;
-use std::path::PathBuf;
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-revisar-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    (db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("revisar-{nombre}"));
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }
 
 fn guardar(db: &mut Connection, project: &str, title: &str, content: &str, tags: &[&str]) -> String {
@@ -33,7 +34,7 @@ fn desfasadas(db: &Connection) -> Vec<(String, String)> {
 /// El caso que lo motivó: la nota del proyecto sigue en la 0.2.0 y la de estado ya va por la 0.9.2.
 #[test]
 fn avisa_de_la_version_vieja_y_lo_dice_en_el_recall() {
-    let (mut db, dir) = base("version");
+    let (_dir, mut db) = base("version");
     let vieja = guardar(&mut db, "/p", "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
     let nueva = guardar(&mut db, "/p", "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
     assert_eq!(desfasadas(&db), vec![(vieja.clone(), nueva.clone())]);
@@ -46,14 +47,12 @@ fn avisa_de_la_version_vieja_y_lo_dice_en_el_recall() {
     let t = recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), ..Default::default() }).unwrap().unwrap();
     let linea = t.lines().find(|l| l.contains("memoria para agentes en Rust")).unwrap();
     assert!(linea.contains("⚠ may be outdated") && linea.contains(&nueva[..12]), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Falsos positivos que daban las primeras versiones con las notas reales.
 #[test]
 fn no_avisa_de_cosas_distintas() {
-    let (mut db, dir) = base("distintas");
+    let (_dir, mut db) = base("distintas");
     // Versiones de cosas distintas en el mismo proyecto.
     guardar(&mut db, "/p", "Dependencias de Lumbre", "Usa rusqlite 0.41.0 desde el 27-oct-2026.", &[]);
     guardar(&mut db, "/p", "Lumbre publicada", "omoi 0.9.2 publicado el 29-oct-2026.", &[]);
@@ -61,25 +60,21 @@ fn no_avisa_de_cosas_distintas() {
     guardar(&mut db, "", "Eslogan de Lumbre", "Elegido el 29-oct-2026. Falta ponerlo en la descripción del repositorio.", &[]);
     guardar(&mut db, "", "Lumbre: estado de la versión", "La versión está publicada e instalada en el portátil desde el 30-oct-2026.", &[]);
     assert!(desfasadas(&db).is_empty(), "{:?}", revisar::avisos(&db, &Ambito::Todos).unwrap());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// «Pendiente» en la vieja y «hecho» en la nueva sobre lo mismo sí es un aviso.
 #[test]
 fn pendiente_y_hecho_de_lo_mismo() {
-    let (mut db, dir) = base("pendiente");
+    let (_dir, mut db) = base("pendiente");
     let vieja = guardar(&mut db, "", "Certificado del dominio gaviota", "28-oct-2026: pendiente renovar el certificado wildcard de gaviota.example.", &[]);
     let nueva = guardar(&mut db, "", "Dominio gaviota renovado", "30-oct-2026: hecho, renovado el certificado wildcard de gaviota.example.", &[]);
     assert_eq!(desfasadas(&db), vec![(vieja, nueva)]);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// «Está bien así» vale hasta que la memoria vuelva a cambiar.
 #[test]
 fn descartar_hasta_que_cambie() {
-    let (mut db, dir) = base("descartar");
+    let (_dir, mut db) = base("descartar");
     let vieja = guardar(&mut db, "/p", "Lumbre: memoria para agentes", "La v0.2.0 publicada el 28-oct-2026.", &[]);
     let nueva = guardar(&mut db, "/p", "Lumbre: estado", "La 0.9.2 está publicada desde el 29-oct-2026.", &["status"]);
     assert_eq!(desfasadas(&db).len(), 1);
@@ -89,14 +84,12 @@ fn descartar_hasta_que_cambie() {
     let c = Cambios { content: Some("La v0.2.0 publicada el 28-oct-2026. Y algo más.".into()), ..Default::default() };
     memoria::actualizar(&mut db, &vieja, c, None).unwrap();
     assert_eq!(desfasadas(&db).len(), 1, "tras cambiar, vuelve a avisar");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Las que dependen del disco y del largo.
 #[test]
 fn rutas_rotas_y_largas() {
-    let (mut db, dir) = base("rutas");
+    let (dir, mut db) = base("rutas");
     let proyecto = dir.join("proyecto");
     std::fs::create_dir_all(proyecto.join("src")).unwrap();
     std::fs::write(proyecto.join("src/existe.rs"), "").unwrap();
@@ -115,8 +108,6 @@ fn rutas_rotas_y_largas() {
     let rota = v.iter().find(|a| a.kind == revisar::RUTA_ROTA).expect("ruta rota");
     assert!(rota.detail.contains("src/borrado.rs") && !rota.detail.contains("existe.rs"), "{}", rota.detail);
     assert!(v.iter().any(|a| a.kind == revisar::LARGA && a.title == "Nota enorme"));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- El aviso al empezar la sesión ------------------------------------------------------------------
@@ -137,7 +128,7 @@ fn aviso_al_empezar(db: &mut Connection, sesion: &str) -> Option<String> {
 /// proponga sin tocar nada.
 #[test]
 fn avisa_de_la_revision_al_pasar_el_umbral_y_una_vez() {
-    let (mut db, dir) = base("aviso");
+    let (_dir, mut db) = base("aviso");
     largas(&mut db, 0, revisar::AVISO_MINIMO - 1);
     assert_eq!(aviso_al_empezar(&mut db, "s1"), None, "por debajo del umbral");
     largas(&mut db, 100, 1);
@@ -155,15 +146,13 @@ fn avisa_de_la_revision_al_pasar_el_umbral_y_una_vez() {
     // Otro día, otra vez aunque no haya crecido.
     db.execute("UPDATE meta SET v = '2000-01-01|25' WHERE k = 'revision_aviso'", []).unwrap();
     assert!(aviso_al_empezar(&mut db, "s6").is_some(), "al día siguiente");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// La herramienta `context` (los agentes sin recall al empezar) da el mismo aviso, y comparte con el
 /// recall el «ya se dijo hoy».
 #[test]
 fn el_aviso_tambien_en_context() {
-    let (mut db, dir) = base("aviso-context");
+    let (dir, mut db) = base("aviso-context");
     let carpeta = dir.join("proyecto");
     std::fs::create_dir_all(&carpeta).unwrap();
     largas(&mut db, 0, revisar::AVISO_MINIMO);
@@ -178,15 +167,13 @@ fn el_aviso_tambien_en_context() {
     assert!(a.starts_with("Memory review: 20 items pending (20 too long)"), "{a}");
     assert!(context().get("review_notice").is_none(), "una vez al día");
     assert_eq!(aviso_al_empezar(&mut db, "s1"), None, "ya se dijo hoy por context");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// `context` cuenta como al empezar, sin las rutas rotas: tener unas cuantas no hace «crecer» la
 /// cuenta ni repite el aviso en la misma sesión.
 #[test]
 fn las_rutas_rotas_no_repiten_el_aviso_en_context() {
-    let (mut db, dir) = base("aviso-rutas");
+    let (dir, mut db) = base("aviso-rutas");
     let carpeta = dir.join("proyecto");
     std::fs::create_dir_all(&carpeta).unwrap();
     // La ruta como la resuelve Omoikane: en Windows, la carpeta temporal puede llegar con su nombre
@@ -210,15 +197,13 @@ fn las_rutas_rotas_no_repiten_el_aviso_en_context() {
     let r: serde_json::Value = serde_json::from_str(&t).unwrap();
     assert!(r["review"].as_array().unwrap().iter().filter(|a| a["kind"] == revisar::RUTA_ROTA).count() >= 5, "{r}");
     assert!(r.get("review_notice").is_none(), "{r}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Al empezar se cuenta sin leer las memorias enteras (`pendientes`): da lo mismo que la revisión
 /// entera, salvo las rutas rotas y los secretos, que solo salen en ella.
 #[test]
 fn las_cifras_rapidas_cuadran_con_la_revision() {
-    let (mut db, dir) = base("cifras");
+    let (_dir, mut db) = base("cifras");
     let vieja = guardar(&mut db, "/p", "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026.", &[]);
     guardar(&mut db, "/p", "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub.", &["status"]);
     guardar(&mut db, "/p", "Horno del taller", "Ver [[manual_que_no_existe]] antes de abrirlo.", &[]);
@@ -237,6 +222,4 @@ fn las_cifras_rapidas_cuadran_con_la_revision() {
         assert_eq!(rapidas, enteras);
         assert!(rapidas.len() >= 5 && rapidas.contains_key(revisar::ESTADO_VIEJO), "{rapidas:?}");
     }
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

@@ -5,18 +5,18 @@
 //! usuario de verdad ni su `~/.omoikane` se tocan (cada orden lleva `HOME`/`USERPROFILE` falsos o
 //! ninguno, y `OMOIKANE_HOME` o `OMOIKANE_DB` propios).
 
+mod comun;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
     fn nueva(nombre: &str) -> Prueba {
-        let dir = std::env::temp_dir().join(format!("omoi-sinpersona-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = comun::Temporal::nueva(&format!("sinpersona-{nombre}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
         Prueba { dir }
     }
@@ -59,17 +59,6 @@ impl Prueba {
         std::fs::create_dir_all(p.join(".git")).unwrap();
         std::fs::write(p.join(".git").join("config"), format!("[core]\n\tbare = false\n[remote \"origin\"]\n\turl = {remoto}\n")).unwrap();
         p
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        for _ in 0..20 {
-            if std::fs::remove_dir_all(&self.dir).is_ok() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
     }
 }
 
@@ -243,6 +232,42 @@ fn sin_nadie_delante_no_pregunta() {
     let m: serde_json::Value = serde_json::from_str(&ok(&p.omoi(&pr, &["--json", "remember", "-k", "fact", "-t", "Algo", "Algo que olvidar."], &env), "remember")).unwrap();
     let o = p.omoi(&pr, &["forget", m["id"].as_str().unwrap()], &env);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--yes"), "{}", salida(&o));
+}
+
+/// 1.7.1: sin nadie delante, ni guardar ni buscar arrancan el servicio de significado (viviría media
+/// hora más que el trabajo). Con una persona, el mismo guardar sí lo deja arrancando: la prueba ve algo.
+#[test]
+fn sin_nadie_delante_no_arranca_el_servicio_de_significado() {
+    let p = Prueba::nueva("significado");
+    // Un «modelo» con los ficheros del formato compacto, vacíos: basta para que se dé por instalado. El
+    // servicio que se lance con él falla al cargarlo y sale.
+    let modelo = p.dir.join("modelo");
+    std::fs::create_dir_all(&modelo).unwrap();
+    for f in ["config.json", "tokenizer.json", "pesos.safetensors", "tokens.i8", "tokens.escala"] {
+        std::fs::write(modelo.join(f), "").unwrap();
+    }
+    let pr = p.proyecto("web", "git@github.com:acme/web.git");
+    let marca = |casa: &Path| casa.join("significado.arrancando").exists();
+    let casa = p.dir.join("casa");
+    let env = [
+        ("OMOIKANE_HOME", Some(casa.to_str().unwrap())),
+        ("OMOIKANE_NONINTERACTIVE", Some("1")),
+        ("OMOIKANE_SEMANTIC", Some("1")),
+        ("OMOIKANE_SEMANTIC_MODEL", Some(modelo.to_str().unwrap())),
+    ];
+    ok(&p.omoi(&pr, &["remember", "-k", "fact", "-t", "Despliegue", "Se publica con el script de la CI."], &env), "remember");
+    ok(&p.omoi(&pr, &["search", "publicar"], &env), "search");
+    assert!(!marca(&casa), "sin nadie delante no se arranca el servicio");
+    assert!(!casa.join("significado.json").exists());
+
+    let otra = p.dir.join("otra");
+    let env = [
+        ("OMOIKANE_HOME", Some(otra.to_str().unwrap())),
+        ("OMOIKANE_SEMANTIC", Some("1")),
+        ("OMOIKANE_SEMANTIC_MODEL", Some(modelo.to_str().unwrap())),
+    ];
+    ok(&p.omoi(&pr, &["remember", "-k", "fact", "-t", "Despliegue", "Se publica con el script de la CI."], &env), "remember");
+    assert!(marca(&otra), "con una persona delante sí se deja arrancando");
 }
 
 /// Un repositorio git desnudo en la carpeta de la prueba; su URL.

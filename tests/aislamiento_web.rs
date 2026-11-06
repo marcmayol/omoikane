@@ -3,12 +3,14 @@
 //! global); desde un proyecto sin espacio, solo lo que no tiene espacio; desde la carpeta del usuario,
 //! todo. Tampoco se puede escribir fuera, y `?dir=` solo restringe.
 
+mod comun;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
@@ -50,12 +52,6 @@ impl Prueba {
 
     fn cuenta(&self, consulta: &str, p: &str) -> i64 {
         self.base().query_row(consulta, [p], |f| f.get(0)).unwrap()
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -135,8 +131,7 @@ fn sin_otros(que: &str, texto: &str) {
 
 #[test]
 fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
-    let p = Prueba { dir: std::env::temp_dir().join(format!("omoi-aislweb-{}", std::process::id())) };
-    let _ = std::fs::remove_dir_all(&p.dir);
+    let p = Prueba { dir: comun::Temporal::nueva("aislweb") };
     for n in ["acme-api", "acme-web", "globex", "notas"] {
         std::fs::create_dir_all(p.proyecto(n).join(".git")).unwrap();
     }
@@ -304,4 +299,69 @@ fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
     sin_otros("?dir=acme-api desde casa", &solo_acme);
     let (e, c) = s.post("/api/redact", serde_json::json!({ "id": globex }));
     assert_eq!(e, 200, "desde casa sí: {c}");
+}
+
+/// 1.7.1: `/api/sync` desde un cliente solo enseña el repositorio de ese espacio, nunca la URL ni el
+/// autor del general (el personal) ni los de otro cliente.
+#[test]
+fn la_sincronizacion_de_la_web_solo_ensena_el_repositorio_del_espacio() {
+    let p = Prueba { dir: comun::Temporal::nueva("aislweb-sync") };
+    for n in ["acme-api", "globex", "notas"] {
+        std::fs::create_dir_all(p.proyecto(n).join(".git")).unwrap();
+    }
+    let casa = p.casa();
+    p.ok(&casa, &["space", "add", "Acme"]);
+    p.ok(&casa, &["space", "add", "globex"]);
+    for n in ["acme-api", "globex", "notas"] {
+        p.ok(&p.proyecto(n), &["remember", "-f", "-k", "fact", "-t", &format!("Nota de {n}"), "Algo."]);
+    }
+    for (e, n) in [("acme", "acme-api"), ("globex", "globex")] {
+        let ruta = p.proyecto(n);
+        p.ok(&casa, &["space", "assign", e, ruta.to_str().unwrap()]);
+    }
+    // Las configuraciones tal como las deja `sync init`: la general junto a la base (`o.sync.json`) y
+    // una por espacio en `o.sync-spaces/<espacio>/`.
+    let config = |ruta: PathBuf, url: &str, autor: &str, espacio: Option<&str>| {
+        std::fs::create_dir_all(ruta.parent().unwrap()).unwrap();
+        let mut c = serde_json::json!({ "url": url, "kinds": ["fact"], "global": true, "author": autor, "person": "p" });
+        if let Some(e) = espacio {
+            c["space"] = e.into();
+        }
+        std::fs::write(ruta, c.to_string()).unwrap();
+    };
+    config(p.dir.join("o.sync.json"), "https://git.example/marc/personal.git", "Marc Personal", None);
+    let espacios = p.dir.join("o.sync-spaces");
+    config(espacios.join("acme").join("sync.json"), "https://git.example/acme/memoria.git", "Marc en Acme", Some("acme"));
+    config(espacios.join("globex").join("sync.json"), "https://git.example/globex/memoria.git", "Marc en Globex", Some("globex"));
+    let puerto = 7600 + (std::process::id() % 300) as u16;
+    let sync = |s: &Servidor| -> serde_json::Value { serde_json::from_str(&s.get("/api/sync")).unwrap() };
+
+    // Desde acme: su repositorio y su autor, nada del general ni de globex.
+    let s = servir(&p, &p.proyecto("acme-api"), puerto);
+    let v = sync(&s);
+    assert_eq!(v["configured"], true, "{v}");
+    assert_eq!(v["url"], "https://git.example/acme/memoria.git", "{v}");
+    assert_eq!(v["author"], "Marc en Acme", "{v}");
+    let texto = v.to_string();
+    for x in ["personal", "Personal", "globex", "Globex"] {
+        assert!(!texto.contains(x), "desde acme enseña «{x}»: {texto}");
+    }
+    drop(s);
+
+    // Desde un proyecto sin espacio, y desde la carpeta del usuario: el general.
+    for (i, carpeta) in [p.proyecto("notas"), casa.clone()].iter().enumerate() {
+        let s = servir(&p, carpeta, puerto + 1 + i as u16);
+        let v = sync(&s);
+        assert_eq!(v["url"], "https://git.example/marc/personal.git", "{v}");
+        assert_eq!(v["author"], "Marc Personal", "{v}");
+        let texto = v.to_string();
+        assert!(!texto.contains("acme") && !texto.contains("globex"), "{texto}");
+    }
+
+    // Un cliente sin repositorio propio no cae al general: no hay nada que enseñar.
+    std::fs::remove_dir_all(espacios.join("acme")).unwrap();
+    let s = servir(&p, &p.proyecto("acme-api"), puerto + 3);
+    let v = sync(&s);
+    assert_eq!(v["configured"], false, "{v}");
+    assert!(v["url"].is_null() && v["author"].is_null(), "{v}");
 }

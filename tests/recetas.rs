@@ -1,5 +1,7 @@
 //! Fase 7.3: recetas (`procedure`) que vuelven enteras cuando el mensaje las pide.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
@@ -8,8 +10,7 @@ const PASOS: &str = "1. Subir la versión en Cargo.toml y plugin.json.\n2. `git 
 
 #[test]
 fn la_receta_llega_entera_cuando_se_pide_y_solo_entonces() {
-    let dir = std::env::temp_dir().join(format!("omoi-recetas-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("recetas");
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
     let n = Nueva { project: "/p".into(), kind: Some(Tipo::Procedure), title: "Publicar una versión de Lumbre".into(), content: PASOS.into(), ..Default::default() };
     let receta = memoria::guardar(&mut db, n, None).unwrap();
@@ -30,16 +31,13 @@ fn la_receta_llega_entera_cuando_se_pide_y_solo_entonces() {
     assert!(t.contains("A saved procedure"), "{t}");
     // Otro proyecto no la ve.
     assert!(recall::al_preguntar(&mut db, "/otro", &e("s4", "publica la web"), None).unwrap().is_none_or(|t| !t.contains("A saved procedure")));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Una palabra suelta de `when:` («publica») vale para muchas cosas: con una receta global (o de otro
 /// proyecto, vista desde una carpeta general), hace falta algo más que diga que es esa receta.
 #[test]
 fn una_palabra_suelta_no_basta_fuera_de_su_proyecto() {
-    let dir = std::env::temp_dir().join(format!("omoi-recetas-sueltas-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("recetas-sueltas");
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
     let n = Nueva { project: String::new(), kind: Some(Tipo::Procedure), title: "Publicar una versión de Lumbre".into(), content: PASOS.into(), ..Default::default() };
     memoria::guardar(&mut db, n, None).unwrap();
@@ -55,6 +53,4 @@ fn una_palabra_suelta_no_basta_fuera_de_su_proyecto() {
     for (i, p) in ["publica la versión nueva", "publica lumbre ya", "saca versión cuando puedas", "publica la release de hoy"].iter().enumerate() {
         assert!(pide(&mut db, &format!("s{i}"), p), "debería traer la receta: {p}");
     }
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

@@ -3,6 +3,8 @@
 //! que son un mismo proyecto, carpetas movidas, `lector_minimo`, veredictos por reloj lógico y tipos
 //! que esta versión no conoce.
 
+mod comun;
+
 use omoikane::buscar::{self, Opciones};
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
@@ -10,11 +12,8 @@ use omoikane::{db, proyecto, veredictos};
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 
-fn carpeta(nombre: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("omoi-esquema-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn carpeta(nombre: &str) -> comun::Temporal {
+    comun::Temporal::nueva(&format!("esquema-{nombre}"))
 }
 
 /// Un repositorio git de mentira con su `origin` (lo que lee `sync::clave`).
@@ -174,8 +173,6 @@ fn migra_una_base_del_esquema_9_sin_perder_nada() {
     // Y se sigue escribiendo como siempre.
     let nueva = guardar(&mut db, &web_b, Tipo::Fact, "Nueva tras migrar", "Funciona.");
     assert_eq!(pid_de(&db, &nueva), web);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -206,13 +203,13 @@ fn una_base_de_un_esquema_mayor_se_abre_si_su_lector_minimo_lo_permite() {
         db.execute_batch("DELETE FROM meta WHERE k = 'lector_minimo'; PRAGMA user_version = 11;").unwrap();
     }
     assert!(db::abrir(&ruta).is_err());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Espacios ------------------------------------------------------------------------------------
 
 struct Clientes {
-    dir: PathBuf,
+    /// Va antes que la base: al deshacer el struct en variables, la base se suelta antes de borrarla.
+    dir: comun::Temporal,
     db: Connection,
     a_web: String,
     a_app: String,
@@ -249,7 +246,7 @@ fn clientes(nombre: &str) -> Clientes {
 
 #[test]
 fn desde_un_cliente_no_se_ve_nada_de_otro() {
-    let Clientes { dir, mut db, a_web, a_app, b_web, suelto } = clientes("aislar");
+    let Clientes { dir: _dir, mut db, a_web, a_app, b_web, suelto } = clientes("aislar");
     let desde_a = Ambito::de(&db, &a_web).unwrap();
     let o = Opciones { ambito: desde_a, kind: None, tags: vec![], limite: 50 };
     let vistas = titulos(buscar::buscar(&mut db, "zafiro", &o, None).unwrap().into_iter().map(|r| r.memoria));
@@ -278,8 +275,6 @@ fn desde_un_cliente_no_se_ve_nada_de_otro() {
     // Y lo de Globex sí se ve desde Globex.
     let desde_b = Ambito::de(&db, &b_web).unwrap();
     assert!(titulos(memoria::recientes(&db, &desde_b, None, 50).unwrap()).iter().any(|t| t.starts_with("Globex web")));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Lo mismo por las herramientas MCP (`search`, `recent`, `context`), que es lo que ve el agente,
@@ -325,7 +320,6 @@ fn por_mcp_tampoco_se_cruza_de_espacio() {
     // Un nombre que encaja con varios: error con la lista.
     let (t, error) = llamar(&dir.display().to_string(), "search", serde_json::json!({ "query": "zafiro", "project": "web" }));
     assert!(error && t.contains("acme-web") && t.contains("globex-web"), "{t}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Clones, worktrees y carpetas movidas ---------------------------------------------------------
@@ -348,8 +342,6 @@ fn dos_clones_y_un_worktree_son_un_proyecto() {
     let e = Entrada { session_id: "s".into(), ..Default::default() };
     let r = recall::al_empezar(&mut db, &w, &e).unwrap().unwrap();
     assert!(r.contains("La caché del build") && !r.contains("[project"), "{r}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -390,8 +382,6 @@ fn una_carpeta_movida_sigue_siendo_su_proyecto() {
     // `projects prune`: el de la otra carpeta «notas», sin memorias, se va.
     assert_eq!(proyecto::podar(&db).unwrap(), 1);
     assert_eq!(proyecto::resolver(&db, &otra).unwrap(), None);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -412,8 +402,6 @@ fn fundir_dos_proyectos_conserva_ids_y_deja_el_estado_mas_nuevo() {
     assert_eq!(memoria::historial(&db, &otra).unwrap().len(), 1, "con su historial");
     assert_eq!(veredictos::ultima_de_cadena(&db, &ea).unwrap().map(|x| x.0), Some(eb.clone()), "el estado viejo, sustituido por el nuevo");
     assert_eq!(proyecto::resolver(&db, &a).unwrap().map(|x| x.0), Some(pb), "la carpeta vieja ya es del nuevo");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Veredictos por reloj lógico y tipos desconocidos ----------------------------------------------
@@ -445,8 +433,6 @@ fn un_veredicto_vale_aunque_los_relojes_de_pared_esten_descuadrados() {
     assert!(veredictos::parejas(&db).unwrap().contains_key(&veredictos::pareja(&a, &b)));
     memoria::actualizar(&mut db, &a, Cambios { content: Some("Del servidor de pruebas.".into()), ..Default::default() }, None).unwrap();
     assert!(!veredictos::parejas(&db).unwrap().contains_key(&veredictos::pareja(&a, &b)));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Un tipo de una versión futura llega por un export: se guarda tal cual, se trata como `fact` y vuelve
@@ -476,8 +462,6 @@ fn un_tipo_desconocido_se_conserva() {
     omoikane::copia::importar(&mut otra, &ruta2, &fichero, "", None, false).unwrap();
     let kind: String = otra.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
-    drop((db, otra));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Para aprender entre proyectos (0.21.0): desde qué proyecto se recibió cada memoria. El recall lo
@@ -509,8 +493,6 @@ fn el_uso_desde_cada_proyecto_queda_resumido() {
     // Olvidarla del todo (y que no quede nada colgando).
     memoria::olvidar_del_todo(&mut db, &id).unwrap();
     assert_eq!(uno(&db, "SELECT count(*) FROM memory_use"), 0);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Persona local y aislamiento por id (revisión de la 1.0) -----------------------------------------
@@ -544,7 +526,6 @@ fn la_migracion_pone_persona_en_las_claves_dir() {
         assert_eq!(la_clave(&db), format!("dir:{persona}/notas"));
         drop(db);
         assert_eq!(db::persona_de(&db::abrir(&ruta).unwrap()), persona, "estable");
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -569,8 +550,6 @@ fn una_base_10_sin_persona_se_pone_al_dia() {
     assert_eq!(la_clave(&db), format!("dir:{persona}/notas"));
     assert_eq!(uno(&db, "SELECT count(*) FROM tombstone WHERE space_key = ''"), 1);
     assert_eq!(uno(&db, "SELECT count(*) FROM project WHERE hlc = ''"), 2, "la columna, vacía");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// La misma base vieja abierta por varios procesos (aquí, hilos) a la vez: ponerla al día comprueba y
@@ -601,8 +580,6 @@ fn una_base_10_vieja_abierta_a_la_vez() {
         assert!(personas.iter().all(|p| *p == personas[0]), "{personas:?}");
         let db = db::abrir(&ruta).unwrap();
         assert_eq!(uno(&db, "SELECT count(*) FROM project WHERE hlc = '' AND paused = ''"), 2);
-        drop(db);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -666,7 +643,6 @@ fn por_id_tampoco_se_cruza_de_espacio() {
     // Con una global, sí: se ve desde los dos.
     let (t, error) = llamar(&a_web, "update", serde_json::json!({ "id": acme, "compatible": [global] }));
     assert!(!error, "{t}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// `fundir` y `mover` entre proyectos de espacios distintos: error (de qué espacio a cuál) salvo con
@@ -689,6 +665,4 @@ fn fundir_entre_espacios_pide_forzar() {
     let pv = proyecto::registrar(&db, &vacia).unwrap();
     assert_eq!(proyecto::fundir(&mut db, pv, pa, false).unwrap(), 0);
     assert_eq!(proyecto::fundir(&mut db, pb, pa, true).unwrap(), 1);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

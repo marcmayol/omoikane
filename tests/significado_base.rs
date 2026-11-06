@@ -2,15 +2,17 @@
 //! un cambio de texto lo vuelva a pedir, que el ámbito se respete al comparar y que cambiar de
 //! versión de los vectores los borre.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use omoikane::significado as s;
 
-fn base(nombre: &str) -> (rusqlite::Connection, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-sigbase-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn base(nombre: &str) -> (comun::Temporal, rusqlite::Connection) {
+    let dir = comun::Temporal::nueva(&format!("sigbase-{nombre}"));
     let ruta = dir.join("o.db");
-    (db::abrir(&ruta).unwrap(), dir)
+    let db = db::abrir(&ruta).unwrap();
+    (dir, db)
 }
 
 fn nueva(project: &str, title: &str, content: &str) -> Nueva {
@@ -28,7 +30,7 @@ fn eje(i: usize, j: usize) -> Vec<f32> {
 
 #[test]
 fn vectores_en_la_base() {
-    let (mut db, dir) = base("vectores");
+    let (dir, mut db) = base("vectores");
     let a = memoria::guardar(&mut db, nueva("/p", "Tokens", "El token caduca a los 15 minutos."), None).unwrap();
     let b = memoria::guardar(&mut db, nueva("/p", "Gradle", "La caché de Gradle se rompe con dos daemons."), None).unwrap();
     let c = memoria::guardar(&mut db, nueva("/otro", "Otro proyecto", "Esto es de otro proyecto."), None).unwrap();
@@ -75,15 +77,13 @@ fn vectores_en_la_base() {
     drop(db);
     let db = db::abrir(&dir.join("o.db")).unwrap();
     assert_eq!(s::cobertura(&db).unwrap(), (0, 2));
-    drop(db);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// El servicio filtra el ámbito en memoria (`parecidas_en_base`); tiene que ver lo mismo que el SQL de
 /// `Ambito::sql` (`cosenos`), con proyectos con y sin espacio, memorias de espacio y globales.
 #[test]
 fn el_ambito_en_memoria_es_el_de_sql() {
-    let (mut db, dir) = base("ambito");
+    let (_dir, mut db) = base("ambito");
     let acme = omoikane::proyecto::crear_espacio(&db, "acme").unwrap();
     let globex = omoikane::proyecto::crear_espacio(&db, "globex").unwrap();
     let mut ids = Vec::new();
@@ -115,6 +115,4 @@ fn el_ambito_en_memoria_es_el_de_sql() {
         assert_eq!(sql, mem, "{a:?}");
         assert!(!sql.is_empty(), "{a:?}");
     }
-    drop(db);
-    let _ = std::fs::remove_dir_all(&dir);
 }

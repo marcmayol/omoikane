@@ -5,6 +5,8 @@
 //! Necesita EmbeddingGemma en `OMOIKANE_SEMANTIC_MODEL` (la carpeta de sentence-transformers o la del
 //! formato compacto); sin ella se salta.
 
+mod comun;
+
 use omoikane::gemma::{Gemma, Tipo};
 use std::path::PathBuf;
 
@@ -46,8 +48,7 @@ const TEXTOS: [&str; 12] = [
 
 #[test]
 fn motor_y_tokenizer() {
-    let dir = std::env::temp_dir().join(format!("omoi-motor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("motor");
     let Some(m) = compacto(&dir) else {
         eprintln!("motor: falta OMOIKANE_SEMANTIC_MODEL (EmbeddingGemma); se salta");
         return;
@@ -96,6 +97,4 @@ fn motor_y_tokenizer() {
     for (l, s) in lote_generico.iter().zip(solos.iter().step_by(2)) {
         assert!(coseno(l, s) > 0.9999);
     }
-    drop((candle, rapido, generico));
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -9,6 +9,8 @@
 //! aviso. La CI (`.github/workflows/compat.yml`) lo baja de la Release v1.0.0, comprueba su SHA-256 y
 //! corre `cargo test --test compat` en Windows, Linux y macOS.
 
+mod comun;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -30,14 +32,12 @@ fn binario_10() -> Option<PathBuf> {
 }
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
     fn nueva(nombre: &str) -> Prueba {
-        let dir = std::env::temp_dir().join(format!("omoi-compat-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = comun::Temporal::nueva(&format!("compat-{nombre}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
         let p = Prueba { dir };
         p.otro_repo("compartida");
@@ -114,17 +114,6 @@ impl Prueba {
         for args in [vec!["add", "-A"], vec!["-c", "user.name=x", "-c", "user.email=x@x", "commit", "--quiet", "-m", "a mano"], vec!["push", "--quiet", "origin", "HEAD:main"]] {
             let o = self.git(&clon, &args);
             assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
-        }
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        for _ in 0..20 {
-            if std::fs::remove_dir_all(&self.dir).is_ok() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
 }

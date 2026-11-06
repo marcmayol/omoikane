@@ -3,12 +3,14 @@
 //! pendientes y hechos, etiquetas y enlaces), las mismas parejas desfasadas, los mismos enlaces y
 //! los mismos enlaces rotos que si se rehiciera todo.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Cambios, Nueva, Tipo};
 use omoikane::revisar;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Un generador de números de siempre (sin dependencias): el test sale igual en cada pasada.
 struct Azar(u64);
@@ -28,12 +30,11 @@ impl Azar {
     }
 }
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-por-partes-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("por-partes-{nombre}"));
     let db = db::abrir(&dir.join("o.db")).unwrap();
     db.execute_batch("PRAGMA synchronous = OFF").unwrap();
-    (db, dir)
+    (dir, db)
 }
 
 fn frases() -> Vec<String> {
@@ -127,7 +128,7 @@ fn parciales(db: &Connection) -> i64 {
 
 #[test]
 fn por_partes_igual_que_entera() {
-    let (mut db, dir) = base("igual");
+    let (dir, mut db) = base("igual");
     let fr = frases();
     let mut az = Azar(0x9E37_79B9_7F4A_7C15);
     let mut ids: Vec<String> = Vec::new();
@@ -194,8 +195,6 @@ fn por_partes_igual_que_entera() {
     // Se ha revisado por partes de verdad, no rehaciendo todo en cada paso.
     assert!(parciales(&db) >= 70, "solo {} por partes", parciales(&db));
     assert_ne!(foto(&db), inicial, "las escrituras no han cambiado nada");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Lo que se aproxima: qué palabra es rara se toma del último recálculo entero. Una palabra que
@@ -203,7 +202,7 @@ fn por_partes_igual_que_entera() {
 /// número de memorias cambia más de un 5 %; entonces se rehace todo y vuelve a cuadrar.
 #[test]
 fn la_rareza_se_fija_hasta_el_siguiente_entero() {
-    let (mut db, dir) = base("rareza");
+    let (dir, mut db) = base("rareza");
     let fr = frases();
     let mut az = Azar(0x2545_F491_4F6C_DD1D);
     let mut ids = Vec::new();
@@ -245,6 +244,4 @@ fn la_rareza_se_fija_hasta_el_siguiente_entero() {
         revisar::al_dia_de(&db, &antes, &[id]).unwrap();
     }
     assert_eq!(foto(&db), foto_entera(&db, &dir, 1));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

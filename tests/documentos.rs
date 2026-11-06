@@ -1,14 +1,15 @@
 //! 1.6: el recall sobre la documentación del proyecto, en solo lectura (`omoi docs`).
 
+mod comun;
+
 use omoikane::db;
 use omoikane::documentos as d;
 use omoikane::recall::{self, Entrada};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn dir(nombre: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("omoi-docs-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn dir(nombre: &str) -> comun::Temporal {
+    let d = comun::Temporal::nueva(&format!("docs-{nombre}"));
     std::fs::create_dir_all(d.join("repo").join(".git")).unwrap();
     std::fs::create_dir_all(d.join("repo").join("docs").join("guias")).unwrap();
     std::fs::create_dir_all(d.join("repo").join("docs").join(".obsidian")).unwrap();
@@ -33,7 +34,7 @@ fn documentacion(docs: &Path) {
     escribir(&docs.join(".obsidian").join("oculto.md"), "# Oculto\n\nStripe webhooks firma: la carpeta oculta no se indexa.");
 }
 
-fn preparar(nombre: &str) -> (PathBuf, String, rusqlite::Connection) {
+fn preparar(nombre: &str) -> (comun::Temporal, String, rusqlite::Connection) {
     let base = dir(nombre);
     documentacion(&base.join("repo").join("docs"));
     let project = omoikane::proyecto::de(&base.join("repo")).unwrap();

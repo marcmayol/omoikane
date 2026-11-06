@@ -1,41 +1,70 @@
 //! Fase 2: vectores al día, búsqueda híbrida y duplicados. Necesitan el modelo int8 (ver la
 //! cabecera de tests/equivalencia.rs); sin él, avisan y no comprueban nada.
 
+mod comun;
+
 use omoikane::buscar::{self, Opciones};
 use omoikane::embeber::{Modelo, compilar};
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use omoikane::{db, vectores};
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-/// El modelo compilado una sola vez para todos los tests de este fichero.
-fn modelo() -> Option<Modelo> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    let dir = DIR.get_or_init(|| {
-        let int8 = std::env::var_os("OMOI_MODELO_INT8")
-            .map(PathBuf::from)
-            .or_else(|| std::env::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
-        if !int8.join("model.safetensors").exists() {
-            return None;
-        }
-        let destino = std::env::temp_dir().join(format!("omoi-test-modelo-{}", std::process::id())).join("modelo-test");
-        compilar(&int8, &destino).expect("compilar");
-        Some(destino)
-    });
-    match dir {
-        Some(d) => Some(Modelo::abrir(d).expect("abrir")),
-        None => {
-            eprintln!("SALTADO: no está el modelo int8 (ver la cabecera de tests/equivalencia.rs)");
-            None
+/// El modelo compilado una vez para los tests de este fichero que corren a la vez. Su carpeta temporal
+/// se borra cuando el último lo suelta (los ficheros mapeados no se pueden borrar antes en Windows); si
+/// otro lo pide después, se compila de nuevo.
+struct ConModelo(Option<Modelo>);
+
+static COMPILADO: Mutex<Option<(comun::Temporal, usize)>> = Mutex::new(None);
+
+impl std::ops::Deref for ConModelo {
+    type Target = Modelo;
+
+    fn deref(&self) -> &Modelo {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl Drop for ConModelo {
+    fn drop(&mut self) {
+        let mut c = COMPILADO.lock().unwrap_or_else(|e| e.into_inner());
+        // Primero se suelta el modelo y luego, si era el último, su carpeta.
+        self.0 = None;
+        if let Some((_, usos)) = c.as_mut() {
+            *usos -= 1;
+            if *usos == 0 {
+                *c = None;
+            }
         }
     }
 }
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-vectores-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    (db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn modelo() -> Option<ConModelo> {
+    let int8 = std::env::var_os("OMOI_MODELO_INT8")
+        .map(PathBuf::from)
+        .or_else(|| std::env::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))
+        .filter(|d| d.join("model.safetensors").exists());
+    let Some(int8) = int8 else {
+        eprintln!("SALTADO: no está el modelo int8 (ver la cabecera de tests/equivalencia.rs)");
+        return None;
+    };
+    let mut c = COMPILADO.lock().unwrap_or_else(|e| e.into_inner());
+    if c.is_none() {
+        let dir = comun::Temporal::nueva("test-modelo");
+        compilar(&int8, &dir.join("modelo-test")).expect("compilar");
+        *c = Some((dir, 0));
+    }
+    let (dir, usos) = c.as_mut().unwrap();
+    let m = Modelo::abrir(&dir.join("modelo-test")).expect("abrir");
+    *usos += 1;
+    Some(ConModelo(Some(m)))
+}
+
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("vectores-{nombre}"));
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }
 
 fn nueva(project: &str, title: &str, content: &str) -> Nueva {
@@ -49,7 +78,7 @@ fn cuenta(db: &Connection, sql: &str) -> i64 {
 #[test]
 fn los_vectores_siguen_a_las_memorias() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("al-dia");
+    let (_dir, mut db) = base("al-dia");
     // Dos guardadas sin modelo (como antes de instalarlo) y una con él.
     let a = memoria::guardar(&mut db, nueva("/p", "Uno", "primero"), None).unwrap();
     memoria::guardar(&mut db, nueva("/p", "Dos", "segundo"), None).unwrap();
@@ -72,27 +101,23 @@ fn los_vectores_siguen_a_las_memorias() {
     // Olvidar se lleva el vector.
     memoria::olvidar(&mut db, &a.id).unwrap();
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_vec"), 2);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn el_vector_es_el_del_texto_nuevo() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("texto-nuevo");
+    let (_dir, mut db) = base("texto-nuevo");
     let a = memoria::guardar(&mut db, nueva("/p", "Puerto", "El servidor escucha en el 8765."), Some(&m)).unwrap();
     let c = Cambios { content: Some("La tortilla lleva cebolla.".into()), ..Default::default() };
     memoria::actualizar(&mut db, &a.id, c, Some(&m)).unwrap();
     let p = vectores::parecidas(&db, &m, &vectores::texto("Puerto", "La tortilla lleva cebolla."), None, None, -1.0, 1).unwrap();
     assert!(p[0].1 > 0.999, "similitud {}", p[0].1);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn duplicados_del_mismo_ambito() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("duplicados");
+    let (_dir, mut db) = base("duplicados");
     let n = nueva("/p", "Bug en auth: el token caduca antes de tiempo", "El middleware compara la hora local con la caducidad en UTC.");
     memoria::guardar(&mut db, n, Some(&m)).unwrap();
     // Unas cuantas memorias más, como en una base de verdad (la media sale de ellas).
@@ -108,8 +133,6 @@ fn duplicados_del_mismo_ambito() {
     // En otro proyecto no cuenta, y siendo global solo se compara con las globales.
     assert!(vectores::duplicada(&db, &m, "/otro", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
     assert!(vectores::duplicada(&db, &m, "", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn pares() -> Vec<(String, String, String)> {
@@ -132,7 +155,7 @@ fn pares() -> Vec<(String, String, String)> {
 #[test]
 fn umbral_de_duplicados() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("umbral");
+    let (_dir, mut db) = base("umbral");
     let pares = pares();
     let mut vistas = std::collections::HashSet::new();
     for (_, a, _) in &pares {
@@ -156,8 +179,6 @@ fn umbral_de_duplicados() {
     eprintln!("duplicados detectados: {acertados} de {duplicados}");
     assert!(falsos.is_empty(), "falsos positivos: {falsos:?}");
     assert!(acertados * 3 >= duplicados, "solo {acertados} de {duplicados} duplicados");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// La búsqueda con tests/busquedas.tsv no empeora: con modelo al menos tan bien como sin él, y las
@@ -165,7 +186,7 @@ fn umbral_de_duplicados() {
 #[test]
 fn calidad_de_la_busqueda() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("calidad");
+    let (_dir, mut db) = base("calidad");
     let mut claves = std::collections::HashMap::new();
     let mut consultas = Vec::new();
     for l in include_str!("busquedas.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
@@ -200,17 +221,15 @@ fn calidad_de_la_busqueda() {
     let r = buscar::buscar(&mut db, "el token caduca antes de tiempo", &o, Some(&m)).unwrap();
     assert_eq!(claves[&r[0].memoria.id], "auth");
     assert!(r[0].similarity.is_some());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn coherencia_con_vectores() {
     let Some(m) = modelo() else { return };
-    let (mut db, dir) = base("coherencia");
+    let (_dir, mut db) = base("coherencia");
     let mut ids = Vec::new();
     for i in 0..60 {
-        let usa = if i % 3 == 0 { None } else { Some(&m) };
+        let usa = if i % 3 == 0 { None } else { Some(&*m) };
         ids.push(memoria::guardar(&mut db, nueva("/p", &format!("nota {i}"), &format!("contenido {i}")), usa).unwrap().id);
     }
     for (i, id) in ids.iter().enumerate() {
@@ -228,6 +247,4 @@ fn coherencia_con_vectores() {
     vectores::sincronizar(&mut db, &m).unwrap();
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_vec"), cuenta(&db, "SELECT count(*) FROM memory"));
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_vec WHERE n NOT IN (SELECT n FROM memory)"), 0);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

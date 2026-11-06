@@ -4,6 +4,18 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.7.1 (unreleased)
+
+### Fixed
+- `ratatui` goes from 0.29 to 0.30.2 (and `crossterm` from 0.28 to 0.29), which brings `lru` 0.18.5 instead of 0.12.5 and closes the Dependabot alert about `lru`'s `IterMut` (low severity; `omoi tui` didn't use it). `omoi tui` needed no changes and was checked on screen: list, search as you type, whole memory, history, all projects, forget with confirmation.
+- The web view's sync indicator (`GET /api/sync`) showed the general repository's URL and author (the personal one) even when `omoi serve` was started in a client's project. Now, from a client's project, it shows only that space's repository, or nothing if the space has none here; from the home folder or a project with no space, the general one as before.
+- With `OMOIKANE_NONINTERACTIVE=1`, saving, searching or syncing no longer starts the meaning model's service, which lived on for 30 minutes after the job. A service already running is still used.
+- The tests left one folder per test in the temporary folder (30 per `cargo test` on Windows, almost 500 after a few releases). Each test now deletes its own, also when it fails; a full run leaves none.
+
+### Compatibility
+- Nothing changes in the database (schema 10), the sync lines, the export format or the HTTP API's fields: 1.7.0 and 1.7.1 can use the same database at once.
+- A program that read `/api/sync` from a client's project to get the general repository's URL now gets that space's (or `configured: false`); start it from the home folder to see the general one.
+
 ## 1.7.0 (2026-11-06)
 
 ### Agents with nobody at the keyboard

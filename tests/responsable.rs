@@ -2,12 +2,14 @@
 //! lo escribió y qué está desfasado o en pausa; desde un proyecto, solo su espacio, y con la misma
 //! protección que el resto de la API.
 
+mod comun;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
@@ -46,12 +48,6 @@ impl Prueba {
 
     fn autor(&self, nombre: &str) {
         self.sql("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", &[&nombre]);
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -110,8 +106,7 @@ fn espacio<'a>(v: &'a serde_json::Value, clave: &str) -> &'a serde_json::Value {
 
 #[test]
 fn vista_de_responsable_por_espacio() {
-    let p = Prueba { dir: std::env::temp_dir().join(format!("omoi-responsable-{}", std::process::id())) };
-    let _ = std::fs::remove_dir_all(&p.dir);
+    let p = Prueba { dir: comun::Temporal::nueva("responsable") };
     for n in ["acme-api", "acme-web", "globex", "notas"] {
         std::fs::create_dir_all(p.proyecto(n).join(".git")).unwrap();
     }

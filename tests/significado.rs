@@ -6,6 +6,8 @@
 //! sentence-transformers de `google/embeddinggemma-300m`, ~1,2 GB); sin ella se salta. Todo va en
 //! un solo test porque cambia variables de entorno del proceso.
 
+mod comun;
+
 use omoikane::gemma::Tipo;
 use omoikane::significado as s;
 use std::path::PathBuf;
@@ -30,9 +32,7 @@ fn coseno(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn servicio_de_significado() {
     let modelo = std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty()).map(PathBuf::from);
-    let dir = std::env::temp_dir().join(format!("omoi-significado-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = comun::Temporal::nueva("significado");
     // SAFETY: es el único test de este fichero (un proceso aparte) y nadie más lee el entorno a la vez.
     unsafe {
         std::env::set_var("OMOIKANE_HOME", &dir);
@@ -141,7 +141,4 @@ fn servicio_de_significado() {
         let c = coseno(&g1.vector(t, tipo).unwrap(), &g2.vector(t, tipo).unwrap());
         assert!(c > 0.9999, "compacto: coseno {c}");
     }
-    drop((g1, g2));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

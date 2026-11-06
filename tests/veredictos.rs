@@ -3,17 +3,18 @@
 //! engram, pero sin herramientas nuevas y sin pedir juicio en cada guardado.
 //! 0.19.0: cada veredicto con su motivo y su autor, y las sustituciones encadenadas (A → B → C).
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
 use omoikane::revisar;
 use omoikane::veredictos::{self, Veredicto};
 use rusqlite::Connection;
-use std::path::PathBuf;
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-veredictos-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    (db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("veredictos-{nombre}"));
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }
 
 fn guardar(db: &mut Connection, kind: Tipo, title: &str, content: &str, tags: &[&str]) -> String {
@@ -40,7 +41,7 @@ fn notas(db: &Connection, id: &str, busqueda: bool) -> Option<String> {
 
 #[test]
 fn sustituida_sale_en_revisar_en_el_recall_y_en_la_busqueda() {
-    let (mut db, dir) = base("sustituye");
+    let (_dir, mut db) = base("sustituye");
     let vieja = guardar(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
     let nueva = guardar(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
     assert!(avisos(&db).is_empty());
@@ -54,13 +55,11 @@ fn sustituida_sale_en_revisar_en_el_recall_y_en_la_busqueda() {
     let c = Cambios { content: Some("La cookie sigue para la web; la API va con JWT.".into()), reason: Some("aclarado".into()), ..Default::default() };
     memoria::actualizar(&mut db, &vieja, c, None).unwrap();
     assert!(avisos(&db).is_empty());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn se_contradicen_hasta_que_cambia_una_y_compatible_quita_el_aviso() {
-    let (mut db, dir) = base("contradicen");
+    let (_dir, mut db) = base("contradicen");
     let a = guardar(&mut db, Tipo::Fact, "El backup se hace de noche", "La copia corre a las 3:00.", &[]);
     let b = guardar(&mut db, Tipo::Fact, "El backup se hace al mediodía", "La copia corre a las 12:00.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::CONTRADICE, "", "").unwrap();
@@ -72,26 +71,22 @@ fn se_contradicen_hasta_que_cambia_una_y_compatible_quita_el_aviso() {
     veredictos::poner(&db, &b, &a, veredictos::COMPATIBLE, "", "").unwrap();
     assert!(avisos(&db).is_empty());
     assert_eq!(notas(&db, &a, true), None);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn esta_bien_asi_en_una_desfasada_es_compatible() {
-    let (mut db, dir) = base("desfasada");
+    let (_dir, mut db) = base("desfasada");
     let vieja = guardar(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
     let nueva = guardar(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
     assert_eq!(avisos(&db), vec![(revisar::DESFASADA.to_string(), vieja.clone(), nueva.clone())]);
     revisar::descartar(&db, &vieja, revisar::DESFASADA, &nueva).unwrap();
     assert!(avisos(&db).is_empty());
     assert_eq!(notas(&db, &vieja, false), None);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn fecha_de_revision_por_tipo() {
-    let (mut db, dir) = base("revision");
+    let (_dir, mut db) = base("revision");
     let decision = guardar(&mut db, Tipo::Decision, "Los precios van en céntimos", "Todos los importes en enteros de céntimos.", &[]);
     let hecho = guardar(&mut db, Tipo::Fact, "El servidor de pruebas es lento", "Tarda unos 10 s en arrancar.", &[]);
     let pref = guardar(&mut db, Tipo::Preference, "Commits cortos y en inglés", "Una línea, en inglés.", &[]);
@@ -112,13 +107,11 @@ fn fecha_de_revision_por_tipo() {
     // «Está bien así» pone el reloj a cero.
     revisar::descartar(&db, &decision, revisar::POR_REVISAR, "").unwrap();
     assert!(!avisos(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn de_otro_equipo_gana_el_mas_nuevo() {
-    let (mut db, dir) = base("recibir");
+    let (_dir, mut db) = base("recibir");
     let a = guardar(&mut db, Tipo::Fact, "Uno", "El puerto es el 8080.", &[]);
     let b = guardar(&mut db, Tipo::Fact, "Dos", "El puerto es el 9090.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::CONTRADICE, "", "").unwrap();
@@ -130,8 +123,6 @@ fn de_otro_equipo_gana_el_mas_nuevo() {
     let nuevo = Veredicto { memory_id: b.clone(), other_id: a.clone(), relation: veredictos::COMPATIBLE.into(), hlc: futuro, ..mio };
     assert!(veredictos::recibir(&db, &nuevo).unwrap());
     assert!(avisos(&db).is_empty());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Una memoria escrita a mano en una base de un esquema viejo (con `project` como ruta).
@@ -146,9 +137,7 @@ fn memoria_vieja(db: &Connection, n: i64, id: &str, title: &str, content: &str, 
 
 #[test]
 fn los_descartes_de_antes_pasan_a_veredictos() {
-    let dir = std::env::temp_dir().join(format!("omoi-veredictos-migrar-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = comun::Temporal::nueva("veredictos-migrar");
     let a = "01JAAAAAAAAAAAAAAAAAAAAAAA";
     {
         // Una base del esquema 7 con un «está bien así» en `review`.
@@ -168,15 +157,13 @@ fn los_descartes_de_antes_pasan_a_veredictos() {
     assert!(db.query_row("SELECT count(*) FROM review WHERE dismissed_at IS NOT NULL", [], |f| f.get::<_, i64>(0)).is_err());
     // Y el «está bien así» sigue valiendo (la memoria no ha cambiado desde entonces).
     assert!(veredictos::oks(&db, true).unwrap().contains_key(&(a.to_string(), "unused".to_string())));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Los falsos positivos de la base real de Marc (30-oct-2026): dentro de un proyecto, dos memorias
 /// que no tienen nada que ver se marcaban como desfasadas solo por nombrar versiones distintas.
 #[test]
 fn una_version_a_secas_no_contradice_a_otro_tema() {
-    let (mut db, dir) = base("temas");
+    let (_dir, mut db) = base("temas");
     guardar(&mut db, Tipo::Fact, "Clave de firma de las Releases", "Desde la 0.14.0 el flujo firma SHA256SUMS con una clave Ed25519 guardada en los secretos del repositorio.", &[]);
     guardar(&mut db, Tipo::Decision, "Eslogan del proyecto", "Desde la 0.14.1 el eslogan es «Memoria eterna, viva y ultrarrápida».", &[]);
     assert!(avisos(&db).is_empty(), "{:?}", avisos(&db));
@@ -184,14 +171,12 @@ fn una_version_a_secas_no_contradice_a_otro_tema() {
     guardar(&mut db, Tipo::Fact, "Compilación en Linux", "Con rusqlite 0.41.0 hace falta glibc 2.35.", &[]);
     guardar(&mut db, Tipo::Gotcha, "Pruebas en macOS", "Desde rusqlite 0.42.0 el bundled ya no falla en Intel.", &[]);
     assert_eq!(avisos(&db).iter().filter(|a| a.0 == revisar::DESFASADA).count(), 1);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Un «está bien así» frente a la memoria de estado no caduca cuando el estado cambia.
 #[test]
 fn compatible_sobrevive_a_los_cambios_de_la_otra() {
-    let (mut db, dir) = base("sobrevive");
+    let (_dir, mut db) = base("sobrevive");
     let vieja = guardar(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
     let estado = guardar(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
     assert_eq!(avisos(&db).len(), 1);
@@ -203,14 +188,12 @@ fn compatible_sobrevive_a_los_cambios_de_la_otra() {
     let c = Cambios { content: Some("La v0.2.0 publicada el 28-oct-2026.\nFalta publicar en crates.io y en Homebrew.".into()), reason: Some("más".into()), ..Default::default() };
     memoria::actualizar(&mut db, &vieja, c, None).unwrap();
     assert_eq!(avisos(&db).len(), 1);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// 0.19.0: el motivo y el autor se guardan y salen donde sale el veredicto.
 #[test]
 fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
-    let (mut db, dir) = base("motivo");
+    let (_dir, mut db) = base("motivo");
     let vieja = guardar(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
     let nueva = guardar(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
     veredictos::poner(&db, &vieja, &nueva, veredictos::SUSTITUIDA, "  JWT replaced the cookie\n in 0.19 ", "agent:claude-code").unwrap();
@@ -241,28 +224,24 @@ fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
     let v = veredictos::todos(&db).unwrap();
     let ok = v.iter().find(|x| x.relation == veredictos::COMPATIBLE).unwrap();
     assert_eq!((ok.author.as_str(), ok.reason.as_str()), ("user", ""));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Quién firma: la persona de la sincronización, o el cliente que llama.
 #[test]
 fn el_autor_es_la_persona_de_la_sync_o_el_cliente() {
-    let (db, dir) = base("autor");
+    let (_dir, db) = base("autor");
     assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "agent:claude-code");
     assert_eq!(veredictos::autor(&db, "mcp", ""), "agent");
     assert_eq!(veredictos::autor(&db, "", ""), "agent");
     assert_eq!(veredictos::autor(&db, "cli", ""), "cli");
     db.execute("INSERT INTO meta(k, v) VALUES ('autor', 'Marc')", []).unwrap();
     assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "Marc");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A sustituida por B y B por C: la nota de A lleva a C, con el motivo del último eslabón.
 #[test]
 fn la_cadena_de_sustituciones_lleva_a_la_ultima() {
-    let (mut db, dir) = base("cadena");
+    let (_dir, mut db) = base("cadena");
     let a = guardar(&mut db, Tipo::Fact, "El puerto es el 8080", "Escucha en el 8080.", &[]);
     let b = guardar(&mut db, Tipo::Fact, "El puerto es el 9090", "Escucha en el 9090 desde la migración.", &[]);
     let c = guardar(&mut db, Tipo::Fact, "El puerto es el 7070", "Escucha en el 7070 detrás de Caddy.", &[]);
@@ -288,14 +267,12 @@ fn la_cadena_de_sustituciones_lleva_a_la_ultima() {
     memoria::actualizar(&mut db, &b, cambio, None).unwrap();
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), Some((b.clone(), 1)));
     assert!(notas(&db, &a, false).unwrap().contains(&b[..12]));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Un ciclo (A → B → A) o una cadena larguísima no cuelgan: el camino corta el ciclo y hay tope.
 #[test]
 fn un_ciclo_de_sustituciones_no_cuelga() {
-    let (mut db, dir) = base("ciclo");
+    let (_dir, mut db) = base("ciclo");
     let a = guardar(&mut db, Tipo::Fact, "Uno", "El backup corre a las 3:00.", &[]);
     let b = guardar(&mut db, Tipo::Fact, "Dos", "El backup corre a las 12:00.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "", "").unwrap();
@@ -320,16 +297,12 @@ fn un_ciclo_de_sustituciones_no_cuelga() {
     }
     assert_eq!(veredictos::ultima_de_cadena(&db, &ids[0]).unwrap(), Some((ids[20].clone(), 20)));
     assert_eq!(veredictos::ultima_de_cadena(&db, &ids[27]).unwrap(), Some((ids[29].clone(), 2)));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Esquema 8 → 10: los veredictos que ya había se conservan, sin motivo ni autor, y siguen valiendo.
 #[test]
 fn los_veredictos_del_esquema_8_se_conservan() {
-    let dir = std::env::temp_dir().join(format!("omoi-veredictos-esquema8-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = comun::Temporal::nueva("veredictos-esquema8");
     let (a, b) = ("01JAAAAAAAAAAAAAAAAAAAAAAA", "01JBBBBBBBBBBBBBBBBBBBBBBB");
     {
         // Una base del esquema 8: la tabla `verdict` sin motivo ni autor, y sellos de contador corto.
@@ -356,6 +329,4 @@ fn los_veredictos_del_esquema_8_se_conservan() {
     assert!(notas(&db, a, false).unwrap().ends_with(": use that one"));
     let ok: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
     assert_eq!(ok, "ok");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

@@ -20,6 +20,8 @@
 //! y la carpeta personal (`USERPROFILE`/`HOME`) en una carpeta temporal, y se comprueba antes de
 //! lanzar nada.
 
+mod comun;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -361,8 +363,7 @@ fn modelo_int8() -> Option<PathBuf> {
 }
 
 fn ejecutar(nombre: &str, c: &Conf) -> Informe {
-    let dir = std::env::temp_dir().join(format!("omoi-conc-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva(&format!("conc-{nombre}"));
     for i in 0..3 {
         std::fs::create_dir_all(dir.join(format!("repo{i}")).join(".git")).unwrap();
         std::fs::create_dir_all(dir.join(format!("repo{i}")).join("src")).unwrap();
@@ -542,9 +543,7 @@ fn ejecutar(nombre: &str, c: &Conf) -> Informe {
     for l in perdidas.iter().take(5).chain(incoherencias.iter()) {
         texto.push_str(&format!("  {l}\n"));
     }
-    let informe = Informe { ops, escritas: escritas.len(), perdidas, incoherencias, wal_kb, texto };
-    let _ = std::fs::remove_dir_all(&dir);
-    informe
+    Informe { ops, escritas: escritas.len(), perdidas, incoherencias, wal_kb, texto }
 }
 
 /// Para CI: corto y sin cifras que dependan de la máquina. Ningún error, nada perdido, todo cuadra.

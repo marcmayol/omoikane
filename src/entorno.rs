@@ -10,7 +10,8 @@
 //!   carpeta en la que se ejecuta (podría acabar dentro del repositorio que se está probando).
 //! - `OMOIKANE_NONINTERACTIVE=1`: nadie delante. Ninguna pregunta (lo que necesite confirmación pide
 //!   `--yes`), ninguna descarga que no se haya pedido (el modelo de significado), ninguna
-//!   actualización automática y ninguna sincronización de fondo que sobreviva al proceso (salvo
+//!   actualización automática, ningún servicio de significado que se arranque solo (1.7.1; si ya hay
+//!   uno en marcha, se usa) y ninguna sincronización de fondo que sobreviva al proceso (salvo
 //!   `OMOIKANE_SYNC_AUTO=1`). Sin ella, las preguntas ya se saltan si la entrada no es una terminal; lo
 //!   demás no, porque los hooks de los agentes tampoco tienen terminal y ahí sí se quieren.
 //! - `OMOIKANE_AUTHOR`: quién firma lo que se guarda (el autor de cada memoria y de cada veredicto),

@@ -948,9 +948,7 @@ mod tests {
 
     #[test]
     fn migra_de_1_a_2_y_reindexa() {
-        let dir = std::env::temp_dir().join(format!("omoi-db-migra-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::comun::Temporal::nueva("db-migra");
         let ruta = dir.join("o.db");
         {
             // Una base de la fase 1, a mano.
@@ -973,14 +971,11 @@ mod tests {
         assert_eq!(por("seguridad"), 1);
         assert_eq!(por("trampa"), 1);
         drop(db);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn sin_copia_previa_no_se_migra() {
-        let dir = std::env::temp_dir().join(format!("omoi-db-sin-copia-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::comun::Temporal::nueva("db-sin-copia");
         let ruta = dir.join("o.db");
         abrir_en_esquema(&ruta, 9).unwrap();
         let mut db = Connection::open(&ruta).unwrap();
@@ -995,14 +990,11 @@ mod tests {
         assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
         assert!(dir.join("o.db.antes-del-esquema-10").exists());
         drop(db);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn rehace_una_copia_previa_a_medias() {
-        let dir = std::env::temp_dir().join(format!("omoi-db-copia-medias-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::comun::Temporal::nueva("db-copia-medias");
         let ruta = dir.join("o.db");
         abrir_en_esquema(&ruta, 9).unwrap().execute_batch("INSERT INTO meta(k, v) VALUES ('marca', 'de la 9')").unwrap();
         // Una copia cortada (de una versión que copiaba directamente con el nombre final): sin tablas.
@@ -1016,12 +1008,11 @@ mod tests {
         assert_eq!(c.query_row("SELECT v FROM meta WHERE k = 'marca'", [], |f| f.get::<_, String>(0)).unwrap(), "de la 9");
         drop(c);
         assert!(!dir.join("o.db.antes-del-esquema-10.tmp").exists(), "sin el temporal");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn crea_y_reabre() {
-        let dir = std::env::temp_dir().join(format!("omoi-db-{}", std::process::id()));
+        let dir = crate::comun::Temporal::nueva("db");
         let ruta = dir.join("sub").join("o.db");
         let db = abrir(&ruta).unwrap();
         assert_eq!(version(&db).unwrap(), VERSION_ESQUEMA);
@@ -1030,14 +1021,13 @@ mod tests {
         let modo: String = db.query_row("PRAGMA journal_mode", [], |f| f.get(0)).unwrap();
         assert_eq!(modo, "wal");
         drop(db);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Al cerrar, el WAL no se pasa a la base (cada `omoi` pagaba dos sincronizaciones con el disco) y
     /// lo escrito sigue ahí al volver a abrir, aunque el WAL no se haya pasado.
     #[test]
     fn cerrar_no_pasa_el_wal() {
-        let dir = std::env::temp_dir().join(format!("omoi-db-wal-{}", std::process::id()));
+        let dir = crate::comun::Temporal::nueva("db-wal");
         let ruta = dir.join("o.db");
         let db = abrir(&ruta).unwrap();
         assert!(db.db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE).unwrap());
@@ -1048,6 +1038,5 @@ mod tests {
         let v: String = db.query_row("SELECT v FROM meta WHERE k = 'prueba-wal'", [], |f| f.get(0)).unwrap();
         assert_eq!(v, "sí");
         drop(db);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -1,17 +1,17 @@
 //! 0.19.0: corregir con cabeza. Edición parcial (`replace` exactamente una vez, `append`) y juntar
 //! N memorias en una (`absorb`), por la herramienta `update` y por la CLI.
 
-use std::path::PathBuf;
+mod comun;
+
 use std::process::{Command, Output, Stdio};
 
 struct Entorno {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Entorno {
     fn nuevo(nombre: &str) -> Entorno {
-        let dir = std::env::temp_dir().join(format!("omoi-update-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = comun::Temporal::nueva(&format!("update-{nombre}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         Entorno { dir }
     }
@@ -86,12 +86,6 @@ impl Entorno {
             .filter(|a| a["kind"] == "broken_link")
             .map(|a| a["memory_id"].as_str().unwrap().to_string())
             .collect()
-    }
-}
-
-impl Drop for Entorno {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

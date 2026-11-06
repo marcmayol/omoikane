@@ -1,17 +1,16 @@
 //! 1.5: proponer recetas (las de `procedure` guardadas a mano van en `recetas.rs`). Una secuencia de órdenes que funcionaron y se repite en `MIN_SESIONES`
 //! sesiones sale como candidata una vez; la que ya cubre una receta guardada, no.
 
+mod comun;
+
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
 use omoikane::{candidatas, db, recetas};
 use serde_json::json;
 use std::path::PathBuf;
 
-fn dir(nombre: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("omoi-recetas-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn dir(nombre: &str) -> comun::Temporal {
+    comun::Temporal::nueva(&format!("recetas-{nombre}"))
 }
 
 /// Una conversación de Claude Code con estas órdenes, todas bien.
@@ -72,6 +71,4 @@ fn propone_una_vez_lo_que_se_repite_y_no_lo_ya_guardado() {
         recetas::apuntar(&db2, &format!("p{i}"), &recetas::pasos(&c).unwrap()).unwrap();
     }
     assert!(!recetas::proponer(&db2, "/web", "p", &recetas::pasos(&conversacion(&d, "p0", &publicar)).unwrap()).unwrap(), "la cubre la receta guardada: {:?}", candidatas::todas(&db2).unwrap());
-    drop((db, db2));
-    let _ = std::fs::remove_dir_all(d);
 }

@@ -1,17 +1,18 @@
 //! 0.18.0: nada se pierde. La papelera (`forget` → `trash` → `restore`) y la copia fiel
 //! (`export` → `import` reconstruye la base exacta y se puede repetir sin cambiar nada).
 
+mod comun;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Entorno {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Entorno {
     fn nuevo(nombre: &str) -> Entorno {
-        let dir = std::env::temp_dir().join(format!("omoi-copia-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = comun::Temporal::nueva(&format!("copia-{nombre}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         Entorno { dir }
     }
@@ -63,12 +64,6 @@ impl Entorno {
 
     fn fichero(&self, nombre: &str) -> PathBuf {
         self.dir.join(nombre)
-    }
-}
-
-impl Drop for Entorno {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

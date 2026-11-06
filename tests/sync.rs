@@ -2,18 +2,18 @@
 //! que comparten un repositorio git desnudo local. Git sin identidad ni configuración del usuario,
 //! para que la prueba no dependa de la máquina.
 
+mod comun;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
     fn nueva(nombre: &str) -> Prueba {
-        let dir = std::env::temp_dir().join(format!("omoi-sync-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = comun::Temporal::nueva(&format!("sync-{nombre}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
         let p = Prueba { dir };
         let o = p.git(&p.dir, &["init", "--quiet", "--bare", "compartida.git"]);
@@ -64,18 +64,6 @@ impl Prueba {
     fn commits(&self) -> usize {
         let o = self.git(&self.dir.join("compartida.git"), &["rev-list", "--count", "--all"]);
         String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0)
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        // Un `omoi sync --background` aún vivo puede tener ficheros abiertos un momento.
-        for _ in 0..20 {
-            if std::fs::remove_dir_all(&self.dir).is_ok() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
     }
 }
 

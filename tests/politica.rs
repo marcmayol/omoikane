@@ -6,6 +6,8 @@
 //! veces que se le pregunta), y una carpeta con los ficheros del formato compacto vacíos hace de
 //! modelo instalado. Todo va en un solo test porque cambia variables de entorno del proceso.
 
+mod comun;
+
 use omoikane::memoria::{self, Ambito, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
 use omoikane::significado::{self as s, Porque};
@@ -84,8 +86,7 @@ fn recall_cli(db: &Path, inicio: bool) -> String {
 
 #[test]
 fn cuando_y_cuanto_se_usa_el_modelo() {
-    let dir = std::env::temp_dir().join(format!("omoi-politica-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("politica");
     let (home, modelo) = (dir.join("home"), dir.join("modelo"));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&modelo).unwrap();
@@ -222,5 +223,4 @@ fn cuando_y_cuanto_se_usa_el_modelo() {
     assert!(!marca.exists(), "con --off no descarga");
     let doctor = Command::new(env!("CARGO_BIN_EXE_omoi")).arg("doctor").env("OMOIKANE_DB", &ruta).output().unwrap();
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("meaning    off: you turned it off"), "{doctor:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

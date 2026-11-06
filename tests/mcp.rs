@@ -1,6 +1,8 @@
 //! Fase 3: `omoi mcp` de punta a punta, con un cliente MCP de verdad (el de rmcp) que lo arranca
 //! como proceso hijo, igual que Claude Code.
 
+mod comun;
+
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::{RoleClient, RunningService};
@@ -16,13 +18,12 @@ fn modelo_int8() -> Option<PathBuf> {
 }
 
 struct Prueba {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Prueba {
     fn nueva(nombre: &str, con_modelo: bool) -> Option<Prueba> {
-        let dir = std::env::temp_dir().join(format!("omoi-mcp-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = comun::Temporal::nueva(&format!("mcp-{nombre}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         let p = Prueba { dir };
         if con_modelo {
@@ -45,12 +46,6 @@ impl Prueba {
             c.arg("mcp").current_dir(repo).env("OMOIKANE_DB", db).env("OMOIKANE_MODELS", modelos).env_remove("OMOIKANE_LANG");
         });
         ().serve(TokioChildProcess::new(cmd).unwrap()).await.unwrap()
-    }
-}
-
-impl Drop for Prueba {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

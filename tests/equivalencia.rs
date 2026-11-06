@@ -5,6 +5,8 @@
 //! `~/.omoikane/models/potion-multilingual-128M-int8`; si no está, el test avisa y no comprueba nada.
 //! Se baja de https://huggingface.co/natzx94/potion-multilingual-128M-int8.
 
+mod comun;
+
 use omoikane::embeber::{Modelo, compilar};
 use std::path::PathBuf;
 
@@ -29,7 +31,7 @@ fn ids_y_vectores_iguales_que_la_referencia() {
         eprintln!("SALTADO: no está el modelo int8 (ver la cabecera de tests/equivalencia.rs)");
         return;
     };
-    let destino = std::env::temp_dir().join(format!("omoikane-test-equivalencia-{}", std::process::id()));
+    let destino = comun::Temporal::nueva("equivalencia");
     compilar(&int8, &destino).expect("compilar");
     let nuevo = Modelo::abrir(&destino).expect("abrir");
 
@@ -64,5 +66,4 @@ fn ids_y_vectores_iguales_que_la_referencia() {
         let c: f32 = va.iter().zip(&vb).map(|(x, y)| x * y).sum();
         assert!(c >= 0.9999, "coseno {c} en {f:?}");
     }
-    let _ = std::fs::remove_dir_all(&destino);
 }

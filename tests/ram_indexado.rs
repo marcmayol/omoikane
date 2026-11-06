@@ -2,6 +2,8 @@
 //! `OMOIKANE_SEMANTIC_RAM` por encima, el mínimo (siempre cabe la memoria más larga) y lo que enseñan
 //! `omoi model semantic` y `omoi doctor`.
 
+mod comun;
+
 use omoikane::significado::{self as s, OrigenRam, RAM_MINIMA_MB, RAM_POR_DEFECTO_MB};
 use std::process::Command;
 
@@ -18,9 +20,7 @@ fn omoi(home: &std::path::Path, args: &[&str], ram: Option<&str>) -> String {
 
 #[test]
 fn tope_de_ram() {
-    let home = std::env::temp_dir().join(format!("omoi-ram-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
+    let home = comun::Temporal::nueva("ram");
     // SAFETY: único test de este fichero (un proceso aparte).
     unsafe {
         std::env::set_var("OMOIKANE_HOME", &home);
@@ -51,5 +51,4 @@ fn tope_de_ram() {
     assert!(omoi(&home, &["model", "semantic"], None).contains("indexing RAM: up to 300 MB"));
     let j: serde_json::Value = serde_json::from_str(&omoi(&home, &["--json", "model", "semantic", "--ram", "0"], None)).unwrap();
     assert_eq!((j["indexing_ram_mb"].as_u64(), j["indexing_ram_from"].as_str()), (Some(RAM_POR_DEFECTO_MB), Some("default")));
-    let _ = std::fs::remove_dir_all(&home);
 }

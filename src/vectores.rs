@@ -774,10 +774,11 @@ mod tests {
 
     const DIM: usize = 256;
 
-    fn base(nombre: &str) -> Connection {
-        let dir = std::env::temp_dir().join(format!("omoi-resumen-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        crate::db::abrir(&dir.join("o.db")).unwrap()
+    /// La base en su carpeta temporal, que se borra al acabar (la carpeta va primero: se suelta después).
+    fn base(nombre: &str) -> (crate::comun::Temporal, Connection) {
+        let dir = crate::comun::Temporal::nueva(&format!("resumen-{nombre}"));
+        let db = crate::db::abrir(&dir.join("o.db")).unwrap();
+        (dir, db)
     }
 
     fn guardar(db: &mut Connection, project: &str, kind: Tipo, i: usize) -> (String, i64) {
@@ -801,8 +802,8 @@ mod tests {
     }
 
     /// Una base con memorias de dos proyectos, globales y de dos tipos, con vectores al azar.
-    fn con_vectores(nombre: &str, cuantas: usize, azar: &mut Azar) -> (Connection, Vec<Vec<f32>>) {
-        let mut db = base(nombre);
+    fn con_vectores(nombre: &str, cuantas: usize, azar: &mut Azar) -> (crate::comun::Temporal, Connection, Vec<Vec<f32>>) {
+        let (dir, mut db) = base(nombre);
         let centros: Vec<Vec<f32>> = (0..12).map(|_| normalizado((0..DIM).map(|_| azar.siguiente()).collect())).collect();
         for i in 0..cuantas {
             let project = ["/p1", "/p1", "/p2", ""][i % 4];
@@ -810,13 +811,13 @@ mod tests {
             let (_, n) = guardar(&mut db, project, kind, i);
             poner_vector(&db, n, &azar.vector(&centros));
         }
-        (db, centros)
+        (dir, db, centros)
     }
 
     #[test]
     fn el_resumen_da_lo_mismo_que_comparar_con_todos() {
         let mut azar = Azar(0x9e3779b97f4a7c15);
-        let (db, centros) = con_vectores("igual", 1200, &mut azar);
+        let (_dir, db, centros) = con_vectores("igual", 1200, &mut azar);
         let r = al_dia(&db).unwrap().expect("resumen");
         assert_eq!(r.cuantos, 1200);
         let media: Vec<f32> = r.suma.iter().map(|s| (*s / r.cuantos as f64) as f32).collect();
@@ -843,7 +844,7 @@ mod tests {
     #[test]
     fn el_resumen_sigue_a_los_cambios() {
         let mut azar = Azar(0x2545f4914f6cdd1d);
-        let (mut db, centros) = con_vectores("cambios", 300, &mut azar);
+        let (_dir, mut db, centros) = con_vectores("cambios", 300, &mut azar);
         al_dia(&db).unwrap().expect("resumen");
         // Un vector cambiado con `INSERT OR REPLACE` (como al editar), otro con `UPDATE`, uno borrado a
         // mano, memorias olvidadas (sus vectores se van en cascada), una nueva y otra sin vector.
@@ -881,7 +882,7 @@ mod tests {
     #[test]
     fn sin_las_tablas_locales_se_compara_con_todos() {
         let mut azar = Azar(7);
-        let (db, _) = con_vectores("sin-locales", 20, &mut azar);
+        let (_dir, db, _) = con_vectores("sin-locales", 20, &mut azar);
         db.execute_batch("DROP TABLE vec_bloque").unwrap();
         assert!(al_dia(&db).unwrap().is_none());
         assert_eq!(faltan(&db).unwrap(), 0);
@@ -889,7 +890,7 @@ mod tests {
 
     #[test]
     fn las_cuentas_por_ambito_cuadran() {
-        let mut db = base("cuentas");
+        let (_dir, mut db) = base("cuentas");
         let mut ids = Vec::new();
         for i in 0..40 {
             ids.push(guardar(&mut db, ["/p1", "/p2", "", "/p3"][i % 4], Tipo::Fact, i).0);
@@ -914,7 +915,7 @@ mod tests {
     #[test]
     fn las_piezas_locales_se_rehacen_si_falta_alguna() {
         let mut azar = Azar(11);
-        let (mut db, centros) = con_vectores("rehacer", 30, &mut azar);
+        let (_dir, mut db, centros) = con_vectores("rehacer", 30, &mut azar);
         al_dia(&db).unwrap().expect("resumen");
         let ruta = std::path::PathBuf::from(db.path().unwrap());
         db.execute_batch("DROP TRIGGER memory_cuenta_mas; DROP TRIGGER vec_cambio_pon;").unwrap();

@@ -388,16 +388,13 @@ mod tests {
 
     #[test]
     fn reemplaza_y_deja_el_viejo_aparte() {
-        let d = std::env::temp_dir().join(format!("omoi-reemplazar-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::comun::Temporal::nueva("reemplazar");
         let exe = d.join(if cfg!(windows) { "omoi.exe" } else { "omoi" });
         let nuevo = d.join("nuevo");
         std::fs::write(&exe, "viejo").unwrap();
         std::fs::write(&nuevo, "nuevo").unwrap();
         reemplazar(&exe, &nuevo).unwrap();
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "nuevo");
-        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

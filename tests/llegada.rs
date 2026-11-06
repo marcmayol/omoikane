@@ -1,6 +1,8 @@
 //! Memoria para quien llega (1.7.0): la primera sesión en un proyecto de un espacio trae lo del resto
 //! del espacio, `sync join --space` dice qué ha llegado, y las preferencias del espacio viajan.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::proyecto;
@@ -9,10 +11,10 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-llegada-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    (db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("llegada-{nombre}"));
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }
 
 fn entrada(sesion: &str, source: &str) -> Entrada {
@@ -54,7 +56,7 @@ fn dos_clientes(db: &mut Connection) {
 
 #[test]
 fn la_primera_sesion_en_un_proyecto_del_espacio_trae_lo_del_equipo() {
-    let (mut db, dir) = base("bienvenida");
+    let (_dir, mut db) = base("bienvenida");
     dos_clientes(&mut db);
     let t = recall::al_empezar(&mut db, "/acme/web", &entrada("s1", "startup")).unwrap().unwrap();
     let (_, llegada) = t.split_once("First session in this project").unwrap_or_else(|| panic!("sin bienvenida: {t}"));
@@ -81,13 +83,11 @@ fn la_primera_sesion_en_un_proyecto_del_espacio_trae_lo_del_equipo() {
     assert!(api.contains("First session in this project") && api.contains("- web (1 memories)"), "{api}");
     // La decisión abierta de api ya sale en su lista de siempre: no se repite en la bienvenida.
     assert!(!api.split_once("First session").unwrap().1.split_once("The user's preferences").map_or("", |x| x.0).contains("Postgres"), "{api}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn sin_espacio_o_sin_equipo_no_hay_bienvenida() {
-    let (mut db, dir) = base("sin-bienvenida");
+    let (_dir, mut db) = base("sin-bienvenida");
     dos_clientes(&mut db);
     // Un proyecto sin espacio.
     guardar(&mut db, ("/solo", None), Tipo::Fact, ("Algo mío", "Nada de equipo."), &[], "Marc");
@@ -108,8 +108,6 @@ fn sin_espacio_o_sin_equipo_no_hay_bienvenida() {
     proyecto::asignar_espacio(&db, viejo, acme).unwrap();
     let t = recall::al_empezar(&mut db, "/viejo", &entrada("s4", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- De punta a punta: dos personas y el repositorio del espacio ------------------------------------
@@ -159,9 +157,7 @@ impl Equipo {
 
 #[test]
 fn quien_se_une_al_espacio_sabe_que_ha_llegado_y_su_agente_lo_tiene() {
-    let raiz = std::env::temp_dir().join(format!("omoi-llegada-join-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&raiz);
-    std::fs::create_dir_all(&raiz).unwrap();
+    let raiz = comun::Temporal::nueva("llegada-join");
     std::fs::write(raiz.join("gitconfig-vacio"), "").unwrap();
     let o = Command::new("git").current_dir(&raiz).args(["init", "--quiet", "--bare", "acme.git"]).env("GIT_CONFIG_GLOBAL", raiz.join("gitconfig-vacio")).env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
     assert!(o.status.success());
@@ -213,12 +209,11 @@ fn quien_se_une_al_espacio_sabe_que_ha_llegado_y_su_agente_lo_tiene() {
     assert!(t.contains("Acme despliega") && !t.contains("[by Ana]"), "{t}");
     // Todo lo escribió ella: no hay bienvenida que darle.
     assert!(!t.contains("First session"), "{t}");
-    let _ = std::fs::remove_dir_all(&raiz);
 }
 
 #[test]
 fn lo_que_no_firmo_nadie_cuenta_como_del_equipo() {
-    let (mut db, dir) = base("sin-firma");
+    let (_dir, mut db) = base("sin-firma");
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', 'Bea')", []).unwrap();
     let acme = proyecto::crear_espacio(&db, "acme").unwrap();
     for p in ["/acme/web", "/acme/api", "/acme/app"] {
@@ -235,6 +230,4 @@ fn lo_que_no_firmo_nadie_cuenta_como_del_equipo() {
     db.execute("UPDATE memory SET author = 'Bea'", []).unwrap();
     let t = recall::al_empezar(&mut db, "/acme/app", &entrada("s2", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }

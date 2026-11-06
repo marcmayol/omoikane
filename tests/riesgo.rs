@@ -1,17 +1,17 @@
 //! 1.6: el historial de cada fichero, sacado del diario de sesiones, en el recall del mensaje que lo
 //! nombra.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::diario;
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
 use omoikane::riesgo;
 use rusqlite::Connection;
-use std::path::PathBuf;
 
-fn dir(nombre: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("omoi-riesgo-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn dir(nombre: &str) -> comun::Temporal {
+    let d = comun::Temporal::nueva(&format!("riesgo-{nombre}"));
     std::fs::create_dir_all(d.join("repo").join(".git")).unwrap();
     d
 }
@@ -44,7 +44,7 @@ fn gotcha(db: &mut Connection, project: &str, titulo: &str, rutas: &[&str]) {
 
 /// Un proyecto con 5 sesiones en `src/sync.rs`: 4 con `tests/sync.rs`, 3 con `CHANGELOG.md`, 2 con
 /// `src/db.rs` (no llega a 3) y una suelta con `README.md`.
-fn proyecto(nombre: &str) -> (Connection, String, i64, PathBuf) {
+fn proyecto(nombre: &str) -> (comun::Temporal, Connection, String, i64) {
     let d = dir(nombre);
     let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
     let mut db = db::abrir(&d.join("o.db")).unwrap();
@@ -59,12 +59,12 @@ fn proyecto(nombre: &str) -> (Connection, String, i64, PathBuf) {
     gotcha(&mut db, &repo, "El push de sync pierde el orden", &["src/sync.rs"]);
     gotcha(&mut db, &repo, "Sync con la ruta entera", &[&format!("{repo}/src/sync.rs")]);
     gotcha(&mut db, &repo, "Otro fichero", &["src/db.rs"]);
-    (db, repo, id, d)
+    (d, db, repo, id)
 }
 
 #[test]
 fn una_linea_con_lo_que_cambia_a_la_vez() {
-    let (mut db, repo, _, d) = proyecto("linea");
+    let (_d, mut db, repo, _) = proyecto("linea");
     let t = recall::al_preguntar(&mut db, &repo, &entrada("s1", "arregla el fallo en sync.rs"), None).unwrap().expect("la historia");
     assert!(t.starts_with("<omoikane>") && t.ends_with("</omoikane>"), "{t}");
     assert!(
@@ -89,13 +89,11 @@ fn una_linea_con_lo_que_cambia_a_la_vez() {
     assert_eq!(log, 0);
     let dichas: i64 = db.query_row("SELECT count(*) FROM diary_hint", [], |f| f.get(0)).unwrap();
     assert_eq!(dichas, 2);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
 fn sin_bastantes_sesiones_no_dice_nada() {
-    let (db, repo, _, d) = proyecto("umbral");
+    let (_d, db, repo, _) = proyecto("umbral");
     // `README.md`: 2 sesiones, por debajo de 3.
     assert!(riesgo::historias(&db, &repo, "cambia README.md").unwrap().is_empty());
     // `src/db.rs`: 3 sesiones, pero ninguno cambia con él en 3; su gotcha sí cuenta.
@@ -103,13 +101,11 @@ fn sin_bastantes_sesiones_no_dice_nada() {
     assert_eq!(h.len(), 1);
     assert_eq!((h[0].sesiones, h[0].juntos.len(), h[0].gotchas), (3, 0, 1));
     assert_eq!(h[0].linea(), "History of `src/db.rs`: changed in 3 sessions (last 2026-10-21); 1 gotcha mentions it.");
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
 fn sin_fichero_en_el_mensaje_no_mira_el_diario() {
-    let (mut db, repo, _, d) = proyecto("nada");
+    let (_d, mut db, repo, _) = proyecto("nada");
     assert!(!riesgo::parece_nombrar("qué tal ha ido la sincronización de ayer"));
     let t = recall::al_preguntar(&mut db, &repo, &entrada("s1", "qué tal ha ido la sincronización de ayer"), None).unwrap().unwrap_or_default();
     assert!(!t.contains("History of"), "{t}");
@@ -120,14 +116,11 @@ fn sin_fichero_en_el_mensaje_no_mira_el_diario() {
     let repo2 = omoikane::proyecto::de(&d2.join("repo")).unwrap();
     let db2 = db::abrir(&d2.join("o.db")).unwrap();
     assert!(riesgo::al_preguntar(&db2, &repo2, "s", "mira src/sync.rs").unwrap().is_none());
-    drop((db, db2));
-    let _ = std::fs::remove_dir_all(d);
-    let _ = std::fs::remove_dir_all(d2);
 }
 
 #[test]
 fn solo_las_sesiones_de_este_proyecto() {
-    let (db, repo, id, d) = proyecto("ambito");
+    let (d, db, repo, id) = proyecto("ambito");
     // Otro proyecto con el mismo fichero, y sesiones sin proyecto: desde esta carpeta cuentan, desde
     // otra no.
     let otro = d.join("otro").to_string_lossy().into_owned();
@@ -138,13 +131,11 @@ fn solo_las_sesiones_de_este_proyecto() {
     sesion(&db, "suelta", 0, &repo, "2026-11-05", &["src/sync.rs"]);
     let h = riesgo::historias(&db, &repo, "src/sync.rs").unwrap();
     assert_eq!((h[0].sesiones, h[0].ultima.as_str()), (6, "2026-11-05"));
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
 fn con_el_nombre_solo_el_que_mas_se_mueve() {
-    let (db, repo, id, d) = proyecto("nombre");
+    let (_d, db, repo, id) = proyecto("nombre");
     for (i, dia) in ["2026-11-01", "2026-11-02", "2026-11-03"].iter().enumerate() {
         sesion(&db, &format!("t{i}"), id, &repo, dia, &["tools/sync.rs"]);
     }
@@ -156,21 +147,17 @@ fn con_el_nombre_solo_el_que_mas_se_mueve() {
     assert_eq!(h.iter().map(|x| x.fichero.as_str()).collect::<Vec<_>>(), ["tools/sync.rs"]);
     let h = riesgo::historias(&db, &repo, "compara tools/sync.rs con src/sync.rs").unwrap();
     assert_eq!(h.len(), 2);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// El historial es opcional: si falla (aquí, una `diary_hint` que no es la suya), el recall del mensaje
 /// y el arranque de la sesión siguen, sin él.
 #[test]
 fn si_falla_el_historial_el_recall_sigue() {
-    let (mut db, repo, _, d) = proyecto("falla");
+    let (_d, mut db, repo, _) = proyecto("falla");
     db.execute_batch("CREATE TABLE diary_hint (otra TEXT)").unwrap();
     assert!(riesgo::al_preguntar(&db, &repo, "s1", "mira src/sync.rs").is_err(), "la tabla rota hace fallar el historial");
     let t = recall::al_preguntar(&mut db, &repo, &entrada("s1", "mira src/sync.rs"), None).unwrap().expect("las memorias siguen llegando");
     assert!(t.contains("El push de sync pierde el orden"), "{t}");
     assert!(!t.contains("History of"), "{t}");
     assert!(recall::al_empezar(&mut db, &repo, &entrada("s2", "")).unwrap().is_some());
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }

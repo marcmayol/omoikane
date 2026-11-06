@@ -23,7 +23,7 @@ Con `OMOIKANE_NONINTERACTIVE=1`, `omoi sync --pull` espera a la sincronización 
 
 Una CI empieza cada vez con una base vacía. La carpeta que descarga es nueva para ella, pero el repositorio del espacio dice que ese proyecto es del cliente. En el equipo de una persona eso deja el proyecto en pausa hasta que lo confirme (`omoi projects keep`): el repositorio de un cliente podría reclamar una carpeta que no es suya. En una CI no hay nadie que confirme. Con `OMOIKANE_NONINTERACTIVE=1` y el código del espacio en `OMOIKANE_SYNC_CODE`, la variable hace de confirmación, y una carpeta cuyo `origin` de git es exactamente el de un proyecto del espacio entra en él, trae sus memorias y sube lo que guarde. Tienen que cumplirse las cuatro cosas: nadie delante, el repositorio de ese espacio unido con un código de la variable, un remoto git en el proyecto (sin él, una carpeta es solo un nombre) y ninguna memoria suya guardada antes en ese equipo. Si falla alguna, queda en pausa como siempre y lo que se guarde se queda en ese equipo.
 
-Aún no siguen el modo desatendido (llegará en la 1.7.1): el `/api/sync` de `omoi serve` y el servicio del modelo de significado.
+Con `OMOIKANE_NONINTERACTIVE=1`, `omoi` tampoco arranca por su cuenta el servicio del modelo de significado (viviría media hora más que el trabajo): si ya hay uno en marcha, por ejemplo lanzado con `omoi model serve-semantic` en un servidor, lo usa; si no, la búsqueda y el recall van por palabras.
 
 ## GitHub Actions
 

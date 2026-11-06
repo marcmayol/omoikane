@@ -1,17 +1,18 @@
 //! Fase 4: el recall que inyectan los hooks.
 
+mod comun;
+
 use omoikane::db;
 use omoikane::memoria::{self, Nueva, Tipo};
 use omoikane::recall::{self, Entrada};
 use rusqlite::Connection;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-fn base(nombre: &str) -> (Connection, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("omoi-recall-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    (db::abrir(&dir.join("o.db")).unwrap(), dir)
+fn base(nombre: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("recall-{nombre}"));
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    (dir, db)
 }
 
 /// Las memorias de tests/busquedas.tsv en el proyecto `/p`, más una preferencia y una fijada.
@@ -37,7 +38,7 @@ fn entrada(sesion: &str, prompt: &str) -> Entrada {
 
 #[test]
 fn al_empezar_da_preferencias_y_fijadas() {
-    let (mut db, dir) = base("empezar");
+    let (_dir, mut db) = base("empezar");
     con_memorias(&mut db);
     let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
     assert!(t.starts_with("<omoikane>") && t.ends_with("</omoikane>"));
@@ -53,13 +54,11 @@ fn al_empezar_da_preferencias_y_fijadas() {
     assert!(t.contains("ask the user right away"), "{t}");
     // Solo las preferencias y las fijadas cuentan como inyectadas: lo reciente aún puede llegar entero.
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
-    let (mut db, dir) = base("estado");
+    let (_dir, mut db) = base("estado");
     con_memorias(&mut db);
     let estado = |project: &str, title: &str, content: &str| Nueva {
         project: project.into(),
@@ -88,8 +87,6 @@ fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
     assert!(!ultimas.iter().any(|l| l.contains(&nuevo.id[..12])), "{t}");
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
     assert!(t.contains("tag `status`"), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Las líneas de la sección de decisiones abiertas al empezar sesión (vacío si no está).
@@ -102,7 +99,7 @@ fn lineas_abiertas(t: &str) -> Vec<String> {
 
 #[test]
 fn al_empezar_recuerda_las_decisiones_abiertas() {
-    let (mut db, dir) = base("abiertas");
+    let (_dir, mut db) = base("abiertas");
     con_memorias(&mut db);
     let decision = |project: &str, title: &str, kind: Tipo, tags: &[&str]| Nueva {
         project: project.into(),
@@ -152,13 +149,11 @@ fn al_empezar_recuerda_las_decisiones_abiertas() {
     }
     let t = recall::al_empezar(&mut db, "/p", &entrada("s3", "")).unwrap().unwrap();
     assert!(!t.contains("Decisions waiting for the user"), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn al_empezar_cuenta_las_decisiones_abiertas_que_no_caben() {
-    let (mut db, dir) = base("abiertas-muchas");
+    let (_dir, mut db) = base("abiertas-muchas");
     let temas = ["precios", "licencia", "logotipo", "dominio", "idiomas", "soporte", "pagos", "correo", "nube", "móvil", "datos", "marca", "equipo"];
     for tema in temas {
         let n = Nueva {
@@ -175,13 +170,11 @@ fn al_empezar_cuenta_las_decisiones_abiertas_que_no_caben() {
     let l = lineas_abiertas(&t);
     assert_eq!(l.iter().filter(|x| x.starts_with("- ")).count(), recall::ABIERTAS, "{t}");
     assert!(l.last().unwrap().contains(&format!("{} more", temas.len() - recall::ABIERTAS)), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn cada_mensaje_trae_lo_que_toca_o_nada() {
-    let (mut db, dir) = base("mensaje");
+    let (_dir, mut db) = base("mensaje");
     con_memorias(&mut db);
     // Relevante: comparte palabras poco frecuentes con una memoria.
     let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap();
@@ -199,15 +192,13 @@ fn cada_mensaje_trae_lo_que_toca_o_nada() {
     assert!(recall::al_preguntar(&mut db, "/p", &entrada("s2", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
     recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap();
     assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Con muy pocas memorias, las palabras del mensaje que no están en ninguna no deben hundir la
 /// cobertura de la que sí es del tema (caso real de la prueba con Claude Code).
 #[test]
 fn base_pequena_y_palabras_que_no_estan() {
-    let (mut db, dir) = base("pequena");
+    let (_dir, mut db) = base("pequena");
     for (k, t, c, p) in [
         (Tipo::Preference, "Respuestas cortas y en español", "Como mucho tres frases.", ""),
         (Tipo::Gotcha, "El cobro con tarjeta redondea mal los céntimos", "En src/pago.rs el importe va en f32 y pierde céntimos.", "/p"),
@@ -217,14 +208,12 @@ fn base_pequena_y_palabras_que_no_estan() {
     }
     let t = recall::al_preguntar(&mut db, "/p", &entrada("s", "Estoy pensando en cambiar la pasarela de pago a Stripe"), None).unwrap();
     assert!(t.expect("debería traer la decisión").contains("Redsys"));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// El recordatorio de guardar: solo en sesiones largas sin nada guardado, y no en cada mensaje.
 #[test]
 fn recordatorio_de_guardar() {
-    let (mut db, dir) = base("recordatorio");
+    let (_dir, mut db) = base("recordatorio");
     con_memorias(&mut db);
     recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "startup".into(), ..Default::default() }).unwrap();
     let charla = |db: &mut Connection| recall::al_preguntar(db, "/p", &entrada("s", "vale, sigue"), None).unwrap();
@@ -248,32 +237,26 @@ fn recordatorio_de_guardar() {
     recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "compact".into(), ..Default::default() }).unwrap();
     let despues: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
     assert_eq!(antes, despues);
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn nombrar_un_fichero_trae_sus_memorias() {
-    let (mut db, dir) = base("rutas");
+    let (_dir, mut db) = base("rutas");
     con_memorias(&mut db);
     let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "revisa src/middleware/auth.rs por favor"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth") && t.contains("src/middleware/auth.rs"), "{t}");
     // Con el nombre del fichero basta, y en Windows con barras al revés también.
     let t = recall::al_preguntar(&mut db, "/p", &entrada("s2", r"mira src\middleware\auth.rs"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth"));
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn otro_proyecto_no_ve_las_memorias() {
-    let (mut db, dir) = base("proyecto");
+    let (_dir, mut db) = base("proyecto");
     con_memorias(&mut db);
     assert!(recall::al_preguntar(&mut db, "/otro", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_none());
     let t = recall::al_empezar(&mut db, "/otro", &entrada("s1", "")).unwrap().unwrap();
     assert!(t.contains("Respuestas en español") && !t.contains("Base de datos única"), "{t}");
-    drop(db);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// El hook de verdad: `omoi recall` con el JSON que manda Claude Code por stdin.
@@ -295,8 +278,7 @@ fn hook(dir: &std::path::Path, args: &[&str], json: &str) -> (bool, String, Stri
 
 #[test]
 fn el_hook_de_claude_code() {
-    let dir = std::env::temp_dir().join(format!("omoi-recall-hook-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = comun::Temporal::nueva("recall-hook");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     let cwd = repo.to_string_lossy().replace('\\', "\\\\");
@@ -328,5 +310,4 @@ fn el_hook_de_claude_code() {
     // Entrada rota: ni error ni salida (un hook nunca debe bloquear al usuario).
     let (ok, out, _) = hook(&dir, &[], "esto no es json");
     assert!(ok && out.is_empty());
-    let _ = std::fs::remove_dir_all(dir);
 }

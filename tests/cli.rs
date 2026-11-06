@@ -1,17 +1,18 @@
 //! La CLI de punta a punta, como la usará una persona o un hook: el binario `omoi` de verdad, con
 //! su propia base y dentro de un repositorio de prueba.
 
+mod comun;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Entorno {
-    dir: PathBuf,
+    dir: comun::Temporal,
 }
 
 impl Entorno {
     fn nuevo(nombre: &str) -> Entorno {
-        let dir = std::env::temp_dir().join(format!("omoi-cli-{nombre}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = comun::Temporal::nueva(&format!("cli-{nombre}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("repo").join("src")).unwrap();
         Entorno { dir }
@@ -54,12 +55,6 @@ impl Entorno {
         let mut a = args.to_vec();
         a.push("--json");
         serde_json::from_str(&self.ok(&a)).unwrap()
-    }
-}
-
-impl Drop for Entorno {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

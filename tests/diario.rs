@@ -1,15 +1,16 @@
 //! 1.4: el diario de sesiones. Una línea por sesión y proyecto, sacada de la conversación (`.jsonl`
 //! inventados con la forma de los de verdad) y de lo que la base sabe (`recall_log`).
 
+mod comun;
+
 use omoikane::db;
 use omoikane::diario::{self, Filtro};
 use omoikane::memoria::{self, Ambito, Nueva, Tipo};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn dir(nombre: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("omoi-diario-{nombre}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn dir(nombre: &str) -> comun::Temporal {
+    let d = comun::Temporal::nueva(&format!("diario-{nombre}"));
     std::fs::create_dir_all(d.join("repo").join(".git")).unwrap();
     std::fs::create_dir_all(d.join("repo").join("src")).unwrap();
     d
@@ -107,8 +108,6 @@ fn una_linea_por_sesion_con_ficheros_y_memorias() {
     // Sin conversación (el agente no la da): queda lo que sabe la base.
     assert!(diario::apuntar(&db, &repo, "s2", None).unwrap());
     assert!(!diario::apuntar(&db, &repo, "", None).unwrap());
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
@@ -167,7 +166,6 @@ fn ficheros_de_otros_agentes() {
     let l = diario::leer(&ruta, raiz).unwrap();
     assert_eq!(l.ficheros, vec!["v.md"]);
     assert_eq!(l.primera.as_deref(), Some("2026-11-01T07:00:00.000Z"));
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
@@ -206,8 +204,6 @@ fn filtros_y_caducidad() {
     db.execute("UPDATE diary SET last_at = '2020-01-01T00:00:00.000Z' WHERE session = 'martes'", []).unwrap();
     diario::apuntar(&db, &repo, "hoy", None).unwrap();
     assert_eq!(sesiones(&proyecto, Filtro { limite: 10, ..Default::default() }), vec!["hoy"]);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// Lo que hicieron los subagentes (`<sesión>/subagents/*.jsonl`, con `isSidechain`) también es de la
@@ -243,8 +239,6 @@ fn cuenta_lo_de_los_subagentes() {
     let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert_eq!(v[0].files, vec!["src/main.rs", "src/sub.rs"], "{v:?}");
     assert_eq!(v[0].saved.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![suya.as_str()]);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// Una sesión en una carpeta que aún no es un proyecto (un agente que solo tiene el hook de cierre)
@@ -294,8 +288,6 @@ fn lineas_sin_proyecto_y_podados() {
     diario::apuntar(&db, &ruta_cliente, "del-cliente", None).unwrap();
     omoikane::proyecto::podar(&db).unwrap();
     assert_eq!(db.query_row("SELECT count(*) FROM diary WHERE session = 'del-cliente'", [], |f| f.get::<_, i64>(0)).unwrap(), 0);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// Una conversación cortada a mitad de un carácter se lee igual.
@@ -307,7 +299,6 @@ fn conversacion_cortada() {
     bytes.extend_from_slice(b"\n{\"type\":\"user\",\"message\":\"caf\xC3");
     std::fs::write(&ruta, bytes).unwrap();
     assert_eq!(diario::leer(&ruta, "/w/repo").unwrap().ficheros, vec!["src/ñ.rs"]);
-    let _ = std::fs::remove_dir_all(d);
 }
 
 /// `--file` compara en minúsculas también lo que no es ASCII, y `-n` cuenta después de filtrar.
@@ -326,6 +317,4 @@ fn fichero_unicode_y_limite() {
     let f = Filtro { fichero: Some("ñandú".into()), limite: 1, ..Default::default() };
     let v = diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &f).unwrap();
     assert_eq!(v.iter().map(|l| l.session.as_str()).collect::<Vec<_>>(), vec!["uno"]);
-    drop(db);
-    let _ = std::fs::remove_dir_all(d);
 }
