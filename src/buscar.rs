@@ -514,6 +514,14 @@ pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'
         return Ok(());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    apuntar_recuperadas_en(&tx, &ids, proyecto)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Lo de `apuntar_recuperadas`, dentro de una transacción que ya está abierta (el recall lo junta con
+/// su registro: un turno de escritura por mensaje en vez de dos).
+pub fn apuntar_recuperadas_en(tx: &Connection, ids: &[&str], proyecto: Option<i64>) -> Result<()> {
     {
         let mut u = tx.prepare(&format!(
             "UPDATE memory SET recalled_at = {AHORA}, recall_count = recall_count + 1 WHERE id = ?1"
@@ -529,7 +537,6 @@ pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'
             }
         }
     }
-    tx.commit()?;
     Ok(())
 }
 

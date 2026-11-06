@@ -648,7 +648,16 @@ fn main() -> Result<()> {
         }
         omoikane::sync::programar(&ruta_db(c));
     }
+    trazar_espera();
     r
+}
+
+/// Con `OMOIKANE_TRAZA`, cuánto esperó este proceso a que otro soltara la base (el test de
+/// concurrencia lo suma por operación).
+fn trazar_espera() {
+    if std::env::var_os("OMOIKANE_TRAZA").is_some_and(|v| !v.is_empty()) {
+        eprintln!("TRAZA espera_base {}", serde_json::json!({ "ms": db::esperado().as_secs_f64() * 1000.0 }));
+    }
 }
 
 fn ruta_db(c: &Comun) -> PathBuf {
@@ -672,6 +681,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let (texto, es_error) = omoikane::mcp::herramienta(db, c.dir.clone(), nombre.as_deref(), &args, &origen)?;
             println!("{texto}");
             // Exit 1 si la herramienta respondió con isError: el cliente lo marca como error.
+            trazar_espera();
             std::process::exit(if es_error { 1 } else { 0 })
         }
         Orden::Setup { agente, yes, dry_run, no_auto_update } => setup(&agente, yes, dry_run, no_auto_update),

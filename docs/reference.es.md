@@ -15,6 +15,8 @@ OMOIKANE_LANG=es omoi --help
 
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos; más en [sync-and-spaces.es.md](sync-and-spaces.es.md#proyectos)). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
+Varios agentes pueden usar la misma base a la vez (subagentes, varias sesiones, trabajos de CI): cada `omoi` espera su turno para escribir, hasta 5 s, y una base nueva que crean varios procesos en el mismo momento sale una sola. Lo comprueba `tests/concurrencia.rs` con procesos `omoi` de verdad; `cargo test --release --test concurrencia -- --ignored --nocapture` hace la medida entera (20 agentes durante 30 s).
+
 ## La ves y la ordenas tú
 
 `omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala.
@@ -46,7 +48,7 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo ligero (el de significado no lo bajan nunca) |
 | `OMOIKANE_SEMANTIC=0` / `1` | apaga o enciende el modelo de significado (por encima de `omoi model semantic` y del tamaño de la memoria) |
 | `OMOIKANE_SEMANTIC_THRESHOLD` | desde cuántas memorias se enciende solo el modelo de significado (1000) |
-| `OMOIKANE_TRAZA=1` | el recuerdo escribe cada paso en stderr: candidatas, puntuaciones y qué hizo el modelo de significado, o por qué no se le preguntó |
+| `OMOIKANE_TRAZA=1` | el recuerdo escribe cada paso en stderr: candidatas, puntuaciones y qué hizo el modelo de significado, o por qué no se le preguntó; y cada orden dice cuánto esperó a que otro proceso soltara la base |
 | `OMOIKANE_SEMANTIC_IDLE` | segundos sin uso antes de que se cierre el servicio de significado (1800) |
 | `OMOIKANE_SEMANTIC_RAM` | MB de RAM que puede usar el modelo de significado al indexar (por encima de `omoi model semantic --ram`; 128 por defecto, mínimo 80) |
 | `OMOIKANE_SEMANTIC_MODEL` | una carpeta con EmbeddingGemma para usarla en vez de la instalada |

@@ -4,6 +4,19 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.7.0 (unreleased)
+
+### Many agents on one database
+- Measured first, with a new harness (`tests/concurrencia.rs`): real `omoi` processes at once against one database of 3,000 memories with the model installed, each agent doing what its hooks and plugin do (session start, the recall of each prompt, `remember`, `omoi tool remember`, `update`, `search`, `omoi tool search`, session end with its conversation) and one of them running `omoi sync` against a local repository. At the end it checks that every write `omoi` reported as saved is there with its last content, and that `memory`, `memory_fts`, `memory_path` and `memory_vec` match. 1.6.0 already held up: with 20 agents for 30 s (about 1,000 to 1,500 processes per run) and with 5, no `database is locked`, no lost write and nothing out of step, in any of its runs (four with 20 agents, three with 5).
+- What it did find: when several processes create a brand-new database at the same moment (a CI job starting from scratch), SQLite can answer `SQLITE_BUSY` without waiting at all. It happened twice in about 1,500 such openings, and once a `remember` failed with `database is locked`. Opening now starts over when that happens, for up to 5 s; every step of it was already safe to repeat.
+- Waiting for the database is now Omoikane's own: it tries again every 0.1 to 2 ms instead of SQLite's 1, 2, 5… up to 100 ms, still up to 5 s in all. Same binary, both ways, interleaved, 20 agents: the average wait of a `remember` went from 200-300 ms to 150, that of each prompt's recall from 95-170 ms to 50, and that recall's P99 from 1.4-2.1 s to 0.8-1.2 s (its slowest went from 5.2 s, at the edge of the error, to 1.7 s). With 5 agents the wait is 1 to 8 ms either way. Most of the time with 20 agents is the machine, not the database: on the same runs, `omoi --version`, which doesn't open it, took a P50 of 55 to 450 ms.
+- The two transactions of the review that read before they write (`revisar`) are now `IMMEDIATE`, like every other one that writes: deferred, a write by another agent in between made them fail at once (`BUSY_SNAPSHOT`) and the review stayed out of date. The recall of a prompt writes once instead of twice (what it injected and what counts as recalled, in one transaction).
+- With one agent nothing changes: interleaved against 1.6.0, the recall of a prompt took a P50 of 42, 98 and 82 ms against 39, 76 and 98 (the machine was busy; `--version` moved as much).
+- `OMOIKANE_TRAZA=1` now also says, for every command, how long it waited for another process (`TRAZA espera_base`). The full measurement is `cargo test --release --test concurrencia -- --ignored --nocapture` (`OMOI_CONC_AGENTES`, `OMOI_CONC_SEGUNDOS`, `OMOI_CONC_MEMORIAS`, `OMOI_CONC_SYNC`, and `OMOI_CONC_BIN` to measure another `omoi`); CI runs a short one, 6 agents for 5 s, that fails on any error, lost write or mismatch.
+
+### Compatibility
+- Nothing changes in the database, the sync lines or the export format: the schema is still 10, and 1.6.0 and this version can use the same database at once.
+
 ## 1.6.0 (2026-11-06)
 
 ### Open decisions

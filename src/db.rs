@@ -1,8 +1,10 @@
 //! La base: dónde vive, cómo se abre y su esquema.
 //!
-//! Una conexión por proceso, en WAL, con `busy_timeout` de 5 s y transacciones `IMMEDIATE` para
-//! escribir: varios agentes (cada uno con su `omoi`) pueden escribir a la vez sin que un
-//! `SQLITE_BUSY` llegue al usuario.
+//! Una conexión por proceso, en WAL, con una espera propia de hasta 5 s (`esperar_turno`) y
+//! transacciones `IMMEDIATE` para escribir: varios agentes (cada uno con su `omoi`) pueden escribir a
+//! la vez sin que un `SQLITE_BUSY` llegue al usuario. Una transacción diferida que lee y después
+//! escribe daría `BUSY_SNAPSHOT` sin esperar si otro escribe en medio: por eso todas las que escriben
+//! son `IMMEDIATE`. Lo comprueba `tests/concurrencia.rs`, con procesos `omoi` de verdad.
 
 use crate::tr;
 use anyhow::{Context, Result};
@@ -45,14 +47,83 @@ pub fn registrar_sqlite_vec() {
     });
 }
 
+/// Lo más que espera una conexión a que otra suelte la base antes de dar `database is locked`.
+pub const ESPERA_MAXIMA: Duration = Duration::from_secs(5);
+
+/// Microsegundos que este proceso ha pasado esperando a otra conexión (ver `esperar_turno`).
+static ESPERADO_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cuánto ha esperado este proceso a que otro soltara la base. Lo enseña la traza (`OMOIKANE_TRAZA`).
+pub fn esperado() -> Duration {
+    Duration::from_micros(ESPERADO_US.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// La espera cuando otra conexión tiene la base (en vez de `busy_timeout`). La de SQLite duerme 1, 2,
+/// 5, 10… hasta 100 ms entre intentos (y en Windows un `Sleep(1)` puede ser bastante más), así que
+/// quien esperaba llegaba tarde a los huecos. Con 20 agentes a la vez (`tests/concurrencia.rs`), la
+/// espera media de un `remember` bajó de 200-300 ms a 150, la del recall de cada mensaje de 95-170 a
+/// 50, y su P99 de 1,4-2,1 s a 0,8-1,2 s. Aquí se vuelve a probar a los 0,1-2 ms (con algo de azar,
+/// para que no despierten todos a la vez), hasta `ESPERA_MAXIMA` desde el primer intento.
+fn esperar_turno(veces: i32) -> bool {
+    thread_local! {
+        static DESDE: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
+    }
+    let ahora = std::time::Instant::now();
+    if veces == 0 {
+        DESDE.with(|d| d.set(ahora));
+    }
+    if ahora.duration_since(DESDE.with(|d| d.get())) >= ESPERA_MAXIMA {
+        return false;
+    }
+    let tope = (100u64 << veces.clamp(0, 5)).min(2_000);
+    // El azar de los nanosegundos del reloj basta: solo es para repartir los despertares.
+    let azar = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0);
+    let us = tope / 2 + azar % (tope / 2 + 1);
+    std::thread::sleep(Duration::from_micros(us));
+    ESPERADO_US.fetch_add(ahora.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    true
+}
+
 /// Abre (o crea) la base y la deja en la última versión del esquema.
+///
+/// Si al abrir otra conexión tiene la base y SQLite da `SQLITE_BUSY` sin pasar por `esperar_turno`
+/// (pasa, rara vez, cuando varios procesos crean a la vez una base nueva: 2 de unas 1.500 aperturas
+/// en las pruebas, y una fue un `remember` que falló con `database is locked`), se vuelve a abrir
+/// desde el principio, hasta `ESPERA_MAXIMA`. Todo lo que hace la apertura se puede repetir: cada
+/// paso mira primero si ya está hecho, y lo que escribe va en transacciones.
 pub fn abrir(ruta: &Path) -> Result<Connection> {
+    let desde = std::time::Instant::now();
+    let mut intento = 0u32;
+    loop {
+        match abrir_una_vez(ruta) {
+            Err(e) if ocupada(&e) && desde.elapsed() < ESPERA_MAXIMA => {
+                if std::env::var_os("OMOIKANE_TRAZA").is_some_and(|v| !v.is_empty()) {
+                    eprintln!("TRAZA abrir_reintento {}", serde_json::json!({ "error": format!("{e:#}") }));
+                }
+                intento += 1;
+                std::thread::sleep(Duration::from_millis(u64::from(intento.min(10))));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// Si el error es que otra conexión tenía la base (`SQLITE_BUSY` o `SQLITE_LOCKED`).
+pub fn ocupada(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<rusqlite::Error>()
+            .and_then(|r| r.sqlite_error_code())
+            .is_some_and(|c| matches!(c, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+    })
+}
+
+fn abrir_una_vez(ruta: &Path) -> Result<Connection> {
     registrar_sqlite_vec();
     if let Some(dir) = ruta.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| tr!("can't create {}", "no se puede crear {}", dir.display()))?;
     }
     let mut db = Connection::open(ruta).with_context(|| tr!("can't open {}", "no se puede abrir {}", ruta.display()))?;
-    db.busy_timeout(Duration::from_secs(5))?;
+    db.busy_handler(Some(esperar_turno))?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "synchronous", "NORMAL")?;
     // Sin pasar el WAL a la base al cerrar. Casi todo `omoi` es un proceso corto (el hook de cada
@@ -275,7 +346,7 @@ fn migrar(db: &mut Connection) -> Result<()> {
 pub fn abrir_en_esquema(ruta: &Path, hasta: i64) -> Result<Connection> {
     registrar_sqlite_vec();
     let mut db = Connection::open(ruta)?;
-    db.busy_timeout(Duration::from_secs(5))?;
+    db.busy_handler(Some(esperar_turno))?;
     migrar_hasta(&mut db, hasta)?;
     Ok(db)
 }
