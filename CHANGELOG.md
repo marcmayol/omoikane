@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.7.1 (unreleased)
+## 1.7.1 (2026-11-06)
 
 ### Fixed
 - `ratatui` goes from 0.29 to 0.30.2 (and `crossterm` from 0.28 to 0.29), which brings `lru` 0.18.5 instead of 0.12.5 and closes the Dependabot alert about `lru`'s `IterMut` (low severity; `omoi tui` didn't use it). `omoi tui` needed no changes and was checked on screen: list, search as you type, whole memory, history, all projects, forget with confirmation.
