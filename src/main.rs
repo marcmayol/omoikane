@@ -634,7 +634,12 @@ fn main() -> Result<()> {
     }
     // Sin carpeta de usuario (un contenedor) ni variables que digan dónde: un error claro, no una base
     // nueva en la carpeta en la que se ejecuta.
-    if cli.comun.db.is_none() && !omoikane::entorno::hay_donde_guardar() {
+    // `setup` y `upgrade` no abren la base: no lo necesitan.
+    let sin_base = matches!(cli.orden, Orden::Setup { .. } | Orden::Upgrade { .. });
+    if let Some(e) = omoikane::entorno::casa_mala() {
+        bail!(e);
+    }
+    if !sin_base && cli.comun.db.is_none() && !omoikane::entorno::hay_donde_guardar() {
         bail!(omoikane::entorno::sin_casa());
     }
     let c = &cli.comun;
@@ -2353,8 +2358,28 @@ fn unirse_con(c: &Comun, ruta: &std::path::Path, codigo: &str, otra_url: Option<
     let sync::Codigo { url, clave, id, persona, espacio } = sync::leer_codigo(codigo)?;
     let espacio = espacio_de(space)?.or(espacio);
     if sync::leer_config_de(&sync::rutas_de(ruta, espacio.as_deref()))?.is_some() {
-        // Ya sincroniza con ese repositorio: la clave nueva de una rotación, junto a las viejas.
-        return Ok(if sync::anadir_clave(&db, ruta, espacio.as_deref(), id, &clave)? { Union::Clave(id) } else { Union::Ya });
+        // Ya sincroniza con ese repositorio. Otra URL (un token nuevo en `OMOIKANE_SYNC_URL`) pasa a ser
+        // la suya antes de nada: con la vieja quizá ya no se llega.
+        // Si el código resulta ser de otro repositorio, la URL vuelve a ser la de antes.
+        let vieja = match &otra_url {
+            Some(u) => sync::cambiar_url(ruta, espacio.as_deref(), u)?,
+            None => None,
+        };
+        // La clave nueva de una rotación, junto a las viejas.
+        let union = match sync::anadir_clave(&db, ruta, espacio.as_deref(), id, &clave) {
+            Ok(true) => Union::Clave(id),
+            Ok(false) => Union::Ya,
+            Err(e) => {
+                if let Some(v) = &vieja {
+                    let _ = sync::cambiar_url(ruta, espacio.as_deref(), v);
+                }
+                return Err(e);
+            }
+        };
+        if let Some(u) = otra_url.as_deref().filter(|_| vieja.is_some()) {
+            eprintln!("{}", tr!("the repository URL is now {}", "la URL del repositorio es ahora {}", sync::sin_credenciales(u)));
+        }
+        return Ok(union);
     }
     let url = otra_url.unwrap_or(url);
     let e = elegir(eleccion)?;

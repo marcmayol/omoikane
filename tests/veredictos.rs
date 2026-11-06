@@ -249,12 +249,12 @@ fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
 #[test]
 fn el_autor_es_la_persona_de_la_sync_o_el_cliente() {
     let (db, dir) = base("autor");
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code"), "agent:claude-code");
-    assert_eq!(veredictos::autor(&db, "mcp"), "agent");
-    assert_eq!(veredictos::autor(&db, ""), "agent");
-    assert_eq!(veredictos::autor(&db, "cli"), "cli");
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "agent:claude-code");
+    assert_eq!(veredictos::autor(&db, "mcp", ""), "agent");
+    assert_eq!(veredictos::autor(&db, "", ""), "agent");
+    assert_eq!(veredictos::autor(&db, "cli", ""), "cli");
     db.execute("INSERT INTO meta(k, v) VALUES ('autor', 'Marc')", []).unwrap();
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code"), "Marc");
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "Marc");
     drop(db);
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -62,11 +62,19 @@ pub fn pareja(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.into(), b.into()) } else { (b.into(), a.into()) }
 }
 
-/// Quién firma un veredicto dado aquí: la persona de la sincronización si la hay y, si no, quien
-/// llama: `mcp:claude-code` → `agent:claude-code`, `mcp` a secas → `agent`, y lo demás (`cli`,
-/// `http`) tal cual.
-pub fn autor(db: &Connection, origen: &str) -> String {
-    let persona = crate::memoria::autor(db).unwrap_or_default();
+/// Quién firma un veredicto dado aquí sobre la memoria `memoria`: el autor que firmaría lo que se
+/// guarda donde está ella (`memoria::autor_de`: el del repositorio de su espacio, o el general) si lo
+/// hay y, si no, quien llama: `mcp:claude-code` → `agent:claude-code`, `mcp` a secas → `agent`, y lo
+/// demás (`cli`, `http`) tal cual.
+pub fn autor(db: &Connection, origen: &str, memoria: &str) -> String {
+    let donde: Option<(i64, Option<i64>)> = crate::memoria::resolver_id(db, memoria)
+        .ok()
+        .and_then(|id| db.query_row("SELECT project_id, space_id FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?))).optional().ok().flatten());
+    let persona = match donde {
+        Some((p, s)) => crate::memoria::autor_de(db, p, s),
+        None => crate::memoria::autor_en(db, ""),
+    }
+    .unwrap_or_default();
     if !persona.is_empty() {
         return persona;
     }

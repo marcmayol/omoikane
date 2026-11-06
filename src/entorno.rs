@@ -36,12 +36,41 @@ fn encendida(nombre: &str) -> bool {
 
 /// La carpeta de Omoikane: `OMOIKANE_HOME` o `~/.omoikane`. `None` si no hay ninguna de las dos (sin
 /// carpeta de usuario, o con un `HOME` vacío o relativo).
+///
+/// `OMOIKANE_HOME` tiene que ser absoluta: una relativa dependería de la carpeta en la que se ejecute
+/// cada orden (cada hook, cada paso de una CI tendría su base). `~` y `~/…` se expanden con la carpeta
+/// de usuario; otra relativa no vale (`None`, y `casa_mala` lo explica).
 pub fn casa() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty()) {
-        let h = PathBuf::from(h);
-        return Some(std::path::absolute(&h).unwrap_or(h));
+        return casa_de(&h.to_string_lossy());
     }
     std::env::home_dir().filter(|h| h.is_absolute()).map(|h| h.join(".omoikane"))
+}
+
+/// `OMOIKANE_HOME` como ruta: absoluta tal cual, `~` o `~/…` desde la carpeta de usuario; otra, `None`.
+fn casa_de(h: &str) -> Option<PathBuf> {
+    let usuario = || std::env::home_dir().filter(|u| u.is_absolute());
+    if h == "~" {
+        return usuario();
+    }
+    if let Some(resto) = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")) {
+        return usuario().map(|u| u.join(resto));
+    }
+    let p = PathBuf::from(h);
+    p.is_absolute().then_some(p)
+}
+
+/// El error de un `OMOIKANE_HOME` que no vale (relativo, o con `~` sin carpeta de usuario); `None` si
+/// no está o vale.
+pub fn casa_mala() -> Option<String> {
+    let h = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty())?;
+    let h = h.to_string_lossy();
+    casa_de(&h).is_none().then(|| {
+        tr!(
+            "OMOIKANE_HOME must be an absolute path (it is «{h}»): a relative one would change with the folder each command runs in",
+            "OMOIKANE_HOME tiene que ser una ruta absoluta (es «{h}»): una relativa cambiaría con la carpeta en la que se ejecuta cada orden"
+        )
+    })
 }
 
 /// Si hay dónde guardar la base: `OMOIKANE_DB` o una carpeta de Omoikane.
@@ -60,6 +89,16 @@ pub fn sin_casa() -> String {
 /// `OMOIKANE_NONINTERACTIVE=1`: no hay nadie delante.
 pub fn desatendido() -> bool {
     encendida("OMOIKANE_NONINTERACTIVE")
+}
+
+/// La variable con la que `omoi` marca los procesos que lanza él mismo en segundo plano (la
+/// sincronización de fondo, el `--pull` de los hooks): no es para nadie de fuera.
+pub const DE_FONDO: &str = "OMOIKANE_INTERNAL_BACKGROUND";
+
+/// Si este proceso lo lanzó `omoi` en segundo plano (`DE_FONDO`): aunque no haya nadie delante, nadie
+/// espera su resultado.
+pub fn de_fondo() -> bool {
+    encendida(DE_FONDO)
 }
 
 /// Si se puede preguntar: hay una terminal en la entrada y no se ha dicho que no hay nadie.
@@ -101,4 +140,22 @@ pub fn codigos_sync() -> Vec<String> {
 /// `OMOIKANE_SYNC_URL`: otra URL para el repositorio del código (solo con un código).
 pub fn url_sync() -> Option<String> {
     valor("OMOIKANE_SYNC_URL")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::casa_de;
+
+    /// `OMOIKANE_HOME` relativa no vale; absoluta, tal cual; `~/…`, desde la carpeta de usuario.
+    #[test]
+    fn casa_absoluta_o_con_tilde() {
+        assert_eq!(casa_de("relativa/omoikane"), None);
+        assert_eq!(casa_de(".omoikane"), None);
+        let abs = std::env::temp_dir().join("omoi-casa");
+        assert_eq!(casa_de(&abs.to_string_lossy()), Some(abs));
+        if let Some(u) = std::env::home_dir().filter(|u| u.is_absolute()) {
+            assert_eq!(casa_de("~/omoi"), Some(u.join("omoi")));
+            assert_eq!(casa_de("~"), Some(u));
+        }
+    }
 }

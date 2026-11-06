@@ -329,16 +329,19 @@ fn desde_hex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// Quita usuario y contraseña de las URL de un texto (`https://token@host/…` → `https://***@host/…`):
-/// para enseñar URLs y errores sin enseñar credenciales.
+/// Quita usuario y contraseña de las URL de un texto (`https://token@host/…` → `https://***@host/…`),
+/// y el valor de los parámetros de su consulta que suenan a credencial (`?access_token=…`,
+/// `&private_token=…`, `?sig=…`): para enseñar URLs y errores sin enseñar credenciales.
 pub fn sin_credenciales(texto: &str) -> String {
     let mut s = String::with_capacity(texto.len());
     let mut resto = texto;
     while let Some(i) = resto.find("://") {
         let (antes, despues) = resto.split_at(i + 3);
         s.push_str(antes);
-        let fin = despues.find(|c: char| c == '/' || c.is_whitespace() || c == '\'' || c == '"').unwrap_or(despues.len());
-        let anfitrion = &despues[..fin];
+        let fin_url = despues.find(|c: char| c.is_whitespace() || c == '\'' || c == '"').unwrap_or(despues.len());
+        let url = &despues[..fin_url];
+        let fin = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let anfitrion = &url[..fin];
         match anfitrion.rfind('@') {
             Some(a) => {
                 s.push_str("***@");
@@ -346,10 +349,33 @@ pub fn sin_credenciales(texto: &str) -> String {
             }
             None => s.push_str(anfitrion),
         }
-        resto = &despues[fin..];
+        s.push_str(&sin_credenciales_en_consulta(&url[fin..]));
+        resto = &despues[fin_url..];
     }
     s.push_str(resto);
     s
+}
+
+/// El camino y la consulta de una URL, con `***` en el valor de cada parámetro que suena a credencial.
+fn sin_credenciales_en_consulta(resto: &str) -> String {
+    let Some(q) = resto.find('?') else { return resto.to_string() };
+    let (camino, consulta) = resto.split_at(q + 1);
+    let (consulta, fragmento) = match consulta.find('#') {
+        Some(f) => consulta.split_at(f),
+        None => (consulta, ""),
+    };
+    let secreto = |nombre: &str| {
+        let n = nombre.to_lowercase();
+        ["token", "secret", "pass", "pwd", "key", "auth", "sig", "credential", "session"].iter().any(|x| n.contains(x))
+    };
+    let partes: Vec<String> = consulta
+        .split('&')
+        .map(|p| match p.split_once('=') {
+            Some((n, v)) if secreto(n) && !v.is_empty() => format!("{n}=***"),
+            _ => p.to_string(),
+        })
+        .collect();
+    format!("{camino}{}{fragmento}", partes.join("&"))
 }
 
 // --- Cifrado ---------------------------------------------------------------------------------------
@@ -1696,14 +1722,48 @@ pub fn avisos_de_pausa(db: &Connection, ruta_db: &Path) -> Vec<String> {
     crate::proyecto::en_pausa(db).unwrap_or_default().iter().map(|p| texto_pausa(ruta_db, p)).collect()
 }
 
+/// Si un proyecto no tiene ninguna memoria.
+fn sin_memorias(db: &Connection, proyecto: i64) -> Result<bool> {
+    Ok(db.query_row("SELECT NOT EXISTS (SELECT 1 FROM memory WHERE project_id = ?1)", [proyecto], |f| f.get(0))?)
+}
+
+/// Sin nadie delante (`OMOIKANE_NONINTERACTIVE=1`): si el repositorio del espacio `espacio` (su clave)
+/// es uno de los de `OMOIKANE_SYNC_CODE`, es decir, si una de las claves que este equipo tiene para él
+/// es la de un código de la variable con ese espacio, y la clave del proyecto es la de un remoto git
+/// (`git:`; una `dir:` es solo el nombre de una carpeta y no dice de quién es). Lo demás que hace
+/// falta (que el `origin` de una carpeta de aquí sea esa clave) lo mira `proyecto::adopta_en`.
+pub(crate) fn adopta_por_entorno(db: &Connection, clave: &str, espacio: &str) -> bool {
+    if !crate::entorno::desatendido() || !clave.starts_with("git:") || espacio.is_empty() {
+        return false;
+    }
+    let codigos = crate::entorno::codigos_sync();
+    if codigos.is_empty() {
+        return false;
+    }
+    let Some(r) = db.path().filter(|p| !p.is_empty()).and_then(|p| repo_de_espacio(Path::new(p), espacio)) else { return false };
+    let Ok(cifra) = leer_claves(&r) else { return false };
+    codigos.iter().filter_map(|k| leer_codigo(k).ok()).any(|c| {
+        c.espacio.as_deref().is_some_and(|e| crate::proyecto::clave_de_espacio(e) == espacio) && cifra.claves.get(&c.id).is_some_and(|k| *k == c.clave)
+    })
+}
+
 /// Para el agente, al empezar la sesión: una línea por proyecto en pausa, con lo que tiene que hacer.
 pub fn aviso_de_pausa_agente(db: &Connection) -> Option<String> {
     let v = crate::proyecto::en_pausa(db).ok()?;
+    // Sin nadie delante no hay a quién preguntar: que no ejecute ninguna de las dos órdenes (decidir
+    // es de una persona) y que sepa que lo que guarde ahí no sale de este equipo.
+    let nadie = crate::entorno::desatendido();
     let lineas: Vec<String> = v
         .iter()
         .map(|p| {
             let (si, no) = (orden_aceptar(p), orden_quedarse(p));
             let e = &p.pausa.space;
+            if nadie {
+                return format!(
+                    "The project {} is paused until a person decides which space it belongs to; nobody can decide it here, so run neither `{no}` nor `{si}`. Nothing of it is synced: what you save in it stays on this computer.",
+                    p.name
+                );
+            }
             if p.pausa.claimed {
                 return format!(
                     "The project {} is paused: its folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What is saved in it stays on this computer until the user decides. Ask the user whether it belongs to {e}: if so, run `{no}`; if it is theirs, `{si}`.",
@@ -1900,6 +1960,22 @@ impl<'a> Aplicador<'a> {
                 if moved && !aqui.is_empty() {
                     return Ok(());
                 }
+                // Sin nadie delante y unido a este repositorio por `OMOIKANE_SYNC_CODE`: una carpeta de
+                // aquí (la de la CI) con el mismo `origin`, sin espacio y sin memorias que pudieran ser de
+                // otro repositorio, entra en el espacio sin pausa (`proyecto::adopta_en`).
+                if !moved
+                    && aqui.is_empty()
+                    && pausa.is_none()
+                    && c.space.is_some()
+                    && va_al_repo(c, &space_key)
+                    && sin_memorias(db, id)?
+                    && crate::proyecto::adopta_en(db, id, &space_key)?
+                {
+                    let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
+                    db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
+                    reloj::recibir(db, &hlc)?;
+                    return Ok(());
+                }
                 // Otro espacio: ni se mueve ni se sigue sincronizando; en pausa hasta que se decida aquí.
                 let quien = reloj::partes(&hlc).2.to_string();
                 let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: quien, ..Default::default() };
@@ -2017,7 +2093,12 @@ impl<'a> Aplicador<'a> {
                         // Si su carpeta ya estaba aquí (la misma ruta, con la misma clave), es una carpeta
                         // de aquí que entra en un espacio porque lo dice su repositorio: en pausa hasta
                         // que la persona lo confirme, como si la abriera después.
-                        if self.config.is_some() && crate::proyecto::carpetas_propias(db, p)? > 0 {
+                        // Sin nadie delante y unido a este repositorio por la variable, la carpeta de la CI
+                        // entra sin pausa si no tenía nada (lo que tuviera podría ser de otro repositorio).
+                        if self.config.is_some()
+                            && crate::proyecto::carpetas_propias(db, p)? > 0
+                            && !(sin_memorias(db, p)? && crate::proyecto::adopta_sin_pausa(db, p)?)
+                        {
                             crate::proyecto::pausar_por_reclamo(db, p)?;
                         }
                     }
@@ -2400,15 +2481,19 @@ fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) ->
     }
     guardar_claves(r, cifra)?;
     escribir_privado(&r.config, &serde_json::to_string_pretty(config)?)?;
-    // El autor de la base es el del repositorio general; sin él (quien solo trabaja para clientes), el
-    // del repositorio del espacio, para que su equipo sepa quién escribió cada memoria.
-    let sin_general = || db.path().filter(|p| !p.is_empty()).is_some_and(|p| leer_config(Path::new(p)).ok().flatten().is_none());
-    if r.espacio.is_none() || (config.author.is_some() && sin_general()) {
-        match &config.author {
+    // El autor del repositorio general firma lo que no es de ningún espacio (`meta` `autor`); el del
+    // repositorio de un espacio, solo lo de ese espacio (`autor:<espacio>`, vacío si se unió sin autor):
+    // el nombre con el que alguien se une a un cliente no firma nunca lo de otro (`memoria::autor_en`).
+    match &r.espacio {
+        None => match &config.author {
             Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
             None => db.execute("DELETE FROM meta WHERE k = 'autor'", [])?,
-        };
-    }
+        },
+        Some(e) => db.execute(
+            "INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)",
+            params![format!("autor:{}", crate::proyecto::clave_de_espacio(e)), config.author.as_deref().unwrap_or("")],
+        )?,
+    };
     db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
     Ok(())
 }
@@ -2544,6 +2629,25 @@ pub fn anadir_clave(db: &Connection, ruta_db: &Path, espacio: Option<&str>, id: 
     Ok(true)
 }
 
+/// Otra URL para un repositorio con el que este equipo ya sincroniza (`OMOIKANE_SYNC_URL` con un token
+/// nuevo de la CI, o `omoi sync join --url`): la apunta en su configuración y en el remoto `origin`
+/// de su clon. Devuelve la que tenía (`None` si ya era esa). La URL puede llevar un token: no sale en
+/// ningún mensaje.
+pub fn cambiar_url(ruta_db: &Path, espacio: Option<&str>, url: &str) -> Result<Option<String>> {
+    let r = rutas_de(ruta_db, espacio);
+    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+    let Some(mut config) = leer_config_de(&r)? else { return Ok(None) };
+    if config.url == url {
+        return Ok(None);
+    }
+    if r.clon.join(".git").exists() {
+        git(&r.clon, &["remote", "set-url", "origin", url])?;
+    }
+    let vieja = std::mem::replace(&mut config.url, url.to_string());
+    escribir_privado(&r.config, &serde_json::to_string_pretty(&config)?)?;
+    Ok(Some(vieja))
+}
+
 /// `omoi sync rotate`: una clave nueva para un repositorio. La apunta como vigente en
 /// `omoikane.check`, vuelve a cifrar con ella todo lo de este equipo (y borra sus ficheros con la
 /// vieja), hace commit y push, y la guarda aquí junto a las viejas. Desde entonces `omoi sync code` da
@@ -2579,10 +2683,11 @@ pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Res
         std::fs::remove_dir_all(&r.clon)?;
     }
     match &r.espacio {
-        Some(_) => {
+        Some(e) => {
             if let Some(d) = r.config.parent() {
                 let _ = std::fs::remove_dir_all(d);
             }
+            db.execute("DELETE FROM meta WHERE k = ?1", [format!("autor:{}", crate::proyecto::clave_de_espacio(e))])?;
         }
         None => {
             db.execute("DELETE FROM meta WHERE k = 'autor'", [])?;
@@ -2851,6 +2956,8 @@ pub(crate) fn lanzar(args: &[&str], ruta_db: Option<&Path>) {
     if let Some(r) = ruta_db {
         c.env("OMOIKANE_DB", r);
     }
+    // El hijo sabe que es de fondo: su `--pull` es el barato aunque no haya nadie delante (`traer`).
+    c.env(crate::entorno::DE_FONDO, "1");
     c.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
@@ -3194,7 +3301,9 @@ const PENDIENTE_INTENTADO: &str = "sync_pendiente_intentado";
 pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
     // Sin nadie delante (una CI que pide `omoi sync --pull`) no vale «ya lo hará otra» ni «sin red, en
     // el siguiente intento»: espera a la que haya en marcha, sincroniza entero y, si falla, sale con error.
-    if crate::entorno::desatendido() {
+    // El que lanza `omoi` mismo en segundo plano (con `OMOIKANE_SYNC_AUTO=1` en un servidor) sigue siendo
+    // el barato: nadie espera su resultado.
+    if crate::entorno::desatendido() && !crate::entorno::de_fondo() {
         let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
         let mut db = abrir()?;
         let r = rutas(ruta_db);
@@ -3300,6 +3409,14 @@ mod tests {
         assert_eq!(sin_credenciales("https://ghp_x:y@github.com/a/b.git"), "https://***@github.com/a/b.git");
         assert_eq!(sin_credenciales("git clone https://tok@host/r falló; ssh://git@h:22/r"), "git clone https://***@host/r falló; ssh://***@h:22/r");
         assert_eq!(sin_credenciales("git@github.com:a/b.git"), "git@github.com:a/b.git");
+        // Los tokens en la consulta también, y solo los parámetros que suenan a credencial.
+        assert_eq!(
+            sin_credenciales("fallo en https://h.com/a/b.git?access_token=s3cr3t&ref=main#x y más"),
+            "fallo en https://h.com/a/b.git?access_token=***&ref=main#x y más"
+        );
+        assert_eq!(sin_credenciales("https://u:p@h.com?private_token=abc&sig=zz"), "https://***@h.com?private_token=***&sig=***");
+        assert_eq!(sin_credenciales("https://h.com/r?token=t1 'https://h.com/q?Token=T2'"), "https://h.com/r?token=*** 'https://h.com/q?Token=***'");
+        assert_eq!(sin_credenciales("https://h.com/buscar?q=deploy"), "https://h.com/buscar?q=deploy");
         assert_eq!(error_corto("git push: remote: Permission to x denied to ghp\nmás"), "git push:");
     }
 

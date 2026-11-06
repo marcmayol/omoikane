@@ -231,7 +231,7 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
 /// motivo (el `reason` del `update`, o el título de la memoria nueva) y quién los firma (`origen`:
 /// la persona de la sync o `agent:<cliente>`, ver `veredictos::autor`).
 fn juzgar(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts: Option<Vec<String>>, compatible: Option<Vec<String>>, motivo: &str, origen: &str) -> Result<usize> {
-    let autor = veredictos::autor(db, origen);
+    let autor = veredictos::autor(db, origen, id);
     let mut n = 0;
     for viejo in supersedes.unwrap_or_default() {
         veredictos::poner(db, &viejo, id, veredictos::SUSTITUIDA, motivo, &autor)?;

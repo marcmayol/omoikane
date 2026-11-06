@@ -529,13 +529,33 @@ pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>,
     Ok(())
 }
 
-/// El autor que se apunta en lo que se guarda aquí: `OMOIKANE_AUTHOR` (un agente sin persona delante
-/// dice quién es) o el que configuró la sincronización; vacío = ninguno.
-pub(crate) fn autor(db: &Connection) -> Result<String> {
+/// El autor que se apunta en lo que se guarda aquí en el espacio `espacio` (su clave; vacía: en
+/// ninguno): `OMOIKANE_AUTHOR` (un agente sin persona delante dice quién es); si no, el del repositorio
+/// de ese espacio si este equipo lo tiene (`meta` `autor:<espacio>`, vacío si se unió sin autor), y si
+/// no, el del repositorio general (`meta` `autor`). Así el nombre con el que alguien se unió a un
+/// cliente nunca firma lo de otro cliente ni lo suyo; vacío = ninguno.
+pub(crate) fn autor_en(db: &Connection, espacio: &str) -> Result<String> {
     if let Some(a) = crate::entorno::autor() {
         return Ok(a);
     }
+    if !espacio.is_empty()
+        && let Some(a) = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("autor:{espacio}")], |f| f.get(0)).optional()?
+    {
+        return Ok(a);
+    }
     Ok(db.query_row("SELECT v FROM meta WHERE k = 'autor'", [], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+/// El autor de lo que se guarda en este proyecto o espacio (`autor_en` con el espacio que le toca).
+pub(crate) fn autor_de(db: &Connection, project_id: i64, space_id: Option<i64>) -> Result<String> {
+    if crate::entorno::autor().is_some() {
+        return autor_en(db, "");
+    }
+    let espacio = match space_id {
+        Some(s) => Some(s),
+        None => crate::proyecto::espacio_de(db, project_id)?,
+    };
+    autor_en(db, &crate::proyecto::clave_espacio(db, espacio)?)
 }
 
 fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
@@ -555,18 +575,18 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
         Some(_) => (titulo(&nueva.title)?, contenido(&nueva.content)?),
     };
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
+    let (project_id, space_id) = alcance(tx, &nueva.project, nueva.project_id, nueva.space_id)?;
     let (hlc, author) = match origen {
         Some(o) => {
             crate::reloj::recibir(tx, o.hlc)?;
             (o.hlc.to_string(), o.author.to_string())
         }
-        None => (crate::reloj::sello(tx)?, autor(tx)?),
+        None => (crate::reloj::sello(tx)?, autor_de(tx, project_id, space_id)?),
     };
     let content_hlc = match origen {
         Some(o) if !o.content_hlc.is_empty() => o.content_hlc.to_string(),
         _ => hlc.clone(),
     };
-    let (project_id, space_id) = alcance(tx, &nueva.project, nueva.project_id, nueva.space_id)?;
     tx.execute(
         &format!(
             "INSERT INTO memory(id, project_id, space_id, kind, title, content, paths, tags, pinned, source, created_at, updated_at, hlc, author, content_hlc, extra)
@@ -766,7 +786,7 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
             despues.pinned,
             project_id,
             hlc,
-            autor(tx)?,
+            autor_de(tx, project_id, space_id)?,
             space_id,
             content_hlc,
         ],

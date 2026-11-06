@@ -465,9 +465,12 @@ fn fragmento(texto: &str, n: usize) -> String {
 
 /// Al empezar la sesión (o tras compactar): el contexto que el agente debe tener siempre.
 /// El autor de este equipo, si la sincronización lo apunta: con él se distingue lo de otras personas.
-fn autor_propio(db: &Connection) -> Option<String> {
-    // El que se apunta en cada memoria (el del repositorio general o, sin él, el de un espacio).
-    if let Some(a) = memoria::autor(db).ok().filter(|a| !a.is_empty()) {
+/// `actual`: el proyecto de la sesión (-1 o 0, ninguno): en uno de un espacio, el autor con el que este
+/// equipo firma en ese espacio.
+fn autor_propio(db: &Connection, actual: i64) -> Option<String> {
+    // El que se apunta en cada memoria guardada aquí (el del repositorio de su espacio o el general).
+    let autor = if actual > 0 { memoria::autor_de(db, actual, None) } else { memoria::autor_en(db, "") };
+    if let Some(a) = autor.ok().filter(|a| !a.is_empty()) {
         return Some(a);
     }
     let ruta = db.path().filter(|p| !p.is_empty())?;
@@ -475,7 +478,6 @@ fn autor_propio(db: &Connection) -> Option<String> {
 }
 
 pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
-    let propio = autor_propio(db);
     // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
     crate::revisar::al_dia(db)?;
     let actualizado = crate::actualizar::aviso();
@@ -484,6 +486,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     let movido = if crate::proyecto::es_general(project) { None } else { crate::proyecto::registrar_avisando(db, project)?.1 };
     let ambito = Ambito::de(db, project)?;
     let actual = proyecto_actual(db, project);
+    let propio = autor_propio(db, actual);
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes. Lo que se
     // borra queda resumido en `memory_use` (cuántas veces y desde qué proyecto se recibió cada memoria).
     {
@@ -830,8 +833,8 @@ pub fn al_preguntar_abriendo<'m>(
     e: &Entrada,
     modelo: &mut dyn FnMut() -> Option<&'m Modelo>,
 ) -> Result<Option<String>> {
-    let propio = autor_propio(db);
     let actual = proyecto_actual(db, project);
+    let propio = autor_propio(db, actual);
     let vistas = ya_inyectadas(db, &e.session_id)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
     let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id));

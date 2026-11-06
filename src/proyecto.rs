@@ -326,7 +326,7 @@ pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<St
                  WHERE path_cmp = ?1 AND (is_foreign = 1 OR origin != ?2 OR last_seen IS NULL OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'))",
                 params![comparable(ruta), origen(ruta), ahora],
             )?;
-            if reclamado {
+            if reclamado && !adopta_sin_pausa(db, id)? {
                 pausar_por_reclamo(db, id)?;
             }
             return Ok((id, principal_si_hace_falta(db, id, ruta)?));
@@ -350,7 +350,7 @@ pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<St
         "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
         params![ruta, comparable(ruta), id, origen(ruta), existe.then_some(&ahora)],
     )?;
-    if reclamado {
+    if reclamado && !adopta_sin_pausa(db, id)? {
         pausar_por_reclamo(db, id)?;
     }
     Ok((id, principal_si_hace_falta(db, id, ruta)?))
@@ -742,6 +742,29 @@ pub fn pausar_por_reclamo(db: &Connection, proyecto: i64) -> Result<()> {
     }
     let machine = crate::reloj::partes(&hlc).2.to_string();
     pausar(db, proyecto, &Pausa { space: clave_espacio(db, espacio)?, claimed: true, hlc, machine, ..Default::default() })
+}
+
+/// Sin nadie delante (`OMOIKANE_NONINTERACTIVE=1`), si un proyecto que el repositorio de su espacio
+/// dice suyo entra en él sin pausa al aparecer aquí una carpeta suya: solo si este equipo se unió a
+/// ese repositorio por `OMOIKANE_SYNC_CODE` (la variable ya es la decisión: una CI parte cada vez de
+/// una base nueva y no hay nadie que diga `omoi projects keep`) y si el `origin` de una carpeta de
+/// aquí es exactamente el de su clave `git:` (ver `sync::adopta_por_entorno`). Con una persona
+/// delante, o sin esa variable, se pausa como siempre.
+pub fn adopta_sin_pausa(db: &Connection, proyecto: i64) -> Result<bool> {
+    let espacio = clave_espacio(db, espacio_de(db, proyecto)?)?;
+    adopta_en(db, proyecto, &espacio)
+}
+
+/// Como `adopta_sin_pausa`, para entrar en el espacio `espacio` (su clave) un proyecto que aquí aún
+/// no está en ninguno.
+pub fn adopta_en(db: &Connection, proyecto: i64, espacio: &str) -> Result<bool> {
+    let clave = clave_de(db, proyecto)?;
+    if !crate::sync::adopta_por_entorno(db, &clave, espacio) {
+        return Ok(false);
+    }
+    let mut q = db.prepare("SELECT origin FROM project_path WHERE project_id = ?1 AND is_foreign = 0")?;
+    let origenes: Vec<String> = q.query_map([proyecto], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(origenes.iter().any(|o| !o.is_empty() && format!("git:{o}") == clave))
 }
 
 /// Un proyecto en pausa, como lo enseñan `omoi sync`, `doctor`, `review` y Revisar.

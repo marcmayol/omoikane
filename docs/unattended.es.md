@@ -8,18 +8,22 @@ Las CI, los servidores, los contenedores y los agentes en la nube pueden usar la
 
 | variable | qué hace |
 |---|---|
-| `OMOIKANE_HOME` | la carpeta de Omoikane entera: la base, los modelos, la elección y el servicio del modelo de significado y las actualizaciones. Por defecto, `~/.omoikane`. La configuración de la sincronización, sus claves y sus clones, las copias y el diario están junto a la base, así que van con ella. `OMOIKANE_DB` y `OMOIKANE_MODELS` siguen mandando en lo suyo |
+| `OMOIKANE_HOME` | la carpeta de Omoikane entera: la base, los modelos, la elección y el servicio del modelo de significado y las actualizaciones. Por defecto, `~/.omoikane`. La configuración de la sincronización, sus claves y sus clones, las copias y el diario están junto a la base, así que van con ella. `OMOIKANE_DB` y `OMOIKANE_MODELS` siguen mandando en lo suyo. Tiene que ser una ruta absoluta (`~` y `~/…` se expanden); una relativa da error |
 | `OMOIKANE_NONINTERACTIVE=1` | no hay nadie: ninguna pregunta (lo que pide confirmación pide `--yes`), ninguna descarga del modelo que nadie haya pedido, ninguna actualización automática y ninguna sincronización de fondo que siga viva después de la orden (`OMOIKANE_SYNC_AUTO=1` la devuelve en un servidor) |
 | `OMOIKANE_SYNC_CODE` | uno o varios códigos de `omoi sync code` (separados por espacios, comas o líneas: el del repositorio general y el de cada espacio). `omoi sync`, `omoi sync --pull` y `omoi sync join` sin código se unen solos, compartiendo lo de por defecto (sin preferencias) |
-| `OMOIKANE_SYNC_URL` | otra URL para el repositorio del código, por ejemplo HTTPS con un token de la CI (solo con un código) |
+| `OMOIKANE_SYNC_URL` | otra URL para el repositorio del código, por ejemplo HTTPS con un token de la CI (solo con un código). Si cambia (un token nuevo), el siguiente `omoi sync` usa la nueva |
 | `OMOIKANE_AUTHOR` | quién firma lo que guarda este agente: el autor de cada memoria y de cada veredicto (por encima del que se eligió al configurar la sincronización) |
 | `OMOIKANE_NO_MODEL=1` | además de los instaladores, el propio `omoi` no descarga el modelo de significado cuando crece la memoria |
 
 Sin carpeta personal y sin `OMOIKANE_HOME` ni `OMOIKANE_DB`, `omoi` se para con un error en vez de crear una base en la carpeta desde la que se ejecuta, que podría acabar dentro del repositorio que se está probando.
 
-El código lleva la clave del repositorio. `omoi` no lo escribe nunca: ni al unirse ni en los errores, y el usuario y la contraseña de una URL tampoco salen. Guárdalo en los secretos de la CI; si un agente intenta guardarlo como memoria, queda como `[redacted:omoikane-sync-code]`. El código de un espacio solo abre el repositorio de ese cliente.
+El código lleva la clave del repositorio. `omoi` no lo escribe nunca: ni al unirse ni en los errores, y el usuario y la contraseña de una URL tampoco salen. Guárdalo en los secretos de la CI; si un agente intenta guardarlo como memoria, queda como `[redacted:omoikane-sync-code]`. El código de un espacio solo abre el repositorio de ese cliente. Ojo: `omoi sync code` en un equipo que se unió con `OMOIKANE_SYNC_URL` da esa URL, con su token, así que saca los códigos del equipo de una persona, no de la CI.
 
 Con `OMOIKANE_NONINTERACTIVE=1`, `omoi sync --pull` espera a la sincronización que haya en marcha, hace una completa y sale con error (código 1) si no llega al repositorio o la clave no lo abre. Sin ella, `--pull` es el que lanzan los hooks en silencio y vuelve a intentarlo más tarde.
+
+Una CI empieza cada vez con una base vacía. La carpeta que descarga es nueva para ella, pero el repositorio del espacio dice que ese proyecto es del cliente. En el equipo de una persona eso deja el proyecto en pausa hasta que lo confirme (`omoi projects keep`): el repositorio de un cliente podría reclamar una carpeta que no es suya. En una CI no hay nadie que confirme. Con `OMOIKANE_NONINTERACTIVE=1` y el código del espacio en `OMOIKANE_SYNC_CODE`, la variable hace de confirmación, y una carpeta cuyo `origin` de git es exactamente el de un proyecto del espacio entra en él, trae sus memorias y sube lo que guarde. Tienen que cumplirse las cuatro cosas: nadie delante, el repositorio de ese espacio unido con un código de la variable, un remoto git en el proyecto (sin él, una carpeta es solo un nombre) y ninguna memoria suya guardada antes en ese equipo. Si falla alguna, queda en pausa como siempre y lo que se guarde se queda en ese equipo.
+
+Aún no siguen el modo desatendido (llegará en la 1.7.1): el `/api/sync` de `omoi serve` y el servicio del modelo de significado.
 
 ## GitHub Actions
 

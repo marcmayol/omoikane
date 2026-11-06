@@ -138,8 +138,7 @@ fn abrir_una_vez(ruta: &Path) -> Result<Connection> {
     // Las claves ajenas, después de migrar: reconstruir `memory` (esquema 10) pide tenerlas apagadas, y
     // `PRAGMA foreign_keys` no cambia dentro de una transacción (lang_altertable.html, paso 1).
     migrar(&mut db)?;
-    al_dia_10(&db)?;
-    asegurar_persona(&db)?;
+    al_dia_al_abrir(&mut db)?;
     locales(&mut db)?;
     crate::significado::crear_tabla(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
@@ -320,6 +319,22 @@ fn asegurar_persona(db: &Connection) -> Result<String> {
         crate::proyecto::cambiar_persona(db, "", &persona)?;
     }
     Ok(persona)
+}
+
+/// `al_dia_10` y `asegurar_persona` al abrir. Casi siempre no hay nada que hacer y basta con leer; si
+/// lo hay, se hace en una transacción `IMMEDIATE` que vuelve a mirarlo dentro: dos procesos que abren
+/// a la vez una base vieja no añaden los dos la misma columna («duplicate column») ni apuntan cada uno
+/// una persona distinta.
+fn al_dia_al_abrir(db: &mut Connection) -> Result<()> {
+    let con_persona: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE k = 'persona' AND v != '')", [], |f| f.get(0))?;
+    if con_persona && version(db)? != 10 {
+        return Ok(());
+    }
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    al_dia_10(&tx)?;
+    asegurar_persona(&tx)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Una base del esquema 10 de una versión sin publicar a la que le falta `project.hlc` (el sello del

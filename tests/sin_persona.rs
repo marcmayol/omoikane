@@ -203,6 +203,12 @@ fn una_ci_se_une_por_variables() {
     let o = p.omoi(&web_ci, &["sync", "--pull"], &env_ci);
     assert!(!o.status.success(), "{}", salida(&o));
     assert!(!salida(&o).contains(&clave));
+    // El `--pull` que lanza `omoi` mismo en segundo plano (`OMOIKANE_SYNC_AUTO=1` en un servidor) sigue
+    // siendo el barato aunque no haya nadie delante: sin red no falla, lo intentará más tarde.
+    let mut de_fondo = env_ci.to_vec();
+    de_fondo.push(("OMOIKANE_INTERNAL_BACKGROUND", Some("1")));
+    let o = p.omoi(&web_ci, &["sync", "--pull"], &de_fondo);
+    assert!(o.status.success(), "{}", salida(&o));
     std::fs::rename(p.dir.join("movida.git"), p.dir.join("memoria.git")).unwrap();
 
     // Un código malo o una URL a la que no se llega: error claro, sin el código ni la clave.
@@ -237,4 +243,181 @@ fn sin_nadie_delante_no_pregunta() {
     let m: serde_json::Value = serde_json::from_str(&ok(&p.omoi(&pr, &["--json", "remember", "-k", "fact", "-t", "Algo", "Algo que olvidar."], &env), "remember")).unwrap();
     let o = p.omoi(&pr, &["forget", m["id"].as_str().unwrap()], &env);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--yes"), "{}", salida(&o));
+}
+
+/// Un repositorio git desnudo en la carpeta de la prueba; su URL.
+fn repo_desnudo(p: &Prueba, nombre: &str) -> String {
+    let g = Command::new("git").current_dir(&p.dir).args(["init", "--quiet", "--bare", nombre]).env("GIT_CONFIG_GLOBAL", p.dir.join("gitconfig-vacio")).output().unwrap();
+    assert!(g.status.success());
+    p.dir.join(nombre).to_string_lossy().replace('\\', "/")
+}
+
+fn json(o: &Output, que: &str) -> serde_json::Value {
+    serde_json::from_str(&ok(o, que)).unwrap_or_else(|e| panic!("{que}: {e}"))
+}
+
+/// Las variables como `(&str, Option<&str>)`, que es lo que toma `Prueba::omoi`.
+fn prestadas<'a>(v: &'a [(&'static str, Option<String>)]) -> Vec<(&'static str, Option<&'a str>)> {
+    v.iter().map(|(k, x)| (*k, x.as_deref())).collect()
+}
+
+/// Una CI que se une al ESPACIO de un cliente por `OMOIKANE_SYNC_CODE` parte de una base nueva: su
+/// carpeta es un proyecto que el repositorio del espacio dice suyo y que este equipo no tenía. Sin
+/// nadie delante, la variable es la decisión: entra en el espacio sin pausa, trae lo que hay, busca,
+/// guarda y lo sube, y el equipo de la persona lo recibe. Con una persona delante (sin
+/// `OMOIKANE_NONINTERACTIVE`), o si la carpeta ya tenía memorias aquí, sigue en pausa.
+#[test]
+fn una_ci_se_une_a_un_espacio_por_variables() {
+    let p = Prueba::nueva("ci-espacio");
+    let url = repo_desnudo(&p, "acme.git");
+
+    // El equipo de la persona: el proyecto en el espacio acme, con su repositorio.
+    let pc = p.dir.join("pc");
+    std::fs::create_dir_all(&pc).unwrap();
+    let env_pc = [("OMOIKANE_HOME", Some(pc.to_str().unwrap())), ("OMOIKANE_EQUIPO", Some("pc"))];
+    let web_pc = p.proyecto("web-pc", "git@github.com:acme/web.git");
+    ok(&p.omoi(&pc, &["space", "add", "acme"], &env_pc), "space add");
+    ok(&p.omoi(&web_pc, &["space", "assign", "acme"], &env_pc), "space assign");
+    ok(&p.omoi(&web_pc, &["remember", "-k", "gotcha", "-t", "Las migraciones van antes del deploy", "Si no, el deploy arranca con el esquema viejo."], &env_pc), "remember pc");
+    ok(&p.omoi(&pc, &["sync", "init", "--space", "acme", &url, "--yes", "--author", "Ana"], &env_pc), "init");
+    let codigo = ok(&p.omoi(&pc, &["sync", "code", "--space", "acme"], &env_pc), "code").trim().to_string();
+    let clave = clave_de(&codigo);
+
+    // La CI: sin carpeta de usuario, sin terminal, el código del espacio en la variable.
+    let checkout = p.proyecto("checkout", "https://github.com/acme/web");
+    let omoi_ci = |casa: &Path, nadie: bool, args: &[&str]| -> Output {
+        let v: Vec<(&'static str, Option<String>)> = vec![
+            ("HOME", None),
+            ("USERPROFILE", None),
+            ("OMOIKANE_HOME", Some(casa.to_string_lossy().into_owned())),
+            ("OMOIKANE_NONINTERACTIVE", nadie.then(|| "1".to_string())),
+            ("OMOIKANE_SYNC_CODE", Some(codigo.clone())),
+            ("OMOIKANE_AUTHOR", Some("ci-bot".to_string())),
+            ("OMOIKANE_EQUIPO", Some("ci".to_string())),
+        ];
+        p.omoi(&checkout, args, &prestadas(&v))
+    };
+    let ci = p.dir.join("ci-home");
+    let o = omoi_ci(&ci, true, &["sync"]);
+    let todo = salida(&o);
+    ok(&o, "sync ci");
+    assert!(!todo.contains("paused") && !todo.contains(&codigo) && !todo.contains(&clave), "sin pausa y sin el código: {todo}");
+    // Trae lo del espacio: lo encuentra la búsqueda.
+    let s = json(&omoi_ci(&ci, true, &["--json", "search", "migraciones deploy"]), "search");
+    assert_eq!(s[0]["title"], "Las migraciones van antes del deploy", "{s}");
+    // Lo que guarda va al espacio y llega al equipo de la persona.
+    let m = json(&omoi_ci(&ci, true, &["--json", "remember", "-k", "fact", "-t", "La CI tarda 9 minutos", "El paso lento es el e2e."]), "remember ci");
+    assert_eq!(m["author"], "ci-bot", "{m}");
+    let j = json(&omoi_ci(&ci, true, &["--json", "sync"]), "sync ci 2");
+    assert!(j["exportadas"].as_u64().or(j["exported"].as_u64()).is_some_and(|n| n >= 1), "{j}");
+    ok(&p.omoi(&pc, &["sync"], &env_pc), "sync pc");
+    let en_pc = json(&p.omoi(&web_pc, &["--json", "get", m["id"].as_str().unwrap()], &env_pc), "get pc");
+    assert_eq!(en_pc["author"], "ci-bot", "{en_pc}");
+    let s = json(&p.omoi(&web_pc, &["--json", "search", "CI tarda e2e"], &env_pc), "search pc");
+    assert_eq!(s[0]["title"], "La CI tarda 9 minutos", "en el proyecto del espacio: {s}");
+
+    // Otra ejecución, otra vez desde cero: igual, y ya trae lo que subió la anterior.
+    let ci2 = p.dir.join("ci-home-2");
+    ok(&omoi_ci(&ci2, true, &["sync"]), "sync ci2");
+    let s = json(&omoi_ci(&ci2, true, &["--json", "search", "CI tarda e2e"]), "search ci2");
+    assert_eq!(s[0]["title"], "La CI tarda 9 minutos", "{s}");
+
+    // Con una persona delante (sin OMOIKANE_NONINTERACTIVE), la carpeta se queda en pausa: no trae nada.
+    let persona = p.dir.join("con-persona");
+    let o = omoi_ci(&persona, false, &["sync"]);
+    assert!(salida(&o).contains("paused"), "{}", salida(&o));
+    let s = json(&omoi_ci(&persona, false, &["--json", "search", "migraciones deploy"]), "search persona");
+    assert_eq!(s.as_array().map(Vec::len), Some(0), "{s}");
+
+    // Una CI cuya carpeta ya tenía memorias aquí antes de unirse (podrían ser de otro repositorio): en
+    // pausa, y lo suyo no sube al espacio.
+    let previa = p.dir.join("ci-previa");
+    let v = [("HOME", None), ("USERPROFILE", None), ("OMOIKANE_HOME", Some(previa.to_str().unwrap())), ("OMOIKANE_NONINTERACTIVE", Some("1")), ("OMOIKANE_EQUIPO", Some("ci"))];
+    ok(&p.omoi(&checkout, &["remember", "-k", "fact", "-t", "Una nota de antes de unirse", "Guardada sin espacio."], &v), "remember previa");
+    let o = omoi_ci(&previa, true, &["sync"]);
+    assert!(salida(&o).contains("paused"), "{}", salida(&o));
+    ok(&p.omoi(&pc, &["sync"], &env_pc), "sync pc 2");
+    let s = ok(&p.omoi(&web_pc, &["--json", "search", "nota antes unirse"], &env_pc), "search pc 2");
+    assert!(!s.contains("Una nota de antes de unirse"), "lo de antes no sube: {s}");
+}
+
+/// Ya unida con `OMOIKANE_SYNC_URL`: si la variable trae otra URL (un token nuevo, el repositorio en
+/// otro sitio), la siguiente sincronización la usa, en la configuración y en el `origin` del clon.
+#[test]
+fn otra_url_en_la_variable_se_apunta() {
+    let p = Prueba::nueva("url");
+    let url = repo_desnudo(&p, "memoria.git");
+    let pc = p.dir.join("pc");
+    std::fs::create_dir_all(&pc).unwrap();
+    let env_pc = [("OMOIKANE_HOME", Some(pc.to_str().unwrap())), ("OMOIKANE_EQUIPO", Some("pc"))];
+    ok(&p.omoi(&pc, &["sync", "init", &url, "--yes", "--author", "Ana"], &env_pc), "init");
+    let codigo = ok(&p.omoi(&pc, &["sync", "code"], &env_pc), "code").trim().to_string();
+
+    let ci = p.dir.join("ci");
+    let checkout = p.proyecto("checkout", "https://github.com/acme/web");
+    let omoi = |u: &str, args: &[&str]| -> Output {
+        let v: Vec<(&'static str, Option<String>)> = vec![
+            ("HOME", None),
+            ("USERPROFILE", None),
+            ("OMOIKANE_HOME", Some(ci.to_string_lossy().into_owned())),
+            ("OMOIKANE_NONINTERACTIVE", Some("1".into())),
+            ("OMOIKANE_SYNC_CODE", Some(codigo.clone())),
+            ("OMOIKANE_SYNC_URL", Some(u.to_string())),
+        ];
+        p.omoi(&checkout, args, &prestadas(&v))
+    };
+    ok(&omoi(&url, &["sync"]), "sync 1");
+    // El repositorio cambia de sitio: con la URL vieja ya no se llega.
+    std::fs::rename(p.dir.join("memoria.git"), p.dir.join("nueva.git")).unwrap();
+    let nueva = p.dir.join("nueva.git").to_string_lossy().replace('\\', "/");
+    let o = omoi(&nueva, &["sync"]);
+    ok(&o, "sync con la URL nueva");
+    assert!(salida(&o).contains("URL"), "lo dice: {}", salida(&o));
+    let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(ci.join("sync.json")).unwrap()).unwrap();
+    assert_eq!(config["url"], nueva.as_str(), "{config}");
+    let g = Command::new("git").args(["-C", ci.join("sync").to_str().unwrap(), "remote", "get-url", "origin"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&g.stdout).trim(), nueva, "el origin del clon");
+    // Sin cambio, nada que decir.
+    let o = omoi(&nueva, &["sync"]);
+    ok(&o, "sync 3");
+    assert!(!salida(&o).contains("URL"), "{}", salida(&o));
+}
+
+/// El autor con el que alguien se une al repositorio de un cliente firma solo lo de ese cliente: ni lo
+/// de otro cliente (unido sin autor) ni lo que no es de ningún espacio, y quitar la sincronización del
+/// primero no deja su nombre en nada. Sin repositorio general.
+#[test]
+fn el_autor_de_un_cliente_no_firma_lo_de_otro() {
+    let p = Prueba::nueva("autores");
+    let (url_a, url_b) = (repo_desnudo(&p, "acme.git"), repo_desnudo(&p, "beta.git"));
+    let pc = p.dir.join("pc");
+    std::fs::create_dir_all(&pc).unwrap();
+    let env = [("OMOIKANE_HOME", Some(pc.to_str().unwrap())), ("OMOIKANE_EQUIPO", Some("pc"))];
+    let web_a = p.proyecto("web-a", "git@github.com:acme/web.git");
+    let web_b = p.proyecto("web-b", "git@github.com:beta/web.git");
+    let mio = p.proyecto("notas", "git@github.com:ana/notas.git");
+    for (e, d) in [("acme", &web_a), ("beta", &web_b)] {
+        ok(&p.omoi(&pc, &["space", "add", e], &env), "space add");
+        ok(&p.omoi(d, &["space", "assign", e], &env), "space assign");
+    }
+    ok(&p.omoi(&pc, &["sync", "init", "--space", "acme", &url_a, "--yes", "--author", "Ana (Acme)"], &env), "init acme");
+    ok(&p.omoi(&pc, &["sync", "init", "--space", "beta", &url_b, "--yes", "--no-author"], &env), "init beta");
+    let autor = |d: &Path, t: &str| -> String {
+        let m = json(&p.omoi(d, &["--json", "remember", "-k", "fact", "-t", t, "Algo que guardar aquí."], &env), "remember");
+        m["author"].as_str().unwrap_or_default().to_string()
+    };
+    assert_eq!(autor(&web_a, "Nota de acme"), "Ana (Acme)");
+    assert_eq!(autor(&web_b, "Nota de beta"), "", "beta no hereda el nombre de acme");
+    assert_eq!(autor(&mio, "Nota mía"), "", "lo de ningún espacio tampoco");
+    // Lo que viaja a beta no lleva el nombre de acme: otro equipo unido solo a beta no lo ve.
+    ok(&p.omoi(&pc, &["sync"], &env), "sync");
+    let codigo_b = ok(&p.omoi(&pc, &["sync", "code", "--space", "beta"], &env), "code beta").trim().to_string();
+    let otra = p.dir.join("otra");
+    let env_otra = [("OMOIKANE_HOME", Some(otra.to_str().unwrap())), ("OMOIKANE_EQUIPO", Some("otra")), ("OMOIKANE_NONINTERACTIVE", Some("1")), ("OMOIKANE_SYNC_CODE", Some(codigo_b.as_str()))];
+    ok(&p.omoi(&p.dir, &["sync"], &env_otra), "sync otra");
+    let todo = ok(&p.omoi(&web_b, &["--json", "recent", "-n", "50"], &env_otra), "recent otra");
+    assert!(todo.contains("Nota de beta") && !todo.contains("Acme") && !todo.contains("Nota de acme"), "{todo}");
+    // Sin la sincronización de acme, su nombre ya no firma nada.
+    ok(&p.omoi(&pc, &["sync", "off", "--space", "acme", "--yes"], &env), "off acme");
+    assert_eq!(autor(&web_a, "Otra de acme"), "");
 }

@@ -573,6 +573,39 @@ fn una_base_10_sin_persona_se_pone_al_dia() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// La misma base vieja abierta por varios procesos (aquí, hilos) a la vez: ponerla al día comprueba y
+/// escribe en una sola transacción, así que ninguno falla con «duplicate column» y todos ven la misma
+/// persona.
+#[test]
+fn una_base_10_vieja_abierta_a_la_vez() {
+    for vuelta in 0..5 {
+        let dir = carpeta(&format!("diez-a-la-vez-{vuelta}"));
+        let notas = suelta(&dir.join("notas"));
+        let ruta = dir.join("o.db");
+        {
+            let mut db = db::abrir(&ruta).unwrap();
+            guardar(&mut db, &notas, Tipo::Fact, "Notas", "En markdown.");
+            db.execute_batch("DELETE FROM meta WHERE k = 'persona'; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc; ALTER TABLE project DROP COLUMN paused;").unwrap();
+        }
+        let salida = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let hilos: Vec<_> = (0..8)
+            .map(|_| {
+                let (ruta, salida) = (ruta.clone(), salida.clone());
+                std::thread::spawn(move || {
+                    salida.wait();
+                    db::abrir(&ruta).map(|db| db::persona_de(&db)).map_err(|e| format!("{e:#}"))
+                })
+            })
+            .collect();
+        let personas: Vec<String> = hilos.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+        assert!(personas.iter().all(|p| *p == personas[0]), "{personas:?}");
+        let db = db::abrir(&ruta).unwrap();
+        assert_eq!(uno(&db, "SELECT count(*) FROM project WHERE hlc = '' AND paused = ''"), 2);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Por id tampoco se cruza: `get`, `history`, `update` (y sus veredictos y `absorb`) y `forget` de una
 /// memoria de otro espacio (o de un proyecto sin espacio) dan error desde un proyecto de un cliente;
 /// desde la carpeta del usuario se puede todo, salvo un veredicto entre memorias de espacios
