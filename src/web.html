@@ -54,7 +54,8 @@ code, .mono { font-family: var(--mono); }
 .word { font: 600 19px/1 var(--serif); letter-spacing: .01em; }
 .word .kj { color: var(--glow); margin-right: 6px; }
 .nav { display: flex; gap: 2px; }
-.nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13.5px; }
+.nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13.5px; white-space: nowrap; }
+@media (max-width: 480px) { .nav a { padding: 6px 8px; } }
 .nav a[aria-current=page] { background: var(--panel2); color: var(--ink); box-shadow: 0 0 0 1px var(--line2); }
 .search { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
 .search:focus-within { border-color: var(--accent); }
@@ -266,6 +267,42 @@ button.chip:hover { border-color: var(--accent); }
 .abiertas .av textarea { width: 100%; min-height: 64px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
 
+/* Panorama: la vista de responsable, por espacio */
+.pan { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
+.pan .ctl { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+.pan .ctl select { background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; padding: 4px 8px; font-size: 13px; }
+.alcance { color: var(--faint); font-size: 12.5px; margin: -6px 0 6px; }
+.tres { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; align-items: start; }
+.blq { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.blq > h3 { margin: 0; font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); display: flex; gap: 8px; align-items: baseline; }
+.blq > h3 span { margin-left: auto; color: var(--faint); letter-spacing: 0; text-transform: none; font-weight: 400; }
+.blq .sub { font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); border-top: 1px solid var(--line); padding-top: 9px; display: flex; gap: 8px; }
+.blq .sub span { margin-left: auto; letter-spacing: 0; }
+.lst { display: flex; flex-direction: column; gap: 2px; }
+.fl { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 1px 10px; padding: 5px 6px; border-radius: 8px; text-align: left; background: none; border: 0; color: inherit; text-decoration: none; }
+a.fl:hover, button.fl:hover { background: var(--panel2); }
+.fl .t { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl .d { grid-column: 1 / -1; color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl .d.dos { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--muted); }
+.fl .n { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.fl .ido, .fl .pz { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--delink); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; line-height: 16px; margin-left: 6px; }
+.fl .pz { color: var(--glow); }
+.aut { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 3px 10px; padding: 5px 6px; }
+.aut .nm { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aut .nm.anon { color: var(--muted); font-style: italic; font-weight: 400; }
+.aut .n { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.aut .barra { grid-column: 1 / -1; display: block; height: 5px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
+.aut .barra i { display: block; height: 100%; background: var(--accent); opacity: .75; }
+.aut .ag { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; color: var(--faint); font-size: 11.5px; }
+.aut .ag code { font-size: 11px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+.cuentas { display: flex; flex-wrap: wrap; gap: 6px; }
+.cuentas .chip b { color: var(--glow); margin-left: 5px; font-weight: 600; }
+.blq .cmd code { font-size: 11.5px; padding: 2px 7px; }
+.blq .cmd .btn { font-size: 12px; padding: 2px 9px; }
+.blq .vacio { padding: 2px 6px; font-size: 12.5px; }
+@media (max-width: 1100px) { .tres { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 700px) { .tres { grid-template-columns: minmax(0,1fr); } .pan { padding: 18px 14px 30px; } }
+
 #aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 9; }
 
 @media (max-width: 900px) {
@@ -289,7 +326,7 @@ button.chip:hover { border-color: var(--accent); }
 <body>
 <header class="bar">
   <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
-  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a></nav>
+  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a></nav>
   <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
   <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
 </header>
@@ -322,6 +359,18 @@ const T = ES ? {
   abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
   papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
+  pan: {
+    nav: 'Panorama', titulo: 'Panorama por cliente', sub: 'Para quien lleva un cliente o la factory entera: en cada espacio, qué hay, quién lo escribió y qué está desfasado o en pausa.',
+    todo: 'Ves todos los espacios: el servidor arrancó en tu carpeta de usuario.', solo: n => `Solo ves el espacio ${n}: el servidor arrancó en uno de sus proyectos. Desde tu carpeta de usuario se ven todos.`, soloNinguno: 'Solo ves los proyectos sin espacio: el servidor arrancó en uno de ellos. Desde tu carpeta de usuario se ven todos.',
+    sinTocar: 'Sin tocar desde hace', meses: n => `${n} mes${n === 1 ? '' : 'es'}`, autores: 'autores', autoresN: n => `${n} autor${n === 1 ? '' : 'es'}`, aRevisar: 'a revisar',
+    que: 'Qué hay', quien: 'Quién lo escribió', desfasado: 'Desfasado o en pausa',
+    fijadas: 'Fijadas', abiertas: 'Decisiones abiertas', decidirEn: 'Decidir en Proyectos', sinProyectos: 'Sin proyectos con memorias.', delEspacio: n => `${n} del propio espacio`,
+    sinEstado: 'sin status', pausado: 'en pausa', idoP: 'ya no está', fijadasN: n => `${n} fijada${n === 1 ? '' : 's'}`,
+    sinAutor: 'Sin autor', sinAutorT: 'Guardadas sin autor: en este equipo sin sincronización, o con --no-author.', recientes: (n, d) => `${n} en ${d} días`, ultima: 'última', con: 'con',
+    actividad: 'Actividad reciente', revisarN: 'Lo que dice Revisar', nadaRev: 'Nada que revisar.', pausa: 'Proyectos en pausa', olvidadas: 'Sin tocar', olvidadasSub: n => `más de ${n} mes${n === 1 ? '' : 'es'}`,
+    nadaOlv: 'Nada lleva tanto tiempo sin tocarse.', verRev: 'Ver en Revisar', verTodas: n => `y ${n} más`, sinEspacio: 'Sin espacio', sinEspacioSub: 'Proyectos que no son de ningún cliente.',
+    global: n => `Además hay ${n} memoria${n === 1 ? '' : 's'} global${n === 1 ? '' : 'es'}, que no son de ningún cliente y no salen aquí.`, nada: 'Todavía no hay nada en ningún espacio.'
+  },
   guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito', subagent: 'subagente', recipe: 'receta' },
   quienDijo: a => { const q = a.author === 'user' ? 'tú' : a.author.startsWith('agent:') ? `el agente (${a.author.slice(6)})` : a.author === 'agent' ? 'el agente' : a.author; const via = a.via > 1 ? ` · pasando por ${a.via - 1} memoria${a.via > 2 ? 's' : ''} más` : ''; return (q ? `Lo dijo ${q}` : 'Sin autor') + (a.reason ? `: «${a.reason}»` : '') + via; },
   tipos: { secret: ['Secretos', 'Llevan algo que parece una clave, un token o una contraseña (se guardaron antes de la 0.19.0 o con OMOIKANE_REDACT=0). «Redactar» lo cambia por [redacted:<tipo>], también en su historial.'], superseded: ['Sustituidas', 'El agente dijo que otra memoria las sustituye: si es así, olvida la vieja.'], contradicts: ['Se contradicen', 'El agente vio que dicen cosas distintas y no supo cuál vale.'], due: ['Toca revisarlas', 'Hace tiempo que no se tocan: decisiones y recetas a los 120 días, hechos y trampas a los 180. «Está bien así» vuelve a poner el reloj a cero.'], outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
@@ -351,6 +400,18 @@ const T = ES ? {
   abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
   papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
+  pan: {
+    nav: 'Overview', titulo: 'Overview by client', sub: 'For whoever runs a client or the whole factory: in each space, what there is, who wrote it and what is outdated or paused.',
+    todo: 'You see every space: the server started in your home folder.', solo: n => `You only see the space ${n}: the server started in one of its projects. From your home folder you see them all.`, soloNinguno: 'You only see the projects in no space: the server started in one of them. From your home folder you see them all.',
+    sinTocar: 'Untouched for', meses: n => `${n} month${n === 1 ? '' : 's'}`, autores: 'authors', autoresN: n => `${n} author${n === 1 ? '' : 's'}`, aRevisar: 'to review',
+    que: 'What there is', quien: 'Who wrote it', desfasado: 'Outdated or paused',
+    fijadas: 'Pinned', abiertas: 'Open decisions', decidirEn: 'Decide in Projects', sinProyectos: 'No projects with memories.', delEspacio: n => `${n} of the space itself`,
+    sinEstado: 'no status', pausado: 'paused', idoP: 'gone', fijadasN: n => `${n} pinned`,
+    sinAutor: 'No author', sinAutorT: 'Saved with no author: on this computer without sync, or with --no-author.', recientes: (n, d) => `${n} in ${d} days`, ultima: 'last', con: 'with',
+    actividad: 'Recent activity', revisarN: 'What Review says', nadaRev: 'Nothing to review.', pausa: 'Paused projects', olvidadas: 'Untouched', olvidadasSub: n => `over ${n} month${n === 1 ? '' : 's'}`,
+    nadaOlv: 'Nothing has gone that long untouched.', verRev: 'Open Review', verTodas: n => `and ${n} more`, sinEspacio: 'No space', sinEspacioSub: 'Projects that belong to no client.',
+    global: n => `There ${n === 1 ? 'is' : 'are'} also ${n} global memor${n === 1 ? 'y' : 'ies'}, which belong to no client and are not shown here.`, nada: 'Nothing in any space yet.'
+  },
   guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone', subagent: 'subagent', recipe: 'recipe' },
   quienDijo: a => { const q = a.author === 'user' ? 'you' : a.author.startsWith('agent:') ? `the agent (${a.author.slice(6)})` : a.author === 'agent' ? 'the agent' : a.author; const via = a.via > 1 ? ` · through ${a.via - 1} more memor${a.via > 2 ? 'ies' : 'y'}` : ''; return (q ? `Said by ${q}` : 'No author') + (a.reason ? `: “${a.reason}”` : '') + via; },
   tipos: { secret: ['Secrets', 'They hold something that looks like a key, a token or a password (saved before 0.19.0 or with OMOIKANE_REDACT=0). "Redact" replaces it with [redacted:<type>], in their history too.'], superseded: ['Superseded', 'The agent said another memory replaces them: if so, forget the old one.'], contradicts: ['They disagree', 'The agent saw they say different things and could not tell which holds.'], due: ['Due for review', 'Untouched for a while: decisions and procedures after 120 days, facts and gotchas after 180. "It\'s fine as it is" restarts the clock.'], outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
@@ -410,6 +471,9 @@ function corta(s) {
 let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, candidatas = [], papelera = [];
 // De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
 let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [];
+// De /api/overview: la vista de responsable, ya filtrada por el servidor (solo lo que se ve desde donde
+// arrancó), y desde cuántos meses sin tocar cuenta una memoria como olvidada.
+let panorama = null, mesesSinTocar = 6;
 // `espacio`: '*' todos, '' los que no son de ningún espacio, o la clave de uno.
 const filtro = { tipo: null, espacio: '*', proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
@@ -563,11 +627,17 @@ async function cargar() {
     const rp = await fetch('/api/projects', { headers: cab });
     const pj = rp.ok ? await rp.json() : {};
     fichas = pj.projects || []; espacios = pj.spaces || []; fueraDeEspacio = pj.space_conflicts || []; enPausa = pj.paused || [];
-  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; }
+    await cargarPanorama();
+  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; panorama = null; }
   if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
   const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length;
   c.textContent = n; c.hidden = !n;
   pintar();
+}
+
+async function cargarPanorama() {
+  const r = await fetch('/api/overview?months=' + mesesSinTocar, { headers: cab });
+  panorama = r.ok ? await r.json() : null;
 }
 
 async function sincro() {
@@ -586,6 +656,7 @@ function ruta() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   if (h === 'proyectos') return { vista: 'proyectos' };
   if (h === 'revisar') return { vista: 'revisar' };
+  if (h === 'panorama') return { vista: 'panorama' };
   if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
   return { vista: 'memorias' };
 }
@@ -596,8 +667,10 @@ function pintar() {
   $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
   $('nav-pj').setAttribute('aria-current', r.vista === 'proyectos' || r.vista === 'proyecto' ? 'page' : 'false');
   $('nav-rev').setAttribute('aria-current', r.vista === 'revisar' ? 'page' : 'false');
+  $('nav-pan').setAttribute('aria-current', r.vista === 'panorama' ? 'page' : 'false');
   $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
   if (r.vista === 'revisar') pintarRevisar();
+  else if (r.vista === 'panorama') pintarPanorama();
   else if (r.vista === 'proyectos') pintarProyectos();
   else if (r.vista === 'proyecto') pintarProyecto(r.p);
   else pintarMemorias();
@@ -1003,6 +1076,108 @@ function pintarProyectos() {
   conectarAbiertas();
 }
 
+/* ---------- Panorama: la vista de responsable ---------- */
+// Por espacio, en tres bloques: qué hay, quién lo escribió y qué está desfasado o en pausa. Todo sale
+// de /api/overview, que ya deja solo lo que se ve desde donde arrancó el servidor.
+const nombreProyecto = p => (fichas.find(x => x.path === p) || {}).name || (p ? p.split(/[\\/]/).filter(Boolean).pop() : '');
+function pintarPanorama() {
+  const P = T.pan, d = panorama;
+  if (!d) { $('vista').innerHTML = `<div class="pan"><p class="vacio">${esc(T.cargando)}</p></div>`; return; }
+  const sp = d.spaces || [];
+  const suma = f => sp.reduce((s, x) => s + f(x), 0);
+  const autoresN = new Set(sp.flatMap(x => x.authors.map(a => a.author))).size;
+  const alcance = d.scope === 'all' ? P.todo : d.space ? P.solo(nombreEspacio(d.space)) : P.soloNinguno;
+  // Una memoria en una línea: el título (abre su proyecto con ella en el panel) y debajo lo que toque.
+  const fila = (m, debajo) => `<button class="fl" data-ir="${esc(m.id || m.memory_id)}"><span class="t" title="${esc(m.title)}">${esc(m.title)}</span><span class="n">${esc(corta(m.updated_at || ''))}</span>${debajo ? `<span class="d">${debajo}</span>` : ''}</button>`;
+  const quien = a => a ? esc(a) : `<i>${esc(P.sinAutor)}</i>`;
+  const donde = (m, x) => m.project ? esc(nombreProyecto(m.project)) : `◇ ${esc(x.name || x.key)}`;
+  const mas = (n, l) => n > l.length ? `<p class="vacio">${esc(P.verTodas(n - l.length))}</p>` : '';
+  const bloqueQue = x => {
+    const pjs = x.projects.length ? x.projects.map(p => `<a class="fl" href="${enlaceProyecto(p.path)}">
+        <span class="t" title="${esc(p.path)}">${esc(p.name)}${p.paused ? `<span class="pz">${esc(P.pausado)}</span>` : ''}${p.gone ? `<span class="ido">${esc(P.idoP)}</span>` : ''}</span>
+        <span class="n">${esc(T.memoriasN(p.memories))}${p.pinned ? ' · ' + esc(P.fijadasN(p.pinned)) : ''}</span>
+        ${p.status ? `<span class="d dos" title="${esc(p.status.title)}"><span class="stl">status</span> ${esc(corta(p.status.updated_at))}${p.status.author ? ' · ' + esc(p.status.author) : ''} — ${esc(extracto(p.status.content))}</span>` : `<span class="d">${esc(P.sinEstado)}</span>`}
+      </a>`).join('') : `<p class="vacio">${esc(P.sinProyectos)}</p>`;
+    return `<div class="blq">
+      <h3>${esc(P.que)}<span>${esc(T.memoriasN(x.memories))}${x.space_memories ? ' · ' + esc(P.delEspacio(x.space_memories)) : ''}</span></h3>
+      <div class="lst">${pjs}</div>
+      ${x.open_decisions.count ? `<div class="sub">${esc(P.abiertas)}<span>${x.open_decisions.count}</span></div>
+        <div class="lst">${x.open_decisions.items.map(m => fila(m, `${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>
+        ${mas(x.open_decisions.count, x.open_decisions.items)}
+        <div><a class="btn" href="#/proyectos">${esc(P.decidirEn)}</a></div>` : ''}
+      ${x.pinned.count ? `<div class="sub">${esc(P.fijadas)}<span>${x.pinned.count}</span></div>
+        <div class="lst">${x.pinned.items.map(m => fila({ ...m, title: '◆ ' + m.title }, `${donde(m, x)} · <span class="kt ${m.kind}">${m.kind}</span>`)).join('')}</div>
+        ${mas(x.pinned.count, x.pinned.items)}` : ''}
+    </div>`;
+  };
+  const bloqueQuien = x => {
+    const max = Math.max(1, ...x.authors.map(a => a.memories));
+    const autores = x.authors.map(a => `<div class="aut">
+        <span class="nm${a.author ? '' : ' anon'}"${a.author ? '' : ` title="${esc(P.sinAutorT)}"`}>${esc(a.author || P.sinAutor)}</span>
+        <span class="n">${esc(T.memoriasN(a.memories))}</span>
+        <span class="barra"><i style="width:${(100 * a.memories / max).toFixed(1)}%"></i></span>
+        <span class="ag">${esc(P.recientes(a.recent, d.recent_days))} · ${esc(P.ultima)} ${esc(corta(a.last))} · ${esc(P.con)} ${a.sources.slice(0, 3).map(s => `<code title="${esc(T.memoriasN(s.memories))}">${esc(s.source)}</code>`).join(' ')}</span>
+      </div>`).join('');
+    return `<div class="blq">
+      <h3>${esc(P.quien)}<span>${esc(P.autoresN(x.authors.length))}</span></h3>
+      <div class="lst">${autores || `<p class="vacio">—</p>`}</div>
+      ${x.recent.length ? `<div class="sub">${esc(P.actividad)}</div>
+        <div class="lst">${x.recent.slice(0, 8).map(m => fila(m, `${quien(m.author)} · <code>${esc(m.source)}</code> · ${donde(m, x)} · ${esc(m.created_at === m.updated_at ? T.nueva : T.cambiada)}`)).join('')}</div>` : ''}
+    </div>`;
+  };
+  const bloqueDesfasado = x => {
+    const r = x.review, orden = ['secret', 'superseded', 'contradicts', 'outdated', 'broken_link', 'stale_status', 'due', 'broken_path', 'unused', 'too_long'];
+    const cuentas = orden.filter(k => r.kinds[k]).map(k => `<span class="chip" title="${esc(T.tipos[k][1])}">${esc(T.tipos[k][0])}<b>${r.kinds[k]}</b></span>`).join('');
+    // De Revisar, primero lo que dice que algo ya no vale (desfasadas, sustituidas, contradicciones).
+    const peso = a => ['superseded', 'contradicts', 'outdated', 'stale_status'].includes(a.kind) ? 0 : 1;
+    const items = [...r.items].sort((a, b) => peso(a) - peso(b)).slice(0, 6);
+    const pausas = x.paused.map(p => `<div class="fl" style="cursor:default">
+        <span class="t">${esc(p.name)}<span class="pz">${esc(P.pausado)}</span></span><span class="n">${esc(p.machine)}${p.space ? ' → ' + esc(p.space) : ''}</span>
+        ${ES ? '' : `<span class="d dos" title="${esc(p.text)}">${esc(p.text)}</span>`}
+      </div>
+      <div class="cmd"><code>${esc(p.keep)}</code><button class="btn" data-copia="${esc(p.keep)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(p.accept)}</code><button class="btn" data-copia="${esc(p.accept)}">${esc(T.copiar)}</button></div>`).join('');
+    return `<div class="blq">
+      <h3>${esc(P.desfasado)}<span>${r.count} ${esc(P.aRevisar)}</span></h3>
+      ${r.count ? `<div class="cuentas">${cuentas}</div>
+        <div class="lst">${items.map(a => fila({ ...a, updated_at: (todas.find(m => m.id === a.memory_id) || {}).updated_at }, `<span class="kt">${esc(T.tipos[a.kind] ? T.tipos[a.kind][0] : a.kind)}</span> · ${donde(a, x)} · ${esc(T.detalle(a))}`)).join('')}</div>
+        ${mas(r.count, items)}
+        <div><a class="btn" href="#/revisar">${esc(P.verRev)}</a></div>` : `<p class="vacio">${esc(P.nadaRev)}</p>`}
+      ${x.paused.length ? `<div class="sub">${esc(P.pausa)}<span>${x.paused.length}</span></div>${pausas}` : ''}
+      <div class="sub">${esc(P.olvidadas)}<span>${esc(P.olvidadasSub(d.months))} · ${x.untouched.count}</span></div>
+      ${x.untouched.count ? `<div class="lst">${x.untouched.items.slice(0, 6).map(m => fila(m, `${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>${mas(x.untouched.count, x.untouched.items.slice(0, 6))}` : `<p class="vacio">${esc(P.nadaOlv)}</p>`}
+    </div>`;
+  };
+  const seccion = x => {
+    const n = x.projects.length;
+    const cab = x.key ? `<h2 class="esp">${esc(x.name || x.key)}</h2><span>${esc(T.espacioDe(x.name || x.key))} · ${esc(T.enEspacio(n, x.memories))}</span>`
+      : `<h2>${esc(P.sinEspacio)}</h2><span>${esc(P.sinEspacioSub)} · ${esc(T.enEspacio(n, x.memories))}</span>`;
+    return `<div class="gsp">${cab}</div><div class="tres">${bloqueQue(x)}${bloqueQuien(x)}${bloqueDesfasado(x)}</div>`;
+  };
+  $('vista').innerHTML = `<div class="pan">
+    <div class="hero">
+      <div><h1>${esc(P.titulo)}</h1><p>${esc(P.sub)}</p></div>
+      <div class="stats">
+        <div class="stat"><b>${sp.filter(x => x.key).length}</b><span>${esc(T.espacios)}</span></div>
+        <div class="stat"><b>${suma(x => x.projects.length)}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        <div class="stat"><b>${suma(x => x.memories)}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
+        <div class="stat"><b>${autoresN}</b><span>${esc(P.autores)}</span></div>
+        <div class="stat"><b>${suma(x => x.review.count)}</b><span>${esc(P.aRevisar)}</span></div>
+      </div>
+    </div>
+    <p class="alcance">${esc(alcance)}</p>
+    <label class="ctl">${esc(P.sinTocar)} <select id="meses">${[3, 6, 12, 24].map(n => `<option value="${n}"${n === d.months ? ' selected' : ''}>${esc(P.meses(n))}</option>`).join('')}</select></label>
+    ${sp.length ? sp.map(seccion).join('') : `<p class="vacio">${esc(P.nada)}</p>`}
+    ${d.global_memories ? `<p class="alcance" style="margin-top:18px">${esc(P.global(d.global_memories))}</p>` : ''}
+  </div>`;
+  const v = $('vista');
+  for (const b of v.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
+  for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
+  };
+  $('meses').onchange = async e => { mesesSinTocar = +e.target.value; await cargarPanorama(); pintar(); };
+}
+
 /* ---------- Decisiones abiertas ---------- */
 // Las decisiones que esperan a la persona (etiqueta `open`), de la más nueva a la más vieja: las mismas
 // que recibe el agente al empezar sesión.
@@ -1122,7 +1297,7 @@ let espera;
 async function buscar() {
   consulta = $('q').value.trim();
   if (!consulta) { encontrados = null; pintar(); return; }
-  if (ruta().vista === 'proyectos') location.hash = '#/';
+  if (ruta().vista === 'proyectos' || ruta().vista === 'panorama') location.hash = '#/';
   const args = { query: consulta, limit: 50, all_projects: true };
   try {
     let v;
@@ -1135,7 +1310,7 @@ async function buscar() {
   abierta = null; pagina = 1; pintar();
 }
 $('q').oninput = () => { clearTimeout(espera); espera = setTimeout(buscar, 180); };
-window.addEventListener('hashchange', () => { elegidaPanel = irPendiente; irPendiente = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs')?.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { elegidaPanel = irPendiente; irPendiente = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs,.pan')?.scrollTo(0, 0); });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
@@ -1155,6 +1330,7 @@ document.addEventListener('keydown', e => {
 document.documentElement.lang = ES ? 'es' : 'en';
 $('nav-mem').textContent = T.memorias;
 $('nav-pj').textContent = T.proyectos;
+$('nav-pan').textContent = T.pan.nav;
 $('nav-rev').firstElementChild.textContent = T.revisar;
 cargar();
 </script>

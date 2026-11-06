@@ -7,6 +7,10 @@
 //!   `versions` (cuántas versiones anteriores guarda su historial) y `links` (las que enlaza con `[[…]]`)
 //! - `GET /api/projects` → los proyectos (`proyecto::lista`: clave, espacio, carpeta y si ya no está)
 //!   y los espacios (`proyecto::espacios`, con su nombre), para agrupar y filtrar por espacio
+//! - `GET /api/overview?months=…` → la vista de responsable (`responsable::panorama`): por espacio, sus
+//!   proyectos con su último `status`, lo fijado, las decisiones abiertas, quién escribió qué, lo que
+//!   dice `revisar`, lo que está en pausa y lo que nadie toca desde hace `months` meses (6). Solo lo que
+//!   se ve desde el proyecto de la petición (su espacio); desde la carpeta del usuario, todo
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
@@ -251,6 +255,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     });
                     Ok(json(200, cuerpo.to_string()))
                 }
+                (Method::Get, "/api/overview") => {
+                    // La vista de responsable, solo con lo que se ve desde el proyecto de la petición
+                    // (su espacio) o, desde la carpeta del usuario, todo.
+                    let ruta = db.clone();
+                    let db = db::abrir(&db)?;
+                    let proyecto = match &dir_peticion {
+                        Some(d) => crate::proyecto::de(d)?,
+                        None => crate::proyecto::actual()?,
+                    };
+                    let base = Ambito::de(&db, &proyecto)?;
+                    let meses = param("months").and_then(|n| n.parse().ok()).unwrap_or(crate::responsable::MESES);
+                    Ok(json(200, crate::responsable::panorama(&db, &ruta, &base, meses)?.to_string()))
+                }
                 (Method::Get, "/api/review") => {
                     let db = db::abrir(&db)?;
                     Ok(json(200, serde_json::to_string(&crate::revisar::avisos(&db, &Ambito::Todos)?)?))
@@ -356,7 +373,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

@@ -4,6 +4,16 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.7.0 (unreleased)
+
+### Overview by client
+- The web view (`omoi serve`) has a new **Overview** page for whoever runs a client or the whole factory. Per space it shows what there is (projects with their memory count, pinned ones and latest `status`, open decisions and pinned memories), who wrote it (memories per author, how many in the last 30 days, the agents they used and the latest activity) and what is outdated or paused (what Review flags, projects on hold with both commands, and memories untouched for over 3, 6, 12 or 24 months).
+- It keeps to the space isolation: started in a client's project, the server shows only that space; in a project with no space, only the projects with no space; in the home folder, every space. Global memories aren't counted.
+- The same data comes as JSON from `GET /api/overview?months=6`, with the same protection as the rest of the API (local Host only and `OMOIKANE_HTTP_TOKEN`).
+
+### Compatibility
+- Same as 1.6.0: the database schema (10), the sync lines and the export format don't change. The overview only reads.
+
 ## 1.6.0 (2026-11-06)
 
 ### Open decisions
