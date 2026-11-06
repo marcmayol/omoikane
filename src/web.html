@@ -65,6 +65,8 @@ code, .mono { font-family: var(--mono); }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--preference); }
 .pill.mal { color: var(--delink); } .pill.mal .dot { background: var(--delink); }
+/* Desde dónde se mira: el espacio que enseña el servidor (o todos). */
+.pill.alc { color: var(--ink2); border-color: var(--line2); } .pill.alc .dot { background: var(--accent); border-radius: 2px; transform: rotate(45deg); }
 main { flex: 1; min-height: 0; position: relative; }
 
 /* Tipos */
@@ -328,6 +330,7 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
   <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
   <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a></nav>
   <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
+  <span class="pill alc" id="alcance" hidden><span class="dot"></span><span></span></span>
   <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
 </header>
 <main id="vista"></main>
@@ -337,6 +340,7 @@ const ES = (navigator.language || '').toLowerCase().startsWith('es');
 const T = ES ? {
   memorias: 'Memorias', proyectos: 'Proyectos', buscar: 'Buscar como lo haría el agente…', buscarEn: p => `Buscar en ${p}…`,
   tipo: 'Tipo', todo: 'Todo', fijadas: 'Fijadas', proyecto: 'Proyecto', todos: 'Todos', global: 'Global', etiqueta: 'Etiqueta', todasEt: 'Todas',
+  alcTodo: 'Todos los espacios', alcSolo: n => `Solo ${n}`, alcNinguno: 'Solo sin espacio',
   espacio: 'Espacio', espacios: 'espacios', sinEspacio: 'Sin espacio', ambito: 'Ámbito', espacioDe: n => `espacio «${n}»`, espacioPath: n => `vale para todos los proyectos de ${n}`,
   enEspacio: (p, m) => `${p} proyecto${p === 1 ? '' : 's'} · ${m} memoria${m === 1 ? '' : 's'}`, personal: 'Sin espacio', personalSub: 'Proyectos que no son de ningún espacio.', globalSub: 'Lo que vale en todos los proyectos de todos los espacios.',
   yaNoEsta: 'ya no está', copiar: 'Copiar', copiado: 'Copiado', carpetaNueva: '<carpeta nueva>', otroProyecto: '<otro proyecto>',
@@ -378,6 +382,7 @@ const T = ES ? {
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
+  alcTodo: 'All spaces', alcSolo: n => `Only ${n}`, alcNinguno: 'Only no space',
   espacio: 'Space', espacios: 'spaces', sinEspacio: 'No space', ambito: 'Scope', espacioDe: n => `space “${n}”`, espacioPath: n => `applies to every project in ${n}`,
   enEspacio: (p, m) => `${p} project${p === 1 ? '' : 's'} · ${m} memor${m === 1 ? 'y' : 'ies'}`, personal: 'No space', personalSub: 'Projects that belong to no space.', globalSub: 'What applies to every project in every space.',
   yaNoEsta: 'gone', copiar: 'Copy', copiado: 'Copied', carpetaNueva: '<new folder>', otroProyecto: '<other project>',
@@ -627,12 +632,24 @@ async function cargar() {
     const rp = await fetch('/api/projects', { headers: cab });
     const pj = rp.ok ? await rp.json() : {};
     fichas = pj.projects || []; espacios = pj.spaces || []; fueraDeEspacio = pj.space_conflicts || []; enPausa = pj.paused || [];
+    pintarAlcance(pj.scope);
     await cargarPanorama();
   } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; panorama = null; }
   if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
   const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length;
   c.textContent = n; c.hidden = !n;
   pintar();
+}
+
+// En la cabecera, desde dónde se mira: lo decide la carpeta en la que arrancó el servidor, y vale para
+// todas las vistas (quien comparte pantalla con un cliente ve que solo sale ese cliente).
+function pintarAlcance(a) {
+  const el = $('alcance');
+  if (!a) { el.hidden = true; return; }
+  const P = T.pan, todo = a.scope === 'all', n = a.name || a.space;
+  el.hidden = false;
+  el.lastElementChild.textContent = todo ? T.alcTodo : a.space ? T.alcSolo('◇ ' + n) : T.alcNinguno;
+  el.title = todo ? P.todo : a.space ? P.solo(n) : P.soloNinguno;
 }
 
 async function cargarPanorama() {

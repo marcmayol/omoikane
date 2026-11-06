@@ -11,6 +11,12 @@ How it works is in [docs/](docs/).
 - It keeps to the space isolation: started in a client's project, the server shows only that space; in a project with no space, only the projects with no space; in the home folder, every space. Global memories aren't counted.
 - The same data comes as JSON from `GET /api/overview?months=6`, with the same protection as the rest of the API (local Host only and `OMOIKANE_HTTP_TOKEN`).
 
+### Space isolation in the web view
+- Until now only Overview kept to the spaces: Memories, Projects, Review, the trash, what was set aside from sessions and their APIs (`/api/memories`, `/api/projects`, `/api/review`, `/api/trash`, `/api/candidates`) showed every client, whatever folder `omoi serve` started in. Now every page sees what the CLI and the MCP see from that folder: in a client's project, that space and the global memories; in a project with no space, the projects with no space and the global memories; in the home folder, everything. Links (`links`) to memories outside are left out too.
+- Writes keep to it as well: redacting, restoring from the trash, dismissing a Review warning or a set-aside note of a memory outside answers 403, and the tools (`/tools/update`, `/tools/forget`, `get`…) already refused it.
+- `?dir=<folder>` can no longer widen the view: from a client's project, pointing it at the home folder, another client or a project with no space answers 403. It still picks another project inside what the server shows (and, from the home folder, narrows to one client).
+- The header says where you are looking from: "All spaces", "Only ◇ Acme" or "Only no space", with the explanation on hover.
+
 ### Compatibility
 - Same as 1.6.0: the database schema (10), the sync lines and the export format don't change. The overview only reads.
 
