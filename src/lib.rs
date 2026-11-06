@@ -16,6 +16,7 @@ pub mod gemma;
 pub mod http;
 pub mod idioma;
 pub mod importar;
+pub mod llegada;
 pub mod mcp;
 pub mod memoria;
 pub mod modelos;

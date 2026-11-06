@@ -203,6 +203,8 @@ pub fn comparable(ruta: &str) -> String {
 
 /// El nombre corto de un proyecto: el de su carpeta (o, sin ruta, el final de la clave).
 pub fn nombre_de(ruta: &str, clave: &str) -> String {
+    // `[<clave>]` es la ruta de un proyecto que llegó por la sincronización sin carpeta aquí (`de_clave`).
+    let ruta = if ruta.starts_with('[') && ruta.ends_with(']') { "" } else { ruta };
     let desde_ruta = ruta.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
     if !desde_ruta.is_empty() {
         return desde_ruta;

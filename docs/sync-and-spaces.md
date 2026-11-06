@@ -36,7 +36,11 @@ Each project has its key, worked out once: its git `origin`, or, without one, yo
 
 Spaces keep clients apart. `omoi spaces add acme`, then `omoi space assign acme` in each of the client's repositories (or `omoi projects move <project> --space acme`). From an Acme project you see its memories, the space's and the global ones, never another client's: not in search, not in recall, not in `context`. What is common to all of a client's repositories is saved with `remember --space` (`space: true` over MCP); your preferences stay yours, global. From your home folder you see everything. `search` and `recent` take `project` (a folder or part of a name) and `space`.
 
-To share it, one repository per client, with its own key: `omoi sync init --space acme <url>` carries only that space, without your global memories, and the general repository doesn't carry the space's memories. A CI job or a server joins with the space's code in `OMOIKANE_SYNC_CODE`, without prompts: see [unattended.md](unattended.md).
+To share it, one repository per client, with its own key: `omoi sync init --space acme <url>` carries only that space, without your global memories, and the general repository doesn't carry the space's memories. Preferences saved for the whole space (`remember --space`) are the team's, so they always travel through it, even if you chose not to share preferences; yours (global) never do. If the space's repository is the only one you sync, its `--author` is the one written on your memories. A CI job or a server joins with the space's code in `OMOIKANE_SYNC_CODE`, without prompts: see [unattended.md](unattended.md).
+
+### Someone new joins a client
+
+`omoi sync join <code>` for a space ends by saying what arrived: how many memories, in which projects, how many pinned and how many open decisions. From the first session in any of those projects, the agent has the space's pinned memories and preferences, as always. The first session in each project on that computer also brings a short welcome, once: the space's other projects with where their work was left (their latest `status`), the decisions still open in them, and who writes in the space. Only that space, never another client's. If everything in the space was written by you, there is no welcome.
 
 ### Projects on hold
 

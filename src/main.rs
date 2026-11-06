@@ -2323,7 +2323,7 @@ fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
 /// Lo que pasó al unirse con un código de `omoi sync code`.
 enum Union {
     /// Unido a un repositorio nuevo para este equipo (su URL, sin credenciales).
-    Nueva(String),
+    Nueva(String, Option<String>),
     /// Ya sincronizaba con él: se añadió la clave nueva de una rotación.
     Clave(u32),
     /// Ya sincronizaba con él y ya tenía esa clave.
@@ -2361,7 +2361,7 @@ fn unirse_con(c: &Comun, ruta: &std::path::Path, codigo: &str, otra_url: Option<
     }
     sync::unirse(&mut db, ruta, &config, id, &clave)?;
     sync::adoptar_persona(&mut db, ruta, &config.person)?;
-    Ok(Union::Nueva(sync::sin_credenciales(&url)))
+    Ok(Union::Nueva(sync::sin_credenciales(&url), config.space))
 }
 
 /// `OMOIKANE_SYNC_CODE` (y `OMOIKANE_SYNC_URL`): se une, sin preguntar, a cada repositorio de esos
@@ -2383,7 +2383,7 @@ fn unirse_por_entorno(c: &Comun, ruta: &std::path::Path) -> Result<()> {
             if varios { e.context(tr!("OMOIKANE_SYNC_CODE (code {})", "OMOIKANE_SYNC_CODE (código {})", i + 1)) } else { e.context("OMOIKANE_SYNC_CODE") }
         })?;
         match union {
-            Union::Nueva(u) => eprintln!("{}", tr!("joined {u} (OMOIKANE_SYNC_CODE)", "unido a {u} (OMOIKANE_SYNC_CODE)")),
+            Union::Nueva(u, _) => eprintln!("{}", tr!("joined {u} (OMOIKANE_SYNC_CODE)", "unido a {u} (OMOIKANE_SYNC_CODE)")),
             Union::Clave(id) => eprintln!("{}", tr!("new key k{id} added (OMOIKANE_SYNC_CODE)", "añadida la clave nueva k{id} (OMOIKANE_SYNC_CODE)")),
             Union::Ya | Union::Cancelada => {}
         }
@@ -2512,7 +2512,17 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
                     "New key k{id} added (the old ones stay, to read what others haven't re-encrypted yet).",
                     "Añadida la clave nueva k{id} (las viejas se quedan, para leer lo que otros aún no han vuelto a cifrar)."
                 )),
-                Union::Nueva(url) => primera(&tr!("Joined {}.", "Unido a {}.", url)),
+                Union::Nueva(url, espacio) => {
+                    primera(&tr!("Joined {}.", "Unido a {}.", url))?;
+                    // Lo que acaba de llegar del espacio, y que el agente lo tendrá en su próxima sesión.
+                    if !c.json
+                        && let Some(espacio) = &espacio
+                        && let Some(t) = omoikane::llegada::al_unirse(&abrir(c)?, espacio)?
+                    {
+                        println!("{t}");
+                    }
+                    Ok(())
+                }
             }
         }
         Some(AccionSync::Code { space }) => {
