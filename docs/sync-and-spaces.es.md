@@ -45,3 +45,13 @@ Meter un proyecto en un espacio nunca lo mueve solo en otro sitio: esa línea la
 El repositorio de un espacio también puede nombrar un proyecto que aún no has abierto en este equipo (el de un compañero, o una librería tuya que alguien usa en el cliente): la primera vez que abres esa carpeta, el proyecto también queda en pausa, y lo que guardes en ella se queda en tu equipo hasta que digas de quién es: `omoi projects keep <proyecto>` si es del cliente, `omoi space unassign <proyecto> --force` si es tuyo (va a tu repositorio general, nunca al del cliente). Lo dicen `omoi sync`, `omoi sync status`, `omoi doctor`, `omoi review`, Revisar en la vista web (con las dos órdenes para copiar) y el agente al empezar cada sesión, hasta que decidas. Así, lo peor que puede hacer una línea falsa es pausar un proyecto, nunca mandar lo de un cliente, ni lo tuyo, a otro repositorio.
 
 `omoi export --encrypt` desde un proyecto de un cliente cifra con la clave de su espacio; con `--all`, con la del general.
+
+### Panorama por cliente
+
+Quien lleva un cliente, o la factory entera, abre **Panorama** en la vista web (`omoi serve --open`). Cada espacio tiene tres bloques:
+
+- **Qué hay**: sus proyectos con cuántas memorias, cuántas fijadas y su último `status` (cuándo y de quién), las decisiones abiertas (se contestan en **Proyectos**) y lo fijado.
+- **Quién lo escribió**: memorias por autor (el `author` que la sincronización apunta en cada memoria; «Sin autor» para las guardadas sin sincronizar o con `--no-author`), cuántas en los últimos 30 días, cuándo fue la última y con qué agentes (`mcp:claude-code`, `mcp:codex`, `cli`…), y la actividad reciente.
+- **Desfasado o en pausa**: lo que marca Revisar (desfasadas, sustituidas, que se contradicen, que toca revisar, que nunca se usan…), los proyectos en pausa con las dos órdenes para copiar, y las memorias que nadie toca desde hace más de 3, 6, 12 o 24 meses (6 por defecto).
+
+Respeta el aislamiento de espacios: un servidor arrancado en un proyecto de un cliente solo enseña ese espacio (entero, no solo ese proyecto), uno arrancado en un proyecto sin espacio solo los proyectos sin espacio, y uno arrancado en la carpeta del usuario, todos. Las memorias globales no son de ningún cliente y no cuentan. Los scripts tienen lo mismo en `GET /api/overview?months=6`.

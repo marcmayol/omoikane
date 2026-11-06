@@ -45,3 +45,13 @@ Moving a project into a space never moves it anywhere else by itself: anyone wit
 A space's repository can also name a project you haven't opened on this computer yet (a coworker's, or a library of yours that someone uses at the client): the first time you open that folder, the project goes on hold too, and what you save there stays on your computer until you say whose it is: `omoi projects keep <project>` if it is the client's, `omoi space unassign <project> --force` if it is yours (it goes to your general repository, never to the client's). `omoi sync`, `omoi sync status`, `omoi doctor`, `omoi review`, the web view's Review (with both commands to copy) and the agent at the start of each session say so until you decide. So the worst a forged line can do is put a project on hold, never send a client's memories, or yours, to another repository.
 
 `omoi export --encrypt` from a client's project uses that space's key; with `--all`, the general one.
+
+### Overview by client
+
+Whoever runs a client, or the whole factory, opens **Overview** in the web view (`omoi serve --open`). Each space gets three blocks:
+
+- **What there is**: its projects with how many memories, how many pinned and their latest `status` (when and by whom), the open decisions (answered in **Projects**) and what is pinned.
+- **Who wrote it**: memories per author (the `author` that sync writes on each memory; "No author" for those saved without sync or with `--no-author`), how many in the last 30 days, when the last one was and with which agents (`mcp:claude-code`, `mcp:codex`, `cli`…), and the latest activity.
+- **Outdated or paused**: what Review flags (outdated, superseded, contradicting, due, never used…), the projects on hold with both commands to copy, and the memories nobody has touched in over 3, 6, 12 or 24 months (6 by default).
+
+It follows the space isolation: a server started in a client's project only shows that space (all of it, not just that project), one started in a project with no space only the projects with no space, and one started in the home folder shows every space. Global memories belong to no client and aren't counted. Scripts get the same from `GET /api/overview?months=6`.

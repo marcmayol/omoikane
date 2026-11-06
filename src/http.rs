@@ -3,10 +3,14 @@
 //!
 //! - `GET /` → la vista web: la cronología de memorias y los proyectos con su estado (y `/icono.png`,
 //!   `/fuentes/*.woff2`, que la página carga del binario)
-//! - `GET /api/memories` → todas las memorias, enteras, de la más reciente a la más antigua, con
+//! - `GET /api/memories` → las memorias que se ven (ver «Quién ve qué»), enteras, de la más reciente a la más antigua, con
 //!   `versions` (cuántas versiones anteriores guarda su historial) y `links` (las que enlaza con `[[…]]`)
 //! - `GET /api/projects` → los proyectos (`proyecto::lista`: clave, espacio, carpeta y si ya no está)
 //!   y los espacios (`proyecto::espacios`, con su nombre), para agrupar y filtrar por espacio
+//! - `GET /api/overview?months=…` → la vista de responsable (`responsable::panorama`): por espacio, sus
+//!   proyectos con su último `status`, lo fijado, las decisiones abiertas, quién escribió qué, lo que
+//!   dice `revisar`, lo que está en pausa y lo que nadie toca desde hace `months` meses (6). Solo lo que
+//!   se ve desde el proyecto de la petición (su espacio); desde la carpeta del usuario, todo
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
@@ -23,8 +27,15 @@
 //! Solo escucha en `127.0.0.1`, y solo atiende peticiones dirigidas a `127.0.0.1` o `localhost` (para
 //! que una web cualquiera no llegue a ella cambiando su DNS) y, si escriben, hechas desde la propia
 //! vista (una web ajena no puede mandar un POST que olvide memorias). Con `OMOIKANE_HTTP_TOKEN`, cada
-//! petición (salvo la página, que no lleva datos) tiene que llevar `Authorization: Bearer <token>`. `?dir=<carpeta>` elige el proyecto de esa petición (por defecto,
-//! el de la carpeta en la que arrancó el servidor).
+//! petición (salvo la página, que no lleva datos) tiene que llevar `Authorization: Bearer <token>`.
+//!
+//! **Quién ve qué** (1.7.0), la misma regla que la CLI y el MCP: lo decide la carpeta en la que arrancó
+//! el servidor. Desde un proyecto de un espacio, ese espacio entero (sus proyectos, lo del espacio) y lo
+//! global; desde un proyecto sin espacio, los proyectos sin espacio y lo global; desde la carpeta del
+//! usuario, todo. Vale para todo lo que lee (memorias, proyectos, revisar, papelera, candidatas,
+//! panorama, herramientas) y para lo que escribe: tocar una memoria de fuera da 403. `?dir=<carpeta>`
+//! elige el proyecto de esa petición, pero solo dentro de lo que ya se ve (desde un proyecto, otro de su
+//! mismo espacio; desde la carpeta del usuario, cualquiera): no amplía nada (403).
 
 use crate::memoria::{self, Ambito};
 use crate::{db, mcp, tr};
@@ -128,6 +139,96 @@ fn parametros(consulta: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Desde dónde mira una petición: el proyecto (para las herramientas) y lo que se ve desde él.
+#[derive(Clone)]
+struct Mirador {
+    /// La carpeta que se pasa a las herramientas (`?dir=` o la del servidor).
+    dir: Option<PathBuf>,
+    /// El proyecto, como lo guarda la base.
+    proyecto: String,
+    /// Lo que se ve desde el proyecto (para la vista de responsable, que lo amplía ella).
+    base: Ambito,
+    /// «Todos los proyectos» desde aquí: su espacio entero, los que no tienen espacio, o todo.
+    vista: Ambito,
+    /// Si se ve todo (carpeta del usuario).
+    todo: bool,
+    /// La clave del espacio desde el que se mira (vacía: ninguno, o todo).
+    espacio: String,
+}
+
+impl Mirador {
+    /// Si se ve lo de este espacio (su clave; vacía: sin espacio), o una memoria global.
+    fn ve_espacio(&self, clave: &str, global: bool) -> bool {
+        self.todo || global || clave == self.espacio
+    }
+
+    /// Si se ve la memoria `id`, viva o en la papelera. Una que no existe, sí: ya lo dirá quien la busque.
+    fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
+        Ok(self.todo || memoria::alcance_de_memoria(db, id)?.is_none_or(|(global, clave)| self.ve_espacio(&clave, global)))
+    }
+
+    /// Si se ve un ámbito pedido: desde todo, cualquiera; si no, uno que no sea todo y de su mismo espacio.
+    fn abarca(&self, otro: &Ambito) -> bool {
+        self.todo || (!matches!(otro, Ambito::Todos) && self.base.espacio() == otro.espacio())
+    }
+}
+
+/// Desde dónde mira la petición: la carpeta en la que arrancó el servidor o, con `?dir=`, otra dentro de
+/// lo que ya se ve desde esa. `Err` con la respuesta si `?dir=` no vale.
+fn mirar(
+    db: &rusqlite::Connection,
+    servidor: &Mirador,
+    pedida: Option<String>,
+) -> Result<std::result::Result<Mirador, Response<std::io::Cursor<Vec<u8>>>>> {
+    let Some(d) = pedida.filter(|d| !d.trim().is_empty()) else {
+        return Ok(Ok(servidor.clone()));
+    };
+    let Ok(proyecto) = crate::proyecto::de(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
+    let base = Ambito::de(db, &proyecto)?;
+    if !servidor.abarca(&base) {
+        return Ok(Err(error(
+            403,
+            "dir is outside what this server shows: it can only narrow the view to a project of the same space; start `omoi serve` in that project, or in the home folder",
+        )));
+    }
+    Ok(Ok(Mirador::nuevo(db, Some(PathBuf::from(d)), proyecto)?))
+}
+
+impl Mirador {
+    fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, proyecto: String) -> Result<Mirador> {
+        let base = Ambito::de(db, &proyecto)?;
+        let todo = matches!(base, Ambito::Todos);
+        let espacio = crate::proyecto::clave_espacio(db, base.espacio())?;
+        Ok(Mirador { dir, proyecto, base, vista: base.amplio(), todo, espacio })
+    }
+
+    /// Desde dónde se mira, para la vista: todo, o un espacio (vacío: los proyectos sin espacio).
+    fn json(&self, db: &rusqlite::Connection) -> Result<serde_json::Value> {
+        let nombre = if self.espacio.is_empty() {
+            String::new()
+        } else {
+            db.query_row("SELECT name FROM space WHERE key = ?1", [&self.espacio], |f| f.get(0)).unwrap_or_default()
+        };
+        Ok(serde_json::json!({
+            "scope": if self.todo { "all" } else { "space" },
+            "space": if self.todo { serde_json::Value::Null } else { self.espacio.clone().into() },
+            "name": nombre,
+            "project": self.proyecto,
+        }))
+    }
+}
+
+/// El cuerpo JSON de un POST.
+fn cuerpo_json(peticion: &mut tiny_http::Request) -> Result<serde_json::Value> {
+    let mut cuerpo = String::new();
+    peticion.as_reader().read_to_string(&mut cuerpo)?;
+    Ok(serde_json::from_str(&cuerpo)?)
+}
+
+fn fuera() -> Response<std::io::Cursor<Vec<u8>>> {
+    error(403, "that memory is not in this scope: it belongs to another space; start `omoi serve` in that project, or in the home folder, to change it")
+}
+
 /// Mientras sirve, lo que otros equipos suben llega como en una sesión: cada `cada_cuanto` (2
 /// minutos) como mucho, con la misma marca que los mensajes (así no se juntan dos). Se mira cada
 /// cuarto de intervalo; sin sincronización no se abre ni la base.
@@ -166,6 +267,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
         abrir_navegador(&url);
     }
     traer_cada_poco(db.clone());
+    // El proyecto en el que arrancó: de él depende lo que ve cada petición (ver «Quién ve qué»).
+    let proyecto_servidor = match &dir {
+        Some(d) => crate::proyecto::de(d)?,
+        None => crate::proyecto::actual()?,
+    };
     let anfitriones = [format!("127.0.0.1:{puerto}"), format!("localhost:{puerto}")];
     let origenes = anfitriones.iter().map(|a| format!("http://{a}")).collect::<Vec<_>>();
     for mut peticion in servidor.incoming_requests() {
@@ -199,40 +305,54 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
             let (ruta, consulta) = url.split_once('?').unwrap_or((&url, ""));
             let params = parametros(consulta);
             let param = |k: &str| params.iter().find(|(c, _)| c == k).map(|(_, v)| v.clone());
-            let dir_peticion = param("dir").map(PathBuf::from).or_else(|| dir.clone());
             let metodo = peticion.method().clone();
+            if metodo == Method::Get && ruta == "/health" {
+                return Ok(json(200, serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }).to_string()));
+            }
+            // Desde dónde se mira: se calcula en cada petición, porque un proyecto puede cambiar de
+            // espacio mientras el servidor está en marcha.
+            let ruta_db = db.clone();
+            let mut base = db::abrir(&db)?;
+            let servidor = Mirador::nuevo(&base, dir.clone(), proyecto_servidor.clone())?;
+            let m = match mirar(&base, &servidor, param("dir"))? {
+                Ok(m) => m,
+                Err(r) => return Ok(r),
+            };
             match (metodo, ruta) {
                 (Method::Get, "/api/memories") => {
-                    let db = db::abrir(&db)?;
-                    let v = memoria::recientes(&db, &Ambito::Todos, None, usize::MAX >> 1)?;
+                    let v = memoria::recientes(&base, &m.vista, None, usize::MAX >> 1)?;
                     // Con cuántas versiones anteriores tiene cada una, para la cronología de la vista.
-                    let mut q = db.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
+                    let mut q = base.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
                     let versiones: std::collections::HashMap<String, i64> =
                         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-                    crate::revisar::al_dia(&db)?;
-                    let enlaces = crate::enlaces::todos(&db)?;
+                    crate::revisar::al_dia(&base)?;
+                    let enlaces = crate::enlaces::todos(&base)?;
+                    // Los enlaces, solo a las que también se ven: el id de una de otro cliente tampoco sale.
+                    let visibles: std::collections::HashSet<&str> = v.iter().map(|m| m.id.as_str()).collect();
                     let v: Vec<serde_json::Value> = v
-                        .into_iter()
+                        .iter()
                         .map(|m| {
                             let n = versiones.get(&m.id).copied().unwrap_or(0);
-                            let links = enlaces.get(&m.id).cloned().unwrap_or_default();
+                            let links: Vec<&String> =
+                                enlaces.get(&m.id).map(|l| l.iter().filter(|x| visibles.contains(x.as_str())).collect()).unwrap_or_default();
                             let mut j = serde_json::to_value(m).unwrap_or_default();
                             j["versions"] = n.into();
-                            j["links"] = links.into();
+                            j["links"] = serde_json::json!(links);
                             j
                         })
                         .collect();
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Get, "/api/projects") => {
-                    let ruta = db.clone();
-                    let db = db::abrir(&db)?;
+                    let espacio = if m.todo { None } else { Some(m.vista.espacio()) };
                     let cuerpo = serde_json::json!({
-                        "projects": crate::proyecto::lista(&db, None, None, usize::MAX)?,
-                        "spaces": crate::proyecto::espacios(&db)?,
+                        // Desde dónde se mira, para que la vista lo diga.
+                        "scope": m.json(&base)?,
+                        "projects": crate::proyecto::lista(&base, None, espacio, usize::MAX)?,
+                        "spaces": crate::proyecto::espacios(&base)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect::<Vec<_>>(),
                         // Los proyectos que otro equipo tiene en otro espacio, con lo que dice
-                        // `sync status` y la orden que lo arregla.
-                        "space_conflicts": crate::sync::choques(&ruta).iter().map(|x| {
+                        // `sync status` y la orden que lo arregla (solo los que aquí son de lo que se ve).
+                        "space_conflicts": crate::sync::choques(&ruta_db).iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
                             v["text"] = x.texto().into();
                             v["command"] = x.orden().into();
@@ -241,9 +361,9 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         // Los que están en pausa (una línea `project` dice otro espacio, o una carpeta
                         // de aquí entró en un espacio solo porque lo dice su repositorio), con las dos
                         // órdenes que la deciden.
-                        "paused": crate::proyecto::en_pausa(&db)?.iter().map(|x| {
+                        "paused": crate::proyecto::en_pausa(&base)?.iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
-                            v["text"] = crate::sync::texto_pausa(&ruta, x).into();
+                            v["text"] = crate::sync::texto_pausa(&ruta_db, x).into();
                             v["accept"] = crate::sync::orden_aceptar(x).into();
                             v["keep"] = crate::sync::orden_quedarse(x).into();
                             v
@@ -251,74 +371,114 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     });
                     Ok(json(200, cuerpo.to_string()))
                 }
-                (Method::Get, "/api/review") => {
-                    let db = db::abrir(&db)?;
-                    Ok(json(200, serde_json::to_string(&crate::revisar::avisos(&db, &Ambito::Todos)?)?))
+                (Method::Get, "/api/overview") => {
+                    // La vista de responsable, solo con lo que se ve desde el proyecto de la petición
+                    // (su espacio) o, desde la carpeta del usuario, todo.
+                    let meses = param("months").and_then(|n| n.parse().ok()).unwrap_or(crate::responsable::MESES);
+                    Ok(json(200, crate::responsable::panorama(&base, &ruta_db, &m.base, meses)?.to_string()))
                 }
+                (Method::Get, "/api/review") => Ok(json(200, serde_json::to_string(&crate::revisar::avisos(&base, &m.vista)?)?)),
                 (Method::Post, "/api/review/dismiss") => {
-                    let mut cuerpo = String::new();
-                    peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
+                    let v = cuerpo_json(&mut peticion)?;
                     let campo = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                    let db = db::abrir(&db)?;
-                    match crate::revisar::descartar(&db, &campo("memory_id"), &campo("kind"), &campo("other_id")) {
+                    let (una, otra) = (campo("memory_id"), campo("other_id"));
+                    if !m.ve(&base, &una)? || (!otra.is_empty() && !m.ve(&base, &otra)?) {
+                        return Ok(fuera());
+                    }
+                    match crate::revisar::descartar(&base, &una, &campo("kind"), &otra) {
                         Ok(()) => Ok(json(200, serde_json::json!({ "dismissed": true }).to_string())),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
                 (Method::Get, "/api/trash") => {
-                    let db = db::abrir(&db)?;
-                    Ok(json(200, serde_json::to_string(&memoria::papelera(&db)?)?))
+                    let mut v = Vec::new();
+                    for o in memoria::papelera(&base)? {
+                        if m.ve(&base, &o.id)? {
+                            v.push(o);
+                        }
+                    }
+                    Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Post, "/api/restore") => {
-                    let mut cuerpo = String::new();
-                    peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
-                    let mut base = db::abrir(&db)?;
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = v["id"].as_str().unwrap_or_default().trim().to_uppercase();
+                    // Por su principio, como `restaurar`: si encaja con una sola, esa es la que se mira.
+                    let ids: Vec<String> = base
+                        .prepare("SELECT id FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?
+                        .query_map([&id], |f| f.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    if let [una] = ids.as_slice()
+                        && !id.is_empty()
+                        && !m.ve(&base, una)?
+                    {
+                        return Ok(fuera());
+                    }
                     let antes = crate::revisar::antes(&base)?;
-                    match memoria::restaurar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
-                        Ok(m) => {
-                            crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&m.id))?;
-                            crate::sync::programar(&db);
-                            Ok(json(200, serde_json::to_string(&m)?))
+                    match memoria::restaurar(&mut base, &id, None) {
+                        Ok(r) => {
+                            crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&r.id))?;
+                            crate::sync::programar(&ruta_db);
+                            Ok(json(200, serde_json::to_string(&r)?))
                         }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
                 (Method::Post, "/api/redact") => {
-                    let mut cuerpo = String::new();
-                    peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
-                    let mut base = db::abrir(&db)?;
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = match memoria::resolver_id(&base, v["id"].as_str().unwrap_or_default()) {
+                        Ok(id) => id,
+                        Err(e) => return Ok(error(404, &format!("{e:#}"))),
+                    };
+                    if !m.ve(&base, &id)? {
+                        return Ok(fuera());
+                    }
                     let antes = crate::revisar::antes(&base)?;
-                    match memoria::redactar(&mut base, v["id"].as_str().unwrap_or_default(), None) {
-                        Ok(m) => {
-                            if !m.redacted.is_empty() {
-                                crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&m.id))?;
-                                crate::sync::programar(&db);
+                    match memoria::redactar(&mut base, &id, None) {
+                        Ok(r) => {
+                            if !r.redacted.is_empty() {
+                                crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&r.id))?;
+                                crate::sync::programar(&ruta_db);
                             }
-                            let mut j = serde_json::to_value(&m)?;
-                            j["redacted"] = m.redacted.len().into();
+                            let mut j = serde_json::to_value(&r)?;
+                            j["redacted"] = r.redacted.len().into();
                             Ok(json(200, j.to_string()))
                         }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
                 (Method::Get, "/api/candidates") => {
-                    let db = db::abrir(&db)?;
-                    Ok(json(200, serde_json::to_string(&crate::candidatas::todas(&db)?)?))
+                    // Lo apartado lleva la carpeta de su sesión: solo las de proyectos que se ven.
+                    let mut ambitos: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+                    let mut v = Vec::new();
+                    for c in crate::candidatas::todas(&base)? {
+                        let se_ve = match ambitos.get(&c.project) {
+                            Some(s) => *s,
+                            None => {
+                                let s = m.abarca(&Ambito::de(&base, &c.project)?);
+                                ambitos.insert(c.project.clone(), s);
+                                s
+                            }
+                        };
+                        if se_ve {
+                            v.push(c);
+                        }
+                    }
+                    Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Post, "/api/candidates/dismiss") => {
-                    let mut cuerpo = String::new();
-                    peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    let v: serde_json::Value = serde_json::from_str(&cuerpo)?;
-                    let db = db::abrir(&db)?;
-                    crate::candidatas::descartar(&db, v["id"].as_i64().unwrap_or_default())?;
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = v["id"].as_i64().unwrap_or_default();
+                    let proyecto: Option<String> = rusqlite::OptionalExtension::optional(base.query_row("SELECT project FROM candidate WHERE id = ?1", [id], |f| f.get(0)))?;
+                    let Some(proyecto) = proyecto else { return Ok(error(404, "no such candidate")) };
+                    if !m.abarca(&Ambito::de(&base, &proyecto)?) {
+                        return Ok(error(403, "that candidate is from a project outside this scope"));
+                    }
+                    crate::candidatas::descartar(&base, id)?;
                     Ok(json(200, serde_json::json!({ "dismissed": true }).to_string()))
                 }
                 (Method::Get, "/api/sync") => {
-                    let config = crate::sync::leer_config(&db)?;
-                    let e = crate::sync::leer_estado(&db);
+                    let config = crate::sync::leer_config(&ruta_db)?;
+                    let e = crate::sync::leer_estado(&ruta_db);
                     Ok(json(
                         200,
                         serde_json::json!({
@@ -333,30 +493,34 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         .to_string(),
                     ))
                 }
-                (Method::Get, "/health") => Ok(json(200, serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }).to_string())),
+                // Las herramientas miran desde la carpeta de la petición, con las mismas comprobaciones
+                // que por MCP (`search`, `get`, `update`, `forget`… no salen del espacio).
                 (Method::Get, "/tools") => {
-                    let (texto, _) = mcp::herramienta(db.clone(), dir_peticion, None, "", "http")?;
+                    drop(base);
+                    let (texto, _) = mcp::herramienta(ruta_db, m.dir, None, "", "http")?;
                     Ok(json(200, texto))
                 }
                 (Method::Get, "/search") => {
+                    drop(base);
                     let Some(q) = param("q") else { return Ok(error(400, "missing q")) };
                     let mut args = serde_json::json!({ "query": q });
                     if let Some(n) = param("limit").and_then(|n| n.parse::<u64>().ok()) {
                         args["limit"] = n.into();
                     }
-                    let (texto, es_error) = mcp::herramienta(db.clone(), dir_peticion, Some("search"), &args.to_string(), "http")?;
+                    let (texto, es_error) = mcp::herramienta(ruta_db, m.dir, Some("search"), &args.to_string(), "http")?;
                     Ok(json(if es_error { 400 } else { 200 }, texto))
                 }
                 (Method::Post, r) if r.starts_with("/tools/") => {
+                    drop(base);
                     let nombre = &r["/tools/".len()..];
                     let mut cuerpo = String::new();
                     peticion.as_reader().read_to_string(&mut cuerpo)?;
-                    match mcp::herramienta(db.clone(), dir_peticion, Some(nombre), &cuerpo, "http") {
+                    match mcp::herramienta(ruta_db, m.dir, Some(nombre), &cuerpo, "http") {
                         Ok((texto, es_error)) => Ok(json(if es_error { 400 } else { 200 }, texto)),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/review, POST /api/review/dismiss, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

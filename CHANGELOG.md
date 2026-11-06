@@ -13,9 +13,21 @@ How it works is in [docs/](docs/).
 - `OMOIKANE_AUTHOR` signs what is saved here (each memory's and each verdict's author), over the author chosen when sync was set up.
 - `OMOIKANE_NONINTERACTIVE=1`: no prompts even with a terminal (what needs confirming asks for `--yes`), no automatic download of the meaning model, no automatic update and no background sync after each change (`OMOIKANE_SYNC_AUTO=1` brings it back). `omoi sync --pull` then waits for any other sync, does a full one and exits with code 1 if it fails. `OMOIKANE_NO_MODEL=1` also stops `omoi` from downloading the meaning model by itself.
 
+### Overview by client
+- The web view (`omoi serve`) has a new **Overview** page for whoever runs a client or the whole factory. Per space it shows what there is (projects with their memory count, pinned ones and latest `status`, open decisions and pinned memories), who wrote it (memories per author, how many in the last 30 days, the agents they used and the latest activity) and what is outdated or paused (what Review flags, projects on hold with both commands, and memories untouched for over 3, 6, 12 or 24 months).
+- It keeps to the space isolation: started in a client's project, the server shows only that space; in a project with no space, only the projects with no space; in the home folder, every space. Global memories aren't counted.
+- The same data comes as JSON from `GET /api/overview?months=6`, with the same protection as the rest of the API (local Host only and `OMOIKANE_HTTP_TOKEN`).
+
+### Space isolation in the web view
+- Until now only Overview kept to the spaces: Memories, Projects, Review, the trash, what was set aside from sessions and their APIs (`/api/memories`, `/api/projects`, `/api/review`, `/api/trash`, `/api/candidates`) showed every client, whatever folder `omoi serve` started in. Now every page sees what the CLI and the MCP see from that folder: in a client's project, that space and the global memories; in a project with no space, the projects with no space and the global memories; in the home folder, everything. Links (`links`) to memories outside are left out too.
+- Writes keep to it as well: redacting, restoring from the trash, dismissing a Review warning or a set-aside note of a memory outside answers 403, and the tools (`/tools/update`, `/tools/forget`, `get`…) already refused it.
+- `?dir=<folder>` can no longer widen the view: from a client's project, pointing it at the home folder, another client or a project with no space answers 403. It still picks another project inside what the server shows (and, from the home folder, narrows to one client).
+- The header says where you are looking from: "All spaces", "Only ◇ Acme" or "Only no space", with the explanation on hover.
+
 ### Compatibility
 - Same as 1.6.0: the schema, the sync lines and the export format don't change.
 - If you had `OMOIKANE_HOME` set without `OMOIKANE_DB`, the database is now looked for in `OMOIKANE_HOME/omoikane.db` instead of `~/.omoikane/omoikane.db`, and the light model in `OMOIKANE_HOME/models` (without `OMOIKANE_MODELS`). Move them, or set `OMOIKANE_DB`.
+- Same as 1.6.0: the database schema (10), the sync lines and the export format don't change. The overview only reads.
 
 ## 1.6.0 (2026-11-06)
 

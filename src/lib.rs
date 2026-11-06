@@ -25,6 +25,7 @@ pub mod rapido;
 pub mod recall;
 pub mod recetas;
 pub mod reloj;
+pub mod responsable;
 pub mod revisar;
 pub mod riesgo;
 pub mod secretos;
