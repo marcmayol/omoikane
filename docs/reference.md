@@ -15,6 +15,8 @@ omoi --help
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere; more in [sync-and-spaces.md](sync-and-spaces.md#projects)). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it, or `OMOIKANE_HOME` to move the whole `~/.omoikane` folder; for CI and servers, see [unattended.md](unattended.md)). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
+Many agents can share one database at once (subagents, several sessions, CI jobs): each `omoi` waits its turn to write, up to 5 s, and a brand-new database created by several processes at the same moment comes out as one. `tests/concurrencia.rs` checks it with real `omoi` processes; `cargo test --release --test concurrencia -- --ignored --nocapture` runs the full measurement (20 agents for 30 s).
+
 ## See it and tidy it up
 
 `omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it.
@@ -53,7 +55,7 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_NO_MODEL=1` | the installers don't download the light model (the meaning model is never downloaded by them), and `omoi` doesn't download the meaning model by itself |
 | `OMOIKANE_SEMANTIC=0` / `1` | turns the meaning model off or on (over `omoi model semantic` and the size of the memory) |
 | `OMOIKANE_SEMANTIC_THRESHOLD` | from how many memories the meaning model turns on by itself (1000) |
-| `OMOIKANE_TRAZA=1` | recall writes each step to stderr: candidates, scores and what the meaning model did, or why it wasn't asked |
+| `OMOIKANE_TRAZA=1` | recall writes each step to stderr: candidates, scores and what the meaning model did, or why it wasn't asked; every command also says how long it waited for another process to release the database |
 | `OMOIKANE_SEMANTIC_IDLE` | seconds without use before the meaning service closes (1800) |
 | `OMOIKANE_SEMANTIC_RAM` | MB of RAM the meaning model may use while indexing (over `omoi model semantic --ram`; default 128, minimum 80) |
 | `OMOIKANE_SEMANTIC_MODEL` | a folder with EmbeddingGemma to use instead of the installed one |

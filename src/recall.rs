@@ -405,8 +405,9 @@ fn apuntar(db: &mut Connection, sesion: &str, ids: &[String], proyecto: i64) -> 
             params![sesion, id, proyecto],
         )?;
     }
+    buscar::apuntar_recuperadas_en(&tx, &ids.iter().map(String::as_str).collect::<Vec<_>>(), None)?;
     tx.commit()?;
-    buscar::apuntar_recuperadas(db, ids.iter().map(String::as_str), None)
+    Ok(())
 }
 
 /// Dónde está una memoria, si no es del proyecto de la sesión (`actual`): `[global]`, `[space x]` o

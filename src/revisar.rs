@@ -208,7 +208,10 @@ pub fn al_dia_de(db: &Connection, antes: &Antes, ids: &[String]) -> Result<()> {
     let Some(comunes) = comunes_vigentes(db, n)? else {
         return al_dia(db);
     };
-    let tx = db.unchecked_transaction()?;
+    // IMMEDIATE: esta transacción lee y después escribe. Diferida, si otro agente escribía entre la
+    // lectura y la escritura, SQLite daba BUSY_SNAPSHOT al momento, sin esperar (su instantánea ya
+    // no es la última), y la revisión se quedaba sin poner al día.
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
     let hecho = desfasadas_de(&tx, &ids, &comunes)? && crate::enlaces::recalcular_de(&tx, &ids)?;
     if !hecho {
         drop(tx);
@@ -241,7 +244,8 @@ fn comunes_vigentes(db: &Connection, n: usize) -> Result<Option<HashSet<String>>
 /// El recálculo entero: desfasadas y enlaces de toda la base.
 fn rehacer(db: &Connection, h: &str) -> Result<()> {
     let (nuevas, n, comunes) = desfasadas(db)?;
-    let tx = db.unchecked_transaction()?;
+    // IMMEDIATE, como todas las transacciones que escriben (ver `db`).
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
     // Lo que se dio por bueno está en `verdict` (y viaja con la sincronización); aquí solo lo detectado.
     tx.execute("DELETE FROM review WHERE kind IN (?1, ?2)", [DESFASADA, ENLACE_ROTO])?;
     let rotos = crate::enlaces::recalcular(&tx)?;
