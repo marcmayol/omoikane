@@ -529,8 +529,12 @@ pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>,
     Ok(())
 }
 
-/// El autor que se apunta en lo que se guarda aquí (lo configura la sincronización; vacío = ninguno).
+/// El autor que se apunta en lo que se guarda aquí: `OMOIKANE_AUTHOR` (un agente sin persona delante
+/// dice quién es) o el que configuró la sincronización; vacío = ninguno.
 pub(crate) fn autor(db: &Connection) -> Result<String> {
+    if let Some(a) = crate::entorno::autor() {
+        return Ok(a);
+    }
     Ok(db.query_row("SELECT v FROM meta WHERE k = 'autor'", [], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 

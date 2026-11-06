@@ -13,7 +13,7 @@ omoi recent
 omoi --help
 ```
 
-Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere; more in [sync-and-spaces.md](sync-and-spaces.md#projects)). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
+Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere; more in [sync-and-spaces.md](sync-and-spaces.md#projects)). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it, or `OMOIKANE_HOME` to move the whole `~/.omoikane` folder; for CI and servers, see [unattended.md](unattended.md)). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
 ## See it and tidy it up
 
@@ -35,7 +35,12 @@ All of them appear on the pages above; here they are together.
 
 | variable | what it does |
 |---|---|
-| `OMOIKANE_DB` | where the database lives (default `~/.omoikane/omoikane.db`) |
+| `OMOIKANE_DB` | where the database lives (default `omoikane.db` in `OMOIKANE_HOME`) |
+| `OMOIKANE_HOME` | the whole Omoikane folder: database, models, preferences (default `~/.omoikane`) |
+| `OMOIKANE_NONINTERACTIVE=1` | nobody at the keyboard: no prompts, downloads, updates or background sync ([unattended.md](unattended.md)) |
+| `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | join sync from a code (and another URL) without asking ([unattended.md](unattended.md)) |
+| `OMOIKANE_AUTHOR` | who signs what is saved here |
+| `OMOIKANE_SYNC_AUTO=0` / `1` | background sync off or on (on by default, off with `OMOIKANE_NONINTERACTIVE=1`) |
 | `OMOIKANE_LANG=es` | messages in Spanish |
 | `OMOIKANE_BIN` | which `omoi` the Claude Code plugin runs |
 | `OMOIKANE_TRASH_DAYS` | days in the trash before deleting for good (30; 0 = never) |
@@ -43,7 +48,7 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_AUTO_UPDATE=0` | turns automatic updates off |
 | `OMOIKANE_HTTP_TOKEN` | token that `omoi serve` requires over HTTP |
 | `OMOIKANE_NO_SETUP=1` | the installers don't add the Claude Code plugin |
-| `OMOIKANE_NO_MODEL=1` | the installers don't download the light model (the meaning model is never downloaded by them) |
+| `OMOIKANE_NO_MODEL=1` | the installers don't download the light model (the meaning model is never downloaded by them), and `omoi` doesn't download the meaning model by itself |
 | `OMOIKANE_SEMANTIC=0` / `1` | turns the meaning model off or on (over `omoi model semantic` and the size of the memory) |
 | `OMOIKANE_SEMANTIC_THRESHOLD` | from how many memories the meaning model turns on by itself (1000) |
 | `OMOIKANE_TRAZA=1` | recall writes each step to stderr: candidates, scores and what the meaning model did, or why it wasn't asked |

@@ -10,6 +10,7 @@ pub mod db;
 pub mod diario;
 pub mod documentos;
 pub mod embeber;
+pub mod entorno;
 pub mod enlaces;
 pub mod gemma;
 pub mod http;

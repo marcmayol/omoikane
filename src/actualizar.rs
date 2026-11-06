@@ -27,7 +27,7 @@ const CADA: u64 = 24 * 3600;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn carpeta() -> Option<PathBuf> {
-    std::env::var_os("OMOIKANE_HOME").map(PathBuf::from).or_else(|| std::env::home_dir().map(|h| h.join(".omoikane")))
+    crate::entorno::casa()
 }
 
 fn fichero(nombre: &str) -> Option<PathBuf> {
@@ -281,7 +281,8 @@ pub fn comprobar(exe: &Path, instalar_si_hay: bool) -> Result<Resultado> {
 /// comprobación. Nunca espera ni falla.
 pub fn quizas_en_segundo_plano() {
     limpiar_viejos();
-    if !activada() {
+    // Sin nadie delante (una CI, un servidor), el binario no cambia solo aunque se hubiera encendido.
+    if !activada() || crate::entorno::desatendido() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };

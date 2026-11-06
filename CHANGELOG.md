@@ -4,6 +4,19 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.7.0 (unreleased)
+
+### Agents with nobody at the keyboard
+- CI jobs, servers, containers and cloud agents can use the team's memory configured only by environment variables ([docs/unattended.md](docs/unattended.md), with a GitHub Actions example).
+- `OMOIKANE_HOME` moves the whole Omoikane folder: the database, the models, the meaning model's choice and service, and updates (before, only the last two followed it). Sync, backups and the diary already lived next to the database. Without a home folder and without `OMOIKANE_HOME` or `OMOIKANE_DB`, `omoi` stops with a clear error instead of creating `.omoikane/omoikane.db` in the folder it runs in.
+- `OMOIKANE_SYNC_CODE` (one or more codes from `omoi sync code`) and `OMOIKANE_SYNC_URL`: `omoi sync`, `omoi sync --pull` and `omoi sync join` with no code join those repositories by themselves, without prompts, before syncing. A rotated key is added like `join` does. The code is never printed, not even in errors; a code saved in a memory is redacted (`omoikane-sync-code`), and git errors no longer show a URL's user and password in the command they quote.
+- `OMOIKANE_AUTHOR` signs what is saved here (each memory's and each verdict's author), over the author chosen when sync was set up.
+- `OMOIKANE_NONINTERACTIVE=1`: no prompts even with a terminal (what needs confirming asks for `--yes`), no automatic download of the meaning model, no automatic update and no background sync after each change (`OMOIKANE_SYNC_AUTO=1` brings it back). `omoi sync --pull` then waits for any other sync, does a full one and exits with code 1 if it fails. `OMOIKANE_NO_MODEL=1` also stops `omoi` from downloading the meaning model by itself.
+
+### Compatibility
+- Same as 1.6.0: the schema, the sync lines and the export format don't change.
+- If you had `OMOIKANE_HOME` set without `OMOIKANE_DB`, the database is now looked for in `OMOIKANE_HOME/omoikane.db` instead of `~/.omoikane/omoikane.db`, and the light model in `OMOIKANE_HOME/models` (without `OMOIKANE_MODELS`). Move them, or set `OMOIKANE_DB`.
+
 ## 1.6.0 (2026-11-06)
 
 ### Open decisions

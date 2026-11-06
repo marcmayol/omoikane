@@ -77,6 +77,7 @@ El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). Un
 - [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, verla en Obsidian, copia diaria e importar de engram.
 - [Sincronización, proyectos y espacios](docs/sync-and-spaces.es.md): compartir entre equipos y con compañeros, el cifrado y un espacio por cliente.
 - [Agentes](docs/agents.es.md): el plugin de Claude Code, `omoi setup` y qué funciona en cada uno de los 15 agentes.
+- [Agentes sin nadie delante](docs/unattended.es.md): CI, servidores y contenedores, configurados por variables de entorno, con un ejemplo de GitHub Actions.
 - [Terminal, vista web, HTTP y actualizaciones](docs/reference.es.md): la CLI, la TUI y la vista web, la API HTTP, la actualización automática y las variables de entorno.
 
 ## Stack

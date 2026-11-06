@@ -36,7 +36,7 @@ Each project has its key, worked out once: its git `origin`, or, without one, yo
 
 Spaces keep clients apart. `omoi spaces add acme`, then `omoi space assign acme` in each of the client's repositories (or `omoi projects move <project> --space acme`). From an Acme project you see its memories, the space's and the global ones, never another client's: not in search, not in recall, not in `context`. What is common to all of a client's repositories is saved with `remember --space` (`space: true` over MCP); your preferences stay yours, global. From your home folder you see everything. `search` and `recent` take `project` (a folder or part of a name) and `space`.
 
-To share it, one repository per client, with its own key: `omoi sync init --space acme <url>` carries only that space, without your global memories, and the general repository doesn't carry the space's memories.
+To share it, one repository per client, with its own key: `omoi sync init --space acme <url>` carries only that space, without your global memories, and the general repository doesn't carry the space's memories. A CI job or a server joins with the space's code in `OMOIKANE_SYNC_CODE`, without prompts: see [unattended.md](unattended.md).
 
 ### Projects on hold
 

@@ -13,7 +13,7 @@ omoi recent
 OMOIKANE_LANG=es omoi --help
 ```
 
-Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos; más en [sync-and-spaces.es.md](sync-and-spaces.es.md#proyectos)). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
+Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos; más en [sync-and-spaces.es.md](sync-and-spaces.es.md#proyectos)). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla, u `OMOIKANE_HOME` para llevar a otro sitio toda la carpeta `~/.omoikane`; para CI y servidores, ver [unattended.es.md](unattended.es.md)). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
 ## La ves y la ordenas tú
 
@@ -35,7 +35,12 @@ Todas salen en las páginas de arriba; aquí están juntas.
 
 | variable | qué hace |
 |---|---|
-| `OMOIKANE_DB` | dónde está la base (por defecto, `~/.omoikane/omoikane.db`) |
+| `OMOIKANE_DB` | dónde está la base (por defecto, `omoikane.db` en `OMOIKANE_HOME`) |
+| `OMOIKANE_HOME` | la carpeta de Omoikane entera: base, modelos y preferencias (por defecto, `~/.omoikane`) |
+| `OMOIKANE_NONINTERACTIVE=1` | no hay nadie delante: ni preguntas, ni descargas, ni actualizaciones, ni sincronización de fondo ([unattended.es.md](unattended.es.md)) |
+| `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | unirse a la sincronización con un código (y otra URL) sin preguntar ([unattended.es.md](unattended.es.md)) |
+| `OMOIKANE_AUTHOR` | quién firma lo que se guarda aquí |
+| `OMOIKANE_SYNC_AUTO=0` / `1` | apaga o enciende la sincronización de fondo (encendida por defecto, apagada con `OMOIKANE_NONINTERACTIVE=1`) |
 | `OMOIKANE_LANG=es` | mensajes en español |
 | `OMOIKANE_BIN` | qué `omoi` ejecuta el plugin de Claude Code |
 | `OMOIKANE_TRASH_DAYS` | días en la papelera antes de borrar del todo (30; 0 = nunca) |
@@ -43,7 +48,7 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_AUTO_UPDATE=0` | apaga la actualización automática |
 | `OMOIKANE_HTTP_TOKEN` | token que pide `omoi serve` por HTTP |
 | `OMOIKANE_NO_SETUP=1` | los instaladores no añaden el plugin de Claude Code |
-| `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo ligero (el de significado no lo bajan nunca) |
+| `OMOIKANE_NO_MODEL=1` | los instaladores no bajan el modelo ligero (el de significado no lo bajan nunca), y `omoi` no baja solo el de significado |
 | `OMOIKANE_SEMANTIC=0` / `1` | apaga o enciende el modelo de significado (por encima de `omoi model semantic` y del tamaño de la memoria) |
 | `OMOIKANE_SEMANTIC_THRESHOLD` | desde cuántas memorias se enciende solo el modelo de significado (1000) |
 | `OMOIKANE_TRAZA=1` | el recuerdo escribe cada paso en stderr: candidatas, puntuaciones y qué hizo el modelo de significado, o por qué no se le preguntó |

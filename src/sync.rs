@@ -1162,7 +1162,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
     if estado.success() {
         Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
-        bail!("git {}: {}", args.join(" "), sin_credenciales(String::from_utf8_lossy(&err).trim()))
+        // La orden también sin credenciales: la de `clone` lleva la URL, quizá con el token de una CI.
+        bail!("git {}: {}", sin_credenciales(&args.join(" ")), sin_credenciales(String::from_utf8_lossy(&err).trim()))
     }
 }
 
@@ -2792,8 +2793,8 @@ pub fn programar(ruta_db: &Path) {
     // servicio lo calcule ya, en segundo plano.
     crate::significado::avisar(ruta_db);
     let r = rutas(ruta_db);
-    // `OMOIKANE_SYNC_AUTO=0`: solo a mano (`omoi sync`).
-    if (!r.config.exists() && espacios(ruta_db).is_empty()) || std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") {
+    // `OMOIKANE_SYNC_AUTO=0` (o nadie delante sin `=1`): solo a mano (`omoi sync`).
+    if (!r.config.exists() && espacios(ruta_db).is_empty()) || !crate::entorno::sync_automatica() {
         return;
     }
     // Cada cambio, una marca distinta: el proceso de fondo repite mientras la marca no sea la que ya
@@ -3097,10 +3098,10 @@ pub fn cada_cuanto() -> Duration {
     Duration::from_secs(std::env::var("OMOIKANE_SYNC_EVERY").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120))
 }
 
-/// Si la sincronización está configurada y es automática (sin `OMOIKANE_SYNC_AUTO=0`). Solo mira si
+/// Si la sincronización está configurada y es automática (`entorno::sync_automatica`). Solo mira si
 /// existen unos ficheros: sin sincronización no cuesta nada.
 pub fn automatica(ruta_db: &Path) -> bool {
-    !std::env::var("OMOIKANE_SYNC_AUTO").is_ok_and(|v| v == "0") && (rutas(ruta_db).config.exists() || !espacios(ruta_db).is_empty())
+    crate::entorno::sync_automatica() && (rutas(ruta_db).config.exists() || !espacios(ruta_db).is_empty())
 }
 
 /// Apunta que se acaba de traer (o de lanzar una sincronización completa, al empezar la sesión).
@@ -3186,6 +3187,17 @@ const PENDIENTE_INTENTADO: &str = "sync_pendiente_intentado";
 /// una versión más nueva, un choque que no se resuelve solo) no se repite cada 2 minutos, sino cuando
 /// cambie o pasada media hora.
 pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
+    // Sin nadie delante (una CI que pide `omoi sync --pull`) no vale «ya lo hará otra» ni «sin red, en
+    // el siguiente intento»: espera a la que haya en marcha, sincroniza entero y, si falla, sale con error.
+    if crate::entorno::desatendido() {
+        let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+        let mut db = abrir()?;
+        let r = rutas(ruta_db);
+        let marca = std::fs::read_to_string(&r.pendiente).ok();
+        sincronizar(&mut db, ruta_db, None, None)?;
+        hecho(&r, marca.as_deref());
+        return Ok(());
+    }
     // Si hay otra en marcha, esa ya baja lo nuevo.
     let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
     let mut db = abrir()?;

@@ -20,14 +20,15 @@ pub const VERSION_ESQUEMA: i64 = 10;
 /// de ruta a id), así que lo pone en 10.
 pub const LECTOR_MINIMO: i64 = 10;
 
-/// `OMOIKANE_DB` o `~/.omoikane/omoikane.db`.
+/// `OMOIKANE_DB`, o `omoikane.db` en la carpeta de Omoikane (`OMOIKANE_HOME` o `~/.omoikane`). Sin
+/// ninguna de las dos, relativa como antes: la CLI ya se ha negado antes (`entorno::sin_casa`).
 pub fn ruta_por_defecto() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_DB").filter(|r| !r.is_empty()) {
         // Absoluta, como `--db`: la sincronización la usa desde otras carpetas.
         let r = PathBuf::from(r);
         return std::path::absolute(&r).unwrap_or(r);
     }
-    std::env::home_dir().unwrap_or_default().join(".omoikane").join("omoikane.db")
+    crate::entorno::casa().unwrap_or_else(|| PathBuf::from(".omoikane")).join("omoikane.db")
 }
 
 /// Registra sqlite-vec en todas las conexiones que se abran después. Basta con una vez por proceso.

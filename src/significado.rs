@@ -58,7 +58,7 @@ struct Peticion {
 }
 
 fn carpeta() -> Option<PathBuf> {
-    std::env::var_os("OMOIKANE_HOME").filter(|r| !r.is_empty()).map(PathBuf::from).or_else(|| std::env::home_dir().map(|h| h.join(".omoikane")))
+    crate::entorno::casa()
 }
 
 const PREFERENCIA: &str = "semantic";
@@ -188,7 +188,9 @@ pub fn descargando() -> bool {
 /// Lanza aparte `omoi model install --semantic` para `db` (que, al acabar, deja el servicio indexando
 /// esa base), salvo si ya hay una descarga en marcha. No espera.
 pub fn descargar_aparte(db: &std::path::Path) {
-    if !permitido() || modelo().is_some() || descargando() {
+    // Sin nadie delante (u `OMOIKANE_NO_MODEL=1`), nada de 450 MB que no se hayan pedido: el modelo se
+    // instala a mano (`omoi model install --semantic`) y, mientras, todo va por palabras.
+    if !permitido() || modelo().is_some() || descargando() || crate::entorno::sin_descargas() {
         return;
     }
     let Some(c) = carpeta() else { return };
@@ -219,6 +221,9 @@ pub fn al_empezar(db: &rusqlite::Connection) -> Option<String> {
         return None;
     }
     if modelo().is_none() {
+        if crate::entorno::sin_descargas() {
+            return None;
+        }
         descargar_aparte(&ruta);
         let c = carpeta()?;
         if e.reason == Porque::Size && !c.join(AVISADO).exists() && std::fs::write(c.join(AVISADO), ahora().to_string()).is_ok() {

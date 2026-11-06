@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Args)]
 struct Comun {
-    /// Database file (default: OMOIKANE_DB or ~/.omoikane/omoikane.db).
+    /// Database file (default: OMOIKANE_DB, or omoikane.db in OMOIKANE_HOME, ~/.omoikane by default).
     #[arg(long, global = true, value_name = "FILE")]
     db: Option<PathBuf>,
     /// Folder whose project to use (default: the current one).
@@ -483,8 +483,8 @@ enum AccionSync {
     /// Join a repository another computer already syncs with, with the code from `omoi sync code`.
     Join {
         /// The code printed by `omoi sync code` (`-` reads it from standard input, so it doesn't stay in
-        /// the shell history).
-        codigo: String,
+        /// the shell history; without it, the codes in OMOIKANE_SYNC_CODE).
+        codigo: Option<String>,
         /// Reach the same repository by another URL (for example SSH here and HTTPS on the other computer).
         #[arg(long)]
         url: Option<String>,
@@ -631,6 +631,11 @@ fn main() -> Result<()> {
     // otras carpetas (git clona la sincronización desde la carpeta de la base) y no se encontraría.
     if let Some(d) = cli.comun.db.take() {
         cli.comun.db = Some(std::path::absolute(&d).unwrap_or(d));
+    }
+    // Sin carpeta de usuario (un contenedor) ni variables que digan dónde: un error claro, no una base
+    // nueva en la carpeta en la que se ejecuta.
+    if cli.comun.db.is_none() && !omoikane::entorno::hay_donde_guardar() {
+        bail!(omoikane::entorno::sin_casa());
     }
     let c = &cli.comun;
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
@@ -870,8 +875,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             let n = memoria::papelera(&db)?.len();
             if !yes {
-                use std::io::IsTerminal;
-                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
+                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
                 if !preguntar_si(&tr!("Empty the trash ({n} memories)? They can't be brought back afterwards.", "¿Vaciar la papelera ({n} memorias)? Después no se pueden recuperar."), false)? {
                     return Ok(());
                 }
@@ -1151,15 +1155,14 @@ fn upgrade(solo_mirar: bool, on: bool, off: bool, segundo_plano: bool, despues: 
 /// Lo que se pregunta al preparar Claude Code: si Omoikane se actualiza solo (el binario una vez al día
 /// y el plugin con la actualización automática del marketplace). Sin terminal o con `--yes`, sí.
 fn preguntar_auto_update(si: bool, no: bool, simulacro: bool) -> Result<()> {
-    use std::io::IsTerminal;
     if simulacro {
         return Ok(());
     }
     let on = if no {
         false
-    } else if let Some(ya) = omoikane::actualizar::preferencia().filter(|_| si || !std::io::stdin().is_terminal()) {
+    } else if let Some(ya) = omoikane::actualizar::preferencia().filter(|_| si || !omoikane::entorno::puede_preguntar()) {
         ya
-    } else if si || !std::io::stdin().is_terminal() {
+    } else if si || !omoikane::entorno::puede_preguntar() {
         // Sin preguntar no se enciende: tiene que ser un sí de la persona.
         false
     } else {
@@ -2264,7 +2267,6 @@ fn crear_repositorio(nombre: &str) -> Result<String> {
 }
 
 fn confirmar_subida(db: &Connection, config: &omoikane::sync::Config, e: &omoikane::sync::Eleccion, si: bool) -> Result<bool> {
-    use std::io::IsTerminal;
     let (g, p, np) = omoikane::sync::resumen_de_subida(db, config)?;
     println!(
         "{}",
@@ -2278,7 +2280,7 @@ fn confirmar_subida(db: &Connection, config: &omoikane::sync::Config, e: &omoika
         return Ok(true);
     }
     anyhow::ensure!(
-        std::io::stdin().is_terminal(),
+        omoikane::entorno::puede_preguntar(),
         tr!("add --yes to confirm (or run it in a terminal to choose what to share)", "añade --yes para confirmarlo (o ejecútalo en una terminal para elegir qué compartir)")
     );
     if !preguntar_si(&tr!("Continue?", "¿Seguir?"), true)? {
@@ -2290,16 +2292,15 @@ fn confirmar_subida(db: &Connection, config: &omoikane::sync::Config, e: &omoika
 
 /// Qué compartir: lo de las opciones y, en una terminal sin `--yes`, lo que conteste el usuario.
 fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
-    use std::io::IsTerminal;
     let proyectos = o.project.iter().map(|p| proyecto::de(p)).collect::<Result<Vec<_>>>()?;
     let mut e = omoikane::sync::Eleccion {
         preferencias: o.share_preferences,
         global: !o.no_global,
         proyectos,
         espacios: Vec::new(),
-        autor: if o.no_author { None } else { o.author.clone().or_else(omoikane::sync::nombre_git) },
+        autor: if o.no_author { None } else { o.author.clone().or_else(omoikane::entorno::autor).or_else(omoikane::sync::nombre_git) },
     };
-    if o.yes || !std::io::stdin().is_terminal() {
+    if o.yes || !omoikane::entorno::puede_preguntar() {
         return Ok(e);
     }
     e.preferencias = preguntar_si(&tr!("Share your preferences too? They are usually personal.", "¿Compartir también tus preferencias? Suelen ser personales."), e.preferencias)?;
@@ -2319,13 +2320,87 @@ fn elegir(o: &OpcionesSync) -> Result<omoikane::sync::Eleccion> {
     Ok(e)
 }
 
+/// Lo que pasó al unirse con un código de `omoi sync code`.
+enum Union {
+    /// Unido a un repositorio nuevo para este equipo (su URL, sin credenciales).
+    Nueva(String),
+    /// Ya sincronizaba con él: se añadió la clave nueva de una rotación.
+    Clave(u32),
+    /// Ya sincronizaba con él y ya tenía esa clave.
+    Ya,
+    /// La persona dijo que no.
+    Cancelada,
+}
+
+/// `omoi sync join <código>` (y cada código de `OMOIKANE_SYNC_CODE`). Con `confirmar`, enseña qué se
+/// subirá y, en una terminal, lo pregunta; sin él (la variable ya es la decisión) no escribe nada en
+/// la salida, que puede ser el JSON de `omoi --json sync`. El código lleva la clave: no sale en
+/// ningún mensaje.
+#[allow(clippy::too_many_arguments)]
+fn unirse_con(c: &Comun, ruta: &std::path::Path, codigo: &str, otra_url: Option<String>, another_person: bool, space: Option<String>, eleccion: &OpcionesSync, confirmar: bool) -> Result<Union> {
+    use omoikane::sync;
+    let mut db = abrir(c)?;
+    let sync::Codigo { url, clave, id, persona, espacio } = sync::leer_codigo(codigo)?;
+    let espacio = espacio_de(space)?.or(espacio);
+    if sync::leer_config_de(&sync::rutas_de(ruta, espacio.as_deref()))?.is_some() {
+        // Ya sincroniza con ese repositorio: la clave nueva de una rotación, junto a las viejas.
+        return Ok(if sync::anadir_clave(&db, ruta, espacio.as_deref(), id, &clave)? { Union::Clave(id) } else { Union::Ya });
+    }
+    let url = otra_url.unwrap_or(url);
+    let e = elegir(eleccion)?;
+    // Por defecto, otro equipo de la misma persona: su persona, para que los proyectos sin
+    // remoto git se junten aunque cada equipo lleve otro nombre de autor (y los que ya había
+    // aquí pasan a ella). Con `--another-person`, la de este equipo: nada se junta.
+    let local = omoikane::db::persona_de(&db);
+    let fija = if another_person { Some(local.clone()) } else { persona };
+    let mut config = sync::config_con_persona(&url, &e, fija.as_deref(), &local);
+    config.global &= espacio.is_none();
+    config.space = espacio;
+    if confirmar && !confirmar_subida(&db, &config, &e, eleccion.yes)? {
+        return Ok(Union::Cancelada);
+    }
+    sync::unirse(&mut db, ruta, &config, id, &clave)?;
+    sync::adoptar_persona(&mut db, ruta, &config.person)?;
+    Ok(Union::Nueva(sync::sin_credenciales(&url)))
+}
+
+/// `OMOIKANE_SYNC_CODE` (y `OMOIKANE_SYNC_URL`): se une, sin preguntar, a cada repositorio de esos
+/// códigos con el que este equipo aún no sincroniza (o le añade la clave nueva de una rotación). Lo
+/// cuenta por la salida de errores, sin el código. Sin la variable no hace nada.
+fn unirse_por_entorno(c: &Comun, ruta: &std::path::Path) -> Result<()> {
+    let codigos = omoikane::entorno::codigos_sync();
+    let url = omoikane::entorno::url_sync();
+    anyhow::ensure!(
+        url.is_none() || codigos.len() <= 1,
+        tr!("OMOIKANE_SYNC_URL goes with a single code in OMOIKANE_SYNC_CODE", "OMOIKANE_SYNC_URL va con un solo código en OMOIKANE_SYNC_CODE")
+    );
+    // Lo de por defecto, sin preguntar: la variable ya es la decisión.
+    let opciones = OpcionesSync { yes: true, share_preferences: false, no_global: false, project: Vec::new(), no_author: false, author: None };
+    let varios = codigos.len() > 1;
+    for (i, k) in codigos.iter().enumerate() {
+        let union = unirse_con(c, ruta, k, url.clone(), false, None, &opciones, false).map_err(|e| {
+            // El error de un código no lleva el código (ni su clave): solo cuál de ellos era.
+            if varios { e.context(tr!("OMOIKANE_SYNC_CODE (code {})", "OMOIKANE_SYNC_CODE (código {})", i + 1)) } else { e.context("OMOIKANE_SYNC_CODE") }
+        })?;
+        match union {
+            Union::Nueva(u) => eprintln!("{}", tr!("joined {u} (OMOIKANE_SYNC_CODE)", "unido a {u} (OMOIKANE_SYNC_CODE)")),
+            Union::Clave(id) => eprintln!("{}", tr!("new key k{id} added (OMOIKANE_SYNC_CODE)", "añadida la clave nueva k{id} (OMOIKANE_SYNC_CODE)")),
+            Union::Ya | Union::Cancelada => {}
+        }
+    }
+    Ok(())
+}
+
 fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> Result<()> {
     use omoikane::sync;
-    use std::io::IsTerminal;
     let ruta = ruta_db(c);
     // Son las de Omoikane por dentro: con una acción, una de las dos partes se ignoraría sin decirlo.
     if (pull || background) && accion.is_some() {
         bail!(tr!("`--pull` and `--background` don't go with an action: use them with `omoi sync` alone", "`--pull` y `--background` no van con una acción: úsalos solo con `omoi sync`"));
+    }
+    // Una CI o un servidor con `OMOIKANE_SYNC_CODE`: se une solo antes de sincronizar.
+    if pull || accion.is_none() && !background {
+        unirse_por_entorno(c, &ruta)?;
     }
     if pull {
         return sync::traer(&ruta, || abrir(c));
@@ -2406,45 +2481,39 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
             ))
         }
         Some(AccionSync::Join { codigo, url: otra_url, another_person, space, eleccion }) => {
-            let mut db = abrir(c)?;
-            let codigo = if codigo == "-" {
-                let mut l = String::new();
-                std::io::stdin().read_line(&mut l)?;
-                l
-            } else {
-                codigo
-            };
-            let sync::Codigo { url, clave, id, persona, espacio } = sync::leer_codigo(&codigo)?;
-            let espacio = espacio_de(space)?.or(espacio);
-            if sync::leer_config_de(&sync::rutas_de(&ruta, espacio.as_deref()))?.is_some() {
-                // Ya sincroniza con ese repositorio: la clave nueva de una rotación, junto a las viejas.
-                if !sync::anadir_clave(&db, &ruta, espacio.as_deref(), id, &clave)? {
-                    println!("{}", tr!("this computer already has that key", "este equipo ya tiene esa clave"));
-                    return Ok(());
+            let codigo = match codigo {
+                Some(k) if k == "-" => {
+                    let mut l = String::new();
+                    std::io::stdin().read_line(&mut l)?;
+                    l
                 }
-                drop(db);
-                return primera(&tr!(
+                Some(k) => k,
+                // Sin código: los de `OMOIKANE_SYNC_CODE` (una CI, un servidor), sin preguntar nada.
+                None => {
+                    anyhow::ensure!(
+                        !omoikane::entorno::codigos_sync().is_empty(),
+                        tr!("give the code from `omoi sync code` (or set OMOIKANE_SYNC_CODE)", "da el código de `omoi sync code` (o pon OMOIKANE_SYNC_CODE)")
+                    );
+                    anyhow::ensure!(
+                        otra_url.is_none() && space.is_none() && !another_person,
+                        tr!("with OMOIKANE_SYNC_CODE, use OMOIKANE_SYNC_URL for another URL", "con OMOIKANE_SYNC_CODE, otra URL va en OMOIKANE_SYNC_URL")
+                    );
+                    unirse_por_entorno(c, &ruta)?;
+                    return primera(&tr!("Joined from OMOIKANE_SYNC_CODE.", "Unido desde OMOIKANE_SYNC_CODE."));
+                }
+            };
+            match unirse_con(c, &ruta, &codigo, otra_url, another_person, space, &eleccion, true)? {
+                Union::Ya => {
+                    println!("{}", tr!("this computer already has that key", "este equipo ya tiene esa clave"));
+                    Ok(())
+                }
+                Union::Cancelada => Ok(()),
+                Union::Clave(id) => primera(&tr!(
                     "New key k{id} added (the old ones stay, to read what others haven't re-encrypted yet).",
                     "Añadida la clave nueva k{id} (las viejas se quedan, para leer lo que otros aún no han vuelto a cifrar)."
-                ));
+                )),
+                Union::Nueva(url) => primera(&tr!("Joined {}.", "Unido a {}.", url)),
             }
-            let url = otra_url.unwrap_or(url);
-            let e = elegir(&eleccion)?;
-            // Por defecto, otro equipo de la misma persona: su persona, para que los proyectos sin
-            // remoto git se junten aunque cada equipo lleve otro nombre de autor (y los que ya había
-            // aquí pasan a ella). Con `--another-person`, la de este equipo: nada se junta.
-            let local = omoikane::db::persona_de(&db);
-            let fija = if another_person { Some(local.clone()) } else { persona };
-            let mut config = sync::config_con_persona(&url, &e, fija.as_deref(), &local);
-            config.global &= espacio.is_none();
-            config.space = espacio;
-            if !confirmar_subida(&db, &config, &e, eleccion.yes)? {
-                return Ok(());
-            }
-            sync::unirse(&mut db, &ruta, &config, id, &clave)?;
-            sync::adoptar_persona(&mut db, &ruta, &config.person)?;
-            drop(db);
-            primera(&tr!("Joined {}.", "Unido a {}.", sync::sin_credenciales(&url)))
         }
         Some(AccionSync::Code { space }) => {
             println!("{}", sync::codigo(&ruta, espacio_de(space)?.as_deref())?);
@@ -2520,7 +2589,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
                 bail!(tr!("sync is not set up", "la sincronización no está configurada"));
             }
             if !yes {
-                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to change the key", "añade --yes para cambiar la clave"));
+                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to change the key", "añade --yes para cambiar la clave"));
                 if !preguntar_si(
                     &tr!(
                         "Change the key? Computers that should keep reading will need the new code (`omoi sync join <code>`).",
@@ -2558,7 +2627,7 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
                 return Ok(());
             }
             if !yes {
-                anyhow::ensure!(std::io::stdin().is_terminal(), tr!("add --yes to stop syncing", "añade --yes para dejar de sincronizar"));
+                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to stop syncing", "añade --yes para dejar de sincronizar"));
                 if !preguntar_si(&tr!("Stop syncing on this computer? Its memories stay; the key is deleted here.", "¿Dejar de sincronizar en este equipo? Sus memorias se quedan; la clave se borra de aquí."), false)? {
                     return Ok(());
                 }
@@ -2577,7 +2646,7 @@ fn en_espanol(c: Command) -> Command {
     }
     let c = c
         .about("Memoria local para agentes de IA: guarda lo que aprenden y se lo devuelve cuando hace falta.")
-        .mut_arg("db", |a| a.help("Base de datos (por defecto OMOIKANE_DB o ~/.omoikane/omoikane.db).").value_name("FICHERO"))
+        .mut_arg("db", |a| a.help("Base de datos (por defecto OMOIKANE_DB, u omoikane.db en OMOIKANE_HOME, que por defecto es ~/.omoikane).").value_name("FICHERO"))
         .mut_arg("dir", |a| a.help("Carpeta cuyo proyecto se usa (por defecto, la actual).").value_name("CARPETA"))
         .mut_arg("json", |a| a.help("Salida en JSON, para otros programas."));
     // (subcomando, descripción, [(argumento, ayuda)])
@@ -2758,7 +2827,7 @@ fn en_espanol(c: Command) -> Command {
             })
             .mut_subcommand("join", |s| {
                 opciones_sync(s.about("Únete a un repositorio con el que ya sincroniza otro equipo, con el código de `omoi sync code`."))
-                    .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code` («-» lo lee de la entrada estándar, para que no quede en el historial de la terminal).").value_name("CÓDIGO"))
+                    .mut_arg("codigo", |a| a.help("El código que escribe `omoi sync code` («-» lo lee de la entrada estándar, para que no quede en el historial de la terminal; sin él, los de OMOIKANE_SYNC_CODE).").value_name("CÓDIGO"))
                     .mut_arg("url", |a| a.help("Llegar al mismo repositorio por otra URL (por ejemplo, SSH aquí y HTTPS en el otro equipo)."))
                     .mut_arg("another_person", |a| {
                         a.help("Este equipo es de otra persona (un compañero): sus proyectos sin remoto git no se juntan con los de quien invita. Por defecto, un equipo que se une es de la misma persona.")
@@ -2840,8 +2909,7 @@ fn setup_otro(agente: &str, si: bool, simulacro: bool) -> Result<()> {
 
 /// «¿Sigo?» en una terminal; fuera de ella hace falta --yes.
 fn preguntar() -> Result<bool> {
-    use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    if !omoikane::entorno::puede_preguntar() {
         bail!(tr!("add --yes to do it without asking", "añade --yes para hacerlo sin preguntar"));
     }
     eprint!("{}", tr!("Go ahead? [y/N] ", "¿Sigo? [s/N] "));
@@ -2885,8 +2953,7 @@ fn listar_papelera(c: &Comun, db: &Connection) -> Result<()> {
 /// En una terminal, pregunta; en cualquier otro sitio (un agente, un script) se niega sin `--yes`,
 /// para que nadie borre por no haber leído la ayuda.
 fn confirmar_olvido(m: &Memoria, purge: bool) -> Result<bool> {
-    use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    if !omoikane::entorno::puede_preguntar() {
         bail!(tr!("add --yes to forget {} without asking", "añade --yes para olvidar {} sin preguntar", corto(&m.id)));
     }
     if purge {

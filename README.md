@@ -77,6 +77,7 @@ Full method and every number: [BENCHMARK.md](BENCHMARK.md). A public, reproducib
 - [Keeping it right and never losing it](docs/memory-care.md): stale detection, verdicts, merging, review dates, history, trash, export, seeing it in Obsidian, daily copy, importing from engram.
 - [Sync, projects and spaces](docs/sync-and-spaces.md): sharing between computers and teammates, encryption, one space per client.
 - [Agents](docs/agents.md): the Claude Code plugin, `omoi setup` and what works in each of the 15 agents.
+- [Agents with nobody at the keyboard](docs/unattended.md): CI, servers and containers, configured by environment variables, with a GitHub Actions example.
 - [Terminal, web view, HTTP and updates](docs/reference.md): the CLI, the TUI and the web view, the HTTP API, automatic updates and environment variables.
 
 ## Stack

@@ -24,12 +24,12 @@ pub const ORIGENES: [&str; 2] = [
 const FICHEROS: [&str; 3] = ["model.safetensors", "tokenizer.json", "config.json"];
 const ACTUAL: &str = "actual";
 
-/// `OMOIKANE_MODELS` o `~/.omoikane/models`.
+/// `OMOIKANE_MODELS`, o `models` en la carpeta de Omoikane (`OMOIKANE_HOME` o `~/.omoikane`).
 pub fn carpeta() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_MODELS").filter(|r| !r.is_empty()) {
         return PathBuf::from(r);
     }
-    std::env::home_dir().unwrap_or_default().join(".omoikane").join("models")
+    crate::entorno::casa().unwrap_or_else(|| PathBuf::from(".omoikane")).join("models")
 }
 
 /// Carpeta del modelo en uso, si hay uno instalado y completo.

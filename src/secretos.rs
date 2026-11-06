@@ -23,7 +23,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Hallazgo {
     /// `github-token`, `openai-key`, `anthropic-key`, `aws-key`, `slack-token`, `gitlab-token`,
-    /// `google-key`, `stripe-key`, `slack-webhook`, `private-key`, `jwt`, `url-credentials`, `private` o `token` (cadena
+    /// `google-key`, `stripe-key`, `slack-webhook`, `private-key`, `jwt`, `omoikane-sync-code`, `url-credentials`, `private` o `token` (cadena
     /// larga que parece aleatoria).
     #[serde(rename = "type")]
     pub tipo: &'static str,
@@ -84,6 +84,7 @@ pub fn hallazgos(texto: &str) -> Vec<Hallazgo> {
     privados(texto, &mut v);
     pem(texto, &mut v);
     jwt(texto, &mut v);
+    codigo_sync(texto, &mut v);
     credenciales_url(texto, &mut v);
     webhook_slack(texto, &mut v);
     palabras(texto, &mut v);
@@ -183,6 +184,24 @@ fn jwt(t: &str, v: &mut Vec<Hallazgo>) {
             }
         }
         i = a + 3;
+    }
+}
+
+/// Un código de `omoi sync code` (`omoi1.` y base64url): lleva la clave de un repositorio de memorias.
+/// Un agente sin persona delante lo tiene en `OMOIKANE_SYNC_CODE` y podría querer apuntarlo.
+fn codigo_sync(t: &str, v: &mut Vec<Hallazgo>) {
+    const PREFIJO: &str = "omoi1.";
+    let b = t.as_bytes();
+    let mut i = 0;
+    while let Some(k) = t[i..].find(PREFIJO) {
+        let a = i + k;
+        let fin = fin_tira(b, a + PREFIJO.len(), es_b64url);
+        if (a == 0 || !es_b64url(b[a - 1])) && fin - (a + PREFIJO.len()) >= 40 {
+            v.push(hallazgo("omoikane-sync-code", a, fin));
+            i = fin;
+        } else {
+            i = a + PREFIJO.len();
+        }
     }
 }
 
@@ -362,6 +381,17 @@ mod tests {
         assert_eq!(hs.len(), 1);
         assert_eq!(&"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 y ya"[hs[0].inicio..hs[0].fin], "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
         assert_eq!(redactar(&s).0, s);
+    }
+
+    #[test]
+    fn codigo_de_sync() {
+        // Un código de `omoi sync code` entero: `omoi1.` y el JSON en base64url (empieza por `eyJ`).
+        let codigo = "omoi1.eyJ1cmwiOiJnaXRAeDp5L3ouZ2l0Iiwia2V5IjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYifQ";
+        let (s, hs) = redactar(&format!("OMOIKANE_SYNC_CODE={codigo} en la CI"));
+        assert_eq!(s, "OMOIKANE_SYNC_CODE=[redacted:omoikane-sync-code] en la CI");
+        assert_eq!(tipos(&hs), vec!["omoikane-sync-code"]);
+        // Hablar del formato no es un secreto.
+        assert!(hallazgos("los códigos empiezan por omoi1. y llevan la clave").is_empty());
     }
 
     #[test]
