@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.7.0 (unreleased)
+## 1.7.0 (2026-11-06)
 
 ### Agents with nobody at the keyboard
 - CI jobs, servers, containers and cloud agents can use the team's memory configured only by environment variables ([docs/unattended.md](docs/unattended.md), with a GitHub Actions example).
