@@ -45,6 +45,7 @@ cargo test --release
 These are judged by numbers, not by examples that happen to work.
 
 - Run the public benchmark ([omoikane-bench](https://github.com/marcmayol/omoikane-bench)) before and after, and put both tables in the pull request.
+- For recall, also run the before/after comparator: `cargo build --release`, then `cargo run --release --example eval -- tests/recall_casos.tsv --a-bin <old omoi> --b-bin <new omoi>` (or one binary and `--a-env`/`--b-env`). It passes the same messages through `omoi recall` with both, interleaved, and lists the cases the change fixes and the ones it breaks. You can point it at a copy of your own database with `--base` and your own cases; the file format is at the top of `examples/eval.rs`.
 - Compare the two versions interleaved (A, B, A, B…) on the same machine, never one block after the other: caches and thermal throttling make the second block look better or worse than it is.
 - Report what got worse too. A change that helps paraphrases and adds noise to questions with no answer has to say so.
 

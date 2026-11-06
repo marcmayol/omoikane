@@ -45,6 +45,7 @@ cargo test --release
 Se juzgan con números, no con ejemplos que salen bien.
 
 - Pasa el benchmark público ([omoikane-bench](https://github.com/marcmayol/omoikane-bench)) antes y después, y pon las dos tablas en el pull request.
+- En el recall, pasa también el comparador de antes y después: `cargo build --release` y luego `cargo run --release --example eval -- tests/recall_casos.tsv --a-bin <omoi viejo> --b-bin <omoi nuevo>` (o un solo binario con `--a-env`/`--b-env`). Pasa los mismos mensajes por `omoi recall` con los dos, intercalados, y lista los casos que el cambio arregla y los que rompe. Puedes darle una copia de tu propia base con `--base` y tus propios casos; el formato del fichero está al principio de `examples/eval.rs`.
 - Compara las dos versiones intercaladas (A, B, A, B…) en la misma máquina, nunca un bloque detrás de otro: las cachés y la temperatura hacen que el segundo bloque parezca mejor o peor de lo que es.
 - Cuenta también lo que empeora. Un cambio que ayuda con las paráfrasis y mete ruido en las preguntas sin respuesta tiene que decirlo.
 
