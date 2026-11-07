@@ -450,7 +450,12 @@ fn la_papelera_de_un_export_de_la_0_19_sigue_entrando() {
     assert_eq!(e.json("o.db", &["trash"])[0]["id"], id);
     e.ok("o.db", &["restore", id]);
     let m = e.get("o.db", id).unwrap();
-    assert_eq!((m["project"].as_str(), m["kind"].as_str(), m["tags"][0].as_str()), (Some(ruta.as_str()), Some("gotcha"), Some("red")), "{m}");
+    assert_eq!((m["kind"].as_str(), m["tags"][0].as_str()), (Some("gotcha"), Some("red")), "{m}");
+    // En esa carpeta: con `TEMP` en nombre corto (`CLAUDE~1`, la CI) la ruta del export y la del
+    // proyecto de la carpeta actual son la misma carpeta escrita de dos formas, y desde la 1.8.0 (la
+    // carpeta git común) son un solo proyecto, con la ruta larga.
+    let canonica = |r: &str| std::fs::canonicalize(r).unwrap();
+    assert_eq!(canonica(m["project"].as_str().unwrap()), canonica(&ruta), "{m}");
 }
 
 /// Pasar un proyecto de un cliente a otro, o sacarlo de su espacio (sus memorias irían al repositorio

@@ -18,6 +18,12 @@ Lo que Omoikane no puede saber solo lo dice el agente, sin herramientas nuevas: 
 
 `update` acepta `replace` (cambia un texto que tiene que aparecer exactamente una vez; si no, no toca nada), `append` (añade al final, para el paso nuevo de una receta) y `absorb` (junta varias memorias en una: el agente escribe el texto fundido, y las absorbidas van a la papelera con su historial colgado de la que queda y sus etiquetas y enlaces pasados a ella). La pestaña Revisar tiene un botón **Juntar** para hacerlo a mano.
 
+## Proyectos repetidos
+
+A veces el mismo proyecto acaba partido en dos: `Omoikane` y `omoikane`, una carpeta que se renombró sin `origin` (`Narrador`, que ya no está, y `Aloud`, que lo nombra) o un «proyecto» que es la carpeta donde se subió un fichero (`.claude\uploads\<uuid>`, `%TEMP%`). La revisión lo detecta y lo propone, pero nunca junta nada sola, porque un `merge` llega a todos los equipos por la sincronización. Al empezar la sesión, una vez al día, el agente recibe cada caso con la orden ya escrita (`omoi projects merge A B`) y te pregunta antes de lanzarla. Si no son el mismo, `omoi projects distinct A B` hace que no vuelva a salir. Lo enseñan también `omoi review`, `context` (`projects_review`) y la pestaña Revisar.
+
+Cuenta como repetido el mismo nombre sin mayúsculas, acentos, guiones, guiones bajos, espacios ni puntos (`social-publish` = `Social Publish`). A una letra de distancia (`Omoikane`/`Omoikae`, desde 6 letras) solo cuenta si hay otra señal: una de las carpetas ya no existe, el más nuevo casi no tiene memorias o los dos comparten `origin`. Un parecido a secas no basta: `Tokimichi` y `tokimichi-web` son proyectos distintos.
+
 ## Fecha de revisión
 
 Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca, contando desde su último cambio o desde la última vez que el agente la recibió (lo que se usa y nadie corrige, está repasado). Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.

@@ -419,6 +419,14 @@ enum AccionProyectos {
     },
     /// Forget the projects without memories (a folder you work in again comes back by itself).
     Prune,
+    /// Tell the review that A and B are different projects (or, without B, that A is a real project
+    /// even if its folder looks temporary): it stops proposing to merge them. Only on this computer.
+    Distinct {
+        /// A project (folder or name).
+        a: String,
+        /// The other project (folder or name).
+        b: Option<String>,
+    },
     /// Merge project A into B: A's memories (with their ids, history and verdicts) and folders go to B.
     Merge {
         /// The project that disappears (folder or name).
@@ -971,8 +979,17 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                     println!("{:<12}  {}", "", tr!("its git origin is now {} (its sync key stays {})", "su origin de git ahora es {} (su clave de sincronización sigue siendo {})", p.origin_changed, p.key));
                 }
             }
+            // Los proyectos duplicados o en carpetas temporales: se proponen, nunca se juntan solos.
+            let propuestas = omoikane::nombres::propuestas(&db, &ambito)?;
+            for x in &propuestas {
+                let otro = if x.other.is_empty() { String::new() } else { format!("  →  {}  {}", x.other, x.other_path) };
+                println!("{:<12}  {}  {}{otro}", format!("project_{}", x.kind), x.project, x.path);
+                println!("{:<12}  {}", "", x.detail);
+                let no = if x.other.is_empty() { tr!("a real project:", "es un proyecto de verdad:") } else { tr!("not the same:", "no son el mismo:") };
+                println!("{:<12}  {}  ·  {no} {}", "", x.command, x.dismiss);
+            }
             let cs = omoikane::candidatas::todas(&db)?;
-            if v.is_empty() && cs.is_empty() && pausados.is_empty() {
+            if v.is_empty() && cs.is_empty() && pausados.is_empty() && propuestas.is_empty() {
                 println!("{}", tr!("nothing to review", "nada que revisar"));
             }
             if !cs.is_empty() {
@@ -1854,6 +1871,13 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
         AccionProyectos::Prune => {
             let n = proyecto::podar(&db)?;
             println!("{}", tr!("{n} projects without memories forgotten", "{n} proyectos sin memorias olvidados"));
+            Ok(())
+        }
+        AccionProyectos::Distinct { a, b } => {
+            let de = proyecto::buscar(&db, &a)?;
+            let otro = b.as_deref().map(|b| proyecto::buscar(&db, b)).transpose()?;
+            omoikane::nombres::marcar_distintos(&db, de, otro)?;
+            println!("{}", tr!("ok: the review won't propose it again", "hecho: la revisión no volverá a proponerlo"));
             Ok(())
         }
         AccionProyectos::Merge { a, b, force } => {

@@ -349,6 +349,8 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         // Desde dónde se mira, para que la vista lo diga.
                         "scope": m.json(&base)?,
                         "projects": crate::proyecto::lista(&base, None, espacio, usize::MAX)?,
+                        // Repetidos o en carpetas temporales: se proponen, nunca se juntan solos.
+                        "duplicates": crate::nombres::propuestas(&base, &m.vista)?,
                         "spaces": crate::proyecto::espacios(&base)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect::<Vec<_>>(),
                         // Los proyectos que otro equipo tiene en otro espacio, con lo que dice
                         // `sync status` y la orden que lo arregla (solo los que aquí son de lo que se ve).

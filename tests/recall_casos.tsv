@@ -89,3 +89,19 @@ q	-	la cuenta del restaurante de anoche salió carísima para cuatro
 q	-	sube a instagram la foto del gato durmiendo en el sofá
 q	-	el seguro del coche vence el mes que viene, hay que renovarlo
 q	-	ordena la carpeta de descargas del portátil por fecha
+# Nombres de proyecto mal dictados (1.8.0): memorias de proyecto y mensajes desde la carpeta del usuario (~)
+m	n_omoikane	Omoikane: el recall lee las memorias con FTS5	El recall de cada mensaje busca por palabras en FTS5 y solo abre el modelo de significado con más de mil memorias.	fact		Omoikane
+m	n_kawaneko	Kawaneko guarda las fotos en la carpeta de caché	Las fotos de los gatos se guardan en cache/fotos y se borran a los treinta días.	fact		Kawaneko
+m	n_gruta	Gruta publica sus binarios en gruta-releases	El instalador de Gruta baja la versión de escritorio del repositorio de releases, no del privado.	fact		Gruta
+m	n_caldera	Caldera se despliega con rsync	El despliegue de Caldera copia la carpeta dist al servidor con rsync y reinicia el servicio.	gotcha		Caldera
+m	n_social	Social Publish: los posts salen también en Threads	Cada post de LinkedIn se copia a X y a Threads a los diez minutos.	fact		social-publish
+m	n_caldero	El caldero de cobre se limpia con vinagre	Vinagre y sal, nunca lejía: el cobre se mancha.	fact		
+q	n_omoikane	onmoikane: el recall falla con memorias largas	~
+q	n_omoikane	omoikae: revisa otra vez el recall	~
+q	n_kawaneko	abre kawaneco y mira las fotos	~
+q	n_gruta	actualiza gruda con los binarios nuevos	~
+q	n_caldera	revisa el despliegue de caldere esta tarde	~
+q	n_social	socialpublish: falla threads desde ayer	~
+q	n_caldero	cómo limpio el caldero de cobre sin mancharlo	~
+q	-	receta de caldereta de langosta para el domingo	~
+q	-	qué raza de gato es un kawaneco según el veterinario	~

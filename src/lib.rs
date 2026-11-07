@@ -20,6 +20,7 @@ pub mod llegada;
 pub mod mcp;
 pub mod memoria;
 pub mod modelos;
+pub mod nombres;
 pub mod obsidian;
 pub mod proyecto;
 pub mod rapido;

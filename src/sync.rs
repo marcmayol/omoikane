@@ -999,7 +999,10 @@ pub fn clave(project: &str, persona: &str) -> String {
         return format!("git:{}", normalizar_remoto(&url));
     }
     let ruta = Path::new(project);
-    let nombre = ruta.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| project.to_lowercase());
+    // Un worktree sin `origin` lleva el nombre de su repositorio, no el de su carpeta (1.8.0): así sus
+    // worktrees (y los de otros equipos) dan la misma clave. Las claves ya guardadas no cambian.
+    let nombre = crate::proyecto::nombre_de_worktree(ruta)
+        .unwrap_or_else(|| ruta.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| project.to_lowercase()));
     format!("dir:{persona}/{nombre}")
 }
 

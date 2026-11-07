@@ -1135,7 +1135,14 @@ pub fn cifras(avisos: &[Aviso]) -> BTreeMap<&'static str, usize> {
 
 /// Al empezar la sesión (el recall): el aviso, si toca.
 pub fn aviso_al_empezar(db: &Connection, ambito: &Ambito, memorias: usize) -> Result<Option<String>> {
-    aviso(db, &pendientes(db, ambito)?, memorias)
+    let memorias = aviso(db, &pendientes(db, ambito)?, memorias)?;
+    // Y los proyectos duplicados o que no lo son (`nombres`), una vez al día: si falla, solo se pierde ese.
+    let proyectos = crate::nombres::aviso_al_empezar(db, ambito).ok().flatten();
+    Ok(match (memorias, proyectos) {
+        (Some(a), Some(b)) => Some(format!("{a}
+{b}")),
+        (a, b) => a.or(b),
+    })
 }
 
 /// El aviso para estas cifras en un ámbito de `memorias` memorias, si llegan al umbral y no se dio ya

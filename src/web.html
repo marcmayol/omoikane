@@ -346,6 +346,7 @@ const T = ES ? {
   yaNoEsta: 'ya no está', copiar: 'Copiar', copiado: 'Copiado', carpetaNueva: '<carpeta nueva>', otroProyecto: '<otro proyecto>',
   pausa: ['Proyectos en pausa', 'Otro equipo dice que el proyecto está en otro espacio, o una carpeta tuya ha entrado en un espacio solo porque lo dice su repositorio. Aquí no se ha movido: queda en pausa, sin subir ni aceptar nada suyo, hasta que decidas con una de las dos órdenes (la primera lo deja como está; la segunda lo cambia).'],
   fuera: ['Proyectos en otro espacio en otro equipo', 'Otro equipo de la sincronización tiene el proyecto en otro espacio: lo que llega de él no se aplica hasta que los dos coincidan. La orden lo arregla (léela antes: dice en qué equipo va).'],
+  dups: ['Proyectos repetidos o que no lo son', 'Omoikane no junta nada solo: si es el mismo proyecto, copia la orden; si no, la de «no son el mismo» y no volverá a salir.'], dupNo: 'No son el mismo:', dupVer: 'Sus memorias:', dupReal: 'Es un proyecto de verdad:', dupSi: 'Si es el mismo:', dupTipos: { same_name: 'Mismo nombre (sin mayúsculas, acentos ni separadores)', one_letter: 'A una letra, y una carpeta ya no está, o el nuevo casi no tiene memorias, o comparten origin', continued: 'Su carpeta ya no existe y el otro, más nuevo, lo nombra', temp_folder: 'Carpeta temporal o de subidas, no un proyecto: haz globales sus memorias (`omoi update <id> --global`) o júntalas con su proyecto' },
   idos: ['Proyectos que ya no están', 'Su carpeta ya no existe en este equipo. Si la moviste, apunta la nueva; si era una copia de otro proyecto, júntalo con ese (sus memorias pasan al otro).'], mueveLa: 'Si la moviste:', juntalo: 'Si era otro proyecto:',
   mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
@@ -388,6 +389,7 @@ const T = ES ? {
   yaNoEsta: 'gone', copiar: 'Copy', copiado: 'Copied', carpetaNueva: '<new folder>', otroProyecto: '<other project>',
   pausa: ['Paused projects', 'Another computer says the project is in another space, or a folder of yours joined a space only because its repository says so. It has not moved here: it stays paused, nothing of it uploaded or accepted, until you decide with one of the two commands (the first leaves it as it is; the second changes it).'],
   fuera: ['Projects in another space on another computer', 'Another computer in the sync has the project in another space: what comes from it is not applied until both agree. The command fixes it (read it first: it says which computer it is for).'],
+  dups: ['Duplicated projects, or not projects', 'Omoikane merges nothing by itself: if it is the same project, copy the command; if not, the "not the same" one and it will not come back.'], dupNo: 'Not the same:', dupVer: 'Its memories:', dupReal: 'It is a real project:', dupSi: 'If it is the same:', dupTipos: { same_name: 'Same name (ignoring case, accents and separators)', one_letter: 'One letter apart, and a folder is gone, or the newer one has hardly any memories, or they share their origin', continued: 'Its folder no longer exists and the other, newer one mentions it', temp_folder: 'A temporary or uploads folder, not a project: make its memories global (`omoi update <id> --global`) or merge them into their project' },
   idos: ['Projects that are gone', 'Their folder no longer exists on this computer. If you moved it, point to the new one; if it was a copy of another project, merge it into that one (its memories move there).'], mueveLa: 'If you moved it:', juntalo: 'If it was another project:',
   mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
@@ -475,7 +477,7 @@ function corta(s) {
 // Estado de la vista.
 let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, candidatas = [], papelera = [];
 // De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
-let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [];
+let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [], duplicados = [];
 // De /api/overview: la vista de responsable, ya filtrada por el servidor (solo lo que se ve desde donde
 // arrancó), y desde cuántos meses sin tocar cuenta una memoria como olvidada.
 let panorama = null, mesesSinTocar = 6;
@@ -631,12 +633,12 @@ async function cargar() {
     papelera = rt.ok ? await rt.json() : [];
     const rp = await fetch('/api/projects', { headers: cab });
     const pj = rp.ok ? await rp.json() : {};
-    fichas = pj.projects || []; espacios = pj.spaces || []; fueraDeEspacio = pj.space_conflicts || []; enPausa = pj.paused || [];
+    fichas = pj.projects || []; espacios = pj.spaces || []; fueraDeEspacio = pj.space_conflicts || []; enPausa = pj.paused || []; duplicados = pj.duplicates || [];
     pintarAlcance(pj.scope);
     await cargarPanorama();
-  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; panorama = null; }
+  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; duplicados = []; panorama = null; }
   if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
-  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length;
+  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length + duplicados.length;
   c.textContent = n; c.hidden = !n;
   pintar();
 }
@@ -931,7 +933,19 @@ function pintarRevisar() {
       <div class="cmd"><code>${esc(x.keep)}</code><button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
       <div class="cmd"><code>${esc(x.accept)}</code><button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.length && !candidatas.length && !papelera.length && !idos.length && !fueraDeEspacio.length && !enPausa.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + perdidos + orden.filter(k => grupos[k]).map(k => `
+  // Proyectos repetidos o en carpetas temporales (`nombres::propuestas`): la orden que los junta y la
+  // que dice que no son el mismo.
+  const dups = !duplicados.length ? '' : `
+    <div class="grupo"><h2>${esc(T.dups[0])}</h2><span class="n">${duplicados.length}</span></div>
+    <p class="vacio" style="padding:0 0 10px">${esc(T.dups[1])}</p>
+    ${duplicados.map(x => `<div class="av ido">
+      <div class="cab"><span class="t">${esc(x.project)}${x.other ? ' → ' + esc(x.other) : ''}</span><span class="what">${esc(T.memoriasN(x.memories))}</span></div>
+      <div class="det2 mono">${esc(x.path)}${x.other_path ? ' → ' + esc(x.other_path) : ''}</div>
+      <div class="det2">${esc(T.dupTipos[x.kind] || x.detail)}</div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code><button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code><button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
+    </div>`).join('')}`;
+  const cuerpo = !avisos.length && !candidatas.length && !papelera.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
     ${grupos[k].map(avisoHTML).join('')}`).join('') + basura;

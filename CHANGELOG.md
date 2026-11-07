@@ -4,6 +4,18 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.8.0 (unreleased)
+
+### Project names that tolerate typos, and duplicated projects
+- A project name is compared ignoring case, accents, hyphens, underscores, spaces and dots wherever one is written (`project`, `--project`, `omoi projects`): `cronicas` finds `Crónicas` and `Social Publish` finds `social-publish`. If nothing else fits, one letter off (changed, extra or missing, from 6 letters) is enough: `Omoikae` finds `Omoikane`. The 1.7.2 rule stays: a name written exactly as one project picks it, and a name that fits several still asks which.
+- The review proposes merging duplicated projects, and never merges by itself: the same normalized name; one letter apart only with another sign (one folder gone, the newer one with hardly any memories, or the same git origin); a gone folder that a newer project mentions (`Narrador` → `Aloud`); and "projects" in temporary or upload folders (`.claude\uploads\<uuid>`, `%TEMP%`), to make their memories global or move them to their project. A look-alike name alone doesn't count (`Tokimichi` and `tokimichi-web`). The agent gets it at session start once a day, with `omoi projects merge A B` already written, to ask the user; it also shows in `omoi review`, in `context` (`projects_review`), in the web view's Review tab and in `GET /api/projects` (`duplicates`). `omoi projects distinct A [B]` says they are different (or that a temporary-looking folder is a real project) and it stops coming up.
+- Recall understands a misheard project name in a prompt ("trova" for Troba, "onmoikane" for Omoikane, "tokimicho" for Tokimichi): a word that is in no memory and is one letter from the name of exactly one project with memories (from 5 letters) is searched as that name.
+- Two worktrees of a git repository without an `origin`, in folders with different names, were two projects. They are now one: a new folder joins the project of any folder that shares its git common directory, and a new worktree's key carries the repository's name (`dir:<person>/<repository>`) instead of its folder's. For the same reason, a git folder without an `origin` written two ways (its short Windows name, `CLAUDE~1`, and the long one) is one project, not a second one with a `~2` key.
+
+### Compatibility
+- The database schema (10), the sync lines and the export format don't change. Keys already stored don't change either: a worktree that already was its own project stays so (`omoi projects merge` joins them). Only projects created from now on get the repository's name in their key, so a worktree created after upgrading on one computer and before upgrading on another can end up as two projects there; `omoi projects merge` joins them.
+- `GET /api/projects` gains the `duplicates` field and the `context` tool `projects_review`; nothing is removed.
+
 ## 1.7.2 (2026-11-07)
 
 ### Fixed

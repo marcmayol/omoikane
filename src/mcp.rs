@@ -661,6 +661,12 @@ impl Servidor {
                 };
                 let proyectos = proyecto::lista(db, None, filtro, 50)?;
                 let mut r = serde_json::json!({ "project": actual, "projects": proyectos, "memories": memorias, "review": review });
+                // Proyectos duplicados o en carpetas temporales: el agente los propone con la orden escrita.
+                let propuestas = crate::nombres::propuestas(db, &ambito)?;
+                if !propuestas.is_empty() {
+                    r["projects_review"] = serde_json::json!(propuestas);
+                    r["projects_review_hint"] = serde_json::json!("These projects look duplicated or are not real projects. Ask the user before running each `command` (a merge reaches every synced computer); if they say no, run its `dismiss`.");
+                }
                 // El aviso de la revisión acumulada, como al empezar la sesión (y sin repetirlo si ya salió hoy).
                 // Con las mismas cifras que al empezar: sin las rutas rotas (allí no se cuentan), o
                 // tener unas cuantas haría «crecer» la cuenta y repetiría el aviso en la misma sesión.

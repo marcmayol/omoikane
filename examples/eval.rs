@@ -5,13 +5,16 @@
 //!
 //! CASOS es un TSV como `tests/busquedas.tsv` (líneas que empiezan por `#`, ignoradas):
 //!
-//!   m <clave> <título> <contenido> [<tipo> [<etiquetas,con,comas>]]   una memoria (global) para la base
+//!   m <clave> <título> <contenido> [<tipo> [<etiquetas,con,comas> [<proyecto>]]]   una memoria para la base
+//!                                                                  (global, o del proyecto de una carpeta
+//!                                                                  `<proyecto>` creada en la temporal)
 //!   q <esperadas> <mensaje> [<cwd>]                                   un caso
 //!
 //! `<esperadas>`: lo que debería inyectar el recall, separado por `|`: claves de líneas `m`, ids (o su
 //! principio, desde 8 caracteres) o títulos exactos de la base; `-` si no debería inyectar nada. En el
 //! contenido de una memoria, `\n` es un salto de línea (en el mensaje no: las rutas de Windows lo
-//! llevan). Sin `<cwd>`, una carpeta temporal que no es un proyecto.
+//! llevan). Sin `<cwd>`, una carpeta temporal que no es un proyecto; `~`, la carpeta del usuario (que ve
+//! todos los proyectos, como quien abre las sesiones ahí).
 //!
 //! Opciones:
 //!   --base <db>          parte de una COPIA de esta base (se abre en solo lectura y se copia con
@@ -49,6 +52,7 @@ struct Mem {
     contenido: String,
     tipo: Tipo,
     etiquetas: Vec<String>,
+    proyecto: Option<String>,
 }
 
 struct Caso {
@@ -80,6 +84,7 @@ fn leer_tsv(f: &Path) -> Result<(Vec<Mem>, Vec<Caso>)> {
                 contenido: contenido.replace("\\n", "\n"),
                 tipo: resto.first().filter(|t| !t.is_empty()).map(|t| t.parse()).transpose()?.unwrap_or(Tipo::Fact),
                 etiquetas: resto.get(1).map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
+                proyecto: resto.get(2).filter(|p| !p.is_empty()).map(|p| p.to_string()),
             }),
             ["q", esperadas, mensaje, resto @ ..] => qs.push(Caso {
                 esperadas: if *esperadas == "-" { vec![] } else { esperadas.split('|').map(|x| x.trim().to_string()).collect() },
@@ -92,13 +97,22 @@ fn leer_tsv(f: &Path) -> Result<(Vec<Mem>, Vec<Caso>)> {
     Ok((ms, qs))
 }
 
-/// Guarda las memorias en la base y devuelve clave → id.
-fn guardar(db: &Path, ms: &[Mem]) -> Result<BTreeMap<String, String>> {
+/// Guarda las memorias en la base y devuelve clave → id. Las de un proyecto, en una carpeta con su
+/// nombre dentro de `carpetas`.
+fn guardar(db: &Path, ms: &[Mem], carpetas: &Path) -> Result<BTreeMap<String, String>> {
     let mut c = omoikane::db::abrir(db)?;
     let mut ids = BTreeMap::new();
     for m in ms {
+        let project = match &m.proyecto {
+            Some(p) => {
+                let d = carpetas.join(p);
+                std::fs::create_dir_all(&d)?;
+                omoikane::proyecto::de(&d)?
+            }
+            None => String::new(),
+        };
         let n = Nueva {
-            project: String::new(),
+            project,
             kind: Some(m.tipo),
             title: m.titulo.clone(),
             content: m.contenido.clone(),
@@ -249,7 +263,8 @@ fn main() -> Result<()> {
     if let Some(b) = &base {
         copiar_base(b, &base_db)?;
     }
-    let mut claves = guardar(&base_db, &mems)?;
+    let carpetas = tmp.join("proyectos");
+    let mut claves = guardar(&base_db, &mems, &carpetas)?;
 
     let release = std::env::current_exe()?.parent().and_then(Path::parent).map(|d| d.join(format!("omoi{}", std::env::consts::EXE_SUFFIX)));
     let mut lados = Vec::new();
@@ -263,7 +278,7 @@ fn main() -> Result<()> {
             if !qs.is_empty() {
                 bail!("{}: un fichero extra solo lleva memorias (`m`)", extra.display());
             }
-            claves.extend(guardar(&db, &ms)?);
+            claves.extend(guardar(&db, &ms, &carpetas)?);
         }
         let bin = cfg.bin.or(release.clone()).ok_or_else(|| anyhow!("¿qué omoi? usa --{}-bin", nombre.to_lowercase()))?;
         if !bin.exists() {
@@ -303,6 +318,7 @@ fn main() -> Result<()> {
             // Una carpeta que ya no existe (temporales de sesiones viejas): la más cercana que siga,
             // que da el mismo proyecto (o ninguno).
             let cwd = match &c.cwd {
+                Some(d) if d == "~" => std::env::home_dir().unwrap_or(neutra.clone()).to_string_lossy().into_owned(),
                 Some(d) => Path::new(d).ancestors().find(|p| p.exists()).unwrap_or(&neutra).to_string_lossy().into_owned(),
                 None => neutra.to_string_lossy().into_owned(),
             };
