@@ -39,7 +39,12 @@ pub const CONTRADICE: &str = crate::veredictos::CONTRADICE;
 pub const POR_REVISAR: &str = "due";
 /// Lleva algo que parece un secreto (`secretos`): guardada antes de la 0.19.0 o con `OMOIKANE_REDACT=0`.
 pub const SECRETO: &str = "secret";
-const TIPOS: [&str; 10] = [SECRETO, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
+/// Le ha llegado la fecha que alguien le puso al guardarla (`review:AAAA-MM-DD`): un token que caduca,
+/// una oferta, un plan con día. Avisa siempre al empezar la sesión, como un secreto.
+pub const FECHA: &str = "review_date";
+/// La etiqueta de la fecha de revisión: `review:2026-11-25`.
+pub const ETIQUETA_FECHA: &str = "review:";
+const TIPOS: [&str; 11] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
@@ -60,6 +65,46 @@ pub fn dias_para_revisar(m: &Memoria) -> Option<f64> {
         Tipo::Fact | Tipo::Gotcha => Some(180.0),
         Tipo::Preference => None,
     }
+}
+
+/// La fecha de revisión de una memoria (la etiqueta `review:AAAA-MM-DD`), si lleva una válida.
+pub fn fecha_revision(tags: &[String]) -> Option<&str> {
+    tags.iter().filter_map(|t| t.strip_prefix(ETIQUETA_FECHA)).find(|f| es_fecha(f))
+}
+
+/// `AAAA-MM-DD` con un mes y un día posibles (el 31 de cualquier mes vale: basta para comparar).
+fn es_fecha(f: &str) -> bool {
+    let b = f.as_bytes();
+    let cifras = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' || !cifras(0..4) || !cifras(5..7) || !cifras(8..10) {
+        return false;
+    }
+    let (mes, dia) = (f[5..7].parse::<u8>().unwrap_or(0), f[8..10].parse::<u8>().unwrap_or(0));
+    (1..=12).contains(&mes) && (1..=31).contains(&dia)
+}
+
+/// Una etiqueta `review:` que no es una fecha no avisaría nunca: mejor decirlo al guardar.
+pub fn comprobar_fecha(tags: &[String]) -> Result<()> {
+    if let Some(t) = tags.iter().find(|t| t.strip_prefix(ETIQUETA_FECHA).is_some_and(|f| !es_fecha(f))) {
+        anyhow::bail!(crate::tr!(
+            "tag «{t}»: a review date goes as review:YYYY-MM-DD (e.g. review:2026-11-25)",
+            "etiqueta «{t}»: la fecha de revisión va como review:AAAA-MM-DD (p. ej. review:2026-11-25)"
+        ));
+    }
+    Ok(())
+}
+
+/// La fecha de revisión si ya ha llegado (`hoy`, el día local) y nadie ha tocado la memoria ni la ha
+/// dado por buena desde ese día. Recordarla no cuenta: que el agente la reciba no dice que siga valiendo.
+fn fecha_llegada<'a>(m: &'a Memoria, revisadas: &HashMap<(String, String), String>, hoy: &str) -> Option<&'a str> {
+    let f = fecha_revision(&m.tags)?;
+    if f > hoy || m.updated_at.as_str() >= f {
+        return None;
+    }
+    if revisadas.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= f) {
+        return None;
+    }
+    Some(f)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -766,7 +811,11 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
     let ahora = chrono_ahora(db)?;
     let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
     let revisadas = crate::veredictos::oks(db, false)?;
+    let hoy = hoy(db)?;
     for m in &todas {
+        if let Some(f) = fecha_llegada(m, &revisadas, &hoy) {
+            r.push(aviso(m, FECHA, None, format!("review date {f} reached: is it still true?")));
+        }
         if let Some(n) = sin_revisar(m, &revisadas, &ahora) {
             r.push(aviso(m, POR_REVISAR, None, format!("untouched for {n} days: is it still true?")));
         }
@@ -928,6 +977,18 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
          WHERE r.memory_id = ?1 AND r.kind = ?2 LIMIT 1",
     )?;
     let ahora = chrono_ahora(db)?;
+    // La fecha de revisión va también en el recall: dice que la memoria puede haber dejado de valer
+    // (el token caducó, la oferta acabó). Los veredictos solo se leen si alguna lleva fecha.
+    if memorias.iter().any(|m| fecha_revision(&m.tags).is_some()) {
+        let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, hoy(db)?);
+        for m in memorias {
+            if !r.contains_key(&m.id)
+                && let Some(f) = fecha_llegada(m, &revisadas, &hoy)
+            {
+                r.insert(m.id.clone(), format!("review date {f} reached: check it still holds"));
+            }
+        }
+    }
     for m in memorias {
         if r.contains_key(&m.id) {
             continue;
@@ -1100,8 +1161,12 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
             *u = m.updated_at.as_str();
         }
     }
+    let hoy = hoy(db)?;
     for (m, largo) in &todas {
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
+        if fecha_llegada(m, &revisadas, &hoy).is_some() {
+            sumar(FECHA);
+        }
         if sin_revisar(m, &revisadas, &ahora).is_some() {
             sumar(POR_REVISAR);
         }
@@ -1145,7 +1210,9 @@ pub fn aviso(db: &Connection, cifras: &BTreeMap<&'static str, usize>, memorias: 
     // los cuenta, y `context` volvería a avisar en la misma sesión. Pero uno avisa siempre: viaja con
     // la sincronización y las copias.
     let total: usize = cifras.iter().filter(|(k, _)| **k != SECRETO).map(|(_, n)| n).sum();
-    if total < umbral_aviso(memorias) && cifras.get(SECRETO).is_none_or(|n| *n == 0) {
+    // Una fecha de revisión que llega también avisa siempre: alguien la puso para enterarse ese día.
+    let siempre = [SECRETO, FECHA].iter().any(|k| cifras.get(k).is_some_and(|n| *n > 0));
+    if total < umbral_aviso(memorias) && !siempre {
         return Ok(None);
     }
     let hoy = hoy(db)?;
@@ -1163,6 +1230,7 @@ pub fn aviso(db: &Connection, cifras: &BTreeMap<&'static str, usize>, memorias: 
 fn nombre_aviso(kind: &str) -> &'static str {
     match kind {
         SECRETO => "possible secrets",
+        FECHA => "review dates reached",
         SUSTITUIDA => "superseded",
         CONTRADICE => "contradictions",
         DESFASADA => "outdated",

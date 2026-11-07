@@ -29,6 +29,7 @@ Projects can belong to a space (a client, a product with several repositories): 
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When a product or business decision belongs to the user and you can't ask right now, save it as kind decision with the tag `open` (the question, the options, what you assumed meanwhile) and keep working; when you finish a long piece of work, tell the user which ones you left.
+If a memory stops holding on a known day (a token that expires, an offer, a plan with a date), add the tag `review:YYYY-MM-DD`: that day the review flags it.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies (it goes to the trash for 30 days; `update` with restore=true brings it back).
 To fix one part of a memory use `update` with `replace` ([{find, with}], each `find` literal and found exactly once); to add a step, `append`; to merge several memories into one, `update` the one that stays with the merged text in `content` and the others' ids in `absorb` (they go to the trash, superseded by it, and their tags, paths and history move to it).
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
@@ -55,7 +56,7 @@ pub struct Remember {
     kind: String,
     /// Project files or folders it refers to (relative to the repo root, or absolute).
     paths: Option<Vec<String>>,
-    /// Free tags.
+    /// Free tags. `review:YYYY-MM-DD` = flag it for review that day (something that expires).
     tags: Option<Vec<String>>,
     /// Always shown in `context` for this project.
     pinned: Option<bool>,
@@ -70,6 +71,11 @@ pub struct Remember {
     project: Option<String>,
     /// Save it even if a very similar memory exists.
     force: Option<bool>,
+    /// A stable key for "the one memory about X" in this project (e.g. `kumi-profile`): if a memory
+    /// with this key exists here it is updated, otherwise created. No duplicate check.
+    key: Option<String>,
+    /// With `key`: structured data (any JSON) kept with the memory; `get` with `key` and `resolve` returns it as `data`.
+    data: Option<serde_json::Value>,
     /// Ids of memories this one replaces: they will show up as superseded by it.
     supersedes: Option<Vec<String>>,
     /// Ids of memories this one disagrees with, when it's not clear which holds.
@@ -106,6 +112,17 @@ pub enum EspacioParam {
 pub struct Id {
     /// Memory id (its first characters are enough).
     id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct Get {
+    /// Memory id (its first characters are enough).
+    id: Option<String>,
+    /// Or the key it was saved with (`remember` with `key`): the one this project sees.
+    key: Option<String>,
+    /// With `key`: every memory with that key this project sees, most specific first (project, space,
+    /// trade, global), each with its scope and data, unmerged.
+    resolve: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -400,7 +417,14 @@ impl Servidor {
                     None => proyecto::para_guardar(proyecto, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
                 };
                 let busca_en = if !project.is_empty() && proyecto::es_general(proyecto) { proyecto.to_string() } else { project.clone() };
-                if !p.force.unwrap_or(false)
+                let clave = p.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string);
+                anyhow::ensure!(p.data.is_none() || clave.is_some(), "data goes with key");
+                let content = match &p.data {
+                    Some(d) => memoria::con_datos(&p.content, d)?,
+                    None => p.content.clone(),
+                };
+                if clave.is_none()
+                    && !p.force.unwrap_or(false)
                     && let Some(m) = modelo
                     && let Some((existente, sim)) = vectores::duplicada(db, m, &busca_en, &p.title, &p.content)?
                 {
@@ -419,7 +443,7 @@ impl Servidor {
                     space_id,
                     kind,
                     title: p.title,
-                    content: p.content,
+                    content,
                     paths,
                     tags: p.tags.unwrap_or_default(),
                     pinned: p.pinned.unwrap_or(false),
@@ -427,7 +451,14 @@ impl Servidor {
                     ..Default::default()
                 };
                 let antes = crate::revisar::antes(db)?;
-                let m = memoria::guardar(db, nueva, modelo)?;
+                // Con clave: la de esa clave en este ámbito, creada o actualizada en la misma transacción.
+                let (m, por_clave) = match &clave {
+                    Some(k) => {
+                        let r = memoria::guardar_por_clave(db, k, nueva, modelo)?;
+                        (r.memoria, Some((r.creada, r.parecidas)))
+                    }
+                    None => (memoria::guardar(db, nueva, modelo)?, None),
+                };
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
                 let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None, &m.title, &origen)?;
                 let donde = if m.de_espacio() { format!("(space {})", m.space) } else if m.project.is_empty() { "(global)".to_string() } else { m.project.clone() };
@@ -436,7 +467,15 @@ impl Servidor {
                 if juzgadas > 0 {
                     r["judged"] = serde_json::json!(juzgadas);
                 }
-                let rel = vectores::relacionadas(db, &busca_en, &m.title, &m.id, 3)?;
+                if let Some((creada, parecidas)) = &por_clave {
+                    r["key"] = serde_json::json!(memoria::clave_de(&m));
+                    r["created"] = serde_json::json!(creada);
+                    if !parecidas.is_empty() {
+                        r["similar_keys"] = serde_json::json!(parecidas);
+                        r["key_hint"] = serde_json::json!("New key, but these keys already exist here: if you meant one of them, save with that key and forget this memory.");
+                    }
+                }
+                let rel = if por_clave.is_some() { Vec::new() } else { vectores::relacionadas(db, &busca_en, &m.title, &m.id, 3)? };
                 if !rel.is_empty() {
                     r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
@@ -573,7 +612,7 @@ fn origen_de(peer: &Peer<RoleServer>) -> String {
 
 #[tool_router(router = tool_router)]
 impl Servidor {
-    #[tool(description = "Save a memory for future sessions. If a very similar memory already exists in this project, nothing is saved and you get duplicate_of: update that one instead, or call again with force=true if it really is different.")]
+    #[tool(description = "Save a memory for future sessions. If a very similar memory already exists in this project, nothing is saved and you get duplicate_of: update that one instead, or call again with force=true if it really is different. With `key`, it creates or updates the one memory with that key here.")]
     async fn remember(&self, peer: Peer<RoleServer>, Parameters(p): Parameters<Remember>) -> Result<CallToolResult, ErrorData> {
         self.guardar(p, origen_de(&peer)).await
     }
@@ -604,9 +643,18 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "Get a whole memory by id.")]
-    async fn get(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, proyecto| memoria::obtener(db, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
+    #[tool(description = "Get a whole memory by id, or by the key it was saved with.")]
+    async fn get(&self, Parameters(p): Parameters<Get>) -> Result<CallToolResult, ErrorData> {
+        let r = self
+            .con_base(move |db, _, proyecto| match (p.id.as_deref(), p.key.as_deref()) {
+                (None, Some(k)) if p.resolve.unwrap_or(false) => Ok(serde_json::to_value(memoria::capas_de_clave(db, &Ambito::de(db, proyecto)?, k)?)?),
+                (Some(id), _) => Ok(serde_json::to_value(memoria::obtener(db, &id_en_ambito(db, proyecto, id, false)?)?)?),
+                (None, Some(k)) => Ok(serde_json::to_value(
+                    memoria::por_clave(db, &Ambito::de(db, proyecto)?, k)?.ok_or_else(|| anyhow::anyhow!("no memory with key «{}» here", k.trim()))?,
+                )?),
+                (None, None) => anyhow::bail!("give id or key"),
+            })
+            .await;
         Ok(r.map(|m| json(&m)).unwrap_or_else(fallo))
     }
 

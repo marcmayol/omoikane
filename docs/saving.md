@@ -18,6 +18,21 @@ Each `kind` changes how it is recalled: preferences and pinned memories are alwa
 
 Every memory has a kind that decides when it comes back: `fact` and `decision` by relevance, `gotcha` also by its files, `preference` always, and `procedure` whole when you ask for it. Before saving it checks whether something almost the same already exists. If so, it doesn't save and says which one to update; if it is only similar, it saves and shows the related ones. It warns when a memory goes past the 6,000 characters that count for recall and when it makes another one outdated. Paths are stored relative to the repository, so they work on any computer.
 
+When a program keeps one memory about something and rewrites it (a project's profile, the state of a tool), it can save it with a key: `omoi remember … --key kumi-profile` (or `key` in the MCP `remember`). If a memory with that key already exists in the same project, space or global scope, it is updated, keeping the previous text in its history; if not, it is created. There is no duplicate check, and two processes saving the same key at once still leave a single memory. `omoi get --key kumi-profile` (or `get` with `key`) reads it: the project's, else its space's, else the global one. The key is a tag, `topic:<key>`; a new key that looks like an existing one (`kumi_profile` next to `kumi-profile`) gets a warning.
+
+A key can live at four levels, one memory per level: the project (the default), its space (`--space`), a trade (`--trade web`, a global memory tagged `trade:web`) and global (`--global`). `omoi get --key <key> --resolve --json` (or `get` with `key` and `resolve`) returns every one this project sees, most specific first (project, space, trade, global), each with its `scope` and its `data`, without merging them: whoever reads them combines them. Data goes with `--data '<JSON>'` (or `data` in the MCP) and is kept at the end of the memory as a `json omoikane-data` block, so it travels with sync and stays in the history; Omoikane doesn't interpret it. Saving the same text and data again creates no new version.
+
+Kumi's route through its factories is the example. The web factory's default route is a trade memory, client X always adds seo-geo after web, and one of X's projects skips SEO:
+
+```
+omoi remember -k fact -t "Web factory route" --trade web --key kumi-route --data '{"route":["web"],"tests":["web","cyber"]}'
+omoi remember -k fact -t "Client X route" --space=client-x --key kumi-route --data '{"route":["web","seo-geo"]}'
+omoi remember -k fact -t "disney-countdown route" --key kumi-route --data '{"route":["web"]}' "No SEO: a family countdown."
+omoi get --key kumi-route --resolve --json
+```
+
+From disney-countdown the last command returns three layers, `project`, `space` and `trade:web`, in that order. From another project of client X, `space` and `trade:web`; from a project of client Y, never client X's.
+
 ## It saves when you ask
 
 `/omoikane` makes the agent save right then. It goes over the session, saves what is worth keeping and isn't saved yet (decisions with their reason, gotchas with their files, preferences, procedures) and brings the project's `status` memory up to date. With text after it, as in `/omoikane deploys go over ssh`, it saves that, in your words. It ends with one line per memory saved or changed.

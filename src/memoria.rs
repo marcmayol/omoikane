@@ -482,6 +482,263 @@ pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Re
     insertar(db, &ulid::Ulid::generate().to_string(), nueva, None, modelo)
 }
 
+/// La etiqueta de la clave de tema: `topic:<clave>`. Una memoria por clave y por ámbito (proyecto,
+/// espacio o global): `remember` con clave actualiza la que ya la lleva en vez de crear otra.
+pub const ETIQUETA_TEMA: &str = "topic:";
+
+/// Lo que hizo [`guardar_por_clave`].
+#[derive(Clone, Debug)]
+pub struct PorClave {
+    pub memoria: Memoria,
+    /// `true` si no había ninguna con esa clave en el ámbito y se creó.
+    pub creada: bool,
+    /// Al crearla: otras claves del ámbito que se parecen a la nueva (quizá se quería una de ellas).
+    pub parecidas: Vec<String>,
+}
+
+/// La clave tal como se guarda: minúsculas, sin espacios alrededor, y solo letras, cifras y `-_.:/`
+/// (cabe en una etiqueta y se escribe igual en la CLI y en el MCP).
+pub fn clave_tema(clave: &str) -> Result<String> {
+    let c = clave.trim().to_lowercase();
+    ensure!(
+        !c.is_empty() && c.chars().count() <= 80 && c.chars().all(|x| x.is_alphanumeric() || "-_.:/".contains(x)),
+        tr!(
+            "key «{clave}»: use letters, digits and - _ . : / (up to 80), e.g. kumi-profile",
+            "clave «{clave}»: usa letras, cifras y - _ . : / (hasta 80), p. ej. kumi-perfil"
+        )
+    );
+    Ok(c)
+}
+
+/// La clave de tema de una memoria, si lleva una.
+pub fn clave_de(m: &Memoria) -> Option<&str> {
+    m.tags.iter().find_map(|t| t.strip_prefix(ETIQUETA_TEMA))
+}
+
+/// Guarda por clave: si en el mismo ámbito (el proyecto, el espacio o global, exactamente el que toca)
+/// ya hay una memoria con `topic:<clave>`, la actualiza (título, contenido, tipo; junta etiquetas y
+/// rutas); si no, la crea. Todo en una transacción `BEGIN IMMEDIATE` que busca dentro: dos procesos
+/// a la vez con la misma clave dejan una sola memoria (el segundo espera y la encuentra). Sin mirar
+/// duplicadas: la clave ya dice cuál es.
+pub fn guardar_por_clave(db: &mut Connection, clave: &str, mut nueva: Nueva, modelo: Option<&Modelo>) -> Result<PorClave> {
+    let clave = clave_tema(clave)?;
+    let etiqueta = format!("{ETIQUETA_TEMA}{clave}");
+    nueva.tags.retain(|t| !t.trim().to_lowercase().starts_with(ETIQUETA_TEMA));
+    nueva.tags.push(etiqueta.clone());
+    let tx = escribir_tx(db)?;
+    let (project_id, space_id) = alcance(&tx, &nueva.project, nueva.project_id, nueva.space_id)?;
+    // Una global con `trade:<oficio>` es del ámbito de ese oficio (la ruta por defecto de la factoría
+    // web); sin oficio, de la persona. Cada combinación de oficios es su propio ámbito.
+    let oficios = serde_json::to_string(&oficios_de(&etiquetas(&nueva.tags)))?;
+    let existente: Option<String> = tx
+        .query_row(
+            "SELECT id FROM memory WHERE project_id = ?1 AND space_id IS ?2 AND tags LIKE ?3
+               AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?4)
+               AND (SELECT COALESCE(json_group_array(value), '[]') FROM (SELECT value FROM json_each(memory.tags)
+                    WHERE value LIKE 'trade:%' ORDER BY value)) = ?5
+             ORDER BY created_at, id LIMIT 1",
+            params![project_id, space_id, format!("%\"{etiqueta}\"%"), etiqueta, oficios],
+            |f| f.get(0),
+        )
+        .optional()?;
+    let r = match existente {
+        Some(id) => {
+            let antes = leer(&tx, &id)?;
+            let mut tags = antes.tags.clone();
+            tags.extend(nueva.tags.iter().cloned());
+            let mut paths = antes.paths.clone();
+            paths.extend(nueva.paths.iter().cloned());
+            let c = Cambios {
+                title: Some(nueva.title),
+                content: Some(nueva.content),
+                kind: nueva.kind,
+                paths: Some(paths),
+                tags: Some(tags),
+                pinned: nueva.pinned.then_some(true),
+                reason: Some(format!("key {clave}")),
+                ..Default::default()
+            };
+            let (m, _) = actualizar_en(&tx, &id, c, None, modelo)?;
+            PorClave { memoria: m, creada: false, parecidas: Vec::new() }
+        }
+        None => {
+            nueva.project_id = Some(project_id);
+            nueva.space_id = space_id;
+            let m = insertar_en(&tx, &ulid::Ulid::generate().to_string(), nueva, None, modelo)?;
+            let parecidas = claves_parecidas(&tx, project_id, space_id, &clave)?;
+            PorClave { memoria: m, creada: true, parecidas }
+        }
+    };
+    tx.commit()?;
+    Ok(r)
+}
+
+/// Las claves del mismo ámbito que se parecen a `clave` sin ser ella: iguales sin `-_.` ni
+/// mayúsculas, o a una o dos letras (cambiada, de más o de menos) con 6 letras o más.
+fn claves_parecidas(db: &Connection, project_id: i64, space_id: Option<i64>, clave: &str) -> Result<Vec<String>> {
+    let mut q = db.prepare(
+        "SELECT DISTINCT substr(t.value, ?3) FROM memory m, json_each(m.tags) t
+         WHERE m.project_id = ?1 AND m.space_id IS ?2 AND m.tags LIKE '%\"topic:%' AND t.value LIKE 'topic:%'",
+    )?;
+    let claves: Vec<String> = q.query_map(params![project_id, space_id, ETIQUETA_TEMA.len() as i64 + 1], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let plano = |s: &str| s.chars().filter(|c| !"-_.".contains(*c)).collect::<String>();
+    let (pc, n) = (plano(clave), clave.chars().count());
+    Ok(claves
+        .into_iter()
+        .filter(|k| k != clave && (plano(k) == pc || (n >= 6 && distancia(k, clave) <= if n >= 12 { 2 } else { 1 })))
+        .collect())
+}
+
+/// Distancia de edición (Levenshtein) por caracteres.
+fn distancia(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut fila: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut previo = fila[0];
+        fila[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let actual = fila[j + 1];
+            fila[j + 1] = if ca == *cb { previo } else { 1 + previo.min(fila[j]).min(fila[j + 1]) };
+            previo = actual;
+        }
+    }
+    fila[b.len()]
+}
+
+/// Cómo empiezan los datos de una memoria con clave dentro de su contenido: un bloque de código
+/// `json` al final, que se lee igual en el visor, en Obsidian y en un `get` a secas. Así viajan con la
+/// sincronización y quedan en el historial sin tocar el esquema.
+const MARCA_DATOS: &str = "```json omoikane-data";
+
+/// Los datos (JSON) como van al final del contenido: el texto, una línea en blanco y el bloque. Las
+/// claves de los objetos van ordenadas: los mismos datos dan siempre el mismo texto, y regenerarlos
+/// sin cambios no crea versión.
+pub fn con_datos(texto: &str, datos: &serde_json::Value) -> Result<String> {
+    fn ordenar(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(o) => {
+                let mut claves: Vec<&String> = o.keys().collect();
+                claves.sort();
+                serde_json::Value::Object(claves.into_iter().map(|k| (k.clone(), ordenar(&o[k]))).collect())
+            }
+            serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(ordenar).collect()),
+            x => x.clone(),
+        }
+    }
+    let bloque = format!("{MARCA_DATOS}\n{}\n```", serde_json::to_string(&ordenar(datos))?);
+    let texto = datos_de(texto).0;
+    Ok(if texto.trim().is_empty() { bloque } else { format!("{}\n\n{bloque}", texto.trim_end()) })
+}
+
+/// El contenido partido en su texto y sus datos (el bloque de [`con_datos`]), si los lleva y son JSON.
+pub fn datos_de(contenido: &str) -> (String, Option<serde_json::Value>) {
+    if let Some(i) = contenido.rfind(MARCA_DATOS) {
+        let resto = &contenido[i + MARCA_DATOS.len()..];
+        if let Some(fin) = resto.rfind("```")
+            && resto[fin + 3..].trim().is_empty()
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(resto[..fin].trim())
+        {
+            return (contenido[..i].trim_end().to_string(), Some(v));
+        }
+    }
+    (contenido.to_string(), None)
+}
+
+/// La etiqueta de una memoria de oficio: `trade:<oficio>` (la pone `--trade`).
+pub const ETIQUETA_OFICIO: &str = "trade:";
+
+/// Las etiquetas de oficio de una lista de etiquetas, ordenadas (`trade:web`, …).
+fn oficios_de(tags: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(ETIQUETA_OFICIO)).cloned().collect();
+    v.sort();
+    v
+}
+
+/// De qué nivel es una memoria con clave, del más concreto al más general.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Nivel {
+    Project,
+    Space,
+    Trade,
+    Global,
+}
+
+/// El nivel de una memoria: de un proyecto, de un espacio, de un oficio (global con `trade:`) o global.
+pub fn nivel_de(m: &Memoria) -> Nivel {
+    if m.project_id != 0 {
+        Nivel::Project
+    } else if m.de_espacio() {
+        Nivel::Space
+    } else if m.tags.iter().any(|t| t.starts_with(ETIQUETA_OFICIO)) {
+        Nivel::Trade
+    } else {
+        Nivel::Global
+    }
+}
+
+/// Todas las memorias con esta clave que ve el ámbito, de la más concreta a la más general: la del
+/// proyecto, la de su espacio, las de sus oficios y la global. Determinista, sin búsqueda: quien llama
+/// las combina (por ejemplo, la ruta de un proyecto por la megafactoría de Kumi). Lo que el ámbito no
+/// ve (otro cliente, otro proyecto) no sale.
+pub fn resolver_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Vec<(Nivel, Memoria)>> {
+    let clave = clave_tema(clave)?;
+    let mut v: Vec<(Nivel, Memoria)> = con_etiqueta(db, ambito, &format!("{ETIQUETA_TEMA}{clave}"))?.into_iter().map(|m| (nivel_de(&m), m)).collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| oficios_de(&a.1.tags).cmp(&oficios_de(&b.1.tags))).then_with(|| a.1.created_at.cmp(&b.1.created_at)));
+    Ok(v)
+}
+
+/// Una capa de [`resolver_clave`] tal como sale en `get --key … --resolve --json`: su ámbito
+/// (`project`, `space`, `trade:<oficio>` o `global`), la memoria, su texto y sus datos, sin fusionar
+/// nada con las demás capas.
+#[derive(Clone, Debug, Serialize)]
+pub struct Capa {
+    pub scope: String,
+    pub id: String,
+    pub title: String,
+    pub text: String,
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub space: String,
+    pub updated_at: String,
+}
+
+/// Las capas de una clave para el ámbito, de la más concreta a la más general.
+pub fn capas_de_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Vec<Capa>> {
+    Ok(resolver_clave(db, ambito, clave)?
+        .into_iter()
+        .map(|(nivel, m)| {
+            let scope = match nivel {
+                Nivel::Project => "project".to_string(),
+                Nivel::Space => "space".to_string(),
+                Nivel::Global => "global".to_string(),
+                Nivel::Trade => format!(
+                    "trade:{}",
+                    oficios_de(&m.tags).iter().map(|t| &t[ETIQUETA_OFICIO.len()..]).collect::<Vec<_>>().join(",")
+                ),
+            };
+            let (text, data) = datos_de(&m.content);
+            Capa {
+                scope,
+                id: m.id,
+                title: m.title,
+                text,
+                data,
+                project: if nivel == Nivel::Project { m.project } else { String::new() },
+                space: if nivel == Nivel::Space { m.space } else { String::new() },
+                updated_at: m.updated_at,
+            }
+        })
+        .collect())
+}
+
+/// La memoria con esta clave que manda en el ámbito: la más concreta de [`resolver_clave`].
+pub fn por_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Option<Memoria>> {
+    Ok(resolver_clave(db, ambito, clave)?.into_iter().next().map(|(_, m)| m))
+}
+
 /// De dónde viene una memoria que llega por la sincronización: su id, fechas, sellos y autor de origen.
 pub(crate) struct Origen<'a> {
     pub created_at: &'a str,
@@ -575,6 +832,9 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
         Some(_) => (titulo(&nueva.title)?, contenido(&nueva.content)?),
     };
     let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
+    if origen.is_none() {
+        crate::revisar::comprobar_fecha(&tags)?;
+    }
     let (project_id, space_id) = alcance(tx, &nueva.project, nueva.project_id, nueva.space_id)?;
     let (hlc, author) = match origen {
         Some(o) => {
@@ -737,6 +997,9 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
         pinned: c.pinned.unwrap_or(antes.pinned),
         ..antes.clone()
     };
+    if origen.is_none() && c.tags.is_some() {
+        crate::revisar::comprobar_fecha(&despues.tags)?;
+    }
     // Dónde queda: lo que diga el cambio (un espacio, un proyecto ya resuelto, una carpeta o global) o
     // donde estaba.
     let antes_espacio: Option<i64> = tx.query_row("SELECT space_id FROM memory WHERE id = ?1", [id], |f| f.get(0))?;

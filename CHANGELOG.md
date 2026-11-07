@@ -4,6 +4,22 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.8.0 (unreleased)
+
+### Added
+- A review date per memory, for what stops holding on a known day (a token that expires, an offer, a plan with a date): the tag `review:YYYY-MM-DD` (`omoi remember … --tag review:2026-11-25`, or in `tags` from the MCP). That day the review flags it as *review date reached* (`review_date`) in Review, in `search` and in the recall, and the notice at the start of the session comes even for a single one. Touching the memory or "it's fine as it is" clears it; a `review:` tag that isn't a date is refused. No schema or sync change: it is a tag. Checked first on a real memory of 213: 7 memories with a known expiry in the next 3 months that the existing review would have flagged 4 to 6 months late.
+- A key for "the one memory about X": `omoi remember … --key <key>` (and `key` in the MCP `remember`) creates or updates the single memory with that key in the same project, space or global scope, with no duplicate check, and atomically: several processes saving the same key at once leave one memory (tested with 24 writes from 8 processes at a time, CLI and `omoi tool`). `omoi get --key <key>` (and `get` with `key`) reads it. A key lives at four levels, one memory each: project, space (`--space`), trade (a global tagged `trade:<trade>`, what `--trade` saves) and global; `omoi get --key <key> --resolve --json` (and `get` with `resolve`) returns every layer the project sees, most specific first, each with its `scope` (`project`, `space`, `trade:<trade>`, `global`) and its `data`, unmerged. `--data '<JSON>'` (and `data` in the MCP) keeps structured data with the memory, as a `json omoikane-data` block at the end of its content, so it syncs and stays in the history; saving the same text and data again creates no version. The key is a `topic:<key>` tag; a new key that looks like an existing one gets a warning. Asked for by Kumi, which keeps one profile per project and got duplicates with two factories in the same repository; on Marc's own memory (86 memories saved with `remember`) no duplicate had slipped past the existing detection, so plain `remember` keeps working as before.
+
+### Fixed
+- On Windows the main thread gets an 8 MB stack, like on Linux and macOS (it was 1 MB): a debug build of `omoi` overflowed it while building the command line, even for `omoi --version`. Release builds were not affected yet.
+
+### Left out, with data (ideas from Engram)
+- Saving the user's prompts: over 30 days of real conversations (1,606 prompts), 0 questions about something asked earlier that the memories didn't already answer; and secret redaction catches 3 of the 4 secrets found in them (a hand-typed password slips through).
+- A summary per session: in 151 updates of real `status` memories, 9 pending items were dropped without being done, and none of them was needed again.
+
+### Compatibility
+- The database schema (10), the sync lines and the export format don't change. An older version keeps `review:…` and `topic:…` as plain tags (its `remember` doesn't know `--key`, so it would create a second memory); its "it's fine as it is" (`ok:review_date`) travels like any other verdict.
+
 ## 1.7.2 (2026-11-07)
 
 ### Fixed

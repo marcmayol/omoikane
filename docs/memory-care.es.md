@@ -22,6 +22,8 @@ Lo que Omoikane no puede saber solo lo dice el agente, sin herramientas nuevas: 
 
 Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca, contando desde su último cambio o desde la última vez que el agente la recibió (lo que se usa y nadie corrige, está repasado). Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.
 
+Hay memorias que dejan de valer un día que ya se sabe: un token que caduca, una oferta, un plan con fecha. Se guardan con la etiqueta `review:AAAA-MM-DD` (`omoi remember … --tag review:2026-11-25`, o en `tags` desde el MCP) y ese día la revisión las marca como *ha llegado su fecha*, en Revisar, en `search` y también en el recall (puede que ya no valgan). El aviso al empezar la sesión sale aunque sea una sola. Tocar la memoria o «está bien así» lo quita; una etiqueta que no es una fecha no se guarda.
+
 ## Historial y papelera
 
 Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas.
