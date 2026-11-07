@@ -873,8 +873,26 @@ pub fn al_preguntar_abriendo<'m>(
         }
     };
     // Las frecuencias de las palabras del mensaje, una vez para las palabras y el significado.
-    let terminos = utiles(&e.prompt);
-    let frecuencias = if terminos.len() >= TERMINOS_MIN { Some(frecuencias(db, project, &terminos)?) } else { None };
+    let mut terminos = utiles(&e.prompt);
+    let mut frecuencias = if terminos.len() >= TERMINOS_MIN { Some(frecuencias(db, project, &terminos)?) } else { None };
+    // Un nombre de proyecto mal dictado («trova» por Troba) no está en ninguna memoria: se busca por el
+    // nombre bueno (`nombres::mal_escritos`). Solo se miran los nombres si hay palabras que no están
+    // en ninguna memoria.
+    if let Some((_, df)) = &frecuencias
+        && df.contains(&0.0)
+    {
+        let en_ninguna: Vec<bool> = df.iter().map(|d| *d == 0.0).collect();
+        let arreglos = crate::nombres::mal_escritos(db, &terminos, &en_ninguna)?;
+        if !arreglos.is_empty() {
+            traza("nombres", || serde_json::json!(arreglos.iter().map(|(i, p)| (terminos[*i].clone(), p.join(" "))).collect::<Vec<_>>()));
+            for (i, partes) in arreglos.iter().rev() {
+                terminos.splice(*i..*i + 1, partes.iter().filter(|p| p.chars().count() >= 3).cloned());
+            }
+            terminos.sort();
+            terminos.dedup();
+            frecuencias = Some(crate::recall::frecuencias(db, project, &terminos)?);
+        }
+    }
     let por_palabras = match &frecuencias {
         Some(f) => relevantes_con(db, project, &terminos, f)?,
         None => Vec::new(),

@@ -246,14 +246,33 @@ enum Decision {
 
 fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
     let clave = crate::sync::clave(ruta, persona);
+    // Sin `origin`, los worktrees de un mismo repositorio se reconocen por su carpeta git común: el
+    // worktree de un repositorio cuya carpeta principal ya está apuntada es ese proyecto, se llame
+    // como se llame su carpeta.
+    let comun = if clave.starts_with("dir:") { git_comun(Path::new(ruta)) } else { None };
+    // (La principal no es la propia carpeta, tampoco escrita de otra forma: `CLAUDE~1` y su nombre largo.)
+    if let Some(principal) = comun.as_deref().and_then(principal_de)
+        && principal != ruta
+        && canonica(Path::new(ruta)).map(|p| texto(&p)).ok().as_deref() != Some(principal.as_str())
+        && let Some((id, espacio)) = por_ruta(db, &principal)?
+    {
+        return Ok(Decision::Unir(id, espacio));
+    }
+    let mismo_repo = |id: i64| -> Result<bool> {
+        let Some(c) = &comun else { return Ok(false) };
+        let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1 AND is_foreign = 0")?;
+        let rutas: Vec<String> = q.query_map([id], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(rutas.iter().any(|r| git_comun(Path::new(r)).as_ref() == Some(c)))
+    };
     let existente: Option<(i64, Option<i64>)> =
         db.query_row("SELECT id, space_id FROM project WHERE key = ?1", [&clave], |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
     let Some((id, espacio)) = existente else { return Ok(Decision::Nuevo(clave)) };
     // Con `origin`, la misma clave es el mismo repositorio. Sin él (`dir:`), dos carpetas con el mismo
     // nombre pueden ser cosas distintas: solo se junta con un proyecto que aquí no tiene ninguna
-    // carpeta propia (el de otro equipo de la misma persona). Una carpeta movida sin `origin` se
-    // arregla con `omoi projects move` (Revisar la enseña como «ya no está»).
-    if clave.starts_with("git:") || carpetas_propias(db, id)? == 0 {
+    // carpeta propia (el de otro equipo de la misma persona), o con uno de cuyo repositorio git es
+    // worktree. Una carpeta movida sin `origin` se arregla con `omoi projects move` (Revisar la
+    // enseña como «ya no está»).
+    if clave.starts_with("git:") || carpetas_propias(db, id)? == 0 || mismo_repo(id)? {
         return Ok(Decision::Unir(id, espacio));
     }
     let mut n = 2;
@@ -269,9 +288,49 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
         match ya {
             None => return Ok(Decision::Nuevo(k)),
             Some((id, espacio, 0)) => return Ok(Decision::Unir(id, espacio)),
+            Some((id, espacio, _)) if mismo_repo(id)? => return Ok(Decision::Unir(id, espacio)),
             Some(_) => n += 1,
         }
     }
+}
+
+/// La carpeta git común de la raíz de un repositorio, canónica: su `.git`, o en un worktree (`.git` es
+/// un fichero `gitdir: …` y esa carpeta tiene `commondir`) la del repositorio principal. `None` si no
+/// hay repositorio, o si `.git` es un fichero que no es de un worktree (un submódulo).
+pub(crate) fn git_comun(raiz: &Path) -> Option<PathBuf> {
+    let punto = raiz.join(".git");
+    let dir = if punto.is_dir() {
+        punto
+    } else {
+        let t = std::fs::read_to_string(&punto).ok()?;
+        let gitdir = raiz.join(t.trim().strip_prefix("gitdir:")?.trim());
+        let comun = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        gitdir.join(comun.trim())
+    };
+    canonica(&dir).ok()
+}
+
+/// La carpeta de trabajo principal de una carpeta git común (`<principal>/.git`); `None` en un
+/// repositorio desnudo.
+fn principal_de(comun: &Path) -> Option<String> {
+    (comun.file_name()? == ".git").then(|| comun.parent().map(texto)).flatten()
+}
+
+/// El nombre del repositorio de un worktree sin `origin`: el de la carpeta principal (o el del
+/// repositorio desnudo sin `.git`), en minúsculas. `None` si la carpeta no es un worktree.
+pub(crate) fn nombre_de_worktree(raiz: &Path) -> Option<String> {
+    if raiz.join(".git").is_dir() {
+        return None;
+    }
+    let comun = git_comun(raiz)?;
+    let nombre = match principal_de(&comun) {
+        Some(p) => Path::new(&p).file_name()?.to_string_lossy().into_owned(),
+        None => {
+            let n = comun.file_name()?.to_string_lossy().into_owned();
+            n.strip_suffix(".git").map(str::to_string).unwrap_or(n)
+        }
+    };
+    (!nombre.is_empty()).then(|| nombre.to_lowercase())
 }
 
 /// Cuántas carpetas propias (de este equipo, no las que trajo otro) tiene un proyecto.
@@ -554,18 +613,23 @@ pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
         let mut q = db.prepare("SELECT id, name, path FROM project WHERE id != 0 ORDER BY name")?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let n = t.to_lowercase();
-    let exactos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase() == n).collect();
-    let trozos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase().contains(&n)).collect();
+    // De más a menos seguro (`nombres`): el mismo nombre sin mayúsculas, acentos ni separadores
+    // («Crónicas» = «cronicas», «social_publish» = «Social Publish»); un trozo del nombre; y, si
+    // nada encaja, a una letra («Omoikae»).
+    let n = crate::nombres::normal(t);
+    let exactos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| crate::nombres::normal(nombre) == n).collect();
+    let trozos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| !n.is_empty() && crate::nombres::normal(nombre).contains(&n)).collect();
     // Dos proyectos que solo se distinguen por las mayúsculas («Omoikane» y «omoikane»): si uno se
     // escribe tal cual, es ese.
     let identicos: Vec<&(i64, String, String)> = exactos.iter().copied().filter(|(_, nombre, _)| nombre == t).collect();
     let elegidos = if identicos.len() == 1 {
         identicos
-    } else if exactos.is_empty() {
+    } else if !exactos.is_empty() {
+        exactos
+    } else if !trozos.is_empty() {
         trozos
     } else {
-        exactos
+        todos.iter().filter(|(_, nombre, _)| crate::nombres::parecido(nombre, t) == Some(crate::nombres::Parecido::UnaLetra)).collect()
     };
     match elegidos.as_slice() {
         [uno] => Ok(uno.0),

@@ -10,6 +10,8 @@ Al empezar la sesión le llegan al agente tus preferencias y lo fijado, en qué 
 
 Retoma donde lo dejaste: al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
 
+Los nombres de proyecto se entienden aunque estén mal escritos. Donde se escribe uno (`project`, `--project`, `omoi projects`), da igual cómo vayan las mayúsculas, los acentos, los guiones, los guiones bajos, los espacios o los puntos (`cronicas` encuentra `Crónicas`), y si nada más encaja vale con una letra de diferencia (`Omoikae`). Si encaja con varios, pregunta cuál. En el mensaje, un nombre mal dictado («trova» por Troba, «tokimicho» por Tokimichi) se busca como el nombre bueno, siempre que la palabra no esté en ninguna memoria.
+
 ## El ruido, lo viejo y lo erróneo
 
 Un recall que inyecta de más es peor que no tenerlo: llena el contexto de ruido y arrastra de una sesión a otra lo que ya no vale. Por eso es la parte de Omoikane con más horas de calibrado.

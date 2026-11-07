@@ -10,6 +10,8 @@ When a session starts, the agent gets your preferences and pinned memories, wher
 
 It picks up where you left off: each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
 
+Project names are understood even when misspelled. Wherever you write one (`project`, `--project`, `omoi projects`), case, accents, hyphens, underscores, spaces and dots don't matter (`cronicas` finds `Crónicas`), and if nothing else fits, one letter off is enough (`Omoikae`). If it fits several, it asks which. In a prompt, a misheard name ("trova" for Troba, "tokimicho" for Tokimichi) is searched as the right name, as long as the word is in no memory.
+
 ## Noise, stale memories and mistakes
 
 A recall that injects too much is worse than none: it fills the context with noise and carries what no longer holds from one session to the next. That is why it is the most heavily calibrated part of Omoikane.

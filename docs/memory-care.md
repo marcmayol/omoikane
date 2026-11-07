@@ -18,6 +18,12 @@ What Omoikane can't know by itself, the agent says, with no new tools: when savi
 
 `update` takes `replace` (changes a text that must appear exactly once; otherwise nothing changes), `append` (adds at the end, for a procedure's new step) and `absorb` (merges several memories into one: the agent writes the merged text, and the absorbed ones go to the trash with their history hung on the one that stays and their tags and links moved to it). The Review tab has a **Merge** button to do it by hand.
 
+## Duplicated projects
+
+Sometimes one project ends up split in two: `Omoikane` and `omoikane`, a folder renamed without an `origin` (`Narrador`, now gone, and `Aloud`, which mentions it), or a "project" that is just the folder a file was uploaded to (`.claude\uploads\<uuid>`, `%TEMP%`). The review spots them and proposes them, but never merges anything by itself, because a `merge` reaches every computer through sync. At the start of a session, once a day, the agent gets each case with the command already written (`omoi projects merge A B`) and asks you before running it. If they aren't the same, `omoi projects distinct A B` keeps it from coming back. `omoi review`, `context` (`projects_review`) and the Review tab show them too.
+
+It counts as a duplicate when the name is the same ignoring case, accents, hyphens, underscores, spaces and dots (`social-publish` = `Social Publish`). One letter apart (`Omoikane`/`Omoikae`, from 6 letters) only counts with another sign: one of the folders no longer exists, the newer one has hardly any memories, or both share their `origin`. A look-alike name alone is not enough: `Tokimichi` and `tokimichi-web` are different projects.
+
 ## Review date
 
 Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never, counting from its last change or the last time the agent got it (what gets used and nobody corrects is reviewed). When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
