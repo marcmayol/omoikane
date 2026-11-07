@@ -317,9 +317,10 @@ fn por_mcp_tampoco_se_cruza_de_espacio() {
     assert!(!error && t.contains("(global)"), "{t}");
     let (t, _) = llamar(&b_web, "context", serde_json::json!({}));
     assert!(t.contains("Commits en inglés"), "{t}");
-    // Un nombre que encaja con varios: error con la lista.
+    // Desde lo que no tiene espacio, un nombre solo se busca entre los proyectos sin espacio: el error no
+    // nombra los de los clientes.
     let (t, error) = llamar(&dir.display().to_string(), "search", serde_json::json!({ "query": "zafiro", "project": "web" }));
-    assert!(error && t.contains("acme-web") && t.contains("globex-web"), "{t}");
+    assert!(error && !t.contains("acme-web") && !t.contains("globex-web"), "{t}");
 }
 
 #[test]

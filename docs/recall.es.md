@@ -10,7 +10,7 @@ Al empezar la sesión le llegan al agente tus preferencias y lo fijado, en qué 
 
 Retoma donde lo dejaste: al empezar la sesión llega la última memoria `status` de cada proyecto, así que «sigamos con X» no obliga a buscar.
 
-Los nombres de proyecto se entienden aunque estén mal escritos. Donde se escribe uno (`project`, `--project`, `omoi projects`), da igual cómo vayan las mayúsculas, los acentos, los guiones, los guiones bajos, los espacios o los puntos (`cronicas` encuentra `Crónicas`), y si nada más encaja vale con una letra de diferencia (`Omoikae`). Si encaja con varios, pregunta cuál. En el mensaje, un nombre mal dictado («trova» por Troba, «tokimicho» por Tokimichi) se busca como el nombre bueno, siempre que la palabra no esté en ninguna memoria.
+Los nombres de proyecto se entienden aunque estén mal escritos. Donde se escribe uno (`project`, `--project`, `omoi projects`), da igual cómo vayan las mayúsculas, los acentos, los guiones, los guiones bajos, los espacios o los puntos (`cronicas` encuentra `Crónicas`), y si nada más encaja vale con una letra de diferencia (`Omoikae`). Si encaja con varios, pregunta cuál. En el mensaje, un nombre mal dictado («tokimicho» por Tokimichi, «onmoikane» por Omoikane) se busca como el nombre bueno, siempre que la palabra no esté en ninguna memoria, las dos tengan al menos 6 letras, la palabra no sea el nombre con una terminación normal («faltas» no es Faltis) y el proyecto se vea desde donde está la sesión (desde un proyecto de un cliente, solo los de ese cliente; nunca los de otro). Con 5 letras, palabras normales se volvían proyectos («tropa» Troba, «rodeo» Rodet, «balsa» Balùa), así que un nombre de 5 («trova» por Troba) ya no se adivina.
 
 ## El ruido, lo viejo y lo erróneo
 

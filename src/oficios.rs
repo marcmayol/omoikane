@@ -18,8 +18,11 @@
 //!
 //! Lo más importante es que por aquí no salga nada de un cliente: al guardar una memoria de oficio,
 //! [`fugas`] avisa si nombra proyectos, espacios (clientes), rutas absolutas, repositorios o dominios
-//! que solo salen en memorias de un cliente, y no se guarda sin `force`. Y por la sincronización solo
-//! van por el repositorio general (son globales: `sync::va_al_repo` ya no las deja ir a uno de espacio),
+//! que solo salen en memorias de un cliente (en el texto, las rutas, las etiquetas, la clave y los
+//! datos), y no se guarda salvo los falsos positivos que deje pasar el permiso `allow_leaks` (nunca una
+//! ruta ni un repositorio). Promover a un oficio lo de un cliente crea una memoria nueva
+//! ([`crear_de_oficio`]): su historial y sus veredictos se quedan en el cliente. Y por la sincronización
+//! solo van por el repositorio general (son globales: `sync::va_al_repo` ya no las deja ir a uno de espacio),
 //! y un repositorio de cliente no las trae (`sync`, con [`lleva_oficio`]).
 
 use crate::memoria::{Ambito, Memoria};
@@ -758,26 +761,84 @@ fn registrable(host: &str) -> String {
     v[v.len().saturating_sub(2)..].join(".")
 }
 
+/// Las formas de un nombre (ya en minúsculas y sin acentos) que se buscan en el texto: tal cual, con
+/// cada separador cambiado por los otros y sin separadores («social-publish», «social publish»,
+/// «social_publish», «socialpublish»).
+fn variantes(n: &str) -> Vec<String> {
+    let mut v = vec![n.to_string(), n.replace(['-', '_'], " "), n.replace(['-', ' '], "_"), n.replace(['_', ' '], "-"), n.replace(['-', '_', ' ', '.'], "")];
+    v.retain(|x| !x.is_empty());
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Las etiquetas reservadas no dicen nada de nadie: las de oficio (`trade:`, `trade-for:`), la fecha de
+/// revisión (`review:`) y las de estado (`open`, `blocking`, `resolved`, `status`). De la de la clave
+/// (`topic:<clave>`) cuenta la clave. Devuelve lo que hay que mirar de una etiqueta.
+fn etiqueta_libre(t: &str) -> Option<&str> {
+    use crate::memoria::{ABIERTA, BLOQUEANTE, ESTADO, ETIQUETA_TEMA, RESUELTA};
+    if t.starts_with(PREFIJO) || t.starts_with(PARA) || t.starts_with(crate::revisar::ETIQUETA_FECHA) || [ABIERTA, BLOQUEANTE, RESUELTA, ESTADO].contains(&t) {
+        return None;
+    }
+    Some(t.strip_prefix(ETIQUETA_TEMA).unwrap_or(t))
+}
+
+/// Las claves y los textos de unos datos (`data`), aplanados, para mirarlos como texto.
+fn aplanar(v: &serde_json::Value, salida: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) => salida.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| aplanar(x, salida)),
+        serde_json::Value::Object(o) => {
+            for (k, x) in o {
+                salida.push(k.clone());
+                aplanar(x, salida);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Todo lo que se mira en una memoria de oficio, como un texto: los trozos que se den (título,
+/// contenido, rutas…), sus etiquetas sin las reservadas ([`etiqueta_libre`]), la clave y los datos
+/// (sus claves y sus textos).
+pub fn texto_para_fugas(partes: &[&str], tags: &[String], clave: Option<&str>, datos: Option<&serde_json::Value>) -> String {
+    let mut v: Vec<String> = partes.iter().map(|p| p.to_string()).collect();
+    v.extend(tags.iter().filter_map(|t| etiqueta_libre(t)).map(String::from));
+    v.extend(clave.map(String::from));
+    if let Some(d) = datos {
+        aplanar(d, &mut v);
+    }
+    v.retain(|x| !x.trim().is_empty());
+    v.join("\n")
+}
+
+/// Las fugas que impiden guardar. Con el permiso de fugas (`allow_leaks`), solo las que nunca son un
+/// falso positivo: una ruta absoluta personal o la URL de un repositorio.
+pub fn bloquean(fugas: Vec<Fuga>, permitir: bool) -> Vec<Fuga> {
+    if permitir { fugas.into_iter().filter(|f| f.tipo == "path" || f.tipo == "repository").collect() } else { fugas }
+}
+
 /// Lo que en el texto de una memoria de oficio parece de un proyecto o de un cliente: nombres de
 /// proyectos y de espacios, rutas absolutas personales, URLs de repositorios conocidos (o por SSH) y
-/// dominios que solo salen en memorias de un cliente (o el de su servidor git). Sin repetir.
+/// dominios que solo salen en memorias de un cliente (o el de su servidor git). Sin repetir. Los
+/// nombres se comparan sin mayúsculas ni acentos («balua» es «Balùa»).
 pub fn fugas(db: &Connection, texto: &str) -> Result<Vec<Fuga>> {
-    let min = texto.to_lowercase();
+    let min = crate::nombres::sin_acentos(&texto.to_lowercase());
     let mut v: Vec<Fuga> = Vec::new();
     let mut pon = |tipo: &'static str, text: String| {
         if !v.iter().any(|f| f.tipo == tipo && f.text.eq_ignore_ascii_case(&text)) {
             v.push(Fuga { tipo, text });
         }
     };
-    // Espacios: un cliente, se llame como se llame.
+    // Espacios: un cliente, se llame como se llame (desde 2 letras: «QA», «HP»).
     let espacios: Vec<(String, String)> = {
         let mut q = db.prepare("SELECT key, name FROM space")?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (key, name) in &espacios {
         for n in [key, name] {
-            let n = n.trim().to_lowercase();
-            if n.chars().count() >= 3 && aparece(&min, &n) {
+            let n = crate::nombres::sin_acentos(&n.trim().to_lowercase());
+            if n.chars().count() >= 2 && variantes(&n).iter().any(|x| x.chars().count() >= 2 && aparece(&min, x)) {
                 pon("space", name.clone());
             }
         }
@@ -788,12 +849,11 @@ pub fn fugas(db: &Connection, texto: &str) -> Result<Vec<Fuga>> {
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (name, _) in &proyectos {
-        let n = name.trim().to_lowercase();
+        let n = crate::nombres::sin_acentos(&name.trim().to_lowercase());
         if n.chars().count() < 4 || GENERICOS.contains(&n.as_str()) || DETECTABLES.contains(&n.as_str()) || n.starts_with("tmp.") {
             continue;
         }
-        let variantes = [n.clone(), n.replace(['-', '_'], " "), n.replace(['-', ' '], "_"), n.replace(['_', ' '], "-")];
-        if variantes.iter().any(|x| aparece(&min, x)) {
+        if variantes(&n).iter().any(|x| x.chars().count() >= 4 && aparece(&min, x)) {
             pon("project", name.clone());
         }
     }
@@ -865,56 +925,34 @@ pub fn fugas(db: &Connection, texto: &str) -> Result<Vec<Fuga>> {
     Ok(v)
 }
 
-/// Una memoria que pasó de un cliente (o de un proyecto) a un oficio y cuyo texto de antes podía ser
-/// del cliente: su historial se queda en este equipo y no viaja por la sincronización (que ahora la
-/// lleva por el repositorio general). Se apunta en `meta('historial_local:<id>')`.
-pub(crate) fn historial_solo_aqui(db: &Connection, id: &str) -> Result<()> {
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('historial_local:' || ?1, '1')", [id])?;
-    Ok(())
-}
-
-/// Las memorias cuyo historial no viaja (ver `historial_solo_aqui`).
+/// Las memorias cuyo historial no viaja: las que una versión previa de la 1.8.0 (sin publicar) promovió
+/// de un cliente a un oficio con el mismo id y apuntó en `meta('historial_local:<id>')`. Desde que
+/// promover lo de un cliente crea una memoria nueva ([`crear_de_oficio`]) ya no se apunta ninguna; las
+/// que haya siguen sin viajar y su historial solo se enseña desde una carpeta general
+/// (`memoria::historial_en`).
 pub(crate) fn historiales_solo_aqui(db: &Connection) -> Result<HashSet<String>> {
     let mut q = db.prepare("SELECT substr(k, 17) FROM meta WHERE k LIKE 'historial_local:%'")?;
     Ok(q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Al promover a un oficio una memoria de un proyecto o de un espacio: si venía de un cliente (de un
-/// espacio o de un proyecto en uno), o si su texto de antes o alguna versión anterior nombra algo de un
-/// proyecto o de un cliente, su historial deja de viajar (ver `historial_solo_aqui`). Se llama después
-/// de cambiarla, con lo que era (`antes`). Devuelve si lo hizo.
-pub fn al_promover(db: &Connection, antes: &Memoria) -> Result<bool> {
-    let mut texto = vec![antes.title.clone(), antes.content.clone(), antes.paths.join(" ")];
-    for v in crate::memoria::historial(db, &antes.id)? {
-        texto.extend([v.title, v.content, v.paths.join(" ")]);
-    }
-    let de_cliente = !antes.space.is_empty();
-    let solo_aqui = de_cliente || !fugas(db, &texto.join("\n"))?.is_empty();
-    if solo_aqui {
-        historial_solo_aqui(db, &antes.id)?;
-    }
-    Ok(solo_aqui)
+/// Si el historial de esta memoria se quedó en este equipo (ver [`historiales_solo_aqui`]).
+pub(crate) fn historial_solo_aqui(db: &Connection, id: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE k = 'historial_local:' || ?1)", [id], |f| f.get(0))?)
 }
 
 /// Lo que pide un `update` que toca los oficios (MCP y CLI).
-#[derive(Default)]
 pub struct PedidoCambio<'a> {
     /// `trade`: los oficios («android, web»); `Some("")` deja de ser de oficio.
     pub trade: Option<&'a str>,
     /// `for`: `client`, `personal` o `both`.
     pub para: Option<&'a str>,
-    /// Las etiquetas nuevas, si se cambian.
-    pub tags: Option<Vec<String>>,
-    /// Se lleva a un proyecto o a un espacio.
-    pub a_proyecto: bool,
-    /// Se hace global (`project: ""`).
-    pub a_global: bool,
-    pub title: Option<&'a str>,
-    pub content: Option<&'a str>,
-    /// Lo que añaden `replace` (lo que se pone) y `append`.
-    pub anadido: Vec<String>,
-    pub paths: Option<&'a [String]>,
-    pub force: bool,
+    /// Lo que cambia (título, contenido, `replace`, `append`, rutas, etiquetas, a dónde va).
+    pub cambios: &'a crate::memoria::Cambios,
+    /// Los datos nuevos (`Some(None)`: se quitan), si se cambian.
+    pub datos: Option<Option<&'a serde_json::Value>>,
+    /// El permiso de fugas (`allow_leaks`): deja pasar lo que parezca un falso positivo, nunca una
+    /// ruta ni un repositorio.
+    pub permitir_fugas: bool,
 }
 
 /// Qué hacer con los oficios en un `update`.
@@ -924,14 +962,19 @@ pub struct Plan {
     pub tags: Option<Vec<String>>,
     /// Hay que llevarla a global (era de un proyecto o de un espacio y pasa a ser de oficio).
     pub hacer_global: bool,
-    /// Pasa de un proyecto o un espacio a un oficio: después, `al_promover`.
-    pub promueve: bool,
+    /// Pasa de un cliente (un espacio, o un proyecto en uno) a un oficio: no se mueve, se crea una
+    /// memoria de oficio nueva ([`crear_de_oficio`]) y la de cliente se queda donde estaba.
+    pub nueva: bool,
 }
 
-/// Lo que hace un `update` con los oficios: hacerla de oficio (promoverla, con su id, su historial y
-/// sus veredictos), dejar de serlo, cambiar para quién es, o sacarla de su oficio al llevarla a un
-/// proyecto o un espacio. Lo nuevo de una memoria de oficio pasa por `fugas` (el texto entero si entra
-/// en un oficio), salvo con `force`: `Err` con ellas en `Ok(Err(…))`.
+/// Lo que hace un `update` con los oficios: hacerla de oficio (promoverla), dejar de serlo, cambiar para
+/// quién es, o sacarla de su oficio al llevarla a un proyecto o un espacio. Lo nuevo de una memoria de
+/// oficio pasa por `fugas` (todo lo que quedará si entra en un oficio: texto, rutas, etiquetas, clave y
+/// datos), salvo lo que deje pasar el permiso de fugas: `Err` con ellas en `Ok(Err(…))`.
+///
+/// Promover una memoria personal (de un proyecto sin espacio) la mueve con su id, su historial y sus
+/// veredictos: todo eso es de la persona. Promover una de un cliente crea una memoria nueva (`nueva`):
+/// su historial y sus veredictos son del cliente y no deben llegar a los demás.
 pub fn al_cambiar(db: &Connection, actual: &Memoria, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
     let norma = |v: &[String]| -> Vec<String> {
         let mut v: Vec<String> = v.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty()).collect();
@@ -939,7 +982,10 @@ pub fn al_cambiar(db: &Connection, actual: &Memoria, p: PedidoCambio) -> Result<
         v.dedup();
         v
     };
-    let base = norma(&p.tags.clone().unwrap_or_else(|| actual.tags.clone()));
+    let c = p.cambios;
+    let base = norma(&c.tags.clone().unwrap_or_else(|| actual.tags.clone()));
+    let a_proyecto = c.space_id.is_some() || c.project.as_deref().is_some_and(|d| !d.is_empty());
+    let a_global = c.project.as_deref() == Some("");
     let era = de_memoria(actual);
     let quitar = p.trade.is_some_and(|t| t.trim().is_empty());
     let mut pedidos = match p.trade.map(str::trim).filter(|t| !t.is_empty()) {
@@ -957,41 +1003,89 @@ pub fn al_cambiar(db: &Connection, actual: &Memoria, p: PedidoCambio) -> Result<
         let tags = norma(&tags);
         (tags != norma(&actual.tags)).then_some(tags)
     };
-    if quitar || p.a_proyecto {
+    if quitar || a_proyecto {
         return Ok(Ok(Plan { tags: cambia(sin_oficio(base)), ..Plan::default() }));
     }
-    let entra = !pedidos.is_empty() && (p.trade.is_some() || actual.global() || p.a_global);
+    let entra = !pedidos.is_empty() && (p.trade.is_some() || actual.global() || a_global);
     if !entra && era.is_empty() {
         ensure!(para_nuevo.is_none(), tr!("`for` only applies to a trade memory: give `trade` too", "`for` solo vale en una memoria de oficio: di también `trade`"));
-        return Ok(Ok(Plan { tags: p.tags.as_ref().and_then(|_| cambia(sin_oficio(base))), ..Plan::default() }));
+        return Ok(Ok(Plan { tags: c.tags.as_ref().and_then(|_| cambia(sin_oficio(base))), ..Plan::default() }));
     }
     let oficios = if entra { pedidos } else { era.clone() };
     let para_final = para_nuevo.unwrap_or_else(|| para_de(&actual.tags));
     let nuevo_oficio = era.is_empty() || oficios.iter().any(|o| !era.contains(o));
-    if !p.force {
-        // Lo nuevo; y, si entra en un oficio (o en otro), lo que se queda de antes.
-        let mut texto: Vec<String> = p.anadido.clone();
-        texto.push(p.title.map(String::from).unwrap_or_else(|| if nuevo_oficio { actual.title.clone() } else { String::new() }));
-        texto.push(p.content.map(String::from).unwrap_or_else(|| if nuevo_oficio { actual.content.clone() } else { String::new() }));
-        match p.paths {
-            Some(ps) => texto.extend(ps.iter().cloned()),
-            None if nuevo_oficio => texto.extend(actual.paths.iter().cloned()),
-            None => {}
-        }
-        let f = fugas(db, &texto.join("\n"))?;
-        if !f.is_empty() {
-            return Ok(Err(f));
-        }
+    let texto = if nuevo_oficio {
+        // Entra en un oficio (o en otro): todo lo que quedará, como quedará (tras `replace` y `append`).
+        let (titulo, contenido) = crate::memoria::texto_tras(actual, c)?;
+        let rutas = c.paths.clone().unwrap_or_else(|| actual.paths.clone());
+        let datos = match p.datos {
+            Some(d) => d.cloned(),
+            None => crate::memoria::datos_de(db, &[actual.id.as_str()])?.remove(&actual.id),
+        };
+        texto_para_fugas(&[&titulo, &contenido, &rutas.join(" ")], &base, None, datos.as_ref())
+    } else {
+        // Ya era de este oficio: lo nuevo (lo que ponen `replace` y `append`, el título, el contenido y
+        // las rutas que vengan, las etiquetas que no tenía y los datos nuevos).
+        let mut partes: Vec<String> = c.replace.iter().map(|(_, con)| con.clone()).collect();
+        partes.extend(c.append.clone());
+        partes.extend(c.title.clone());
+        partes.extend(c.content.clone());
+        partes.extend(c.paths.iter().flatten().cloned());
+        let tenia = norma(&actual.tags);
+        let nuevas: Vec<String> = base.iter().filter(|t| !tenia.contains(t)).cloned().collect();
+        texto_para_fugas(&partes.iter().map(String::as_str).collect::<Vec<_>>(), &nuevas, None, p.datos.flatten())
+    };
+    let f = bloquean(fugas(db, &texto)?, p.permitir_fugas);
+    if !f.is_empty() {
+        return Ok(Err(f));
     }
     Ok(Ok(Plan {
         tags: cambia(etiquetas_de_oficio(base, &oficios, para_final.as_deref())),
         hacer_global: !actual.global(),
-        promueve: !actual.global(),
+        nueva: !actual.global() && !actual.space.is_empty(),
     }))
 }
 
+/// Promover a un oficio una memoria de un cliente: una memoria de oficio NUEVA (otro id, sin historial
+/// ni veredictos) con el texto tal como queda tras los cambios (`c`, que ya pasaron por `fugas`), sus
+/// rutas, su tipo, sus datos y las etiquetas del plan (`tags`, con el oficio). La del cliente no se toca:
+/// sigue en su proyecto o en su espacio, con su historial, y la sincronización la sigue llevando por el
+/// repositorio de su cliente (moverla al general dejaba la copia de los otros equipos del cliente en
+/// conflicto, y su historial era texto del cliente).
+pub fn crear_de_oficio(
+    db: &mut Connection,
+    actual: &Memoria,
+    c: &crate::memoria::Cambios,
+    tags: Vec<String>,
+    origen: &str,
+    modelo: Option<&crate::embeber::Modelo>,
+) -> Result<Memoria> {
+    let (title, content) = crate::memoria::texto_tras(actual, c)?;
+    let datos = crate::memoria::datos_de(db, &[actual.id.as_str()])?.remove(&actual.id);
+    let nueva = crate::memoria::Nueva {
+        project_id: Some(0),
+        kind: Some(c.kind.unwrap_or(actual.kind)),
+        kind_text: if c.kind.is_none() { actual.kind_text.clone() } else { None },
+        title,
+        content,
+        paths: c.paths.clone().unwrap_or_else(|| actual.paths.clone()),
+        tags,
+        pinned: c.pinned.unwrap_or(actual.pinned),
+        source: origen.to_string(),
+        ..Default::default()
+    };
+    let m = crate::memoria::guardar(db, nueva, modelo)?;
+    if let Some(d) = datos {
+        crate::memoria::poner_datos(db, &m.id, Some(d))?;
+    }
+    Ok(m)
+}
+
 /// Lo que se le dice al agente con las fugas.
-pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This text names what looks like a project or a client (see trade_leaks). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with force=true.";
+pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
+
+/// Lo que se le dice al agente al promover una memoria de un cliente.
+pub const AVISO_PROMOVIDA: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";
 
 #[cfg(test)]
 mod tests {

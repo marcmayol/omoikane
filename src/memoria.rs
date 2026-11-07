@@ -470,6 +470,22 @@ fn aplicar_edicion(contenido: &mut String, c: &Cambios) -> Result<Vec<Cambiado>>
     Ok(cambiados)
 }
 
+/// El título y el contenido que tendría `m` con estos cambios (`title`, `content`, `replace`, `append`),
+/// sin escribir nada: para mirar el texto final antes de guardarlo (`oficios::al_cambiar`) o para
+/// guardarlo en otra memoria (`oficios::crear_de_oficio`).
+pub fn texto_tras(m: &Memoria, c: &Cambios) -> Result<(String, String)> {
+    let titulo_nuevo = match &c.title {
+        Some(t) => titulo(t)?,
+        None => m.title.clone(),
+    };
+    let mut content = match &c.content {
+        Some(t) => contenido(t)?,
+        None => m.content.clone(),
+    };
+    aplicar_edicion(&mut content, c)?;
+    Ok((titulo_nuevo, contenido(&content)?))
+}
+
 // --- Índices ---------------------------------------------------------------------------------------
 
 fn indexar(tx: &Transaction, n: i64, m: &Memoria) -> Result<()> {
@@ -918,6 +934,43 @@ pub fn obtener(db: &Connection, id: &str) -> Result<Memoria> {
     leer(db, &resolver_id(db, id)?)
 }
 
+/// Error si la memoria `id` (el id entero, viva) no se ve desde `base`: desde un proyecto, solo las de
+/// su espacio (o, sin espacio, las que no tienen), las globales y las de oficio de un oficio que tenga
+/// algún proyecto de ese espacio; desde una carpeta general, todas. Para lo que se pide por id (`get`,
+/// `history`, `update`, `forget`): que nadie saque lo de otro cliente aunque tenga su id.
+pub fn en_ambito(db: &Connection, base: &Ambito, id: &str) -> Result<()> {
+    if matches!(base, Ambito::Todos) {
+        return Ok(());
+    }
+    if crate::oficios::oculta(db, &base.amplio(), id)? {
+        bail!(tr!(
+            "memory {id} is a trade memory of a trade no project here has (see `context`): it is not in this scope",
+            "la memoria {id} es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
+        ));
+    }
+    let propio = crate::proyecto::clave_espacio(db, base.espacio())?;
+    match alcance_de_memoria(db, id)? {
+        Some((global, espacio)) if !global && espacio != propio => bail!(tr!(
+            "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder",
+            "la memoria {id} no es de este ámbito: es de otro espacio, y desde este proyecto solo se llega a su espacio y a las globales; abre la sesión en ese proyecto, o en tu carpeta de usuario"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// El historial de una memoria visto desde `base`: error si la memoria no se ve desde ahí
+/// ([`en_ambito`]); vacío si es una de las que una versión previa de la 1.8.0 promovió de un cliente
+/// con el mismo id (su historial era texto del cliente, `oficios::historiales_solo_aqui`) y no se
+/// mira desde una carpeta general.
+pub fn historial_en(db: &Connection, base: &Ambito, id: &str) -> Result<Vec<Version>> {
+    let id = resolver_id(db, id)?;
+    en_ambito(db, base, &id)?;
+    if !matches!(base, Ambito::Todos) && crate::oficios::historial_solo_aqui(db, &id)? {
+        return Ok(Vec::new());
+    }
+    historial(db, &id)
+}
+
 pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<Memoria> {
     Ok(actualizar_con_cambios(db, id, c, modelo)?.0)
 }
@@ -991,8 +1044,11 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
         pinned: c.pinned.unwrap_or(antes.pinned),
         ..antes.clone()
     };
+    // Solo las etiquetas `review:` nuevas: una mal escrita que llegó por la sincronización (de otra
+    // versión) no debe impedir cambiar la memoria.
     if origen.is_none() && c.tags.is_some() {
-        crate::revisar::comprobar_fecha(&despues.tags)?;
+        let nuevas: Vec<String> = despues.tags.iter().filter(|t| !antes.tags.contains(t)).cloned().collect();
+        crate::revisar::comprobar_fecha(&nuevas)?;
     }
     // Dónde queda: lo que diga el cambio (un espacio, un proyecto ya resuelto, una carpeta o global) o
     // donde estaba.
@@ -1581,11 +1637,34 @@ pub const RESUELTA: &str = "resolved";
 
 /// Resuelve una decisión abierta: añade la respuesta al final del contenido («Answer (fecha): …»),
 /// le quita [`ABIERTA`] y [`BLOQUEANTE`] y le pone [`RESUELTA`]. Con versión y motivo, como `update`.
-pub fn resolver_decision(db: &mut Connection, id: &str, respuesta: &str, motivo: Option<String>) -> Result<Memoria> {
+/// Una ya resuelta no se resuelve otra vez (error). En una decisión de oficio la respuesta pasa por
+/// `oficios::fugas` como cualquier texto nuevo (salvo lo que deje pasar `permitir_fugas`): si nombra
+/// algo de un proyecto o de un cliente no se guarda y vuelven las fugas (`Ok(Err(…))`).
+pub fn resolver_decision(
+    db: &mut Connection,
+    id: &str,
+    respuesta: &str,
+    motivo: Option<String>,
+    permitir_fugas: bool,
+) -> Result<std::result::Result<Memoria, Vec<crate::oficios::Fuga>>> {
     let m = obtener(db, id)?;
     ensure!(m.kind == Tipo::Decision, tr!("{} is not a decision", "{} no es una decisión", m.id));
+    ensure!(
+        !m.tags.iter().any(|t| t == RESUELTA),
+        tr!(
+            "{} is already resolved: to change the answer, `update` it",
+            "{} ya está resuelta: para cambiar la respuesta, cámbiala con `update`",
+            m.id
+        )
+    );
     let respuesta = respuesta.trim();
     ensure!(!respuesta.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
+    if !crate::oficios::de_memoria(&m).is_empty() {
+        let f = crate::oficios::bloquean(crate::oficios::fugas(db, respuesta)?, permitir_fugas);
+        if !f.is_empty() {
+            return Ok(Err(f));
+        }
+    }
     let dia: String = db.query_row(&format!("SELECT substr({AHORA}, 1, 10)"), [], |f| f.get(0))?;
     let mut tags: Vec<String> = m.tags.iter().filter(|t| *t != ABIERTA && *t != BLOQUEANTE).cloned().collect();
     if !tags.iter().any(|t| t == RESUELTA) {
@@ -1597,7 +1676,7 @@ pub fn resolver_decision(db: &mut Connection, id: &str, respuesta: &str, motivo:
         reason: Some(motivo.unwrap_or_else(|| "decision resolved".into())),
         ..Default::default()
     };
-    actualizar(db, &m.id, c, None)
+    Ok(Ok(actualizar(db, &m.id, c, None)?))
 }
 
 /// Las memorias del ámbito que llevan todas estas etiquetas (y, si se pide, de este tipo), de la más

@@ -35,7 +35,7 @@ fn avisos(db: &Connection) -> Vec<(String, String, String)> {
 
 fn notas(db: &Connection, id: &str, busqueda: bool) -> Option<String> {
     let m = memoria::obtener(db, id).unwrap();
-    let mut n = if busqueda { revisar::notas_busqueda(db, &[&m]) } else { revisar::notas(db, &[&m]) }.unwrap();
+    let mut n = if busqueda { revisar::notas_busqueda(db, &Ambito::Todos, &[&m]) } else { revisar::notas(db, &Ambito::Todos, &[&m]) }.unwrap();
     n.remove(id)
 }
 

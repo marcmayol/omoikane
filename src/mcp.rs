@@ -26,7 +26,7 @@ Write each memory in the language the user writes to you in (not in English if t
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
 If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
 Projects can belong to a space (a client, a product with several repositories): what applies to every project of the space but not to other clients goes with `space: true` instead of `global`. From a project you see its memories, its space's and the global ones, never another space's. `search` and `recent` take `project` (a folder or part of a project's name) and `space`; `context` says where you are and lists the projects.
-Each project has trades (its stack: android, web, wordpress, rust…, detected from its files; `context` lists them). A trap or know-how about the stack itself, that would help any project of that trade of any client (\"don't kill the Android emulator with taskkill\"), goes with `trade: \"android\"`: every project of that trade sees it, and no other. Only knowledge of the stack: never a project's or client's name, paths, repository URLs, domains or data (Omoikane refuses it, see trade_leaks); anything about this project or its client stays in the project. Any kind can be a trade memory: a trade preference (\"new screens go in a Scaffold\") applies from the first session of every project of that trade; `for: \"client\"` keeps it for client projects only (those in a space), `for: \"personal\"` for the user's own. A memory saved in the project that turns out to be of the trade is promoted with `update` and `trade` (same id and history), rewritten without the client.
+Each project has trades (its stack: android, web, wordpress, rust…, detected from its files; `context` lists them). A trap or know-how about the stack itself, that would help any project of that trade of any client (\"don't kill the Android emulator with taskkill\"), goes with `trade: \"android\"`: every project of that trade sees it, and no other. Only knowledge of the stack: never a project's or client's name, paths, repository URLs, domains or data (Omoikane refuses it, see trade_leaks); anything about this project or its client stays in the project. Any kind can be a trade memory: a trade preference (\"new screens go in a Scaffold\") applies from the first session of every project of that trade; `for: \"client\"` keeps it for client projects only (those in a space), `for: \"personal\"` for the user's own. A memory saved in the project that turns out to be of the trade is promoted with `update` and `trade`, rewritten without the client: from a client's project (one in a space) that creates a new trade memory with no history and the client's one stays; from a personal project it keeps its id and history. `force` only skips the duplicate check; if trade_leaks flags something you checked is a false positive (a library's name), pass allow_leaks=true, never by default.
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When a product or business decision belongs to the user and you can't ask right now, save it as kind decision with the tag `open` (the question, the options, what you assumed meanwhile) and keep working; when you finish a long piece of work, tell the user which ones you left. Add the tag `blocking` too only when the work can't go on without the answer (no safe assumption, or a wrong guess would be costly to undo): then stop that part and ask; without it the decision is for later. `decisions` lists the open ones, blocking first, and closes one with the user's answer (`resolve` and `answer`).
@@ -75,8 +75,10 @@ pub struct Remember {
     /// With `trade`: "client" (only for projects in a space, a client's: "when it's for a client, review the landing's SEO"), "personal" (only projects in no space) or "both" (the default).
     #[serde(rename = "for")]
     para: Option<String>,
-    /// Save it even if a very similar memory exists (or, with `trade`, even if trade_leaks flags something that is a false positive).
+    /// Save it even if a very similar memory exists. It does not skip the trade leak check (see allow_leaks).
     force: Option<bool>,
+    /// With `trade`: save even if trade_leaks flags something you checked is a false positive (a library's name, public docs). Never lets through an absolute path or a repository URL. Don't send it by default.
+    allow_leaks: Option<bool>,
     /// A stable key for "the one memory about X" in this project (e.g. `kumi-profile`): if a memory
     /// with this key exists here it is updated, otherwise created. No duplicate check.
     key: Option<String>,
@@ -148,10 +150,10 @@ pub struct Update {
     project: Option<String>,
     /// Move it to this space (its name), for every project in it.
     space: Option<String>,
-    /// Make it a trade memory ("android", or several: "android, kotlin"), seen by every project of that trade; "" stops it being one (it stays global).
+    /// Make it a trade memory ("android", or several: "android, kotlin"), seen by every project of that trade; "" stops it being one (it becomes an ordinary global memory, not back to its project). From a client's project (one in a space) this creates a NEW trade memory and the client's one stays; from a personal one it keeps its id and history.
     trade: Option<String>,
-    /// With `trade` (or on a trade memory): save even if trade_leaks flags something that is a false positive.
-    force: Option<bool>,
+    /// With `trade` (or on a trade memory): save even if trade_leaks flags something you checked is a false positive. Never lets through an absolute path or a repository URL.
+    allow_leaks: Option<bool>,
     /// On a trade memory: "client" (only projects in a space, a client's), "personal" (only projects in no space) or "both".
     #[serde(rename = "for")]
     para: Option<String>,
@@ -229,6 +231,8 @@ pub struct Decisions {
     answer: Option<String>,
     /// With resolve: why (kept with the previous version).
     reason: Option<String>,
+    /// With resolve, on a trade decision: save the answer even if trade_leaks flags a false positive (never an absolute path or a repository URL).
+    allow_leaks: Option<bool>,
 }
 
 /// `data` en `update`: sin el campo, no se toca; con `null`, se quitan los datos.
@@ -354,7 +358,7 @@ fn ambito_pedido(db: &Connection, proyecto: &str, project: Option<&str>, space: 
     let pedido = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
         Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
-        let id = proyecto::buscar(db, p)?;
+        let id = proyecto::buscar_en(db, p, &base)?;
         Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
     } else if todos {
         base.amplio()
@@ -392,21 +396,18 @@ fn id_en_ambito(db: &Connection, proyecto: &str, id: &str, papelera: bool) -> Re
         memoria::resolver_id(db, id)?
     };
     let base = Ambito::de(db, proyecto)?;
-    if matches!(base, Ambito::Todos) {
-        return Ok(id);
+    if papelera {
+        // En la papelera no hay oficios que mirar: solo su espacio.
+        let propio = proyecto::clave_espacio(db, base.espacio())?;
+        return match memoria::alcance_de_memoria(db, &id)? {
+            Some((global, espacio)) if !matches!(base, Ambito::Todos) && !global && espacio != propio => anyhow::bail!(
+                "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
+            ),
+            _ => Ok(id),
+        };
     }
-    // Una memoria de oficio, solo desde donde hay un proyecto de ese oficio (el espacio, o los proyectos
-    // sin espacio).
-    if !papelera && crate::oficios::oculta(db, &base.amplio(), &id)? {
-        anyhow::bail!("memory {id} is a trade memory of a trade no project here has (see `context`): it is not in this scope");
-    }
-    let propio = proyecto::clave_espacio(db, base.espacio())?;
-    match memoria::alcance_de_memoria(db, &id)? {
-        Some((global, espacio)) if !global && espacio != propio => anyhow::bail!(
-            "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
-        ),
-        _ => Ok(id),
-    }
+    memoria::en_ambito(db, &base, &id)?;
+    Ok(id)
 }
 
 /// Los oficios que piden `remember` o `update`: los de `trade` y los de las etiquetas `trade:` que ponga
@@ -504,11 +505,13 @@ impl Servidor {
                         space_id.is_none() && p.project.as_deref().is_none_or(|x| x.trim().is_empty()),
                         "a trade memory belongs to no project and no space (every project of the trade sees it): drop `project` and `space`, or drop `trade` to keep it in the project"
                     );
-                    if !p.force.unwrap_or(false) {
-                        let fugas = crate::oficios::fugas(db, &format!("{}\n{}\n{}", p.title, p.content, p.paths.as_deref().unwrap_or_default().join(" ")))?;
-                        if !fugas.is_empty() {
-                            return Ok(serde_json::json!({ "saved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
-                        }
+                    // Todo lo que llevará: texto, rutas, etiquetas, clave y datos. `force` no lo salta (es
+                    // para las duplicadas); `allow_leaks`, solo lo que puede ser un falso positivo.
+                    let rutas = p.paths.as_deref().unwrap_or_default().join(" ");
+                    let texto = crate::oficios::texto_para_fugas(&[&p.title, &p.content, &rutas], &tags, p.key.as_deref(), p.data.as_ref());
+                    let fugas = crate::oficios::bloquean(crate::oficios::fugas(db, &texto)?, p.allow_leaks.unwrap_or(false));
+                    if !fugas.is_empty() {
+                        return Ok(serde_json::json!({ "saved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
                     }
                 }
                 // Las preferencias son de la persona, no de un proyecto ni de un cliente: globales salvo
@@ -618,9 +621,12 @@ impl Servidor {
                 }
                 // Si deja anticuada a otra (versión más alta, o hecho lo que allí estaba pendiente), se dice ya.
                 crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                // Solo las que se ven desde aquí: una de oficio puede dejar anticuada una de otro cliente.
+                let aqui = Ambito::de(db, proyecto)?;
                 let viejas: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
                     .into_iter()
                     .filter(|(id, _, _)| veredictos::parejas(db).map(|p| !p.contains_key(&veredictos::pareja(id, &m.id))).unwrap_or(true))
+                    .filter(|(id, _, _)| aqui.ve(db, id).unwrap_or(false))
                     .collect();
                 if !viejas.is_empty() {
                     // Una que ya está sustituida (quizá por una cadena) se dice, con el final de la
@@ -629,7 +635,9 @@ impl Servidor {
                     let mut encadenadas = false;
                     for (id, titulo, detalle) in &viejas {
                         let mut e = serde_json::json!({ "id": id, "title": titulo, "why": detalle });
-                        if let Some(fin) = veredictos::cadena(db, id)? {
+                        if let Some(fin) = veredictos::cadena(db, id)?
+                            && aqui.ve(db, &fin.id)?
+                        {
                             let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [&fin.id], |f| f.get(0))?;
                             let via = if fin.saltos > 1 { format!(" (via {})", fin.saltos) } else { String::new() };
                             e["already_superseded_by"] = serde_json::json!(format!("{} «{}»{via}", fin.id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()));
@@ -679,39 +687,19 @@ impl Servidor {
                 // El motivo del cambio es también el de los veredictos que vengan con él.
                 let motivo = p.reason.clone().unwrap_or_default();
                 let space_id = espacio_pedido(db, proyecto, p.space.map(EspacioParam::Nombre))?;
-                // Los oficios: hacerla de oficio (promoverla, con su id y su historial), dejar de serlo,
-                // para quién es, o sacarla de su oficio al llevarla a un proyecto o un espacio. Lo nuevo de
-                // una memoria de oficio pasa por `oficios::fugas`.
+                // Los oficios: hacerla de oficio (promoverla), dejar de serlo, para quién es, o sacarla de
+                // su oficio al llevarla a un proyecto o un espacio. Lo nuevo de una memoria de oficio pasa
+                // por `oficios::fugas`.
                 let actual = memoria::obtener(db, &id)?;
-                let mut anadido: Vec<String> = p.replace.iter().flatten().map(|r| r.with.clone()).collect();
-                anadido.extend(p.append.clone());
-                let pedido = crate::oficios::PedidoCambio {
-                    trade: p.trade.as_deref(),
-                    para: p.para.as_deref(),
-                    tags: p.tags.clone(),
-                    a_proyecto: space_id.is_some() || p.project.as_deref().is_some_and(|d| !d.trim().is_empty()),
-                    a_global: p.project.as_deref().is_some_and(|d| d.trim().is_empty()),
-                    title: p.title.as_deref(),
-                    content: p.content.as_deref(),
-                    anadido,
-                    paths: p.paths.as_deref(),
-                    force: p.force.unwrap_or(false),
-                };
-                let plan = match crate::oficios::al_cambiar(db, &actual, pedido)? {
-                    Ok(plan) => plan,
-                    Err(fugas) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS })),
-                };
-                let (tags, hacer_global) = (plan.tags.clone(), plan.hacer_global);
-                let c = Cambios {
+                let mut c = Cambios {
                     space_id,
                     title: p.title,
                     content: p.content,
                     kind: tipo(p.kind)?,
                     paths: p.paths,
-                    tags,
+                    tags: p.tags,
                     pinned: p.pinned,
                     project: match p.project.as_deref().map(str::trim) {
-                        None if hacer_global => Some(String::new()),
                         None => None,
                         Some("") => Some(String::new()),
                         Some(d) => Some(proyecto::de_carpeta(std::path::Path::new(d))?),
@@ -721,7 +709,56 @@ impl Servidor {
                     append: p.append,
                     ..Default::default()
                 };
+                let pedido = crate::oficios::PedidoCambio {
+                    trade: p.trade.as_deref(),
+                    para: p.para.as_deref(),
+                    cambios: &c,
+                    datos: p.data.as_ref().map(|d| d.as_ref().filter(|d| !d.is_null())),
+                    permitir_fugas: p.allow_leaks.unwrap_or(false),
+                };
+                let plan = match crate::oficios::al_cambiar(db, &actual, pedido)? {
+                    Ok(plan) => plan,
+                    Err(fugas) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS })),
+                };
+                c.tags = plan.tags.clone();
                 let absorbe = p.absorb.filter(|ids| !ids.is_empty());
+                // Absorber se lleva el historial, las etiquetas y las rutas de las absorbidas: lo de un
+                // cliente no puede ir a parar a una memoria que ven todos (global o de oficio).
+                if let Some(ids) = &absorbe {
+                    let queda_global = (actual.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.hacer_global;
+                    for otra in ids {
+                        let o = memoria::obtener(db, otra)?;
+                        anyhow::ensure!(
+                            !(queda_global && !o.space.is_empty()),
+                            "memory {} is a client's: absorbing it would carry its history, tags and paths to a memory every client sees; write what holds into this one and `forget` it instead",
+                            o.id
+                        );
+                    }
+                }
+                // De un cliente a un oficio: una memoria nueva, y la del cliente se queda como estaba.
+                if plan.nueva {
+                    anyhow::ensure!(absorbe.is_none(), "a client's memory becomes a new trade memory: promote it first, without `absorb`");
+                    let tags = c.tags.clone().unwrap_or_else(|| actual.tags.clone());
+                    let m = crate::oficios::crear_de_oficio(db, &actual, &c, tags, &origen, modelo)?;
+                    let tapados = match p.data {
+                        Some(d) => memoria::poner_datos(db, &m.id, d)?,
+                        None => Vec::new(),
+                    };
+                    juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
+                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                    let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
+                    con_redactados(&mut r, &m);
+                    r["created"] = serde_json::json!(true);
+                    r["promoted_from"] = serde_json::json!(actual.id);
+                    r["promoted_hint"] = serde_json::json!(crate::oficios::AVISO_PROMOVIDA);
+                    if !tapados.is_empty() {
+                        r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                    }
+                    return Ok(r);
+                }
+                if plan.hacer_global && c.project.is_none() {
+                    c.project = Some(String::new());
+                }
                 // Solo veredictos: la memoria no cambia (ni gana una versión vacía en su historial).
                 let solo_juicio = c.title.is_none()
                     && c.content.is_none()
@@ -748,16 +785,10 @@ impl Servidor {
                     None => Vec::new(),
                 };
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
-                // Promovida a un oficio: si su texto de antes podía ser de un cliente, su historial no viaja.
-                let historial_aqui = plan.promueve && crate::oficios::al_promover(db, &actual)?;
                 let tocadas: Vec<String> = std::iter::once(m.id.clone()).chain(absorbidas.iter().cloned()).collect();
                 crate::revisar::al_dia_de(db, &antes, if solo_juicio { &[] } else { &tocadas })?;
                 let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
                 con_redactados(&mut r, &m);
-                if historial_aqui {
-                    r["history_kept_local"] = serde_json::json!(true);
-                    r["history_hint"] = serde_json::json!("It came from a project or a client: its previous versions stay on this computer and don't travel through sync with it.");
-                }
                 if !tapados.is_empty() {
                     r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
                 }
@@ -804,7 +835,7 @@ impl Servidor {
                     limite: limite(p.limit),
                 };
                 let res = buscar::buscar(db, &p.query, &o, modelo)?;
-                let mut notas = crate::revisar::notas_busqueda(db, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
+                let mut notas = crate::revisar::notas_busqueda(db, &ambito, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
                 Ok(res
                     .into_iter()
                     .map(|r| {
@@ -857,7 +888,7 @@ impl Servidor {
 
     #[tool(description = "Previous versions of a memory, newest first, with the reason for each change.")]
     async fn history(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, proyecto| memoria::historial(db, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
+        let r = self.con_base(move |db, _, proyecto| memoria::historial_en(db, &Ambito::de(db, proyecto)?, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
@@ -962,7 +993,10 @@ impl Servidor {
                     let id = id_en_ambito(db, proyecto, &id, false)?;
                     let respuesta = p.answer.unwrap_or_default();
                     let antes = crate::revisar::antes(db)?;
-                    let m = memoria::resolver_decision(db, &id, &respuesta, p.reason)?;
+                    let m = match memoria::resolver_decision(db, &id, &respuesta, p.reason, p.allow_leaks.unwrap_or(false))? {
+                        Ok(m) => m,
+                        Err(fugas) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS })),
+                    };
                     crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::json!({ "resolved": true, "memory": compacta(m, false, None) }));
                 }

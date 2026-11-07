@@ -10,7 +10,7 @@ When a session starts, the agent gets your preferences and pinned memories, wher
 
 It picks up where you left off: each project's latest `status` memory arrives at session start, so "let's carry on with X" needs no searching.
 
-Project names are understood even when misspelled. Wherever you write one (`project`, `--project`, `omoi projects`), case, accents, hyphens, underscores, spaces and dots don't matter (`cronicas` finds `Crónicas`), and if nothing else fits, one letter off is enough (`Omoikae`). If it fits several, it asks which. In a prompt, a misheard name ("trova" for Troba, "tokimicho" for Tokimichi) is searched as the right name, as long as the word is in no memory.
+Project names are understood even when misspelled. Wherever you write one (`project`, `--project`, `omoi projects`), case, accents, hyphens, underscores, spaces and dots don't matter (`cronicas` finds `Crónicas`), and if nothing else fits, one letter off is enough (`Omoikae`). If it fits several, it asks which. In a prompt, a misheard name ("tokimicho" for Tokimichi, "onmoikane" for Omoikane) is searched as the right name, as long as the word is in no memory, both have at least 6 letters, the word isn't the name with an ordinary ending ("faltas" is not Faltis) and the project is one you can see from where the session is (from a client's project, only that client's projects; never another client's). With 5 letters, ordinary words became projects ("tropa" Troba, "rodeo" Rodet, "balsa" Balùa), so a 5-letter name ("trova" for Troba) is no longer guessed.
 
 ## Noise, stale memories and mistakes
 

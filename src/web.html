@@ -365,7 +365,7 @@ const T = ES ? {
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
   juntar: 'Juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web',
-  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
+  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', fugas: l => `No se ha guardado: es una memoria de oficio (la ven todos los clientes) y nombra lo que parece de un proyecto o de un cliente (${l}). Escríbelo sin eso.`, bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
   papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   pan: {
@@ -408,7 +408,7 @@ const T = ES ? {
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
   juntar: 'Merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view',
-  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view', bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
+  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view', fugas: l => `Not saved: it is a trade memory (every client sees it) and it names what looks like a project or a client (${l}). Write it without them.`, bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
   papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   pan: {
@@ -499,6 +499,9 @@ async function herramienta(nombre, args) {
   const t = await r.text();
   let v; try { v = JSON.parse(t); } catch (e) { v = t; }
   if (!r.ok) throw new Error(typeof v === 'string' ? v : (v.error || t));
+  // Rechazado por fugas (una memoria de oficio que nombra un proyecto o un cliente): no se guardó.
+  if (v && typeof v === 'object' && Array.isArray(v.trade_leaks) && v.trade_leaks.length)
+    throw new Error(T.fugas(v.trade_leaks.map(f => `${f.type}: ${f.text}`).join(', ')));
   return v;
 }
 

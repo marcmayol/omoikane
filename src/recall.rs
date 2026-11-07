@@ -570,7 +570,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         s.push_str(l);
     }
     if !contexto.is_empty() {
-        let notas = crate::revisar::notas(db, &contexto.iter().collect::<Vec<_>>())?;
+        let notas = crate::revisar::notas(db, &ambito, &contexto.iter().collect::<Vec<_>>())?;
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &contexto {
             s.push_str(&linea(m, actual, propio.as_deref()));
@@ -585,7 +585,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
         .collect();
     if !estados.is_empty() {
-        let notas = crate::revisar::notas(db, &estados.iter().collect::<Vec<_>>())?;
+        let notas = crate::revisar::notas(db, &ambito, &estados.iter().collect::<Vec<_>>())?;
         s.push_str("Where work was left (the latest `status` memory of each project, newest first):\n");
         for m in &estados {
             let linea = linea_corta(m, actual, propio.as_deref());
@@ -632,7 +632,7 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         .collect();
     if !ultimas.is_empty() {
         s.push_str("Last worked on (newest first; `get` an id for the whole memory):\n");
-        let notas = crate::revisar::notas(db, &ultimas.iter().collect::<Vec<_>>())?;
+        let notas = crate::revisar::notas(db, &ambito, &ultimas.iter().collect::<Vec<_>>())?;
         for m in &ultimas {
             s.push_str(&linea_corta(m, actual, propio.as_deref()));
             s.push_str(&nota(&notas, m));
@@ -882,7 +882,8 @@ pub fn al_preguntar_abriendo<'m>(
         && df.contains(&0.0)
     {
         let en_ninguna: Vec<bool> = df.iter().map(|d| *d == 0.0).collect();
-        let arreglos = crate::nombres::mal_escritos(db, &terminos, &en_ninguna)?;
+        // Solo los proyectos que se ven desde aquí: el nombre de otro cliente nunca entra en el mensaje.
+        let arreglos = crate::nombres::mal_escritos(db, &Ambito::de(db, project)?, &terminos, &en_ninguna)?;
         if !arreglos.is_empty() {
             traza("nombres", || serde_json::json!(arreglos.iter().map(|(i, p)| (terminos[*i].clone(), p.join(" "))).collect::<Vec<_>>()));
             for (i, partes) in arreglos.iter().rev() {
@@ -1002,7 +1003,7 @@ pub fn al_preguntar_abriendo<'m>(
         ));
     }
     if !elegidas.is_empty() {
-        let notas = crate::revisar::notas(db, &elegidas.iter().collect::<Vec<_>>())?;
+        let notas = crate::revisar::notas(db, &Ambito::de(db, project)?, &elegidas.iter().collect::<Vec<_>>())?;
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &elegidas {
             s.push_str(&linea(m, actual, propio.as_deref()));

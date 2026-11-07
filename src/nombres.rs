@@ -19,9 +19,38 @@ use std::collections::{BTreeSet, HashMap};
 /// Desde cuántas letras (del nombre más corto, normalizado) cuenta el parecido a una letra.
 pub const LETRAS_MIN: usize = 6;
 
-/// En el recall, una palabra que no está en ninguna memoria puede ser un nombre mal dictado desde 5
-/// letras («trova» por Troba): que no exista ya es la otra señal.
-pub const LETRAS_MIN_RECALL: usize = 5;
+/// En el recall, una palabra que no está en ninguna memoria puede ser un nombre mal dictado desde 6
+/// letras (la palabra y el nombre): que no exista ya es la otra señal. Con 5, palabras normales que no
+/// salían en ninguna memoria se volvían proyectos («tropa» → Troba, «rodeo» y «rodes» → Rodet, «balsa»
+/// → Balua): mirado con `examples/eval.rs` sobre `tests/recall_casos.tsv`.
+pub const LETRAS_MIN_RECALL: usize = 6;
+
+/// Desde cuántas letras se busca, en la revisión, el nombre de una carpeta que ya no existe en las
+/// memorias de otro proyecto (`Narrador` → `Aloud`).
+const LETRAS_MIN_CONTINUA: usize = 5;
+
+/// Terminaciones de flexión (plural, infinitivo, participio…) en castellano e inglés: una palabra que
+/// solo se aparta de un nombre en sus dos últimas letras y acaba así es una palabra normal con su
+/// terminación, no un nombre mal dictado («faltas» no es Faltis; «tokimicho» sí es Tokimichi).
+const FLEXIONES: &[&str] = &["s", "ar", "er", "ir", "an", "en", "ed"];
+
+/// Si `t` (normalizado) se aparta de `n` solo en sus dos últimas letras y acaba en una flexión.
+fn es_flexion(t: &str, n: &str) -> bool {
+    let comun = t.chars().zip(n.chars()).take_while(|(a, b)| a == b).count();
+    comun + 2 >= t.chars().count() && FLEXIONES.iter().any(|f| t.ends_with(f))
+}
+
+/// La condición SQL sobre `p` (un proyecto) de los proyectos que se ven desde un ámbito: desde un
+/// proyecto o un espacio, los de su espacio (o los que no tienen); desde una carpeta general, todos.
+fn proyectos_visibles(ambito: &Ambito) -> String {
+    match ambito {
+        Ambito::Todos => "1".to_string(),
+        a => match a.espacio() {
+            Some(s) => format!("p.space_id = {s}"),
+            None => "p.space_id IS NULL".to_string(),
+        },
+    }
+}
 
 /// Cómo se parecen dos nombres.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +73,12 @@ fn sin_acento(c: char) -> char {
         'ç' => 'c',
         c => c,
     }
+}
+
+/// Un texto sin acentos (letra a letra, como [`normal`] pero sin quitar separadores): para buscar un
+/// nombre como palabra en un texto.
+pub fn sin_acentos(texto: &str) -> String {
+    texto.chars().map(|c| c.to_lowercase().next().map_or(c, sin_acento)).collect()
 }
 
 /// El nombre para comparar: minúsculas, sin acentos y sin `-`, `_`, espacios ni puntos.
@@ -81,10 +116,13 @@ pub fn parecido(a: &str, b: &str) -> Option<Parecido> {
 
 // --- El recall ----------------------------------------------------------------------------------
 
-/// Los nombres de los proyectos con memorias, normalizados, con las palabras de cada uno (en
-/// minúsculas y sin acentos, como los términos del recall).
-fn nombres_con_memorias(db: &Connection) -> Result<Vec<(String, Vec<String>)>> {
-    let mut q = db.prepare("SELECT name FROM project p WHERE p.id != 0 AND EXISTS (SELECT 1 FROM memory m WHERE m.project_id = p.id)")?;
+/// Los nombres de los proyectos con memorias que se ven desde `ambito`, normalizados, con las palabras
+/// de cada uno (en minúsculas y sin acentos, como los términos del recall).
+fn nombres_con_memorias(db: &Connection, ambito: &Ambito) -> Result<Vec<(String, Vec<String>)>> {
+    let mut q = db.prepare(&format!(
+        "SELECT name FROM project p WHERE p.id != 0 AND {} AND EXISTS (SELECT 1 FROM memory m WHERE m.project_id = p.id)",
+        proyectos_visibles(ambito)
+    ))?;
     let nombres: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut v: Vec<(String, Vec<String>)> = nombres
         .iter()
@@ -106,20 +144,24 @@ fn nombres_con_memorias(db: &Connection) -> Result<Vec<(String, Vec<String>)>> {
 
 /// Un término del mensaje que es un nombre de proyecto mal escrito: las palabras del nombre bueno.
 /// Solo se miran los términos que no están en ninguna memoria (`en_ninguna[i]`), de `LETRAS_MIN_RECALL`
-/// letras o más, a una letra de un único proyecto (o iguales normalizados a uno que se escribe con
-/// separadores: «socialpublish» → «social publish»). Devuelve (índice del término, palabras).
-pub fn mal_escritos(db: &Connection, terminos: &[String], en_ninguna: &[bool]) -> Result<Vec<(usize, Vec<String>)>> {
+/// letras o más, a una letra de un único proyecto de también `LETRAS_MIN_RECALL` letras que se vea desde
+/// `ambito` (nunca el de otro cliente), sin ser una flexión ([`es_flexion`]); o iguales normalizados a
+/// uno que se escribe con separadores («socialpublish» → «social publish»). Devuelve (índice del
+/// término, palabras).
+pub fn mal_escritos(db: &Connection, ambito: &Ambito, terminos: &[String], en_ninguna: &[bool]) -> Result<Vec<(usize, Vec<String>)>> {
     let dudosos: Vec<usize> = (0..terminos.len()).filter(|&i| en_ninguna.get(i).copied().unwrap_or(false) && terminos[i].chars().count() >= LETRAS_MIN_RECALL).collect();
     if dudosos.is_empty() {
         return Ok(Vec::new());
     }
-    let nombres = nombres_con_memorias(db)?;
+    let nombres = nombres_con_memorias(db, ambito)?;
     let mut r = Vec::new();
     for i in dudosos {
         let t = normal(&terminos[i]);
         let encajan: Vec<&(String, Vec<String>)> = nombres
             .iter()
-            .filter(|(n, partes)| (*n == t && partes.len() > 1) || (n.chars().count() >= LETRAS_MIN_RECALL && a_una_letra_normal(n, &t)))
+            .filter(|(n, partes)| {
+                (*n == t && partes.len() > 1) || (n.chars().count() >= LETRAS_MIN_RECALL && a_una_letra_normal(n, &t) && !es_flexion(&t, n))
+            })
             .collect();
         if let [(_, partes)] = encajan.as_slice() {
             r.push((i, partes.clone()));
@@ -329,7 +371,7 @@ pub fn propuestas_con(db: &Connection, ambito: &Ambito, es_temporal: &dyn Fn(&st
     // Una carpeta que ya no existe, continuada por otro proyecto más nuevo que la nombra.
     for viejo in todos.iter().filter(|p| p.gone && !temporales.contains(&p.id)) {
         let palabra = normal(&viejo.name);
-        if palabra.chars().count() < LETRAS_MIN_RECALL || !palabra.chars().all(char::is_alphanumeric) {
+        if palabra.chars().count() < LETRAS_MIN_CONTINUA || !palabra.chars().all(char::is_alphanumeric) {
             continue;
         }
         let nombran = mencionan(db, &palabra)?;

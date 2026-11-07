@@ -166,13 +166,16 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
     }
     // Las memorias que van (vivas o en la papelera): sus veredictos, con ellas.
     let mut van = en_papelera.clone();
+    // El historial de las que una versión previa de la 1.8.0 promovió de un cliente con su id era texto
+    // del cliente: solo sale en la copia de todo (como en `memoria::historial_en`).
+    let sin_historial = if todo { Default::default() } else { crate::oficios::historiales_solo_aqui(db)? };
     {
         let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", ambito.sql()))?;
         let mut filas = q.query([])?;
         while let Some(f) = filas.next()? {
             let m = de_fila(f)?;
             let (hlc, content_hlc, extra): (String, String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?, f.get(NCOL + 2)?);
-            let versions = memoria::historial(db, &m.id)?;
+            let versions = if sin_historial.contains(&m.id) { Vec::new() } else { memoria::historial(db, &m.id)? };
             van.insert(m.id.clone());
             let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions, sync::extra_de(&extra));
             escribir(&l, salida)?;

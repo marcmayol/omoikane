@@ -1214,7 +1214,11 @@ fn de_personal_a_empresa() {
     a.ok(&["forget", &borrador, "--yes"]);
     let del_proyecto = [staging.as_str(), centimos.as_str(), webhook.as_str(), cookie.as_str(), jwt.as_str()];
     let de_a: Vec<serde_json::Value> = del_proyecto.iter().map(|id| a.get(id).unwrap()).collect();
-    let historial = |e: &Equipo, id: &str| e.json_en(&e.dir, &["history", id]);
+    // Desde su carpeta de usuario (ve todo): `history` desde otro sitio solo da lo que se ve desde ahí.
+    let historial = |e: &Equipo, id: &str| -> serde_json::Value {
+        let casa = e.dir.to_string_lossy().to_string();
+        serde_json::from_str(&e.ok_en(&e.dir, &["--json", "history", id], &[("USERPROFILE", &casa), ("HOME", &casa)])).unwrap()
+    };
     let hist_a = historial(&a, &staging);
     assert_eq!(hist_a.as_array().unwrap().len(), 1, "{hist_a}");
     let veredicto = |e: &Equipo, en: &Path| -> serde_json::Value {
@@ -2473,18 +2477,30 @@ fn las_memorias_de_oficio_no_pasan_por_un_cliente() {
     a.ok_en(&web, &["space", "assign", "acme"], &[]);
     let de_acme = a.guardar(&web, "fact", "La web usa Astro", "Con islas en la cabecera.", &[]);
     let oficio = a.guardar(&a.dir, "gotcha", "No matar el emulador con taskkill", "Deja colgado adb: usar adb emu kill.", &["--trade", "android"]);
-    // Una memoria de acme que se promueve a oficio, reescrita: llega por el general sin su historial,
-    // que era de acme.
-    let promovida = a.guardar(&web, "gotcha", "En la web de Acme Astro rompe con Node 18", "Lo vimos en su servidor.", &[]);
-    a.ok_en(&web, &["update", &promovida, "--append", "Con Node 20 va bien."], &[]);
-    a.ok_en(&web, &["update", &promovida, "--trade", "web", "-t", "Astro 5 rompe con Node 18", "-c", "Usar Node 20 o más."], &[]);
-    a.sync();
-    b.sync();
+    // Una memoria de acme que se promueve a oficio, reescrita: es una memoria nueva, que llega por el
+    // general sin historial; la de acme sigue en acme, sin conflicto en el equipo de su compañero.
+    let de_cliente = a.guardar(&web, "gotcha", "En la web de Acme Astro rompe con Node 18", "Lo vimos en su servidor.", &[]);
+    a.ok_en(&web, &["update", &de_cliente, "--append", "Con Node 20 va bien."], &[]);
     c.sync();
+    a.sync();
+    c.sync();
+    assert!(c.get(&de_cliente).is_some(), "el compañero de acme ya la tiene");
+    let nueva = a.json_en(&web, &["update", &de_cliente, "--trade", "web", "-t", "Astro 5 rompe con Node 18", "-c", "Usar Node 20 o más."]);
+    let promovida = nueva["id"].as_str().unwrap().to_string();
+    assert!(promovida != de_cliente && nueva["promoted_from"] == de_cliente.as_str(), "{nueva}");
+    let r = a.sync();
+    b.sync();
+    let rc = c.sync();
+    assert_eq!(rc["conflictos_de_espacio"].as_u64().unwrap_or(0) + r["conflictos_de_espacio"].as_u64().unwrap_or(0), 0, "{r} {rc}");
     let m = b.get(&promovida).expect("la promovida llega por el general");
     assert_eq!(m["title"], "Astro 5 rompe con Node 18");
-    let h = b.json_en(&b.dir, &["history", &promovida]);
-    assert_eq!(h.as_array().map(Vec::len), Some(0), "sin el historial de acme: {h}");
+    let casa = b.dir.to_string_lossy().to_string();
+    let h: serde_json::Value = serde_json::from_str(&b.ok_en(&b.dir, &["--json", "history", &promovida], &[("USERPROFILE", &casa), ("HOME", &casa)])).unwrap();
+    assert_eq!(h.as_array().map(Vec::len), Some(0), "sin historial: {h}");
+    assert!(b.get(&de_cliente).is_none(), "la de acme no llega por el general");
+    let original = c.get(&de_cliente).expect("la de acme sigue en acme");
+    assert_eq!(original["title"], "En la web de Acme Astro rompe con Node 18");
+    assert!(!original["tags"].to_string().contains("trade:"), "{original}");
     let clave_general = clave_del_codigo(&a.ok(&["sync", "code"]));
     for l in p.lineas_de(&p.url()) {
         let j = descifrar_linea(&clave_general, &l);

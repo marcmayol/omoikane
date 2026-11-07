@@ -214,23 +214,79 @@ fn el_recall_entiende_un_nombre_mal_dictado() {
     let pedir = |db: &mut Connection, sesion: &str, prompt: &str| {
         recall::al_preguntar(db, &home, &Entrada { session_id: sesion.into(), prompt: prompt.into(), ..Default::default() }, None).unwrap().unwrap_or_default()
     };
-    let t = pedir(&mut db, "a", "dónde publica trova los binarios del instalador");
-    assert!(t.contains("troba-releases"), "trova → Troba: {t}");
+    // Con 5 letras ya no: «trova» podría ser una palabra normal (como «tropa»).
+    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &["trova".to_string()], &[true]).unwrap().is_empty(), "trova (5 letras) no es Troba");
+    let t = pedir(&mut db, "a", "cómo va trova esta semana");
+    assert!(!t.contains("troba-releases"), "{t}");
     let t = pedir(&mut db, "b", "en tokimicho de dónde salen las fechas del calendario");
     assert!(t.contains("hoja de config"), "tokimicho → Tokimichi: {t}");
     // Una palabra que sí está en alguna memoria no se toca, aunque esté a una letra de un nombre.
     let terminos: Vec<String> = ["trova", "tokimicho", "onmoikane", "socialpublish"].iter().map(|t| t.to_string()).collect();
-    let arreglos = nombres::mal_escritos(&db, &terminos, &[false, true, true, true]).unwrap();
+    let arreglos = nombres::mal_escritos(&db, &Ambito::Todos, &terminos, &[false, true, true, true]).unwrap();
     assert_eq!(arreglos, vec![(1, vec!["tokimichi".to_string()])], "trova está en alguna memoria; onmoikane y socialpublish no son proyectos de esta base");
     // Un nombre con separadores, escrito junto o a una letra, da sus palabras.
     let sp = carpeta(&dir, "social-publish");
     guardar(&mut db, &sp, "Social", "Publica en redes.");
-    let arreglos = nombres::mal_escritos(&db, &terminos, &[false, false, false, true]).unwrap();
+    let arreglos = nombres::mal_escritos(&db, &Ambito::Todos, &terminos, &[false, false, false, true]).unwrap();
     assert_eq!(arreglos, vec![(3, vec!["social".to_string(), "publish".to_string()])]);
     // A una letra de dos proyectos a la vez, ninguno.
     let toka = carpeta(&dir, "Tokimicha");
     guardar(&mut db, &toka, "Otro", "Otro.");
-    assert!(nombres::mal_escritos(&db, &terminos, &[false, true, false, false]).unwrap().is_empty());
+    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &terminos, &[false, true, false, false]).unwrap().is_empty());
+}
+
+/// Palabras normales que no salen en ninguna memoria no se vuelven proyectos: con menos de 6 letras
+/// («tropa», «rodeo», «rodes», «balsa»), con un nombre de menos de 6 («trobar» → Troba), ni una flexión
+/// del nombre («faltas» → Faltis). Y un nombre mal dictado solo se busca entre los proyectos que se ven:
+/// desde un proyecto sin espacio, nunca el de un cliente.
+#[test]
+fn el_recall_no_cambia_palabras_normales_ni_mira_otros_clientes() {
+    let (dir, mut db) = base("recall-negativos");
+    for (nombre, titulo) in [("Troba", "Troba indexa"), ("Rodet", "Rodet pesa bobinas"), ("Balùa", "Balùa cuenta calorías"), ("Faltis", "Faltis compara tickets")] {
+        let p = carpeta(&dir, nombre);
+        guardar(&mut db, &p, titulo, "Una nota del proyecto.");
+    }
+    let terminos: Vec<String> = ["tropa", "trobar", "rodeo", "rodes", "balsa", "faltas"].iter().map(|t| t.to_string()).collect();
+    let todos = vec![true; terminos.len()];
+    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &terminos, &todos).unwrap().is_empty());
+    // «faltis» sí es Faltis, y «faltiz» (no es una flexión) también.
+    let t2: Vec<String> = ["faltiz".to_string()].to_vec();
+    assert_eq!(nombres::mal_escritos(&db, &Ambito::Todos, &t2, &[true]).unwrap(), vec![(0, vec!["faltis".to_string()])]);
+    // Un proyecto de un cliente: desde lo que no tiene espacio no se busca su nombre; desde su espacio o
+    // desde la carpeta general, sí.
+    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
+    let kawa = carpeta(&dir, "Kawaneko");
+    guardar(&mut db, &kawa, "Kawaneko guarda fotos", "En la caché.");
+    proyecto::asignar_espacio(&db, id_de(&db, &kawa), Some(acme)).unwrap();
+    let t3: Vec<String> = ["kawaneco".to_string()].to_vec();
+    let personal = Ambito::Espacio(None);
+    assert!(nombres::mal_escritos(&db, &personal, &t3, &[true]).unwrap().is_empty(), "de otro cliente, no");
+    assert_eq!(nombres::mal_escritos(&db, &Ambito::Espacio(Some(acme)), &t3, &[true]).unwrap().len(), 1);
+    assert_eq!(nombres::mal_escritos(&db, &Ambito::Todos, &t3, &[true]).unwrap().len(), 1);
+}
+
+/// `proyecto::buscar_en` solo busca entre los proyectos del espacio del ámbito, y su error no nombra
+/// los de otro cliente.
+#[test]
+fn buscar_un_proyecto_no_sale_del_espacio() {
+    let (dir, mut db) = base("buscar-espacio");
+    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
+    let beta = proyecto::crear_espacio(&db, "beta").unwrap();
+    let a = carpeta(&dir, "acme-app");
+    let b = carpeta(&dir, "beta-app");
+    guardar(&mut db, &a, "Nota", "De acme.");
+    guardar(&mut db, &b, "Nota", "De beta.");
+    proyecto::asignar_espacio(&db, id_de(&db, &a), Some(acme)).unwrap();
+    proyecto::asignar_espacio(&db, id_de(&db, &b), Some(beta)).unwrap();
+    let desde_beta = Ambito::Proyecto { id: id_de(&db, &b), space: Some(beta) };
+    assert_eq!(proyecto::buscar_en(&db, "beta", &desde_beta).unwrap(), id_de(&db, &b), "«beta» encaja solo con el suyo, aunque «app» también con acme");
+    let e = proyecto::buscar_en(&db, "acme-app", &desde_beta).unwrap_err().to_string();
+    let conocidos = e.split_once("known:").map(|(_, l)| l.to_string()).unwrap_or_default();
+    assert!(conocidos.contains("beta-app") && !conocidos.contains("acme"), "el error no nombra lo de otro cliente: {e}");
+    assert_eq!(proyecto::buscar_en(&db, "app", &desde_beta).unwrap(), id_de(&db, &b), "«app» solo encaja con el suyo");
+    // Por su carpeta tampoco.
+    assert!(proyecto::buscar_en(&db, &a, &desde_beta).is_err());
+    assert_eq!(proyecto::buscar_en(&db, "acme-app", &Ambito::Todos).unwrap(), id_de(&db, &a));
 }
 
 /// Dos worktrees de un repositorio sin `origin`, en carpetas con nombres distintos, son el mismo

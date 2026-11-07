@@ -1401,7 +1401,8 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let mut carpetas: HashMap<String, String> = HashMap::new();
     // El historial de todas, en una consulta (una por memoria eran 50.000 con una base grande).
     let mut historiales = crate::memoria::historiales(db)?;
-    // Lo que pasó de un cliente a un oficio no lleva su historial (podía ser texto del cliente).
+    // Lo que una versión previa de la 1.8.0 pasó de un cliente a un oficio con su id no lleva su
+    // historial (era texto del cliente). Desde que eso crea una memoria nueva ya no se apunta ninguna.
     for id in crate::oficios::historiales_solo_aqui(db)? {
         historiales.remove(&id);
     }

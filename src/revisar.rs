@@ -927,21 +927,27 @@ pub fn superadas_por(db: &Connection, id: &str) -> Result<Vec<(String, String, S
 
 /// Para el recall: una nota corta por memoria que conviene tomar con cuidado (sustituida,
 /// contradicha, desfasada o estado viejo).
-pub fn notas(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
-    notas_con(db, memorias, false)
+/// Las notas nombran la otra memoria (su id, su título, el motivo del veredicto) solo si se ve desde
+/// `ambito`: una memoria de oficio que se ve en dos clientes puede tener un veredicto con una de uno de
+/// ellos.
+pub fn notas(db: &Connection, ambito: &Ambito, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notas_con(db, ambito, memorias, false)
 }
 
 /// Para `search`: lo mismo y, además, las que ya toca revisar. En el recall no, para no meter ruido:
 /// ahí solo va lo que dice que la memoria puede estar mal.
-pub fn notas_busqueda(db: &Connection, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
-    notas_con(db, memorias, true)
+pub fn notas_busqueda(db: &Connection, ambito: &Ambito, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notas_con(db, ambito, memorias, true)
 }
 
-fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Result<HashMap<String, String>> {
+fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revision: bool) -> Result<HashMap<String, String>> {
     let mut r = HashMap::new();
     if memorias.is_empty() {
         return Ok(r);
     }
+    // Lo que se ve desde el espacio del ámbito (las otras memorias de su espacio, sí).
+    let vista = ambito.amplio();
+    let se_ve = |id: &str| -> Result<bool> { if matches!(vista, Ambito::Todos) { Ok(true) } else { vista.ve(db, id) } };
     let corto = |id: &str| -> Result<String> {
         let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
         Ok(format!("{} «{}»", id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()))
@@ -961,9 +967,14 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
                         _ => (otra.clone(), 1, v.reason.clone()),
                     };
                     let via = if saltos > 1 { format!(" (via {saltos})") } else { String::new() };
-                    format!("superseded by {}{via}: {}", corto(&ultima)?, motivo(&reason, "use that one"))
+                    if se_ve(&ultima)? {
+                        format!("superseded by {}{via}: {}", corto(&ultima)?, motivo(&reason, "use that one"))
+                    } else {
+                        // Ni su título ni el motivo (que puede ser el título de la otra).
+                        "superseded by a newer memory that is not in this scope".to_string()
+                    }
                 }
-                CONTRADICE => format!("contradicts {}: {}", corto(otra)?, motivo(&v.reason, "check which one holds, asking the user if unsure")),
+                CONTRADICE if se_ve(otra)? => format!("contradicts {}: {}", corto(otra)?, motivo(&v.reason, "check which one holds, asking the user if unsure")),
                 _ => continue,
             };
             r.insert(esta.clone(), nota);
@@ -996,6 +1007,7 @@ fn notas_con(db: &Connection, memorias: &[&Memoria], con_revision: bool) -> Resu
         if let Some((otra, detalle, titulo)) =
             q.query_row(params![m.id, DESFASADA], |f| Ok((f.get::<_, String>(0)?, f.get::<_, String>(1)?, f.get::<_, String>(2)?))).optional()?
             && !fuera.contains(&(m.id.clone(), DESFASADA.to_string(), otra.clone()))
+            && se_ve(&otra)?
         {
             let corto: String = titulo.chars().take(80).collect();
             r.insert(m.id.clone(), format!("may be outdated: newer {} «{corto}» ({detalle})", otra.chars().take(12).collect::<String>()));

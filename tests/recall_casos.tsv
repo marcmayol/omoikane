@@ -105,3 +105,16 @@ q	n_social	socialpublish: falla threads desde ayer	~
 q	n_caldero	cómo limpio el caldero de cobre sin mancharlo	~
 q	-	receta de caldereta de langosta para el domingo	~
 q	-	qué raza de gato es un kawaneco según el veterinario	~
+# Palabras normales que no deben volverse proyectos (1.8.0): con menos de 6 letras, un nombre de menos de 6 o una flexión
+m	n_troba	Troba indexa los ficheros del disco	El índice de Troba se guarda en su carpeta de datos y se rehace con la orden reindex.	fact		Troba
+m	n_rodet	Rodet calcula lo que queda en cada bobina	Rodet pesa la bobina y resta el carrete vacío para saber los metros de filamento.	fact		Rodet
+m	n_balua	Balùa saca las calorías de la foto del plato	Balùa usa un modelo local para estimar las calorías de lo que hay en el plato.	fact		Balùa
+m	n_faltis	Faltis compara los tickets del súper	Faltis lee cada ticket y compara el precio de cada producto entre tiendas.	fact		Faltis
+q	-	la tropa del colegio sale de excursión el sábado	~
+q	-	no consigo trobar las llaves del coche esta mañana	~
+q	-	el rodeo de la feria empieza a las seis	~
+q	-	les rodes de la bici estan desinflades	~
+q	-	alquilamos una balsa para bajar el río en verano	~
+q	-	tengo muchas faltas de ortografía en el informe	~
+q	-	corrige las faltas de ortografía en la descripción de cada producto	~
+q	-	alquilamos una balsa para hacer la foto del plato en el río	~

@@ -102,18 +102,18 @@ struct Cambio {
     /// Move it to this space: it applies to every project in it.
     #[arg(long, value_name = "SPACE", conflicts_with_all = ["global", "project"])]
     space: Option<String>,
-    /// Make it a trade memory (repeatable): every project of that trade sees it. It keeps its id, history and verdicts.
+    /// Make it a trade memory (repeatable): every project of that trade sees it. A personal memory keeps its id, history and verdicts; a client's (in a space) becomes a NEW trade memory and the original stays.
     #[arg(long = "trade", value_name = "TRADE", conflicts_with_all = ["space", "project", "no_trade"])]
     trades: Vec<String>,
-    /// It stops being a trade memory (it stays global).
+    /// It stops being a trade memory (it becomes an ordinary global memory, not back to its project).
     #[arg(long)]
     no_trade: bool,
     /// On a trade memory, who it is for: client (projects in a space), personal (projects in no space) or both.
     #[arg(long = "for", value_name = "WHO", conflicts_with = "no_trade")]
     para: Option<String>,
-    /// With a trade memory: save even if the leak check flags a false positive.
-    #[arg(short, long)]
-    force: bool,
+    /// With a trade memory: save even if the leak check flags something you checked is a false positive (never an absolute path or a repository URL).
+    #[arg(long)]
+    allow_leaks: bool,
     /// Why it changes (kept with the previous version).
     #[arg(short, long)]
     reason: Option<String>,
@@ -160,6 +160,9 @@ struct Decisiones {
     /// With --resolve: why (kept with the previous version).
     #[arg(short, long, requires = "resolve")]
     reason: Option<String>,
+    /// With --resolve, on a trade decision: save the answer even if the leak check flags a false positive (never an absolute path or a repository URL).
+    #[arg(long, requires = "resolve")]
+    allow_leaks: bool,
 }
 
 // Los datos de `remember` y `update`, aparte por lo mismo que `Diario`.
@@ -245,9 +248,12 @@ enum Orden {
         /// Who saves it (for example "claude-code:<session>").
         #[arg(long, default_value = "cli")]
         source: String,
-        /// Save it even if a very similar memory already exists (or, with --trade, even if the leak check flags a false positive).
+        /// Save it even if a very similar memory already exists (it does not skip the leak check of --trade).
         #[arg(short, long)]
         force: bool,
+        /// With --trade: save even if the leak check flags something you checked is a false positive (never an absolute path or a repository URL).
+        #[arg(long, requires = "trades")]
+        allow_leaks: bool,
         /// A stable key (e.g. kumi-profile): creates or updates the one memory with this key at its level (this project, or the one --space, --trade or --global says), with no duplicate check.
         #[arg(long, value_name = "KEY")]
         key: Option<String>,
@@ -956,7 +962,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, key, datos: DatosNuevos { data } } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, allow_leaks, key, datos: DatosNuevos { data } } => {
             let content = contenido_de(content, &title, data.is_some())?;
             let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
             // Memoria de oficio: `--trade`, o una etiqueta `trade:` puesta a mano.
@@ -979,8 +985,10 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             // Desde una carpeta general se ve todo: ahí se buscan las duplicadas.
             let busca_en = if !project.is_empty() && proyecto::es_general(&actual) { actual.clone() } else { project.clone() };
             let (mut db, modelo) = abrir_con_modelo(c)?;
-            if de_oficio && !force {
-                avisar_fugas(c, &omoikane::oficios::fugas(&db, &format!("{title}\n{content}\n{}", paths.join(" ")))?)?;
+            // Todo lo que llevará: texto, rutas, etiquetas, clave y datos (`--force` no lo salta).
+            if de_oficio {
+                let texto = omoikane::oficios::texto_para_fugas(&[&title, &content, &paths.join(" ")], &tags, key.as_deref(), data.as_ref());
+                avisar_fugas(c, &omoikane::oficios::bloquean(omoikane::oficios::fugas(&db, &texto)?, allow_leaks))?;
             }
             if !force
                 && key.is_none()
@@ -1093,7 +1101,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, force, reason, replace, with, append, datos: DatosCambio { data, no_data } }) => {
+        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, allow_leaks, reason, replace, with, append, datos: DatosCambio { data, no_data } }) => {
             let data = if no_data { Some(None) } else { data.as_deref().map(memoria::datos_de_texto).transpose()?.map(Some) };
             anyhow::ensure!(
                 replace.len() == with.len(),
@@ -1114,8 +1122,33 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let cambios = Cambios { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..cambios };
-            let (cambios, promovida) = oficios_al_cambiar(c, &db, &id, cambios, &trades, no_trade, para.as_deref(), force)?;
+            let (cambios, de_cliente) = oficios_al_cambiar(c, &db, &id, cambios, &trades, no_trade, para.as_deref(), data.as_ref(), allow_leaks)?;
             let antes = omoikane::revisar::antes(&db)?;
+            // De un cliente a un oficio: una memoria nueva, y la del cliente se queda como estaba.
+            if let Some(actual) = de_cliente {
+                let tags = cambios.tags.clone().unwrap_or_else(|| actual.tags.clone());
+                let m = omoikane::oficios::crear_de_oficio(&mut db, &actual, &cambios, tags, "cli", modelo.as_ref())?;
+                if let Some(d) = data {
+                    avisar_datos_tapados(&memoria::poner_datos(&mut db, &m.id, d)?);
+                }
+                let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
+                avisar_redactados(&m);
+                if c.json {
+                    let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
+                    v["promoted_from"] = serde_json::json!(actual.id);
+                    return json(&v);
+                }
+                println!(
+                    "{}",
+                    tr!(
+                        "created trade memory {} from {}: it came from a client, so the original stays in its project (with its history); forget it if it now only repeats this one",
+                        "creada la memoria de oficio {} a partir de {}: venía de un cliente, así que la original se queda en su proyecto (con su historial); olvídala si ya solo repite esta",
+                        corto(&m.id),
+                        corto(&actual.id)
+                    )
+                );
+                return Ok(());
+            }
             // Solo los datos: sin versión nueva (como fijarla), y sin el «nada que cambiar» de `update`.
             let solo_datos = data.is_some() && sin_cambios(&cambios);
             let (m, cambiados) = if solo_datos {
@@ -1123,19 +1156,6 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             } else {
                 memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?
             };
-            // Promovida a un oficio: si su texto de antes podía ser de un cliente, su historial no viaja.
-            if let Some(antes) = &promovida
-                && omoikane::oficios::al_promover(&db, antes)?
-                && !c.json
-            {
-                eprintln!(
-                    "{}",
-                    tr!(
-                        "it came from a project or a client: its previous versions stay on this computer and don't travel through sync",
-                        "venía de un proyecto o de un cliente: sus versiones anteriores se quedan en este equipo y no viajan por la sincronización"
-                    )
-                );
-            }
             if let Some(d) = data {
                 avisar_datos_tapados(&memoria::poner_datos(&mut db, &m.id, d)?);
             }
@@ -1200,7 +1220,13 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         Orden::History { id } => {
             let db = abrir(c)?;
             let m = memoria::obtener(&db, &id)?;
-            let v = memoria::historial(&db, &m.id)?;
+            // Desde un proyecto, solo una memoria que se vea desde ahí (ver `memoria::historial_en`), con
+            // sus oficios mirados (sin ellos no vería las memorias de su oficio).
+            let aqui = proyecto_de(c)?;
+            if let Err(e) = omoikane::oficios::preparar(&db, &aqui) {
+                eprintln!("omoikane: trades: {e:#}");
+            }
+            let v = memoria::historial_en(&db, &Ambito::de(&db, &aqui)?, &m.id)?;
             if c.json {
                 return json(&v);
             }
@@ -1919,7 +1945,13 @@ fn decisiones_cli(c: &Comun, d: Decisiones) -> Result<()> {
             tr!("{id} is in another space: resolve it from that project", "{id} es de otro espacio: resuélvela desde ese proyecto")
         );
         let antes = omoikane::revisar::antes(&db)?;
-        let m = memoria::resolver_decision(&mut db, &id, respuesta, d.reason)?;
+        let m = match memoria::resolver_decision(&mut db, &id, respuesta, d.reason, d.allow_leaks)? {
+            Ok(m) => m,
+            Err(fugas) => {
+                avisar_fugas(c, &fugas)?;
+                unreachable!()
+            }
+        };
         let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
         omoikane::sync::programar(&ruta_db(c));
         if c.json {
@@ -2158,7 +2190,7 @@ fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>,
     let pedido = if let Some(s) = space {
         Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project {
-        let id = proyecto::buscar(db, p)?;
+        let id = proyecto::buscar_en(db, p, &base)?;
         Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
     } else if todos {
         base.amplio()
@@ -2413,7 +2445,7 @@ fn oficios_pedidos(trades: &[String], tags: Vec<String>) -> Result<(Vec<String>,
 }
 
 /// Si una memoria de oficio nombra algo de un proyecto o de un cliente, lo dice y sale con código 2
-/// (como una duplicada): no se guarda sin `--force`.
+/// (como una duplicada): no se guarda (salvo los falsos positivos que deje pasar `--allow-leaks`).
 fn avisar_fugas(c: &Comun, fugas: &[omoikane::oficios::Fuga]) -> Result<()> {
     if fugas.is_empty() {
         return Ok(());
@@ -2434,37 +2466,35 @@ fn avisar_fugas(c: &Comun, fugas: &[omoikane::oficios::Fuga]) -> Result<()> {
         println!(
             "{}",
             tr!(
-                "  rewrite it without them, or save it in the project (without --trade); if they are false positives, add --force",
-                "  reescríbela sin eso, o guárdala en el proyecto (sin --trade); si son falsos positivos, añade --force"
+                "  rewrite it without them, or save it in the project (without --trade); if you checked they are false positives, add --allow-leaks (it never lets through an absolute path or a repository URL)",
+                "  reescríbela sin eso, o guárdala en el proyecto (sin --trade); si has comprobado que son falsos positivos, añade --allow-leaks (nunca deja pasar una ruta absoluta ni la URL de un repositorio)"
             )
         );
     }
     std::process::exit(2);
 }
 
-/// Los oficios de `update` (ver `oficios::al_cambiar`): `--trade` la hace de oficio (la promueve, con su
-/// id y su historial), `--no-trade` deja de serlo, `--for` dice para quién; y lo nuevo de una memoria de
-/// oficio pasa por `oficios::fugas` (sin `--force`). Devuelve los cambios y la memoria de antes si se
-/// promueve (para `oficios::al_promover` después).
+/// Los oficios de `update` (ver `oficios::al_cambiar`): `--trade` la hace de oficio (la promueve),
+/// `--no-trade` deja de serlo, `--for` dice para quién; y lo nuevo de una memoria de oficio (texto,
+/// rutas, etiquetas, datos) pasa por `oficios::fugas` (salvo lo que deje pasar `--allow-leaks`).
+/// Devuelve los cambios y, si es de un cliente y se promueve, la memoria del cliente: entonces no se
+/// cambia, se crea una de oficio nueva (`oficios::crear_de_oficio`).
 #[allow(clippy::too_many_arguments)]
-fn oficios_al_cambiar(c: &Comun, db: &Connection, id: &str, mut cambios: Cambios, trades: &[String], no_trade: bool, para: Option<&str>, force: bool) -> Result<(Cambios, Option<Memoria>)> {
+fn oficios_al_cambiar(
+    c: &Comun,
+    db: &Connection,
+    id: &str,
+    mut cambios: Cambios,
+    trades: &[String],
+    no_trade: bool,
+    para: Option<&str>,
+    datos: Option<&Option<serde_json::Value>>,
+    allow_leaks: bool,
+) -> Result<(Cambios, Option<Memoria>)> {
     use omoikane::oficios;
     let actual = memoria::obtener(db, id)?;
     let trade = if no_trade { Some(String::new()) } else { (!trades.is_empty()).then(|| trades.join(",")) };
-    let mut anadido: Vec<String> = cambios.replace.iter().map(|(_, con)| con.clone()).collect();
-    anadido.extend(cambios.append.clone());
-    let pedido = oficios::PedidoCambio {
-        trade: trade.as_deref(),
-        para,
-        tags: cambios.tags.clone(),
-        a_proyecto: cambios.space_id.is_some() || cambios.project.as_deref().is_some_and(|p| !p.is_empty()),
-        a_global: cambios.project.as_deref() == Some(""),
-        title: cambios.title.as_deref(),
-        content: cambios.content.as_deref(),
-        anadido,
-        paths: cambios.paths.as_deref(),
-        force,
-    };
+    let pedido = oficios::PedidoCambio { trade: trade.as_deref(), para, cambios: &cambios, datos: datos.map(|d| d.as_ref()), permitir_fugas: allow_leaks };
     let plan = match oficios::al_cambiar(db, &actual, pedido)? {
         Ok(plan) => plan,
         Err(fugas) => {
@@ -2473,10 +2503,13 @@ fn oficios_al_cambiar(c: &Comun, db: &Connection, id: &str, mut cambios: Cambios
         }
     };
     cambios.tags = plan.tags;
+    if plan.nueva {
+        return Ok((cambios, Some(actual)));
+    }
     if plan.hacer_global {
         cambios.project = Some(String::new());
     }
-    Ok((cambios, plan.promueve.then_some(actual)))
+    Ok((cambios, None))
 }
 
 /// `omoi trades`.
@@ -3357,7 +3390,8 @@ fn en_espanol(c: Command) -> Command {
             ("trades", "Memoria de oficio (android, web, wordpress…; se puede repetir): la ven todos los proyectos de ese oficio, de cualquier cliente, y ningún otro. Solo conocimiento del stack, nada de un proyecto ni de un cliente."),
             ("para", "Con --trade, para quién es: client (solo proyectos en un espacio, de un cliente), personal (solo proyectos sin espacio) o both (por defecto)."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
-            ("force", "Guardarla aunque ya exista una muy parecida (o, con --trade, aunque el aviso de fugas marque un falso positivo)."),
+            ("force", "Guardarla aunque ya exista una muy parecida (no se salta el aviso de fugas de --trade)."),
+            ("allow_leaks", "Con --trade: guardarla aunque el aviso de fugas marque algo que has comprobado que es un falso positivo (nunca deja pasar una ruta absoluta ni la URL de un repositorio)."),
             ("key", "Una clave fija (p. ej. kumi-perfil): crea o actualiza la única memoria con esa clave en su nivel (este proyecto, o el que digan --space, --trade o --global), sin buscar duplicadas."),
             ("data", "Datos estructurados para programas, en JSON: van con la memoria, fuera de la búsqueda y del recall."),
         ]),
@@ -3386,10 +3420,10 @@ fn en_espanol(c: Command) -> Command {
             ("no_tags", "Quita todas las etiquetas."),
             ("project", "Llevarla al proyecto de esta carpeta."),
             ("global", "Hacerla global: vale para todos los proyectos."),
-            ("trades", "Hacerla de oficio (se puede repetir): la ven todos los proyectos de ese oficio. Conserva su id, su historial y sus veredictos."),
+            ("trades", "Hacerla de oficio (se puede repetir): la ven todos los proyectos de ese oficio. Una personal conserva su id, su historial y sus veredictos; la de un cliente (en un espacio) pasa a una memoria de oficio NUEVA y la original se queda."),
             ("para", "En una memoria de oficio, para quién es: client (proyectos en un espacio), personal (proyectos sin espacio) o both."),
-            ("no_trade", "Deja de ser de oficio (se queda global)."),
-            ("force", "En una memoria de oficio: guardar aunque el aviso de fugas marque un falso positivo."),
+            ("no_trade", "Deja de ser de oficio (se queda como global corriente, no vuelve a su proyecto)."),
+            ("allow_leaks", "En una memoria de oficio: guardar aunque el aviso de fugas marque algo que has comprobado que es un falso positivo (nunca deja pasar una ruta absoluta ni la URL de un repositorio)."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
             ("replace", "Trozo exacto del contenido que se cambia; tiene que aparecer exactamente una vez. Cada uno con su --with (se puede repetir)."),
             ("with", "Lo que va en lugar del --replace que le toca (se puede repetir, en el mismo orden)."),
@@ -3438,6 +3472,7 @@ fn en_espanol(c: Command) -> Command {
             ("resolve", "En vez de listar, resuelve esta decisión: se añade su respuesta, se quitan las etiquetas `open` y `blocking` y se pone `resolved`."),
             ("answer", "Con --resolve: la respuesta de la persona."),
             ("reason", "Con --resolve: por qué (se guarda con la versión anterior)."),
+            ("allow_leaks", "Con --resolve, en una decisión de oficio: guardar la respuesta aunque el aviso de fugas marque un falso positivo (nunca una ruta absoluta ni la URL de un repositorio)."),
         ]),
         ("list", "Todas las memorias con estas etiquetas en este proyecto (las de su espacio y las globales), de la más nueva a la más vieja, sin búsqueda ni ranking: para programas que guardan algo con una etiqueta y tienen que encontrarlo siempre.", &[
             ("tags", "Etiqueta que tienen que llevar (se puede repetir: todas). Al menos una."),

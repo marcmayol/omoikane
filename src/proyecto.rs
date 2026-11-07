@@ -595,6 +595,29 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
 /// El proyecto que dice una persona o un agente: una carpeta, o un nombre o trozo de nombre de los
 /// proyectos conocidos («balua»). Error si no encaja con ninguno o encaja con varios (con la lista).
 pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
+    buscar_en(db, texto, &crate::memoria::Ambito::Todos)
+}
+
+/// [`buscar`] entre los proyectos que se ven desde `ambito`: desde un proyecto o un espacio, los de su
+/// espacio (o, sin espacio, los que no tienen); desde una carpeta general, todos. Un nombre se busca
+/// solo entre ellos (el de otro cliente no encaja ni sale en el error), y una carpeta de otro espacio
+/// es un error.
+pub fn buscar_en(db: &Connection, texto: &str, ambito: &crate::memoria::Ambito) -> Result<i64> {
+    let todo = matches!(ambito, crate::memoria::Ambito::Todos);
+    let id = buscar_entre(db, texto, if todo { None } else { Some(ambito.espacio()) })?;
+    anyhow::ensure!(
+        todo || espacio_de(db, id)? == ambito.espacio(),
+        tr!(
+            "that project is in another space: from here you only reach the projects of this one",
+            "ese proyecto es de otro espacio: desde aquí solo se llega a los proyectos de este"
+        )
+    );
+    Ok(id)
+}
+
+/// `buscar`, con los nombres solo de los proyectos de este espacio (`Some(None)`: los que no tienen;
+/// `None`: todos).
+fn buscar_entre(db: &Connection, texto: &str, espacio: Option<Option<i64>>) -> Result<i64> {
     let t = texto.trim();
     anyhow::ensure!(!t.is_empty(), tr!("which project? give its folder or its name", "¿qué proyecto? di su carpeta o su nombre"));
     let parece_ruta = t.contains(['/', '\\']) || t == "." || t == "..";
@@ -610,7 +633,12 @@ pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
         return Ok(id);
     }
     let todos: Vec<(i64, String, String)> = {
-        let mut q = db.prepare("SELECT id, name, path FROM project WHERE id != 0 ORDER BY name")?;
+        let filtro = match espacio {
+            None => String::new(),
+            Some(Some(s)) => format!(" AND space_id = {s}"),
+            Some(None) => " AND space_id IS NULL".to_string(),
+        };
+        let mut q = db.prepare(&format!("SELECT id, name, path FROM project WHERE id != 0{filtro} ORDER BY name"))?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
     // De más a menos seguro (`nombres`): el mismo nombre sin mayúsculas, acentos ni separadores
