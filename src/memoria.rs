@@ -1660,7 +1660,7 @@ pub fn resolver_decision(
     let respuesta = respuesta.trim();
     ensure!(!respuesta.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
     if !crate::oficios::de_memoria(&m).is_empty() {
-        let f = crate::oficios::bloquean(crate::oficios::fugas(db, respuesta)?, permitir_fugas);
+        let f = crate::oficios::bloquean(crate::oficios::fugas_en(db, &[("answer", respuesta.to_string())])?, permitir_fugas);
         if !f.is_empty() {
             return Ok(Err(f));
         }

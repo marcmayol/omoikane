@@ -508,8 +508,8 @@ impl Servidor {
                     // Todo lo que llevará: texto, rutas, etiquetas, clave y datos. `force` no lo salta (es
                     // para las duplicadas); `allow_leaks`, solo lo que puede ser un falso positivo.
                     let rutas = p.paths.as_deref().unwrap_or_default().join(" ");
-                    let texto = crate::oficios::texto_para_fugas(&[&p.title, &p.content, &rutas], &tags, p.key.as_deref(), p.data.as_ref());
-                    let fugas = crate::oficios::bloquean(crate::oficios::fugas(db, &texto)?, p.allow_leaks.unwrap_or(false));
+                    let campos = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &rutas)], &tags, p.key.as_deref(), p.data.as_ref());
+                    let fugas = crate::oficios::bloquean(crate::oficios::fugas_en(db, &campos)?, p.allow_leaks.unwrap_or(false));
                     if !fugas.is_empty() {
                         return Ok(serde_json::json!({ "saved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
                     }

@@ -364,16 +364,19 @@ fn las_fugas_miran_etiquetas_clave_y_datos() {
         }
         p.tool_ok(&app, "remember", v)
     };
-    for (extra, tipo) in [
-        (json!({ "tags": ["globex-tienda"] }), "project"),
-        (json!({ "key": "globex-perfil" }), "space"),
-        (json!({ "data": { "cliente": "Globex" } }), "space"),
-        (json!({ "data": { "globex-tienda": 1 } }), "project"),
-        (json!({ "content": "En balua pasa siempre." }), "project"),
-        (json!({ "content": "Lo vimos en QA ayer." }), "space"),
+    // Cada fuga dice en qué campo está (la clave que nombra un cliente se arregla renombrándola).
+    for (extra, tipo, campo) in [
+        (json!({ "tags": ["globex-tienda"] }), "project", "tag"),
+        (json!({ "key": "globex-perfil" }), "space", "key"),
+        (json!({ "data": { "cliente": "Globex" } }), "space", "data"),
+        (json!({ "data": { "globex-tienda": 1 } }), "project", "data"),
+        (json!({ "content": "En balua pasa siempre." }), "project", "content"),
+        (json!({ "content": "Lo vimos en QA ayer." }), "space", "content"),
     ] {
         let r = base(extra.clone());
         assert!(r["saved"] == false && tipos(&r).contains(&tipo.to_string()), "{extra}: {r}");
+        let campos: Vec<&str> = r["trade_leaks"].as_array().unwrap().iter().filter(|f| f["type"] == tipo).filter_map(|f| f["field"].as_str()).collect();
+        assert!(campos.contains(&campo), "{extra}: se esperaba el campo {campo}: {r}");
     }
     // Las reservadas no cuentan.
     let r = base(json!({ "tags": ["review:2026-12-01", "status", "blocking", "open"] }));

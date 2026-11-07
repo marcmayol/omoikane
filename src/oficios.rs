@@ -671,6 +671,10 @@ pub struct Fuga {
     #[serde(rename = "type")]
     pub tipo: &'static str,
     pub text: String,
+    /// Dónde está: `title`, `content`, `paths`, `tag`, `key`, `data` o `answer` (vacío si no se sabe).
+    /// Una clave que nombra un proyecto («kumi-ruta») se arregla en un momento si se sabe que es la clave.
+    #[serde(rename = "field", skip_serializing_if = "str::is_empty")]
+    pub campo: &'static str,
 }
 
 /// Nombres de proyecto tan genéricos que nombrarlos no dice de quién es (y los de los oficios).
@@ -802,14 +806,36 @@ fn aplanar(v: &serde_json::Value, salida: &mut Vec<String>) {
 /// contenido, rutas…), sus etiquetas sin las reservadas ([`etiqueta_libre`]), la clave y los datos
 /// (sus claves y sus textos).
 pub fn texto_para_fugas(partes: &[&str], tags: &[String], clave: Option<&str>, datos: Option<&serde_json::Value>) -> String {
-    let mut v: Vec<String> = partes.iter().map(|p| p.to_string()).collect();
-    v.extend(tags.iter().filter_map(|t| etiqueta_libre(t)).map(String::from));
-    v.extend(clave.map(String::from));
+    let campos: Vec<(&'static str, &str)> = partes.iter().map(|p| ("", *p)).collect();
+    campos_para_fugas(&campos, tags, clave, datos).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
+}
+
+/// Lo mismo que [`texto_para_fugas`], campo a campo (`title`, `content`, `paths`, `tag`, `key`,
+/// `data`…), para poder decir dónde está cada fuga.
+pub fn campos_para_fugas(partes: &[(&'static str, &str)], tags: &[String], clave: Option<&str>, datos: Option<&serde_json::Value>) -> Vec<(&'static str, String)> {
+    let mut v: Vec<(&'static str, String)> = partes.iter().map(|(c, p)| (*c, p.to_string())).collect();
+    v.extend(tags.iter().filter_map(|t| etiqueta_libre(t)).map(|t| ("tag", t.to_string())));
+    v.extend(clave.map(|k| ("key", k.to_string())));
     if let Some(d) = datos {
-        aplanar(d, &mut v);
+        let mut textos = Vec::new();
+        aplanar(d, &mut textos);
+        v.extend(textos.into_iter().map(|t| ("data", t)));
     }
-    v.retain(|x| !x.trim().is_empty());
-    v.join("\n")
+    v.retain(|(_, x)| !x.trim().is_empty());
+    v
+}
+
+/// [`fugas`] de unos campos, cada fuga con el campo en que aparece (el primero que la contiene).
+pub fn fugas_en(db: &Connection, campos: &[(&'static str, String)]) -> Result<Vec<Fuga>> {
+    let texto = campos.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
+    let norma = |s: &str| crate::nombres::sin_acentos(&s.to_lowercase());
+    let campos_n: Vec<(&'static str, String)> = campos.iter().map(|(c, t)| (*c, norma(t))).collect();
+    let mut v = fugas(db, &texto)?;
+    for f in &mut v {
+        let buscado = norma(&f.text);
+        f.campo = campos_n.iter().find(|(_, t)| t.contains(&buscado)).map(|(c, _)| *c).unwrap_or("");
+    }
+    Ok(v)
 }
 
 /// Las fugas que impiden guardar. Con el permiso de fugas (`allow_leaks`), solo las que nunca son un
@@ -827,7 +853,7 @@ pub fn fugas(db: &Connection, texto: &str) -> Result<Vec<Fuga>> {
     let mut v: Vec<Fuga> = Vec::new();
     let mut pon = |tipo: &'static str, text: String| {
         if !v.iter().any(|f| f.tipo == tipo && f.text.eq_ignore_ascii_case(&text)) {
-            v.push(Fuga { tipo, text });
+            v.push(Fuga { tipo, text, campo: "" });
         }
     };
     // Espacios: un cliente, se llame como se llame (desde 2 letras: «QA», «HP»).
@@ -1022,20 +1048,20 @@ pub fn al_cambiar(db: &Connection, actual: &Memoria, p: PedidoCambio) -> Result<
             Some(d) => d.cloned(),
             None => crate::memoria::datos_de(db, &[actual.id.as_str()])?.remove(&actual.id),
         };
-        texto_para_fugas(&[&titulo, &contenido, &rutas.join(" ")], &base, None, datos.as_ref())
+        campos_para_fugas(&[("title", &titulo), ("content", &contenido), ("paths", &rutas.join(" "))], &base, None, datos.as_ref())
     } else {
         // Ya era de este oficio: lo nuevo (lo que ponen `replace` y `append`, el título, el contenido y
         // las rutas que vengan, las etiquetas que no tenía y los datos nuevos).
-        let mut partes: Vec<String> = c.replace.iter().map(|(_, con)| con.clone()).collect();
-        partes.extend(c.append.clone());
-        partes.extend(c.title.clone());
-        partes.extend(c.content.clone());
-        partes.extend(c.paths.iter().flatten().cloned());
+        let mut partes: Vec<(&'static str, String)> = c.replace.iter().map(|(_, con)| ("content", con.clone())).collect();
+        partes.extend(c.append.clone().map(|a| ("content", a)));
+        partes.extend(c.title.clone().map(|t| ("title", t)));
+        partes.extend(c.content.clone().map(|t| ("content", t)));
+        partes.extend(c.paths.iter().flatten().cloned().map(|r| ("paths", r)));
         let tenia = norma(&actual.tags);
         let nuevas: Vec<String> = base.iter().filter(|t| !tenia.contains(t)).cloned().collect();
-        texto_para_fugas(&partes.iter().map(String::as_str).collect::<Vec<_>>(), &nuevas, None, p.datos.flatten())
+        campos_para_fugas(&partes.iter().map(|(c, t)| (*c, t.as_str())).collect::<Vec<_>>(), &nuevas, None, p.datos.flatten())
     };
-    let f = bloquean(fugas(db, &texto)?, p.permitir_fugas);
+    let f = bloquean(fugas_en(db, &texto)?, p.permitir_fugas);
     if !f.is_empty() {
         return Ok(Err(f));
     }
@@ -1082,7 +1108,7 @@ pub fn crear_de_oficio(
 }
 
 /// Lo que se le dice al agente con las fugas.
-pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
+pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks: each says its `field`, so a key like `acme-route` is renamed, not the text rewritten). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
 
 /// Lo que se le dice al agente al promover una memoria de un cliente.
 pub const AVISO_PROMOVIDA: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";

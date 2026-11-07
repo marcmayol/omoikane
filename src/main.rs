@@ -987,8 +987,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let (mut db, modelo) = abrir_con_modelo(c)?;
             // Todo lo que llevará: texto, rutas, etiquetas, clave y datos (`--force` no lo salta).
             if de_oficio {
-                let texto = omoikane::oficios::texto_para_fugas(&[&title, &content, &paths.join(" ")], &tags, key.as_deref(), data.as_ref());
-                avisar_fugas(c, &omoikane::oficios::bloquean(omoikane::oficios::fugas(&db, &texto)?, allow_leaks))?;
+                let campos = omoikane::oficios::campos_para_fugas(&[("title", &title), ("content", &content), ("paths", &paths.join(" "))], &tags, key.as_deref(), data.as_ref());
+                avisar_fugas(c, &omoikane::oficios::bloquean(omoikane::oficios::fugas_en(&db, &campos)?, allow_leaks))?;
             }
             if !force
                 && key.is_none()
@@ -2461,7 +2461,11 @@ fn avisar_fugas(c: &Comun, fugas: &[omoikane::oficios::Fuga]) -> Result<()> {
             )
         );
         for f in fugas {
-            println!("  {:<10}  {}", f.tipo, f.text);
+            if f.campo.is_empty() {
+                println!("  {:<10}  {}", f.tipo, f.text);
+            } else {
+                println!("  {:<10}  {}  {}", f.tipo, f.text, tr!("(in its {})", "(en su {})", f.campo));
+            }
         }
         println!(
             "{}",
