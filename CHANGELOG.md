@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.8.0 (unreleased)
+## 1.8.0 (2026-11-07)
 
 ### Trades: memory for each stack
 - A new level between the project and the global memories: the **trade** (android, web, wordpress, rust, python…). What one stack teaches ("don't kill the Android emulator with `taskkill`") is saved once with `remember --trade android` (`trade: "android"` over MCP) and reaches every project of that trade, of any client, and no other: a client's web project never gets the Android trap. In search, recall, `recent`, `context`, the web view and `get` by id. From the home folder, all of them. `update` with `trade` turns a memory into a trade memory, and `trade: ""` turns it into an ordinary global memory (it doesn't go back to the project it came from); moving it to a project or a space drops the trade.
