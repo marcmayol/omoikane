@@ -4,6 +4,17 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.7.2 (2026-11-07)
+
+### Fixed
+- Two projects whose names only differ in case (a repository `Omoikane` and a folder `omoikane` for its campaign, say) made `project: "Omoikane"` fail with «matches several projects» in `search`, `recent`, `remember` and the CLI. A name written exactly as one of them now picks that one; written any other way (`OMOIKANE`), it still asks which.
+
+### Development
+- `examples/eval.rs` compares the recall of two binaries or two settings over a battery of prompts, deterministically and with no model as judge: the hit rate of each side and the list of prompts the change fixes and the ones it breaks. `tests/recall_casos.tsv` is a public synthetic battery (30 memories, 52 prompts, in both languages). With it a project glossary was tried and left out: on 280 real prompts it fixed none and broke none.
+
+### Compatibility
+- Same as 1.7.1: the database schema (10), the sync lines and the export format don't change.
+
 ## 1.7.1 (2026-11-06)
 
 ### Fixed

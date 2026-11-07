@@ -322,6 +322,22 @@ fn por_mcp_tampoco_se_cruza_de_espacio() {
     assert!(error && t.contains("acme-web") && t.contains("globex-web"), "{t}");
 }
 
+#[test]
+fn un_nombre_escrito_tal_cual_elige_entre_dos_que_solo_cambian_de_mayusculas() {
+    let dir = carpeta("mayusculas");
+    let repo_de = repo(&dir.join("codigo").join("Omoikane"), "git@github.com:acme/omoikane.git");
+    let campana = dir.join("campana").join("omoikane");
+    std::fs::create_dir_all(&campana).unwrap();
+    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let (a, b) = (proyecto::registrar(&db, &repo_de).unwrap(), proyecto::registrar(&db, &campana.display().to_string()).unwrap());
+    assert_ne!(a, b);
+    assert_eq!(proyecto::buscar(&db, "Omoikane").unwrap(), a);
+    assert_eq!(proyecto::buscar(&db, "omoikane").unwrap(), b);
+    // Con otras mayúsculas no hay forma de saber cuál: sigue pidiendo que se diga.
+    let e = proyecto::buscar(&db, "OMOIKANE").unwrap_err().to_string();
+    assert!(e.contains("Omoikane") && e.contains("omoikane"), "{e}");
+}
+
 // --- Clones, worktrees y carpetas movidas ---------------------------------------------------------
 
 #[test]

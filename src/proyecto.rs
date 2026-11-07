@@ -551,7 +551,16 @@ pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
     let n = t.to_lowercase();
     let exactos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase() == n).collect();
     let trozos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| nombre.to_lowercase().contains(&n)).collect();
-    let elegidos = if exactos.is_empty() { trozos } else { exactos };
+    // Dos proyectos que solo se distinguen por las mayúsculas («Omoikane» y «omoikane»): si uno se
+    // escribe tal cual, es ese.
+    let identicos: Vec<&(i64, String, String)> = exactos.iter().copied().filter(|(_, nombre, _)| nombre == t).collect();
+    let elegidos = if identicos.len() == 1 {
+        identicos
+    } else if exactos.is_empty() {
+        trozos
+    } else {
+        exactos
+    };
     match elegidos.as_slice() {
         [uno] => Ok(uno.0),
         [] => anyhow::bail!(tr!(
