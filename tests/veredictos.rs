@@ -109,6 +109,42 @@ fn fecha_de_revision_por_tipo() {
     assert!(!avisos(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
 }
 
+/// Una fecha puesta al guardar (`review:AAAA-MM-DD`): avisa ese día aunque la memoria sea nueva y de
+/// un tipo que no caduca, también en el recall, y deja de avisar al tocarla o darla por buena.
+#[test]
+fn fecha_de_revision_puesta_a_mano() {
+    let (_dir, mut db) = base("fecha");
+    let hoy: String = db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0)).unwrap();
+    let manana: String = db.query_row("SELECT date('now', 'localtime', '+1 day')", [], |f| f.get(0)).unwrap();
+    let token = guardar(&mut db, Tipo::Gotcha, "El token del vigilante caduca", "Hay que renovarlo en el panel.", &[&format!("review:{hoy}")]);
+    let oferta = guardar(&mut db, Tipo::Preference, "Usar la oferta del hosting", "Precio rebajado.", &[&format!("review:{manana}")]);
+    // Se guardó hace un mes con la fecha de hoy.
+    db.execute("UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days'), created_at = updated_at", []).unwrap();
+    let fechas: Vec<String> = avisos(&db).into_iter().filter(|a| a.0 == revisar::FECHA).map(|a| a.1).collect();
+    assert_eq!(fechas, vec![token.clone()], "la de mañana aún no");
+    let a = revisar::avisos(&db, &Ambito::Todos).unwrap().into_iter().find(|a| a.kind == revisar::FECHA).unwrap();
+    assert_eq!(a.detail, format!("review date {hoy} reached: is it still true?"));
+    // Sale en el recall (puede haber dejado de valer) y en la búsqueda.
+    assert_eq!(notas(&db, &token, false).unwrap(), format!("review date {hoy} reached: check it still holds"));
+    assert!(notas(&db, &token, true).is_some());
+    assert_eq!(notas(&db, &oferta, false), None);
+    // Una sola fecha llegada basta para el aviso al empezar, muy por debajo del umbral.
+    let cifras = revisar::pendientes(&db, &Ambito::Todos).unwrap();
+    assert_eq!(cifras.get(revisar::FECHA), Some(&1));
+    let aviso = revisar::aviso(&db, &cifras, 2).unwrap().expect("avisa con una sola");
+    assert!(aviso.contains("1 review dates reached"), "{aviso}");
+    // «Está bien así» la da por revisada.
+    revisar::descartar(&db, &token, revisar::FECHA, "").unwrap();
+    assert!(!avisos(&db).iter().any(|a| a.0 == revisar::FECHA));
+    assert_eq!(notas(&db, &token, false), None);
+    // Una etiqueta que no es una fecha no se guarda.
+    let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Mal".into(), content: "x".into(), tags: vec!["review:25-nov".into()], ..Default::default() };
+    let e = memoria::guardar(&mut db, n, None).unwrap_err().to_string();
+    assert!(e.contains("review:YYYY-MM-DD"), "{e}");
+    let c = Cambios { tags: Some(vec!["review:2026-13-01".into()]), ..Default::default() };
+    assert!(memoria::actualizar(&mut db, &oferta, c, None).is_err());
+}
+
 #[test]
 fn de_otro_equipo_gana_el_mas_nuevo() {
     let (_dir, mut db) = base("recibir");

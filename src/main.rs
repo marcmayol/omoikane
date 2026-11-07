@@ -224,7 +224,7 @@ enum Orden {
         /// File or folder of the project it refers to (repeatable).
         #[arg(long = "path", value_name = "PATH")]
         paths: Vec<String>,
-        /// Free tag (repeatable).
+        /// Free tag (repeatable). `review:YYYY-MM-DD` flags it for review that day.
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
         /// Always injected in its project.
@@ -248,6 +248,9 @@ enum Orden {
         /// Save it even if a very similar memory already exists (or, with --trade, even if the leak check flags a false positive).
         #[arg(short, long)]
         force: bool,
+        /// A stable key (e.g. kumi-profile): creates or updates the one memory with this key at its level (this project, or the one --space, --trade or --global says), with no duplicate check.
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
         #[command(flatten)]
         datos: DatosNuevos,
     },
@@ -278,7 +281,14 @@ enum Orden {
     /// Show a whole memory (the start of the id is enough).
     Get {
         /// Memory id (its start is enough).
-        id: String,
+        #[arg(required_unless_present = "key")]
+        id: Option<String>,
+        /// Instead of the id, the key it was saved with (`remember --key`): the one this project sees.
+        #[arg(long, value_name = "KEY", conflicts_with = "id")]
+        key: Option<String>,
+        /// With --key: every memory with that key this project sees, most specific first (project, space, trade, global), each with its scope and data, unmerged.
+        #[arg(long, requires = "key")]
+        resolve: bool,
     },
     /// Change a memory. The previous version is kept in its history.
     Update(Cambio),
@@ -386,7 +396,7 @@ enum Orden {
         /// "It's fine as it is": stop warning about this memory (until it changes). Give its id.
         #[arg(long, value_name = "ID")]
         dismiss: Option<String>,
-        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long, secret).
+        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long, secret, due, review_date).
         #[arg(long, requires = "dismiss")]
         kind: Option<String>,
         /// With --dismiss on an outdated warning: the id of the newer memory.
@@ -843,6 +853,65 @@ fn ruta_db(c: &Comun) -> PathBuf {
     c.db.clone().unwrap_or_else(db::ruta_por_defecto)
 }
 
+/// El contenido de `remember`: el argumento o la entrada estándar. Con `--data` y sin contenido, la
+/// memoria es sobre todo sus datos: no se espera la entrada estándar y el contenido es el título.
+fn contenido_de(content: Option<String>, title: &str, con_datos: bool) -> Result<String> {
+    if con_datos && content.is_none() {
+        return Ok(title.to_string());
+    }
+    texto_o_entrada(content)
+}
+
+/// `remember --key`: la de esa clave aquí, creada o actualizada, sin buscar duplicadas. Aparte de
+/// `ejecutar` para no agrandar su marco de pila (en debug, cada rama suma).
+fn recordar_por_clave(
+    c: &Comun,
+    db: &mut rusqlite::Connection,
+    clave: &str,
+    nueva: Nueva,
+    datos: Option<serde_json::Value>,
+    modelo: Option<&omoikane::embeber::Modelo>,
+    antes: &omoikane::revisar::Antes,
+) -> Result<()> {
+    let r = memoria::guardar_por_clave(db, clave, nueva, datos, modelo)?;
+    let _ = omoikane::revisar::al_dia_de(db, antes, std::slice::from_ref(&r.memoria.id));
+    avisar_redactados(&r.memoria);
+    avisar_datos_tapados(&r.tapados);
+    if c.json {
+        // La memoria con sus datos (`data`), si tiene, como `get --json`.
+        let mut v = memoria::con_datos(db, vec![r.memoria])?.remove(0);
+        v["created"] = serde_json::json!(r.creada);
+        if !r.parecidas.is_empty() {
+            v["similar_keys"] = serde_json::json!(r.parecidas);
+        }
+        return json(&v);
+    }
+    let id = corto(&r.memoria.id);
+    println!("{}", if r.creada { tr!("saved {id}", "guardada {id}") } else { tr!("updated {id}", "actualizada {id}") });
+    if !r.parecidas.is_empty() {
+        println!("{}", tr!("  new key, but these keys already exist here: {}", "  clave nueva, pero aquí ya hay estas parecidas: {}", r.parecidas.join(", ")));
+    }
+    Ok(())
+}
+
+/// `get --key --resolve`: todas las capas de la clave para este proyecto, sin juntarlas.
+fn capas_de_clave(c: &Comun, db: &rusqlite::Connection, clave: &str) -> Result<()> {
+    let capas = memoria::capas_de_clave(db, &Ambito::de(db, &proyecto_de(c)?)?, clave)?;
+    if c.json {
+        return json(&capas);
+    }
+    if capas.is_empty() {
+        println!("{}", tr!("no memory with key «{}» here", "aquí no hay ninguna memoria con la clave «{}»", clave.trim()));
+    }
+    for capa in &capas {
+        println!("[{}] {}  {}", capa.scope, corto(&capa.id), capa.title);
+        if let Some(d) = &capa.data {
+            println!("  data: {d}");
+        }
+    }
+    Ok(())
+}
+
 fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
     match orden {
         Orden::Doctor => doctor(c),
@@ -887,8 +956,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, datos: DatosNuevos { data } } => {
-            let content = texto_o_entrada(content)?;
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, key, datos: DatosNuevos { data } } => {
+            let content = contenido_de(content, &title, data.is_some())?;
             let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
             // Memoria de oficio: `--trade`, o una etiqueta `trade:` puesta a mano.
             let (oficios, tags) = oficios_pedidos(&trades, tags)?;
@@ -914,6 +983,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 avisar_fugas(c, &omoikane::oficios::fugas(&db, &format!("{title}\n{content}\n{}", paths.join(" ")))?)?;
             }
             if !force
+                && key.is_none()
                 && let Some(modelo) = &modelo
                 && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &busca_en, &title, &content)?
             {
@@ -946,11 +1016,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
             };
             let antes = omoikane::revisar::antes(&db)?;
-            let m = memoria::guardar(
-                &mut db,
-                Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, ..Default::default() },
-                modelo.as_ref(),
-            )?;
+            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, ..Default::default() };
+            if let Some(k) = key {
+                return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
+            }
+            let m = memoria::guardar(&mut db, nueva, modelo.as_ref())?;
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
             if let Some(d) = &data {
@@ -1002,9 +1072,17 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Get { id } => {
+        Orden::Get { id, key, resolve } => {
             let db = abrir(c)?;
-            let m = memoria::obtener(&db, &id)?;
+            if resolve && let Some(k) = &key {
+                return capas_de_clave(c, &db, k);
+            }
+            let m = match (id, key) {
+                (Some(id), _) => memoria::obtener(&db, &id)?,
+                (None, Some(k)) => memoria::por_clave(&db, &Ambito::de(&db, &proyecto_de(c)?)?, &k)?
+                    .with_context(|| tr!("no memory with key «{}» here", "aquí no hay ninguna memoria con la clave «{}»", k.trim()))?,
+                (None, None) => unreachable!("clap pide id o --key"),
+            };
             if c.json {
                 return json(&memoria::con_datos(&db, vec![m])?.remove(0));
             }
@@ -3273,13 +3351,14 @@ fn en_espanol(c: Command) -> Command {
             ("title", "Una línea que diga de qué va."),
             ("content", "Qué, por qué y dónde. Sin él (o con «-»), se lee de la entrada estándar."),
             ("paths", "Fichero o carpeta del proyecto al que se refiere (se puede repetir)."),
-            ("tags", "Etiqueta libre (se puede repetir)."),
+            ("tags", "Etiqueta libre (se puede repetir). `review:AAAA-MM-DD` la marca para revisar ese día."),
             ("pinned", "Se inyecta siempre en su proyecto."),
             ("global", "Vale para todos los proyectos, no solo para este."),
             ("trades", "Memoria de oficio (android, web, wordpress…; se puede repetir): la ven todos los proyectos de ese oficio, de cualquier cliente, y ningún otro. Solo conocimiento del stack, nada de un proyecto ni de un cliente."),
             ("para", "Con --trade, para quién es: client (solo proyectos en un espacio, de un cliente), personal (solo proyectos sin espacio) o both (por defecto)."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
             ("force", "Guardarla aunque ya exista una muy parecida (o, con --trade, aunque el aviso de fugas marque un falso positivo)."),
+            ("key", "Una clave fija (p. ej. kumi-perfil): crea o actualiza la única memoria con esa clave en su nivel (este proyecto, o el que digan --space, --trade o --global), sin buscar duplicadas."),
             ("data", "Datos estructurados para programas, en JSON: van con la memoria, fuera de la búsqueda y del recall."),
         ]),
         ("search", "Busca en las memorias de este proyecto y en las globales.", &[
@@ -3289,7 +3368,11 @@ fn en_espanol(c: Command) -> Command {
             ("tags", "Solo las que llevan esta etiqueta (se puede repetir)."),
             ("all", "En todos los proyectos."),
         ]),
-        ("get", "Una memoria entera (basta con el principio del id).", &[("id", "Id de la memoria (basta con el principio).")]),
+        ("get", "Una memoria entera (basta con el principio del id).", &[
+            ("id", "Id de la memoria (basta con el principio)."),
+            ("key", "En vez del id, la clave con la que se guardó (`remember --key`): la que ve este proyecto."),
+            ("resolve", "Con --key: todas las de esa clave que ve este proyecto, de la más concreta a la más general (proyecto, espacio, oficio, global), cada una con su ámbito y sus datos, sin juntarlas."),
+        ]),
         ("update", "Cambia una memoria. La versión anterior queda en el historial.", &[
             ("id", "Id de la memoria (basta con el principio)."),
             ("title", "Título nuevo."),
@@ -3328,7 +3411,7 @@ fn en_espanol(c: Command) -> Command {
         ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
             ("all", "De todos los proyectos."),
             ("dismiss", "«Está bien así»: deja de avisar de esta memoria (hasta que cambie). Su id."),
-            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, broken_path, unused, too_long)."),
+            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, broken_path, unused, too_long, secret, due, review_date)."),
             ("other", "Con --dismiss en un aviso outdated: el id de la memoria más nueva."),
         ]),
         ("recent", "Las últimas memorias guardadas o cambiadas.", &[

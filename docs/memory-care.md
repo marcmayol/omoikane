@@ -28,6 +28,8 @@ It counts as a duplicate when the name is the same ignoring case, accents, hyphe
 
 Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never, counting from its last change or the last time the agent got it (what gets used and nobody corrects is reviewed). When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
 
+Some memories stop holding on a known day: a token that expires, an offer, a plan with a date. Save them with the tag `review:YYYY-MM-DD` (`omoi remember … --tag review:2026-11-25`, or in `tags` from the MCP) and that day the review flags them as *review date reached*, in Review, in `search` and also in the recall (it may no longer hold). The notice at the start of the session comes even with a single one. Touching the memory or "it's fine as it is" clears it; a tag that isn't a date is refused when saving.
+
 ## History and trash
 
 Changing a memory keeps the previous version with the reason, and `omoi history` shows them all.
