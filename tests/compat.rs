@@ -526,6 +526,32 @@ fn lo_que_escribe_una_1x_pasa_por_la_10_sin_perderse() {
     assert_eq!(serde_json::from_str::<serde_json::Value>(&guardado).unwrap()["futuro"], futuro);
 }
 
+/// 1.8: los datos estructurados de una memoria (`--data`) viajan como un campo `data` de la línea que
+/// la 1.0 no conoce: los guarda, la cambia y los reenvía sin perderlos.
+#[test]
+fn los_datos_pasan_por_la_10_sin_perderse() {
+    let Some(v10) = binario_10() else { return };
+    let p = Prueba::nueva("datos");
+    let (a, viejo) = dos(&p, Path::new(NUEVO), &v10);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+    a.sync();
+    if la_10_se_aparta(&p, &viejo, &clave) {
+        return;
+    }
+    let datos = serde_json::json!({ "ruta": ["web", "seo-geo"], "prod_tests": true });
+    let id = a.guardar(&a.dir, "decision", "Kumi: perfil del proyecto", "Lo que decidió Marc.", &["--global", "--data", &datos.to_string()]);
+    a.sync();
+    viejo.sync();
+    let guardado: String = viejo.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&guardado).unwrap()["data"], datos);
+    viejo.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
+    viejo.sync();
+    a.sync();
+    let m = a.get(&id).unwrap();
+    assert_eq!((&m["content"], &m["data"]), (&serde_json::json!("Cambiado por la 1.0."), &datos), "{m}");
+}
+
 // --- La base ------------------------------------------------------------------------------------------
 
 /// Los ficheros de una base (`o.db`, `o.db-wal`…) con su contenido, para ver que nadie los toca.

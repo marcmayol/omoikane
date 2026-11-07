@@ -1244,10 +1244,220 @@ pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Me
 /// pregunta, las opciones y lo que asumió mientras tanto, y siguió trabajando.
 pub const ABIERTA: &str = "open";
 
-/// Las decisiones abiertas del ámbito (de tipo decisión y con la etiqueta [`ABIERTA`]), de la más nueva
-/// a la más vieja; como mucho `limite`.
+/// La etiqueta que, junto a [`ABIERTA`], dice que la decisión es bloqueante: sin la respuesta no se
+/// puede seguir con lo que depende de ella. Sin ella, la decisión es «para revisar después» (el agente
+/// siguió con lo que asumió). Una etiqueta y no un campo: no cambia el esquema ni la sync.
+pub const BLOQUEANTE: &str = "blocking";
+
+impl Memoria {
+    /// Si es una decisión abierta bloqueante (con la etiqueta [`BLOQUEANTE`]).
+    pub fn bloqueante(&self) -> bool {
+        self.tags.iter().any(|t| t == BLOQUEANTE)
+    }
+}
+
+/// Las decisiones abiertas del ámbito (de tipo decisión y con la etiqueta [`ABIERTA`]): primero las
+/// bloqueantes y, dentro de cada grupo, de la más nueva a la más vieja; como mucho `limite`.
 pub fn abiertas(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
-    Ok(con_etiqueta(db, ambito, ABIERTA)?.into_iter().filter(|m| m.kind == Tipo::Decision).take(limite).collect())
+    let mut v: Vec<Memoria> = con_etiqueta(db, ambito, ABIERTA)?.into_iter().filter(|m| m.kind == Tipo::Decision).collect();
+    // Estable: conserva el orden por fecha dentro de cada grupo.
+    v.sort_by_key(|m| !m.bloqueante());
+    v.truncate(limite);
+    Ok(v)
+}
+
+/// Una decisión abierta para otros programas (`omoi decisions --json`, la herramienta `decisions`, la
+/// central de Kumi): entera, con su prioridad y de dónde es.
+#[derive(Debug, Serialize)]
+pub struct Decision {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    /// `blocking` (no se puede seguir sin la respuesta) o `later` (para revisar después).
+    pub priority: &'static str,
+    /// Carpeta de su proyecto; vacía si es de espacio o global.
+    pub project: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub project_key: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub space: String,
+    pub global: bool,
+    pub tags: Vec<String>,
+    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Sus datos estructurados, si tiene ([`poner_datos`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl From<Memoria> for Decision {
+    fn from(m: Memoria) -> Decision {
+        Decision {
+            priority: if m.bloqueante() { "blocking" } else { "later" },
+            global: m.global(),
+            id: m.id,
+            title: m.title,
+            content: m.content,
+            project: m.project,
+            project_key: m.project_key,
+            space: m.space,
+            tags: m.tags,
+            paths: m.paths,
+            author: m.author,
+            source: m.source,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+            data: None,
+        }
+    }
+}
+
+/// Las decisiones abiertas del ámbito para otros programas; con `solo_bloqueantes`, solo esas, y con
+/// `etiquetas`, solo las que las lleven todas (`tarea:123`).
+pub fn decisiones(db: &Connection, ambito: &Ambito, solo_bloqueantes: bool, etiquetas_pedidas: &[String], limite: usize) -> Result<Vec<Decision>> {
+    let pedidas = etiquetas(etiquetas_pedidas);
+    let v: Vec<Memoria> = abiertas(db, ambito, usize::MAX)?
+        .into_iter()
+        .filter(|m| (!solo_bloqueantes || m.bloqueante()) && pedidas.iter().all(|t| m.tags.contains(t)))
+        .take(limite)
+        .collect();
+    let mut datos = datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    Ok(v.into_iter()
+        .map(|m| {
+            let data = datos.remove(&m.id);
+            Decision { data, ..Decision::from(m) }
+        })
+        .collect())
+}
+
+/// La etiqueta que deja una decisión resuelta con [`resolver_decision`] (o desde la vista web).
+pub const RESUELTA: &str = "resolved";
+
+/// Resuelve una decisión abierta: añade la respuesta al final del contenido («Answer (fecha): …»),
+/// le quita [`ABIERTA`] y [`BLOQUEANTE`] y le pone [`RESUELTA`]. Con versión y motivo, como `update`.
+pub fn resolver_decision(db: &mut Connection, id: &str, respuesta: &str, motivo: Option<String>) -> Result<Memoria> {
+    let m = obtener(db, id)?;
+    ensure!(m.kind == Tipo::Decision, tr!("{} is not a decision", "{} no es una decisión", m.id));
+    let respuesta = respuesta.trim();
+    ensure!(!respuesta.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
+    let dia: String = db.query_row(&format!("SELECT substr({AHORA}, 1, 10)"), [], |f| f.get(0))?;
+    let mut tags: Vec<String> = m.tags.iter().filter(|t| *t != ABIERTA && *t != BLOQUEANTE).cloned().collect();
+    if !tags.iter().any(|t| t == RESUELTA) {
+        tags.push(RESUELTA.into());
+    }
+    let c = Cambios {
+        append: Some(format!("Answer ({dia}): {respuesta}")),
+        tags: Some(tags),
+        reason: Some(motivo.unwrap_or_else(|| "decision resolved".into())),
+        ..Default::default()
+    };
+    actualizar(db, &m.id, c, None)
+}
+
+/// Las memorias del ámbito que llevan todas estas etiquetas (y, si se pide, de este tipo), de la más
+/// nueva a la más vieja, sin ranking ni umbral: para programas que guardan algo con una etiqueta y lo
+/// tienen que volver a encontrar siempre (`omoi list`). Como mucho `limite`.
+pub fn con_etiquetas(db: &Connection, ambito: &Ambito, etiquetas_pedidas: &[String], kind: Option<Tipo>, limite: usize) -> Result<Vec<Memoria>> {
+    let pedidas = etiquetas(etiquetas_pedidas);
+    let Some((primera, resto)) = pedidas.split_first() else {
+        bail!(tr!("which tag? Pass at least one with --tag", "¿qué etiqueta? Pasa al menos una con --tag"));
+    };
+    Ok(con_etiqueta(db, ambito, primera)?
+        .into_iter()
+        .filter(|m| kind.is_none_or(|k| m.kind == k) && resto.iter().all(|t| m.tags.contains(t)))
+        .take(limite)
+        .collect())
+}
+
+// --- Datos estructurados ----------------------------------------------------------------------------
+//
+// Un JSON propio de la memoria para programas (el perfil de un proyecto en Kumi, por ejemplo), aparte
+// del texto: no entra en el índice de búsqueda ni en el recall, que solo leen título, contenido,
+// etiquetas y rutas. Vive en `memory.extra` con la clave [`DATOS`], que es donde la sincronización y
+// `omoi export` guardan los campos de la línea que no conocen: así viaja como un campo `data` de la
+// línea, y una versión anterior (desde la 1.0) lo guarda y lo reenvía tal cual sin entenderlo. Sin
+// cambiar el esquema.
+
+/// La clave de los datos en `memory.extra` (y el campo `data` de la línea que viaja).
+pub const DATOS: &str = "data";
+/// Tamaño máximo de los datos, en JSON.
+pub const DATOS_MAX: usize = 64 * 1024;
+
+/// Los datos de unas memorias (las que tienen).
+pub fn datos_de(db: &Connection, ids: &[&str]) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+    let mut r = std::collections::HashMap::new();
+    let mut q = db.prepare("SELECT extra FROM memory WHERE id = ?1")?;
+    for id in ids {
+        if let Some(t) = q.query_row([id], |f| f.get::<_, String>(0)).optional()?
+            && let Ok(serde_json::Value::Object(mut o)) = serde_json::from_str::<serde_json::Value>(&t)
+            && let Some(d) = o.remove(DATOS)
+        {
+            r.insert(id.to_string(), d);
+        }
+    }
+    Ok(r)
+}
+
+/// Lee los datos que llegan como texto (`--data '{…}'`): JSON válido y como mucho [`DATOS_MAX`].
+pub fn datos_de_texto(t: &str) -> Result<serde_json::Value> {
+    ensure!(t.len() <= DATOS_MAX, tr!("data over {DATOS_MAX} bytes", "datos de más de {DATOS_MAX} bytes"));
+    serde_json::from_str(t).map_err(|e| anyhow!(tr!("data is not valid JSON: {e}", "los datos no son JSON válido: {e}")))
+}
+
+/// Pone (o quita, con `None` o `null`) los datos de una memoria. Cambia su sello y su fecha, para que
+/// la sincronización lo lleve, y no crea versión (como fijarla). Lo que parezca un secreto en los
+/// textos se tapa, como en el contenido; devuelve los tipos tapados.
+pub fn poner_datos(db: &mut Connection, id: &str, datos: Option<serde_json::Value>) -> Result<Vec<&'static str>> {
+    let mut tapados = Vec::new();
+    let datos = datos.filter(|d| !d.is_null()).map(|d| tapar_en(d, &mut tapados));
+    if let Some(d) = &datos {
+        ensure!(serde_json::to_string(d)?.len() <= DATOS_MAX, tr!("data over {DATOS_MAX} bytes", "datos de más de {DATOS_MAX} bytes"));
+    }
+    let tx = escribir_tx(db)?;
+    let id = resolver_id(&tx, id)?;
+    let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
+    let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
+    if o.get(DATOS) == datos.as_ref() {
+        return Ok(tapados);
+    }
+    match datos {
+        Some(d) => o.insert(DATOS.into(), d),
+        None => o.remove(DATOS),
+    };
+    let hlc = crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?;
+    tx.execute(&format!("UPDATE memory SET extra = ?2, hlc = ?3, updated_at = {AHORA} WHERE id = ?1"), params![id, serde_json::to_string(&o)?, hlc])?;
+    tx.commit()?;
+    Ok(tapados)
+}
+
+/// Los textos de un JSON sin lo que parezca un secreto.
+fn tapar_en(v: serde_json::Value, tapados: &mut Vec<&'static str>) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(sin_secretos(&s, tapados)),
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| tapar_en(x, tapados)).collect()),
+        Value::Object(o) => Value::Object(o.into_iter().map(|(k, x)| (k, tapar_en(x, tapados))).collect()),
+        otro => otro,
+    }
+}
+
+/// Una memoria en JSON para programas, con sus datos (`data`) si tiene.
+pub fn con_datos(db: &Connection, ms: Vec<Memoria>) -> Result<Vec<serde_json::Value>> {
+    let datos = datos_de(db, &ms.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    ms.into_iter()
+        .map(|m| {
+            let d = datos.get(&m.id).cloned();
+            let mut v = serde_json::to_value(m)?;
+            if let Some(d) = d {
+                v[DATOS] = d;
+            }
+            Ok(v)
+        })
+        .collect()
 }
 
 /// Todas las memorias del ámbito con esta etiqueta (ya en minúsculas, como se guardan), de la más
@@ -1264,7 +1474,7 @@ fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<
     ))?;
     // El `LIKE` descarta sin leer el JSON lo que no lleva la etiqueta.
     let v = q
-        .query_map(params![etiqueta, format!("%\"{etiqueta}\"%"), format!("tags : \"{etiqueta}\"")], de_fila)?
+        .query_map(params![etiqueta, format!("%\"{etiqueta}\"%"), format!("tags : \"{}\"", etiqueta.replace('"', "\"\""))], de_fila)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }

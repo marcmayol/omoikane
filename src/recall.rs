@@ -604,9 +604,17 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
         .filter(|m| !contexto.iter().any(|c| c.id == m.id))
         .collect();
     if !abiertas.is_empty() {
-        s.push_str("Decisions waiting for the user (decisions tagged `open`, newest first; mention them to the user at a natural moment; when they decide, `update` the memory with the answer and drop the `open` tag):\n");
+        // Las bloqueantes van primero (`memoria::abiertas`) y marcadas: el trabajo que depende de ellas
+        // espera a la persona; las demás son para revisar después.
+        let bloqueantes = abiertas.iter().filter(|m| m.bloqueante()).count();
+        if bloqueantes > 0 {
+            s.push_str(&format!("Decisions waiting for the user (decisions tagged `open`; the {bloqueantes} marked BLOCKING first, then the rest, newest first. BLOCKING: don't go on with the work that depends on it, ask the user now; the rest are for later: mention them at a natural moment. When they decide, `update` the memory with the answer and drop the `open` and `blocking` tags):\n"));
+        } else {
+            s.push_str("Decisions waiting for the user (decisions tagged `open`, newest first; for later: mention them to the user at a natural moment; when they decide, `update` the memory with the answer and drop the `open` tag):\n");
+        }
         for m in abiertas.iter().take(ABIERTAS) {
             let linea = linea_corta(m, actual, propio.as_deref());
+            let linea = if m.bloqueante() { linea.replacen("- ", "- BLOCKING ", 1) } else { linea };
             s.push_str(&citado(&format!("{linea}: {}\n", fragmento(&m.content, FRAGMENTO_ABIERTA))));
         }
         if abiertas.len() > ABIERTAS {
@@ -690,7 +698,7 @@ pub const ABIERTAS: usize = 10;
 const FRAGMENTO_ABIERTA: usize = 160;
 
 /// Qué hacer con una petición ambigua y cuándo dejar dicho en qué punto se quedó algo.
-const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another. When a product or business decision is the user's and you can't ask now, save it as kind decision with the tag `open` (question, options, what you assumed meanwhile), keep working, and when you finish a long piece of work tell the user which ones you left.\n";
+const CONTINUAR: &str = "If the user asks to continue something and it is unclear what, check the list above and do at most one `search`; if that doesn't settle it, ask the user right away instead of exploring files. When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with `remember` and the tag `status`: one per project, so if the project already has one (listed above), `update` it instead of saving another. When a product or business decision is the user's and you can't ask now, save it as kind decision with the tag `open` (question, options, what you assumed meanwhile), keep working, and when you finish a long piece of work tell the user which ones you left. Add the tag `blocking` too only when the work can't go on without the answer (no safe assumption, or a wrong guess would be costly to undo): then stop that part and ask. Without it, the decision is for later.\n";
 
 /// Una memoria en una línea, sin contenido: fecha, tipo, proyecto si no es el de la sesión, título e id.
 fn linea_corta(m: &Memoria, actual: i64, propio: Option<&str>) -> String {

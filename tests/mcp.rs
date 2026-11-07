@@ -70,7 +70,7 @@ async fn las_herramientas_de_punta_a_punta() {
     assert!(info.instructions.as_deref().unwrap().contains("remember"));
     let mut nombres: Vec<String> = c.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
     nombres.sort();
-    assert_eq!(nombres, ["context", "forget", "get", "history", "recent", "remember", "search", "update"]);
+    assert_eq!(nombres, ["context", "decisions", "forget", "get", "history", "recent", "remember", "search", "update"]);
 
     let (err, r) = llamar(
         &c,

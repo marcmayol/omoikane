@@ -36,6 +36,48 @@ Además de las memorias, Omoikane apunta una línea por sesión: cuándo empezó
 
 El diario también alimenta el recall: cuando un mensaje nombra un fichero que cambió en al menos 3 sesiones del proyecto, al agente le llega una línea con en cuántas sesiones cambió y cuándo fue la última, los ficheros que suelen cambiar con él (en al menos 3 de esas sesiones y el 40 %) y cuántos gotcha lo mencionan, una vez por sesión. Por ejemplo: ``History of `src/recall.rs`: changed in 30 sessions (last 2026-11-04); it usually changes together with `src/main.rs` (18 of 30), `Cargo.toml` (12) and `src/mcp.rs` (12).``
 
+`omoi file-history` da esas mismas cifras enteras, para código: las lee una puerta de riesgo que decide sobre un diff si un cambio se publica solo o lo revisa una persona, y no decide ningún agente. Acepta rutas relativas al repositorio o absolutas, o una por línea por la entrada estándar (la salida de `git diff --name-only`), y responde por el proyecto de la carpeta actual o de `--dir`. No tiene umbrales: por fichero, en cuántas sesiones cambió y cuándo fue la última, hasta 10 ficheros que cambiaron en las mismas sesiones con cuántas, y los gotcha (del proyecto, de su espacio y globales) que lo nombran en sus rutas. También cuenta las sesiones abiertas en otra carpeta, como la del usuario, que editaron ficheros de este repositorio (esas los guardan con la ruta absoluta), pero solo sus ficheros de dentro. El `sessions` de arriba es cuántas sesiones tocaron ficheros del proyecto, para poner lo demás en proporción. Un fichero que el diario no ha visto nunca sale con `sessions: 0` y `last: null`.
+
+```sh
+git diff --name-only origin/master... | omoi file-history --json
+```
+
+```json
+{
+  "project": "/home/ana/trabajo/acme-web",
+  "sessions": 48,
+  "files": [
+    {
+      "file": "src/sync.rs",
+      "sessions": 14,
+      "last": "2026-11-04",
+      "changes_with": [
+        { "file": "tests/sync.rs", "sessions": 9 },
+        { "file": "CHANGELOG.md", "sessions": 7 }
+      ],
+      "gotchas": 2,
+      "gotcha_ids": ["01M64WZATAVWKSYRMVG4FCV64V", "01M666RGFB3JWVYHTPYVPFD282"]
+    }
+  ]
+}
+```
+
+La puerta de riesgo de Kumi, una factoría de agentes que usa Omoikane como memoria, podría leerlo así: un fichero con gotchas sube el nivel, y también un diff que deja fuera un fichero que casi siempre cambia con uno que sí toca.
+
+```python
+diff = subprocess.run(["git", "diff", "--name-only", "origin/master..."], capture_output=True, text=True).stdout
+h = json.loads(subprocess.run(["omoi", "file-history", "--json"], input=diff, capture_output=True, text=True).stdout)
+tocados = set(diff.split())
+nivel = 0
+for f in h["files"]:
+    if f["gotchas"]:
+        nivel = max(nivel, 1)
+    if any(j["file"] not in tocados and j["sessions"] >= 0.6 * f["sessions"] >= 3 for j in f["changes_with"]):
+        nivel = max(nivel, 1)
+```
+
+Solo lee y, como el diario, solo conoce las sesiones de este equipo.
+
 Se escribe al cerrar o compactar la sesión, con el mismo hook que aparta las candidatas, y nunca en el recall de cada mensaje. Si la sesión se compacta, la línea se completa y no se repite. Como guardadas cuentan las memorias cuyo id devolvió `remember` o `update` en esa conversación. Mirar qué memorias cambiaron entre el principio y el final de la sesión daría por suyas las que guardaba a la vez otra sesión en el mismo proyecto. Las preferencias y las fijadas no cuentan como recibidas, porque llegan en todas las sesiones.
 
 Se queda en este equipo: no viaja con la sincronización ni con `omoi export`, porque las rutas de tus ficheros dicen mucho de lo que haces y el historial es de cada equipo. Sí va en la copia diaria, que es la base entera. Pesa poco: con conversaciones reales, 142 bytes por sesión de mediana y 716 de media (unos 2 MB al año con diez sesiones al día). Se guarda un año.

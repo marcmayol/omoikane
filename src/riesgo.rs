@@ -236,6 +236,160 @@ pub fn al_preguntar(db: &Connection, project: &str, sesion: &str, prompt: &str) 
     Ok(Some(hs.iter().map(Historia::linea).collect::<Vec<_>>().join("\n")))
 }
 
+// --- Para otros programas: `omoi file-history` ----------------------------------------------------
+//
+// Lo mismo que la línea del recall, pero entero y para código: la puerta de riesgo de una central de
+// agentes (Kumi) calcula su nivel sobre el diff con estos números; no decide un agente. Sin mínimos ni
+// límite de ficheros: el que llama pone sus umbrales.
+
+/// Cuántos de los que cambian a la vez se dan por fichero.
+pub const JUNTOS_INFORME: usize = 10;
+
+/// Un fichero que suele cambiar con otro, y en cuántas sesiones lo hizo.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Junto {
+    pub file: String,
+    pub sessions: usize,
+}
+
+/// El historial de un fichero según el diario de este equipo.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct HistoriaFichero {
+    /// Relativo al repositorio, con `/` (absoluto si cae fuera).
+    pub file: String,
+    /// En cuántas sesiones cambió.
+    pub sessions: usize,
+    /// El último día (UTC) de la sesión más reciente que lo tocó; `None` si ninguna.
+    pub last: Option<String>,
+    /// Los que cambiaron en las mismas sesiones, de más a menos (como mucho [`JUNTOS_INFORME`]).
+    pub changes_with: Vec<Junto>,
+    /// Cuántos gotcha (del proyecto, su espacio y los globales) lo nombran en sus rutas, y cuáles.
+    pub gotchas: usize,
+    pub gotcha_ids: Vec<String>,
+}
+
+/// El historial de varios ficheros de un proyecto.
+#[derive(Debug, serde::Serialize)]
+pub struct Informe {
+    /// La carpeta del proyecto.
+    pub project: String,
+    /// Cuántas sesiones con ficheros tiene el diario de este proyecto: para poner en proporción.
+    pub sessions: usize,
+    pub files: Vec<HistoriaFichero>,
+}
+
+/// Una ruta como la guarda el diario: relativa al repositorio si cae dentro (también si llega absoluta),
+/// con `/` y sin `./` delante.
+fn clave_ruta(f: &str, project: &str) -> String {
+    let f = f.trim();
+    let r = if std::path::Path::new(f).is_absolute() { crate::diario::relativo(f, project) } else { f.replace('\\', "/") };
+    let mut r = r.as_str();
+    while let Some(x) = r.strip_prefix("./") {
+        r = x;
+    }
+    r.to_string()
+}
+
+/// Las sesiones del proyecto (`sesiones`) y, además, las abiertas en otra carpeta (la del usuario, otro
+/// proyecto) que tocaron ficheros de este repositorio: esas los apuntan con la ruta absoluta. De ellas
+/// solo cuentan los ficheros de dentro, ya relativos; lo de fuera no es de este proyecto. Quien trabaja
+/// desde su carpeta personal en varios repositorios no tendría historial sin esto.
+fn sesiones_con_fuera(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>> {
+    let mut r = sesiones(db, project)?;
+    if crate::proyecto::es_general(project) {
+        return Ok(r);
+    }
+    let id = crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0);
+    let carpetas: BTreeSet<String> = {
+        let mut c = BTreeSet::from([crate::diario::carpeta_cmp(project)]);
+        if id != 0 {
+            let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1")?;
+            for p in q.query_map([id], |f| f.get::<_, String>(0))? {
+                c.insert(crate::diario::carpeta_cmp(&p?));
+            }
+        }
+        c
+    };
+    // Las que `sesiones` ya contó: las de este proyecto y las sin proyecto desde una de sus carpetas.
+    let mut q = db.prepare(r"SELECT project_id, folder, last_at, files FROM diary WHERE project_id <> ?1 AND files LIKE ?2 ESCAPE '\'")?;
+    // El `LIKE` descarta sin leer el JSON las que no nombran la carpeta (con `/`, como se guardan).
+    let carpeta = project.replace('\\', "/");
+    let patron = format!("%{}/%", carpeta.trim_end_matches('/').replace('\\', r"\\").replace('%', r"\%").replace('_', r"\_"));
+    let mut filas = q.query(rusqlite::params![id, patron])?;
+    while let Some(f) = filas.next()? {
+        let (pid, folder): (i64, String) = (f.get(0)?, f.get(1)?);
+        if pid == 0 && carpetas.contains(&crate::diario::carpeta_cmp(&folder)) {
+            continue;
+        }
+        let files: Vec<String> = serde_json::from_str(&f.get::<_, String>(3)?).unwrap_or_default();
+        let dentro: Vec<String> = files
+            .iter()
+            .filter_map(|x| {
+                let x = x.replace('\\', "/");
+                let rel = crate::diario::relativo_texto(&x, &carpeta);
+                (rel != x).then_some(rel)
+            })
+            .collect();
+        if !dentro.is_empty() {
+            r.push((f.get(2)?, dentro));
+        }
+    }
+    Ok(r)
+}
+
+/// El historial de `ficheros` (rutas relativas al repositorio o absolutas) en el proyecto de la carpeta
+/// `project`, en el orden pedido y sin repetir. Solo lee: el diario es local, de este equipo.
+pub fn de_ficheros(db: &Connection, project: &str, ficheros: &[String]) -> Result<Informe> {
+    let mut claves: Vec<String> = Vec::new();
+    for f in ficheros.iter().filter(|f| !f.trim().is_empty()) {
+        let k = clave_ruta(f, project);
+        if !claves.iter().any(|c| crate::proyecto::comparable(c) == crate::proyecto::comparable(&k)) {
+            claves.push(k);
+        }
+    }
+    let lineas = if crate::diario::hay_tabla(db)? { sesiones_con_fuera(db, project)? } else { Vec::new() };
+    // Cada sesión con sus ficheros ya comparables, una vez.
+    let lineas: Vec<(&str, Vec<(String, &str)>)> = lineas
+        .iter()
+        .map(|(u, fs)| (u.as_str(), fs.iter().map(|f| (crate::proyecto::comparable(&f.replace('\\', "/")), f.as_str())).collect()))
+        .collect();
+    let gotchas: Vec<(String, String)> = if claves.is_empty() {
+        Vec::new()
+    } else {
+        let mut q = db.prepare(&format!(
+            "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id WHERE m.kind = 'gotcha' AND {}",
+            Ambito::de(db, project)?.sql()
+        ))?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let mut files = Vec::new();
+    for k in claves {
+        let kc = crate::proyecto::comparable(&k);
+        let (mut n, mut ultima) = (0, "");
+        let mut juntos: HashMap<&str, usize> = HashMap::new();
+        for (u, fs) in lineas.iter().filter(|(_, fs)| fs.iter().any(|(c, _)| *c == kc)) {
+            n += 1;
+            ultima = ultima.max(*u);
+            for (_, f) in fs.iter().filter(|(c, _)| *c != kc) {
+                *juntos.entry(*f).or_default() += 1;
+            }
+        }
+        let mut juntos: Vec<Junto> = juntos.into_iter().map(|(f, s)| Junto { file: f.replace('\\', "/"), sessions: s }).collect();
+        juntos.sort_by(|a, b| b.sessions.cmp(&a.sessions).then(a.file.cmp(&b.file)));
+        juntos.truncate(JUNTOS_INFORME);
+        let ids: BTreeSet<&str> = gotchas.iter().filter(|(_, p)| misma(p, &k)).map(|(id, _)| id.as_str()).collect();
+        files.push(HistoriaFichero {
+            sessions: n,
+            last: (n > 0).then(|| ultima.chars().take(10).collect()),
+            changes_with: juntos,
+            gotchas: ids.len(),
+            gotcha_ids: ids.into_iter().map(String::from).collect(),
+            file: k,
+        });
+    }
+    Ok(Informe { project: project.to_string(), sessions: lineas.len(), files })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

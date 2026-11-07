@@ -24,6 +24,78 @@ Every memory has a kind that decides when it comes back: `fact` and `decision` b
 
 `/omoikane` makes the agent save right then. It goes over the session, saves what is worth keeping and isn't saved yet (decisions with their reason, gotchas with their files, preferences, procedures) and brings the project's `status` memory up to date. With text after it, as in `/omoikane deploys go over ssh`, it saves that, in your words. It ends with one line per memory saved or changed.
 
+## Decisions that wait for you
+
+When a decision is yours and the agent can't ask you right then, it saves it as kind `decision` with the tag `open` (the question, the options, what it assumed meanwhile) and keeps working. If the work can't go on without your answer, because there is no safe assumption or a wrong guess would be costly to undo, it also adds the tag `blocking` and stops that part. Without it, the decision is for later. Every session starts with the open ones, the blocking ones first and marked. In the web view, **Projects** and **Overview** say which are blocking, and answering one there drops both tags.
+
+`omoi decisions` lists them, blocking first (`--blocking` for only those; `--project`, `--space`, `--all` and `--json` as in `recent`), and agents have the `decisions` tool. From a client's project it never shows another client's. A program that hands out work, such as the dispatcher of an agent factory, can check before starting a task on a repository:
+
+```sh
+omoi --dir ~/work/acme-web decisions --blocking --json
+```
+
+```json
+[
+  {
+    "id": "01M6B2Q8XKTE4R7N0VZC3HJ5WD",
+    "title": "Delete accounts inactive for 12 months?",
+    "content": "Options: delete, or only anonymise. Assumed meanwhile: nothing is deleted.",
+    "priority": "blocking",
+    "project": "/home/ana/work/acme-web",
+    "project_key": "github.com/acme/web",
+    "space": "acme",
+    "global": false,
+    "tags": ["blocking", "open"],
+    "paths": ["src/accounts/cleanup.ts"],
+    "source": "claude-code",
+    "created_at": "2026-11-07T09:12:40.120Z",
+    "updated_at": "2026-11-07T09:12:40.120Z"
+  }
+]
+```
+
+`priority` is `blocking` or `later`. It is a tag, so neither the schema nor sync change, and an older version sees an ordinary open decision.
+
+A decision has three states, all in its tags, so the text stays clean: open and blocking (`open` + `blocking`), open for later (`open`), and resolved (`resolved`, with the answer at the end of its content). `omoi decisions --resolve <id> --answer "…"` resolves one: it appends `Answer (2026-11-07): …`, drops `open` and `blocking`, adds `resolved` and keeps the previous version in its history (the `decisions` tool takes `resolve` and `answer`, and the web view does the same). `--tag` narrows the list to the decisions that carry other tags too, such as the task that opened them.
+
+## Listing by tag, and data for programs
+
+`omoi list --tag <tag>` returns every memory with that tag in the project, its space and the global ones, newest first, with no search, ranking or threshold (`--tag` again for several, all required; `--kind`, `-n`, `--project`, `--space`, `--all`, `--json`). A program that saves something under a tag finds it every time; `search` ranks by words and could leave it out. Agents get the same with `recent` and `tags`.
+
+A memory can also carry data for programs: any JSON up to 64 KB, with `--data '<json>'` in `remember` and `update` (`--no-data` removes it) or `data` in the tools. `get`, `list --json` and `decisions --json` return it as `data`. It is never searched or recalled, so it doesn't fill the agent's context, and what looks like a secret in it is redacted as in the content. Changing only the data doesn't add a version. It travels with sync and `omoi export` as a `data` field of the memory's line: versions from 1.0 to 1.7 don't know it, but they keep it and send it on unchanged, even after editing the memory.
+
+This is how Kumi's dispatcher (`kumi.py`) uses it, with the text free of markers:
+
+```python
+def omoi(*args, entrada=None):
+    r = subprocess.run(["omoi", *args], input=entrada, capture_output=True, text=True)
+    return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+
+# The project profile: a memory with a tag and its data, found every time.
+def perfil_leer(raiz):
+    ms = omoi("--dir", raiz, "list", "--tag", "kumi-perfil", "--kind", "decision", "--json") or []
+    return {**ms[0]["data"], "id": ms[0]["id"]} if ms and ms[0].get("data") else None
+
+def perfil_guardar(raiz, perfil, previa_id=None):
+    if previa_id:
+        omoi("--dir", raiz, "update", previa_id, "--data", json.dumps(perfil), "--json")
+    else:
+        omoi("--dir", raiz, "remember", "--json", "-k", "decision", "-t", "Kumi: project profile",
+             "--tag", "kumi", "--tag", "kumi-perfil", "--data", json.dumps(perfil), "--force",
+             "Marc's decisions for how Kumi works on this project.")
+
+# The queue: a blocking decision for a task, the risk gate's check, and the approval.
+def decision(raiz, tarea, titulo, texto, bloqueante=True):
+    tags = ["--tag", "kumi", "--tag", f"tarea:{tarea}", "--tag", "open"] + (["--tag", "blocking"] if bloqueante else [])
+    return (omoi("--dir", raiz, "remember", "--json", "-k", "decision", "-t", titulo, *tags, "--force", texto) or {}).get("id")
+
+def bloqueantes_abiertas(raiz, tarea):
+    return omoi("--dir", raiz, "decisions", "--blocking", "--tag", f"tarea:{tarea}", "--json") or []
+
+def cerrar(raiz, mem_id, respuesta):
+    omoi("--dir", raiz, "decisions", "--resolve", mem_id, "--answer", respuesta, "--json")
+```
+
 ## It saves even when the agent forgets to
 
 When a session ends or compacts, Omoikane reads the conversation and sets aside what may be worth keeping: your answers to the agent's questions (with the question), your preferences and corrections, and the last commit or release. The next session in that project gets them once, and the agent saves the ones worth it in your words; the Review tab lists them too. Nothing that looks like a secret, nothing already saved. They are proposals, and they expire after 7 days if nobody saves them.
