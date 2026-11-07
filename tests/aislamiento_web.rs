@@ -55,8 +55,9 @@ impl Prueba {
     }
 }
 
-/// El servidor se cierra aunque el test falle: uno huérfano deja bloqueado el binario en Windows.
-struct Servidor(std::process::Child, u16);
+/// El servidor se cierra aunque el test falle: uno huérfano deja bloqueado el binario en Windows. Lo
+/// que escribe por stderr queda en un fichero, para decir por qué no contestó.
+struct Servidor(std::process::Child, u16, PathBuf);
 
 impl Drop for Servidor {
     fn drop(&mut self) {
@@ -90,7 +91,8 @@ impl Servidor {
 
     fn get(&self, ruta: &str) -> String {
         let (e, c) = self.pedir("GET", ruta, "");
-        assert_eq!(e, 200, "GET {ruta}: {c}");
+        assert_eq!(e, 200, "GET {ruta}: {c}
+stderr del servidor: {}", std::fs::read_to_string(&self.2).unwrap_or_default());
         c
     }
 
@@ -99,17 +101,19 @@ impl Servidor {
     }
 }
 
-fn servir(p: &Prueba, carpeta: &Path, puerto: u16) -> Servidor {
+fn servir(p: &Prueba, carpeta: &Path) -> Servidor {
+    let puerto = comun::puerto_libre();
+    let log = p.dir.join(format!("serve-{puerto}.log"));
     let hijo = p
         .orden(carpeta)
         .args(["serve", "--port", &puerto.to_string()])
         .env("OMOIKANE_HTTP_TOKEN", "secreto")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
-    Servidor(hijo, puerto)
+    Servidor(hijo, puerto, log)
 }
 
 /// `?dir=` con la carpeta escapada para la URL.
@@ -179,10 +183,9 @@ fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
     let globex_vieja = p.id("Globex: tienda");
     let globex_nueva = p.id("Globex: estado");
     let cand_globex: i64 = p.base().query_row("SELECT id FROM candidate WHERE text LIKE '%globex%'", [], |f| f.get(0)).unwrap();
-    let puerto = 7300 + (std::process::id() % 300) as u16;
 
     // Desde un proyecto de acme: solo acme (los dos proyectos) y lo global, en cada vista.
-    let s = servir(&p, &p.proyecto("acme-api"), puerto);
+    let s = servir(&p, &p.proyecto("acme-api"));
     let memorias = s.get("/api/memories");
     assert!(memorias.contains("Acme usa Postgres") && memorias.contains("Acme web en Astro"), "todo el espacio: {memorias}");
     assert!(memorias.contains("Respuestas cortas"), "y lo global: {memorias}");
@@ -261,7 +264,7 @@ fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
     drop(s);
 
     // Desde un proyecto sin espacio: lo que no tiene espacio y lo global, nada de los clientes.
-    let s = servir(&p, &p.proyecto("notas"), puerto + 1);
+    let s = servir(&p, &p.proyecto("notas"));
     let memorias = s.get("/api/memories");
     assert!(memorias.contains("Idea de blog") && memorias.contains("Respuestas cortas"), "{memorias}");
     assert!(!memorias.contains("Acme") && !memorias.contains("Globex"), "{memorias}");
@@ -284,7 +287,7 @@ fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
     drop(s);
 
     // Desde la carpeta del usuario: todo, y `?dir=` restringe a un cliente.
-    let s = servir(&p, &casa, puerto + 2);
+    let s = servir(&p, &casa);
     let memorias = s.get("/api/memories");
     for t in ["Acme usa Postgres", "Globex es Flutter", "Idea de blog", "Respuestas cortas"] {
         assert!(memorias.contains(t), "{t}: {memorias}");
@@ -333,11 +336,10 @@ fn la_sincronizacion_de_la_web_solo_ensena_el_repositorio_del_espacio() {
     let espacios = p.dir.join("o.sync-spaces");
     config(espacios.join("acme").join("sync.json"), "https://git.example/acme/memoria.git", "Marc en Acme", Some("acme"));
     config(espacios.join("globex").join("sync.json"), "https://git.example/globex/memoria.git", "Marc en Globex", Some("globex"));
-    let puerto = 7600 + (std::process::id() % 300) as u16;
     let sync = |s: &Servidor| -> serde_json::Value { serde_json::from_str(&s.get("/api/sync")).unwrap() };
 
     // Desde acme: su repositorio y su autor, nada del general ni de globex.
-    let s = servir(&p, &p.proyecto("acme-api"), puerto);
+    let s = servir(&p, &p.proyecto("acme-api"));
     let v = sync(&s);
     assert_eq!(v["configured"], true, "{v}");
     assert_eq!(v["url"], "https://git.example/acme/memoria.git", "{v}");
@@ -349,8 +351,8 @@ fn la_sincronizacion_de_la_web_solo_ensena_el_repositorio_del_espacio() {
     drop(s);
 
     // Desde un proyecto sin espacio, y desde la carpeta del usuario: el general.
-    for (i, carpeta) in [p.proyecto("notas"), casa.clone()].iter().enumerate() {
-        let s = servir(&p, carpeta, puerto + 1 + i as u16);
+    for carpeta in [p.proyecto("notas"), casa.clone()].iter() {
+        let s = servir(&p, carpeta);
         let v = sync(&s);
         assert_eq!(v["url"], "https://git.example/marc/personal.git", "{v}");
         assert_eq!(v["author"], "Marc Personal", "{v}");
@@ -360,7 +362,7 @@ fn la_sincronizacion_de_la_web_solo_ensena_el_repositorio_del_espacio() {
 
     // Un cliente sin repositorio propio no cae al general: no hay nada que enseñar.
     std::fs::remove_dir_all(espacios.join("acme")).unwrap();
-    let s = servir(&p, &p.proyecto("acme-api"), puerto + 3);
+    let s = servir(&p, &p.proyecto("acme-api"));
     let v = sync(&s);
     assert_eq!(v["configured"], false, "{v}");
     assert!(v["url"].is_null() && v["author"].is_null(), "{v}");

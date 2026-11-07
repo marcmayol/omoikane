@@ -658,7 +658,7 @@ fn servidor_http() {
     use std::io::{Read, Write};
     let e = Entorno::nuevo("http");
     e.ok(&["remember", "-k", "fact", "-t", "Puerto del servidor", "Escucha en el 8010"]);
-    let puerto = 7400 + (std::process::id() % 500) as u16;
+    let puerto = comun::puerto_libre();
     // El servidor se cierra aunque el test falle: uno huérfano deja bloqueado el binario en Windows.
     struct Cerrar(std::process::Child);
     impl Drop for Cerrar {

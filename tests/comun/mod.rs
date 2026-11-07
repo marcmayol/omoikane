@@ -43,6 +43,15 @@ impl AsRef<std::ffi::OsStr> for Temporal {
     }
 }
 
+/// Un puerto libre de 127.0.0.1 para un `omoi serve` del test: el que da el sistema al pedir el 0. Uno
+/// fijo por pid (`7600 + pid % 300`) chocaba con el de otro `cargo test` a la vez, como los de otras
+/// ramas en paralelo (en Windows los pid son múltiplos de 4: `pid % 300` solo da 75 puertos): el test
+/// le hablaba al servidor del otro proceso, que a veces se estaba cerrando y contestaba vacío.
+#[allow(dead_code)]
+pub fn puerto_libre() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+}
+
 impl Drop for Temporal {
     fn drop(&mut self) {
         // Un proceso que lanzó el test (`omoi serve`, la sincronización de fondo) puede tardar un

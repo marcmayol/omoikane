@@ -87,7 +87,8 @@ impl Servidor {
     }
 }
 
-fn servir(p: &Prueba, carpeta: &Path, puerto: u16) -> Servidor {
+fn servir(p: &Prueba, carpeta: &Path) -> Servidor {
+    let puerto = comun::puerto_libre();
     let hijo = p
         .orden(carpeta)
         .args(["serve", "--port", &puerto.to_string()])
@@ -142,8 +143,8 @@ fn vista_de_responsable_por_espacio() {
     );
 
     // Desde la carpeta del usuario: todos los espacios, y al final los proyectos sin espacio.
-    let puerto = 7000 + (std::process::id() % 300) as u16;
-    let s = servir(&p, &casa, puerto);
+    let s = servir(&p, &casa);
+    let puerto = s.1;
     let sin = s.pedir(&format!("GET /api/overview HTTP/1.1\r\nHost: 127.0.0.1:{puerto}\r\nConnection: close\r\n\r\n"));
     assert!(sin.starts_with("HTTP/1.1 401"), "sin token no: {sin}");
     let ajeno = s.pedir(&format!("GET /api/overview HTTP/1.1\r\nHost: malo.example:{puerto}\r\nAuthorization: Bearer secreto\r\nConnection: close\r\n\r\n"));
@@ -189,7 +190,7 @@ fn vista_de_responsable_por_espacio() {
     drop(s);
 
     // Desde un proyecto de acme: solo acme (todo el espacio, no solo ese proyecto).
-    let s = servir(&p, &p.proyecto("acme-api"), puerto + 1);
+    let s = servir(&p, &p.proyecto("acme-api"));
     let v = s.panorama("");
     assert_eq!(v["scope"], "space", "{v}");
     assert_eq!(v["space"], "acme", "{v}");
@@ -201,7 +202,7 @@ fn vista_de_responsable_por_espacio() {
     drop(s);
 
     // Desde un proyecto sin espacio: solo los proyectos sin espacio.
-    let s = servir(&p, &p.proyecto("notas"), puerto + 2);
+    let s = servir(&p, &p.proyecto("notas"));
     let v = s.panorama("");
     let claves: Vec<&str> = v["spaces"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
     assert_eq!(claves, [""], "{v}");
