@@ -19,7 +19,7 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **It recalls by itself, and almost always stays quiet.** When what you type relates to something saved, a hook hands the agent that memory in about 35 ms (with a large memory, the meaning model checks it on the few prompts where words found something, and the noise drops). If nothing relates, it hands over nothing, as with 93 % of real prompts. It also saves what the agent forgot to, when the session ends.
 - **It understands what you ask, even with other words**, in 101 languages, accents or not. On the [public benchmark](https://github.com/marcmayol/omoikane-bench) (250 questions written blind), the right memory comes first for 89 % of questions and 55 % of paraphrases; engram 3.6, 71 % and 6 %.
 - **Nothing gets lost.** No duplicates, history with reasons, stale memories flagged, secrets redacted, a trash everything comes back from and a copy of the database every day.
-- **From you alone to a whole company.** The same memory on all your computers and with teammates, through a git repository of yours, encrypted. Spaces keep each client's memories apart.
+- **From you alone to a whole company.** The same memory on all your computers and with teammates, through a git repository of yours, encrypted. Spaces keep each client's memories apart, and trades share what one stack teaches (Android, web, WordPress…) with every project of that stack.
 - **15 agents, one memory.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode and the rest; `omoi setup <agent>` gets each one ready. Two are tested by hand, the rest going by their documentation.
 - **One binary, no server.** 8 MCP tools, SQLite built in, no Python, Node or Docker. It works offline, and on Windows just like on Linux and macOS.
 
@@ -75,7 +75,7 @@ Full method and every number: [BENCHMARK.md](BENCHMARK.md). A public, reproducib
 - [Recall and search](docs/recall.md): when it speaks and when it keeps quiet, stale memories, search in 101 languages, and how it compares with CLAUDE.md.
 - [What a memory is and how it gets saved](docs/saving.md): kinds, duplicates, `/omoikane`, saving at session end, secrets, procedures and links.
 - [Keeping it right and never losing it](docs/memory-care.md): stale detection, verdicts, merging, review dates, history, trash, export, seeing it in Obsidian, daily copy, importing from engram.
-- [Sync, projects and spaces](docs/sync-and-spaces.md): sharing between computers and teammates, encryption, one space per client.
+- [Sync, projects and spaces](docs/sync-and-spaces.md): sharing between computers and teammates, encryption, one space per client, trades.
 - [Agents](docs/agents.md): the Claude Code plugin, `omoi setup` and what works in each of the 15 agents.
 - [Agents with nobody at the keyboard](docs/unattended.md): CI, servers and containers, configured by environment variables, with a GitHub Actions example.
 - [Terminal, web view, HTTP and updates](docs/reference.md): the CLI, the TUI and the web view, the HTTP API, automatic updates and environment variables.

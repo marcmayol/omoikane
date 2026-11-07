@@ -339,7 +339,7 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
 const ES = (navigator.language || '').toLowerCase().startsWith('es');
 const T = ES ? {
   memorias: 'Memorias', proyectos: 'Proyectos', buscar: 'Buscar como lo haría el agente…', buscarEn: p => `Buscar en ${p}…`,
-  tipo: 'Tipo', todo: 'Todo', fijadas: 'Fijadas', proyecto: 'Proyecto', todos: 'Todos', global: 'Global', etiqueta: 'Etiqueta', todasEt: 'Todas',
+  tipo: 'Tipo', todo: 'Todo', fijadas: 'Fijadas', proyecto: 'Proyecto', todos: 'Todos', global: 'Global', oficio: o => `Oficio ${o}`, oficioPath: o => `todos los proyectos de ${o}, de cualquier cliente`, etiqueta: 'Etiqueta', todasEt: 'Todas',
   alcTodo: 'Todos los espacios', alcSolo: n => `Solo ${n}`, alcNinguno: 'Solo sin espacio',
   espacio: 'Espacio', espacios: 'espacios', sinEspacio: 'Sin espacio', ambito: 'Ámbito', espacioDe: n => `espacio «${n}»`, espacioPath: n => `vale para todos los proyectos de ${n}`,
   enEspacio: (p, m) => `${p} proyecto${p === 1 ? '' : 's'} · ${m} memoria${m === 1 ? '' : 's'}`, personal: 'Sin espacio', personalSub: 'Proyectos que no son de ningún espacio.', globalSub: 'Lo que vale en todos los proyectos de todos los espacios.',
@@ -381,7 +381,7 @@ const T = ES ? {
   detalle: a => a.kind === 'secret' ? a.detail.replace(/^looks like a secret: (.*); redact it$/, 'parece un secreto: $1') : a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
-  tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', etiqueta: 'Tag', todasEt: 'All',
+  tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', oficio: o => `Trade ${o}`, oficioPath: o => `every ${o} project, of any client`, etiqueta: 'Tag', todasEt: 'All',
   alcTodo: 'All spaces', alcSolo: n => `Only ${n}`, alcNinguno: 'Only no space',
   espacio: 'Space', espacios: 'spaces', sinEspacio: 'No space', ambito: 'Scope', espacioDe: n => `space “${n}”`, espacioPath: n => `applies to every project in ${n}`,
   enEspacio: (p, m) => `${p} project${p === 1 ? '' : 's'} · ${m} memor${m === 1 ? 'y' : 'ies'}`, personal: 'No space', personalSub: 'Projects that belong to no space.', globalSub: 'What applies to every project in every space.',
@@ -809,7 +809,10 @@ function irA(id) {
 function detalleHTML(m, vertical) {
   const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
   const a = ambito(m), e = espacioDe(a);
-  const donde = esEspacio(a) ? `${esc(T.espacioDe(nombre(a)))} <span class="pe">· ${esc(T.espacioPath(nombre(a)))}</span>`
+  // Una memoria de oficio (global con `trade:`): la ven los proyectos de ese oficio.
+  const oficios = a ? [] : (m.tags || []).filter(t => t.startsWith('trade:')).map(t => t.slice(6));
+  const donde = oficios.length ? `${esc(T.oficio(oficios.join(', ')))} <span class="pe">· ${esc(T.oficioPath(oficios.join(', ')))}</span>`
+    : esEspacio(a) ? `${esc(T.espacioDe(nombre(a)))} <span class="pe">· ${esc(T.espacioPath(nombre(a)))}</span>`
     : a ? `${esc(a)}${e ? ` <span class="pe">· ${esc(T.espacioDe(nombreEspacio(e)))}</span>` : ''}` : `${esc(T.global)} <span class="pe">· ${esc(T.globalPath)}</span>`;
   return `<div class="det${vertical ? ' vertical' : ''}">
     <div class="md">${md(m.content)}</div>

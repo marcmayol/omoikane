@@ -2456,3 +2456,59 @@ fn pull_con_una_accion_es_un_error() {
         assert!(String::from_utf8_lossy(&o.stderr).contains("don't go with an action"), "{}", String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// 1.8.0: las memorias de oficio (globales con `trade:`) van solo por el repositorio general, nunca por
+/// el de un cliente, y un repositorio de cliente no puede traer ninguna (ni colarla como de espacio).
+#[test]
+fn las_memorias_de_oficio_no_pasan_por_un_cliente() {
+    let p = Prueba::nueva("oficios");
+    let (a, b) = dos(&p, &[], &[]);
+    let acme = p.otro_repo("acme");
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let c = p.equipo("pc-c");
+    c.ok(&["sync", "join", &codigo, "--yes"]);
+    a.ok(&["space", "add", "acme"]);
+    let web = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
+    a.ok_en(&web, &["space", "assign", "acme"], &[]);
+    let de_acme = a.guardar(&web, "fact", "La web usa Astro", "Con islas en la cabecera.", &[]);
+    let oficio = a.guardar(&a.dir, "gotcha", "No matar el emulador con taskkill", "Deja colgado adb: usar adb emu kill.", &["--trade", "android"]);
+    // Una memoria de acme que se promueve a oficio, reescrita: llega por el general sin su historial,
+    // que era de acme.
+    let promovida = a.guardar(&web, "gotcha", "En la web de Acme Astro rompe con Node 18", "Lo vimos en su servidor.", &[]);
+    a.ok_en(&web, &["update", &promovida, "--append", "Con Node 20 va bien."], &[]);
+    a.ok_en(&web, &["update", &promovida, "--trade", "web", "-t", "Astro 5 rompe con Node 18", "-c", "Usar Node 20 o más."], &[]);
+    a.sync();
+    b.sync();
+    c.sync();
+    let m = b.get(&promovida).expect("la promovida llega por el general");
+    assert_eq!(m["title"], "Astro 5 rompe con Node 18");
+    let h = b.json_en(&b.dir, &["history", &promovida]);
+    assert_eq!(h.as_array().map(Vec::len), Some(0), "sin el historial de acme: {h}");
+    let clave_general = clave_del_codigo(&a.ok(&["sync", "code"]));
+    for l in p.lineas_de(&p.url()) {
+        let j = descifrar_linea(&clave_general, &l);
+        assert!(!j.to_string().contains("Acme"), "nada de acme en el general: {j}");
+    }
+    let m = b.get(&oficio).expect("por el general llega");
+    assert!(m["tags"].as_array().unwrap().iter().any(|t| t == "trade:android"), "{m}");
+    assert!(c.get(&oficio).is_none(), "por el de acme no");
+    assert!(c.get(&de_acme).is_some());
+    let clave = clave_del_codigo(&codigo);
+    for l in p.lineas_de(&acme) {
+        let j = descifrar_linea(&clave, &l);
+        assert_ne!(j["id"], oficio.as_str(), "{j}");
+        assert!(!j.to_string().contains("trade:"), "{j}");
+    }
+    // Un repositorio de cliente que intenta traer una (global con `trade:`) no la mete.
+    let colada = "01M62EWVHRXM0000000000TRD1";
+    let linea = serde_json::json!({
+        "type": "memory", "id": colada, "project_key": "", "project_path": "", "kind": "gotcha",
+        "title": "Trampa colada", "content": "Por el repositorio de acme.", "tags": ["trade:android"],
+        "created_at": "2026-10-29T00:00:00.000Z", "updated_at": "2026-10-29T00:00:00.000Z", "hlc": "1761696000000-0000000000-x"
+    });
+    p.subir_a_mano_en(&acme, "global/otro.jsonl", &(cifrar_linea(&clave, &linea) + "\n"));
+    a.sync();
+    c.sync();
+    assert!(a.get(colada).is_none() && c.get(colada).is_none(), "ninguna memoria de oficio por un cliente");
+}

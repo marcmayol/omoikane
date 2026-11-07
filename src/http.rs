@@ -164,7 +164,9 @@ impl Mirador {
 
     /// Si se ve la memoria `id`, viva o en la papelera. Una que no existe, sí: ya lo dirá quien la busque.
     fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
-        Ok(self.todo || memoria::alcance_de_memoria(db, id)?.is_none_or(|(global, clave)| self.ve_espacio(&clave, global)))
+        // Una memoria de oficio, solo si algún proyecto de lo que se ve tiene ese oficio.
+        Ok(self.todo
+            || (memoria::alcance_de_memoria(db, id)?.is_none_or(|(global, clave)| self.ve_espacio(&clave, global)) && !crate::oficios::oculta(db, &self.vista, id)?))
     }
 
     /// Si se ve un ámbito pedido: desde todo, cualquiera; si no, uno que no sea todo y de su mismo espacio.

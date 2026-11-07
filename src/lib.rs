@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod memoria;
 pub mod modelos;
 pub mod obsidian;
+pub mod oficios;
 pub mod proyecto;
 pub mod rapido;
 pub mod recall;

@@ -60,6 +60,74 @@ struct Diario {
     space: Option<String>,
 }
 
+// `omoi update`, con sus opciones aparte (como `omoi diary`): dentro de `Orden`, la función que arma
+// la ayuda de clap desbordaba la pila en la compilación de depuración.
+#[derive(Args)]
+struct Cambio {
+    /// Memory id (its start is enough).
+    id: String,
+    /// New title.
+    #[arg(short, long)]
+    title: Option<String>,
+    /// New content ("-" to read it from standard input).
+    #[arg(short, long)]
+    content: Option<String>,
+    /// New kind.
+    #[arg(short, long)]
+    kind: Option<Tipo>,
+    /// Replace the paths with these (repeatable).
+    #[arg(long = "path", value_name = "PATH")]
+    paths: Vec<String>,
+    /// Remove all paths.
+    #[arg(long, conflicts_with = "paths")]
+    no_paths: bool,
+    /// Replace the tags with these (repeatable).
+    #[arg(long = "tag", value_name = "TAG")]
+    tags: Vec<String>,
+    /// Remove all tags.
+    #[arg(long, conflicts_with = "tags")]
+    no_tags: bool,
+    /// Pin it: always injected in its project.
+    #[arg(long, conflicts_with = "unpin")]
+    pin: bool,
+    /// Unpin it.
+    #[arg(long)]
+    unpin: bool,
+    /// Move it to the project of this folder.
+    #[arg(long, value_name = "DIR", conflicts_with = "global")]
+    project: Option<PathBuf>,
+    /// Make it global: it applies to every project.
+    #[arg(long)]
+    global: bool,
+    /// Move it to this space: it applies to every project in it.
+    #[arg(long, value_name = "SPACE", conflicts_with_all = ["global", "project"])]
+    space: Option<String>,
+    /// Make it a trade memory (repeatable): every project of that trade sees it. It keeps its id, history and verdicts.
+    #[arg(long = "trade", value_name = "TRADE", conflicts_with_all = ["space", "project", "no_trade"])]
+    trades: Vec<String>,
+    /// It stops being a trade memory (it stays global).
+    #[arg(long)]
+    no_trade: bool,
+    /// On a trade memory, who it is for: client (projects in a space), personal (projects in no space) or both.
+    #[arg(long = "for", value_name = "WHO", conflicts_with = "no_trade")]
+    para: Option<String>,
+    /// With a trade memory: save even if the leak check flags a false positive.
+    #[arg(short, long)]
+    force: bool,
+    /// Why it changes (kept with the previous version).
+    #[arg(short, long)]
+    reason: Option<String>,
+    /// Exact text to replace in the content; it has to appear exactly once. Pair each one with a --with (repeatable).
+    #[arg(long, value_name = "FIND")]
+    replace: Vec<String>,
+    /// What goes in place of the matching --replace (repeatable, in the same order).
+    #[arg(long, value_name = "TEXT", requires = "replace")]
+    with: Vec<String>,
+    /// Text added at the end of the content, after a blank line (one more step in a procedure).
+    #[arg(long, value_name = "TEXT")]
+    append: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Orden {
     /// Save a memory. The content goes as an argument or through standard input.
@@ -87,10 +155,16 @@ enum Orden {
         /// Applies to every project of a space: this project's (`--space`) or the named one (`--space=<name>`).
         #[arg(long, value_name = "SPACE", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with = "global")]
         space: Option<String>,
+        /// A trade memory (android, web, wordpress…; repeatable): every project of that trade sees it, of any client, and no other. Only knowledge of the stack, nothing of a project or client.
+        #[arg(long = "trade", value_name = "TRADE", conflicts_with_all = ["space", "global"])]
+        trades: Vec<String>,
+        /// With --trade, who it is for: client (only projects in a space, a client's), personal (only projects in no space) or both (the default).
+        #[arg(long = "for", value_name = "WHO", requires = "trades")]
+        para: Option<String>,
         /// Who saves it (for example "claude-code:<session>").
         #[arg(long, default_value = "cli")]
         source: String,
-        /// Save it even if a very similar memory already exists.
+        /// Save it even if a very similar memory already exists (or, with --trade, even if the leak check flags a false positive).
         #[arg(short, long)]
         force: bool,
     },
@@ -124,58 +198,7 @@ enum Orden {
         id: String,
     },
     /// Change a memory. The previous version is kept in its history.
-    Update {
-        /// Memory id (its start is enough).
-        id: String,
-        /// New title.
-        #[arg(short, long)]
-        title: Option<String>,
-        /// New content ("-" to read it from standard input).
-        #[arg(short, long)]
-        content: Option<String>,
-        /// New kind.
-        #[arg(short, long)]
-        kind: Option<Tipo>,
-        /// Replace the paths with these (repeatable).
-        #[arg(long = "path", value_name = "PATH")]
-        paths: Vec<String>,
-        /// Remove all paths.
-        #[arg(long, conflicts_with = "paths")]
-        no_paths: bool,
-        /// Replace the tags with these (repeatable).
-        #[arg(long = "tag", value_name = "TAG")]
-        tags: Vec<String>,
-        /// Remove all tags.
-        #[arg(long, conflicts_with = "tags")]
-        no_tags: bool,
-        /// Pin it: always injected in its project.
-        #[arg(long, conflicts_with = "unpin")]
-        pin: bool,
-        /// Unpin it.
-        #[arg(long)]
-        unpin: bool,
-        /// Move it to the project of this folder.
-        #[arg(long, value_name = "DIR", conflicts_with = "global")]
-        project: Option<PathBuf>,
-        /// Make it global: it applies to every project.
-        #[arg(long)]
-        global: bool,
-        /// Move it to this space: it applies to every project in it.
-        #[arg(long, value_name = "SPACE", conflicts_with_all = ["global", "project"])]
-        space: Option<String>,
-        /// Why it changes (kept with the previous version).
-        #[arg(short, long)]
-        reason: Option<String>,
-        /// Exact text to replace in the content; it has to appear exactly once. Pair each one with a --with (repeatable).
-        #[arg(long, value_name = "FIND")]
-        replace: Vec<String>,
-        /// What goes in place of the matching --replace (repeatable, in the same order).
-        #[arg(long, value_name = "TEXT", requires = "replace")]
-        with: Vec<String>,
-        /// Text added at the end of the content, after a blank line (one more step in a procedure).
-        #[arg(long, value_name = "TEXT")]
-        append: Option<String>,
-    },
+    Update(Cambio),
     /// Forget a memory: it goes to the trash with its history (`omoi restore` brings it back; emptied after 30 days).
     Forget {
         /// Memory id (its start is enough).
@@ -241,6 +264,12 @@ enum Orden {
     Space {
         #[command(subcommand)]
         accion: Option<AccionEspacio>,
+    },
+    /// Trades: a project's stack (android, web, wordpress…), detected from its files. Trade memories reach every project of their trade. Without an action, this project's.
+    #[command(alias = "trade")]
+    Trades {
+        #[command(subcommand)]
+        accion: Option<AccionOficios>,
     },
     /// Omoikane's own update: check now, or turn the daily automatic update on or off.
     Upgrade {
@@ -428,6 +457,49 @@ enum AccionProyectos {
         /// Merge them even if they are in different spaces (the memories change space).
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccionOficios {
+    /// This project's trades and where they come from (the default); with --all, every project's.
+    List {
+        /// Every project, and how many trade memories each trade has.
+        #[arg(long)]
+        all: bool,
+    },
+    /// The project has these trades too, even if they aren't detected.
+    Add {
+        /// Trades: android, web, wordpress, seo-geo…
+        #[arg(required = true, value_name = "TRADE")]
+        oficios: Vec<String>,
+        /// The project: its folder, or its name or part of it (by default, this folder's).
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+    },
+    /// The project doesn't have these trades, even if they are detected.
+    Remove {
+        /// Trades: android, web, wordpress, seo-geo…
+        #[arg(required = true, value_name = "TRADE")]
+        oficios: Vec<String>,
+        /// The project: its folder, or its name or part of it (by default, this folder's).
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+    },
+    /// Exactly these trades (none, without any), and stop detecting.
+    Set {
+        /// Trades: android, web, wordpress, seo-geo…
+        #[arg(value_name = "TRADE")]
+        oficios: Vec<String>,
+        /// The project: its folder, or its name or part of it (by default, this folder's).
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
+    },
+    /// Forget the manual changes and detect them again from the files.
+    Auto {
+        /// The project: its folder, or its name or part of it (by default, this folder's).
+        #[arg(long, value_name = "PROJECT")]
+        project: Option<String>,
     },
 }
 
@@ -646,7 +718,7 @@ fn main() -> Result<()> {
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
         omoikane::actualizar::quizas_en_segundo_plano();
     }
-    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update { .. } | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update(..) | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
     // Remember, update, forget y restore saben qué memoria tocan y ponen al día la revisión solo con
     // ella (`revisar::al_dia_de`); una importación o lo que se haga en la vista, entera.
     let sin_saber_que = matches!(cli.orden, Orden::Import { .. } | Orden::Tui { .. });
@@ -718,8 +790,18 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, source, force } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force } => {
             let content = texto_o_entrada(content)?;
+            // Memoria de oficio: `--trade`, o una etiqueta `trade:` puesta a mano.
+            let (oficios, tags) = oficios_pedidos(&trades, tags)?;
+            let de_oficio = !oficios.is_empty();
+            anyhow::ensure!(
+                !(de_oficio && space.is_some()),
+                tr!("a trade memory belongs to no project and no space: drop --space", "una memoria de oficio no es de ningún proyecto ni espacio: quita --space")
+            );
+            let global = global || de_oficio;
+            let para = para.as_deref().map(omoikane::oficios::para).transpose()?.flatten();
+            let tags = if de_oficio { omoikane::oficios::etiquetas_de_oficio(tags, &oficios, para.as_deref()) } else { tags };
             // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
             // al que apunten sus rutas, o es global.
             let actual = proyecto_de(c)?;
@@ -730,6 +812,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             // Desde una carpeta general se ve todo: ahí se buscan las duplicadas.
             let busca_en = if !project.is_empty() && proyecto::es_general(&actual) { actual.clone() } else { project.clone() };
             let (mut db, modelo) = abrir_con_modelo(c)?;
+            if de_oficio && !force {
+                avisar_fugas(c, &omoikane::oficios::fugas(&db, &format!("{title}\n{content}\n{}", paths.join(" ")))?)?;
+            }
             if !force
                 && let Some(modelo) = &modelo
                 && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &busca_en, &title, &content)?
@@ -822,7 +907,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             entera(&m);
             Ok(())
         }
-        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, reason, replace, with, append } => {
+        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, force, reason, replace, with, append }) => {
             anyhow::ensure!(
                 replace.len() == with.len(),
                 tr!("each --replace needs its --with ({} and {})", "cada --replace necesita su --with ({} y {})", replace.len(), with.len())
@@ -842,8 +927,22 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             };
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let cambios = Cambios { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..cambios };
+            let (cambios, promovida) = oficios_al_cambiar(c, &db, &id, cambios, &trades, no_trade, para.as_deref(), force)?;
             let antes = omoikane::revisar::antes(&db)?;
             let (m, cambiados) = memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?;
+            // Promovida a un oficio: si su texto de antes podía ser de un cliente, su historial no viaja.
+            if let Some(antes) = &promovida
+                && omoikane::oficios::al_promover(&db, antes)?
+                && !c.json
+            {
+                eprintln!(
+                    "{}",
+                    tr!(
+                        "it came from a project or a client: its previous versions stay on this computer and don't travel through sync",
+                        "venía de un proyecto o de un cliente: sus versiones anteriores se quedan en este equipo y no viajan por la sincronización"
+                    )
+                );
+            }
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
             if c.json {
@@ -1000,6 +1099,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Projects { accion } => proyectos_cli(c, accion.unwrap_or(AccionProyectos::List)),
         Orden::Space { accion } => espacios_cli(c, accion.unwrap_or(AccionEspacio::List)),
+        Orden::Trades { accion } => oficios_cli(c, accion.unwrap_or(AccionOficios::List { all: false })),
         Orden::Tui { all } => {
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let proyecto = proyecto_de(c)?;
@@ -1734,7 +1834,12 @@ fn docs_cli(c: &Comun, accion: AccionDocs) -> Result<()> {
 }
 
 fn ambito_pedido(c: &Comun, db: &Connection, todos: bool, project: Option<&str>, space: Option<&str>) -> Result<Ambito> {
-    let base = Ambito::de(db, &proyecto_de(c)?)?;
+    let actual = proyecto_de(c)?;
+    // Sus oficios, si nunca se miraron: sin ellos no vería las memorias de su oficio. Opcional.
+    if let Err(e) = omoikane::oficios::preparar(db, &actual) {
+        eprintln!("omoikane: trades: {e:#}");
+    }
+    let base = Ambito::de(db, &actual)?;
     let pedido = if let Some(s) = space {
         Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project {
@@ -1776,14 +1881,19 @@ fn proyectos_cli(c: &Comun, accion: AccionProyectos) -> Result<()> {
         AccionProyectos::List => {
             let base = Ambito::de(&db, &proyecto_de(c)?)?;
             let filtro = if matches!(base, Ambito::Todos) { None } else { Some(base.espacio()) };
-            let v = proyecto::lista(&db, None, filtro, usize::MAX)?;
+            let mut v = proyecto::lista(&db, None, filtro, usize::MAX)?;
+            // Sus oficios: los de los que nunca se miraron, ahora (raíz y un nivel de cada uno).
+            for p in v.iter_mut().filter(|p| !p.gone && p.trades.is_empty()) {
+                p.trades = omoikane::oficios::al_dia_si_falta(&db, p.id, &p.path)?;
+            }
             if c.json {
                 return json(&v);
             }
             for p in &v {
                 let espacio = if p.space.is_empty() { String::new() } else { format!(" [{}]", p.space) };
                 let ido = if p.gone { tr!("  (folder gone)", "  (ya no está)") } else { String::new() };
-                println!("{:>5}  {}  {}{espacio}  {}{ido}", p.memories, p.last_update.get(..10).unwrap_or(""), p.name, p.path);
+                let oficios = if p.trades.is_empty() { String::new() } else { format!("  ({})", p.trades.join(", ")) };
+                println!("{:>5}  {}  {}{espacio}  {}{ido}{oficios}", p.memories, p.last_update.get(..10).unwrap_or(""), p.name, p.path);
             }
             Ok(())
         }
@@ -1964,6 +2074,184 @@ fn espacios_cli(c: &Comun, accion: AccionEspacio) -> Result<()> {
     }
 }
 
+/// Los oficios de `remember` (`--trade`, o etiquetas `trade:` puestas a mano), validados y sin
+/// repetir, y las etiquetas sin las de oficio.
+fn oficios_pedidos(trades: &[String], tags: Vec<String>) -> Result<(Vec<String>, Vec<String>)> {
+    let mut v: Vec<String> = Vec::new();
+    let a_mano: Vec<String> = tags.iter().filter_map(|t| t.trim().to_lowercase().strip_prefix(omoikane::oficios::PREFIJO).map(String::from)).collect();
+    for t in trades.iter().chain(&a_mano) {
+        for o in omoikane::oficios::lista(t)? {
+            if !v.contains(&o) {
+                v.push(o);
+            }
+        }
+    }
+    let tags = tags.into_iter().filter(|t| !t.trim().to_lowercase().starts_with(omoikane::oficios::PREFIJO)).collect();
+    Ok((v, tags))
+}
+
+/// Si una memoria de oficio nombra algo de un proyecto o de un cliente, lo dice y sale con código 2
+/// (como una duplicada): no se guarda sin `--force`.
+fn avisar_fugas(c: &Comun, fugas: &[omoikane::oficios::Fuga]) -> Result<()> {
+    if fugas.is_empty() {
+        return Ok(());
+    }
+    if c.json {
+        json(&serde_json::json!({ "saved": false, "trade_leaks": fugas }))?;
+    } else {
+        println!(
+            "{}",
+            tr!(
+                "not saved: a trade memory reaches every project of that trade, of every client, and this one names what looks like a project or a client:",
+                "no guardada: una memoria de oficio llega a todos los proyectos de ese oficio, de todos los clientes, y esta nombra lo que parece de un proyecto o de un cliente:"
+            )
+        );
+        for f in fugas {
+            println!("  {:<10}  {}", f.tipo, f.text);
+        }
+        println!(
+            "{}",
+            tr!(
+                "  rewrite it without them, or save it in the project (without --trade); if they are false positives, add --force",
+                "  reescríbela sin eso, o guárdala en el proyecto (sin --trade); si son falsos positivos, añade --force"
+            )
+        );
+    }
+    std::process::exit(2);
+}
+
+/// Los oficios de `update` (ver `oficios::al_cambiar`): `--trade` la hace de oficio (la promueve, con su
+/// id y su historial), `--no-trade` deja de serlo, `--for` dice para quién; y lo nuevo de una memoria de
+/// oficio pasa por `oficios::fugas` (sin `--force`). Devuelve los cambios y la memoria de antes si se
+/// promueve (para `oficios::al_promover` después).
+#[allow(clippy::too_many_arguments)]
+fn oficios_al_cambiar(c: &Comun, db: &Connection, id: &str, mut cambios: Cambios, trades: &[String], no_trade: bool, para: Option<&str>, force: bool) -> Result<(Cambios, Option<Memoria>)> {
+    use omoikane::oficios;
+    let actual = memoria::obtener(db, id)?;
+    let trade = if no_trade { Some(String::new()) } else { (!trades.is_empty()).then(|| trades.join(",")) };
+    let mut anadido: Vec<String> = cambios.replace.iter().map(|(_, con)| con.clone()).collect();
+    anadido.extend(cambios.append.clone());
+    let pedido = oficios::PedidoCambio {
+        trade: trade.as_deref(),
+        para,
+        tags: cambios.tags.clone(),
+        a_proyecto: cambios.space_id.is_some() || cambios.project.as_deref().is_some_and(|p| !p.is_empty()),
+        a_global: cambios.project.as_deref() == Some(""),
+        title: cambios.title.as_deref(),
+        content: cambios.content.as_deref(),
+        anadido,
+        paths: cambios.paths.as_deref(),
+        force,
+    };
+    let plan = match oficios::al_cambiar(db, &actual, pedido)? {
+        Ok(plan) => plan,
+        Err(fugas) => {
+            avisar_fugas(c, &fugas)?;
+            unreachable!()
+        }
+    };
+    cambios.tags = plan.tags;
+    if plan.hacer_global {
+        cambios.project = Some(String::new());
+    }
+    Ok((cambios, plan.promueve.then_some(actual)))
+}
+
+/// `omoi trades`.
+fn oficios_cli(c: &Comun, accion: AccionOficios) -> Result<()> {
+    use omoikane::oficios;
+    let db = abrir(c)?;
+    // El proyecto pedido (o el de esta carpeta, apuntándolo si aún no lo está) y su carpeta.
+    let elegido = |p: Option<String>| -> Result<(i64, String)> {
+        match p {
+            Some(p) => {
+                let id = proyecto::buscar(&db, &p)?;
+                let ruta: String = db.query_row("SELECT path FROM project WHERE id = ?1", [id], |f| f.get(0))?;
+                Ok((id, ruta))
+            }
+            None => {
+                let ruta = proyecto_de(c)?;
+                anyhow::ensure!(
+                    !proyecto::es_general(&ruta),
+                    tr!("this folder is not a project: run it in one, or give --project", "esta carpeta no es un proyecto: hazlo en uno, o di --project")
+                );
+                Ok((proyecto::registrar(&db, &ruta)?, ruta))
+            }
+        }
+    };
+    let nombres = |v: &[String]| -> Result<Vec<String>> { v.iter().map(|o| oficios::nombre(o)).collect() };
+    let decir = |id: i64| -> Result<()> {
+        let e = oficios::estado(&db, id)?;
+        if c.json {
+            return json(&e);
+        }
+        let o = if e.trades.is_empty() { tr!("(none)", "(ninguno)") } else { e.trades.join(", ") };
+        println!("{}", tr!("trades: {o}", "oficios: {o}"));
+        if !e.detected.is_empty() {
+            println!("{}", tr!("  detected from its files: {}", "  detectados en sus ficheros: {}", e.detected.join(", ")));
+        }
+        if !e.added.is_empty() {
+            println!("{}", tr!("  added by hand: {}", "  puestos a mano: {}", e.added.join(", ")));
+        }
+        if !e.removed.is_empty() {
+            println!("{}", tr!("  removed by hand: {}", "  quitados a mano: {}", e.removed.join(", ")));
+        }
+        if e.fixed {
+            println!("{}", tr!("  fixed with `omoi trades set`: detection adds nothing (`omoi trades auto` undoes it)", "  fijados con `omoi trades set`: la detección no añade nada (`omoi trades auto` lo deshace)"));
+        }
+        Ok(())
+    };
+    match accion {
+        AccionOficios::List { all: false } => {
+            let (id, ruta) = elegido(None)?;
+            oficios::al_dia(&db, id, &ruta)?;
+            decir(id)
+        }
+        AccionOficios::List { all: true } => {
+            let base = Ambito::de(&db, &proyecto_de(c)?)?;
+            let filtro = if matches!(base, Ambito::Todos) { None } else { Some(base.espacio()) };
+            let mut v = proyecto::lista(&db, None, filtro, usize::MAX)?;
+            for p in v.iter_mut().filter(|p| !p.gone) {
+                p.trades = oficios::al_dia_si_falta(&db, p.id, &p.path)?;
+            }
+            let por_oficio = oficios::memorias_por_oficio(&db)?;
+            if c.json {
+                let proyectos: Vec<_> = v.iter().map(|p| serde_json::json!({ "name": p.name, "path": p.path, "trades": p.trades })).collect();
+                return json(&serde_json::json!({ "projects": proyectos, "memories": por_oficio }));
+            }
+            for p in &v {
+                println!("{:<28}  {}", p.name, if p.trades.is_empty() { "-".to_string() } else { p.trades.join(", ") });
+            }
+            if !por_oficio.is_empty() {
+                let mut cuentas: Vec<_> = por_oficio.into_iter().collect();
+                cuentas.sort();
+                println!("\n{}", tr!("trade memories: {}", "memorias de oficio: {}", cuentas.iter().map(|(o, n)| format!("{o} {n}")).collect::<Vec<_>>().join(", ")));
+            }
+            Ok(())
+        }
+        AccionOficios::Add { oficios: os, project } => {
+            let (id, _) = elegido(project)?;
+            oficios::anadir(&db, id, &nombres(&os)?)?;
+            decir(id)
+        }
+        AccionOficios::Remove { oficios: os, project } => {
+            let (id, _) = elegido(project)?;
+            oficios::quitar(&db, id, &nombres(&os)?)?;
+            decir(id)
+        }
+        AccionOficios::Set { oficios: os, project } => {
+            let (id, _) = elegido(project)?;
+            oficios::fijar(&db, id, &nombres(&os)?)?;
+            decir(id)
+        }
+        AccionOficios::Auto { project } => {
+            let (id, ruta) = elegido(project)?;
+            oficios::automatico(&db, id, &ruta)?;
+            decir(id)
+        }
+    }
+}
+
 /// Si la persona sacó el proyecto de su espacio a propósito (`space unassign --force`).
 fn personal_decidido(db: &Connection, id: i64) -> Result<bool> {
     Ok(db.query_row("SELECT count(*) FROM meta WHERE k = 'personal:' || ?1", [id], |f| f.get::<_, i64>(0))? > 0)
@@ -2023,8 +2311,12 @@ fn lista(m: &Memoria, con_proyecto: bool) {
     let fijada = if m.pinned { tr!(" (pinned)", " (fijada)") } else { String::new() };
     println!("{}  {:<10} {}{fijada}", corto(&m.id), m.kind.as_str(), m.title);
     let mut extra: Vec<String> = m.paths.clone();
-    extra.extend(m.tags.iter().map(|t| format!("#{t}")));
-    if m.project.is_empty() {
+    extra.extend(m.tags.iter().filter(|t| !t.starts_with(omoikane::oficios::PREFIJO) && !t.starts_with(omoikane::oficios::PARA)).map(|t| format!("#{t}")));
+    let oficios = omoikane::oficios::de_memoria(m);
+    if !oficios.is_empty() {
+        let para = omoikane::oficios::para_de(&m.tags).map(|p| format!(" ({p})")).unwrap_or_default();
+        extra.push(format!("trade {}{para}", oficios.join(", ")));
+    } else if m.project.is_empty() {
         extra.push("global".into());
     } else if con_proyecto {
         extra.push(m.project.clone());
@@ -2046,7 +2338,14 @@ fn entera(m: &Memoria) {
         let tags = m.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
         println!("{}{tags}", tr!("tags       ", "etiquetas  "));
     }
-    let proyecto = if m.project.is_empty() { "global" } else { &m.project };
+    let oficios = omoikane::oficios::de_memoria(m);
+    let proyecto = if !oficios.is_empty() {
+        format!("trade {}", oficios.join(", "))
+    } else if m.project.is_empty() {
+        "global".to_string()
+    } else {
+        m.project.clone()
+    };
     println!("{}{proyecto}", tr!("project    ", "proyecto   "));
     println!("{}{}", tr!("source     ", "origen     "), m.source);
     println!("{}", tr!("created    {}   changed {}", "creada     {}   cambiada {}", m.created_at, m.updated_at));
@@ -2705,8 +3004,10 @@ fn en_espanol(c: Command) -> Command {
             ("tags", "Etiqueta libre (se puede repetir)."),
             ("pinned", "Se inyecta siempre en su proyecto."),
             ("global", "Vale para todos los proyectos, no solo para este."),
+            ("trades", "Memoria de oficio (android, web, wordpress…; se puede repetir): la ven todos los proyectos de ese oficio, de cualquier cliente, y ningún otro. Solo conocimiento del stack, nada de un proyecto ni de un cliente."),
+            ("para", "Con --trade, para quién es: client (solo proyectos en un espacio, de un cliente), personal (solo proyectos sin espacio) o both (por defecto)."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
-            ("force", "Guardarla aunque ya exista una muy parecida."),
+            ("force", "Guardarla aunque ya exista una muy parecida (o, con --trade, aunque el aviso de fugas marque un falso positivo)."),
         ]),
         ("search", "Busca en las memorias de este proyecto y en las globales.", &[
             ("query", "Lo que buscas, en lenguaje normal."),
@@ -2729,6 +3030,10 @@ fn en_espanol(c: Command) -> Command {
             ("no_tags", "Quita todas las etiquetas."),
             ("project", "Llevarla al proyecto de esta carpeta."),
             ("global", "Hacerla global: vale para todos los proyectos."),
+            ("trades", "Hacerla de oficio (se puede repetir): la ven todos los proyectos de ese oficio. Conserva su id, su historial y sus veredictos."),
+            ("para", "En una memoria de oficio, para quién es: client (proyectos en un espacio), personal (proyectos sin espacio) o both."),
+            ("no_trade", "Deja de ser de oficio (se queda global)."),
+            ("force", "En una memoria de oficio: guardar aunque el aviso de fugas marque un falso positivo."),
             ("reason", "Por qué cambia (se guarda con la versión anterior)."),
             ("replace", "Trozo exacto del contenido que se cambia; tiene que aparecer exactamente una vez. Cada uno con su --with (se puede repetir)."),
             ("with", "Lo que va en lugar del --replace que le toca (se puede repetir, en el mismo orden)."),
@@ -2767,6 +3072,7 @@ fn en_espanol(c: Command) -> Command {
         ]),
         ("docs", "La documentación propia del proyecto en Markdown (una carpeta docs/, una wiki, una bóveda de Obsidian), en solo lectura: el recall trae el apartado que toca con cada mensaje. Sin acción, la lista.", &[]),
         ("projects", "Proyectos con memorias.", &[]),
+        ("trades", "Oficios: el stack de un proyecto (android, web, wordpress…), detectado en sus ficheros. Las memorias de oficio llegan a todos los proyectos de su oficio. Sin acción, los de este proyecto.", &[]),
         ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
             ("encrypt", "Cifra cada línea con la clave de la sincronización (AES-SIV), para guardar la copia en cualquier sitio."),
@@ -2859,6 +3165,15 @@ fn en_espanol(c: Command) -> Command {
                 s.about("Qué apartado traería el recall con este texto, sin apuntarlo como dado.").mut_arg("texto", |a| a.help("El mensaje que quieres probar."))
             })
     });
+    let proyecto_es = |a: Arg| a.help("El proyecto: su carpeta, o su nombre o parte de él (por defecto, el de esta carpeta).").value_name("PROYECTO");
+    let c = c.mut_subcommand("trades", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("list", |s| s.about("Los oficios de este proyecto y de dónde salen (por defecto); con --all, los de todos.").mut_arg("all", |a| a.help("Todos los proyectos, y cuántas memorias de oficio tiene cada oficio.")))
+            .mut_subcommand("add", |s| s.about("El proyecto tiene también estos oficios, aunque no se detecten.").mut_arg("oficios", |a| a.value_name("OFICIO").help("Oficios: android, web, wordpress, seo-geo…")).mut_arg("project", proyecto_es))
+            .mut_subcommand("remove", |s| s.about("El proyecto no tiene estos oficios, aunque se detecten.").mut_arg("oficios", |a| a.value_name("OFICIO").help("Oficios: android, web, wordpress, seo-geo…")).mut_arg("project", proyecto_es))
+            .mut_subcommand("set", |s| s.about("Exactamente estos oficios (sin ninguno, ninguno), y deja de detectarlos.").mut_arg("oficios", |a| a.value_name("OFICIO").help("Oficios: android, web, wordpress, seo-geo…")).mut_arg("project", proyecto_es))
+            .mut_subcommand("auto", |s| s.about("Olvida lo puesto a mano y los vuelve a detectar en sus ficheros.").mut_arg("project", proyecto_es))
+    });
     let c = c.mut_subcommand("sync", |m| {
         m.subcommand_help_heading("Acciones")
             .mut_subcommand("init", |s| {
@@ -2901,7 +3216,7 @@ fn en_espanol(c: Command) -> Command {
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
     let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));
-    ["model", "sync", "docs"].iter().fold(c, |c, sub| {
+    ["model", "sync", "docs", "trades"].iter().fold(c, |c, sub| {
         c.mut_subcommand(*sub, |m| {
             let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
             acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))

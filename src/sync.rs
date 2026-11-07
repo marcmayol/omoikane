@@ -247,7 +247,9 @@ impl Config {
     }
 
     fn comparte(&self, m: &Memoria) -> bool {
-        self.admite(m.tipo_texto(), &m.project_key, &m.space)
+        // Una memoria de oficio (global con `trade:`) es de la persona o de la factoría: nunca va por el
+        // repositorio de un cliente (por ser global ya no iría; esto lo deja dicho).
+        self.admite(m.tipo_texto(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
     }
 }
 
@@ -1396,6 +1398,10 @@ fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: 
     let mut carpetas: HashMap<String, String> = HashMap::new();
     // El historial de todas, en una consulta (una por memoria eran 50.000 con una base grande).
     let mut historiales = crate::memoria::historiales(db)?;
+    // Lo que pasó de un cliente a un oficio no lleva su historial (podía ser texto del cliente).
+    for id in crate::oficios::historiales_solo_aqui(db)? {
+        historiales.remove(&id);
+    }
     // Lo de un proyecto en pausa no va a ningún repositorio hasta que la persona decida.
     let en_pausa: HashSet<String> = {
         let mut q = db.prepare("SELECT key FROM project WHERE paused != ''")?;
@@ -2030,6 +2036,12 @@ impl<'a> Aplicador<'a> {
             }
             Linea::Memory(CuerpoMemoria { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, extra, .. }) => {
                 if let Some(c) = self.config {
+                    // Un repositorio de cliente no trae memorias de oficio (globales con `trade:`): las
+                    // verían los proyectos de ese oficio de todos los clientes.
+                    if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::oficios::lleva_oficio(&tags) {
+                        r.conflictos_de_espacio += 1;
+                        return Ok(());
+                    }
                     // Por un repositorio solo entra lo de su espacio (el general: lo de ninguno, y los
                     // espacios que diga su `spaces`): lo demás se rechaza y se cuenta.
                     if !va_al_repo(c, &space_key) {

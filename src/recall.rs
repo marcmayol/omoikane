@@ -413,7 +413,11 @@ fn apuntar(db: &mut Connection, sesion: &str, ids: &[String], proyecto: i64) -> 
 /// Dónde está una memoria, si no es del proyecto de la sesión (`actual`): `[global]`, `[space x]` o
 /// `[project x]` (vista desde una carpeta general o desde otro proyecto del espacio).
 fn donde(m: &Memoria, actual: i64) -> String {
-    if m.global() {
+    let oficios = crate::oficios::de_memoria(m);
+    if !oficios.is_empty() {
+        let para = crate::oficios::para_de(&m.tags).map(|p| format!(", {p} projects")).unwrap_or_default();
+        format!(" [trade {}{para}]", oficios.join(", "))
+    } else if m.global() {
         " [global]".to_string()
     } else if m.de_espacio() {
         format!(" [space {}]", m.space)
@@ -485,6 +489,15 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     // es la carpeta nueva de un proyecto que se movió (el mismo `origin`), se dice una vez.
     let movido = if crate::proyecto::es_general(project) { None } else { crate::proyecto::registrar_avisando(db, project)?.1 };
     let ambito = Ambito::de(db, project)?;
+    // Sus oficios, mirando sus ficheros (raíz y un nivel): con ellos llegan las memorias de oficio.
+    // Opcional: si falla, la sesión empieza sin ellos.
+    let oficios = match ambito.proyecto() {
+        Some(id) => crate::oficios::al_dia(db, id, project).unwrap_or_else(|x| {
+            eprintln!("omoikane: trades: {x:#}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
     let actual = proyecto_actual(db, project);
     let propio = autor_propio(db, actual);
     // Una sesión que empieza o se compacta ya no tiene en su contexto lo inyectado antes. Lo que se
@@ -543,6 +556,14 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     } else {
         s.push_str(&format!(
             "Long-term memory (Omoikane) holds {total} memories for this project and globally. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\n"
+        ));
+    }
+    if !oficios.is_empty() {
+        s.push_str(&format!(
+            "This project's trades (its stack, from its files): {}. A trap or know-how about the stack itself, useful to any project of that trade and with nothing of this project or its client in it, goes with `trade` (e.g. `trade: \"{}\"`) and reaches every {} project; anything about this project stays in the project.\n",
+            oficios.join(", "),
+            oficios[0],
+            oficios[0]
         ));
     }
     if let Some(l) = &llegada {

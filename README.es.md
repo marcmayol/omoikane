@@ -19,7 +19,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Recuerda solo, y casi siempre calla.** Cuando lo que escribes tiene que ver con algo guardado, un hook le pasa al agente esa memoria en unos 35 ms (con una memoria grande, el modelo de significado la revisa en los pocos mensajes en que las palabras encontraron algo, y baja el ruido). Si no tiene que ver, no le pasa nada, y así fue en el 93 % de los mensajes reales. Y al cerrar la sesión guarda lo que al agente se le olvidó.
 - **Entiende lo que preguntas, aunque lo digas con otras palabras**, en 101 idiomas, con tildes o sin ellas. En el [benchmark público](https://github.com/marcmayol/omoikane-bench) (250 preguntas escritas a ciegas), la memoria buena sale la primera en el 89 % de las preguntas y en el 55 % de las paráfrasis; engram 3.6, en el 71 % y el 6 %.
 - **Nada se pierde.** Sin duplicados, con historial y motivo, lo viejo marcado, los secretos tachados, una papelera desde la que todo vuelve y una copia de la base cada día.
-- **De ti solo a una empresa entera.** La misma memoria en todos tus equipos y con compañeros, por un repositorio git tuyo y cifrada. Los espacios separan las memorias de cada cliente.
+- **De ti solo a una empresa entera.** La misma memoria en todos tus equipos y con compañeros, por un repositorio git tuyo y cifrada. Los espacios separan las memorias de cada cliente, y los oficios llevan lo que enseña un stack (Android, web, WordPress…) a todos los proyectos de ese stack.
 - **15 agentes, una sola memoria.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode y los demás; `omoi setup <agente>` deja cada uno listo. Dos están probados a mano, el resto según su documentación.
 - **Un binario y ningún servidor.** 8 herramientas MCP, SQLite dentro, ni Python, ni Node, ni Docker. Funciona sin internet, y en Windows igual que en Linux y macOS.
 
@@ -75,7 +75,7 @@ El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). Un
 - [Recall y búsqueda](docs/recall.es.md): cuándo habla y cuándo calla, lo que se queda viejo, la búsqueda en 101 idiomas y qué tiene frente a CLAUDE.md.
 - [Qué es una memoria y cómo se guarda](docs/saving.es.md): tipos, duplicados, `/omoikane`, guardar al cerrar la sesión, secretos, recetas y enlaces.
 - [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, verla en Obsidian, copia diaria e importar de engram.
-- [Sincronización, proyectos y espacios](docs/sync-and-spaces.es.md): compartir entre equipos y con compañeros, el cifrado y un espacio por cliente.
+- [Sincronización, proyectos y espacios](docs/sync-and-spaces.es.md): compartir entre equipos y con compañeros, el cifrado, un espacio por cliente y los oficios.
 - [Agentes](docs/agents.es.md): el plugin de Claude Code, `omoi setup` y qué funciona en cada uno de los 15 agentes.
 - [Agentes sin nadie delante](docs/unattended.es.md): CI, servidores y contenedores, configurados por variables de entorno, con un ejemplo de GitHub Actions.
 - [Terminal, vista web, HTTP y actualizaciones](docs/reference.es.md): la CLI, la TUI y la vista web, la API HTTP, la actualización automática y las variables de entorno.

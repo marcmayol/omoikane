@@ -141,6 +141,7 @@ fn abrir_una_vez(ruta: &Path) -> Result<Connection> {
     al_dia_al_abrir(&mut db)?;
     locales(&mut db)?;
     crate::significado::crear_tabla(&db)?;
+    crate::oficios::crear_tabla(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }

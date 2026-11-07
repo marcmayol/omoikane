@@ -265,7 +265,19 @@ impl Ambito {
 
     /// La condición SQL sobre la memoria `m` (con `m.project_id IN (…)`, que va por el índice
     /// `memory_scope`). Los ids son enteros de la base: van en el texto, no hace falta parámetro.
+    /// Sin las memorias de oficio de los oficios que no tiene ningún proyecto del ámbito (ver
+    /// `oficios::ocultas`): una global con `trade:android` no llega a un proyecto web.
     pub(crate) fn sql(&self) -> String {
+        let base = self.sql_sin_oficios();
+        match crate::oficios::ocultas(self) {
+            Some(o) => format!("({base} AND (m.project_id <> 0 OR m.space_id IS NOT NULL OR m.n NOT IN ({o})))"),
+            None => base,
+        }
+    }
+
+    /// `sql` contando las memorias de oficio como globales: para `memory_cuenta` (que no tiene las
+    /// etiquetas); quien la usa resta `oficios::cuantas_ocultas`.
+    fn sql_sin_oficios(&self) -> String {
         let espacio = |s: Option<i64>| match s {
             Some(s) => format!("(m.project_id <> 0 OR m.space_id IS NULL OR m.space_id = {s})"),
             None => "(m.project_id <> 0 OR m.space_id IS NULL)".to_string(),
@@ -301,7 +313,10 @@ pub(crate) fn ve_todas(db: &Connection, ambito: &Ambito) -> bool {
         let todas: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |f| f.get(0)).ok()?;
         let aqui: i64 = match ambito {
             Ambito::Todos => todas,
-            a => db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql()), [], |f| f.get(0)).ok()?,
+            a => {
+                let n: i64 = db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql_sin_oficios()), [], |f| f.get(0)).ok()?;
+                n - crate::oficios::cuantas_ocultas(db, a).ok()?
+            }
         };
         Some(aqui == todas && filas_fts(db)? == todas)
     };
@@ -1259,7 +1274,8 @@ fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<
 /// fijadas, luego las más recientes.
 pub fn contexto(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
     let donde = match ambito {
-        Ambito::Todos => "(m.project_id = 0 AND m.space_id IS NULL)".to_string(),
+        // Las de oficio no: son de los proyectos de ese oficio, no de la persona.
+        Ambito::Todos => "(m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') = 0)".to_string(),
         a => a.sql(),
     };
     // La condición, igual que la del índice parcial `memory_always`, para que lo use.
@@ -1275,8 +1291,8 @@ pub fn contexto(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<M
 /// Cuántas memorias se ven desde un ámbito. Con la cuenta por proyecto y espacio que llevan los
 /// disparadores (`db::LOCALES`), sin recorrer la tabla; contando, en una conexión sin ella.
 pub fn cuantas(db: &Connection, ambito: &Ambito) -> Result<i64> {
-    match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", ambito.sql()), [], |f| f.get(0)) {
-        Ok(n) => Ok(n),
+    match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", ambito.sql_sin_oficios()), [], |f| f.get::<_, i64>(0)) {
+        Ok(n) => Ok(n - crate::oficios::cuantas_ocultas(db, ambito)?),
         Err(_) => Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", ambito.sql()), [], |f| f.get(0))?),
     }
 }

@@ -9,10 +9,12 @@ Una memoria es un párrafo que el agente querría leer antes de volver a tocar a
 | campo | quién lo pone |
 |---|---|
 | `title`, `content`, `kind` (`fact` · `decision` · `gotcha` · `preference` · `procedure`) | el agente |
-| `paths`, `tags`, `pinned` | el agente, si quiere |
+| `paths`, `tags`, `pinned`, `space` o `trade` | el agente, si quiere |
 | `project`, `source`, fechas, estadísticas de recall, historial de versiones | Omoikane |
 
 Cada `kind` cambia cómo se recupera: las preferencias y lo fijado se inyectan siempre; los gotcha salen cuando el prompt o los ficheros coinciden; hechos y decisiones, por relevancia; las recetas, enteras, cuando el mensaje dice una de las palabras de su `when:`. Una memoria con la etiqueta `status` dice en qué punto se quedó el trabajo de un proyecto: al empezar sesión sale la última de cada proyecto con parte de su contenido, para que «sigamos con X» no obligue a buscar.
+
+Una memoria es de su proyecto, de un espacio (todos los proyectos de un cliente), de un oficio (todos los proyectos de un stack, de cualquier cliente: ver [sync-and-spaces.es.md](sync-and-spaces.es.md#oficios-lo-que-enseña-un-stack-para-todos-los-proyectos-de-ese-stack)) o global.
 
 ## Guarda sin duplicados
 

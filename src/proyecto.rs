@@ -459,6 +459,9 @@ pub struct Proyecto {
     /// El `origin` de git de alguna de sus carpetas ya no es el de su clave.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub origin_changed: String,
+    /// Sus oficios (android, web…: `oficios`), los detectados y los puestos a mano.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trades: Vec<String>,
 }
 
 /// Los proyectos con memorias (o el que se pida, aunque no tenga), del más al menos activo. Sin lo
@@ -496,6 +499,7 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
                     status: String::new(),
                     gone: false,
                     origin_changed: f.get(6)?,
+                    trades: Vec::new(),
                 },
                 f.get(5)?,
                 f.get(7)?,
@@ -518,10 +522,12 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
         let etiqueta = crate::memoria::ESTADO;
         q.query_map(params![format!("%\"{etiqueta}\"%"), etiqueta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
+    let mut oficios = crate::oficios::de_proyectos(db)?;
     Ok(v.into_iter()
         .map(|(mut p, ajena, _)| {
             p.gone = !ajena && !p.path.is_empty() && !Path::new(&p.path).is_dir();
             p.status = estados.get(&p.id).cloned().unwrap_or_default();
+            p.trades = oficios.remove(&p.id).unwrap_or_default();
             p
         })
         .collect())

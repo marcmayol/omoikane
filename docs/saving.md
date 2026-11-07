@@ -9,10 +9,12 @@ A memory is one paragraph the agent would want to read before touching something
 | field | who sets it |
 |---|---|
 | `title`, `content`, `kind` (`fact` · `decision` · `gotcha` · `preference` · `procedure`) | the agent |
-| `paths`, `tags`, `pinned` | the agent, optionally |
+| `paths`, `tags`, `pinned`, `space` or `trade` | the agent, optionally |
 | `project`, `source`, timestamps, recall stats, version history | Omoikane |
 
 Each `kind` changes how it is recalled: preferences and pinned memories are always injected; gotchas come up when the prompt or the files match; facts and decisions by relevance; procedures, whole, when the message says one of their `when:` words. A memory tagged `status` says where the work on a project was left: at session start the latest one of each project comes with part of its content, so "let's carry on with X" needs no searching.
+
+A memory belongs to its project, to a space (all of one client's projects), to a trade (every project of one stack, of any client: see [sync-and-spaces.md](sync-and-spaces.md#trades-what-one-stack-teaches-for-every-project-of-that-stack)) or is global.
 
 ## It saves without duplicates
 
