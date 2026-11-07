@@ -113,7 +113,8 @@ pub fn bienvenida(db: &Connection, ambito: &Ambito, sesion: &str, propio: Option
                 .optional()?
                 .filter(|n: &String| !n.is_empty())
                 .unwrap_or_else(|| crate::proyecto::nombre_de(&m.project, &m.project_key));
-            s.push_str(&format!("- [project {p}] {} (id {})\n", m.title, m.id.chars().take(12).collect::<String>()));
+            let marca = if m.bloqueante() { "BLOCKING " } else { "" };
+            s.push_str(&format!("- {marca}[project {p}] {} (id {})\n", m.title, m.id.chars().take(12).collect::<String>()));
         }
         if abiertas.len() > ABIERTAS {
             s.push_str(&format!("…and {} more (`search` with the tag `open` and `space`).\n", abiertas.len() - ABIERTAS));

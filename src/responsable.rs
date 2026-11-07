@@ -188,8 +188,11 @@ pub fn panorama(db: &Connection, ruta_db: &Path, base: &Ambito, meses: u32) -> R
                 })
                 .collect();
             autores.sort_by(|a, b| b["last"].as_str().cmp(&a["last"].as_str()));
-            let abiertas: Vec<&&Memoria> =
-                ms.iter().filter(|m| m.kind == memoria::Tipo::Decision && m.tags.iter().any(|t| t == "open")).collect();
+            let mut abiertas: Vec<&&Memoria> =
+                ms.iter().filter(|m| m.kind == memoria::Tipo::Decision && m.tags.iter().any(|t| t == memoria::ABIERTA)).collect();
+            // Las bloqueantes primero, como al empezar la sesión.
+            abiertas.sort_by_key(|m| !m.bloqueante());
+            let bloqueantes = abiertas.iter().filter(|m| m.bloqueante()).count();
             let fijadas: Vec<&&Memoria> = ms.iter().filter(|m| m.pinned).collect();
             // Las que nadie toca desde el corte, de la más vieja a la más nueva.
             let mut olvidadas: Vec<&&Memoria> = ms.iter().filter(|m| m.updated_at < corte).collect();
@@ -207,7 +210,15 @@ pub fn panorama(db: &Connection, ruta_db: &Path, base: &Ambito, meses: u32) -> R
                 "space_memories": ms.iter().filter(|m| m.project_id == 0).count(),
                 "projects": g.proyectos,
                 "pinned": { "count": fijadas.len(), "items": lista(&fijadas) },
-                "open_decisions": { "count": abiertas.len(), "items": lista(&abiertas) },
+                "open_decisions": {
+                    "count": abiertas.len(),
+                    "blocking": bloqueantes,
+                    "items": abiertas.iter().take(POR_LISTA).map(|m| {
+                        let mut b = breve(m);
+                        b["blocking"] = json!(m.bloqueante());
+                        b
+                    }).collect::<Vec<_>>(),
+                },
                 "authors": autores,
                 "recent": ms.iter().take(POR_LISTA).map(|m| breve(m)).collect::<Vec<_>>(),
                 "review": {

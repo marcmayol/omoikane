@@ -266,6 +266,10 @@ button.chip:hover { border-color: var(--accent); }
 .par .md { max-height: 320px; overflow-y: auto; font-size: 13px; }
 .av textarea.fusion { width: 100%; min-height: 220px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 .abiertas { margin-bottom: 22px; }
+.blk { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--delink); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; line-height: 16px; white-space: nowrap; }
+.blk.later { color: var(--faint); }
+.fl .blk { margin-left: 6px; }
+.abiertas .av.bloq { border-color: color-mix(in srgb, var(--delink) 55%, var(--line)); }
 .abiertas .av textarea { width: 100%; min-height: 64px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
 
@@ -360,7 +364,7 @@ const T = ES ? {
   nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
   juntar: 'Juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web',
-  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web',
+  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
   papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   pan: {
@@ -402,7 +406,7 @@ const T = ES ? {
   nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
   juntar: 'Merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view',
-  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view',
+  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view', bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
   papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   pan: {
@@ -1118,8 +1122,8 @@ function pintarPanorama() {
     return `<div class="blq">
       <h3>${esc(P.que)}<span>${esc(T.memoriasN(x.memories))}${x.space_memories ? ' · ' + esc(P.delEspacio(x.space_memories)) : ''}</span></h3>
       <div class="lst">${pjs}</div>
-      ${x.open_decisions.count ? `<div class="sub">${esc(P.abiertas)}<span>${x.open_decisions.count}</span></div>
-        <div class="lst">${x.open_decisions.items.map(m => fila(m, `${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>
+      ${x.open_decisions.count ? `<div class="sub">${esc(P.abiertas)}<span>${x.open_decisions.count}${x.open_decisions.blocking ? ` · ${x.open_decisions.blocking} ${esc(T.bloqueante)}` : ''}</span></div>
+        <div class="lst">${x.open_decisions.items.map(m => fila(m, `${m.blocking ? marcaPrioridad(m) + ' ' : ''}${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>
         ${mas(x.open_decisions.count, x.open_decisions.items)}
         <div><a class="btn" href="#/proyectos">${esc(P.decidirEn)}</a></div>` : ''}
       ${x.pinned.count ? `<div class="sub">${esc(P.fijadas)}<span>${x.pinned.count}</span></div>
@@ -1199,15 +1203,19 @@ function pintarPanorama() {
 // Las decisiones que esperan a la persona (etiqueta `open`), de la más nueva a la más vieja: las mismas
 // que recibe el agente al empezar sesión.
 const ABIERTA = 'open';
-const abiertas = () => todas.filter(m => m.kind === 'decision' && m.tags.includes(ABIERTA) && enEspacio(m));
+const BLOQUEANTE = 'blocking';
+const esBloqueante = m => (m.tags || []).includes(BLOQUEANTE) || m.blocking === true;
+// Las bloqueantes primero (sort es estable: dentro de cada grupo, de la más nueva a la más vieja).
+const abiertas = () => todas.filter(m => m.kind === 'decision' && m.tags.includes(ABIERTA) && enEspacio(m)).sort((a, b) => esBloqueante(b) - esBloqueante(a));
+const marcaPrioridad = m => esBloqueante(m) ? `<span class="blk" title="${esc(T.bloqueanteT)}">${esc(T.bloqueante)}</span>` : `<span class="blk later">${esc(T.paraDespues)}</span>`;
 function abiertasHTML() {
   const ds = abiertas();
   if (!ds.length) return '';
   return `<div class="abiertas">
     <div class="gsp"><h2>${esc(T.abiertasTitulo)}</h2><span>${esc(String(ds.length))}</span></div>
     <p class="vacio" style="padding:0 0 10px">${T.abiertasSub}</p>
-    ${ds.map(m => `<div class="av" data-abierta="${esc(m.id)}">
-      <div class="cab"><span class="t">${esc(m.title)}</span>${pastilla(ambito(m))}<span class="what">${esc(corta(m.updated_at))}</span></div>
+    ${ds.map(m => `<div class="av${esBloqueante(m) ? ' bloq' : ''}" data-abierta="${esc(m.id)}">
+      <div class="cab">${marcaPrioridad(m)}<span class="t">${esc(m.title)}</span>${pastilla(ambito(m))}<span class="what">${esc(corta(m.updated_at))}</span></div>
       <div class="md">${md(m.content)}</div>
       <textarea placeholder="${esc(T.respuesta)}" rows="2"></textarea>
       <div><button class="btn pri" data-r="decidir">${esc(T.decidir)}</button></div>
@@ -1231,7 +1239,7 @@ function conectarAbiertas() {
           await herramienta('update', {
             id,
             append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${respuesta}`,
-            tags: (actual.tags || []).filter(t => t !== ABIERTA),
+            tags: [...(actual.tags || []).filter(t => t !== ABIERTA && t !== BLOQUEANTE && t !== 'resolved'), 'resolved'],
             reason: T.decididoMotivo,
           });
         });

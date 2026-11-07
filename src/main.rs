@@ -60,6 +60,85 @@ struct Diario {
     space: Option<String>,
 }
 
+// `omoi decisions` y `omoi file-history`, aparte por lo mismo que `Diario`.
+#[derive(Args)]
+struct Decisiones {
+    /// Only the blocking ones (work that can't go on without the answer).
+    #[arg(long)]
+    blocking: bool,
+    /// How many.
+    #[arg(short = 'n', long, default_value_t = 50)]
+    limit: usize,
+    /// From every project (of this space, if the project is in one).
+    #[arg(long)]
+    all: bool,
+    /// From this project instead: its folder, or its name or part of it.
+    #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+    project: Option<String>,
+    /// From this space instead.
+    #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+    space: Option<String>,
+    /// Only those with this tag too (repeatable: all of them).
+    #[arg(long = "tag", value_name = "TAG")]
+    tags: Vec<String>,
+    /// Resolve this decision instead of listing: its answer is appended, the `open` and `blocking` tags go and `resolved` is added.
+    #[arg(long, value_name = "ID", requires = "answer", conflicts_with_all = ["blocking", "all", "project", "space", "tags"])]
+    resolve: Option<String>,
+    /// With --resolve: the user's answer.
+    #[arg(long, value_name = "TEXT", requires = "resolve")]
+    answer: Option<String>,
+    /// With --resolve: why (kept with the previous version).
+    #[arg(short, long, requires = "resolve")]
+    reason: Option<String>,
+}
+
+// Los datos de `remember` y `update`, aparte por lo mismo que `Diario`.
+#[derive(Args)]
+struct DatosNuevos {
+    /// Structured data for programs, as JSON: kept with the memory, out of search and recall.
+    #[arg(long, value_name = "JSON")]
+    data: Option<String>,
+}
+
+#[derive(Args)]
+struct DatosCambio {
+    /// Replace its structured data with this JSON (out of search and recall).
+    #[arg(long, value_name = "JSON")]
+    data: Option<String>,
+    /// Remove its structured data.
+    #[arg(long, conflicts_with = "data")]
+    no_data: bool,
+}
+
+#[derive(Args)]
+struct Lista {
+    /// Tag the memories must have (repeatable: all of them). At least one.
+    #[arg(long = "tag", value_name = "TAG", required = true)]
+    tags: Vec<String>,
+    /// Only this kind.
+    #[arg(short, long)]
+    kind: Option<Tipo>,
+    /// At most this many (all, by default).
+    #[arg(short = 'n', long)]
+    limit: Option<usize>,
+    /// From every project (of this space, if the project is in one).
+    #[arg(long)]
+    all: bool,
+    /// From this project instead: its folder, or its name or part of it.
+    #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+    project: Option<String>,
+    /// From this space instead.
+    #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+    space: Option<String>,
+}
+
+#[derive(Args)]
+struct HistoriaFicheros {
+    /// Files, relative to the repository or absolute. Without any (or with -), one per line from the standard input, such as the output of `git diff --name-only`.
+    #[arg(value_name = "FILE")]
+    files: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Orden {
     /// Save a memory. The content goes as an argument or through standard input.
@@ -93,6 +172,8 @@ enum Orden {
         /// Save it even if a very similar memory already exists.
         #[arg(short, long)]
         force: bool,
+        #[command(flatten)]
+        datos: DatosNuevos,
     },
     /// Search the memories of this project and the global ones.
     Search {
@@ -175,6 +256,8 @@ enum Orden {
         /// Text added at the end of the content, after a blank line (one more step in a procedure).
         #[arg(long, value_name = "TEXT")]
         append: Option<String>,
+        #[command(flatten)]
+        datos: DatosCambio,
     },
     /// Forget a memory: it goes to the trash with its history (`omoi restore` brings it back; emptied after 30 days).
     Forget {
@@ -226,6 +309,12 @@ enum Orden {
     },
     /// The session diary: one line per session (when, which project, files touched, memories recalled and saved), newest first. Only on this computer.
     Diary(Diario),
+    /// Every memory with these tags in this project (its space's and the global ones), newest first, with no search or ranking: for programs that save something under a tag and must always find it again.
+    List(Lista),
+    /// Open decisions waiting for the user (kind decision, tag `open`): blocking ones (tag `blocking`) first, then the ones for later.
+    Decisions(Decisiones),
+    /// What the session diary knows about some files of this project: in how many sessions each changed, when last, which files change with it and which gotchas mention it. For code such as a risk gate; only on this computer.
+    FileHistory(HistoriaFicheros),
     /// The project's own Markdown documentation (a docs/ folder, a wiki, an Obsidian vault), read-only: recall brings the section that fits a prompt. Without an action, the list.
     Docs {
         #[command(subcommand)]
@@ -718,8 +807,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, source, force } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, source, force, datos: DatosNuevos { data } } => {
             let content = texto_o_entrada(content)?;
+            let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
             // Sin --dir, desde una carpeta que no es un proyecto (el home) la memoria va al repositorio
             // al que apunten sus rutas, o es global.
             let actual = proyecto_de(c)?;
@@ -770,16 +860,21 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             )?;
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
+            if let Some(d) = &data {
+                avisar_datos_tapados(&memoria::poner_datos(&mut db, &m.id, Some(d.clone()))?);
+            }
             let rel = vectores::relacionadas(&db, &busca_en, &m.title, &m.id, 3)?;
             if c.json {
                 #[derive(serde::Serialize)]
                 struct Guardada<'a> {
                     #[serde(flatten)]
                     memoria: &'a Memoria,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    data: Option<&'a serde_json::Value>,
                     #[serde(skip_serializing_if = "<[Memoria]>::is_empty")]
                     related: &'a [Memoria],
                 }
-                return json(&Guardada { memoria: &m, related: &rel });
+                return json(&Guardada { memoria: &m, data: data.as_ref(), related: &rel });
             }
             println!("{}", tr!("saved {}", "guardada {}", corto(&m.id)));
             for r in &rel {
@@ -815,14 +910,20 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             Ok(())
         }
         Orden::Get { id } => {
-            let m = memoria::obtener(&abrir(c)?, &id)?;
+            let db = abrir(c)?;
+            let m = memoria::obtener(&db, &id)?;
             if c.json {
-                return json(&m);
+                return json(&memoria::con_datos(&db, vec![m])?.remove(0));
             }
+            let datos = memoria::datos_de(&db, &[m.id.as_str()])?;
             entera(&m);
+            if let Some(d) = datos.get(&m.id) {
+                println!("\ndata: {}", serde_json::to_string_pretty(d)?);
+            }
             Ok(())
         }
-        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, reason, replace, with, append } => {
+        Orden::Update { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, reason, replace, with, append, datos: DatosCambio { data, no_data } } => {
+            let data = if no_data { Some(None) } else { data.as_deref().map(memoria::datos_de_texto).transpose()?.map(Some) };
             anyhow::ensure!(
                 replace.len() == with.len(),
                 tr!("each --replace needs its --with ({} and {})", "cada --replace necesita su --with ({} y {})", replace.len(), with.len())
@@ -843,11 +944,20 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let (mut db, modelo) = abrir_con_modelo(c)?;
             let cambios = Cambios { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..cambios };
             let antes = omoikane::revisar::antes(&db)?;
-            let (m, cambiados) = memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?;
+            // Solo los datos: sin versión nueva (como fijarla), y sin el «nada que cambiar» de `update`.
+            let solo_datos = data.is_some() && sin_cambios(&cambios);
+            let (m, cambiados) = if solo_datos {
+                (memoria::obtener(&db, &id)?, Vec::new())
+            } else {
+                memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?
+            };
+            if let Some(d) = data {
+                avisar_datos_tapados(&memoria::poner_datos(&mut db, &m.id, d)?);
+            }
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
             if c.json {
-                let mut v = serde_json::to_value(&m)?;
+                let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
                 if !cambiados.is_empty() {
                     v["changed"] = serde_json::json!(cambiados);
                 }
@@ -929,6 +1039,24 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             Ok(())
         }
         Orden::Diary(d) => diario_cli(c, d),
+        Orden::Decisions(d) => decisiones_cli(c, d),
+        Orden::List(l) => {
+            let db = abrir(c)?;
+            let ambito = ambito_pedido(c, &db, l.all, l.project.as_deref(), l.space.as_deref())?;
+            let todos = !matches!(ambito, Ambito::Proyecto { .. });
+            let v = memoria::con_etiquetas(&db, &ambito, &l.tags, l.kind, l.limit.unwrap_or(usize::MAX))?;
+            if c.json {
+                return json(&memoria::con_datos(&db, v)?);
+            }
+            if v.is_empty() {
+                println!("{}", tr!("nothing with those tags", "nada con esas etiquetas"));
+            }
+            for m in &v {
+                lista(m, todos);
+            }
+            Ok(())
+        }
+        Orden::FileHistory(h) => historia_ficheros_cli(c, h),
         Orden::Docs { accion } => docs_cli(c, accion.unwrap_or(AccionDocs::List)),
         Orden::Review { all, dismiss, kind, other } => {
             let db = abrir(c)?;
@@ -1585,6 +1713,98 @@ fn proyecto_de(c: &Comun) -> Result<String> {
 
 /// Lo que se ve desde la carpeta (`--dir` o la actual), o lo que se pida (`--all`, `--project`,
 /// `--space`), sin salir de su espacio.
+/// `omoi decisions`: las decisiones abiertas, las bloqueantes primero.
+fn decisiones_cli(c: &Comun, d: Decisiones) -> Result<()> {
+    let mut db = abrir(c)?;
+    if let (Some(id), Some(respuesta)) = (&d.resolve, &d.answer) {
+        // Solo una que se vea desde aquí: no se resuelve la de otro cliente.
+        let id = memoria::resolver_id(&db, id)?;
+        anyhow::ensure!(
+            Ambito::de(&db, &proyecto_de(c)?)?.ve(&db, &id)?,
+            tr!("{id} is in another space: resolve it from that project", "{id} es de otro espacio: resuélvela desde ese proyecto")
+        );
+        let antes = omoikane::revisar::antes(&db)?;
+        let m = memoria::resolver_decision(&mut db, &id, respuesta, d.reason)?;
+        let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
+        omoikane::sync::programar(&ruta_db(c));
+        if c.json {
+            return json(&memoria::con_datos(&db, vec![m])?.remove(0));
+        }
+        println!("{}", tr!("resolved {}: {}", "resuelta {}: {}", corto(&m.id), m.title));
+        return Ok(());
+    }
+    let ambito = ambito_pedido(c, &db, d.all, d.project.as_deref(), d.space.as_deref())?;
+    let v = memoria::decisiones(&db, &ambito, d.blocking, &d.tags, d.limit)?;
+    if c.json {
+        return json(&v);
+    }
+    if v.is_empty() {
+        println!("{}", tr!("no open decisions", "no hay decisiones abiertas"));
+    }
+    let con_proyecto = !matches!(ambito, Ambito::Proyecto { .. });
+    for x in &v {
+        let marca = if x.priority == "blocking" { tr!("BLOCKING", "BLOQUEANTE") } else { tr!("later", "después") };
+        println!("{}  {:<10} {}", corto(&x.id), marca, x.title);
+        let donde = if x.global {
+            "global".to_string()
+        } else if x.project.is_empty() {
+            format!("◇ {}", x.space)
+        } else {
+            x.project.clone()
+        };
+        if con_proyecto || x.project.is_empty() {
+            println!("              {donde}");
+        }
+        println!("              {}", una_linea(&x.content, 160));
+    }
+    Ok(())
+}
+
+/// `omoi file-history`: el historial de unos ficheros (los de un diff, por la entrada) para la puerta
+/// de riesgo.
+fn historia_ficheros_cli(c: &Comun, h: HistoriaFicheros) -> Result<()> {
+    use std::io::IsTerminal;
+    let mut ficheros: Vec<String> = h.files.into_iter().filter(|f| f != "-").collect();
+    if ficheros.is_empty() {
+        let entrada = std::io::stdin();
+        anyhow::ensure!(
+            !entrada.is_terminal(),
+            tr!(
+                "which files? Pass them as arguments, or through the standard input (git diff --name-only | omoi file-history)",
+                "¿qué ficheros? Pásalos como argumentos o por la entrada estándar (git diff --name-only | omoi file-history)"
+            )
+        );
+        let mut t = String::new();
+        entrada.lock().read_to_string(&mut t)?;
+        ficheros = t.lines().map(str::to_string).collect();
+    }
+    let project = proyecto_de(c)?;
+    let db = abrir(c)?;
+    let r = omoikane::riesgo::de_ficheros(&db, &project, &ficheros)?;
+    if c.json {
+        return json(&r);
+    }
+    for f in &r.files {
+        match &f.last {
+            None => print!("{}: {}", f.file, tr!("not in the session diary", "no sale en el diario de sesiones")),
+            Some(u) => {
+                let n = f.sessions;
+                print!("{}: {}", f.file, tr!("changed in {n} of {} sessions (last {u})", "cambió en {n} de {} sesiones (la última, {u})", r.sessions));
+            }
+        }
+        if !f.changes_with.is_empty() {
+            let v: Vec<String> = f.changes_with.iter().map(|j| format!("{} ({})", j.file, j.sessions)).collect();
+            print!("; {} {}", tr!("with", "con"), v.join(", "));
+        }
+        if f.gotchas > 0 {
+            let ids: Vec<&str> = f.gotcha_ids.iter().map(|i| corto(i)).collect();
+            print!("; {} gotcha(s): {}", f.gotchas, ids.join(", "));
+        }
+        println!();
+    }
+    Ok(())
+}
+
 /// `omoi diary`.
 fn diario_cli(c: &Comun, d: Diario) -> Result<()> {
     use omoikane::diario;
@@ -1997,6 +2217,34 @@ fn avisar_redactados(m: &Memoria) {
             tr!(
                 "redacted {r}: what looked like a secret was saved as [redacted:<type>] (OMOIKANE_REDACT=0 turns this off)",
                 "redactado {r}: lo que parecía un secreto se ha guardado como [redacted:<tipo>] (OMOIKANE_REDACT=0 lo apaga)"
+            )
+        );
+    }
+}
+
+/// Si un `update` no cambia nada de la memoria (solo, quizá, sus datos).
+fn sin_cambios(c: &Cambios) -> bool {
+    c.title.is_none()
+        && c.content.is_none()
+        && c.kind.is_none()
+        && c.paths.is_none()
+        && c.tags.is_none()
+        && c.pinned.is_none()
+        && c.project.is_none()
+        && c.space_id.is_none()
+        && c.replace.is_empty()
+        && c.append.is_none()
+}
+
+/// Lo que se tapó en los datos por parecer un secreto, a stderr.
+fn avisar_datos_tapados(tipos: &[&str]) {
+    if !tipos.is_empty() {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: what looked like a secret in the data was replaced by [redacted:<type>] ({})",
+                "omoikane: lo que parecía un secreto en los datos se cambió por [redacted:<tipo>] ({})",
+                tipos.join(", ")
             )
         );
     }
@@ -2707,6 +2955,7 @@ fn en_espanol(c: Command) -> Command {
             ("global", "Vale para todos los proyectos, no solo para este."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
             ("force", "Guardarla aunque ya exista una muy parecida."),
+            ("data", "Datos estructurados para programas, en JSON: van con la memoria, fuera de la búsqueda y del recall."),
         ]),
         ("search", "Busca en las memorias de este proyecto y en las globales.", &[
             ("query", "Lo que buscas, en lenguaje normal."),
@@ -2733,6 +2982,8 @@ fn en_espanol(c: Command) -> Command {
             ("replace", "Trozo exacto del contenido que se cambia; tiene que aparecer exactamente una vez. Cada uno con su --with (se puede repetir)."),
             ("with", "Lo que va en lugar del --replace que le toca (se puede repetir, en el mismo orden)."),
             ("append", "Texto que se añade al final del contenido, tras una línea en blanco (un paso más en una receta)."),
+            ("data", "Cambia sus datos estructurados por este JSON (fuera de la búsqueda y del recall)."),
+            ("no_data", "Quita sus datos estructurados."),
         ]),
         ("forget", "Olvida una memoria: va a la papelera con su historial (`omoi restore` la devuelve; se vacía a los 30 días).", &[
             ("id", "Id de la memoria (basta con el principio)."),
@@ -2764,6 +3015,28 @@ fn en_espanol(c: Command) -> Command {
             ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
             ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
             ("space", "De este espacio."),
+        ]),
+        ("decisions", "Las decisiones abiertas que esperan a la persona (tipo decision, etiqueta `open`): primero las bloqueantes (etiqueta `blocking`), luego las de después.", &[
+            ("blocking", "Solo las bloqueantes (sin la respuesta no se puede seguir)."),
+            ("limit", "Cuántas."),
+            ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "De este espacio."),
+            ("tags", "Solo las que lleven también esta etiqueta (se puede repetir: todas)."),
+            ("resolve", "En vez de listar, resuelve esta decisión: se añade su respuesta, se quitan las etiquetas `open` y `blocking` y se pone `resolved`."),
+            ("answer", "Con --resolve: la respuesta de la persona."),
+            ("reason", "Con --resolve: por qué (se guarda con la versión anterior)."),
+        ]),
+        ("list", "Todas las memorias con estas etiquetas en este proyecto (las de su espacio y las globales), de la más nueva a la más vieja, sin búsqueda ni ranking: para programas que guardan algo con una etiqueta y tienen que encontrarlo siempre.", &[
+            ("tags", "Etiqueta que tienen que llevar (se puede repetir: todas). Al menos una."),
+            ("kind", "Solo de este tipo."),
+            ("limit", "Como mucho tantas (por defecto, todas)."),
+            ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "De este espacio."),
+        ]),
+        ("file-history", "Lo que sabe el diario de sesiones de unos ficheros del proyecto: en cuántas sesiones cambió cada uno, cuándo por última vez, qué ficheros cambian con él y qué gotchas lo nombran. Para código como una puerta de riesgo; solo de este equipo.", &[
+            ("files", "Ficheros, relativos al repositorio o absolutos. Sin ninguno (o con -), uno por línea de la entrada estándar, como la salida de `git diff --name-only`."),
         ]),
         ("docs", "La documentación propia del proyecto en Markdown (una carpeta docs/, una wiki, una bóveda de Obsidian), en solo lectura: el recall trae el apartado que toca con cada mensaje. Sin acción, la lista.", &[]),
         ("projects", "Proyectos con memorias.", &[]),

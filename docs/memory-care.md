@@ -36,6 +36,48 @@ Besides the memories, Omoikane keeps one line per session: when it started and e
 
 The diary also feeds the recall: when a prompt names a file changed in at least 3 sessions of the project, the agent gets one line with how many sessions changed it and when last, the files that usually change with it (in at least 3 of those sessions and 40 % of them) and how many gotchas mention it, once per session. For example: ``History of `src/recall.rs`: changed in 30 sessions (last 2026-11-04); it usually changes together with `src/main.rs` (18 of 30), `Cargo.toml` (12) and `src/mcp.rs` (12).``
 
+`omoi file-history` gives the same numbers in full, for code: a risk gate that decides from a diff whether a change ships by itself or goes to a person reads them, and no agent decides anything. It takes paths relative to the repository or absolute, or one per line on standard input (the output of `git diff --name-only`), and answers for the project of the current folder or of `--dir`. It has no thresholds: per file, how many sessions changed it and when last, up to 10 files that changed in the same sessions with how many, and the gotchas (of the project, its space and global) whose paths name it. It also counts sessions opened in another folder, such as your home folder, that edited files of this repository (those are stored with the absolute path), but only their files inside it. The top `sessions` is how many sessions touched files of the project, to put the rest in proportion. A file the diary has never seen comes with `sessions: 0` and `last: null`.
+
+```sh
+git diff --name-only origin/master... | omoi file-history --json
+```
+
+```json
+{
+  "project": "/home/ana/work/acme-web",
+  "sessions": 48,
+  "files": [
+    {
+      "file": "src/sync.rs",
+      "sessions": 14,
+      "last": "2026-11-04",
+      "changes_with": [
+        { "file": "tests/sync.rs", "sessions": 9 },
+        { "file": "CHANGELOG.md", "sessions": 7 }
+      ],
+      "gotchas": 2,
+      "gotcha_ids": ["01M64WZATAVWKSYRMVG4FCV64V", "01M666RGFB3JWVYHTPYVPFD282"]
+    }
+  ]
+}
+```
+
+The risk gate of Kumi, an agent factory that uses Omoikane as its memory, might read it like this: a file with gotchas raises the level, and so does a diff that leaves out a file which nearly always changes with one it touches.
+
+```python
+diff = subprocess.run(["git", "diff", "--name-only", "origin/master..."], capture_output=True, text=True).stdout
+h = json.loads(subprocess.run(["omoi", "file-history", "--json"], input=diff, capture_output=True, text=True).stdout)
+touched = set(diff.split())
+level = 0
+for f in h["files"]:
+    if f["gotchas"]:
+        level = max(level, 1)
+    if any(j["file"] not in touched and j["sessions"] >= 0.6 * f["sessions"] >= 3 for j in f["changes_with"]):
+        level = max(level, 1)
+```
+
+It only reads, and like the diary it knows only this computer's sessions.
+
 It is written when the session ends or compacts, by the same hook that sets candidates aside, and never in the recall of each prompt. When a session compacts, its line is completed, not repeated. A memory counts as saved when `remember` or `update` returned its id in that conversation. Looking at which memories changed between the start and the end of the session would claim the ones another session in the same project was saving at the same time. Preferences and pinned memories don't count as recalled: they reach every session.
 
 It stays on this computer: it travels neither with sync nor with `omoi export`, because the paths of your files say a lot about what you do and the history belongs to each computer. It is in the daily copy, which is the whole database. It weighs little: on real conversations, 142 bytes per session at the median and 716 on average (about 2 MB a year at ten sessions a day). Lines are kept for a year.

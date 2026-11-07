@@ -28,7 +28,7 @@ If the session runs in a folder that is not a project (such as the home folder),
 Projects can belong to a space (a client, a product with several repositories): what applies to every project of the space but not to other clients goes with `space: true` instead of `global`. From a project you see its memories, its space's and the global ones, never another space's. `search` and `recent` take `project` (a folder or part of a project's name) and `space`; `context` says where you are and lists the projects.
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
-When a product or business decision belongs to the user and you can't ask right now, save it as kind decision with the tag `open` (the question, the options, what you assumed meanwhile) and keep working; when you finish a long piece of work, tell the user which ones you left.
+When a product or business decision belongs to the user and you can't ask right now, save it as kind decision with the tag `open` (the question, the options, what you assumed meanwhile) and keep working; when you finish a long piece of work, tell the user which ones you left. Add the tag `blocking` too only when the work can't go on without the answer (no safe assumption, or a wrong guess would be costly to undo): then stop that part and ask; without it the decision is for later. `decisions` lists the open ones, blocking first, and closes one with the user's answer (`resolve` and `answer`).
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies (it goes to the trash for 30 days; `update` with restore=true brings it back).
 To fix one part of a memory use `update` with `replace` ([{find, with}], each `find` literal and found exactly once); to add a step, `append`; to merge several memories into one, `update` the one that stays with the merged text in `content` and the others' ids in `absorb` (they go to the trash, superseded by it, and their tags, paths and history move to it).
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
@@ -74,6 +74,8 @@ pub struct Remember {
     supersedes: Option<Vec<String>>,
     /// Ids of memories this one disagrees with, when it's not clear which holds.
     contradicts: Option<Vec<String>>,
+    /// Structured data for programs (any JSON, up to 64 KB): kept with the memory and returned by `get`, never searched or recalled.
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -133,6 +135,10 @@ pub struct Update {
     contradicts: Option<Vec<String>>,
     /// Ids of memories flagged against this one that both hold: clears the warning.
     compatible: Option<Vec<String>>,
+    /// Replace its structured data (any JSON; null removes it). Never searched or recalled.
+    #[serde(default, deserialize_with = "doble")]
+    #[schemars(with = "Option<serde_json::Value>")]
+    data: Option<Option<serde_json::Value>>,
     /// Bring a forgotten memory back from the trash (with its history, on every synced computer). The other fields are ignored.
     restore: Option<bool>,
     /// Edit part of the content: each `find` is literal and has to appear exactly once in the current content (otherwise nothing changes and you get the count). Applied in order, before `append`.
@@ -163,6 +169,8 @@ pub struct Recent {
     project: Option<String>,
     /// From this space instead.
     space: Option<String>,
+    /// Only memories with all these tags: every one in the scope, newest first, with no search or ranking (for programs that save something under a tag and must always find it). Each comes with its `data`.
+    tags: Option<Vec<String>>,
     /// Instead of memories, the session diary: one line per past session (when, files touched, memories recalled and saved), newest first. Answers "what did we do on Tuesday?" or "when did we last touch sync.rs?".
     sessions: Option<bool>,
     /// With sessions: only those that ended on or after this date (2026-11-03, or 7d for the last 7 days).
@@ -171,6 +179,33 @@ pub struct Recent {
     until: Option<String>,
     /// With sessions: only those that touched a file whose path contains this.
     file: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct Decisions {
+    /// Only the blocking ones (work that can't go on without the user's answer).
+    blocking: Option<bool>,
+    /// From every project (of this space, if the project is in one).
+    all_projects: Option<bool>,
+    /// From this project instead: its folder, or its name or part of it.
+    project: Option<String>,
+    /// From this space instead.
+    space: Option<String>,
+    /// How many (1-50, default 50).
+    limit: Option<usize>,
+    /// Only those with all these tags too.
+    tags: Option<Vec<String>>,
+    /// Resolve this decision instead of listing: `answer` is appended, the `open` and `blocking` tags go and `resolved` is added.
+    resolve: Option<String>,
+    /// With resolve: the user's answer.
+    answer: Option<String>,
+    /// With resolve: why (kept with the previous version).
+    reason: Option<String>,
+}
+
+/// `data` en `update`: sin el campo, no se toca; con `null`, se quitan los datos.
+fn doble<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<serde_json::Value>>, D::Error> {
+    Ok(Some(Option::deserialize(d)?))
 }
 
 // --- Respuestas ------------------------------------------------------------------------------------
@@ -426,13 +461,24 @@ impl Servidor {
                     source: origen.clone(),
                     ..Default::default()
                 };
+                let datos = p.data.filter(|d| !d.is_null());
+                if let Some(d) = &datos {
+                    anyhow::ensure!(serde_json::to_string(d)?.len() <= memoria::DATOS_MAX, "data over {} bytes", memoria::DATOS_MAX);
+                }
                 let antes = crate::revisar::antes(db)?;
                 let m = memoria::guardar(db, nueva, modelo)?;
+                let tapados = match datos {
+                    Some(d) => memoria::poner_datos(db, &m.id, Some(d))?,
+                    None => Vec::new(),
+                };
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
                 let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None, &m.title, &origen)?;
                 let donde = if m.de_espacio() { format!("(space {})", m.space) } else if m.project.is_empty() { "(global)".to_string() } else { m.project.clone() };
                 let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": donde });
                 con_redactados(&mut r, &m);
+                if !tapados.is_empty() {
+                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                }
                 if juzgadas > 0 {
                     r["judged"] = serde_json::json!(juzgadas);
                 }
@@ -535,6 +581,7 @@ impl Servidor {
                     && c.replace.is_empty()
                     && c.append.is_none()
                     && absorbe.is_none();
+                let datos = p.data;
                 let (m, cambiados, absorbidas) = if solo_juicio {
                     (memoria::obtener(db, &id)?, Vec::new(), Vec::new())
                 } else if let Some(ids) = absorbe {
@@ -543,11 +590,18 @@ impl Servidor {
                     let (m, cambiados) = memoria::actualizar_con_cambios(db, &id, c, modelo)?;
                     (m, cambiados, Vec::new())
                 };
+                let tapados = match datos {
+                    Some(d) => memoria::poner_datos(db, &m.id, d)?,
+                    None => Vec::new(),
+                };
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
                 let tocadas: Vec<String> = std::iter::once(m.id.clone()).chain(absorbidas.iter().cloned()).collect();
                 crate::revisar::al_dia_de(db, &antes, if solo_juicio { &[] } else { &tocadas })?;
                 let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
                 con_redactados(&mut r, &m);
+                if !tapados.is_empty() {
+                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                }
                 if !cambiados.is_empty() {
                     r["changed"] = serde_json::json!(cambiados);
                 }
@@ -606,7 +660,12 @@ impl Servidor {
 
     #[tool(description = "Get a whole memory by id.")]
     async fn get(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, proyecto| memoria::obtener(db, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
+        let r = self
+            .con_base(move |db, _, proyecto| {
+                let m = memoria::obtener(db, &id_en_ambito(db, proyecto, &p.id, false)?)?;
+                Ok(memoria::con_datos(db, vec![m])?.remove(0))
+            })
+            .await;
         Ok(r.map(|m| json(&m)).unwrap_or_else(fallo))
     }
 
@@ -699,8 +758,43 @@ impl Servidor {
                     };
                     return Ok(serde_json::to_value(crate::diario::lineas(db, &ambito, &filtro)?)?);
                 }
+                if let Some(tags) = p.tags.filter(|t| !t.is_empty()) {
+                    // Por etiqueta: todas (como mucho `limit`, 200 si no se dice), con sus datos.
+                    let v = memoria::con_etiquetas(db, &ambito, &tags, tipo(p.kind)?, p.limit.unwrap_or(200).clamp(1, 200))?;
+                    let datos = memoria::datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+                    let mut lista = Vec::new();
+                    for m in v {
+                        let d = datos.get(&m.id).cloned();
+                        let mut x = serde_json::to_value(compacta(m, todos, None))?;
+                        if let Some(d) = d {
+                            x["data"] = d;
+                        }
+                        lista.push(x);
+                    }
+                    return Ok(serde_json::Value::Array(lista));
+                }
                 let v = memoria::recientes(db, &ambito, tipo(p.kind)?, limite(p.limit))?;
                 Ok(serde_json::to_value(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())?)
+            })
+            .await;
+        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+    }
+
+    #[tool(description = "The open decisions waiting for the user (kind decision, tag `open`) in this project, its space's and the global ones (or in `project`, `space` or every project of the space with all_projects): blocking first (priority `blocking`: work can't go on without the answer), then the ones for later (priority `later`), newest first within each. With blocking=true, only the blocking ones.")]
+    async fn decisions(&self, Parameters(p): Parameters<Decisions>) -> Result<CallToolResult, ErrorData> {
+        let r = self
+            .con_base(move |db, _, proyecto| {
+                if let Some(id) = p.resolve {
+                    let id = id_en_ambito(db, proyecto, &id, false)?;
+                    let respuesta = p.answer.unwrap_or_default();
+                    let antes = crate::revisar::antes(db)?;
+                    let m = memoria::resolver_decision(db, &id, &respuesta, p.reason)?;
+                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                    return Ok(serde_json::json!({ "resolved": true, "memory": compacta(m, false, None) }));
+                }
+                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let v = memoria::decisiones(db, &ambito, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
+                Ok(serde_json::to_value(v)?)
             })
             .await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
@@ -738,6 +832,7 @@ pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args
             "history" => s.history(Parameters(serde_json::from_value(v)?)).await,
             "context" => s.context().await,
             "recent" => s.recent(Parameters(serde_json::from_value(v)?)).await,
+            "decisions" => s.decisions(Parameters(serde_json::from_value(v)?)).await,
             otro => anyhow::bail!("unknown tool: {otro}"),
         })
     })?;

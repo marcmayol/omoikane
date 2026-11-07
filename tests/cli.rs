@@ -316,7 +316,7 @@ fn herramientas_sin_mcp() {
     let e = Entorno::nuevo("tool");
     let lista: serde_json::Value = serde_json::from_str(&e.ok(&["tool"])).unwrap();
     let nombres: Vec<&str> = lista["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["remember", "search", "get", "update", "forget", "history", "context", "recent"] {
+    for n in ["remember", "search", "get", "update", "forget", "history", "context", "recent", "decisions"] {
         assert!(nombres.contains(&n), "falta {n} en {nombres:?}");
     }
     assert!(lista["instructions"].as_str().unwrap().contains("long-term memory"));
@@ -786,7 +786,7 @@ fn el_diario_apunta_la_sesion_al_cerrar() {
     // Sin `sessions`, `recent` sigue siendo lo de siempre.
     assert_eq!(tool("{}")[0]["title"], "Puerto del servidor");
     let lista: serde_json::Value = serde_json::from_str(&e.ok(&["tool"])).unwrap();
-    assert_eq!(lista["tools"].as_array().map(Vec::len), Some(8));
+    assert_eq!(lista["tools"].as_array().map(Vec::len), Some(9));
     // Ni la sincronización ni `omoi export` lo llevan: es de este equipo.
     let export = e.ok(&["export", "--all"]);
     assert!(!export.contains("sesion-1") && !export.contains("sync.rs"), "{export}");

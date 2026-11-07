@@ -348,7 +348,7 @@ pub fn leer(ruta: &Path, raiz: &str) -> Result<Lectura> {
 /// `f` relativo a `raiz` si cae dentro, con `/`; si no, tal cual (con `/`). Primero comparando el
 /// texto; si no encaja, con las rutas reales del disco, porque la misma carpeta puede llegar escrita de
 /// otra forma: en Windows con su nombre corto (`C:/Users/RUNNER~1/…`), o por un enlace.
-fn relativo(f: &str, raiz: &str) -> String {
+pub(crate) fn relativo(f: &str, raiz: &str) -> String {
     let r = relativo_texto(f, raiz);
     if r != f.replace('\\', "/") || raiz.is_empty() || !std::path::Path::new(f).is_absolute() {
         return r;
@@ -381,7 +381,7 @@ fn real(p: &std::path::Path) -> Option<String> {
 }
 
 /// `relativo` sin tocar el disco: solo el texto.
-fn relativo_texto(f: &str, raiz: &str) -> String {
+pub(crate) fn relativo_texto(f: &str, raiz: &str) -> String {
     let f = f.replace('\\', "/");
     let raiz = raiz.replace('\\', "/");
     let raiz = raiz.trim_end_matches('/');
