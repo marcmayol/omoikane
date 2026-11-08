@@ -831,6 +831,35 @@ fn ni_la_base_ni_sus_carpetas_en_una_ruta_de_red() {
     }
 }
 
+/// Una ruta local con el prefijo de ruta extendida (`\\?\C:\…`, la que da `canonicalize`) es de este
+/// equipo: `--db`, `OMOIKANE_DB` y `OMOIKANE_HOME` la aceptan (en la 1.8.5 se rechazaba como si fuera
+/// de red). `\\?\UNC\…` sigue siendo de red.
+#[cfg(windows)]
+#[test]
+fn la_ruta_extendida_de_una_unidad_es_local() {
+    let e = Entorno::nuevo("base-extendida");
+    let carpeta = std::fs::canonicalize(&e.dir).unwrap();
+    let carpeta = carpeta.to_string_lossy();
+    assert!(carpeta.starts_with(r"\\?\"), "{carpeta}");
+    let base = format!(r"{carpeta}\extendida.db");
+    let o = e.omoi_con(&["--db", base.as_str(), "remember", "-k", "fact", "-t", "Ruta extendida", "La base vive en una ruta extendida."], None, &[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = e.omoi_con(&["recent"], None, &[("OMOIKANE_DB", base.as_str())]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Ruta extendida"), "{}", String::from_utf8_lossy(&o.stderr));
+    // `OMOIKANE_HOME` sin `OMOIKANE_DB`.
+    let casa = format!(r"{carpeta}\casa-extendida");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
+    c.args(["recent"]).current_dir(e.dir.join("repo")).env_remove("OMOIKANE_DB").env("OMOIKANE_HOME", &casa).env("OMOIKANE_MODELS", e.dir.join("models")).env("OMOIKANE_AUTO_UPDATE", "0").env_remove("OMOIKANE_LANG");
+    let o = c.output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(e.dir.join("casa-extendida").join("omoikane.db").exists());
+    // Con `..` o de red, no.
+    for mala in [format!(r"{carpeta}\..\..\x.db"), r"\\?\UNC\10.255.255.1\x\o.db".to_string()] {
+        let o = e.omoi_con(&["--db", mala.as_str(), "recent"], None, &[]);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("network paths"), "{mala}");
+    }
+}
+
 /// La carpeta en la que la persona trabaja puede estar en una carpeta de red (una unidad compartida,
 /// `\\servidor\recurso`, WSL): ahí se lee su repositorio como en la 1.8.0. Con los arreglos de rutas de
 /// red de la 1.8.5 un proyecto nuevo desde ahí recibía `dir:persona/netrepo` en vez de su `git:`, sin

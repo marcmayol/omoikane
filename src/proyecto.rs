@@ -116,6 +116,10 @@ pub fn ruta_local(p: &Path) -> bool {
     if de_wsl(s.trim_start()) {
         return true;
     }
+    #[cfg(windows)]
+    if disco_extendido(&s) {
+        return true;
+    }
     if ruta_de_red(&s) {
         return false;
     }
@@ -133,6 +137,20 @@ pub fn ruta_local(p: &Path) -> bool {
         }
     }
     true
+}
+
+/// Si un texto de ruta es el de una unidad con el prefijo de ruta extendida de Windows (`\\?\C:\…`, la
+/// forma que da `canonicalize` y que ponen algunos programas para pasar de 260 caracteres): es de este
+/// equipo como `C:\…` (y como `Z:`, una unidad de red con letra no se distingue sin preguntar al
+/// sistema; ver [`ruta_local`]). Solo con barras invertidas, que es como lo reconoce Windows
+/// (`//?/C:/` no es esto), una letra, `:` y nada o una barra detrás, y sin `..`: con el prefijo, Windows
+/// no normaliza la ruta y la pasa tal cual. `\\?\UNC\…` (de red), `\\?\Volume{…}`, `\\?\GLOBALROOT\…`,
+/// `\\.\…` y `\??\…` no lo son.
+#[cfg(any(windows, test))]
+fn disco_extendido(s: &str) -> bool {
+    let Some(resto) = s.strip_prefix(r"\\?\") else { return false };
+    let b = resto.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\') && !resto.split(['\\', '/']).any(|c| c == "..")
 }
 
 /// La ruta si es local ([`ruta_local`]); `None` si no. Para las carpetas que salen de una variable de
@@ -160,8 +178,8 @@ pub fn existe(p: &Path) -> bool {
 /// El error de una ruta que no es de este equipo.
 fn no_local(p: &Path) -> anyhow::Error {
     anyhow::anyhow!(tr!(
-        "{} is not a folder on this computer: Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…, \\??\\…); map it to a drive letter if you need it",
-        "{} no es una carpeta de este equipo: Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…, \\??\\…); si la necesitas, asígnale una letra de unidad",
+        "{} is not a folder on this computer: Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…, \\??\\…); map it to a drive letter if you need it",
+        "{} no es una carpeta de este equipo: Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…, \\??\\…); si la necesitas, asígnale una letra de unidad",
         p.display()
     ))
 }
@@ -243,12 +261,72 @@ pub fn de_confianza(dir: &Path) -> Result<String> {
 
 /// Apunta el recurso de red de una carpeta de trabajo (si es de red), sin mirar nada en el disco.
 fn apuntar_de_trabajo(dir: &Path) {
-    if let Some(r) = recurso_de_red(dir)
-        && let Ok(mut v) = RECURSOS_DE_TRABAJO.lock()
-        && !v.contains(&r)
-    {
-        v.push(r);
+    if let Some(r) = recurso_de_red(dir) {
+        if let Ok(mut v) = RECURSOS_DE_TRABAJO.lock()
+            && !v.contains(&r)
+        {
+            v.push(r);
+        }
+        if let Ok(mut v) = CARPETAS_DE_TRABAJO.lock()
+            && !v.iter().any(|c| c == dir)
+        {
+            v.push(dir.to_path_buf());
+        }
     }
+}
+
+/// Las carpetas de trabajo de red que recibió este proceso ([`de_confianza`]), enteras: para aceptar
+/// esa misma carpeta cuando llega como `project` ([`de_pedida`]).
+static CARPETAS_DE_TRABAJO: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Proyecto de una carpeta que llega de fuera (`project` por MCP o por `omoi serve`): como [`de`], y
+/// además la propia carpeta de trabajo de red de la sesión (la del proceso o la del hook, ver
+/// [`de_confianza`]) o la raíz de su repositorio, escritas como sea (`\\?\UNC\…`, `/`, mayúsculas, una
+/// barra al final). Esa ya se lee: el agente que trabaja en `\\servidor\equipo\repo` y la pasa como
+/// `project` no pide nada nuevo. Cualquier otra ruta de red, también del mismo recurso o una carpeta
+/// dentro de la de trabajo, sigue siendo un error sin tocar el disco.
+pub fn de_pedida(dir: &Path) -> Result<String> {
+    if ruta_local(dir) {
+        return de(dir);
+    }
+    let pedida = forma_de_comparar(dir).ok_or_else(|| no_local(dir))?;
+    let mut trabajo: Vec<PathBuf> = std::env::current_dir().into_iter().filter(|d| recurso_de_red(d).is_some()).collect();
+    if let Ok(v) = CARPETAS_DE_TRABAJO.lock() {
+        trabajo.extend(v.iter().cloned());
+    }
+    for t in trabajo {
+        let Some(forma) = forma_de_comparar(&t) else { continue };
+        if forma == pedida {
+            return de_confianza(&t);
+        }
+        // La raíz de su repositorio (el proyecto de la sesión, el que enseñan `context` y las memorias),
+        // que está por encima de la carpeta de trabajo: se calcula desde ella, que ya es de confianza.
+        // Si la pedida no está por encima, ni se mira.
+        if forma.starts_with(&format!(r"{pedida}\"))
+            && let Ok(raiz) = de_confianza(&t)
+            && forma_de_comparar(Path::new(&raiz)).as_ref() == Some(&pedida)
+        {
+            return Ok(raiz);
+        }
+    }
+    Err(no_local(dir))
+}
+
+/// Una ruta UNC escrita de una sola forma para compararla sin tocar el disco: `\\servidor\…` con barras
+/// invertidas, sin `\\?\UNC\`, sin barras de más ni al final y, en Windows y macOS, en minúsculas
+/// ([`comparable`]). `None` si no es UNC o lleva `.` o `..` (llevarían a otra carpeta).
+fn forma_de_comparar(p: &Path) -> Option<String> {
+    recurso_de_red(p)?;
+    let s = p.to_string_lossy().replace('/', r"\");
+    let resto = match s.get(..8) {
+        Some(x) if x.eq_ignore_ascii_case(r"\\?\UNC\") => &s[8..],
+        _ => s.strip_prefix(r"\\")?,
+    };
+    let partes: Vec<&str> = resto.split('\\').filter(|c| !c.is_empty()).collect();
+    if partes.len() < 2 || partes.iter().any(|c| *c == "." || *c == "..") {
+        return None;
+    }
+    Some(comparable(&format!(r"\\{}", partes.join(r"\"))))
 }
 
 /// Proyecto de la carpeta actual, que puede estar en un recurso de red (ver [`de_confianza`]).
@@ -295,7 +373,7 @@ fn general_en(project: &str, home: &Path) -> bool {
 /// Proyecto de una carpeta que alguien da a propósito (`--project`, `project`): una carpeta general
 /// no es un proyecto, así que da global.
 pub fn de_carpeta(dir: &Path) -> Result<String> {
-    let p = de(dir)?;
+    let p = de_pedida(dir)?;
     Ok(if es_general(&p) { String::new() } else { p })
 }
 
@@ -907,7 +985,7 @@ fn buscar_entre(db: &Connection, texto: &str, espacio: Option<Option<i64>>) -> R
     anyhow::ensure!(!t.is_empty(), tr!("which project? give its folder or its name", "¿qué proyecto? di su carpeta o su nombre"));
     let parece_ruta = t.contains(['/', '\\']) || t == "." || t == "..";
     if (parece_ruta || es_carpeta(Path::new(t)))
-        && let Ok(ruta) = de(Path::new(t))
+        && let Ok(ruta) = de_pedida(Path::new(t))
     {
         if let Some((id, _)) = resolver(db, &ruta)? {
             return Ok(id);
@@ -1494,6 +1572,88 @@ mod tests {
             assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
         }
         assert!(ruta_local(Path::new(r"C:\x\??\y")) && ruta_local(Path::new("src/a.rs")));
+    }
+
+    /// `project` (MCP) con la carpeta de red de la propia sesión, o la raíz de su repositorio, se acepta
+    /// escrita como sea; otra carpeta del mismo recurso, una de dentro, con `..` o de otro servidor, no,
+    /// y sin tocar el disco (nadie contesta en 10.255.255.1). Solo en Windows: fuera no hay rutas UNC.
+    #[cfg(windows)]
+    #[test]
+    fn project_de_la_carpeta_de_red_de_la_sesion() {
+        let inicio = std::time::Instant::now();
+        apuntar_de_trabajo(Path::new(r"\\10.255.255.1\sesion-prueba\repo\src"));
+        assert_eq!(forma_de_comparar(Path::new(r"\\?\UNC\10.255.255.1\Sesion-Prueba\repo\src\")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
+        assert_eq!(forma_de_comparar(Path::new("//10.255.255.1/sesion-prueba//repo/src")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
+        for r in [r"\\10.255.255.1\sesion-prueba\repo\src\..", r"\\10.255.255.1\sesion-prueba\.\repo", r"\\10.255.255.1", r"C:\x", r"\\.\pipe\x"] {
+            assert_eq!(forma_de_comparar(Path::new(r)), None, "{r}");
+        }
+        for r in [
+            r"\\10.255.255.1\sesion-prueba\otro",
+            r"\\10.255.255.1\sesion-prueba\repo\src\dentro",
+            r"\\10.255.255.1\sesion-prueba\repo\src\..\..\otro",
+            r"\\10.255.255.2\sesion-prueba\repo\src",
+            r"\\10.255.255.1\otro-recurso\repo\src",
+            r"\??\UNC\10.255.255.1\sesion-prueba\repo\src",
+        ] {
+            assert!(de_pedida(Path::new(r)).is_err(), "{r}");
+            assert!(de_carpeta(Path::new(r)).is_err(), "{r}");
+        }
+        assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+        // Con una carpeta de red de verdad (el recurso administrativo de la unidad, si este equipo lo
+        // tiene): la de trabajo y la raíz de su repositorio, escritas de otra forma, dan su proyecto.
+        let t = crate::comun::Temporal::nueva("project-red");
+        std::fs::create_dir_all(t.join("repo").join(".git")).unwrap();
+        std::fs::create_dir_all(t.join("repo").join("src")).unwrap();
+        let local = de(&t.join("repo").join("src")).unwrap();
+        let (unidad, resto) = local.split_at(2);
+        let red = PathBuf::from(format!(r"\\localhost\{}$\{}", &unidad[..1], resto.trim_start_matches('\\')));
+        if red.is_dir() {
+            let sesion = de_confianza(&red.join("src")).unwrap();
+            let raiz_red = format!(r"\\?\UNC\LOCALHOST\{}$\{}/", unidad[..1].to_lowercase(), resto.trim_start_matches('\\').replace('\\', "/"));
+            assert_eq!(de_pedida(Path::new(&raiz_red)).unwrap(), sesion, "{raiz_red}");
+            assert_eq!(de_pedida(&red.join("src")).unwrap(), sesion);
+            assert!(de_pedida(&red.join("src").join("otra")).is_err());
+        }
+    }
+
+    /// `\\?\C:\…` (ruta extendida de una unidad) es local; el resto de prefijos de dispositivo, no. La
+    /// forma se prueba en todos los sistemas; `ruta_local`, solo en Windows (fuera, la barra invertida es
+    /// una letra más y `\\?\C:` sería un nombre raro de este equipo, que se sigue rechazando).
+    #[test]
+    fn la_ruta_extendida_de_una_unidad() {
+        for r in [r"\\?\C:\Users\a\.omoikane", r"\\?\d:\x", r"\\?\C:", r"\\?\C:\", r"\\?\C:\a..b\c"] {
+            assert!(disco_extendido(r), "{r}");
+        }
+        for r in [
+            r"\\?\UNC\10.255.255.1\x",
+            r"\\?\unc\10.255.255.1\x",
+            r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\x",
+            r"\\?\GLOBALROOT\Device\Mup\10.255.255.1\x",
+            r"\\?\C:\..\..\UNC\10.255.255.1\x",
+            r"\\?\C:\a/../../x",
+            r"\\?\CC:\x",
+            r"\\?\C:x",
+            r"\\?\1:\x",
+            "//?/C:/x",
+            r"\\.\C:\x",
+            r"\??\C:\x",
+            r"\\?\\C:\x",
+            r"C:\x",
+        ] {
+            assert!(!disco_extendido(r), "{r}");
+        }
+        #[cfg(windows)]
+        {
+            assert!(ruta_local(Path::new(r"\\?\C:\Users\a\.omoikane")));
+            for r in [r"\\?\UNC\10.255.255.1\x", r"\\?\C:\..\..\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"\\.\pipe\x", r"\\?\GLOBALROOT\Device\Mup\10.255.255.1\x"] {
+                assert!(!ruta_local(Path::new(r)), "{r}");
+            }
+            // Una carpeta de verdad, como la da `canonicalize`: `de` la lee.
+            let t = crate::comun::Temporal::nueva("extendida");
+            let c = std::fs::canonicalize(&*t).unwrap();
+            assert!(c.to_string_lossy().starts_with(r"\\?\"));
+            assert_eq!(de(&c).unwrap(), de(&t).unwrap());
+        }
     }
 
     /// La carpeta en la que se trabaja puede ser de red: su recurso (`\\servidor\recurso`) es legible

@@ -456,3 +456,47 @@ fn la_web_verifica_solo_desde_el_navegador() {
     assert_eq!(estado, 200);
     assert!(e.json(&["get", &id]).get("verified").is_none());
 }
+
+/// El enlace a una memoria (1.8.6): `omoi serve --memory <id>` acepta su principio, dice el enlace
+/// (`#/memoria/<id entero>`) y la página sabe abrirlo; un id que no existe es un error antes de arrancar
+/// el servidor. Lo usa Kumi para que la persona verifique desde su aviso.
+#[test]
+fn el_enlace_a_una_memoria() {
+    let e = Entorno::nuevo("enlace");
+    let id = e.guardar("decision", "Para verificar desde un aviso", "Kumi manda el enlace.");
+    // Un id que no existe: error enseguida, sin servidor.
+    let o = e.omoi_con(&["serve", "--port", &comun::puerto_libre().to_string(), "--memory", "ZZZZZZZZ"], None, &[]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("ZZZZZZZZ"), "{}", String::from_utf8_lossy(&o.stderr));
+    let puerto = comun::puerto_libre();
+    let log = e.dir.join("serve-enlace.log");
+    let prefijo = id[..10].to_lowercase();
+    let hijo = e
+        .orden()
+        .args(["serve", "--port", &puerto.to_string(), "--memory", &prefijo])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    struct Cerrar(std::process::Child);
+    impl Drop for Cerrar {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _servidor = Cerrar(hijo);
+    let enlace = format!("http://127.0.0.1:{puerto}/#/memoria/{id}");
+    let mut pagina = String::new();
+    for _ in 0..100 {
+        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", puerto)) {
+            s.write_all(format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{puerto}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            s.read_to_string(&mut pagina).unwrap();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let salida = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(salida.contains(&enlace), "{salida}");
+    assert!(pagina.contains("startsWith('memoria/')") && pagina.contains("function pintarMemoria"), "la página abre #/memoria/<id>");
+}

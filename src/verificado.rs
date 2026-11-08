@@ -79,9 +79,28 @@ struct Sello {
 // aleatoria de esta base (`meta('sello_firma')`, que no viaja): sus sellos valen aquí y en ningún otro
 // equipo. Un sello sin firma, con la de otra persona o copiado de otra memoria (la firma cubre el id) o
 // de otro texto (cubre la huella) no es de esta persona.
+//
+// **Cuando cambian las claves** (1.8.6). Rotar la clave del general, unirse a uno (`join`), crearlo
+// (`init`) o apagarlo (`sync off`) cambia la clave de sellos. Para que las verificaciones de la persona
+// no dejen de contar:
+// - Las claves de sellos que salieron de un repositorio general de esta persona se quedan apuntadas en
+//   `meta('sello_firma_antes')` (local, como la propia): siguen valiendo para comprobar sellos aunque ya
+//   no esté su clave (`sync off`, otro general). Nunca se firma con ellas: solo con la vigente.
+// - Tras el cambio ([`tras_cambio_de_claves`]), los sellos que esta base tiene por suyos (su firma vale
+//   con alguna de sus claves y no está marcado como de otra persona) se vuelven a firmar con la clave
+//   vigente del general, para que los acepten los equipos que solo tienen esa (uno que se une después
+//   de rotarla). Y los marcados como de otra persona (`SELLO_AJENO`) se vuelven a mirar con las claves
+//   de ahora: uno firmado con una clave que este equipo acaba de recibir (la nueva de una rotación hecha
+//   en otro equipo) era suyo. Ninguno pasa a ser suyo sin una firma que valga.
+// - El general de otra persona (`join --another-person`) no da clave de sellos: su clave la tiene
+//   también la otra persona, y lo que firmara con ella contaría aquí como propio. Esta base sigue con
+//   la suya (la propia y las apuntadas).
 
 /// La clave de esta base para firmar sellos sin repositorio general (hex, 32 bytes).
 const META_SELLOS: &str = "sello_firma";
+/// Las claves de sellos de los repositorios generales que tuvo esta base (hex, una por línea, de la más
+/// vieja a la más nueva): siguen valiendo para comprobar.
+const META_ANTES: &str = "sello_firma_antes";
 /// Lo que se firma con la clave del repositorio general para sacar la de sellos (nunca se usa esa
 /// clave tal cual: es la del cifrado).
 const DERIVAR: &[u8] = b"omoikane-verified-seal-key-1";
@@ -90,28 +109,66 @@ const DERIVAR: &[u8] = b"omoikane-verified-seal-key-1";
 pub(crate) struct Llaves {
     firmar: Option<Vec<u8>>,
     validas: Vec<Vec<u8>>,
+    /// Si `firmar` sale del repositorio general (la tienen todos los equipos de la persona).
+    de_general: bool,
 }
 
 fn hmac(clave: &[u8], texto: &[u8]) -> Vec<u8> {
     ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave), texto).as_ref().to_vec()
 }
 
+/// Las claves de sellos que salen del repositorio general de esta base, de la más vieja a la vigente
+/// (ninguna sin general, o si es el de otra persona).
+fn del_general(db: &Connection) -> Vec<Vec<u8>> {
+    let Some(ruta) = db.path().filter(|p| !p.is_empty()) else { return Vec::new() };
+    let r = crate::sync::rutas(std::path::Path::new(ruta));
+    if !crate::proyecto::existe(&r.clave) || crate::sync::leer_config_de(&r).ok().flatten().is_some_and(|c| c.another_person) {
+        return Vec::new();
+    }
+    match crate::sync::leer_claves(&r) {
+        Ok(c) => c.por_orden().map(|k| hmac(k, DERIVAR)).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Las claves de sellos apuntadas de generales anteriores ([`META_ANTES`]).
+fn apuntadas(db: &Connection) -> Result<Vec<Vec<u8>>> {
+    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [META_ANTES], |f| f.get(0)).optional()?;
+    Ok(v.unwrap_or_default().lines().filter_map(de_hex).filter(|k| k.len() == 32).collect())
+}
+
+/// Apunta en [`META_ANTES`] las claves de sellos del repositorio general de ahora que aún no estén: así
+/// siguen valiendo si su clave se va (`sync off`, otro general). Lo llaman `sync off` (antes de borrar la
+/// clave) y [`tras_cambio_de_claves`].
+pub(crate) fn recordar(db: &Connection) -> Result<()> {
+    let mut v = apuntadas(db)?;
+    let n = v.len();
+    for k in del_general(db) {
+        if !v.contains(&k) {
+            v.push(k);
+        }
+    }
+    if v.len() != n {
+        let texto: Vec<String> = v.iter().map(|k| a_hex(k)).collect();
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![META_ANTES, texto.join("\n")])?;
+    }
+    Ok(())
+}
+
 /// Las claves de sellos de esta base: una por cada clave del repositorio general (con la vigente se
-/// firma; con las de antes de rotarla siguen valiendo los sellos de entonces) y la propia de la base
-/// (con la que se firma si no hay repositorio general). Con `crear`, la de la base se crea si hace falta
-/// para firmar.
+/// firma; con las de antes de rotarla siguen valiendo los sellos de entonces), las de generales
+/// anteriores ([`META_ANTES`], solo para comprobar) y la propia de la base (con la que se firma si no
+/// hay repositorio general). Con `crear`, la de la base se crea si hace falta para firmar.
 pub(crate) fn llaves(db: &Connection, crear: bool) -> Result<Llaves> {
-    let mut l = Llaves { firmar: None, validas: Vec::new() };
-    if let Some(ruta) = db.path().filter(|p| !p.is_empty()) {
-        let r = crate::sync::rutas(std::path::Path::new(ruta));
-        if crate::proyecto::existe(&r.clave)
-            && let Ok(c) = crate::sync::leer_claves(&r)
-        {
-            for k in c.por_orden() {
-                let d = hmac(k, DERIVAR);
-                l.validas.push(d.clone());
-                l.firmar = Some(d);
-            }
+    let mut l = Llaves { firmar: None, validas: Vec::new(), de_general: false };
+    for d in del_general(db) {
+        l.validas.push(d.clone());
+        l.firmar = Some(d);
+        l.de_general = true;
+    }
+    for k in apuntadas(db)? {
+        if !l.validas.contains(&k) {
+            l.validas.push(k);
         }
     }
     let hay: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [META_SELLOS], |f| f.get(0)).optional()?;
@@ -129,6 +186,72 @@ pub(crate) fn llaves(db: &Connection, crear: bool) -> Result<Llaves> {
         l.validas.push(p);
     }
     Ok(l)
+}
+
+/// Tras cambiar las claves del repositorio general (ver arriba): apunta las de sellos que salen de él
+/// ([`recordar`]), quita la marca de otra persona ([`SELLO_AJENO`]) a los sellos cuya firma vale ahora con
+/// alguna de las claves de esta base, y vuelve a firmar con la vigente del general los sellos que esta
+/// base tiene por suyos y estaban firmados con otra. Volver a firmar cambia el sello de tiempo de la
+/// memoria: la próxima sincronización lo lleva. Devuelve cuántas marcas quitó y cuántos sellos firmó.
+pub fn tras_cambio_de_claves(db: &Connection) -> Result<(usize, usize)> {
+    recordar(db)?;
+    let l = llaves(db, false)?;
+    let tx = db.unchecked_transaction()?;
+    let sello_de = |id: &str| -> Result<Option<(serde_json::Value, Sello)>> {
+        let extra: Option<String> = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+        let v = extra.and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()).and_then(|mut e| e.get_mut(CLAVE).map(serde_json::Value::take));
+        Ok(v.and_then(|v| serde_json::from_value::<Sello>(v.clone()).ok().map(|s| (v, s))))
+    };
+    // Las marcas de otra persona que ya no tocan: su firma vale con las claves de ahora.
+    let marcas: Vec<(String, String)> = {
+        let mut q = tx.prepare("SELECT k, v FROM meta WHERE k LIKE 'sello_ajeno:%'")?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let mut quitadas = 0;
+    let mut ajenos = std::collections::HashSet::new();
+    for (k, marca) in marcas {
+        let id = k[SELLO_AJENO.len()..].to_string();
+        let Some((v, s)) = sello_de(&id)? else { continue };
+        if marca != format!("{}\n{}", s.by, s.at) {
+            continue;
+        }
+        // Como `sync::sello_de_otro`: uno anterior a cuando la persona se lo quitó aquí no vuelve.
+        let desverificada_despues = desverificada_en(&tx, &id)?.is_some_and(|d| d > s.at);
+        if !desverificada_despues && sello_propio(&l, &id, &v) {
+            tx.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
+            quitadas += 1;
+        } else {
+            ajenos.insert(id);
+        }
+    }
+    // Los suyos, firmados de nuevo con la clave vigente del general. Sin general, nada: la propia no la
+    // tiene ningún otro equipo, y los firmados con una apuntada siguen valiendo donde ya valían.
+    let mut firmados = 0;
+    if let (true, Some(k)) = (l.de_general, l.firmar.as_ref()) {
+        let filas: Vec<(String, String, String, String)> = {
+            let mut q = tx.prepare("SELECT id, kind, title, content FROM memory WHERE instr(extra, '\"verified\"') > 0")?;
+            q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        let vigente = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, k);
+        for (id, kind, title, content) in filas {
+            if ajenos.contains(&id) {
+                continue;
+            }
+            let Some((v, mut s)) = sello_de(&id)? else { continue };
+            // Solo uno que siga valiendo para su texto, de esta persona y aún sin la clave vigente.
+            if s.sha != huella(&kind, &title, &content) || !sello_propio(&l, &id, &v) {
+                continue;
+            }
+            if de_hex(&s.mac).is_some_and(|f| ring::hmac::verify(&vigente, texto_mac(&id, &s).as_bytes(), &f).is_ok()) {
+                continue;
+            }
+            s.mac = a_hex(&hmac(k, texto_mac(&id, &s).as_bytes()));
+            poner(&tx, &id, Some(serde_json::to_value(&s)?))?;
+            firmados += 1;
+        }
+    }
+    tx.commit()?;
+    Ok((quitadas, firmados))
 }
 
 fn a_hex(b: &[u8]) -> String {
@@ -345,7 +468,7 @@ pub(crate) fn desverificada_en(db: &Connection, id: &str) -> Result<Option<Strin
 }
 
 /// Pone o quita el sello con un sello de tiempo nuevo. `false` si no había nada que quitar.
-fn poner(tx: &Transaction, id: &str, sello: Option<serde_json::Value>) -> Result<bool> {
+fn poner(tx: &Connection, id: &str, sello: Option<serde_json::Value>) -> Result<bool> {
     let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
     let habia = match sello {

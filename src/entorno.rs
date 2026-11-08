@@ -74,8 +74,8 @@ pub fn casa_mala() -> Option<String> {
         let local = |r: &str| crate::proyecto::ruta_local(std::path::Path::new(r));
         if !local(&h) || !local(tras_casa) {
             tr!(
-                "OMOIKANE_HOME must be a folder on this computer (it is «{h}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…); map the share to a drive letter if you need it",
-                "OMOIKANE_HOME tiene que ser una carpeta de este equipo (es «{h}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…); si la necesitas, asígnale una letra de unidad"
+                "OMOIKANE_HOME must be a folder on this computer (it is «{h}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
+                "OMOIKANE_HOME tiene que ser una carpeta de este equipo (es «{h}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad"
             )
         } else {
             tr!(
@@ -91,8 +91,8 @@ pub fn casa_mala() -> Option<String> {
 pub fn ruta_mala(que: &str, p: &std::path::Path) -> Option<String> {
     (!crate::proyecto::ruta_local(p)).then(|| {
         tr!(
-            "{que} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…); map the share to a drive letter if you need it",
-            "{que} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…); si la necesitas, asígnale una letra de unidad",
+            "{que} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
+            "{que} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad",
             p.display()
         )
     })
@@ -193,5 +193,16 @@ mod tests {
         for h in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"~/\\10.255.255.1\x", r"~\//10.255.255.1/x"] {
             assert_eq!(casa_de(h), None, "{h}");
         }
+    }
+
+    /// Un `OMOIKANE_HOME` o una base con el prefijo de ruta extendida de una unidad (`\\?\C:\…`) es de
+    /// este equipo y vale; `\\?\UNC\…` no.
+    #[cfg(windows)]
+    #[test]
+    fn la_ruta_extendida_de_una_unidad_vale() {
+        let h = r"\\?\C:\Users\alguien\.omoikane";
+        assert_eq!(casa_de(h), Some(std::path::PathBuf::from(h)));
+        assert_eq!(super::ruta_mala("--db", std::path::Path::new(r"\\?\C:\x\o.db")), None);
+        assert!(super::ruta_mala("--db", std::path::Path::new(r"\\?\UNC\10.255.255.1\x\o.db")).is_some());
     }
 }

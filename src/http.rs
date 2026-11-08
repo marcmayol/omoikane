@@ -282,14 +282,43 @@ fn traer_cada_poco(ruta: PathBuf) {
     });
 }
 
-/// Atiende peticiones hasta que se cierre el proceso. Con `abrir`, abre la vista en el navegador; si
-/// ya hay un servidor en ese puerto, solo la abre.
-pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Result<()> {
+/// La dirección de la vista: con el token de `OMOIKANE_HTTP_TOKEN` (`#token=…`, que la página guarda y
+/// quita) y, con `memoria`, el enlace a esa memoria (`#/memoria/<id>`, o `&to=/memoria/<id>` detrás del
+/// token).
+pub fn url_vista(puerto: u16, token: Option<&str>, memoria: Option<&str>) -> String {
+    let base = format!("http://127.0.0.1:{puerto}/");
+    match (token, memoria) {
+        (Some(t), Some(id)) => format!("{base}#token={t}&to=/memoria/{id}"),
+        (Some(t), None) => format!("{base}#token={t}"),
+        (None, Some(id)) => format!("{base}#/memoria/{id}"),
+        (None, None) => base,
+    }
+}
+
+/// El id entero de la memoria que pide `omoi serve --memory` (vale su principio, como en el resto de
+/// órdenes), si se ve desde `proyecto` (la carpeta en la que arranca el servidor): si no, la vista no
+/// la tendría y el enlace no abriría nada.
+pub fn memoria_del_enlace(db: &rusqlite::Connection, proyecto: &str, id: &str) -> Result<String> {
+    let id = memoria::resolver_id(db, id)?;
+    memoria::en_ambito(db, &Ambito::de(db, proyecto)?, &id).map_err(|e| {
+        anyhow!(tr!(
+            "--memory {id}: the web view started from this folder doesn't show it ({e}); run `omoi serve` in that memory's project or in your home folder",
+            "--memory {id}: la vista que arranca desde esta carpeta no la enseña ({e}); lanza `omoi serve` en el proyecto de esa memoria o en tu carpeta personal"
+        ))
+    })?;
+    Ok(id)
+}
+
+/// Atiende peticiones hasta que se cierre el proceso. Con `abrir`, abre la vista en el navegador (en la
+/// memoria `memoria`, si se da: su id entero, ver [`memoria_del_enlace`]); si ya hay un servidor en ese
+/// puerto, solo la abre.
+pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memoria: Option<String>) -> Result<()> {
     let token = std::env::var("OMOIKANE_HTTP_TOKEN").ok().filter(|t| !t.is_empty());
-    let url = match &token {
-        Some(t) => format!("http://127.0.0.1:{puerto}/#token={t}"),
-        None => format!("http://127.0.0.1:{puerto}/"),
-    };
+    let url = url_vista(puerto, token.as_deref(), memoria.as_deref());
+    if let Some(id) = &memoria {
+        // El enlace sin el token: es el que se puede mandar en un aviso (la página pide el token aparte).
+        eprintln!("{}", tr!("omoikane: memory {id}: {}", "omoikane: memoria {id}: {}", url_vista(puerto, None, Some(id))));
+    }
     let servidor = match Server::http(("127.0.0.1", puerto)) {
         Ok(s) => s,
         Err(_) if abrir && ya_sirve(puerto) => {
@@ -624,4 +653,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
         let _ = peticion.respond(respuesta);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_vista;
+
+    /// El enlace a una memoria, con y sin el token de `OMOIKANE_HTTP_TOKEN` (que la página quita de la
+    /// dirección y cambia por `#/memoria/<id>`).
+    #[test]
+    fn la_url_de_la_vista() {
+        assert_eq!(url_vista(7438, None, None), "http://127.0.0.1:7438/");
+        assert_eq!(url_vista(7438, None, Some("01ABC")), "http://127.0.0.1:7438/#/memoria/01ABC");
+        assert_eq!(url_vista(1, Some("t"), None), "http://127.0.0.1:1/#token=t");
+        assert_eq!(url_vista(1, Some("t"), Some("01ABC")), "http://127.0.0.1:1/#token=t&to=/memoria/01ABC");
+    }
 }
