@@ -11,8 +11,9 @@
 //! que recibe (`remember`, `update` y `data` no llegan a esta clave, y `update` sobre el texto la
 //! quita); el endpoint `/tools/` de `omoi serve` es el MCP, así que tampoco. Verifican la persona en
 //! la CLI (`omoi verify`, que en una terminal pregunta y fuera de ella pide `--yes`, y que se niega
-//! dentro de la shell de un agente) y en la vista web (un botón, `POST /api/verify`, que solo acepta
-//! peticiones del propio navegador). Un agente con shell que quiera saltárselo a propósito puede
+//! dentro de la shell de un agente), en la vista web (un botón, `POST /api/verify`, que solo acepta
+//! peticiones del propio navegador) y al importar un bundle OKF (`omoi import --okf`, que pone el
+//! sello de los `verified` de personas con su fecha, salvo dentro de la shell de un agente). Un agente con shell que quiera saltárselo a propósito puede
 //! (como puede editar la base): esto no es una frontera de seguridad sino que ningún camino normal
 //! del agente acabe en «verificada».
 //!
@@ -89,18 +90,37 @@ pub fn shell_de_agente() -> Option<&'static str> {
 /// Marca la memoria `id` (entero) como verificada por `by`. No crea versión ni cambia su fecha (como
 /// fijarla); cambia su sello para que la sincronización lo lleve. Devuelve la memoria.
 pub fn verificar(db: &mut Connection, id: &str, by: &str) -> Result<Memoria> {
+    Ok(verificar_en(db, id, by, None)?.0)
+}
+
+/// Como [`verificar`], con la fecha en que se verificó si se sabe (un instante ISO 8601, el `at` de un
+/// `verified` de OKF al importarlo; si no se entiende, ahora). Si ya tiene ese mismo sello y vale, no
+/// lo vuelve a poner (no cambia su sello de tiempo): devuelve la memoria y si lo ha puesto.
+pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -> Result<(Memoria, bool)> {
     let by = by.split_whitespace().collect::<Vec<_>>().join(" ");
     ensure!(!by.is_empty(), tr!("who verifies it? Give --by <name>", "¿quién la verifica? Di --by <nombre>"));
     ensure!(by.chars().count() <= 100, tr!("--by: up to 100 characters", "--by: hasta 100 caracteres"));
     let tx = crate::memoria::escribir_tx(db)?;
     let (kind, title, content): (String, String, String) =
         tx.query_row("SELECT kind, title, content FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
-    let at: String = tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?;
+    // La fecha dada, en la forma de las de Omoikane (`…T…:…:….mmmZ`, en UTC); si no se entiende, ahora.
+    let dada: Option<String> = match at.map(|a| a.trim().trim_end_matches('Z').replace('T', " ")).filter(|a| !a.is_empty()) {
+        Some(a) => tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)", [a], |f| f.get(0))?,
+        None => None,
+    };
+    let at = match dada {
+        Some(a) => a,
+        None => tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?,
+    };
+    let antes = crate::memoria::leer(&tx, id)?;
+    if antes.verified.as_ref().is_some_and(|v| v.by == by && v.at == at) {
+        return Ok((antes, false));
+    }
     let sello = serde_json::to_value(Sello { by, at, sha: huella(&kind, &title, &content) })?;
     poner(&tx, id, Some(sello))?;
     let m = crate::memoria::leer(&tx, id)?;
     tx.commit()?;
-    Ok(m)
+    Ok((m, true))
 }
 
 /// Le quita la verificación. `false` si no tenía.

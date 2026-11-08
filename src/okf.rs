@@ -23,7 +23,7 @@
 //! | `tags` | `tags` |
 //! | `paths` | `code_refs` |
 //! | `review:AAAA-MM-DD` | `stale_after: AAAA-MM-DDT00:00:00Z` |
-//! | etiqueta `verified` (o `verified:<quién>`) | `verified: [{ by: human:<quién>, at }]` (al importar, un `verified` de una persona da la etiqueta) |
+//! | verificada por una persona (el sello de `omoi verify`, `verificado`) | `verified: [{ by: human:<quién>, at }]` (al importar, el `verified` de una persona pone el sello con su fecha, salvo dentro de la shell de un agente; una etiqueta `verified` es una etiqueta más) |
 //! | sustituida por otra (veredicto vigente) | `status: deprecated` y el enlace a la que la sustituye; al importar, el veredicto vuelve |
 //! | etiquetas `draft` y `deprecated` | `status: draft` / `status: deprecated` |
 //! | `source` | `generated.by` (`<agente>/omoikane`), con `generated.at` = su último cambio |
@@ -45,9 +45,6 @@ use std::path::{Path, PathBuf};
 
 /// La versión de OKF que se escribe.
 pub const VERSION: &str = "0.2";
-/// La etiqueta de lo que una persona ha comprobado (`verified`, o `verified:<quién>`). Si la 1.8.5 trae
-/// otra forma de marcarlo, se cambia aquí.
-pub const ETIQUETA_VERIFICADA: &str = "verified";
 const BORRADOR: &str = "draft";
 const OBSOLETA: &str = "deprecated";
 /// Dónde van, dentro de los datos de una memoria, los campos de OKF que Omoikane no tiene.
@@ -390,23 +387,74 @@ fn actor(fuente: &str) -> String {
     format!("{}/omoikane", if f.is_empty() { "omoikane".to_string() } else { productor })
 }
 
-/// Las verificaciones: las que trajo de OKF (`data.okf.verified`) sin las de personas si ya no lleva
-/// la etiqueta, y la suya si la lleva y no hay ninguna de una persona.
-fn verificaciones(m: &Memoria, guardadas: Option<&Value>) -> Vec<Value> {
-    let marca = m.tags.iter().find(|t| *t == ETIQUETA_VERIFICADA || t.starts_with(&format!("{ETIQUETA_VERIFICADA}:")));
-    let mut v: Vec<Value> = match guardadas {
+/// Las entradas de un `verified` de OKF (una lista o un mapa suelto).
+fn entradas_verificadas(v: Option<&Value>) -> Vec<Value> {
+    match v {
         Some(Value::Array(a)) => a.clone(),
         Some(o @ Value::Object(_)) => vec![o.clone()],
         _ => Vec::new(),
-    };
-    if marca.is_none() {
-        v.retain(|x| !es_humano(x.get("by").and_then(Value::as_str).unwrap_or("")));
-    } else if !v.iter().any(|x| es_humano(x.get("by").and_then(Value::as_str).unwrap_or(""))) {
-        let quien = marca.and_then(|t| t.split_once(':')).map(|(_, q)| q.to_string()).filter(|q| !q.is_empty()).unwrap_or_else(|| m.author.clone());
-        let quien = if quien.trim().is_empty() { "user".to_string() } else { slug(&quien, 60) };
-        v.push(json!({ "by": format!("human:{quien}"), "at": m.updated_at }));
     }
+}
+
+fn por_de(x: &Value) -> &str {
+    x.get("by").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Las verificaciones: la de una persona solo si la memoria lleva el sello y vale (`m.verified`, el de
+/// `omoi verify`, la web o una importación; una etiqueta no cuenta), delante; y las de procesos que
+/// trajo de OKF (`data.okf.verified`), tal cual.
+fn verificaciones(m: &Memoria, guardadas: Option<&Value>) -> Vec<Value> {
+    let mut v: Vec<Value> = Vec::new();
+    if let Some(s) = &m.verified {
+        v.push(json!({ "by": format!("human:{}", id_de_actor(&s.by)), "at": s.at }));
+    }
+    v.extend(entradas_verificadas(guardadas).into_iter().filter(|x| !es_humano(por_de(x))));
     v
+}
+
+/// El id de un actor de OKF no lleva espacios (`human:\S+`): el nombre de quien verificó, con los
+/// espacios como `%20` (y `%` como `%25`), para que vuelva igual al importarlo.
+fn id_de_actor(nombre: &str) -> String {
+    let mut r = String::new();
+    for c in nombre.chars() {
+        match c {
+            '%' => r.push_str("%25"),
+            c if c.is_whitespace() => r.push_str("%20"),
+            c => r.push(c),
+        }
+    }
+    r
+}
+
+/// Lo contrario de [`id_de_actor`]: `%20` es un espacio y `%25`, `%`; lo demás, tal cual.
+fn nombre_de_actor(id: &str) -> String {
+    let mut r = String::new();
+    let mut resto = id;
+    while let Some(i) = resto.find('%') {
+        r.push_str(&resto[..i]);
+        let tras = &resto[i..];
+        let (c, n) = if tras.starts_with("%20") {
+            (" ", 3)
+        } else if tras.starts_with("%25") {
+            ("%", 3)
+        } else {
+            ("%", 1)
+        };
+        r.push_str(c);
+        resto = &tras[n..];
+    }
+    r.push_str(resto);
+    r
+}
+
+/// Quién verificó, de un actor de persona (`human:<id>`, `human/<id>`; `human` a secas, nadie).
+fn persona_de(by: &str) -> Option<String> {
+    let b = by.trim();
+    let resto = b.get(5..).filter(|_| b.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("human")))?;
+    let q = nombre_de_actor(resto.strip_prefix(':').or_else(|| resto.strip_prefix('/'))?);
+    let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
+    // El sello admite hasta 100 caracteres.
+    (!q.is_empty()).then(|| q.chars().take(100).collect::<String>().trim_end().to_string())
 }
 
 /// Un actor de persona, en la forma de OKF (`human:<id>`) o en la de okf-agent-memory (`human/…`).
@@ -438,7 +486,7 @@ fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones
     let tags: Vec<&String> = m
         .tags
         .iter()
-        .filter(|t| !t.starts_with(crate::revisar::ETIQUETA_FECHA) && !t.starts_with(memoria::ETIQUETA_TEMA) && *t != ETIQUETA_VERIFICADA && !t.starts_with(&format!("{ETIQUETA_VERIFICADA}:")) && !es_estado(t))
+        .filter(|t| !t.starts_with(crate::revisar::ETIQUETA_FECHA) && !t.starts_with(memoria::ETIQUETA_TEMA) && !es_estado(t))
         .collect();
     if !tags.is_empty() {
         f.insert("tags".into(), json!(tags));
@@ -462,7 +510,15 @@ fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones
         f.insert("code_refs".into(), json!(relativas));
     }
     let por = okf.get("generated").and_then(|g| g.get("by")).and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| actor(&m.source));
-    f.insert("generated".into(), json!({ "by": por, "at": m.updated_at }));
+    // Con el sello (que vale solo si el texto es el que vio la persona), el texto no ha cambiado desde
+    // que se verificó aunque después cambiaran etiquetas o rutas: `generated.at` no pasa de esa fecha
+    // (OKF da por superada una verificación anterior a `generated.at`). La fecha de verdad va en
+    // `omoikane.updated`.
+    let generada = match &m.verified {
+        Some(v) if v.at < m.updated_at => &v.at,
+        _ => &m.updated_at,
+    };
+    f.insert("generated".into(), json!({ "by": por, "at": generada }));
     let verificado = verificaciones(m, okf.get("verified"));
     if !verificado.is_empty() {
         f.insert("verified".into(), Value::Array(verificado));
@@ -762,6 +818,11 @@ pub struct Resumen {
     pub unchanged: usize,
     pub failed: usize,
     pub verdicts: usize,
+    /// Las memorias a las que se puso (o en seco, se pondría) el sello de verificada por una persona.
+    pub verified: usize,
+    /// Las que traían el `verified` de una persona y se importaron sin sello (dentro de la shell de un
+    /// agente).
+    pub not_verified: usize,
     /// Los títulos de las memorias en las que se tapó algo que parecía un secreto.
     pub redacted: Vec<String>,
 }
@@ -784,6 +845,10 @@ struct Entrada {
     cambiada: Option<String>,
     sustituida_por: Vec<String>,
     contradice: Vec<String>,
+    /// Quién la verificó y cuándo, si trae el `verified` de una persona.
+    verificada: Option<(String, Option<String>)>,
+    /// El `generated.at` del concepto: una verificación anterior está superada (OKF) y no da sello.
+    generada: Option<String>,
 }
 
 /// La clave por la que se guarda un concepto: la que trae de Omoikane, `okf:<id de memoria>` si salió
@@ -807,6 +872,11 @@ fn clave_de_concepto(id: &str, om: &Map<String, Value>) -> String {
     let h = Sha256::digest(id.as_bytes());
     let corto: String = k.chars().take(71).collect();
     format!("{corto}-{:02x}{:02x}{:02x}{:02x}", h[0], h[1], h[2], h[3])
+}
+
+/// Un instante ISO 8601 en la forma que entienden las funciones de fecha de SQLite.
+fn instante_sql(s: &str) -> String {
+    s.trim().trim_end_matches('Z').replace('T', " ")
 }
 
 /// Una fecha `AAAA-MM-DD` válida al principio de un instante ISO 8601.
@@ -857,14 +927,12 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
     if let Some(d) = f.get("stale_after").map(escalar_texto).as_deref().and_then(dia_de) {
         tags.push(format!("{}{d}", crate::revisar::ETIQUETA_FECHA));
     }
-    let verificado = match f.get("verified") {
-        Some(Value::Array(a)) => a.clone(),
-        Some(o @ Value::Object(_)) => vec![o.clone()],
-        _ => Vec::new(),
-    };
-    if verificado.iter().any(|v| es_humano(v.get("by").and_then(Value::as_str).unwrap_or(""))) {
-        tags.push(ETIQUETA_VERIFICADA.into());
-    }
+    // La verificación de una persona (la más reciente, si hay varias): se convierte en el sello al
+    // guardarla, no en datos ni en una etiqueta.
+    let verificada = entradas_verificadas(f.get("verified"))
+        .iter()
+        .filter_map(|v| Some((persona_de(por_de(v))?, v.get("at").map(escalar_texto).filter(|a| !a.trim().is_empty()))))
+        .max_by(|a, b| a.1.cmp(&b.1));
     let sustituida_por = lista_de_textos(om.get("superseded_by"));
     match f.get("status").map(escalar_texto).map(|s| s.trim().to_lowercase()).as_deref() {
         Some(OBSOLETA) if sustituida_por.is_empty() => tags.push(OBSOLETA.into()),
@@ -891,6 +959,13 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
             okf.insert("type".into(), json!(tipo_okf));
         }
     }
+    // De `verified`, a los datos solo las de procesos: las de personas son el sello (o nada).
+    if let Some(v) = okf.remove("verified") {
+        let procesos: Vec<Value> = entradas_verificadas(Some(&v)).into_iter().filter(|x| !es_humano(por_de(x))).collect();
+        if !procesos.is_empty() {
+            okf.insert("verified".into(), Value::Array(procesos));
+        }
+    }
     let datos = match (om.get("data").cloned(), okf.is_empty()) {
         (d, true) => d,
         (None, false) => Some(json!({ DATOS_OKF: okf })),
@@ -900,7 +975,11 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
         }
         (Some(otro), false) => Some(json!({ "value": otro, DATOS_OKF: okf })),
     };
-    let generado = f.get("generated").and_then(|g| g.get("at")).map(escalar_texto);
+    // La fecha del texto: `generated.at`; sin ella, la verificación más reciente (el texto ya existía
+    // entonces, y así no sale como superada al volver a exportarlo).
+    let generado = f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).or_else(|| {
+        entradas_verificadas(f.get("verified")).iter().filter_map(|v| v.get("at").map(escalar_texto)).filter(|a| !a.trim().is_empty()).max()
+    });
     let texto = |k: &str| om.get(k).and_then(Value::as_str).map(str::to_string);
     Ok(Entrada {
         concepto: c.id.clone(),
@@ -926,6 +1005,8 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
         cambiada: texto("updated").or(generado),
         sustituida_por,
         contradice: lista_de_textos(om.get("contradicts")),
+        verificada,
+        generada: f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).filter(|a| !a.trim().is_empty()),
     })
 }
 
@@ -995,8 +1076,11 @@ enum Hecho {
 }
 
 /// Importa un bundle ya leído. Con `en_seco`, solo cuenta lo que haría, sin escribir (`created`: lo que
-/// sería nuevo; `updated`: lo que ya está y se pondría al día).
-pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destino: &Destino, en_seco: bool) -> Result<Resumen> {
+/// sería nuevo; `updated`: lo que ya está y se pondría al día). Con `verificar`, el `verified` de una
+/// persona pone el sello de verificada con su fecha (importar es una acción de la persona: la CLI lo
+/// da fuera de la shell de un agente); sin él, esas memorias entran sin sello y se cuentan en
+/// `not_verified`.
+pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destino: &Destino, en_seco: bool, verificar: bool) -> Result<Resumen> {
     if let (Destino::Proyecto(_), Some(s)) = (destino, espacio_de(b)) {
         bail!(tr!(
             "this bundle was exported from the space «{s}»: import it with --space <name>, so it doesn't mix with personal memories",
@@ -1023,12 +1107,19 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
     let mut tocadas: BTreeSet<String> = BTreeSet::new();
     let mut relaciones: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for c in conceptos {
-        match importar_uno(db, modelo, c, destino, en_seco, &mut tocadas) {
-            Ok((id, hecho, e, tapado)) => {
+        match importar_uno(db, modelo, c, destino, en_seco, verificar, &mut tocadas) {
+            Ok((id, hecho, e, tapado, sellada)) => {
                 match hecho {
                     Hecho::Creada => r.created += 1,
                     Hecho::Cambiada => r.updated += 1,
                     Hecho::Igual => r.unchanged += 1,
+                }
+                if e.verificada.is_some() {
+                    if !verificar {
+                        r.not_verified += 1;
+                    } else if sellada {
+                        r.verified += 1;
+                    }
                 }
                 if tapado {
                     r.redacted.push(e.nueva.title.clone());
@@ -1076,9 +1167,20 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
 }
 
 /// Importa un concepto: el id de su memoria (en seco, el de la que ya está, si está), qué pasó, la
-/// entrada y si se tapó algo que parecía un secreto.
-fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, destino: &Destino, en_seco: bool, tocadas: &mut BTreeSet<String>) -> Result<(Option<String>, Hecho, Entrada, bool)> {
+/// entrada, si se tapó algo que parecía un secreto y si se le ha puesto (en seco, se le pondría) el
+/// sello de verificada.
+fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, destino: &Destino, en_seco: bool, verificar: bool, tocadas: &mut BTreeSet<String>) -> Result<(Option<String>, Hecho, Entrada, bool, bool)> {
     let mut e = entrada(c)?;
+    // Una verificación anterior a `generated.at` es de un texto que ya no es este (OKF la da por
+    // superada): no pone el sello.
+    if let Some((_, Some(at))) = &e.verificada
+        && let Some(gen_at) = &e.generada
+    {
+        let superada: Option<bool> = db.query_row("SELECT julianday(?1) < julianday(?2)", params![instante_sql(at), instante_sql(gen_at)], |f| f.get(0))?;
+        if superada == Some(true) {
+            e.verificada = None;
+        }
+    }
     let (proyecto, project_id, space_id) = donde(db, destino, &e)?;
     e.nueva.project = proyecto.clone();
     e.nueva.project_id = project_id;
@@ -1123,7 +1225,8 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
     };
     if en_seco {
         let hecho = if antes.is_some() { Hecho::Cambiada } else { Hecho::Creada };
-        return Ok((antes.map(|(id, _)| id), hecho, e, false));
+        let sellaria = verificar && e.verificada.is_some();
+        return Ok((antes.map(|(id, _)| id), hecho, e, false, sellaria));
     }
     // Lo que parezca un secreto lo tapa `memoria` al guardar (también en los datos); aquí solo se
     // apunta para decirlo.
@@ -1178,18 +1281,24 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
             if let Some(v) = valor.as_deref().filter(|v| !v.is_empty()) {
                 db.execute(
                     &format!("UPDATE memory SET {columna} = strftime('%Y-%m-%dT%H:%M:%fZ', ?1) WHERE id = ?2 AND strftime('%Y-%m-%dT%H:%M:%fZ', ?1) IS NOT NULL"),
-                    params![v.trim().trim_end_matches('Z').replace('T', " "), id],
+                    params![instante_sql(v), id],
                 )?;
             }
         }
     }
+    // El sello de verificada, después del texto (cambiarlo quita el que hubiera) y con la fecha original.
+    // Si ya tiene ese mismo, no se toca.
+    let sellada = match (&e.verificada, verificar) {
+        (Some((by, at)), true) => crate::verificado::verificar_en(db, &id, by, at.as_deref())?.1,
+        _ => false,
+    };
     let hecho = match antes {
         None => Hecho::Creada,
         Some((_, h)) if sello(db, &id)? != h => Hecho::Cambiada,
         Some(_) => Hecho::Igual,
     };
     tocadas.insert(id.clone());
-    Ok((Some(id), hecho, e, secreto || !tapados.is_empty()))
+    Ok((Some(id), hecho, e, secreto || !tapados.is_empty(), sellada))
 }
 
 // --- YAML ------------------------------------------------------------------------------------------
@@ -1800,6 +1909,16 @@ mod tests {
         assert_eq!(ruta_de_clave("okf:01jabcdefghjkmnpqrstvwxyz0"), None);
         assert_eq!(actor("mcp:claude-code"), "claude-code/omoikane");
         assert_eq!(actor("cli"), "cli/omoikane");
+        assert_eq!(id_de_actor("Marc Mayol 100%"), "Marc%20Mayol%20100%25");
+        for n in ["Marc Mayol 100%", "a%20b", "%", "ana"] {
+            assert_eq!(nombre_de_actor(&id_de_actor(n)), n);
+        }
+        assert_eq!(persona_de("human:Marc%20Mayol").as_deref(), Some("Marc Mayol"));
+        assert_eq!(persona_de("Human/ana").as_deref(), Some("ana"));
+        assert_eq!(persona_de("human"), None);
+        assert_eq!(persona_de("human:"), None);
+        assert_eq!(persona_de("process:nightly"), None);
+        assert_eq!(persona_de("humano:x"), None);
     }
 
     #[test]

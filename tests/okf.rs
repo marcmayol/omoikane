@@ -9,7 +9,7 @@ use omoikane::db;
 use omoikane::memoria::{self, Ambito, Memoria, Nueva, Tipo};
 use omoikane::obsidian::Que;
 use omoikane::okf::{self, Destino};
-use omoikane::{proyecto, veredictos};
+use omoikane::{proyecto, verificado, veredictos};
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -66,6 +66,8 @@ fn ida_y_vuelta_a_una_base_vacia() {
     let global = guardar(&mut a, "", Tipo::Preference, "Commits en inglés", "Siempre.", &[], &[]);
     memoria::actualizar(&mut a, &global, memoria::Cambios { pinned: Some(true), ..Default::default() }, None).unwrap();
     let receta = guardar(&mut a, "/p", Tipo::Procedure, "Publicar", "1. Compilar.\n2. Subir.", &["index"], &[]);
+    // La verificación de verdad: el sello (lo que pone `omoi verify`), no la etiqueta `verified`.
+    let sello = verificado::verificar(&mut a, &nueva, "Marc Mayol").unwrap().verified.unwrap();
 
     let bundle = dir.join("knowledge");
     let n = okf::exportar(&a, &bundle, Que::Personal).unwrap();
@@ -79,7 +81,9 @@ fn ida_y_vuelta_a_una_base_vacia() {
     let jwt = leer(&bundle.join("p/decision/la-autenticación-va-con-jwt.md"));
     assert!(jwt.starts_with("---\ntype: Decision\n"), "{jwt}");
     assert!(jwt.contains("code_refs: [src/auth.rs]") && jwt.contains("paths: [\"/etc/hosts\"]"), "las absolutas, fuera de code_refs: {jwt}");
-    assert!(jwt.contains("{ by: human:user, at: "), "{jwt}");
+    // Un actor de OKF no lleva espacios: van como `%20` y vuelven al importar.
+    assert!(jwt.contains("verified:\n  - { by: \"human:Marc%20Mayol\", at: ") && jwt.contains(&sello.at), "el sello, como `verified` de una persona: {jwt}");
+    assert!(jwt.contains("tags: [auth, verified]"), "la etiqueta es una etiqueta más: {jwt}");
     let cookie = leer(&bundle.join("p/decision/las-sesiones-van-por-cookie.md"));
     assert!(cookie.contains("status: deprecated") && cookie.contains("[La autenticación va con JWT](/p/decision/la-autenticación-va-con-jwt.md)"), "{cookie}");
     let t = leer(&bundle.join("p/gotcha/cuidado-comillas-y-almohadilla.md"));
@@ -90,13 +94,14 @@ fn ida_y_vuelta_a_una_base_vacia() {
 
     // A una base vacía: lo mismo, con los mismos ids.
     let mut z = db::abrir(&dir.join("z.db")).unwrap();
-    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false).unwrap();
-    assert_eq!((r.concepts, r.created, r.updated, r.failed, r.verdicts), (6, 6, 0, 0, 1), "{r:?}");
+    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.concepts, r.created, r.updated, r.failed, r.verdicts, r.verified), (6, 6, 0, 0, 1, 1), "{r:?}");
     let (va, vz) = (todas(&a), todas(&z));
     assert_eq!(va.len(), vz.len());
     for (x, y) in va.iter().zip(&vz) {
         assert_eq!((&x.id, &x.title, &x.content, x.kind, &x.tags, &x.paths, x.pinned, x.global()), (&y.id, &y.title, &y.content, y.kind, &y.tags, &y.paths, y.pinned, y.global()));
         assert_eq!((&x.created_at, &x.updated_at), (&y.created_at, &y.updated_at), "{}", x.title);
+        assert_eq!(x.verified, y.verified, "el sello vuelve con su fecha: {}", x.title);
         if !x.global() {
             assert_eq!(y.project, "/q");
         }
@@ -109,8 +114,8 @@ fn ida_y_vuelta_a_una_base_vacia() {
     let _ = (trampa, receta);
 
     // Otra vez: nada nuevo ni cambiado.
-    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false).unwrap();
-    assert_eq!((r.created, r.updated, r.unchanged, r.verdicts), (0, 0, 6, 0), "{r:?}");
+    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.created, r.updated, r.unchanged, r.verdicts, r.verified), (0, 0, 6, 0, 0), "el mismo sello no se vuelve a poner: {r:?}");
     assert_eq!(todas(&z).len(), 6);
 
     // Y la exportación de la base nueva da los mismos conceptos (salvo el nombre del proyecto).
@@ -131,7 +136,7 @@ fn un_bundle_de_otro() {
     std::fs::write(
         raiz.join("architecture").join("governance-model.md"),
         "---\r\ntype: Decision\r\ntitle: Governance vs. Execution Context\r\ndescription: \"3-tier governance model.\"\r\ntags: [governance, code-refs]\r\n\
-         generated: { by: agent/cli, at: \"2026-09-11T15:37:43Z\" }\r\ngovernance: constraint\r\ncode_refs: [pkg/okf/types.go, cmd/okf/main.go]\r\n\
+         generated: { by: agent/cli, at: \"2026-06-20T15:37:43Z\" }\r\ngovernance: constraint\r\ncode_refs: [pkg/okf/types.go, cmd/okf/main.go]\r\n\
          verified:\r\n  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }\r\n  - by: process:nightly\r\n    at: 2026-06-26T02:00:00Z\r\n\
          stale_after: 2026-09-23\r\nsources:\r\n  - id: adr\r\n    resource: https://example.com/adr\r\n---\r\n\r\n# Governance\r\n\r\nSee [layers](layers.md).[^adr]\r\n\r\n[^adr]: ADR\r\n",
     )
@@ -143,22 +148,25 @@ fn un_bundle_de_otro() {
     // La carpeta del repositorio vale: se lee su knowledge/.
     let b = okf::leer(&dir.join("repo")).unwrap();
     assert_eq!(b.conceptos.len(), 3);
-    let en_seco = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), true).unwrap();
+    let en_seco = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), true, true).unwrap();
     assert_eq!((en_seco.created, todas(&db).len()), (3, 0), "en seco no escribe");
-    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false).unwrap();
-    assert_eq!((r.created, r.failed), (3, 0), "{r:?}");
+    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false, true).unwrap();
+    assert_eq!((r.created, r.failed, r.verified, r.not_verified), (3, 0, 1, 0), "{r:?}");
     assert_eq!(r.redacted.len(), 1, "el token se tapa: {r:?}");
     let g = memoria::por_clave(&db, &Ambito::Todos, "okf:architecture/governance-model").unwrap().unwrap();
     assert_eq!(g.kind, Tipo::Decision);
     assert_eq!(g.paths, ["cmd/okf/main.go", "pkg/okf/types.go"]);
-    for t in ["governance", "code-refs", "verified", "review:2026-09-23"] {
+    for t in ["governance", "code-refs", "review:2026-09-23"] {
         assert!(g.tags.contains(&t.to_string()), "{t}: {:?}", g.tags);
     }
+    // El `verified` de la persona es el sello, con su fecha original; ni etiqueta ni datos.
+    assert_eq!(g.verified, Some(verificado::Verificada { by: "ahormati".into(), at: "2026-06-25T09:00:00.000Z".into() }));
+    assert!(!g.tags.iter().any(|t| t.starts_with("verified")), "{:?}", g.tags);
     assert!(g.content.starts_with("3-tier governance model.\n\n# Governance") && !g.content.contains('\r'), "la descripción, delante: {}", g.content);
     let d = &memoria::datos_de(&db, &[g.id.as_str()]).unwrap()[&g.id];
     assert_eq!(d["okf"]["governance"], "constraint");
     assert_eq!(d["okf"]["sources"][0]["resource"], "https://example.com/adr");
-    assert_eq!(d["okf"]["verified"][1]["by"], "process:nightly");
+    assert_eq!(d["okf"]["verified"], json!([{ "by": "process:nightly", "at": "2026-06-26T02:00:00Z" }]), "solo el del proceso");
     let capas = memoria::por_clave(&db, &Ambito::Todos, "okf:architecture/layers").unwrap().unwrap();
     assert_eq!((capas.kind, capas.title.as_str()), (Tipo::Fact, "layers"));
     assert!(capas.tags.contains(&"deprecated".to_string()) && capas.content.contains("[redacted:github-token]"), "{capas:?}");
@@ -166,26 +174,87 @@ fn un_bundle_de_otro() {
     assert_eq!((estilo.kind, estilo.content.as_str()), (Tipo::Preference, "Go style"));
 
     // Dos veces: sin duplicar.
-    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false).unwrap();
-    assert_eq!((r.created, r.unchanged), (0, 3), "{r:?}");
+    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false, true).unwrap();
+    assert_eq!((r.created, r.unchanged, r.verified), (0, 3, 0), "{r:?}");
     assert_eq!(todas(&db).len(), 3);
 
     // Al exportar vuelve lo que OKF tiene y Omoikane no, y cada concepto, en su sitio.
     let fuera = dir.join("fuera");
     okf::exportar(&db, &fuera, Que::Personal).unwrap();
     let t = leer(&fuera.join("r/architecture/governance-model.md"));
-    for x in ["governance: constraint", "  by: agent/cli\n", "resource: https://example.com/adr", "by: process:nightly", "by: human:ahormati", "type: Decision"] {
+    for x in ["governance: constraint", "  by: agent/cli\n", "resource: https://example.com/adr", "by: process:nightly", "{ by: human:ahormati, at: 2026-06-25T09:00:00.000Z }", "type: Decision"] {
         assert!(t.contains(x), "{x}: {t}");
     }
     let c = leer(&fuera.join("r/architecture/layers.md"));
     assert!(c.contains("type: Architecture") && c.contains("status: deprecated"), "el tipo original vuelve: {c}");
-    // Sin la etiqueta, el `verified` de la persona ya no sale (el del proceso, sí).
-    let mut cambios = memoria::Cambios { tags: Some(g.tags.iter().filter(|t| *t != "verified").cloned().collect()), ..Default::default() };
-    cambios.reason = Some("x".into());
-    memoria::actualizar(&mut db, &g.id, cambios, None).unwrap();
+    // Sin el sello, el `verified` de la persona ya no sale (el del proceso, sí).
+    assert!(verificado::desverificar(&mut db, &g.id).unwrap());
     okf::exportar(&db, &fuera, Que::Personal).unwrap();
     let t = leer(&fuera.join("r/architecture/governance-model.md"));
     assert!(!t.contains("human:ahormati") && t.contains("process:nightly"), "{t}");
+    // Y cambiar el texto también lo quita: la persona verificó el texto de antes.
+    verificado::verificar(&mut db, &g.id, "ahormati").unwrap();
+    let cambios = memoria::Cambios { content: Some("Otro texto.".into()), reason: Some("x".into()), ..Default::default() };
+    memoria::actualizar(&mut db, &g.id, cambios, None).unwrap();
+    okf::exportar(&db, &fuera, Que::Personal).unwrap();
+    assert!(!leer(&fuera.join("r/architecture/governance-model.md")).contains("human:"));
+
+    // Desde la shell de un agente (`verificar` = false), lo mismo pero sin sello: se cuenta para avisar.
+    let mut otra = db::abrir(&dir.join("agente.db")).unwrap();
+    let r = okf::importar(&mut otra, None, &b, &Destino::Proyecto("/r".into()), false, false).unwrap();
+    assert_eq!((r.created, r.verified, r.not_verified), (3, 0, 1), "{r:?}");
+    let g = memoria::por_clave(&otra, &Ambito::Todos, "okf:architecture/governance-model").unwrap().unwrap();
+    assert_eq!(g.verified, None);
+    let d = &memoria::datos_de(&otra, &[g.id.as_str()]).unwrap()[&g.id];
+    assert_eq!(d["okf"]["verified"], json!([{ "by": "process:nightly", "at": "2026-06-26T02:00:00Z" }]), "la de la persona no se guarda ni como dato");
+    let sin = dir.join("sin");
+    okf::exportar(&otra, &sin, Que::Personal).unwrap();
+    let t = leer(&sin.join("r/architecture/governance-model.md"));
+    assert!(!t.contains("human:") && t.contains("process:nightly"), "{t}");
+}
+
+#[test]
+fn una_etiqueta_no_verifica() {
+    let dir = comun::Temporal::nueva("okf-etiqueta");
+    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    // Un agente puede poner etiquetas: `verified` y `verified:<quién>` son etiquetas como las demás.
+    let id = guardar(&mut db, "/p", Tipo::Fact, "Dice que está verificada", "Pero no lo está.", &["verified", "verified:marc"], &[]);
+    let bundle = dir.join("b");
+    okf::exportar(&db, &bundle, Que::Personal).unwrap();
+    let t = leer(&bundle.join("p/fact/dice-que-está-verificada.md"));
+    assert!(t.contains("tags: [verified, \"verified:marc\"]") || t.contains("tags: [verified, verified:marc]"), "{t}");
+    assert!(!t.contains("\nverified:") && !t.contains("human:"), "{t}");
+    // Y al importarla (aquí mismo y en otra base) sigue sin sello.
+    let b = okf::leer(&bundle).unwrap();
+    okf::importar(&mut db, None, &b, &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!(memoria::obtener(&db, &id).unwrap().verified, None);
+    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.created, r.verified), (1, 0), "{r:?}");
+    let m = memoria::obtener(&z, &id).unwrap();
+    assert_eq!((m.verified, m.tags.contains(&"verified".to_string())), (None, true));
+
+    // Un concepto de otro con la etiqueta y sin `verified`, igual; y `human` a secas no dice quién.
+    let ajeno = dir.join("ajeno");
+    std::fs::create_dir_all(&ajeno).unwrap();
+    std::fs::write(ajeno.join("a.md"), "---\ntype: Fact\ntitle: Con etiqueta\ntags: [verified]\n---\nA.\n").unwrap();
+    std::fs::write(ajeno.join("b.md"), "---\ntype: Fact\ntitle: Sin nombre\nverified: [{ by: human, at: 2026-01-01T00:00:00Z }]\n---\nB.\n").unwrap();
+    // Una verificación anterior a `generated.at` está superada (OKF): tampoco sella.
+    std::fs::write(
+        ajeno.join("c.md"),
+        "---\ntype: Fact\ntitle: Superada\ngenerated: { by: agent/cli, at: \"2026-03-01T10:00:00+02:00\" }\nverified: [{ by: human:ana, at: 2026-03-01T07:30:00Z }]\n---\nC.\n",
+    )
+    .unwrap();
+    // Con la zona horaria en cuenta: 09:00Z es después de las 10:00+02:00 (las 08:00Z), y sí sella.
+    std::fs::write(
+        ajeno.join("d.md"),
+        "---\ntype: Fact\ntitle: Vigente\ngenerated: { by: agent/cli, at: \"2026-03-01T10:00:00+02:00\" }\nverified: [{ by: human:ana, at: 2026-03-01T09:00:00Z }]\n---\nD.\n",
+    )
+    .unwrap();
+    let r = okf::importar(&mut z, None, &okf::leer(&ajeno).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.created, r.verified, r.not_verified), (4, 1, 0), "{r:?}");
+    let selladas: Vec<String> = todas(&z).into_iter().filter(|m| m.verified.is_some()).map(|m| m.title).collect();
+    assert_eq!(selladas, ["Vigente"]);
 }
 
 #[test]
@@ -208,10 +277,10 @@ fn los_espacios_van_aparte() {
     // Lo de un espacio no entra sin decir en qué espacio.
     let mut z = db::abrir(&dir.join("z.db")).unwrap();
     let b = okf::leer(&cliente).unwrap();
-    let e = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false).unwrap_err();
+    let e = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap_err();
     assert!(format!("{e}").contains("--space"), "{e}");
     let otro = proyecto::crear_espacio(&z, "acme").unwrap();
-    let r = okf::importar(&mut z, None, &b, &Destino::Espacio(otro), false).unwrap();
+    let r = okf::importar(&mut z, None, &b, &Destino::Espacio(otro), false, true).unwrap();
     assert_eq!(r.created, 1);
     let m = todas(&z).remove(0);
     assert!(m.de_espacio() && m.space == "acme", "{m:?}");
@@ -222,7 +291,7 @@ fn los_espacios_van_aparte() {
     let s = proyecto::crear_espacio(&w, "acme").unwrap();
     proyecto::asignar_espacio(&w, id, Some(s)).unwrap();
     let b = okf::leer(&personal).unwrap();
-    assert!(okf::importar(&mut w, None, &b, &Destino::Proyecto("/cliente".into()), false).is_err());
+    assert!(okf::importar(&mut w, None, &b, &Destino::Proyecto("/cliente".into()), false, true).is_err());
 }
 
 #[test]
@@ -271,19 +340,27 @@ fn lo_que_no_es_un_bundle() {
 fn por_la_cli() {
     let dir = comun::Temporal::nueva("okf-cli");
     std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
-    let omoi = |args: &[&str]| {
-        let o = std::process::Command::new(env!("CARGO_BIN_EXE_omoi"))
-            .args(args)
+    // Sin las variables de la shell de un agente (salvo que se pongan), para que no dependa de dónde
+    // se lancen los tests.
+    let omoi_con = |args: &[&str], agente: bool| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_omoi"));
+        c.args(args)
             .current_dir(dir.join("repo"))
             .env("OMOIKANE_DB", dir.join("o.db"))
             .env("OMOIKANE_MODELS", dir.join("models"))
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_HOME", dir.join("home-omoikane"))
-            .env_remove("OMOIKANE_LANG")
-            .output()
-            .unwrap();
+            .env_remove("OMOIKANE_LANG");
+        for v in ["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT"] {
+            c.env_remove(v);
+        }
+        if agente {
+            c.env("CLAUDECODE", "1");
+        }
+        let o = c.output().unwrap();
         (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
     };
+    let omoi = |args: &[&str]| omoi_con(args, false);
     let (ok, s) = omoi(&["remember", "-k", "gotcha", "-t", "Cuidado", "--path", "src/x.rs", "Con X."]);
     assert!(ok, "{s}");
     let bundle = dir.join("bundle");
@@ -298,4 +375,19 @@ fn por_la_cli() {
     assert!(!ok, "--okf y --obsidian a la vez: {s}");
     let (ok, s) = omoi(&["import", "--space", "x"]);
     assert!(!ok, "--space sin --okf: {s}");
+
+    // El `verified` de una persona: desde la shell de un agente entra sin sello y avisa; desde la
+    // terminal de la persona, con el sello.
+    let ajeno = dir.join("ajeno");
+    std::fs::create_dir_all(&ajeno).unwrap();
+    std::fs::write(ajeno.join("a.md"), "---\ntype: Fact\ntitle: Comprobado\nverified: [{ by: human:ana, at: 2026-06-25T09:00:00Z }]\n---\nA.\n").unwrap();
+    let a = ajeno.to_str().unwrap();
+    let (ok, s) = omoi_con(&["import", "--okf", a], true);
+    assert!(ok && s.contains("they come in unverified") && s.contains("CLAUDECODE"), "{s}");
+    let (ok, s) = omoi(&["get", "--key", "okf:a", "--json"]);
+    assert!(ok && !s.contains("\"ana\""), "{s}");
+    let (ok, s) = omoi(&["import", "--okf", a]);
+    assert!(ok && s.contains("1 marked as verified by a person"), "{s}");
+    let (ok, s) = omoi(&["get", "--key", "okf:a", "--json"]);
+    assert!(ok && s.contains("\"by\": \"ana\"") && s.contains("2026-06-25T09:00:00.000Z"), "{s}");
 }

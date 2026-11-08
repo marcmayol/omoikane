@@ -941,7 +941,20 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, dry_run: bool)
             omoikane::okf::Destino::Proyecto(if proyecto::es_general(&actual) { String::new() } else { actual })
         }
     };
-    let r = omoikane::okf::importar(&mut db, modelo.as_ref(), &bundle, &destino, dry_run)?;
+    // Importar es cosa de la persona: el `verified` de una persona pone el sello, salvo dentro de la
+    // shell de un agente (como `omoi verify`).
+    let agente = omoikane::verificado::shell_de_agente();
+    let r = omoikane::okf::importar(&mut db, modelo.as_ref(), &bundle, &destino, dry_run, agente.is_none())?;
+    if let Some(var) = agente.filter(|_| r.not_verified > 0) {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} concepts say a person verified them, but this looks like a coding agent's shell ({var} is set): they come in unverified. Import again from your own terminal to keep the verification",
+                "omoikane: {} conceptos dicen que una persona los verificó, pero esto parece la shell de un agente ({var} está puesta): entran sin verificar. Vuelve a importar desde tu terminal para conservarla",
+                r.not_verified
+            )
+        );
+    }
     if c.json {
         let mut v = serde_json::to_value(&r)?;
         v["dry_run"] = serde_json::json!(dry_run);
@@ -972,6 +985,16 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, dry_run: bool)
                 r.failed,
                 r.verdicts
             )
+        );
+    }
+    if r.verified > 0 {
+        println!(
+            "{}",
+            if dry_run {
+                tr!("{} would be marked as verified by a person (as the bundle says)", "{} se marcarían como verificadas por una persona (como dice el bundle)", r.verified)
+            } else {
+                tr!("{} marked as verified by a person (as the bundle says)", "{} marcadas como verificadas por una persona (como dice el bundle)", r.verified)
+            }
         );
     }
     if !r.redacted.is_empty() {
