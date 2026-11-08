@@ -513,6 +513,13 @@ pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Re
     insertar(db, &ulid::Ulid::generate().to_string(), nueva, None, modelo)
 }
 
+/// Como [`guardar`], pero con el id que trae (una memoria que vuelve de un bundle OKF exportado de
+/// Omoikane, `okf::importar`): pasa por la redacción de secretos y lleva el sello de aquí.
+pub(crate) fn guardar_con_su_id(db: &mut Connection, id: &str, nueva: Nueva, modelo: Option<&Modelo>) -> Result<Memoria> {
+    let id = ulid::Ulid::from_string(id).map_err(|e| anyhow!("{id}: {e}"))?.to_string();
+    insertar(db, &id, nueva, None, modelo)
+}
+
 /// La etiqueta de la clave de tema: `topic:<clave>`. Una memoria por clave y por ámbito (proyecto,
 /// espacio o global): `remember` con clave actualiza la que ya la lleva en vez de crear otra.
 pub const ETIQUETA_TEMA: &str = "topic:";

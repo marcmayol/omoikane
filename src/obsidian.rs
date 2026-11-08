@@ -212,14 +212,14 @@ fn reservado(k: &str) -> bool {
     matches!(k, "con" | "prn" | "aux" | "nul") || (k.len() == 4 && (k.starts_with("com") || k.starts_with("lpt")) && k.as_bytes()[3].is_ascii_digit())
 }
 
-fn corto(s: &str) -> String {
+pub(crate) fn corto(s: &str) -> String {
     let s: Vec<char> = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     s[s.len().saturating_sub(8)..].iter().collect::<String>().to_lowercase()
 }
 
 /// Un nombre que vale en Windows, macOS, Linux y en un enlace de Obsidian: letras y cifras, el resto
 /// en `-`, en minúsculas y como mucho `max` caracteres.
-fn slug(s: &str, max: usize) -> String {
+pub(crate) fn slug(s: &str, max: usize) -> String {
     let mut r = String::new();
     for ch in s.chars() {
         if ch.is_alphanumeric() {
