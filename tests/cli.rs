@@ -796,6 +796,8 @@ fn el_diario_apunta_la_sesion_al_cerrar() {
 /// `OMOIKANE_DB`, `OMOIKANE_HOME` (también tras `~/`) u `OMOIKANE_MODELS`, cada orden abría ahí una
 /// conexión SMB (unos 21 s contra un equipo que no responde, y el hash NTLM de la persona para él).
 /// Ahora es un error claro antes de tocar nada; e `import` de un fichero de red, también.
+/// Solo en Windows: en Linux y macOS esas rutas son nombres locales y no abren ninguna conexión.
+#[cfg(windows)]
 #[test]
 fn ni_la_base_ni_sus_carpetas_en_una_ruta_de_red() {
     let e = Entorno::nuevo("base-red");
