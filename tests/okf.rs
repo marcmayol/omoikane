@@ -917,3 +917,27 @@ fn un_bundle_viejo_no_vuelve_atras() {
     assert_eq!((r.created, r.verified, r.skipped_older), (1, 1, 0), "{r:?}");
     assert_eq!(memoria::obtener(&c, &x).unwrap().content, "La autenticación va con JWT.");
 }
+
+/// Un bundle que git saca con `\r\n` (`core.autocrlf=true`, lo de serie en Git para Windows) sigue
+/// siendo de esta base: reimportarlo no duplica cada memoria ni pierde su verificación. Una memoria
+/// cuyo texto lleva `\r\n` de verdad (sin pasar por git) vuelve igual.
+#[test]
+fn un_bundle_con_crlf_sigue_siendo_de_esta_base() {
+    let dir = comun::Temporal::nueva("okf-crlf");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let m = guardar(&mut a, "/p", Tipo::Decision, "Dos líneas", "Línea uno\nLínea dos, con ñ.", &["x"], &[]);
+    verificado::verificar(&mut a, &m, "Marc").unwrap();
+    let crlf = guardar(&mut a, "/p", Tipo::Fact, "Con CRLF", "Uno\r\nDos", &[], &[]);
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    let f = concepto_de(&bundle, "Dos líneas");
+    std::fs::write(&f, leer(&f).replace('\n', "\r\n")).unwrap();
+    let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.created, r.foreign, r.failed), (0, 0, 0), "{r:?}");
+    let v = todas(&a);
+    assert_eq!(v.len(), 2, "{v:?}");
+    let x = memoria::obtener(&a, &m).unwrap();
+    assert_eq!(x.content, "Línea uno\nLínea dos, con ñ.");
+    assert_eq!(x.verified.map(|v| v.by).as_deref(), Some("Marc"));
+    assert_eq!(memoria::obtener(&a, &crlf).unwrap().content, "Uno\r\nDos");
+}

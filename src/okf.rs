@@ -801,6 +801,16 @@ pub struct Bundle {
 /// Un concepto más grande no se lee (se salta avisando): una cabecera y una nota, no un volcado.
 pub const MAX_CONCEPTO: u64 = 1 << 20;
 
+/// Un fichero cuya cabecera empieza con `---\r\n` lo ha pasado a `\r\n` entero quien lo copió (git con
+/// `core.autocrlf=true`, lo de serie en Git para Windows; un editor): Omoikane escribe siempre `\n`.
+/// Vuelve a `\n` entero, para que un concepto de esta base siga valiendo con su firma (se firmó con
+/// `\n`) y no entre como uno nuevo, duplicado y sin su verificación. Un contenido con `\r\n` de verdad
+/// va en un fichero con la cabecera en `\n`, y no se toca.
+fn sin_crlf_de_git(texto: String) -> String {
+    let t = texto.strip_prefix('\u{feff}').unwrap_or(&texto);
+    if t.starts_with("---\r\n") { texto.replace("\r\n", "\n") } else { texto }
+}
+
 /// La cabecera y el cuerpo de un Markdown, si empieza por una cabecera `---` cerrada.
 fn separar(texto: &str) -> Option<(&str, &str)> {
     let t = texto.strip_prefix('\u{feff}').unwrap_or(texto);
@@ -980,7 +990,7 @@ fn leer_con_topes(dir: &Path, topes: &Topes) -> Result<Bundle> {
         let rel = p.strip_prefix(&raiz).unwrap_or(p).to_string_lossy().replace('\\', "/");
         let id = rel.strip_suffix(".md").or_else(|| rel.strip_suffix(".MD")).unwrap_or(&rel).to_string();
         let texto = match std::fs::read_to_string(p) {
-            Ok(t) => t,
+            Ok(t) => sin_crlf_de_git(t),
             Err(e) => {
                 malos.push(format!("{rel}: {e}"));
                 continue;
