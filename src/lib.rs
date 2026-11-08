@@ -22,6 +22,7 @@ pub mod memoria;
 pub mod modelos;
 pub mod nombres;
 pub mod obsidian;
+pub mod okf;
 pub mod oficios;
 pub mod proyecto;
 pub mod rapido;

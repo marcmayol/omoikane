@@ -8,7 +8,7 @@ use omoikane::embeber::Modelo;
 use omoikane::{db, idioma, modelos, proyecto, recall, tr, vectores};
 use rusqlite::Connection;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Local memory for AI coding agents: keeps what they learn and gives it back when it matters.
 #[derive(Parser)]
@@ -410,18 +410,22 @@ enum Orden {
         other: Option<String>,
     },
     /// A faithful copy: every memory with its history, forget marks, verdicts and the trash, one JSON line each (`omoi import` restores it exactly).
+    #[command(group(clap::ArgGroup::new("espejo").args(["obsidian", "okf"])))]
     Export {
         /// From every project (default: this one and the global ones).
-        #[arg(long, conflicts_with = "obsidian")]
+        #[arg(long, conflicts_with = "espejo")]
         all: bool,
         /// Encrypt every line with the sync key (AES-SIV), to keep the copy anywhere.
-        #[arg(long, conflicts_with = "obsidian")]
+        #[arg(long, conflicts_with = "espejo")]
         encrypt: bool,
         /// Instead: one Markdown note per memory in <vault>/omoikane/, for Obsidian's graph view (a mirror: rewritten on every export). Personal projects and the global ones by default.
         #[arg(long, value_name = "VAULT")]
         obsidian: Option<PathBuf>,
-        /// With --obsidian: only this space (a client), without the global memories. Give each space its own vault.
-        #[arg(long, requires = "obsidian")]
+        /// Instead: an OKF v0.2 bundle (Open Knowledge Format) in this folder, one concept per memory (a mirror: rewritten on every export). Personal projects and the global ones by default.
+        #[arg(long, value_name = "FOLDER")]
+        okf: Option<PathBuf>,
+        /// With --obsidian or --okf: only this space (a client), without the global memories. Give each space its own folder.
+        #[arg(long, requires = "espejo")]
         space: Option<String>,
         /// With --obsidian: keep the vault up to date, exporting again when the database changes.
         #[arg(long, requires = "obsidian")]
@@ -442,10 +446,17 @@ enum Orden {
         #[arg(long)]
         all: bool,
     },
-    /// Import an `omoi export` file (exactly: same ids, dates, history and verdicts; newest wins, so it is safe to repeat) or an engram export.
+    /// Import an `omoi export` file (exactly: same ids, dates, history and verdicts; newest wins, so it is safe to repeat), an engram export or an OKF bundle (--okf).
     Import {
         /// The export file.
-        fichero: PathBuf,
+        #[arg(required_unless_present = "okf")]
+        fichero: Option<PathBuf>,
+        /// Instead: an OKF v0.2 bundle (a folder of Markdown concepts, like a repository's knowledge/). Each concept updates the same memory when imported again. Into this folder's project, or with --space into that space.
+        #[arg(long, value_name = "FOLDER", conflicts_with = "fichero")]
+        okf: Option<PathBuf>,
+        /// With --okf: into this space (a client), without a project.
+        #[arg(long, requires = "okf")]
+        space: Option<String>,
         /// Import even what looks like a memory already saved.
         #[arg(short, long)]
         force: bool,
@@ -866,6 +877,86 @@ fn contenido_de(content: Option<String>, title: &str, con_datos: bool) -> Result
         return Ok(title.to_string());
     }
     texto_o_entrada(content)
+}
+
+/// `omoi export --okf`: aparte de `ejecutar` para no agrandar su marco de pila.
+fn exportar_okf(c: &Comun, carpeta: &Path, space: Option<String>) -> Result<()> {
+    let db = abrir(c)?;
+    let que = match space {
+        Some(s) => omoikane::obsidian::Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        None => omoikane::obsidian::Que::Personal,
+    };
+    let n = omoikane::okf::exportar(&db, carpeta, que)?;
+    if c.json {
+        return json(&n);
+    }
+    eprintln!(
+        "{}",
+        tr!(
+            "{} memories in the OKF bundle {}: {} new, {} changed, {} unchanged, {} deleted",
+            "{} memorias en el bundle OKF {}: {} nuevas, {} cambiadas, {} iguales, {} borradas",
+            n.memories,
+            carpeta.display(),
+            n.created,
+            n.updated,
+            n.unchanged,
+            n.deleted
+        )
+    );
+    Ok(())
+}
+
+/// `omoi import --okf`: aparte de `ejecutar` para no agrandar su marco de pila.
+fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, dry_run: bool) -> Result<()> {
+    let bundle = omoikane::okf::leer(carpeta)?;
+    if let Some(v) = bundle.version.as_deref().filter(|v| !v.starts_with("0.")) {
+        eprintln!("{}", tr!("omoikane: the bundle says OKF {v}; this version reads 0.2: importing what it understands", "omoikane: el bundle dice OKF {v}; esta versión lee la 0.2: se importa lo que entiende"));
+    }
+    let (mut db, modelo) = abrir_con_modelo(c)?;
+    let destino = match space {
+        Some(s) => omoikane::okf::Destino::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        None => {
+            let actual = proyecto_de(c)?;
+            omoikane::okf::Destino::Proyecto(if proyecto::es_general(&actual) { String::new() } else { actual })
+        }
+    };
+    let r = omoikane::okf::importar(&mut db, modelo.as_ref(), &bundle, &destino, dry_run)?;
+    if c.json {
+        let mut v = serde_json::to_value(&r)?;
+        v["dry_run"] = serde_json::json!(dry_run);
+        return json(&v);
+    }
+    if dry_run {
+        println!(
+            "{}",
+            tr!(
+                "{} concepts in {}: {} new and {} already here (they would be updated); the bundle checks out",
+                "{} conceptos en {}: {} nuevos y {} que ya están (se pondrían al día); el bundle está bien",
+                r.concepts,
+                bundle.raiz.display(),
+                r.created,
+                r.updated
+            )
+        );
+    } else {
+        println!(
+            "{}",
+            tr!(
+                "imported {} concepts: {} new, {} updated, {} unchanged, {} failed; {} verdicts",
+                "importados {} conceptos: {} nuevas, {} actualizadas, {} iguales, {} fallidas; {} veredictos",
+                r.concepts,
+                r.created,
+                r.updated,
+                r.unchanged,
+                r.failed,
+                r.verdicts
+            )
+        );
+    }
+    if !r.redacted.is_empty() {
+        eprintln!("{}", tr!("omoikane: something that looked like a secret was masked in: {}", "omoikane: se tapó algo que parecía un secreto en: {}", r.redacted.join("; ")));
+    }
+    Ok(())
 }
 
 /// `remember --key`: la de esa clave aquí, creada o actualizada, sin buscar duplicadas. Aparte de
@@ -1355,7 +1446,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let all = all || proyecto::es_general(&proyecto);
             omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
         }
-        Orden::Import { fichero, force, dry_run } => {
+        Orden::Import { okf: Some(carpeta), space, dry_run, .. } => importar_okf(c, &carpeta, space, dry_run),
+        Orden::Import { fichero, force, dry_run, .. } => {
+            let fichero = fichero.context("missing file")?;
             let actual = proyecto_de(c)?;
             if omoikane::copia::es_propio(&fichero)? {
                 let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
@@ -1404,6 +1497,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             );
             Ok(())
         }
+        Orden::Export { okf: Some(carpeta), space, .. } => exportar_okf(c, &carpeta, space),
         Orden::Export { obsidian: Some(vault), space, watch, interval, .. } => {
             let db = abrir(c)?;
             let que = match space {
@@ -3492,14 +3586,17 @@ fn en_espanol(c: Command) -> Command {
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
             ("encrypt", "Cifra cada línea con la clave de la sincronización (AES-SIV), para guardar la copia en cualquier sitio."),
             ("obsidian", "En su lugar: una nota Markdown por memoria en <vault>/omoikane/, para la vista de grafo de Obsidian (un espejo: se rehace en cada exportación). Por defecto, los proyectos personales y las globales."),
-            ("space", "Con --obsidian: solo este espacio (un cliente), sin las globales. Cada espacio, en su propio vault."),
+            ("okf", "En su lugar: un bundle OKF v0.2 (Open Knowledge Format) en esta carpeta, un concepto por memoria (un espejo: se rehace en cada exportación). Por defecto, los proyectos personales y las globales."),
+            ("space", "Con --obsidian o --okf: solo este espacio (un cliente), sin las globales. Cada espacio, en su propia carpeta."),
             ("watch", "Con --obsidian: mantener el vault al día, exportando otra vez cuando cambie la base."),
             ("interval", "Con --watch: segundos entre comprobaciones."),
         ]),
         ("backup", "Copia la base ahora en <su carpeta>/backups/omoikane-<fecha>.db (también se hace sola una vez al día; se conservan OMOIKANE_BACKUPS copias, 7 por defecto).", &[("list", "Solo enseñar las copias que hay.")]),
         ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),
-        ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir) o una exportación de engram.", &[
+        ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir), una exportación de engram o un bundle OKF (--okf).", &[
             ("fichero", "El fichero exportado."),
+            ("okf", "En su lugar: un bundle OKF v0.2 (una carpeta de conceptos en Markdown, como el knowledge/ de un repositorio). Cada concepto pone al día la misma memoria si se importa otra vez. Al proyecto de esta carpeta o, con --space, a ese espacio."),
+            ("space", "Con --okf: a este espacio (un cliente), sin proyecto."),
             ("force", "Importar también lo que parece una memoria ya guardada."),
             ("dry_run", "Solo decir qué se importaría."),
         ]),
