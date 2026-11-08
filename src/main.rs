@@ -420,7 +420,7 @@ enum Orden {
         /// "It's fine as it is": stop warning about this memory (until it changes). Give its id.
         #[arg(long, value_name = "ID")]
         dismiss: Option<String>,
-        /// With --dismiss: which warning (outdated, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date).
+        /// With --dismiss: which warning (outdated, trade_duplicate, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date).
         #[arg(long, requires = "dismiss")]
         kind: Option<String>,
         /// With --dismiss on an outdated warning: the id of the newer memory.
@@ -1250,7 +1250,12 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             if !force
                 && key.is_none()
                 && let Some(modelo) = &modelo
-                && let Some((existente, sim)) = vectores::duplicada(&db, modelo, &busca_en, &title, &content)?
+                && let Some((existente, sim)) = if de_oficio {
+                    // Entre las de su oficio, que desde lo global no se ven.
+                    vectores::duplicada_de_oficio(&db, modelo, &oficios, &title, &content, None)?
+                } else {
+                    vectores::duplicada(&db, modelo, &busca_en, &title, &content)?
+                }
             {
                 if c.json {
                     #[derive(serde::Serialize)]
@@ -1399,10 +1404,30 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 }
                 let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
                 avisar_redactados(&m);
+                // Lo mismo promovido desde otro cliente: no se impide (ya está hecha), se dice.
+                let duplicada = match &modelo {
+                    Some(mo) => vectores::duplicada_de_oficio(&db, mo, &omoikane::oficios::de_etiquetas(&m.tags), &m.title, &m.content, Some(&m.id))?,
+                    None => None,
+                };
                 if c.json {
                     let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
                     v["promoted_from"] = serde_json::json!(actual.id);
+                    if let Some((otra, sim)) = &duplicada {
+                        v["duplicate_of"] = serde_json::to_value(otra)?;
+                        v["similarity"] = serde_json::json!((sim * 1000.0).round() / 1000.0);
+                    }
                     return json(&v);
+                }
+                if let Some((otra, sim)) = &duplicada {
+                    println!(
+                        "{}",
+                        tr!(
+                            "it looks like trade memory {} «{}» (similarity {sim:.2}): merge them (Merge in the Review tab of `omoi serve`, or `absorb` in the MCP `update`), or forget one",
+                            "se parece a la memoria de oficio {} «{}» (similitud {sim:.2}): júntalas (Juntar en la pestaña Revisar de `omoi serve`, o `absorb` en el `update` del MCP), u olvida una",
+                            corto(&otra.id),
+                            otra.title
+                        )
+                    );
                 }
                 println!(
                     "{}",
@@ -3839,7 +3864,7 @@ fn en_espanol(c: Command) -> Command {
         ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
             ("all", "De todos los proyectos."),
             ("dismiss", "«Está bien así»: deja de avisar de esta memoria (hasta que cambie). Su id."),
-            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date)."),
+            ("kind", "Con --dismiss: qué aviso (outdated, trade_duplicate, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date)."),
             ("other", "Con --dismiss en un aviso outdated: el id de la memoria más nueva."),
         ]),
         ("recent", "Las últimas memorias guardadas o cambiadas.", &[

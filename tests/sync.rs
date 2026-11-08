@@ -2667,3 +2667,38 @@ fn un_sello_ajeno_que_llega_en_la_papelera_no_cuenta_al_restaurar() {
     a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
     assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
 }
+
+/// 1.8.6: `remember --key` es atómico en cada equipo, pero dos equipos que crean la misma clave sin
+/// verse acaban, al sincronizar, con dos memorias de esa clave en el mismo ámbito. Manda la cambiada
+/// más tarde, la misma en los dos equipos; la otra queda sustituida por ella y `get --key` no falla.
+#[test]
+fn la_misma_clave_creada_en_dos_equipos() {
+    let p = Prueba::nueva("clave-doble");
+    let (a, b) = dos(&p, &[], &[]);
+    let vieja = a.guardar(&a.dir, "fact", "Ruta de la factoría", "android, test", &["--global", "--key", "ruta"]);
+    let nueva = b.guardar(&b.dir, "fact", "Ruta de la factoría", "android, test, despliegue", &["--global", "--key", "ruta"]);
+    assert_ne!(vieja, nueva);
+    a.sync();
+    let r = b.sync();
+    assert_eq!(r["duplicate_keys"], 1, "{r}");
+    let r = a.sync();
+    // A ya recibe el veredicto de B: no pone otro.
+    assert_eq!(r["duplicate_keys"], 0, "{r}");
+    for e in [&a, &b] {
+        let m = e.json_en(&e.dir, &["get", "--key", "ruta"]);
+        assert_eq!(m["id"], nueva.as_str(), "{}: {m}", e.nombre);
+        let capas = e.json_en(&e.dir, &["get", "--key", "ruta", "--resolve"]);
+        assert_eq!(capas.as_array().unwrap().len(), 1, "{capas}");
+        // La otra sigue ahí (no se borra nada), sustituida por la que manda.
+        let rev = e.json_en(&e.dir, &["review"]);
+        let txt = rev.to_string();
+        assert!(txt.contains(&vieja) && txt.contains("superseded"), "{}: {rev}", e.nombre);
+    }
+    // `remember --key` en cualquiera de los dos cambia la que manda.
+    let id = a.guardar(&a.dir, "fact", "Ruta de la factoría", "android, test, despliegue, seo", &["--global", "--key", "ruta"]);
+    assert_eq!(id, nueva);
+    // Y no rebota: otra vuelta no sustituye nada más.
+    assert_eq!(a.sync()["duplicate_keys"], 0);
+    assert_eq!(b.sync()["duplicate_keys"], 0);
+    assert_eq!(b.json_en(&b.dir, &["get", "--key", "ruta"])["id"], nueva.as_str());
+}

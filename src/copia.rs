@@ -416,6 +416,8 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
         }
         Ok(())
     })?;
+    // La misma clave escrita en otro equipo sin ver esta: manda una (`memoria::resolver_claves_repetidas`).
+    crate::memoria::resolver_claves_repetidas(db)?;
     crate::revisar::al_dia(db)?;
     Ok((cuenta, r))
 }

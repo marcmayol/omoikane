@@ -4,6 +4,30 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.8.6 (2026-11-08)
+
+### Duplicated trade memories
+- `remember` with `trade` now checks for duplicates among the memories of its trades. Before, it compared only with the global memories that aren't trade memories (from the global level no project has trades, so trade memories were hidden), and saving the same gotcha from two clients left it twice. It answers `duplicate_of` as for any memory, and `force` saves it anyway. It compares with the global memories and with the trade memories that share one of its trades, whoever they are for (`trade-for:`).
+- Promoting a client's memory to a trade (`update` with `trade`) isn't blocked, since the promotion is done, but when the new trade memory says nearly the same as another one of its trade the answer carries `duplicate_of`, `similarity` and `duplicate_hint` (the CLI says it too).
+- The review proposes merging two memories of the same trade that say the same thing: *duplicated trade memories* (`trade_duplicate`), in `omoi review`, `context`, the notice at the start of the session and the web view's Review tab, which has the **Merge** button for them as for outdated ones. It uses the same rule as `remember` with the vectors already saved (no model loaded) and is worked out when read, among the memories of each trade. "It's fine as it is" (`omoi review --dismiss <id> --kind trade_duplicate --other <id>`) marks the pair `compatible`, and a pair with any verdict isn't proposed.
+
+### Trade detection without reading files at every start
+- The start of a session no longer reads the project's marker files every time: what was detected is kept per project (in `meta`, local) with a fingerprint of what it depends on (the names in the root and the folders it looks at, and the size, date and cloud state of the files whose content it reads). While it doesn't change, only folders are listed. In OneDrive or a network folder, reading `build.gradle`, `package.json` and the rest at every start was slow.
+- A file that is only in the cloud (Windows attributes `RECALL_ON_DATA_ACCESS`, `RECALL_ON_OPEN` or `OFFLINE`, as OneDrive's Files On-Demand leaves them) is never read: reading it would download it. Its name still counts (`package.json` is still `node`), what it says inside doesn't until it is downloaded, which changes the fingerprint.
+- With more than 60 subfolders, the ones looked at depended on the order the system lists them; now they are the first 60 by name, and the entries of each folder are sorted too, so the same files always give the same trades.
+- Measured on a test database (41 memories, a project with 72 subfolders, 12 PHP files and Gradle, release, 40 interleaved rounds of `omoi recall --session-start`): median 38.1 ms before, 33.6 ms after.
+
+### The same key from two computers
+- `remember --key` is atomic on each computer, but two computers that created the same key at the same level without seeing each other ended up with two memories for it after syncing. Now one rules, the same one on every computer: the one changed last (then the larger id). `get --key`, `get --key --resolve` and `remember --key` use it, and the other one doesn't show as a layer. After `sync` (and `omoi import <file>`) the other one is marked superseded by it (a `superseded` verdict with the reason "same key … written on two computers"), so the review proposes forgetting it; nothing is deleted. `sync --json` says how many as `duplicate_keys`.
+
+### OKF names with accents on macOS
+- macOS (HFS+) keeps file names in NFD (the accent apart from the letter) and lists them that way. `import --okf` now reads concept paths in NFC, so a concept from a bundle that went through a Mac is the same concept (with its signature) and not a new memory, and the mirror export compares names in NFC, so it neither deletes the concept it just wrote nor leaves an old copy named in NFD on a system that doesn't normalize. A title saved in NFD gives the same file name as in NFC (`café-con-leche`, not `cafe-con-leche`). New dependency: `unicode-normalization`.
+
+### Compatibility
+- Same as 1.8.5: the database schema stays at 10, `lector_minimo` doesn't move, and the sync lines and the Obsidian export format don't change. Versions 1.0 to 1.8.5 read a 1.8.6 database and sync with it.
+- The trade detection fingerprint lives in local `meta` keys (`oficios_detectados:<project>`). The verdict for a repeated key is an ordinary `superseded` verdict, which older versions already sync and show. An older version still picks the oldest memory of a repeated key in `get --key`, as before.
+- MCP and JSON only add: `duplicate_of`, `similarity` and `duplicate_hint` when promoting to a trade, `duplicate_keys` in `sync --json`, and the review kind `trade_duplicate`. No tool or argument is removed.
+
 ## 1.8.5 (2026-11-08)
 
 ### Leak check says where

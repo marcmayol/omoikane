@@ -248,3 +248,42 @@ fn coherencia_con_vectores() {
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_vec"), cuenta(&db, "SELECT count(*) FROM memory"));
     assert_eq!(cuenta(&db, "SELECT count(*) FROM memory_vec WHERE n NOT IN (SELECT n FROM memory)"), 0);
 }
+
+/// 1.8.6: duplicados entre memorias de oficio. Desde lo global no se ven las de oficio, así que
+/// `duplicada` no las encontraba: lo mismo promovido o guardado desde dos clientes acababa dos veces.
+/// `duplicada_de_oficio` compara con las de sus oficios, y la revisión propone juntar las que ya hay.
+#[test]
+fn duplicados_entre_memorias_de_oficio() {
+    let Some(m) = modelo() else { return };
+    let (_dir, mut db) = base("duplicados-oficio");
+    let de_oficio = |oficio: &str, t: &str, c: &str| Nueva { tags: vec![format!("trade:{oficio}")], ..nueva("", t, c) };
+    let vieja = memoria::guardar(&mut db, de_oficio("android", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill."), Some(&m)).unwrap().id;
+    for (t, c) in [("Puerto", "El servidor escucha en el 8765."), ("Commits", "Una línea, en inglés."), ("Node", "Hace falta Node 20.")] {
+        memoria::guardar(&mut db, nueva("/p", t, c), Some(&m)).unwrap();
+    }
+    // La de un proyecto no es de oficio aunque diga lo mismo: no cuenta.
+    memoria::guardar(&mut db, nueva("/cliente", "Cerrar el emulador", "Con taskkill el AVD queda bloqueado."), Some(&m)).unwrap();
+    let (t, c) = ("El emulador no se mata con taskkill", "Con taskkill el AVD se queda bloqueado: cerrarlo con adb emu kill.");
+    // Antes: desde lo global, nada.
+    assert!(vectores::duplicada(&db, &m, "", t, c).unwrap().is_none());
+    let d = vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, None).unwrap();
+    assert_eq!(d.map(|x| x.0.id), Some(vieja.clone()));
+    // Otro oficio no la ve; y al promover, la de la que sale no cuenta.
+    assert!(vectores::duplicada_de_oficio(&db, &m, &["web".to_string()], t, c, None).unwrap().is_none());
+    assert!(vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, Some(&vieja)).unwrap().is_none());
+
+    // Si ya hay dos (guardada con `force`, o de antes de la 1.8.6), la revisión las propone para juntar.
+    let nueva_id = memoria::guardar(&mut db, de_oficio("android", t, c), Some(&m)).unwrap().id;
+    memoria::guardar(&mut db, de_oficio("web", t, c), Some(&m)).unwrap();
+    let pares = omoikane::revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap();
+    assert_eq!(pares.len(), 1, "solo las del mismo oficio: {pares:?}");
+    assert_eq!((pares[0].0.as_str(), pares[0].1.as_str()), (nueva_id.as_str(), vieja.as_str()));
+    let avisos = omoikane::revisar::avisos(&db, &Ambito::Todos).unwrap();
+    let a: Vec<_> = avisos.iter().filter(|a| a.kind == omoikane::revisar::DUPLICADA_OFICIO).collect();
+    assert_eq!(a.len(), 1);
+    assert_eq!((a[0].memory_id.as_str(), a[0].other_id.as_str()), (vieja.as_str(), nueva_id.as_str()));
+    assert_eq!(omoikane::revisar::pendientes(&db, &Ambito::Todos).unwrap().get(omoikane::revisar::DUPLICADA_OFICIO), Some(&1));
+    // «Está bien así»: dejan de salir.
+    omoikane::revisar::descartar(&db, &vieja, omoikane::revisar::DUPLICADA_OFICIO, &nueva_id).unwrap();
+    assert!(omoikane::revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap().is_empty());
+}

@@ -941,3 +941,38 @@ fn un_bundle_con_crlf_sigue_siendo_de_esta_base() {
     assert_eq!(x.verified.map(|v| v.by).as_deref(), Some("Marc"));
     assert_eq!(memoria::obtener(&a, &crlf).unwrap().content, "Uno\r\nDos");
 }
+
+/// 1.8.6: macOS (HFS+) guarda los nombres en NFD y los lista así. Un concepto con tildes en el nombre
+/// tiene que seguir siendo el mismo al importarlo (no un duplicado) y al reexportar en espejo (no se
+/// borra ni se duplica), venga su nombre en NFC o en NFD; y un título guardado en NFD da el mismo
+/// nombre de fichero que en NFC.
+#[test]
+fn nombres_con_tildes_en_nfd() {
+    let dir = comun::Temporal::nueva("okf-nfd");
+    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    // «Café» con el acento aparte (NFD), como lo dejaría un título pegado desde un Mac.
+    guardar(&mut db, "/p", Tipo::Fact, "Cafe\u{301} con leche", "Sin azúcar.", &[], &[]);
+    guardar(&mut db, "/p", Tipo::Fact, "Té verde", "A 80 grados.", &[], &[]);
+    let bundle = dir.join("b");
+    okf::exportar(&db, &bundle, Que::Personal).unwrap();
+    let fs = ficheros(&bundle);
+    assert!(fs.contains("p/fact/café-con-leche.md") && fs.contains("p/fact/té-verde.md"), "{fs:?}");
+
+    // Lo que daría el listado de HFS+: el nombre en NFD.
+    let carpeta = bundle.join("p").join("fact");
+    std::fs::rename(carpeta.join("té-verde.md"), carpeta.join("te\u{301}-verde.md")).unwrap();
+    let b = okf::leer(&bundle).unwrap();
+    assert!(b.conceptos.iter().any(|c| c.id == "p/fact/té-verde"), "el id del concepto, en NFC");
+    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/p".into()), false, false).unwrap();
+    assert_eq!((r.created, r.unchanged, r.foreign), (0, 2, 0), "es el mismo concepto, con su firma: {r:?}");
+    assert_eq!(todas(&db).len(), 2);
+
+    // Reexportar en espejo: el concepto sigue, una sola vez y con su nombre en NFC. En un sistema que no
+    // normaliza (este), el fichero NFD es otro y es una copia vieja: se borra; en HFS+ es el mismo
+    // fichero y se queda.
+    let n = okf::exportar(&db, &bundle, Que::Personal).unwrap();
+    let fs = ficheros(&bundle);
+    let te: Vec<_> = fs.iter().filter(|f| okf::nfc(f).contains("té-verde")).collect();
+    assert_eq!(te, ["p/fact/té-verde.md"], "{fs:?} {n:?}");
+    assert!(fs.contains("p/fact/café-con-leche.md"), "{fs:?}");
+}

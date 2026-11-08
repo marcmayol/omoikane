@@ -605,7 +605,7 @@ pub fn guardar_por_clave(db: &mut Connection, clave: &str, mut nueva: Nueva, dat
                AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?4)
                AND (SELECT COALESCE(json_group_array(value), '[]') FROM (SELECT value FROM json_each(memory.tags)
                     WHERE value LIKE 'trade:%' OR value LIKE 'trade-for:%' ORDER BY value)) = ?5
-             ORDER BY created_at, id LIMIT 1",
+             ORDER BY updated_at DESC, id DESC LIMIT 1",
             params![project_id, space_id, format!("%\"{etiqueta}\"%"), etiqueta, oficios],
             |f| f.get(0),
         )
@@ -724,8 +724,56 @@ pub fn nivel_de(m: &Memoria) -> Nivel {
 pub fn resolver_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Vec<(Nivel, Memoria)>> {
     let clave = clave_tema(clave)?;
     let mut v: Vec<(Nivel, Memoria)> = con_etiqueta(db, ambito, &format!("{ETIQUETA_TEMA}{clave}"))?.into_iter().map(|m| (nivel_de(&m), m)).collect();
+    // Dos equipos que crearon la misma clave sin verse dejan, al sincronizar, dos memorias en el mismo
+    // ámbito: manda una, la misma en todos los equipos ([`gana_la_clave`]), y la otra no sale.
+    v.sort_by(|a, b| gana_la_clave(&b.1, &a.1));
+    let mut vistos = std::collections::HashSet::new();
+    v.retain(|(_, m)| vistos.insert((m.project_id, m.space.clone(), ambito_de_oficio(&m.tags))));
     v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| ambito_de_oficio(&a.1.tags).cmp(&ambito_de_oficio(&b.1.tags))).then_with(|| a.1.created_at.cmp(&b.1.created_at)));
     Ok(v)
+}
+
+/// Entre dos memorias con la misma clave en el mismo ámbito, cuál manda: la cambiada más tarde y, si
+/// coinciden, la de id mayor (`Greater`: `a`). Igual que el `ORDER BY` de [`guardar_por_clave`], así que
+/// `remember --key` cambia la misma que devuelve `get --key`.
+fn gana_la_clave(a: &Memoria, b: &Memoria) -> std::cmp::Ordering {
+    a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))
+}
+
+/// Tras sincronizar o importar: las claves repetidas en un mismo ámbito (dos equipos que hicieron
+/// `remember --key` con la misma clave sin verse; en cada uno, la clave es atómica). Manda la que
+/// [`gana_la_clave`] y las demás quedan sustituidas por ella (`superseded`, un veredicto que viaja y que
+/// todos los equipos ponen igual), para que Revisar proponga olvidarlas. No se borra ni se cambia nada:
+/// `get --key` ya solo devuelve la que manda. Devuelve cuántas quedaron sustituidas ahora.
+pub fn resolver_claves_repetidas(db: &Connection) -> Result<usize> {
+    let mut q = db.prepare("SELECT id, project_id, space_id, tags, updated_at FROM memory WHERE tags LIKE '%\"topic:%'")?;
+    let filas: Vec<(String, i64, Option<i64>, String, String)> =
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+    type Grupo = (i64, Option<i64>, String, Vec<String>);
+    let mut grupos: std::collections::BTreeMap<Grupo, Vec<Memoria>> = std::collections::BTreeMap::new();
+    for (id, project_id, space_id, tags, updated_at) in filas {
+        let tags: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
+        let m = Memoria { id, project_id, tags, updated_at, ..Default::default() };
+        if let Some(clave) = clave_de(&m).map(str::to_string) {
+            grupos.entry((project_id, space_id, clave, ambito_de_oficio(&m.tags))).or_default().push(m);
+        }
+    }
+    let vigentes = crate::veredictos::parejas(db)?;
+    let mut n = 0;
+    for ((_, _, clave, _), mut v) in grupos.into_iter().filter(|(_, v)| v.len() > 1) {
+        v.sort_by(|a, b| gana_la_clave(b, a));
+        let gana = &v[0];
+        for otra in &v[1..] {
+            let ya = vigentes.get(&crate::veredictos::pareja(&otra.id, &gana.id)).is_some_and(|x| x.relation == crate::veredictos::SUSTITUIDA && x.memory_id == otra.id);
+            if ya {
+                continue;
+            }
+            let autor = crate::veredictos::autor(db, "sync", &otra.id);
+            crate::veredictos::poner(db, &otra.id, &gana.id, crate::veredictos::SUSTITUIDA, &format!("same key {clave} written on two computers"), &autor)?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Una capa de [`resolver_clave`] tal como sale en `get --key … --resolve --json`: su ámbito

@@ -535,7 +535,12 @@ impl Servidor {
                 if clave.is_none()
                     && !p.force.unwrap_or(false)
                     && let Some(m) = modelo
-                    && let Some((existente, sim)) = vectores::duplicada(db, m, &busca_en, &p.title, &p.content)?
+                    && let Some((existente, sim)) = if de_oficio {
+                        // Entre las de su oficio, que desde lo global no se ven.
+                        vectores::duplicada_de_oficio(db, m, &oficios, &p.title, &p.content, None)?
+                    } else {
+                        vectores::duplicada(db, m, &busca_en, &p.title, &p.content)?
+                    }
                 {
                     return Ok(serde_json::json!({
                         "saved": false,
@@ -785,6 +790,14 @@ impl Servidor {
                     r["created"] = serde_json::json!(true);
                     r["promoted_from"] = serde_json::json!(actual.id);
                     r["promoted_hint"] = serde_json::json!(crate::oficios::AVISO_PROMOVIDA);
+                    // Lo mismo promovido desde otro cliente: no se impide (la promoción ya está hecha), se dice.
+                    if let Some(mo) = modelo
+                        && let Some((otra, sim)) = vectores::duplicada_de_oficio(db, mo, &crate::oficios::de_etiquetas(&m.tags), &m.title, &m.content, Some(&m.id))?
+                    {
+                        r["duplicate_of"] = serde_json::to_value(compacta(otra, false, None))?;
+                        r["similarity"] = serde_json::json!((sim * 1000.0).round() / 1000.0);
+                        r["duplicate_hint"] = serde_json::json!(crate::oficios::AVISO_DUPLICADA);
+                    }
                     if !tapados.is_empty() {
                         r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
                     }

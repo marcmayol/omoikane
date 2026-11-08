@@ -1602,6 +1602,10 @@ pub struct Resumen {
     /// Memorias que llegaron por el repositorio de un espacio con el sello de verificada de otra
     /// persona (ver `sello_de_otro`): aquí no cuentan como verificadas.
     pub sellos_ajenos: usize,
+    /// Memorias con una clave (`--key`) que otro equipo también creó sin verla: quedan sustituidas por
+    /// la que manda (`memoria::resolver_claves_repetidas`).
+    #[serde(rename = "duplicate_keys")]
+    pub claves_repetidas: usize,
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
@@ -1829,6 +1833,7 @@ impl Resumen {
         self.conflictos_de_espacio += o.conflictos_de_espacio;
         self.en_pausa += o.en_pausa;
         self.sellos_ajenos += o.sellos_ajenos;
+        self.claves_repetidas += o.claves_repetidas;
         self.avisos.extend(o.avisos);
     }
 }
@@ -2475,6 +2480,9 @@ fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Opt
         }
         ficheros.sort();
         importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
+        // Dos equipos que crearon la misma clave sin verse: manda una y las demás quedan sustituidas
+        // por ella, con un veredicto que sale en este mismo `exportar`.
+        res.claves_repetidas += crate::memoria::resolver_claves_repetidas(db)?;
         res.avisos = sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto).collect();
         // Si esta versión se saltó líneas nuevas y la base la usó antes una más nueva (se volvió a una
         // vieja), esa tendrá que releerlas cuando vuelva.

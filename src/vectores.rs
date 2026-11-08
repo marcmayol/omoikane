@@ -700,16 +700,137 @@ fn lineal(
 /// similitud.
 pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
     let nueva = texto(title, content);
-    let mut v = parecidas_en(db, modelo, &nueva, &Ambito::de(db, project)?, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    let v = parecidas_en(db, modelo, &nueva, &Ambito::de(db, project)?, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    la_duplicada(db, project, &nueva, v)
+}
+
+/// Como [`duplicada`], para una memoria de oficio (`oficios`, sin el prefijo): desde lo global no se ven
+/// las de oficio (ningún proyecto del ámbito tiene oficios), así que se compara con las globales y con
+/// las de oficio que comparten alguno de sus oficios, sean de quien sean para (`trade-for:`). Es lo que
+/// pasa al promover lo mismo desde dos clientes. `excluir`: la memoria de la que sale (al promover).
+pub fn duplicada_de_oficio(db: &Connection, modelo: &Modelo, oficios: &[String], title: &str, content: &str, excluir: Option<&str>) -> Result<Option<(Memoria, f32)>> {
+    let nueva = texto(title, content);
+    // Desde todo (sin ocultar las de oficio), y luego solo las globales que tocan: con más candidatas,
+    // para que las de los proyectos no dejen fuera a las que cuentan.
+    let v: Vec<(Memoria, f32)> = parecidas_en(db, modelo, &nueva, &Ambito::Todos, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 50)?
+        .into_iter()
+        .filter(|(m, _)| m.global() && Some(m.id.as_str()) != excluir)
+        .filter(|(m, _)| {
+            let suyos = crate::oficios::de_etiquetas(&m.tags);
+            suyos.is_empty() || suyos.iter().any(|o| oficios.contains(o))
+        })
+        .take(5)
+        .collect();
+    la_duplicada(db, "", &nueva, v)
+}
+
+/// De las parecidas (de la más a la menos), la duplicada: la primera si llega a `SIMILITUD_DUPLICADO`
+/// y, si no, la que más cubre las palabras de la nueva (al menos `COBERTURA_DUPLICADO`).
+fn la_duplicada(db: &Connection, project: &str, nueva: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
     if v.is_empty() {
         return Ok(None);
     }
-    let coberturas = crate::recall::cobertura(db, project, &nueva, v.iter().map(|x| &x.0))?;
+    let coberturas = crate::recall::cobertura(db, project, nueva, v.iter().map(|x| &x.0))?;
     let mejor = coberturas.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
     Ok(mejor.map(|i| v.swap_remove(i)))
+}
+
+/// La media con la que se centran los vectores, sin el modelo: la de la base (del resumen si lo hay) con
+/// la genérica que se guardó en `meta` al usar el modelo. `None` sin vectores.
+fn media_guardada(db: &Connection) -> Result<Option<Vec<f32>>> {
+    let (mut suma, mut n): (Vec<f64>, f64) = match leer_resumen(db)? {
+        Some(r) if r.cuantos > 0 => (r.suma, r.cuantos as f64),
+        _ => {
+            let mut suma: Vec<f64> = Vec::new();
+            let mut n = 0.0;
+            let mut q = db.prepare("SELECT e FROM memory_vec")?;
+            let mut filas = q.query([])?;
+            while let Some(f) = filas.next()? {
+                let e = a_f32(f.get_ref(0)?.as_blob()?);
+                if suma.is_empty() {
+                    suma = vec![0.0; e.len()];
+                }
+                if e.len() == suma.len() {
+                    suma.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
+                    n += 1.0;
+                }
+            }
+            (suma, n)
+        }
+    };
+    if n == 0.0 {
+        return Ok(None);
+    }
+    let modelo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;
+    let generica: Option<Vec<f32>> = match modelo {
+        Some(m) => db
+            .query_row("SELECT v FROM meta WHERE k = ?1", [format!("media:{m}")], |f| f.get::<_, String>(0))
+            .optional()?
+            .and_then(|t| serde_json::from_str(&t).ok()),
+        None => None,
+    };
+    if let Some(g) = generica.filter(|g| g.len() == suma.len()) {
+        suma.iter_mut().zip(&g).for_each(|(s, x)| *s += f64::from(*x) * f64::from(PESO_MEDIA_GENERICA));
+        n += f64::from(PESO_MEDIA_GENERICA);
+    }
+    Ok(Some(suma.iter().map(|s| (s / n) as f32).collect()))
+}
+
+/// Las parejas de `memorias` (por su posición, `i < j`) que [`duplicada`] habría tomado por duplicadas
+/// al guardar la segunda, con su similitud: con los vectores ya guardados, sin cargar el modelo (para
+/// la revisión). La palabra la tiene la más nueva frente a la más vieja, como al guardar. Una memoria
+/// sin vector (sin modelo) se compara solo por palabras, y entonces tienen que cubrirse las dos a la
+/// otra (`COBERTURA_DUPLICADO` en los dos sentidos). Pensada para pocas memorias (las de un oficio).
+pub fn duplicadas_entre(db: &Connection, memorias: &[&Memoria]) -> Result<Vec<(usize, usize, f32)>> {
+    if memorias.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let media = media_guardada(db)?;
+    let mut q = db.prepare("SELECT v.e FROM memory_vec v JOIN memory m ON m.n = v.n WHERE m.id = ?1")?;
+    let centrados: Vec<Option<Vec<f32>>> = memorias
+        .iter()
+        .map(|m| {
+            let e: Option<Vec<u8>> = q.query_row([&m.id], |f| f.get(0)).optional()?;
+            Ok(match (e, &media) {
+                (Some(e), Some(mu)) => {
+                    let e = a_f32(&e);
+                    (e.len() == mu.len()).then(|| normalizado(e.iter().zip(mu).map(|(x, m)| x - m).collect()))
+                }
+                _ => None,
+            })
+        })
+        .collect::<Result<_>>()?;
+    let mut r = Vec::new();
+    for i in 0..memorias.len() {
+        for j in i + 1..memorias.len() {
+            // La nueva frente a la vieja.
+            let (nueva, vieja) = if (memorias[i].created_at.as_str(), memorias[i].id.as_str()) >= (memorias[j].created_at.as_str(), memorias[j].id.as_str()) { (i, j) } else { (j, i) };
+            let texto_nueva = texto(&memorias[nueva].title, &memorias[nueva].content);
+            let cubre = |de: usize, a: usize| -> Result<f64> {
+                Ok(crate::recall::cobertura(db, "", &texto(&memorias[de].title, &memorias[de].content), std::iter::once(memorias[a]))?.first().copied().unwrap_or(0.0))
+            };
+            let es = match (&centrados[i], &centrados[j]) {
+                (Some(a), Some(b)) => {
+                    let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+                    let dup = sim >= SIMILITUD_DUPLICADO
+                        || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS
+                            && crate::recall::cobertura(db, "", &texto_nueva, std::iter::once(memorias[vieja]))?.first().is_some_and(|c| *c >= COBERTURA_DUPLICADO));
+                    dup.then_some(sim)
+                }
+                _ => {
+                    let c = cubre(nueva, vieja)?.min(cubre(vieja, nueva)?);
+                    (c >= COBERTURA_DUPLICADO).then_some(c as f32)
+                }
+            };
+            if let Some(sim) = es {
+                r.push((i.min(j), i.max(j), sim));
+            }
+        }
+    }
+    Ok(r)
 }
 
 /// Memorias que pueden tratar de lo mismo que una recién guardada sin llegar a duplicadas: las que

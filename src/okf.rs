@@ -36,7 +36,7 @@
 
 use crate::embeber::Modelo;
 use crate::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo};
-use crate::obsidian::{Que, corto, slug};
+use crate::obsidian::{Que, corto};
 use crate::{tr, veredictos};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -301,6 +301,42 @@ pub fn exportar(db: &Connection, dir: &Path, que: Que) -> Result<Cuenta> {
 
     c.deleted = limpiar(dir, &escritos)?;
     Ok(c)
+}
+
+/// Un texto en NFC (letras compuestas: «é» como un solo carácter). macOS (HFS+) guarda los nombres de
+/// fichero en NFD («e» y el acento aparte) y los devuelve así al listar: comparar o firmar rutas sin
+/// normalizar daba otro nombre para el mismo concepto (un duplicado al importar, o un borrado al
+/// reexportar en espejo).
+pub fn nfc(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfc().collect()
+}
+
+/// El `slug` de Obsidian sobre el texto en NFC: en NFD, el acento suelto no es una letra y «café»
+/// salía `cafe`.
+fn slug(s: &str, max: usize) -> String {
+    crate::obsidian::slug(&nfc(s), max)
+}
+
+/// Una ruta como texto en NFC, para comparar las escritas con las que da el listado de la carpeta.
+fn ruta_nfc(p: &Path) -> String {
+    nfc(&p.to_string_lossy())
+}
+
+/// Si dos rutas son el mismo fichero en el disco: en macOS, el nombre NFC con el que se escribió y el
+/// NFD con el que lo lista HFS+. Fuera de Unix (NTFS no normaliza), dos nombres distintos son dos ficheros.
+#[cfg(unix)]
+fn mismo_fichero(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn mismo_fichero(_: &Path, _: &Path) -> bool {
+    false
 }
 
 struct Relaciones {
@@ -649,6 +685,12 @@ fn escribir(ruta: &Path, texto: &str, c: Option<&mut Cuenta>) -> Result<()> {
 /// `omoikane:` en la cabecera y los índices con la marca. Las carpetas que empiezan por `.` no se miran.
 fn limpiar(raiz: &Path, escritos: &BTreeSet<PathBuf>) -> Result<usize> {
     let mut borrados = 0;
+    // Lo escrito, por su nombre en NFC: el listado de HFS+ lo devuelve en NFD.
+    let por_nfc: HashMap<String, &PathBuf> = escritos.iter().map(|p| (ruta_nfc(p), p)).collect();
+    // Escrito con este nombre, o el mismo fichero con el nombre en otra forma (HFS+). Un fichero aparte
+    // con el mismo nombre en NFD (un bundle de un Mac copiado a Linux o Windows) es una copia vieja del
+    // concepto: se borra como lo que ya no sale.
+    let escrito = |p: &Path| escritos.contains(p) || por_nfc.get(&ruta_nfc(p)).is_some_and(|e| mismo_fichero(p, e));
     let mut carpetas = Vec::new();
     let mut pendientes = vec![raiz.to_path_buf()];
     while let Some(d) = pendientes.pop() {
@@ -661,7 +703,7 @@ fn limpiar(raiz: &Path, escritos: &BTreeSet<PathBuf>) -> Result<usize> {
                     carpetas.push(p.clone());
                     pendientes.push(p);
                 }
-            } else if p.extension().is_some_and(|x| x == "md") && !escritos.contains(&p) {
+            } else if p.extension().is_some_and(|x| x == "md") && !escrito(&p) {
                 let reservado = matches!(e.file_name().to_str(), Some("index.md" | "log.md"));
                 if (reservado && es_nuestro_indice(&p)) || (!reservado && es_nuestro_concepto(&p)) {
                     std::fs::remove_file(&p)?;
@@ -988,7 +1030,9 @@ fn leer_con_topes(dir: &Path, topes: &Topes) -> Result<Bundle> {
     let mut en_cabeceras = 0usize;
     for p in &ficheros {
         let rel = p.strip_prefix(&raiz).unwrap_or(p).to_string_lossy().replace('\\', "/");
-        let id = rel.strip_suffix(".md").or_else(|| rel.strip_suffix(".MD")).unwrap_or(&rel).to_string();
+        // En NFC: un bundle que pasó por un Mac (HFS+) lista sus nombres en NFD, y el id del concepto
+        // (su ruta) entra en su clave y en su firma.
+        let id = nfc(rel.strip_suffix(".md").or_else(|| rel.strip_suffix(".MD")).unwrap_or(&rel));
         let texto = match std::fs::read_to_string(p) {
             Ok(t) => sin_crlf_de_git(t),
             Err(e) => {
@@ -1516,7 +1560,7 @@ pub fn importar_con(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, de
     let id_de = |ruta: &str| -> Option<&(String, bool, bool)> {
         let r = ruta.trim().trim_start_matches('/');
         let r = r.strip_suffix(".md").unwrap_or(r);
-        ids.get(&r.to_lowercase()).and_then(Option::as_ref)
+        ids.get(&nfc(r).to_lowercase()).and_then(Option::as_ref)
     };
     for (id, propio, sustituida_por, contradice) in &relaciones {
         for (relacion, otras) in [(veredictos::SUSTITUIDA, sustituida_por), (veredictos::CONTRADICE, contradice)] {

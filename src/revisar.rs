@@ -46,7 +46,11 @@ pub const FECHA: &str = "review_date";
 pub const ETIQUETA_FECHA: &str = "review:";
 /// Sus ficheros han cambiado mucho desde que se escribió o se revisó (`deriva`).
 pub const DERIVA_CODIGO: &str = crate::deriva::DERIVA;
-const TIPOS: [&str; 12] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, DERIVA_CODIGO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
+/// Dos memorias de un mismo oficio que dicen lo mismo (lo mismo promovido desde dos clientes, o
+/// guardado con `force`): para juntarlas. Se calcula al leer, con los vectores guardados
+/// ([`duplicadas_de_oficio`]).
+pub const DUPLICADA_OFICIO: &str = "trade_duplicate";
+const TIPOS: [&str; 13] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, DUPLICADA_OFICIO, ENLACE_ROTO, ESTADO_VIEJO, DERIVA_CODIGO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
@@ -818,6 +822,12 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
             r.push(a);
         }
     }
+    for (nueva, vieja, detalle) in duplicadas_de_oficio(db, ambito)? {
+        if let (Some(n), Some(v)) = (por_id.get(nueva.as_str()), por_id.get(vieja.as_str())) {
+            // Como una desfasada: la vieja, y la otra es la nueva (la vista web junta la vieja en la nueva).
+            r.push(aviso(v, DUPLICADA_OFICIO, Some(n), detalle));
+        }
+    }
     {
         let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 ORDER BY memory_id")?;
         let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
@@ -883,6 +893,40 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
         _ => 1,
     };
     r.sort_by_key(|a| (orden(&a.kind), prioridad(&a.memory_id)));
+    Ok(r)
+}
+
+/// Las memorias de un mismo oficio que dicen lo mismo, de las que se ven desde `ambito`: (la más nueva,
+/// la más vieja, detalle). Con la regla de los duplicados de `remember` (`vectores::duplicadas_entre`)
+/// entre las de cada oficio, salvo las parejas que ya tienen un veredicto (sustituida, se contradicen,
+/// o «está bien así», que es `compatible`). Las de oficio son pocas: se mira al leer.
+pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<(String, String, String)>> {
+    let mut q = db.prepare(&format!(
+        "SELECT {} FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 AND {} ORDER BY m.id",
+        crate::memoria::COLUMNAS,
+        ambito.sql()
+    ))?;
+    let todas: Vec<Memoria> = q.query_map([], crate::memoria::de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let mut por_oficio: BTreeMap<String, Vec<&Memoria>> = BTreeMap::new();
+    for m in &todas {
+        for o in crate::oficios::de_etiquetas(&m.tags) {
+            por_oficio.entry(o).or_default().push(m);
+        }
+    }
+    let juzgadas = crate::veredictos::parejas(db)?;
+    let mut vistas: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut r = Vec::new();
+    for (oficio, ms) in &por_oficio {
+        for (i, j, sim) in crate::vectores::duplicadas_entre(db, ms)? {
+            let (a, b) = (ms[i], ms[j]);
+            let pareja = crate::veredictos::pareja(&a.id, &b.id);
+            if juzgadas.contains_key(&pareja) || !vistas.insert(pareja) {
+                continue;
+            }
+            let (nueva, vieja) = if (a.created_at.as_str(), a.id.as_str()) >= (b.created_at.as_str(), b.id.as_str()) { (a, b) } else { (b, a) };
+            r.push((nueva.id.clone(), vieja.id.clone(), format!("says the same as the other one (trade:{oficio}, similarity {sim:.2}): merge them")));
+        }
+    }
     Ok(r)
 }
 
@@ -1187,6 +1231,11 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
             sumar(if v.relation == SUSTITUIDA { SUSTITUIDA } else { CONTRADICE });
         }
     }
+    for (nueva, vieja, _) in duplicadas_de_oficio(db, ambito)? {
+        if en_ambito.contains(nueva.as_str()) && en_ambito.contains(vieja.as_str()) {
+            sumar(DUPLICADA_OFICIO);
+        }
+    }
     {
         let mut q = db.prepare("SELECT memory_id FROM review WHERE kind = ?1")?;
         let filas: Vec<String> = q.query_map([ENLACE_ROTO], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
@@ -1290,6 +1339,7 @@ fn nombre_aviso(kind: &str) -> &'static str {
         SUSTITUIDA => "superseded",
         CONTRADICE => "contradictions",
         DESFASADA => "outdated",
+        DUPLICADA_OFICIO => "duplicated trade memories",
         ENLACE_ROTO => "broken [[links]]",
         ESTADO_VIEJO => "stale status",
         DERIVA_CODIGO => "code changed under them",

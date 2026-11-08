@@ -327,7 +327,7 @@ pub fn al_dia(db: &Connection, proyecto: i64, ruta: &str) -> Result<Vec<String>>
     if e.fixed {
         return Ok(e.trades);
     }
-    let detectados = detectar(Path::new(ruta));
+    let detectados = detectar_guardado(db, proyecto, Path::new(ruta));
     if e.seen_at.is_none() || detectados != e.detected {
         en_bloque(db, || {
             db.execute("DELETE FROM project_trade WHERE project_id = ?1 AND how = 'auto'", [proyecto])?;
@@ -427,12 +427,20 @@ pub fn memorias_por_oficio(db: &Connection) -> Result<HashMap<String, i64>> {
 
 // --- Detección ------------------------------------------------------------------------------------
 
-/// Subcarpetas de la raíz que se miran como mucho (un monorepo: `app/`, `web/`, `android/`…).
+/// Subcarpetas de la raíz que se miran como mucho (un monorepo: `app/`, `web/`, `android/`…): las
+/// primeras por orden alfabético, así que con más de estas se miran siempre las mismas.
 const MAX_SUBCARPETAS: usize = 60;
-/// Entradas de una carpeta que se leen como mucho.
+/// Entradas de una carpeta que se miran como mucho (las primeras por orden alfabético).
 const MAX_ENTRADAS: usize = 3000;
+/// Entradas de una carpeta que se llegan a listar para ordenarlas. Solo una carpeta con más que estas
+/// depende del orden en que las da el sistema.
+const MAX_LISTADAS: usize = 20_000;
 /// Bytes que se leen de un fichero para mirar su contenido.
 const MAX_BYTES: u64 = 256 * 1024;
+/// Ficheros `.php` de una carpeta cuyo principio se mira (la cabecera «Plugin Name:»).
+const MAX_PHP: usize = 10;
+/// Dónde se guarda en `meta` (local, no viaja) lo detectado en un proyecto: `<firma>\t<oficios en JSON>`.
+const CLAVE_DETECTADOS: &str = "oficios_detectados:";
 
 /// Subcarpetas que no dicen nada del oficio (dependencias, compilados, cachés).
 fn ignorada(nombre: &str) -> bool {
@@ -462,29 +470,172 @@ fn ignorada(nombre: &str) -> bool {
         )
 }
 
-fn leer_carpeta(dir: &Path) -> Vec<(String, bool)> {
+/// Los ficheros (en minúsculas) cuyo contenido se mira además de su nombre (y los `.php`).
+fn se_lee(l: &str) -> bool {
+    matches!(l, "build.gradle" | "build.gradle.kts" | "settings.gradle" | "settings.gradle.kts" | "package.json" | "style.css" | "pubspec.yaml" | "manifest.json")
+}
+
+/// Una entrada de una carpeta. De los ficheros que se leen, su huella: tamaño, última modificación
+/// (en ns) y si está solo en la nube.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Entrada {
+    nombre: String,
+    es_dir: bool,
+    huella: Option<(u64, u128, bool)>,
+}
+
+impl Entrada {
+    /// Si no se puede leer sin descargarlo (OneDrive, Dropbox… con «archivos a petición»).
+    fn en_la_nube(&self) -> bool {
+        self.huella.is_some_and(|h| h.2)
+    }
+}
+
+/// Si unos atributos de Windows son los de un fichero que solo está en la nube: leerlo (o, con
+/// `RECALL_ON_OPEN`, abrirlo) lo descarga. `OFFLINE` es el de siempre de los ficheros archivados.
+#[cfg(any(windows, test))]
+fn atributos_de_nube(a: u32) -> bool {
+    const OFFLINE: u32 = 0x0000_1000;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    a & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) != 0
+}
+
+#[cfg(windows)]
+fn en_la_nube(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    atributos_de_nube(m.file_attributes())
+}
+
+#[cfg(not(windows))]
+fn en_la_nube(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Las entradas de una carpeta, por orden alfabético (sin mirar mayúsculas) y hasta `MAX_ENTRADAS`.
+/// Lo que se sabe de cada fichero sale del listado (en Windows, `metadata` de una entrada viene con
+/// él y no abre el fichero), así que un fichero que solo está en la nube no se descarga por listarlo.
+fn leer_carpeta(dir: &Path) -> Vec<Entrada> {
     let Ok(it) = std::fs::read_dir(dir) else { return Vec::new() };
-    it.flatten()
-        .take(MAX_ENTRADAS)
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().map(|t| t.is_dir()).unwrap_or(false)))
+    let mut v: Vec<(String, std::fs::DirEntry)> = it.flatten().take(MAX_LISTADAS).map(|e| (e.file_name().to_string_lossy().into_owned(), e)).collect();
+    v.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(MAX_ENTRADAS);
+    let mut php = 0;
+    v.into_iter()
+        .map(|(nombre, e)| {
+            let es_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let l = nombre.to_lowercase();
+            let lee = !es_dir
+                && (se_lee(&l)
+                    || (l.ends_with(".php") && {
+                        php += 1;
+                        php <= MAX_PHP
+                    }));
+            let huella = lee.then(|| match e.metadata() {
+                Ok(m) => {
+                    let cuando = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                    (m.len(), cuando, en_la_nube(&m))
+                }
+                Err(_) => (0, 0, false),
+            });
+            Entrada { nombre, es_dir, huella }
+        })
         .collect()
 }
 
-/// El principio de un fichero, en minúsculas (vacío si no se puede leer).
-fn principio(ruta: &Path) -> String {
+/// Lo que se ve de una carpeta para detectar sus oficios, sin leer ningún fichero.
+#[derive(Debug)]
+struct Carpeta {
+    /// Su nombre dentro de la raíz (vacío: la raíz).
+    rel: String,
+    entradas: Vec<Entrada>,
+    /// Tiene `hooks/hooks.json` (un mod de Claude Code).
+    hooks: bool,
+    /// Tiene `src/main/AndroidManifest.xml` (un módulo de Android).
+    manifiesto: bool,
+}
+
+/// La raíz de un proyecto y un nivel de subcarpetas, tal como se ven en sus listados.
+#[derive(Debug)]
+struct Recorrido {
+    raiz: std::path::PathBuf,
+    carpetas: Vec<Carpeta>,
+}
+
+/// La raíz y sus subcarpetas (sin dependencias, compilados ni ocultas), las primeras `MAX_SUBCARPETAS`
+/// por orden alfabético. Lista carpetas y nada más: no lee ningún fichero.
+fn recorrer(raiz: &Path) -> Recorrido {
+    let carpeta = |rel: String, dir: &Path| {
+        let entradas = leer_carpeta(dir);
+        let hay_dir = |n: &str| entradas.iter().any(|e| e.es_dir && e.nombre.eq_ignore_ascii_case(n));
+        let hooks = hay_dir("hooks") && dir.join("hooks").join("hooks.json").is_file();
+        let manifiesto = hay_dir("src") && dir.join("src").join("main").join("AndroidManifest.xml").is_file();
+        Carpeta { rel, entradas, hooks, manifiesto }
+    };
+    let primera = carpeta(String::new(), raiz);
+    let subs: Vec<String> = primera.entradas.iter().filter(|e| e.es_dir && !ignorada(&e.nombre)).take(MAX_SUBCARPETAS).map(|e| e.nombre.clone()).collect();
+    let mut carpetas = vec![primera];
+    carpetas.extend(subs.into_iter().map(|n| {
+        let d = raiz.join(&n);
+        carpeta(n, &d)
+    }));
+    Recorrido { raiz: raiz.to_path_buf(), carpetas }
+}
+
+impl Recorrido {
+    /// Cambia si cambia algo de lo que depende la detección: un nombre, una carpeta, o el tamaño, la
+    /// fecha o el estado en la nube de un fichero que se lee.
+    fn firma(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for c in &self.carpetas {
+            h.update(format!("{}\0{}{}\n", c.rel, u8::from(c.hooks), u8::from(c.manifiesto)).as_bytes());
+            for e in &c.entradas {
+                h.update(format!("{}\0{}\0{:?}\n", e.nombre, u8::from(e.es_dir), e.huella).as_bytes());
+            }
+        }
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Los oficios, leyendo el principio de los ficheros que se leen (nunca el de uno en la nube).
+    fn oficios(&self) -> Vec<String> {
+        let mut v = BTreeSet::new();
+        let mut gradle_sin_android = false;
+        for c in &self.carpetas {
+            mirar(&self.raiz.join(&c.rel), c, c.rel.is_empty(), &mut v, &mut gradle_sin_android);
+        }
+        // Un Gradle sin Android (en ningún sitio) es de la JVM: en un proyecto Android, el `settings.gradle`
+        // de la raíz no siempre lo nombra.
+        if gradle_sin_android && !v.contains("android") {
+            v.insert("jvm".into());
+        }
+        // Una app de escritorio hecha con tecnología web no es una web (su `vite.config` tampoco lo dice).
+        if v.contains("escritorio-node") {
+            v.remove("web");
+        }
+        v.into_iter().collect()
+    }
+}
+
+/// El principio de un fichero, en minúsculas (vacío si no se puede leer). `None` si solo está en la
+/// nube: leerlo lo descargaría (en una carpeta de OneDrive, en cada arranque de sesión).
+fn principio(ruta: &Path, e: &Entrada) -> Option<String> {
     use std::io::Read;
+    if e.en_la_nube() {
+        return None;
+    }
     let mut s = Vec::new();
     if let Ok(f) = std::fs::File::open(ruta) {
         let _ = f.take(MAX_BYTES).read_to_end(&mut s);
     }
-    String::from_utf8_lossy(&s).to_lowercase()
+    Some(String::from_utf8_lossy(&s).to_lowercase())
 }
 
-/// Lo que dice un `package.json`: sus dependencias.
-fn de_package_json(ruta: &Path, v: &mut BTreeSet<String>) {
+/// Lo que dice un `package.json` (su texto; `None` si no se pudo leer sin descargarlo): sus dependencias.
+fn de_package_json(texto: Option<String>, v: &mut BTreeSet<String>) {
     v.insert("node".into());
     // `principio` lo da en minúsculas: las claves van como `devdependencies`.
-    let Ok(j) = serde_json::from_str::<serde_json::Value>(&principio(ruta)) else { return };
+    let Some(Ok(j)) = texto.map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { return };
     let deps: HashSet<String> = ["dependencies", "devDependencies", "peerDependencies"]
         .iter()
         .filter_map(|k| j.get(k.to_lowercase()).and_then(|d| d.as_object()))
@@ -532,38 +683,42 @@ fn de_package_json(ruta: &Path, v: &mut BTreeSet<String>) {
 /// Los oficios de un proyecto por sus ficheros: la raíz y un nivel de subcarpetas (sin dependencias,
 /// compilados ni ocultas), sin recorrer el árbol. Determinista: los mismos ficheros dan lo mismo.
 pub fn detectar(raiz: &Path) -> Vec<String> {
-    let mut v = BTreeSet::new();
-    let mut gradle_sin_android = false;
-    let entradas = leer_carpeta(raiz);
-    mirar(raiz, &entradas, true, &mut v, &mut gradle_sin_android);
-    for (nombre, _) in entradas.iter().filter(|(n, d)| *d && !ignorada(n)).take(MAX_SUBCARPETAS) {
-        let d = raiz.join(nombre);
-        mirar(&d, &leer_carpeta(&d), false, &mut v, &mut gradle_sin_android);
-    }
-    // Un Gradle sin Android (en ningún sitio) es de la JVM: en un proyecto Android, el `settings.gradle`
-    // de la raíz no siempre lo nombra.
-    if gradle_sin_android && !v.contains("android") {
-        v.insert("jvm".into());
-    }
-    // Una app de escritorio hecha con tecnología web no es una web (su `vite.config` tampoco lo dice).
-    if v.contains("escritorio-node") {
-        v.remove("web");
-    }
-    v.into_iter().collect()
+    recorrer(raiz).oficios()
 }
 
-fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<String>, gradle_sin_android: &mut bool) {
+/// Como [`detectar`], con lo detectado la última vez en este proyecto si sus carpetas no han cambiado
+/// ([`Recorrido::firma`]): así solo se listan carpetas, y el principio de sus ficheros se lee cuando
+/// alguno cambia (en OneDrive o en una carpeta de red, leerlos en cada arranque es lento).
+fn detectar_guardado(db: &Connection, proyecto: i64, raiz: &Path) -> Vec<String> {
+    let r = recorrer(raiz);
+    let firma = r.firma();
+    let clave = format!("{CLAVE_DETECTADOS}{proyecto}");
+    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).optional().ok().flatten();
+    if let Some((f, json)) = guardado.as_deref().and_then(|g| g.split_once('\t'))
+        && f == firma
+        && let Ok(v) = serde_json::from_str::<Vec<String>>(json)
+    {
+        return v;
+    }
+    let v = r.oficios();
+    if let Ok(json) = serde_json::to_string(&v) {
+        // Solo es un atajo: si no se puede guardar, la próxima vez se vuelve a leer.
+        let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, format!("{firma}\t{json}")]);
+    }
+    v
+}
+
+fn mirar(dir: &Path, c: &Carpeta, raiz: bool, v: &mut BTreeSet<String>, gradle_sin_android: &mut bool) {
     let mut aqui: BTreeSet<String> = BTreeSet::new();
     let mut paquetes: BTreeSet<String> = BTreeSet::new();
     let mut pon = |t: &str| {
         aqui.insert(t.to_string());
     };
-    let nombres: HashSet<String> = entradas.iter().map(|(n, _)| n.to_lowercase()).collect();
-    let mut php_leidos = 0;
-    for (nombre, es_dir) in entradas {
-        let l = nombre.to_lowercase();
+    let nombres: HashSet<String> = c.entradas.iter().map(|e| e.nombre.to_lowercase()).collect();
+    for e in &c.entradas {
+        let l = e.nombre.to_lowercase();
         let ext = l.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-        if *es_dir {
+        if e.es_dir {
             match l.as_str() {
                 "wp-content" | "wp-includes" => pon("wordpress"),
                 "skill-package" => pon("alexa"),
@@ -575,13 +730,15 @@ fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<S
             }
             continue;
         }
-        let ruta = dir.join(nombre);
+        let ruta = dir.join(&e.nombre);
+        let leer = || principio(&ruta, e);
         match l.as_str() {
             "build.gradle" | "build.gradle.kts" | "settings.gradle" | "settings.gradle.kts" => {
-                if principio(&ruta).contains("android") {
-                    pon("android");
-                } else {
-                    *gradle_sin_android = true;
+                // Uno que solo está en la nube no dice nada (leerlo lo descargaría).
+                match leer() {
+                    Some(t) if t.contains("android") => pon("android"),
+                    Some(_) => *gradle_sin_android = true,
+                    None => {}
                 }
             }
             "androidmanifest.xml" => pon("android"),
@@ -589,12 +746,12 @@ fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<S
             "cargo.toml" => pon("rust"),
             "go.mod" => pon("go"),
             "pyproject.toml" | "setup.py" | "setup.cfg" | "pipfile" | "uv.lock" | "poetry.lock" => pon("python"),
-            "package.json" => de_package_json(&ruta, &mut paquetes),
+            "package.json" => de_package_json(leer(), &mut paquetes),
             "angular.json" => pon("web"),
             "index.html" | "_config.yml" | "hugo.toml" if raiz => pon("web"),
             "wp-config.php" => pon("wordpress"),
             "style.css" => {
-                if principio(&ruta).contains("theme name:") {
+                if leer().is_some_and(|t| t.contains("theme name:")) {
                     pon("wordpress");
                 }
             }
@@ -602,7 +759,7 @@ fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<S
             "gemfile" => pon("ruby"),
             "pubspec.yaml" => {
                 pon("dart");
-                if principio(&ruta).contains("flutter") {
+                if leer().is_some_and(|t| t.contains("flutter")) {
                     pon("flutter");
                 }
             }
@@ -612,7 +769,7 @@ fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<S
             "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => pon("docker"),
             "project.godot" => pon("godot"),
             "manifest.json" => {
-                if principio(&ruta).contains("\"manifest_version\"") {
+                if leer().is_some_and(|t| t.contains("\"manifest_version\"")) {
                     pon("browser-extension");
                 }
             }
@@ -637,23 +794,21 @@ fn mirar(dir: &Path, entradas: &[(String, bool)], raiz: bool, v: &mut BTreeSet<S
             "stl" | "3mf" | "gcode" => pon("3d-print"),
             "php" => {
                 pon("php");
-                // Un plugin de WordPress: su fichero principal lleva la cabecera «Plugin Name:».
-                if php_leidos < 10 {
-                    php_leidos += 1;
-                    if principio(&ruta).contains("plugin name:") {
-                        pon("wordpress");
-                    }
+                // Un plugin de WordPress: su fichero principal lleva la cabecera «Plugin Name:» (se
+                // miran los `MAX_PHP` primeros, los que tienen huella).
+                if e.huella.is_some() && leer().is_some_and(|t| t.contains("plugin name:")) {
+                    pon("wordpress");
                 }
             }
             _ => {}
         }
     }
     // Un mod de Claude Code: `hooks/hooks.json` (en la raíz o en un módulo).
-    if dir.join("hooks").join("hooks.json").is_file() {
+    if c.hooks {
         pon("plugin-claude");
     }
     // El manifiesto de Android vive en `<módulo>/src/main/`.
-    if dir.join("src").join("main").join("AndroidManifest.xml").is_file() {
+    if c.manifiesto {
         pon("android");
     }
     v.extend(aqui);
@@ -1117,6 +1272,10 @@ pub fn crear_de_oficio(
 /// Lo que se le dice al agente con las fugas.
 pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks: each says its `field`, so a key like `acme-route` is renamed, not the text rewritten). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
 
+/// Lo que se le dice al agente cuando la memoria de oficio que acaba de promover dice casi lo mismo
+/// que otra de su oficio (`duplicate_of`).
+pub const AVISO_DUPLICADA: &str = "This trade memory says nearly the same as another one of its trade (duplicate_of), maybe promoted from another client: propose merging them to the user (`update` the one to keep with `absorb` and the other's id), or `forget` this one.";
+
 /// Lo que se le dice al agente al promover una memoria de un cliente.
 pub const AVISO_PROMOVIDA: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";
 
@@ -1225,5 +1384,80 @@ mod tests {
         let t6 = crate::comun::Temporal::nueva("oficios-nada");
         std::fs::write(t6.join("notas.md"), "x").unwrap();
         assert!(detectar(&t6).is_empty());
+    }
+
+    #[test]
+    fn con_muchas_subcarpetas_mira_siempre_las_mismas() {
+        let t = crate::comun::Temporal::nueva("oficios-subcarpetas");
+        // 70 subcarpetas: se miran las 60 primeras por orden alfabético, creadas en el orden que sea.
+        for i in (0..70).rev() {
+            std::fs::create_dir_all(t.join(format!("m{i:02}"))).unwrap();
+        }
+        std::fs::write(t.join("m05").join("go.mod"), "").unwrap();
+        std::fs::write(t.join("m65").join("Cargo.toml"), "").unwrap();
+        for _ in 0..3 {
+            assert_eq!(detectar(&t), ["go"]);
+        }
+        let r = recorrer(&t);
+        assert_eq!(r.carpetas.len(), 1 + MAX_SUBCARPETAS);
+        assert_eq!(r.carpetas.last().unwrap().rel, "m59");
+        assert_eq!(r.firma(), recorrer(&t).firma());
+    }
+
+    #[test]
+    fn lo_detectado_se_guarda_hasta_que_cambian_los_ficheros() {
+        let t = crate::comun::Temporal::nueva("oficios-guardado");
+        // La base, fuera de la carpeta que se mira (sus ficheros cambian).
+        let tb = crate::comun::Temporal::nueva("oficios-guardado-db");
+        let db = crate::db::abrir(&tb.join("o.db")).unwrap();
+        let gradle = t.join("build.gradle");
+        std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
+        assert_eq!(detectar_guardado(&db, 7, &t), ["android"]);
+        // Lo guardado manda mientras las carpetas y los ficheros que se leen no cambien.
+        let clave = format!("{CLAVE_DETECTADOS}7");
+        let v: String = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).unwrap();
+        let (firma, _) = v.split_once('\t').unwrap();
+        db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", params![clave, format!("{firma}\t[\"guardado\"]")]).unwrap();
+        assert_eq!(detectar_guardado(&db, 7, &t), ["guardado"]);
+        // Cambia el fichero (su tamaño o su fecha): se vuelve a leer.
+        std::fs::write(&gradle, "plugins { id 'java' } // sin el otro").unwrap();
+        assert_eq!(detectar_guardado(&db, 7, &t), ["jvm"]);
+        // Un fichero nuevo también.
+        std::fs::write(t.join("Cargo.toml"), "").unwrap();
+        assert_eq!(detectar_guardado(&db, 7, &t), ["jvm", "rust"]);
+    }
+
+    #[test]
+    fn atributos_de_un_fichero_en_la_nube() {
+        assert!(atributos_de_nube(0x0040_0000)); // RECALL_ON_DATA_ACCESS (OneDrive)
+        assert!(atributos_de_nube(0x0004_0000)); // RECALL_ON_OPEN
+        assert!(atributos_de_nube(0x0000_1000 | 0x20)); // OFFLINE
+        assert!(!atributos_de_nube(0x20 | 0x0040_0000 >> 1)); // ARCHIVE, PINNED (descargado)
+        assert!(!atributos_de_nube(0));
+    }
+
+    /// Un fichero marcado como solo en la nube no se lee (leerlo lo descargaría), y cuando se descarga
+    /// cambia la firma y se lee.
+    #[cfg(windows)]
+    #[test]
+    fn no_lee_lo_que_esta_en_la_nube() {
+        let t = crate::comun::Temporal::nueva("oficios-nube");
+        // La base, fuera de la carpeta que se mira (sus ficheros cambian).
+        let tb = crate::comun::Temporal::nueva("oficios-nube-db");
+        let db = crate::db::abrir(&tb.join("o.db")).unwrap();
+        let gradle = t.join("build.gradle");
+        std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
+        std::fs::write(t.join("package.json"), r#"{"dependencies":{"astro":"5"}}"#).unwrap();
+        let attrib = |signo: &str, p: &Path| {
+            let ok = std::process::Command::new("attrib").arg(format!("{signo}O")).arg(p).status().unwrap().success();
+            assert!(ok, "attrib {signo}O");
+        };
+        attrib("+", &gradle);
+        attrib("+", &t.join("package.json"));
+        // Por el nombre sí: `package.json` es de Node; lo que dicen dentro, no.
+        assert_eq!(detectar_guardado(&db, 3, &t), ["node"]);
+        attrib("-", &gradle);
+        attrib("-", &t.join("package.json"));
+        assert_eq!(detectar_guardado(&db, 3, &t), ["android", "node", "web"]);
     }
 }
