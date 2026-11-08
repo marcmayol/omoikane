@@ -973,6 +973,11 @@ fn nombres_con_tildes_en_nfd() {
     let n = okf::exportar(&db, &bundle, Que::Personal).unwrap();
     let fs = ficheros(&bundle);
     let te: Vec<_> = fs.iter().filter(|f| okf::nfc(f).contains("té-verde")).collect();
-    assert_eq!(te, ["p/fact/té-verde.md"], "{fs:?} {n:?}");
+    assert_eq!(te.len(), 1, "una sola vez: {fs:?} {n:?}");
+    // En macOS el sistema de ficheros no distingue las dos formas y lista el nombre como se creó (NFD):
+    // es el mismo fichero, sin cambios, y no se reescribe.
+    if cfg!(not(target_os = "macos")) {
+        assert_eq!(te, ["p/fact/té-verde.md"], "{fs:?} {n:?}");
+    }
     assert!(fs.contains("p/fact/café-con-leche.md"), "{fs:?}");
 }
