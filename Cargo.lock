@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "omoikane"
-version = "1.8.0"
+version = "1.8.5"
 dependencies = [
  "aes-siv",
  "anyhow",

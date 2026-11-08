@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.8.5 (unreleased)
+## 1.8.5 (2026-11-08)
 
 ### Leak check says where
 - Each leak in `trade_leaks` now says in which `field` it was found: `title`, `content`, `paths`, `tag`, `key`, `data` or `answer` (the CLI prints it after each one). A key that names a project (`kumi-route` names Kumi) is a common case: knowing it's the key, you rename it instead of rewriting a text that was already clean. Reported by Kumi, the first program using trade keys.
