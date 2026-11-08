@@ -1,6 +1,6 @@
 # Hoja de ruta
 
-Hacia dónde va Omoikane, qué no va a hacer y por qué. No hay fechas: una versión sale cuando está medida y probada en Windows, Linux y macOS. Lo que cambió de verdad cada versión está en el [CHANGELOG](CHANGELOG.md). Los mismos puntos están en el [tablero del proyecto](https://github.com/users/marcmayol/projects).
+Hacia dónde va Omoikane, qué no va a hacer y por qué. No hay fechas: una versión sale cuando está medida y probada en Windows, Linux y macOS. Lo que cambió de verdad cada versión está en el [CHANGELOG](CHANGELOG.md). Los mismos puntos están en el [tablero del proyecto](https://github.com/users/marcmayol/projects/1).
 
 [Read in English](ROADMAP.md)
 

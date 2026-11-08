@@ -1,6 +1,6 @@
 # Roadmap
 
-Where Omoikane is going, what it won't do and why. There are no dates: a version ships when it is measured and tested on Windows, Linux and macOS. What each version actually changed is in the [CHANGELOG](CHANGELOG.md). The same items are on the [project board](https://github.com/users/marcmayol/projects).
+Where Omoikane is going, what it won't do and why. There are no dates: a version ships when it is measured and tested on Windows, Linux and macOS. What each version actually changed is in the [CHANGELOG](CHANGELOG.md). The same items are on the [project board](https://github.com/users/marcmayol/projects/1).
 
 [Leer en español](ROADMAP.es.md)
 
