@@ -137,9 +137,22 @@ fn base() -> Option<String> {
     cfg!(debug_assertions).then(|| std::env::var("OMOIKANE_UPDATE_URL").ok()).flatten()
 }
 
+/// Baja `url` entera a memoria, con los tiempos máximos de `modelos::get`: un cuelgue es un error
+/// claro y no deja nada escrito (lo bajado se escribe después, solo si la firma y la suma cuadran).
 fn bajar(url: &str) -> Result<Vec<u8>> {
-    let r = crate::modelos::get(url).with_context(|| url.to_string())?;
-    Ok(r.into_body().with_config().limit(200 * 1024 * 1024).read_to_vec()?)
+    use crate::modelos;
+    let r = modelos::get(url, modelos::TIEMPOS_PEQUENO).map_err(|e| modelos::error_de_get(e, url))?;
+    match r.into_body().with_config().limit(200 * 1024 * 1024).read_to_vec() {
+        Ok(v) => Ok(v),
+        Err(e) if modelos::es_tiempo_agotado(&e) => {
+            let nombre = url.rsplit('/').next().unwrap_or(url);
+            bail!(tr!(
+                "the download of {nombre} stalled or took too long ({e}); nothing was installed",
+                "la descarga de {nombre} se colgó o tardó demasiado ({e}); no se instaló nada"
+            ))
+        }
+        Err(e) => Err(anyhow::Error::new(e).context(url.to_string())),
+    }
 }
 
 /// La última versión publicada.

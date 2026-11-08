@@ -1,6 +1,7 @@
 //! Secretos: lo que no debe entrar en la memoria (Fase 8.2, punto 4). Tokens con prefijo conocido
 //! (GitHub, OpenAI, Anthropic, AWS, Slack, GitLab, Google, Stripe), claves privadas PEM, JWT, URLs con
-//! `usuario:clave@`, lo marcado `<private>…</private>` (como engram, por quien venga de allí) y cadenas
+//! `usuario:clave@`, lo marcado `<private>…</private>` (como engram, por quien venga de allí), las
+//! contraseñas escritas a mano («password: hunter2», «la contraseña del wifi es Xy7#k2») y cadenas
 //! largas que parecen aleatorias. Cada hallazgo se cambia por `[redacted:<tipo>]`.
 //!
 //! Sin expresiones regulares ni modelo: formas a mano, como `candidatas`. Lo que manda es no dar
@@ -23,8 +24,9 @@ use serde::Serialize;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Hallazgo {
     /// `github-token`, `openai-key`, `anthropic-key`, `aws-key`, `slack-token`, `gitlab-token`,
-    /// `google-key`, `stripe-key`, `slack-webhook`, `private-key`, `jwt`, `omoikane-sync-code`, `url-credentials`, `private` o `token` (cadena
-    /// larga que parece aleatoria).
+    /// `google-key`, `stripe-key`, `slack-webhook`, `private-key`, `jwt`, `omoikane-sync-code`, `url-credentials`, `private`,
+    /// `password` (una contraseña escrita a mano: «password: hunter2», «la contraseña es Xy7#…») o
+    /// `token` (cadena larga que parece aleatoria).
     #[serde(rename = "type")]
     pub tipo: &'static str,
     pub inicio: usize,
@@ -87,6 +89,7 @@ pub fn hallazgos(texto: &str) -> Vec<Hallazgo> {
     codigo_sync(texto, &mut v);
     credenciales_url(texto, &mut v);
     webhook_slack(texto, &mut v);
+    contrasenas(texto, &mut v);
     palabras(texto, &mut v);
     v.sort_by(|a, b| a.inicio.cmp(&b.inicio).then(b.fin.cmp(&a.fin)));
     let mut r: Vec<Hallazgo> = Vec::with_capacity(v.len());
@@ -239,6 +242,211 @@ fn webhook_slack(t: &str, v: &mut Vec<Hallazgo>) {
     }
 }
 
+/// Palabras que nombran una contraseña, en minúsculas ASCII (la `Ñ` mayúscula no baja con
+/// `to_ascii_lowercase`, por eso va aparte), y si valen en prosa («la contraseña es …»). `pass` y
+/// `pwd` solo con `=` (`pass=…`, `PWD=…`): con `:` o en prosa son otra cosa («Tests pass: 45/45»).
+const NOMBRES_CONTRASENA: &[(&str, bool)] = &[
+    ("password", true),
+    ("passwd", true),
+    ("passphrase", true),
+    ("contraseña", true),
+    ("contraseÑa", true),
+    ("contrasena", true),
+    ("pass", false),
+    ("pwd", false),
+];
+
+/// Lo que puede ir entre la palabra y el verbo en prosa («la contraseña del wifi es …», «the password
+/// for root is …»): solo si la primera palabra es una de estas, y hasta 5 palabras.
+const ENLACES_CONTRASENA: &[&str] = &["de", "del", "of", "for", "para"];
+/// El verbo de la prosa: «la contraseña es …», «the password is …».
+const VERBOS_CONTRASENA: &[&str] = &["es", "is", "era", "was"];
+
+/// Letra o cifra, contando como letra cualquier byte de un carácter no ASCII («ñ», «é»).
+fn es_letra_o_cifra(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c >= 0x80
+}
+
+/// Contraseñas escritas a mano: una palabra que la nombra seguida de `:` o `=` (`password: hunter2`,
+/// `DB_PASSWORD=Xy7#k2`, `"password": "…"`, `pass=…`) o, en prosa, de «es»/«is» («la contraseña es
+/// Xy7#k2», «the wifi password is hunter2», «la contraseña del router es …»). Se redacta solo el
+/// valor. Para no tomar por contraseña la prosa normal («la contraseña se guarda en el llavero»,
+/// «password reset flow», «the password is required») el valor tiene que parecerlo: ver
+/// `parece_contrasena`.
+fn contrasenas(t: &str, v: &mut Vec<Hallazgo>) {
+    let l = t.to_ascii_lowercase(); // los mismos bytes en las mismas posiciones
+    let b = l.as_bytes();
+    for &(nombre, en_prosa) in NOMBRES_CONTRASENA {
+        let mut i = 0;
+        while let Some(k) = l[i..].find(nombre) {
+            let a = i + k;
+            let mut j = a + nombre.len();
+            i = j;
+            // Palabra entera por detrás («passwords», «passing», «contraseñas», `password_hash`, `--password-stdin` no).
+            // Por delante, entera o tras `_` (`DB_PASSWORD`); `password` y `passwd` también pegadas a
+            // otra palabra (`PGPASSWORD=`), pero entonces solo con `=` o `:`.
+            if j < b.len() && (es_letra_o_cifra(b[j]) || matches!(b[j], b'_' | b'-')) {
+                continue;
+            }
+            let pegada = a > 0 && es_letra_o_cifra(b[a - 1]);
+            if pegada && !matches!(nombre, "password" | "passwd") {
+                continue;
+            }
+            // `--password` de una orden: con `=` o con el valor detrás (`--password Xy7#k2`); tras un
+            // solo guion es otra cosa (`no-password`).
+            let opcion = a >= 2 && &l[a - 2..a] == "--";
+            if a > 0 && b[a - 1] == b'-' && !opcion {
+                continue;
+            }
+            if opcion && b.get(j) == Some(&b' ') {
+                let ini = fin_tira(b, j, |c| c == b' ');
+                if let Some((ini, fin)) = valor_de_contrasena(t, ini)
+                    && parece_contrasena(&t[ini..fin], false)
+                {
+                    v.push(hallazgo("password", ini, fin));
+                    i = fin;
+                }
+                continue;
+            }
+            // La comilla que cierra una clave (`"password": …`) y espacios.
+            if j < b.len() && matches!(b[j], b'"' | b'\'') {
+                j += 1;
+            }
+            while j < b.len() && matches!(b[j], b' ' | b'\t') {
+                j += 1;
+            }
+            let prosa = match b.get(j) {
+                Some(b':') if !matches!(nombre, "pass" | "pwd") => {
+                    match b.get(j + 1) {
+                        Some(b':') => continue, // `Password::new`
+                        Some(b'=') => j += 1,   // `:=`
+                        _ => {}
+                    }
+                    j += 1;
+                    false
+                }
+                Some(b'=') => {
+                    if b.get(j + 1) == Some(&b'=') || matches!(b[j - 1], b'!' | b'<' | b'>') {
+                        continue; // una comparación
+                    }
+                    if b.get(j + 1) == Some(&b'>') {
+                        j += 1; // `"password" => "…"`
+                    }
+                    j += 1;
+                    false
+                }
+                _ if en_prosa && !pegada => {
+                    let Some(fin_verbo) = verbo_de_contrasena(&l, j) else { continue };
+                    j = fin_verbo;
+                    if b.get(j) == Some(&b':') {
+                        j += 1;
+                    }
+                    true
+                }
+                _ => continue,
+            };
+            while j < b.len() && matches!(b[j], b' ' | b'\t') {
+                j += 1;
+            }
+            if let Some((ini, fin)) = valor_de_contrasena(t, j)
+                && parece_contrasena(&t[ini..fin], prosa)
+            {
+                v.push(hallazgo("password", ini, fin));
+                i = fin;
+            }
+        }
+    }
+}
+
+/// Desde `j` (tras la palabra y sus espacios), dónde acaba «es»/«is», saltando antes un «del wifi» o
+/// un «for root» (hasta 5 palabras, la primera de `ENLACES_CONTRASENA`: «de la base de datos»). `l` va en minúsculas.
+fn verbo_de_contrasena(l: &str, mut j: usize) -> Option<usize> {
+    let b = l.as_bytes();
+    let mut enlazado = false;
+    for _ in 0..=5 {
+        let f = fin_tira(b, j, |c| es_letra_o_cifra(c) || c == b'_' || c == b'-');
+        let w = &l[j..f];
+        if w.is_empty() {
+            return None;
+        }
+        if VERBOS_CONTRASENA.contains(&w) && b.get(f).is_none_or(|c| matches!(c, b' ' | b'\t' | b':')) {
+            return Some(f);
+        }
+        if !enlazado && !ENLACES_CONTRASENA.contains(&w) {
+            return None;
+        }
+        enlazado = true;
+        if b.get(f) != Some(&b' ') {
+            return None;
+        }
+        j = f + 1;
+    }
+    None
+}
+
+/// El valor que empieza en `j`: entre comillas (en la misma línea), o hasta el primer espacio y sin
+/// el signo que cierra la frase («… es hunter2.»).
+fn valor_de_contrasena(t: &str, j: usize) -> Option<(usize, usize)> {
+    let b = t.as_bytes();
+    let c = *b.get(j)?;
+    if matches!(c, b'"' | b'\'' | b'`') {
+        let fin = t[j + 1..].find([c as char, '\n']).map(|x| j + 1 + x)?;
+        return (b[fin] == c).then_some((j + 1, fin));
+    }
+    if t[j..].starts_with('«') {
+        let ini = j + '«'.len_utf8();
+        let fin = t[ini..].find(['»', '\n']).map(|x| ini + x)?;
+        return t[fin..].starts_with('»').then_some((ini, fin));
+    }
+    let mut fin = t[j..].find(char::is_whitespace).map_or(t.len(), |x| j + x);
+    if t[j..fin].ends_with('»') {
+        fin -= '»'.len_utf8();
+    }
+    while fin > j && matches!(b[fin - 1], b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'"' | b'\'') {
+        fin -= 1;
+    }
+    (fin > j).then_some((j, fin))
+}
+
+/// Si lo que sigue a «password:» o a «la contraseña es» parece una contraseña, y no una palabra de la
+/// frase, un hueco por rellenar o código: de 4 a 128 bytes, con alguna cifra o algún signo (una
+/// palabra suelta como «required» o «segura» no entra; se pierde «swordfish», a cambio de no dar
+/// falsos positivos), y sin ser `$VAR`, `%VAR%`, `<la tuya>`, `${{ secrets.X }}`, `****`, una ruta,
+/// `os.environ["X"]`, `getpass()` ni `config.db_password`. En prosa, además, sin acabar en una
+/// palabra compuesta («SHA256-hashed», «bcrypt-based»).
+fn parece_contrasena(w: &str, prosa: bool) -> bool {
+    let b = w.as_bytes();
+    if b.len() < 4 || b.len() > 128 || w.contains('\n') {
+        return false;
+    }
+    if matches!(b[0], b'$' | b'%' | b'<' | b'{' | b'[' | b'(' | b'*' | b'/' | b'~' | b'.' | b'#' | b'-' | b'\\') || w.starts_with('•') || w.starts_with('…') {
+        return false;
+    }
+    if w.contains("${") || w.contains("{{") || w.contains('(') || w.contains("[\"") || w.contains("['") {
+        return false;
+    }
+    if b.iter().all(|&c| c == b[0]) {
+        return false;
+    }
+    // `config.db_password`, `settings.PASSWORD`: un nombre con puntos, sin cifras.
+    if w.contains('.') && b.iter().all(|&c| c.is_ascii_alphabetic() || c == b'_' || c == b'.') {
+        return false;
+    }
+    let cifra = b.iter().any(u8::is_ascii_digit);
+    let signo = b.iter().any(|&c| c.is_ascii_punctuation() && !matches!(c, b'_' | b'-' | b'.' | b'\'' | b'"' | b','));
+    if !cifra && !signo {
+        return false;
+    }
+    if prosa
+        && let Some((_, cola)) = w.rsplit_once('-')
+        && cola.len() >= 4
+        && cola.bytes().all(|c| c.is_ascii_lowercase())
+    {
+        return false;
+    }
+    true
+}
+
 fn es_de_palabra(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
 }
@@ -317,6 +525,13 @@ fn palabras(t: &str, v: &mut Vec<Hallazgo>) {
         // una clave: los ids de artifacts, vídeos o gists parecen aleatorios y se enseñan a propósito. Lo
         // que sí es secreto en una ruta tiene forma conocida (el webhook de Slack, aparte).
         if i > 0 && matches!(b[i - 1], b'/' | b'\\') {
+            i = fin;
+            continue;
+        }
+        // Los ids de miembro de LinkedIn (`ACoAA…`, y `ACwAA…` en Sales Navigator) parecen aleatorios pero
+        // son el id público de un perfil: salen en sus URLs (`/in/ACoAA…`, `?rcm=ACoAA…`, el parámetro
+        // con el que LinkedIn marca de quién viene una recomendación). Lo mismo el valor de cualquier `rcm=`.
+        if palabra.starts_with("ACoAA") || palabra.starts_with("ACwAA") || t[..i].ends_with("rcm=") {
             i = fin;
             continue;
         }

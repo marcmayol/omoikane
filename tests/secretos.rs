@@ -462,3 +462,83 @@ fn apagado_revisar_doctor_y_redactar() {
     let doctor = String::from_utf8(e.omoi(&["doctor"], None, &[]).stdout).unwrap();
     assert!(doctor.contains("no memory looks like it holds one"), "{doctor}");
 }
+
+/// 1.8.6: contraseñas escritas a mano, en español y en inglés. Se redacta el valor, no la palabra.
+#[test]
+fn contrasenas_escritas_a_mano() {
+    for (t, esperado) in [
+        ("password: hunter2", "password: [redacted:password]"),
+        ("Password=hunter2", "Password=[redacted:password]"),
+        ("pass=Xy7#k2mQ en la VPN", "pass=[redacted:password] en la VPN"),
+        ("PWD=s3cr3t#9", "PWD=[redacted:password]"),
+        ("export DB_PASSWORD=Xy7#k2mQ", "export DB_PASSWORD=[redacted:password]"),
+        ("PGPASSWORD=hunter2 psql -h db", "PGPASSWORD=[redacted:password] psql -h db"),
+        ("{\"user\": \"marc\", \"password\": \"hunter2\"}", "{\"user\": \"marc\", \"password\": \"[redacted:password]\"}"),
+        ("passwd := 'Xy7#k2'", "passwd := '[redacted:password]'"),
+        ("la contraseña es Xy7#k2mQ", "la contraseña es [redacted:password]"),
+        ("La Contraseña es: Xy7#k2mQ.", "La Contraseña es: [redacted:password]."),
+        ("LA CONTRASEÑA ES Xy7#k2mQ", "LA CONTRASEÑA ES [redacted:password]"),
+        ("la contraseña del wifi es Pollo2024#, no la cambies", "la contraseña del wifi es [redacted:password], no la cambies"),
+        ("la contraseña de la base de datos es «Xy7#k2 mQ»", "la contraseña de la base de datos es «[redacted:password]»"),
+        ("the password is hunter2", "the password is [redacted:password]"),
+        ("The wifi password is \"correct horse 9\"", "The wifi password is \"[redacted:password]\""),
+        ("the password for root was Xy7#k2mQ", "the password for root was [redacted:password]"),
+        ("mysql -u root --password Xy7#k2mQ", "mysql -u root --password [redacted:password]"),
+        ("mysql -u root --password=Xy7#k2mQ", "mysql -u root --password=[redacted:password]"),
+    ] {
+        assert_eq!(redactar(t).0, esperado, "{t}");
+        assert_eq!(tipos_de(t), vec!["password"], "{t}");
+        assert_eq!(redactar(esperado).0, esperado, "volver a pasarlo cambia «{esperado}»");
+    }
+}
+
+/// Prosa normal y código que hablan de contraseñas sin dar ninguna.
+#[test]
+fn contrasenas_sin_falsos_positivos() {
+    for t in [
+        "la contraseña se guarda en el llavero",
+        "la contraseña es segura y la guarda Bitwarden",
+        "la contraseña es la del router",
+        "la contraseña de 12 caracteres se pide al entrar",
+        "la contraseña es de 16 caracteres como mínimo",
+        "contraseñas: en el gestor, nunca en el repo",
+        "password reset flow",
+        "the password is required",
+        "the password is 8 chars long",
+        "the password is SHA256-hashed before saving",
+        "Password: see the vault",
+        "password: <your password>",
+        "PASSWORD: ********",
+        "password: ${{ secrets.DB_PASSWORD }}",
+        "password=$DB_PASSWORD",
+        "set PGPASSWORD=%DB_PASS%",
+        "password = os.environ[\"DB_PASSWORD\"]",
+        "password = getpass()",
+        "password=config.db_password",
+        "if password == \"x1\": return",
+        "password_hash = bcrypt(pw)",
+        "docker login --password-stdin < token.txt",
+        "passwordless login with passkeys",
+        "Tests pass: 45/45",
+        "compass=N12 bypass=1",
+        "let p = Password::new(\"x\");",
+        "--no-password",
+        "cd ~ && pwd",
+        "password: [redacted:password]",
+    ] {
+        limpio(t);
+    }
+}
+
+/// 1.8.6: el `rcm=` de las URLs de LinkedIn (el id público de un perfil) no es un secreto.
+#[test]
+fn linkedin_rcm_no_es_secreto() {
+    limpio("https://www.linkedin.com/feed/update/urn:li:activity:7390000000000000000/?rcm=ACoAAD1xYz2AbCdEf3GhIjK4LmNoPq5RsTuVw6Xy");
+    limpio("https://www.linkedin.com/in/ACoAAD1xYz2AbCdEf3GhIjK4LmNoPq5RsTuVw6Xy");
+    limpio("perfil ACoAAD1xYz2AbCdEf3GhIjK4LmNoPq5RsTuVw6Xy en Sales Navigator: ACwAAD1xYz2AbCdEf3GhIjK4LmNoPq5RsTuVw6Xy");
+    // Lo demás de esa URL se sigue mirando: un token de verdad en otro parámetro se redacta.
+    assert_eq!(
+        tipos_de("https://www.linkedin.com/feed/?rcm=ACoAAD1xYz2AbCdEf3GhIjK4LmNoPq5RsTuVw6Xy&access_token=q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0"),
+        vec!["token"]
+    );
+}

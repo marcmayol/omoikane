@@ -273,22 +273,6 @@ const AVISO_LICENCIA: &str = "EmbeddingGemma 300M (google/embeddinggemma-300m), 
 Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n\
 Its use is restricted by the Gemma Prohibited Use Policy: ai.google.dev/gemma/prohibited_use_policy\n";
 
-fn suma(f: &std::path::Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut h = Sha256::new();
-    let mut r = std::fs::File::open(f)?;
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = r.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
-}
-
 /// Instala EmbeddingGemma en `~/.omoikane/models/embeddinggemma-300m`. Sin `desde`, descarga el
 /// formato compacto (unos 450 MB) y comprueba su SHA-256; con `desde`, lo toma de una carpeta, en
 /// formato compacto o de sentence-transformers (que convierte). Si ya está instalado, no hace nada.
@@ -324,15 +308,8 @@ pub fn instalar(desde: Option<&std::path::Path>, aviso: &mut dyn FnMut(&str)) ->
                 };
                 let mut fallos = Vec::new();
                 for o in origenes {
-                    let r = crate::modelos::descargar_ficheros(&o, &gemma::FICHEROS_COMPACTO, &temporal, aviso).and_then(|()| {
-                        for (f, esperada) in SUMAS {
-                            let s = suma(&temporal.join(f))?;
-                            if s != esperada {
-                                bail!(tr!("{f}: wrong SHA-256 ({s})", "{f}: SHA-256 equivocado ({s})"));
-                            }
-                        }
-                        Ok(())
-                    });
+                    let r = crate::modelos::descargar_ficheros(&o, &gemma::FICHEROS_COMPACTO, &temporal, aviso)
+                        .and_then(|()| crate::modelos::comprobar_sumas(&temporal, &SUMAS));
                     match r {
                         Ok(()) => {
                             fallos.clear();

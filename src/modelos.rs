@@ -11,6 +11,7 @@ use crate::tr;
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const NOMBRE: &str = "potion-multilingual-128M-int8";
 /// De dónde se descarga la versión int8 de potion-multilingual-128M (The Minish Lab), en orden:
@@ -22,6 +23,14 @@ pub const ORIGENES: [&str; 2] = [
     "https://github.com/marcmayol/omoikane/releases/download/modelo-potion-int8-v1",
 ];
 const FICHEROS: [&str; 3] = ["model.safetensors", "tokenizer.json", "config.json"];
+/// SHA-256 de cada fichero publicado del modelo ligero: lo que se descarga tiene que ser exactamente
+/// esto, venga del espejo que venga (como `significado::SUMAS`). Comprobados el 8-nov-2026 bajando los
+/// de Hugging Face, contra los `lfs.oid` de su API y los `digest` de la Release de GitHub.
+const SUMAS: [(&str, &str); 3] = [
+    ("model.safetensors", "8cadee28bbc4c52ec36c33af1e6ee8ffcb0e40beb195d29d1b8304d74872df96"),
+    ("tokenizer.json", "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1"),
+    ("config.json", "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54"),
+];
 const ACTUAL: &str = "actual";
 
 /// `OMOIKANE_MODELS`, o `models` en la carpeta de Omoikane (`OMOIKANE_HOME` o `~/.omoikane`).
@@ -93,37 +102,130 @@ fn descargar(destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
 ")))
 }
 
-/// `aviso` recibe una línea por fichero.
+/// `aviso` recibe una línea por fichero. Lo bajado tiene que cuadrar con `SUMAS`.
 fn descargar_de(origen: &str, destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
-    descargar_ficheros(origen, &FICHEROS, destino, aviso)
+    descargar_ficheros(origen, &FICHEROS, destino, aviso)?;
+    comprobar_sumas(destino, &SUMAS)
+}
+
+/// Que cada fichero de `destino` tenga su SHA-256. Si uno no cuadra se borran todos: lo que venga del
+/// espejo siguiente no se mezcla con esto.
+pub(crate) fn comprobar_sumas(destino: &Path, sumas: &[(&str, &str)]) -> Result<()> {
+    for (f, esperada) in sumas {
+        let s = suma(&destino.join(f))?;
+        if s != *esperada {
+            for (f, _) in sumas {
+                let _ = std::fs::remove_file(destino.join(f));
+            }
+            bail!(tr!("{f}: wrong SHA-256 ({s})", "{f}: SHA-256 equivocado ({s})"));
+        }
+    }
+    Ok(())
+}
+
+/// El SHA-256 de un fichero, en hexadecimal.
+pub(crate) fn suma(f: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut r = std::fs::File::open(f).with_context(|| f.display().to_string())?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// El cliente HTTP de todas las descargas (el modelo, las actualizaciones): con los certificados raíz
 /// del sistema, y no solo los de Mozilla que trae ureq. En la red de una empresa que inspecciona el
 /// HTTPS, su certificado raíz está en el almacén del sistema (por eso Git y PowerShell conectan) y no
 /// en la lista de Mozilla. Las actualizaciones se siguen comprobando por su firma Ed25519.
-fn cliente() -> ureq::Agent {
-    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
-    ureq::Agent::config_builder().tls_config(tls).build().new_agent()
+fn cliente(sistema: bool, t: Tiempos) -> ureq::Agent {
+    let mut c = ureq::Agent::config_builder()
+        .timeout_resolve(Some(t.conexion))
+        .timeout_connect(Some(t.conexion))
+        .timeout_send_request(Some(t.respuesta))
+        .timeout_recv_response(Some(t.respuesta))
+        .timeout_recv_body(Some(t.cuerpo));
+    if sistema {
+        c = c.tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build());
+    }
+    c.build().new_agent()
 }
 
+/// Los tiempos máximos de una descarga. Sin ellos, una red que se queda a medias (un proxy que no
+/// contesta, una WiFi que se cae sin cerrar la conexión) dejaba `omoi model install` o la
+/// actualización en segundo plano esperando para siempre.
+#[derive(Clone, Copy, Debug)]
+pub struct Tiempos {
+    /// Para conectar: DNS, TCP y TLS, cada uno.
+    pub conexion: Duration,
+    /// Para mandar la petición y que llegue la cabecera de la respuesta.
+    pub respuesta: Duration,
+    /// Para el cuerpo entero (ureq lo cuenta de principio a fin, no por lectura).
+    pub cuerpo: Duration,
+}
+
+/// Los de los modelos: el cuerpo, de sobra para una conexión lenta (los 130 MB del modelo ligero a
+/// 100 KB/s son 22 minutos; el de significado, unos 450 MB, va fichero a fichero), y aun así un
+/// cuelgue acaba como error.
+pub(crate) const TIEMPOS_MODELO: Tiempos = Tiempos { conexion: Duration::from_secs(30), respuesta: Duration::from_secs(60), cuerpo: Duration::from_secs(60 * 60) };
+/// Los de las actualizaciones (el binario, `SHA256SUMS`, la última versión).
+pub(crate) const TIEMPOS_PEQUENO: Tiempos = Tiempos { cuerpo: Duration::from_secs(10 * 60), ..TIEMPOS_MODELO };
+
 /// GET con los certificados del sistema y, si falla sin que el servidor llegue a responder, otra vez
-/// con la lista de Mozilla: un Linux mínimo sin `ca-certificates` no tiene almacén del sistema.
-pub fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+/// con la lista de Mozilla: un Linux mínimo sin `ca-certificates` no tiene almacén del sistema. Un
+/// tiempo agotado no se reintenta (sería esperar otro tanto): da su error.
+pub fn get(url: &str, t: Tiempos) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
     let ua = format!("omoi/{}", env!("CARGO_PKG_VERSION"));
-    match cliente().get(url).header("User-Agent", &ua).call() {
-        Err(e) if !matches!(e, ureq::Error::StatusCode(_)) => ureq::get(url).header("User-Agent", &ua).call(),
+    match cliente(true, t).get(url).header("User-Agent", &ua).call() {
+        Err(e) if !matches!(e, ureq::Error::StatusCode(_)) && !es_tiempo_agotado(&e) => cliente(false, t).get(url).header("User-Agent", &ua).call(),
         r => r,
     }
 }
 
-/// Descarga `ficheros` de `origen` a `destino` (cada uno a `.part` y renombrado al llegar entero).
+/// Si un error de E/S de una descarga es un tiempo agotado (ureq lo envuelve en `io::Error`).
+pub(crate) fn es_cuelgue(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::TimedOut || e.get_ref().and_then(|x| x.downcast_ref::<ureq::Error>()).is_some_and(|x| matches!(x, ureq::Error::Timeout(_)))
+}
+
+/// Lo mismo con un error de ureq.
+pub(crate) fn es_tiempo_agotado(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Timeout(_) => true,
+        ureq::Error::Io(io) => es_cuelgue(io),
+        _ => false,
+    }
+}
+
+/// El error de `get`, claro si fue un tiempo agotado.
+pub(crate) fn error_de_get(e: ureq::Error, url: &str) -> anyhow::Error {
+    let host = url.split('/').nth(2).unwrap_or(url);
+    match e {
+        e if es_tiempo_agotado(&e) => anyhow::anyhow!(tr!(
+            "{host} didn't answer in time ({e}): check the network or the proxy and try again",
+            "{host} no contestó a tiempo ({e}): mira la red o el proxy y vuelve a probar"
+        )),
+        e => anyhow::Error::new(e).context(tr!("can't download {url}", "no se puede descargar {url}")),
+    }
+}
+
+/// Descarga `ficheros` de `origen` a `destino` (cada uno a `.part` y renombrado al llegar entero; si
+/// falla o se cuelga, el `.part` se borra y no queda nada a medias con el nombre bueno).
 pub(crate) fn descargar_ficheros(origen: &str, ficheros: &[&str], destino: &Path, aviso: &mut dyn FnMut(&str)) -> Result<()> {
+    descargar_ficheros_con(origen, ficheros, destino, aviso, TIEMPOS_MODELO)
+}
+
+/// `descargar_ficheros` con otros tiempos máximos (para las pruebas).
+fn descargar_ficheros_con(origen: &str, ficheros: &[&str], destino: &Path, aviso: &mut dyn FnMut(&str), tiempos: Tiempos) -> Result<()> {
     std::fs::create_dir_all(destino)?;
     let host = origen.split('/').nth(2).unwrap_or(origen);
     for &f in ficheros {
         let url = format!("{origen}/{f}");
-        let resp = get(&url).with_context(|| tr!("can't download {url}", "no se puede descargar {url}"))?;
+        let resp = get(&url, tiempos).map_err(|e| error_de_get(e, &url))?;
         let total: Option<u64> =
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
         aviso(&match total {
@@ -131,16 +233,32 @@ pub(crate) fn descargar_ficheros(origen: &str, ficheros: &[&str], destino: &Path
             None => tr!("downloading {f} from {host}", "descargando {f} de {host}"),
         });
         let parte = destino.join(format!("{f}.part"));
-        let mut salida = std::fs::File::create(&parte)?;
-        let copiados = std::io::copy(&mut resp.into_body().into_reader(), &mut salida)?;
-        salida.flush()?;
-        drop(salida);
-        if let Some(t) = total
-            && copiados != t
-        {
-            bail!(tr!("{f} arrived incomplete ({copiados} of {t} bytes)", "{f} llegó incompleto ({copiados} de {t} bytes)"));
+        let r = (|| -> Result<()> {
+            let mut salida = std::fs::File::create(&parte)?;
+            let copiados = std::io::copy(&mut resp.into_body().into_reader(), &mut salida).map_err(|e| {
+                if es_cuelgue(&e) {
+                    anyhow::anyhow!(tr!(
+                        "the download of {f} from {host} stalled or took too long ({e}); nothing was left half-written",
+                        "la descarga de {f} de {host} se colgó o tardó demasiado ({e}); no queda nada a medias"
+                    ))
+                } else {
+                    anyhow::Error::new(e).context(tr!("the download of {f} was cut", "la descarga de {f} se cortó"))
+                }
+            })?;
+            salida.flush()?;
+            drop(salida);
+            if let Some(t) = total
+                && copiados != t
+            {
+                bail!(tr!("{f} arrived incomplete ({copiados} of {t} bytes)", "{f} llegó incompleto ({copiados} de {t} bytes)"));
+            }
+            std::fs::rename(&parte, destino.join(f))?;
+            Ok(())
+        })();
+        if r.is_err() {
+            let _ = std::fs::remove_file(&parte);
         }
-        std::fs::rename(&parte, destino.join(f))?;
+        r?;
     }
     Ok(())
 }
@@ -220,4 +338,96 @@ pub fn limpiar() -> Vec<String> {
         }
     }
     borrados
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// Lo que contesta el servidor de prueba en una conexión.
+    type Respuesta = Box<dyn FnOnce(&mut std::net::TcpStream) + Send>;
+
+    /// Un servidor HTTP en 127.0.0.1 que atiende una conexión por cada función de `respuestas`, contesta
+    /// lo que esa función escriba y luego se queda callado. Devuelve la URL base.
+    fn servidor(respuestas: Vec<Respuesta>) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for responder in respuestas {
+                let Ok((mut s, _)) = l.accept() else { return };
+                // La petición entera (sin cuerpo) antes de contestar.
+                let mut leido = Vec::new();
+                let mut b = [0u8; 1024];
+                while !leido.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match std::io::Read::read(&mut s, &mut b) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => leido.extend_from_slice(&b[..n]),
+                    }
+                }
+                responder(&mut s);
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        });
+        base
+    }
+
+    fn rapidos() -> Tiempos {
+        Tiempos { conexion: Duration::from_secs(2), respuesta: Duration::from_millis(800), cuerpo: Duration::from_millis(800) }
+    }
+
+    fn carpeta_de_prueba(nombre: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("omoi-modelos-{nombre}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn un_cuerpo_colgado_da_error_y_no_deja_nada() {
+        // Dice 1000 bytes, manda 10 y se calla.
+        let base = servidor(vec![Box::new(|s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789");
+            let _ = s.flush();
+        })]);
+        let d = carpeta_de_prueba("cuerpo");
+        let inicio = std::time::Instant::now();
+        let e = descargar_ficheros_con(&base, &["config.json"], &d, &mut |_| {}, rapidos()).unwrap_err();
+        assert!(inicio.elapsed() < Duration::from_secs(4), "tardó {:?}", inicio.elapsed());
+        let e = format!("{e:#}");
+        assert!(e.contains("config.json") && (e.contains("stalled") || e.contains("colgó")), "{e}");
+        assert!(!d.join("config.json").exists() && !d.join("config.json.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn un_servidor_que_no_contesta_da_error_claro() {
+        // Acepta la conexión y no contesta nunca.
+        let base = servidor(vec![Box::new(|_| {})]);
+        let d = carpeta_de_prueba("respuesta");
+        let inicio = std::time::Instant::now();
+        let e = descargar_ficheros_con(&base, &["config.json"], &d, &mut |_| {}, rapidos()).unwrap_err();
+        assert!(inicio.elapsed() < Duration::from_secs(4), "tardó {:?}", inicio.elapsed());
+        let e = format!("{e:#}");
+        assert!(e.contains("127.0.0.1") && (e.contains("in time") || e.contains("a tiempo")), "{e}");
+        assert!(!d.join("config.json").exists() && !d.join("config.json.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sumas_del_modelo_ligero() {
+        let d = carpeta_de_prueba("sumas");
+        std::fs::create_dir_all(&d).unwrap();
+        for (f, _) in SUMAS {
+            std::fs::write(d.join(f), b"no es el modelo").unwrap();
+        }
+        let e = format!("{:#}", comprobar_sumas(&d, &SUMAS).unwrap_err());
+        assert!(e.contains("SHA-256"), "{e}");
+        // No queda nada de lo que no cuadró.
+        assert!(SUMAS.iter().all(|(f, _)| !d.join(f).exists()));
+        // Y lo que cuadra pasa: `abc` tiene un SHA-256 conocido.
+        std::fs::write(d.join("abc"), b"abc").unwrap();
+        comprobar_sumas(&d, &[("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")]).unwrap();
+        assert!(SUMAS.iter().all(|(f, s)| FICHEROS.contains(f) && s.len() == 64));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

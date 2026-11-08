@@ -43,13 +43,36 @@ const SOLO_MIRAN: &[&str] = &["git status", "git log", "git diff", "git show", "
 /// es el subcomando.
 const CON_VALOR: &[&str] = &["-C", "-R", "--repo", "--prefix", "--manifest-path", "--cwd", "--dir", "-f", "--file"];
 /// Lo que va delante del programa de verdad: intérpretes y envoltorios.
-const DELANTE: &[&str] = &["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "sudo", "env", "time", "nohup", "exec", "call"];
-/// Verbos de los cmdlets de PowerShell (`Select-Object`, `Where-Object`…): no son un programa.
+const DELANTE: &[&str] = &["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "sudo", "doas", "runuser", "env", "time", "nohup", "exec", "call"];
+/// Los verbos aprobados de PowerShell (`Get-Verb`): `Verbo-Nombre` es un cmdlet, una orden como
+/// cualquier otra y no un nombre suelto. Los de Linux con la misma forma (`update-grub`, `start-stop-daemon`)
+/// van en minúsculas; un cmdlet se reconoce por la mayúscula (`Remove-Item`) o, todo en minúsculas
+/// (`get-childitem`, que PowerShell también acepta), si su verbo está en `VERBOS_CMDLET_MINUSCULAS`.
 const VERBOS_POWERSHELL: &[&str] = &[
-    "get", "set", "select", "where", "foreach", "out", "format", "measure", "sort", "test", "new", "remove", "copy", "move", "write", "start", "stop",
-    "invoke", "convertto", "convertfrom", "add", "clear", "join", "split", "resolve", "group", "compare", "import", "export", "rename", "push", "pop",
-    "wait", "read", "tee", "expand", "compress", "register", "unregister", "enable", "disable",
+    "add", "approve", "assert", "backup", "block", "build", "checkpoint", "clear", "close", "compare", "complete", "compress", "confirm", "connect",
+    "convert", "convertfrom", "convertto", "copy", "debug", "deny", "deploy", "disable", "disconnect", "dismount", "edit", "enable", "enter", "exit",
+    "expand", "export", "find", "foreach", "format", "get", "grant", "group", "hide", "import", "initialize", "install", "invoke", "join", "limit",
+    "lock", "measure", "merge", "mount", "move", "new", "open", "optimize", "out", "ping", "pop", "protect", "publish", "push", "read", "receive",
+    "redo", "register", "remove", "rename", "repair", "request", "reset", "resize", "resolve", "restart", "restore", "resume", "revoke", "save",
+    "search", "select", "send", "set", "show", "skip", "sort", "split", "start", "step", "stop", "submit", "suspend", "switch", "sync", "tee", "test",
+    "trace", "unblock", "undo", "uninstall", "unlock", "unprotect", "unpublish", "unregister", "update", "use", "wait", "watch", "where", "write",
 ];
+/// Los verbos que valen como cmdlet aunque vayan en minúsculas: los de siempre, que ningún programa de
+/// Linux usa como prefijo.
+const VERBOS_CMDLET_MINUSCULAS: &[&str] = &[
+    "get", "set", "select", "where", "foreach", "out", "format", "measure", "sort", "test", "new", "remove", "copy", "move", "write", "invoke",
+    "convertto", "convertfrom", "import", "export", "rename", "wait", "expand", "compress", "register", "unregister", "enable", "disable",
+    "restart", "resolve", "publish", "uninstall", "unblock",
+];
+/// Cmdlets que solo miran, mueven ficheros o dan forma a la salida (el `ls`, `cat`, `rm`, `curl`…
+/// de PowerShell), por su verbo: no dicen nada de un procedimiento.
+const VERBOS_CMDLET_TRIVIALES: &[&str] = &[
+    "get", "select", "where", "foreach", "out", "format", "measure", "sort", "test", "write", "read", "tee", "group", "compare", "join", "split",
+    "resolve", "convertto", "convertfrom", "convert", "wait", "clear", "show", "hide", "new", "remove", "copy", "move", "rename", "set", "add", "push",
+    "pop", "find", "search", "trace", "debug", "enter", "exit", "skip", "step", "limit", "use", "open", "close",
+];
+/// Y los que lo son aunque su verbo actúe.
+const CMDLETS_TRIVIALES: &[&str] = &["invoke-webrequest", "invoke-restmethod", "invoke-expression", "invoke-item", "start-process", "start-sleep", "stop-process"];
 
 /// Las órdenes de una línea de shell: corta por `&&`, `||`, `;`, `|`, saltos de línea, `$(` y comillas
 /// invertidas fuera de las comillas. Lo entrecomillado queda como una sola palabra marcada con `\u{1}`
@@ -103,9 +126,25 @@ fn programa(t: &str) -> Option<String> {
     valido.then_some(p)
 }
 
-fn es_cmdlet(p: &str) -> bool {
-    p.split_once('-').is_some_and(|(verbo, nombre)| !nombre.is_empty() && VERBOS_POWERSHELL.contains(&verbo))
+/// Si `t` (tal cual se escribió) es un cmdlet de PowerShell (`Remove-Item`, `Invoke-Pester`,
+/// `get-childitem`): su verbo, en minúsculas.
+fn verbo_de_cmdlet(t: &str) -> Option<String> {
+    let t = t.strip_prefix('\u{1}').unwrap_or(t);
+    let t = t.rsplit(['/', '\\']).next().unwrap_or(t);
+    let (verbo, nombre) = t.split_once('-')?;
+    if nombre.is_empty() || !nombre.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let v = verbo.to_ascii_lowercase();
+    let con_mayuscula = t.starts_with(|c: char| c.is_ascii_uppercase()) || nombre.starts_with(|c: char| c.is_ascii_uppercase());
+    (VERBOS_POWERSHELL.contains(&v.as_str()) && (con_mayuscula || VERBOS_CMDLET_MINUSCULAS.contains(&v.as_str()))).then_some(v)
 }
+
+/// Opciones de `sudo` (y `doas`, `runuser`) que llevan un valor: `sudo -u postgres psql` es `psql`,
+/// no `postgres`.
+const CON_VALOR_SUDO: &[&str] = &["-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user", "--chdir", "--host", "--prompt", "--role", "--type", "--close-from", "--command-timeout"];
+/// Y de `env`: `env -u VAR -C carpeta cargo test`.
+const CON_VALOR_ENV: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"];
 
 /// Los pasos de una orden: el programa y su subcomando (`cargo build --release && git tag -a v1` →
 /// `cargo build`, `git tag`), sin lo trivial ni lo que solo mira.
@@ -130,6 +169,14 @@ pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
                 saltar = true;
                 continue;
             }
+            // Las opciones con valor del envoltorio que va justo antes (`sudo -u <usuario> <orden>`).
+            let envoltorio = ts.last().and_then(|p| programa(p));
+            if matches!(envoltorio.as_deref(), Some("sudo" | "doas" | "runuser")) && CON_VALOR_SUDO.contains(&t)
+                || envoltorio.as_deref() == Some("env") && CON_VALOR_ENV.contains(&t)
+            {
+                saltar = true;
+                continue;
+            }
             if t.starts_with('-') || t.contains('=') || t.contains('>') || t.contains('<') || (t.starts_with('/') && t.len() <= 3) {
                 continue;
             }
@@ -146,7 +193,15 @@ pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
             continue;
         }
         let Some(prog) = ts.first().and_then(|t| programa(t)) else { continue };
-        if TRIVIALES.contains(&prog.as_str()) || es_cmdlet(&prog) {
+        if TRIVIALES.contains(&prog.as_str()) {
+            continue;
+        }
+        // Un cmdlet es una orden entera: lo que lleva detrás son argumentos, no un subcomando
+        // (`Restart-Service omoikane` es `restart-service`). Fuera los que solo miran o mueven ficheros.
+        if let Some(verbo) = ts.first().and_then(|t| verbo_de_cmdlet(t)) {
+            if !VERBOS_CMDLET_TRIVIALES.contains(&verbo.as_str()) && !CMDLETS_TRIVIALES.contains(&prog.as_str()) {
+                r.push(prog);
+            }
             continue;
         }
         let sub = ts.get(1).filter(|s| !s.starts_with('\u{1}') && s.len() > 1 && s.chars().all(|c| c.is_ascii_lowercase() || c == '-')).copied().unwrap_or("");
@@ -317,5 +372,44 @@ mod tests {
         assert_eq!(pasos_de_orden("git commit -m \"say \\\" ; docker push x\""), ["git commit"]);
         assert_eq!(pasos_de_orden("x=`git rev-parse HEAD` && cargo build"), ["git rev-parse", "cargo build"]);
         assert_eq!(pasos_de_orden("GIT.EXE tag v1"), ["git tag"]);
+    }
+
+    /// 1.8.6: los cmdlets de PowerShell son órdenes (con su nombre entero, sin subcomando), y los que
+    /// solo miran o mueven ficheros se quitan como `ls` o `rm`.
+    #[test]
+    fn cmdlets_de_powershell() {
+        assert_eq!(pasos_de_orden("Invoke-Pester -Path tests; git push"), ["invoke-pester", "git push"]);
+        assert_eq!(pasos_de_orden("Restart-Service omoikane"), ["restart-service"]);
+        assert_eq!(pasos_de_orden("Install-Module PSReadLine -Scope CurrentUser"), ["install-module"]);
+        assert_eq!(pasos_de_orden("Publish-Module -Name Omoi -NuGetApiKey $k"), ["publish-module"]);
+        assert_eq!(pasos_de_orden("cargo build --release; Compress-Archive -Path target/release/omoi.exe -DestinationPath omoi.zip"), ["cargo build", "compress-archive"]);
+        assert_eq!(pasos_de_orden("Register-ScheduledTask -TaskName vigilante -Xml (Get-Content x.xml | Out-String)"), ["register-scheduledtask"]);
+        assert_eq!(pasos_de_orden("Update-Help"), ["update-help"]);
+        assert_eq!(pasos_de_orden(r"unblock-file .\omoi.exe"), ["unblock-file"]);
+        // Lo que solo mira, mueve ficheros o da forma a la salida, fuera.
+        assert!(pasos_de_orden("Get-ChildItem -Recurse src | Select-Object -First 5").is_empty());
+        assert!(pasos_de_orden(r"Remove-Item -Recurse -Force D:\tmp\x; Set-Location D:\x; New-Item -ItemType Directory y").is_empty());
+        assert!(pasos_de_orden("Invoke-WebRequest -Uri https://x -OutFile y; Start-Sleep 2; Start-Process notepad").is_empty());
+        assert!(pasos_de_orden("get-content a.txt | where-object { $_ -match 'x' }").is_empty());
+        assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
+        // Los de Linux con forma de cmdlet, en minúsculas, siguen siendo programas.
+        assert_eq!(pasos_de_orden("update-grub"), ["update-grub"]);
+        assert_eq!(pasos_de_orden("docker-compose up -d"), ["docker-compose up"]);
+        assert_eq!(pasos_de_orden("pre-commit run --all-files"), ["pre-commit run"]);
+    }
+
+    /// 1.8.6: `sudo -u <usuario> <orden>` es `<orden>`, no el usuario.
+    #[test]
+    fn sudo_con_usuario() {
+        assert_eq!(pasos_de_orden("sudo -u postgres psql -c 'select 1'"), ["psql"]);
+        assert_eq!(pasos_de_orden("sudo -u www-data git -C /srv/app pull"), ["git pull"]);
+        assert_eq!(pasos_de_orden("sudo -E -u marc docker compose up -d"), ["docker compose"]);
+        assert_eq!(pasos_de_orden("sudo --user=marc systemctl restart caddy"), ["systemctl restart"]);
+        assert_eq!(pasos_de_orden("sudo -g docker -u marc cargo build"), ["cargo build"]);
+        assert_eq!(pasos_de_orden("sudo systemctl restart caddy"), ["systemctl restart"]);
+        assert_eq!(pasos_de_orden("doas -u marc make install"), ["make install"]);
+        assert_eq!(pasos_de_orden("env -u RUST_LOG cargo test"), ["cargo test"]);
+        // `-u` de otra orden no se come nada: `git push -u origin main` sigue siendo `git push`.
+        assert_eq!(pasos_de_orden("git push -u origin main"), ["git push"]);
     }
 }
