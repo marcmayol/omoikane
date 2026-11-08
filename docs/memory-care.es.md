@@ -30,6 +30,12 @@ Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos 
 
 Hay memorias que dejan de valer un día que ya se sabe: un token que caduca, una oferta, un plan con fecha. Se guardan con la etiqueta `review:AAAA-MM-DD` (`omoi remember … --tag review:2026-11-25`, o en `tags` desde el MCP) y ese día la revisión las marca como *ha llegado su fecha*, en Revisar, en `search` y también en el recall (puede que ya no valgan). El aviso al empezar la sesión sale aunque sea una sola. Tocar la memoria o «está bien así» lo quita; una etiqueta que no es una fecha no se guarda.
 
+## El código ha cambiado debajo
+
+Una memoria que habla de unos ficheros (sus `paths` y los que nombra con su carpeta, como `src/sync.rs`) puede quedarse atrás cuando esos ficheros cambian mucho después de escribirla. La revisión la marca como *el código ha cambiado debajo* (`code_drift`) cuando ha cambiado al menos la mitad de las líneas de esos ficheros desde que se escribió o se revisó por última vez, según git (y al menos 20 líneas), o, con ficheros fuera de git, cuando se editaron en 5 sesiones distintas del [diario de sesiones](#diario-de-sesiones). Lo que cambia en las 6 primeras horas no cuenta: lo normal es guardar la memoria y después confirmar el trabajo del que habla. Solo propone revisarla y nunca la cambia. «Está bien así» (`omoi review --dismiss <id> --kind code_drift`) la da por revisada, y vuelve a salir solo si los ficheros cambian mucho otra vez. Un fichero que ya no existe es una ruta rota.
+
+Nunca corre en el recall de cada mensaje. Se calcula una vez al día en segundo plano (un `git log` por repositorio, solo con los ficheros modificados desde entonces), el resultado se guarda hasta que la memoria cambie y el aviso al empezar la sesión solo lee lo guardado.
+
 ## Historial y papelera
 
 Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas.

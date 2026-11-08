@@ -402,12 +402,15 @@ enum Orden {
         /// "It's fine as it is": stop warning about this memory (until it changes). Give its id.
         #[arg(long, value_name = "ID")]
         dismiss: Option<String>,
-        /// With --dismiss: which warning (outdated, stale_status, broken_path, unused, too_long, secret, due, review_date).
+        /// With --dismiss: which warning (outdated, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date).
         #[arg(long, requires = "dismiss")]
         kind: Option<String>,
         /// With --dismiss on an outdated warning: the id of the newer memory.
         #[arg(long, requires = "dismiss")]
         other: Option<String>,
+        /// Recompute in the background which memories' files changed a lot (Omoikane launches it itself).
+        #[arg(long, hide = true)]
+        refresh_drift: bool,
     },
     /// A faithful copy: every memory with its history, forget marks, verdicts and the trash, one JSON line each (`omoi import` restores it exactly).
     Export {
@@ -1269,8 +1272,12 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::FileHistory(h) => historia_ficheros_cli(c, h),
         Orden::Docs { accion } => docs_cli(c, accion.unwrap_or(AccionDocs::List)),
-        Orden::Review { all, dismiss, kind, other } => {
+        Orden::Review { all, dismiss, kind, other, refresh_drift } => {
             let db = abrir(c)?;
+            if refresh_drift {
+                omoikane::deriva::refrescar(&db)?;
+                return Ok(());
+            }
             if let Some(id) = dismiss {
                 let otra = match other {
                     Some(o) => memoria::resolver_id(&db, &o)?,
@@ -1278,6 +1285,10 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 };
                 let kind = kind.unwrap_or_else(|| if otra.is_empty() { omoikane::revisar::LARGA.into() } else { omoikane::revisar::DESFASADA.into() });
                 omoikane::revisar::descartar(&db, &id, &kind, &otra)?;
+                if kind == omoikane::revisar::DERIVA_CODIGO {
+                    println!("{}", tr!("ok: it won't warn about it again until its files change a lot again", "hecho: no volverá a avisar hasta que sus ficheros vuelvan a cambiar mucho"));
+                    return Ok(());
+                }
                 println!("{}", tr!("ok: it won't warn about it again until the memory changes", "hecho: no volverá a avisar hasta que la memoria cambie"));
                 return Ok(());
             }
@@ -3445,7 +3456,7 @@ fn en_espanol(c: Command) -> Command {
         ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
             ("all", "De todos los proyectos."),
             ("dismiss", "«Está bien así»: deja de avisar de esta memoria (hasta que cambie). Su id."),
-            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, broken_path, unused, too_long, secret, due, review_date)."),
+            ("kind", "Con --dismiss: qué aviso (outdated, stale_status, code_drift, broken_path, unused, too_long, secret, due, review_date)."),
             ("other", "Con --dismiss en un aviso outdated: el id de la memoria más nueva."),
         ]),
         ("recent", "Las últimas memorias guardadas o cambiadas.", &[
