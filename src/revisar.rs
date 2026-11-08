@@ -729,15 +729,23 @@ fn descartados(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
 
 /// Dónde está una ruta de una memoria en este equipo, si se puede saber (relativa a su proyecto).
 fn ruta_en_disco(m: &Memoria, ruta: &str) -> Option<std::path::PathBuf> {
+    // Una ruta de red no se mira nunca (abriría una conexión SMB: ver `proyecto::ruta_de_red`).
+    if crate::proyecto::ruta_de_red(ruta) {
+        return None;
+    }
     let p = std::path::Path::new(ruta.trim_start_matches("~/"));
-    if ruta.starts_with("~/") {
-        return dirs_casa().map(|c| c.join(p));
-    }
-    if p.is_absolute() {
-        return Some(p.to_path_buf());
-    }
-    let raiz = std::path::Path::new(&m.project);
-    (!m.project.is_empty() && raiz.is_dir()).then(|| raiz.join(p))
+    let d = if ruta.starts_with("~/") {
+        dirs_casa().map(|c| c.join(p))?
+    } else if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        let raiz = std::path::Path::new(&m.project);
+        if m.project.is_empty() || !crate::proyecto::ruta_local(raiz) || !raiz.is_dir() {
+            return None;
+        }
+        raiz.join(p)
+    };
+    crate::proyecto::ruta_local(&d).then_some(d)
 }
 
 fn dirs_casa() -> Option<std::path::PathBuf> {
@@ -746,6 +754,17 @@ fn dirs_casa() -> Option<std::path::PathBuf> {
 
 /// Todo lo que conviene revisar en el ámbito, de lo más a lo menos importante.
 pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
+    avisos_con(db, ambito, true)
+}
+
+/// Como [`avisos`], para la herramienta `context` (al empezar una sesión, con el agente esperando): la
+/// deriva por código no se calcula aquí la primera vez (con git, puede tardar segundos), se lanza
+/// aparte y sale en la siguiente (`deriva::de_sin_esperar`).
+pub fn avisos_sin_esperar(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
+    avisos_con(db, ambito, false)
+}
+
+fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Aviso>> {
     al_dia(db)?;
     let fuera = descartados(db)?;
     let todas = crate::memoria::recientes(db, ambito, None, usize::MAX >> 1)?;
@@ -815,7 +834,7 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
     let revisadas = crate::veredictos::oks(db, false)?;
     let hoy = hoy(db)?;
     // Opcional, como el aviso: si git o el disco fallan, solo se pierde este.
-    let deriva = crate::deriva::de(db, &todas).unwrap_or_default();
+    let deriva = if esperar { crate::deriva::de(db, &todas) } else { crate::deriva::de_sin_esperar(db, &todas) }.unwrap_or_default();
     for m in &todas {
         if let Some(d) = deriva.get(&m.id) {
             r.push(aviso(m, DERIVA_CODIGO, None, d.clone()));

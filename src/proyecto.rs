@@ -8,6 +8,33 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Si un texto de ruta es de red o de dispositivo: empieza por dos barras (`\\servidor\recurso`,
+/// `//cdn.example.com/x.js`, `\\?\…`, `\\.\…`, mezcladas o no). Lo que dice una memoria (sus `paths`, las
+/// rutas que nombra) lo escribe un agente o llega de otro: en Windows, solo con mirar si existe una ruta
+/// así se abre una conexión SMB (que puede tardar en fallar y entrega el hash NTLM de la persona al
+/// servidor que diga). Esas no se miran nunca.
+pub fn ruta_de_red(ruta: &str) -> bool {
+    let b = ruta.trim_start().as_bytes();
+    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/')
+}
+
+/// Si una ruta es de este equipo y se puede mirar en el disco sin salir a la red: ni [`ruta_de_red`]
+/// ni, en Windows, con otro prefijo que el de una unidad (`C:`): UNC, `\\?\` y `\\.\` fuera. Una unidad
+/// de red con letra (`Z:`) no se distingue sin preguntar al sistema y sí se mira.
+pub fn ruta_local(p: &Path) -> bool {
+    if ruta_de_red(&p.to_string_lossy()) {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(x)) = p.components().next() {
+            return matches!(x.kind(), Prefix::Disk(_));
+        }
+    }
+    true
+}
+
 /// Proyecto de la carpeta actual.
 pub fn actual() -> Result<String> {
     de(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
@@ -104,12 +131,18 @@ fn rutas_en(texto: &str) -> Vec<String> {
 /// Cuántos componentes de la ruta existen en el disco (la del antepasado existente más hondo).
 fn profundidad(ruta: &str) -> usize {
     let r = PathBuf::from(ruta.trim_end_matches(['.', ':', '?', '!']));
+    if !ruta_local(&r) {
+        return 0;
+    }
     r.ancestors().find(|a| a.exists()).map_or(0, |a| a.components().count())
 }
 
 /// Una ruta absoluta (o con `~`), sin la puntuación del final; `None` si no lo es.
 fn expandir(ruta: &str, home: &Path) -> Option<PathBuf> {
     let ruta = ruta.trim_end_matches(['.', ':', '?', '!']);
+    if ruta_de_red(ruta) {
+        return None;
+    }
     let b = ruta.as_bytes();
     let absoluta = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
         || (cfg!(unix) && ruta.len() > 1 && ruta.starts_with('/'));

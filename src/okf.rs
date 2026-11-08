@@ -11,8 +11,9 @@
 //!   carpeta con un bundle de otro (un `index.md` o `log.md` sin la marca) no se toca.
 //! - `omoi import --okf <carpeta>`: cada concepto, una memoria guardada por clave (`remember --key`):
 //!   la que traiga el concepto si salió de Omoikane, `okf:<su id>` si no. Importar dos veces no
-//!   duplica. Va al proyecto de la carpeta (o `--dir`; lo global, a lo global) o, con `--space`, a ese
-//!   espacio. Título, contenido y datos pasan por la redacción de secretos, como cualquier `remember`.
+//!   duplica. Va al proyecto de la carpeta (o `--dir`; lo global de esta base, a lo global), con
+//!   `--space` a ese espacio y con `--global` a lo global. Solo lo firmado por esta base (`firma`)
+//!   entra global, fijado o verificado; lo olvidado aquí no vuelve. Título, contenido y datos pasan por la redacción de secretos, como cualquier `remember`.
 //!
 //! Cómo se corresponden los campos (en los dos sentidos):
 //!
@@ -23,7 +24,7 @@
 //! | `tags` | `tags` |
 //! | `paths` | `code_refs` |
 //! | `review:AAAA-MM-DD` | `stale_after: AAAA-MM-DDT00:00:00Z` |
-//! | verificada por una persona (el sello de `omoi verify`, `verificado`) | `verified: [{ by: human:<quién>, at }]` (al importar, el `verified` de una persona pone el sello con su fecha, salvo dentro de la shell de un agente; una etiqueta `verified` es una etiqueta más) |
+//! | verificada por una persona (el sello de `omoi verify`, `verificado`) | `verified: [{ by: human:<quién>, at }]`, con la huella del texto en `omoikane.verified_sha` (al importar, el `verified` de una persona pone el sello con su fecha si el concepto lleva la firma de esta base y el texto es el verificado, o con `--trust-verified`; nunca dentro de la shell de un agente; una etiqueta `verified` es una etiqueta más) |
 //! | sustituida por otra (veredicto vigente) | `status: deprecated` y el enlace a la que la sustituye; al importar, el veredicto vuelve |
 //! | etiquetas `draft` y `deprecated` | `status: draft` / `status: deprecated` |
 //! | `source` | `generated.by` (`<agente>/omoikane`), con `generated.at` = su último cambio |
@@ -109,6 +110,8 @@ pub fn exportar(db: &Connection, dir: &Path, que: Que) -> Result<Cuenta> {
     todas.sort_by(|a, b| a.id.cmp(&b.id));
     std::fs::create_dir_all(dir).with_context(|| tr!("could not create {}", "no se pudo crear {}", dir.display()))?;
     let datos = memoria::datos_de(db, &todas.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    // La firma de esta base: al importarlo aquí, lo firmado se reconoce como propio (ver `firma`).
+    let clave = firma::clave(db, true)?;
 
     // El grupo de cada memoria, como en el export de Obsidian.
     let mut nombres: HashMap<String, BTreeSet<String>> = HashMap::new();
@@ -197,7 +200,7 @@ pub fn exportar(db: &Connection, dir: &Path, que: Que) -> Result<Cuenta> {
         }
         let rel = Relaciones { sustituida_por: rutas_de(sustituida_por.get(&m.id)), sustituye_a: rutas_de(sustituye_a.get(&m.id)), contradice: rutas_de(contradice.get(&m.id)) };
         let descripcion = descripcion(&m.content, &m.title);
-        let texto = concepto(m, &grupo(m).titulo, datos.get(&m.id), &rel, &descripcion, &pie);
+        let texto = concepto(m, &grupo(m).titulo, datos.get(&m.id), &rel, &descripcion, &pie, clave.as_deref());
         let fichero = dir.join(format!("{r}.md"));
         escribir(&fichero, &texto, Some(&mut c))?;
         escritos.insert(fichero);
@@ -463,7 +466,7 @@ fn es_humano(by: &str) -> bool {
     b == "human" || b.starts_with("human:") || b.starts_with("human/")
 }
 
-fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones, descripcion: &str, pie: &[String]) -> String {
+fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones, descripcion: &str, pie: &[String], clave: Option<&[u8]>) -> String {
     // Lo que trajo de OKF y Omoikane no tiene, y lo demás de sus datos.
     let (okf, resto): (Map<String, Value>, Option<Value>) = match datos {
         Some(Value::Object(o)) => {
@@ -572,6 +575,16 @@ fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones
     if let Some(d) = resto {
         o.insert("data".into(), d);
     }
+    // La huella del texto verificado: al importarlo, el sello vuelve solo si el texto sigue siendo ese
+    // (reeditar el Markdown no se queda con la verificación).
+    let sha = m.verified.as_ref().map(|_| crate::verificado::huella(m.tipo_texto(), &m.title, &m.content)).unwrap_or_default();
+    if !sha.is_empty() {
+        o.insert("verified_sha".into(), json!(sha));
+    }
+    if let Some(k) = clave {
+        let v = m.verified.as_ref().map(|v| (v.by.as_str(), v.at.as_str()));
+        o.insert("sig".into(), json!(firma::firmar(k, &firma::texto(&m.id, m.global(), m.pinned, v, &sha))));
+    }
     f.insert("omoikane".into(), Value::Object(o));
     let mut s = String::from("---\n");
     for (k, v) in &f {
@@ -656,6 +669,67 @@ fn es_nuestro_concepto(p: &Path) -> bool {
     cabecera.lines().any(|l| l.starts_with("omoikane:"))
 }
 
+// --- Firma de esta base ----------------------------------------------------------------------------
+
+/// Cómo se sabe que un concepto salió de ESTA base: cada uno lleva en `omoikane.sig` un HMAC-SHA256,
+/// con una clave aleatoria de esta base (`meta('okf_firma')`, que no viaja con la sincronización ni con
+/// `omoi export`), de lo que le da poder al importarlo: su id, si es global, si está fijada y su
+/// verificación (quién, cuándo y la huella del texto). Un bundle de otro (otra persona, otra base, uno
+/// escrito a mano o retocado en esos campos) no lo puede calcular: sus `scope: global`, `pinned` y
+/// `verified` no se creen (el texto sí se importa, como el de cualquier bundle). Que los ids existan
+/// aquí no basta: cualquiera que haya visto un bundle tuyo los tiene.
+mod firma {
+    use anyhow::{Result, anyhow};
+    use rusqlite::{Connection, OptionalExtension, params};
+
+    const META: &str = "okf_firma";
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn de_hex(s: &str) -> Option<Vec<u8>> {
+        let s = s.trim();
+        if !s.len().is_multiple_of(2) || !s.is_ascii() {
+            return None;
+        }
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+    }
+
+    /// La clave de esta base; con `crear`, la crea si aún no hay (al exportar). Al importar sin clave,
+    /// nada es propio.
+    pub fn clave(db: &Connection, crear: bool) -> Result<Option<Vec<u8>>> {
+        let hay: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [META], |f| f.get(0)).optional()?;
+        if let Some(k) = hay.as_deref().and_then(de_hex).filter(|k| k.len() == 32) {
+            return Ok(Some(k));
+        }
+        if !crear {
+            return Ok(None);
+        }
+        let mut b = [0u8; 32];
+        getrandom::fill(&mut b).map_err(|e| anyhow!("getrandom: {e}"))?;
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![META, hex(&b)])?;
+        Ok(Some(b.to_vec()))
+    }
+
+    /// Lo que se firma de un concepto.
+    pub fn texto(id: &str, global: bool, fijada: bool, verificada: Option<(&str, &str)>, sha: &str) -> String {
+        let (by, at) = verificada.unwrap_or_default();
+        format!("omoikane-okf-1\n{id}\n{}\n{fijada}\n{by}\n{at}\n{sha}", if global { "global" } else { "" })
+    }
+
+    pub fn firmar(clave: &[u8], texto: &str) -> String {
+        let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave);
+        hex(ring::hmac::sign(&k, texto.as_bytes()).as_ref())
+    }
+
+    pub fn vale(clave: &[u8], texto: &str, firma: &str) -> bool {
+        let Some(f) = de_hex(firma) else { return false };
+        let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave);
+        ring::hmac::verify(&k, texto.as_bytes(), &f).is_ok()
+    }
+}
+
 // --- Leer un bundle --------------------------------------------------------------------------------
 
 /// Un concepto leído: su id (la ruta sin `.md`), su cabecera y su cuerpo.
@@ -673,7 +747,12 @@ pub struct Bundle {
     /// El `okf_version` del `index.md` de la raíz, si lo dice.
     pub version: Option<String>,
     pub conceptos: Vec<Concepto>,
+    /// Lo que se ha saltado al leerlo (enlaces simbólicos, ficheros demasiado grandes), para decirlo.
+    pub avisos: Vec<String>,
 }
+
+/// Un concepto más grande no se lee (se salta avisando): una cabecera y una nota, no un volcado.
+pub const MAX_CONCEPTO: u64 = 1 << 20;
 
 /// La cabecera y el cuerpo de un Markdown, si empieza por una cabecera `---` cerrada.
 fn separar(texto: &str) -> Option<(&str, &str)> {
@@ -715,6 +794,7 @@ pub fn leer(dir: &Path) -> Result<Bundle> {
         }
     }
     let mut ficheros = Vec::new();
+    let mut avisos = Vec::new();
     let mut pendientes = vec![raiz.clone()];
     while let Some(d) = pendientes.pop() {
         let rd = std::fs::read_dir(&d).with_context(|| d.display().to_string())?;
@@ -724,9 +804,21 @@ pub fn leer(dir: &Path) -> Result<Bundle> {
             if nombre.starts_with('.') {
                 continue;
             }
-            if p.is_dir() {
+            // El tipo de la entrada misma, sin seguir enlaces: un enlace simbólico (o una unión de
+            // Windows) puede apuntar a una carpeta de arriba y no acabar nunca, o sacar el bundle fuera.
+            let Ok(t) = e.file_type() else { continue };
+            let rel = p.strip_prefix(&raiz).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            if t.is_symlink() || es_union(&p) {
+                avisos.push(tr!("{rel}: a symbolic link, skipped", "{rel}: un enlace simbólico, saltado"));
+                continue;
+            }
+            if t.is_dir() {
                 pendientes.push(p);
-            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md")) && !matches!(nombre.as_str(), "index.md" | "log.md") {
+            } else if t.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md")) && !matches!(nombre.as_str(), "index.md" | "log.md") {
+                if e.metadata().is_ok_and(|m| m.len() > MAX_CONCEPTO) {
+                    avisos.push(tr!("{rel}: over 1 MB, skipped", "{rel}: de más de 1 MB, saltado"));
+                    continue;
+                }
                 ficheros.push(p);
             }
         }
@@ -778,7 +870,21 @@ pub fn leer(dir: &Path) -> Result<Bundle> {
             raiz.display()
         ));
     }
-    Ok(Bundle { raiz, version, conceptos })
+    Ok(Bundle { raiz, version, conceptos, avisos })
+}
+
+/// Una unión (junction) de Windows: `file_type` no la da por enlace simbólico, pero es un punto de
+/// montaje que puede llevar a cualquier carpeta (también a una de arriba).
+#[cfg(windows)]
+fn es_union(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const PUNTO_DE_REANALISIS: u32 = 0x400;
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & PUNTO_DE_REANALISIS != 0)
+}
+
+#[cfg(not(windows))]
+fn es_union(_: &Path) -> bool {
+    false
 }
 
 fn escalar_texto(v: &Value) -> String {
@@ -823,6 +929,24 @@ pub struct Resumen {
     /// Las que traían el `verified` de una persona y se importaron sin sello (dentro de la shell de un
     /// agente).
     pub not_verified: usize,
+    /// Las que traían el `verified` de una persona en un bundle que no es de esta base y se importaron
+    /// sin sello (sin `--trust-verified`).
+    pub untrusted_verified: usize,
+    /// Las que traían el `verified` de una persona que ya no vale: el texto cambió desde entonces (no es
+    /// el de `verified_sha`), la persona la desverificó después aquí, o la fecha es del futuro.
+    pub stale_verified: usize,
+    /// Las que entran (o entrarían) como globales.
+    pub global: usize,
+    /// Las que entran (o entrarían) fijadas.
+    pub pinned: usize,
+    /// Los conceptos que no salieron de esta base (sin la firma de aquí, ver `firma`).
+    pub foreign: usize,
+    /// De esos, los que pedían ser globales y van al destino.
+    pub ignored_global: usize,
+    /// Y los que pedían estar fijados y entran sin fijar.
+    pub ignored_pinned: usize,
+    /// Los que son de una memoria olvidada aquí (en la papelera o con su marca de olvido): no vuelven.
+    pub skipped_forgotten: usize,
     /// Los títulos de las memorias en las que se tapó algo que parecía un secreto.
     pub redacted: Vec<String>,
 }
@@ -849,6 +973,10 @@ struct Entrada {
     verificada: Option<(String, Option<String>)>,
     /// El `generated.at` del concepto: una verificación anterior está superada (OKF) y no da sello.
     generada: Option<String>,
+    /// La huella del texto que se verificó (`omoikane.verified_sha`), si salió de Omoikane con sello.
+    verified_sha: Option<String>,
+    /// La firma de la base de la que salió (`omoikane.sig`, ver `firma`).
+    firma: Option<String>,
 }
 
 /// La clave por la que se guarda un concepto: la que trae de Omoikane, `okf:<id de memoria>` si salió
@@ -1007,6 +1135,8 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
         contradice: lista_de_textos(om.get("contradicts")),
         verificada,
         generada: f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).filter(|a| !a.trim().is_empty()),
+        verified_sha: texto("verified_sha").filter(|s| !s.is_empty()),
+        firma: texto("sig").filter(|s| !s.is_empty()),
     })
 }
 
@@ -1073,14 +1203,41 @@ enum Hecho {
     Creada,
     Cambiada,
     Igual,
+    /// De una memoria olvidada aquí: no vuelve.
+    Olvidada,
 }
 
-/// Importa un bundle ya leído. Con `en_seco`, solo cuenta lo que haría, sin escribir (`created`: lo que
-/// sería nuevo; `updated`: lo que ya está y se pondría al día). Con `verificar`, el `verified` de una
-/// persona pone el sello de verificada con su fecha (importar es una acción de la persona: la CLI lo
-/// da fuera de la shell de un agente); sin él, esas memorias entran sin sello y se cuentan en
-/// `not_verified`.
+/// Cómo se importa un bundle.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Opciones {
+    /// Solo contar lo que haría, sin escribir (`created`: lo que sería nuevo; `updated`: lo que ya está
+    /// y se pondría al día).
+    pub en_seco: bool,
+    /// Fuera de la shell de un agente: el `verified` de una persona puede poner el sello de verificada
+    /// (importar es una acción de la persona). Sin esto, esas memorias entran sin sello y se cuentan en
+    /// `not_verified`.
+    pub verificar: bool,
+    /// `--trust-verified`: el `verified` de una persona de un bundle que no salió de esta base también
+    /// pone el sello. Sin esto, solo el de lo firmado aquí (ver `firma`).
+    pub confiar_verificadas: bool,
+}
+
+/// Importa un bundle ya leído, sin creer el `verified` de un bundle de otro (ver [`importar_con`]).
 pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destino: &Destino, en_seco: bool, verificar: bool) -> Result<Resumen> {
+    importar_con(db, modelo, b, destino, Opciones { en_seco, verificar, confiar_verificadas: false })
+}
+
+/// Importa un bundle ya leído.
+///
+/// Lo que da poder a un concepto (`omoikane.scope: global`, `pinned` y el `verified` de una persona)
+/// solo se cree si salió de ESTA base: lleva su firma (ver `firma`). De un bundle de otro (o de uno
+/// propio retocado en esos campos) va al destino, sin fijar y sin sello (el sello, con
+/// `confiar_verificadas`, sí). Y aun con la firma, el sello vuelve solo si el texto es el que se
+/// verificó (`omoikane.verified_sha`), la persona no la desverificó aquí después y la fecha no es del
+/// futuro. Lo que se olvidó aquí (en la papelera o con su marca de olvido) no vuelve: se salta y se
+/// cuenta en `skipped_forgotten` (como en la sincronización, donde un olvido para la memoria que llega;
+/// para traerla, `omoi restore`).
+pub fn importar_con(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destino: &Destino, op: Opciones) -> Result<Resumen> {
     if let (Destino::Proyecto(_), Some(s)) = (destino, espacio_de(b)) {
         bail!(tr!(
             "this bundle was exported from the space «{s}»: import it with --space <name>, so it doesn't mix with personal memories",
@@ -1098,6 +1255,7 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
             "son memorias personales exportadas de Omoikane y el proyecto de esta carpeta está en un espacio (de un cliente): impórtalas desde un proyecto personal, o a un espacio con --space <nombre>"
         ));
     }
+    let clave = firma::clave(db, false)?;
     // Los resúmenes de grupo de una exportación de Omoikane no son memorias.
     let conceptos: Vec<&Concepto> = b.conceptos.iter().filter(|c| !es_resumen(c)).collect();
     let mut r = Resumen { concepts: conceptos.len(), ..Resumen::default() };
@@ -1107,24 +1265,33 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
     let mut tocadas: BTreeSet<String> = BTreeSet::new();
     let mut relaciones: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for c in conceptos {
-        match importar_uno(db, modelo, c, destino, en_seco, verificar, &mut tocadas) {
-            Ok((id, hecho, e, tapado, sellada)) => {
-                match hecho {
+        match importar_uno(db, modelo, c, destino, op, clave.as_deref(), &mut tocadas) {
+            Ok((u, e)) => {
+                match u.hecho {
                     Hecho::Creada => r.created += 1,
                     Hecho::Cambiada => r.updated += 1,
                     Hecho::Igual => r.unchanged += 1,
-                }
-                if e.verificada.is_some() {
-                    if !verificar {
-                        r.not_verified += 1;
-                    } else if sellada {
-                        r.verified += 1;
+                    Hecho::Olvidada => {
+                        r.skipped_forgotten += 1;
+                        continue;
                     }
                 }
-                if tapado {
+                match u.sello {
+                    Sello::Puesto => r.verified += 1,
+                    Sello::Agente => r.not_verified += 1,
+                    Sello::Ajeno => r.untrusted_verified += 1,
+                    Sello::Viejo => r.stale_verified += 1,
+                    Sello::Nada | Sello::Ya => {}
+                }
+                r.foreign += usize::from(u.ajeno);
+                r.ignored_global += usize::from(u.sin_global);
+                r.ignored_pinned += usize::from(u.sin_fijar);
+                r.global += usize::from(u.global);
+                r.pinned += usize::from(e.nueva.pinned);
+                if u.tapado {
                     r.redacted.push(e.nueva.title.clone());
                 }
-                if let Some(id) = id {
+                if let Some(id) = u.id {
                     ids.insert(e.concepto.to_lowercase(), id.clone());
                     relaciones.push((id, e.sustituida_por, e.contradice));
                 }
@@ -1135,7 +1302,7 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
             }
         }
     }
-    if en_seco {
+    if op.en_seco {
         return Ok(r);
     }
     // Los veredictos entre lo importado: `superseded_by` y `contradicts` llevan a otros conceptos del
@@ -1166,31 +1333,109 @@ pub fn importar(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, destin
     Ok(r)
 }
 
-/// Importa un concepto: el id de su memoria (en seco, el de la que ya está, si está), qué pasó, la
-/// entrada, si se tapó algo que parecía un secreto y si se le ha puesto (en seco, se le pondría) el
-/// sello de verificada.
-fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, destino: &Destino, en_seco: bool, verificar: bool, tocadas: &mut BTreeSet<String>) -> Result<(Option<String>, Hecho, Entrada, bool, bool)> {
+/// Qué pasó con el `verified` de una persona de un concepto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sello {
+    /// No traía.
+    Nada,
+    /// Se le ha puesto (en seco: se le pondría).
+    Puesto,
+    /// Ya tenía ese mismo.
+    Ya,
+    /// No, desde la shell de un agente.
+    Agente,
+    /// No, de un bundle que no es de esta base (sin `confiar_verificadas`).
+    Ajeno,
+    /// No, porque ya no vale (otro texto, desverificada después, fecha del futuro).
+    Viejo,
+}
+
+/// Lo que pasó con un concepto al importarlo.
+struct Uno {
+    /// El id de su memoria (en seco, el de la que ya está, si está).
+    id: Option<String>,
+    hecho: Hecho,
+    /// Si se tapó algo que parecía un secreto.
+    tapado: bool,
+    sello: Sello,
+    /// Sin la firma de esta base.
+    ajeno: bool,
+    /// Pedía ser global (o estar fijada) y no se le ha hecho caso por ser de otro.
+    sin_global: bool,
+    sin_fijar: bool,
+    /// Entra como global.
+    global: bool,
+}
+
+/// Si `id` se olvidó aquí: tiene su marca de olvido o está en la papelera.
+fn olvidada(db: &Connection, id: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM tombstone WHERE id = ?1) OR EXISTS(SELECT 1 FROM forgotten WHERE id = ?1)", [id], |f| f.get(0))?)
+}
+
+/// Si el instante `a` es posterior a `b` (dos ISO 8601, con su zona si la dicen). `false` si alguno no
+/// se entiende.
+fn despues_de(db: &Connection, a: &str, b: &str) -> Result<bool> {
+    let x: Option<bool> = db.query_row("SELECT julianday(?1) > julianday(?2)", params![instante_sql(a), instante_sql(b)], |f| f.get(0))?;
+    Ok(x == Some(true))
+}
+
+/// Importa un concepto: qué pasó y su entrada.
+fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, destino: &Destino, op: Opciones, clave: Option<&[u8]>, tocadas: &mut BTreeSet<String>) -> Result<(Uno, Entrada)> {
     let mut e = entrada(c)?;
+    // ¿Salió de esta base? Su firma cubre su id, si es global, si está fijada y su verificación.
+    let propio = match (clave, &e.firma, &e.id) {
+        (Some(k), Some(f), Some(id)) => {
+            let v = e.verificada.as_ref().map(|(by, at)| (by.as_str(), at.as_deref().unwrap_or("")));
+            firma::vale(k, &firma::texto(id, e.global, e.nueva.pinned, v, e.verified_sha.as_deref().unwrap_or("")), f)
+        }
+        _ => false,
+    };
+    let mut u = Uno { id: None, hecho: Hecho::Igual, tapado: false, sello: Sello::Nada, ajeno: !propio, sin_global: false, sin_fijar: false, global: false };
+    if !propio {
+        // De otro: ni global, ni fijada; va al destino como cualquier concepto.
+        if e.global {
+            u.sin_global = matches!(destino, Destino::Proyecto(p) if !p.is_empty());
+            e.global = false;
+        }
+        if e.nueva.pinned {
+            u.sin_fijar = true;
+            e.nueva.pinned = false;
+        }
+    }
+    // Global: lo que pide serlo (y se cree), o todo si el destino es lo global (`--global`).
+    u.global = matches!(destino, Destino::Proyecto(p) if e.global || p.is_empty());
     // Una verificación anterior a `generated.at` es de un texto que ya no es este (OKF la da por
     // superada): no pone el sello.
     if let Some((_, Some(at))) = &e.verificada
         && let Some(gen_at) = &e.generada
+        && despues_de(db, gen_at, at)?
     {
-        let superada: Option<bool> = db.query_row("SELECT julianday(?1) < julianday(?2)", params![instante_sql(at), instante_sql(gen_at)], |f| f.get(0))?;
-        if superada == Some(true) {
-            e.verificada = None;
-        }
+        e.verificada = None;
+    }
+    // Lo olvidado aquí no vuelve con su id.
+    if let Some(id) = &e.id
+        && memoria::obtener(db, id).is_err()
+        && olvidada(db, id)?
+    {
+        u.hecho = Hecho::Olvidada;
+        return Ok((u, e));
+    }
+    // Los datos, comprobados antes de escribir nada: si no valen, el concepto falla sin dejar una
+    // memoria a medias.
+    if let Some(d) = &e.datos {
+        memoria::comprobar_datos(d)?;
     }
     let (proyecto, project_id, space_id) = donde(db, destino, &e)?;
     e.nueva.project = proyecto.clone();
     e.nueva.project_id = project_id;
     e.nueva.space_id = space_id;
-    // La misma memoria, si esta base ya la tiene (se exportó de aquí) y está donde caería.
+    // La misma memoria, si esta base ya la tiene y está donde caería. La de un concepto de otro, donde
+    // esté (sin moverla): su ámbito no se cree.
     let propia = match &e.id {
         Some(id) if memoria::obtener(db, id).is_ok() => {
             let (global, espacio) = memoria::alcance_de_memoria(db, id)?.unwrap_or((false, String::new()));
             let su_espacio = crate::proyecto::clave_espacio(db, space_id)?;
-            (espacio == su_espacio && (space_id.is_some() || global == e.global)).then(|| id.clone())
+            (espacio == su_espacio && (space_id.is_some() || global == e.global || !propio)).then(|| id.clone())
         }
         _ => None,
     };
@@ -1223,10 +1468,33 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
         (None, None) if con_su_id.is_some() => None,
         (None, None) => existente(db, &proyecto, project_id, space_id, &e.clave)?,
     };
-    if en_seco {
-        let hecho = if antes.is_some() { Hecho::Cambiada } else { Hecho::Creada };
-        let sellaria = verificar && e.verificada.is_some();
-        return Ok((antes.map(|(id, _)| id), hecho, e, false, sellaria));
+    // Si el `verified` de una persona puede poner el sello.
+    u.sello = match &e.verificada {
+        None => Sello::Nada,
+        Some(_) if !op.verificar => Sello::Agente,
+        Some(_) if !propio && !op.confiar_verificadas => Sello::Ajeno,
+        Some((_, at)) => {
+            let kind = e.nueva.kind_text.clone().unwrap_or_else(|| e.nueva.kind.unwrap_or(Tipo::Fact).as_str().to_string());
+            let otro_texto = e.verified_sha.as_deref().is_some_and(|s| s != crate::verificado::huella(&kind, &e.nueva.title, &e.nueva.content));
+            // La persona la desverificó aquí después de esa verificación (reimportar un bundle viejo).
+            let desverificada = match (&antes, at) {
+                (Some((id, _)), Some(at)) => match crate::verificado::desverificada_en(db, id)? {
+                    Some(d) => despues_de(db, &d, at)?,
+                    None => false,
+                },
+                _ => false,
+            };
+            let futura = match at {
+                Some(at) => db.query_row("SELECT julianday(?1) > julianday('now', '+1 day')", [instante_sql(at)], |f| f.get::<_, Option<bool>>(0))? == Some(true),
+                None => false,
+            };
+            if otro_texto || desverificada || futura { Sello::Viejo } else { Sello::Puesto }
+        }
+    };
+    if op.en_seco {
+        u.hecho = if antes.is_some() { Hecho::Cambiada } else { Hecho::Creada };
+        u.id = antes.map(|(id, _)| id);
+        return Ok((u, e));
     }
     // Lo que parezca un secreto lo tapa `memoria` al guardar (también en los datos); aquí solo se
     // apunta para decirlo.
@@ -1288,17 +1556,27 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
     }
     // El sello de verificada, después del texto (cambiarlo quita el que hubiera) y con la fecha original.
     // Si ya tiene ese mismo, no se toca.
-    let sellada = match (&e.verificada, verificar) {
-        (Some((by, at)), true) => crate::verificado::verificar_en(db, &id, by, at.as_deref())?.1,
-        _ => false,
-    };
-    let hecho = match antes {
+    if u.sello == Sello::Puesto
+        && let Some((by, at)) = &e.verificada
+    {
+        u.sello = match crate::verificado::verificar_en(db, &id, by, at.as_deref()) {
+            Ok((_, true)) => Sello::Puesto,
+            Ok((_, false)) => Sello::Ya,
+            Err(err) => {
+                eprintln!("omoikane: {}: {err:#}", c.id);
+                Sello::Viejo
+            }
+        };
+    }
+    u.hecho = match antes {
         None => Hecho::Creada,
         Some((_, h)) if sello(db, &id)? != h => Hecho::Cambiada,
         Some(_) => Hecho::Igual,
     };
     tocadas.insert(id.clone());
-    Ok((Some(id), hecho, e, secreto || !tapados.is_empty(), sellada))
+    u.id = Some(id);
+    u.tapado = secreto || !tapados.is_empty();
+    Ok((u, e))
 }
 
 // --- YAML ------------------------------------------------------------------------------------------
@@ -1320,6 +1598,17 @@ pub mod yaml {
         lineas: Vec<Linea>,
         crudas: Vec<String>,
         i: usize,
+        /// Cuántos mapas y listas hay abiertos (ver [`PROFUNDIDAD`]).
+        prof: usize,
+    }
+
+    /// Cuántos mapas y listas anidados se leen como mucho: una cabecera de verdad no pasa de tres o
+    /// cuatro, y sin tope una de `x: [[[[…` (o de mapas cada vez más sangrados) desborda la pila y
+    /// tumba el proceso.
+    pub const PROFUNDIDAD: usize = 64;
+
+    fn honda() -> String {
+        format!("nested deeper than {PROFUNDIDAD} levels")
     }
 
     /// Lee una cabecera (lo de entre los `---`) como un mapa.
@@ -1339,7 +1628,7 @@ pub mod yaml {
             }
             lineas.push(Linea { sangria: l.len() - sin.len(), texto: sin.to_string(), n });
         }
-        let mut l = Lector { lineas, crudas, i: 0 };
+        let mut l = Lector { lineas, crudas, i: 0, prof: 0 };
         if l.lineas.is_empty() {
             return Ok(Map::new());
         }
@@ -1360,6 +1649,16 @@ pub mod yaml {
 
     impl Lector {
         fn mapa(&mut self, sangria: usize) -> Result<Map<String, Value>, String> {
+            self.prof += 1;
+            let r = self.mapa_dentro(sangria);
+            self.prof -= 1;
+            r
+        }
+
+        fn mapa_dentro(&mut self, sangria: usize) -> Result<Map<String, Value>, String> {
+            if self.prof > PROFUNDIDAD {
+                return Err(honda());
+            }
             let mut m = Map::new();
             while let Some(l) = self.lineas.get(self.i) {
                 if l.sangria < sangria || (l.sangria == sangria && es_item(&l.texto)) {
@@ -1379,6 +1678,16 @@ pub mod yaml {
         }
 
         fn lista(&mut self, sangria: usize) -> Result<Vec<Value>, String> {
+            self.prof += 1;
+            let r = self.lista_dentro(sangria);
+            self.prof -= 1;
+            r
+        }
+
+        fn lista_dentro(&mut self, sangria: usize) -> Result<Vec<Value>, String> {
+            if self.prof > PROFUNDIDAD {
+                return Err(honda());
+            }
             let mut v = Vec::new();
             while let Some(l) = self.lineas.get(self.i) {
                 if l.sangria != sangria || !es_item(&l.texto) {
@@ -1431,7 +1740,7 @@ pub mod yaml {
                     todo.push_str(sin_comentario(&l.texto));
                     self.i += 1;
                 }
-                let mut p = Flujo { c: todo.chars().collect(), i: 0 };
+                let mut p = Flujo { c: todo.chars().collect(), i: 0, prof: 0 };
                 let v = p.valor().map_err(|e| format!("line {}: {e}", n + 1))?;
                 p.espacios();
                 if p.i < p.c.len() {
@@ -1440,7 +1749,7 @@ pub mod yaml {
                 return Ok(v);
             }
             if resto.starts_with('"') || resto.starts_with('\'') {
-                let mut p = Flujo { c: resto.chars().collect(), i: 0 };
+                let mut p = Flujo { c: resto.chars().collect(), i: 0, prof: 0 };
                 let v = p.comillas().map_err(|e| format!("line {}: {e}", n + 1))?;
                 p.espacios();
                 if p.i < p.c.len() {
@@ -1486,7 +1795,18 @@ pub mod yaml {
             }
             let crudas: Vec<&str> = self.crudas[n + 1..fin].iter().map(String::as_str).collect();
             let dentro = crudas.iter().filter(|l| !l.trim().is_empty()).map(|l| l.len() - l.trim_start_matches(' ').len()).min().unwrap_or(sangria + 2);
-            let partes: Vec<String> = crudas.iter().map(|l| if l.len() >= dentro { l[dentro..].to_string() } else { String::new() }).collect();
+            // Se quitan solo espacios ASCII (cada uno, un byte): cortar en el byte `dentro` de una línea
+            // que empieza por otro espacio (`\u{a0}`, de varios bytes) partiría un carácter.
+            let partes: Vec<String> = crudas
+                .iter()
+                .map(|l| {
+                    let espacios = l.len() - l.trim_start_matches(' ').len();
+                    match l.get(espacios.min(dentro)..) {
+                        Some(r) if !l.trim().is_empty() || espacios == l.len() => r.to_string(),
+                        _ => String::new(),
+                    }
+                })
+                .collect();
             let mut s = if literal {
                 partes.join("\n")
             } else {
@@ -1516,7 +1836,7 @@ pub mod yaml {
     /// `clave: resto` (o `"clave": resto`), si la línea empieza así.
     fn partir_clave(t: &str) -> Option<(String, &str)> {
         if t.starts_with('"') || t.starts_with('\'') {
-            let mut p = Flujo { c: t.chars().collect(), i: 0 };
+            let mut p = Flujo { c: t.chars().collect(), i: 0, prof: 0 };
             let k = p.comillas().ok()?;
             let usado: usize = p.c[..p.i].iter().map(|c| c.len_utf8()).sum();
             let resto = t[usado..].trim_start().strip_prefix(':')?;
@@ -1619,6 +1939,8 @@ pub mod yaml {
     struct Flujo {
         c: Vec<char>,
         i: usize,
+        /// Cuántos `[` y `{` hay abiertos (ver [`PROFUNDIDAD`]).
+        prof: usize,
     }
 
     impl Flujo {
@@ -1629,6 +1951,13 @@ pub mod yaml {
         }
 
         fn valor(&mut self) -> Result<Value, String> {
+            self.prof += 1;
+            let r = if self.prof > PROFUNDIDAD { Err(honda()) } else { self.valor_dentro() };
+            self.prof -= 1;
+            r
+        }
+
+        fn valor_dentro(&mut self) -> Result<Value, String> {
             self.espacios();
             match self.c.get(self.i) {
                 Some('[') => {
@@ -1926,5 +2255,31 @@ mod tests {
         assert_eq!(separar("---\na: 1\n---\ncuerpo\n"), Some(("a: 1\n", "cuerpo\n")));
         assert_eq!(separar("\u{feff}---\r\na: 1\r\n---\r\nx"), Some(("a: 1\r\n", "x")));
         assert_eq!(separar("sin cabecera"), None);
+    }
+
+    /// Una cabecera maliciosa no tumba el proceso: ni anidando sin fin (antes, desbordaba la pila y
+    /// abortaba) ni con espacios que no son ASCII en un bloque (antes, cortaba un carácter por la mitad).
+    #[test]
+    fn yaml_malicioso_da_error_y_no_revienta() {
+        // 200 000 `[` en una línea.
+        let hondo = format!("x: {}{}", "[".repeat(200_000), "]".repeat(200_000));
+        assert!(yaml::leer(&hondo).unwrap_err().contains("nested deeper"));
+        let hondo = format!("x: {}1{}", "{a: ".repeat(100_000), "}".repeat(100_000));
+        assert!(yaml::leer(&hondo).unwrap_err().contains("nested deeper"));
+        // Listas anidadas por sangría (`- - - … x`) y mapas cada vez más sangrados.
+        let listas = format!("x:\n  {}x\n", "- ".repeat(100_000));
+        assert!(yaml::leer(&listas).unwrap_err().contains("nested deeper"));
+        let mut mapas = String::new();
+        for i in 0..2_000 {
+            mapas += &format!("{}k{i}:\n", " ".repeat(i));
+        }
+        assert!(yaml::leer(&mapas).unwrap_err().contains("nested deeper"));
+        // Lo de siempre sigue: 60 niveles valen.
+        assert!(yaml::leer(&format!("x: {}1{}", "[".repeat(60), "]".repeat(60))).is_ok());
+        // Un bloque con una línea de espacios no ASCII (`\u{a0}`) más corta que su sangría.
+        let m = yaml::leer("nota: |\n   uno\n  \u{a0}\n   dos\n").unwrap();
+        assert_eq!(m["nota"], "uno\n\ndos\n");
+        let m = yaml::leer("nota: |\n  \u{a0}uno\n  dos\n").unwrap();
+        assert_eq!(m["nota"], "\u{a0}uno\ndos\n");
     }
 }

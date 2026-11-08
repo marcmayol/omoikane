@@ -548,7 +548,15 @@ impl Servidor {
                     fuera_de_espacio(&Ambito::de(db, proyecto)?, &Ambito::de(db, &project)?)?;
                 }
                 // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
-                let provenance = if de_oficio { None } else { crate::procedencia::actual(db, if project.is_empty() { proyecto } else { &project }) };
+                // Las globales y las de un espacio, solo la sesión: la rama de esta carpeta puede ser de un
+                // cliente y esas memorias se ven desde otros.
+                let provenance = if de_oficio {
+                    None
+                } else if project.is_empty() || space_id.is_some() {
+                    crate::procedencia::solo_sesion(db, proyecto)
+                } else {
+                    crate::procedencia::actual(db, &project)
+                };
                 let nueva = Nueva {
                     project,
                     space_id,
@@ -919,7 +927,7 @@ impl Servidor {
                 let ambito = Ambito::de(db, proyecto)?;
                 let v = memoria::contexto(db, &ambito, 30)?;
                 let memorias: Vec<_> = v.into_iter().map(|m| compacta(m, false, None)).collect();
-                let review = crate::revisar::avisos(db, &ambito)?;
+                let review = crate::revisar::avisos_sin_esperar(db, &ambito)?;
                 // Dónde está: el proyecto (o la carpeta general) y, de los demás, solo los de su espacio.
                 let actual = match ambito {
                     Ambito::Proyecto { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {

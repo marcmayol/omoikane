@@ -703,7 +703,11 @@ pub(crate) struct CuerpoMemoria {
 impl CuerpoMemoria {
     /// Una memoria de la base como viaja: la clave del proyecto sale de la tabla `project` (calculada
     /// una vez), así que es la misma por la sincronización y por `omoi export`.
-    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> CuerpoMemoria {
+    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> CuerpoMemoria {
+        // La procedencia, solo lo que le toca según dónde está (una global no lleva la rama de un cliente).
+        // (La de la papelera no trae `project_id`: cuenta como de un proyecto si trae su clave o su carpeta.)
+        let de_proyecto = m.project_id != 0 || !m.project_key.is_empty() || !m.project.is_empty();
+        crate::procedencia::recortar_extra(&mut extra, i64::from(de_proyecto), &m.tags);
         CuerpoMemoria {
             kind: m.tipo_texto().to_string(),
             id: m.id,

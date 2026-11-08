@@ -28,6 +28,9 @@
 //! que una web cualquiera no llegue a ella cambiando su DNS) y, si escriben, hechas desde la propia
 //! vista (una web ajena no puede mandar un POST que olvide memorias). Con `OMOIKANE_HTTP_TOKEN`, cada
 //! petición (salvo la página, que no lleva datos) tiene que llevar `Authorization: Bearer <token>`.
+//! `POST /api/verify` (el botón «Verificar» de la vista) pide además el token de la vista, uno nuevo en
+//! cada `omoi serve` que solo va dentro de la página (`X-Omoikane-View`): frena un `curl` con un
+//! `Origin` inventado, no a un agente con shell que se proponga cargar la página para sacarlo.
 //!
 //! **Quién ve qué** (1.7.0), la misma regla que la CLI y el MCP: lo decide la carpeta en la que arrancó
 //! el servidor. Desde un proyecto de un espacio, ese espacio entero (sus proyectos, lo del espacio) y lo
@@ -69,9 +72,28 @@ fn fichero(tipo: &str, datos: &'static [u8]) -> Response<std::io::Cursor<Vec<u8>
         .with_header(Header::from_bytes("Cache-Control", "max-age=86400").expect("cabecera"))
 }
 
-fn html() -> Response<std::io::Cursor<Vec<u8>>> {
+/// Dónde va, en la página, el token de la vista (ver [`token_de_vista`]).
+const MARCA_VISTA: &str = "__OMOIKANE_VIEW__";
+/// La cabecera con la que la página lo devuelve en lo que solo puede hacer una persona (`/api/verify`).
+const CABECERA_VISTA: &str = "X-Omoikane-View";
+
+/// Un token nuevo para cada `omoi serve`, que solo está dentro de la página que sirve: lo que de verdad
+/// pide `/api/verify` además del `Origin` del navegador (que cualquier `curl -H "Origin: …"` pone).
+/// Para leerlo hay que cargar la página: una web ajena no puede (el navegador no le deja leer la
+/// respuesta, y el `Host` corta el DNS rebinding). Un agente con shell podría pedir la página y
+/// sacarlo: no es una frontera contra quien se lo proponga, sino que ningún camino normal del agente
+/// (sus herramientas, `/tools/`, un `curl` sin más) verifique.
+fn token_de_vista() -> Result<String> {
+    let mut b = [0u8; 24];
+    getrandom::fill(&mut b).map_err(|e| anyhow!("getrandom: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+fn html(vista: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let cabecera = Header::from_bytes("Content-Type", "text/html; charset=utf-8").expect("cabecera");
-    Response::from_string(PAGINA).with_header(cabecera)
+    // Que la página no se guarde en ninguna caché: lleva el token de esta ejecución.
+    let sin_cache = Header::from_bytes("Cache-Control", "no-store").expect("cabecera");
+    Response::from_string(PAGINA.replace(MARCA_VISTA, vista)).with_header(cabecera).with_header(sin_cache)
 }
 
 /// Abre la vista en el navegador del sistema.
@@ -274,6 +296,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
         Some(d) => crate::proyecto::de(d)?,
         None => crate::proyecto::actual()?,
     };
+    let vista = token_de_vista()?;
     let anfitriones = [format!("127.0.0.1:{puerto}"), format!("localhost:{puerto}")];
     let origenes = anfitriones.iter().map(|a| format!("http://{a}")).collect::<Vec<_>>();
     for mut peticion in servidor.incoming_requests() {
@@ -289,7 +312,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
             }
             let (ruta, _) = peticion.url().split_once('?').unwrap_or((peticion.url(), ""));
             if *peticion.method() == Method::Get && ruta == "/" {
-                return Ok(html());
+                return Ok(html(&vista));
             }
             if *peticion.method() == Method::Get
                 && let Some((_, tipo, datos)) = FICHEROS.iter().find(|(r, _, _)| *r == ruta)
@@ -451,11 +474,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                     }
                 }
                 // El botón «Verificar» de la vista: la marca de una persona (`verificado`). No es una
-                // herramienta (`/tools/`, lo que usan los agentes por HTTP), y solo vale desde un
-                // navegador, que manda siempre `Origin` (de esta misma vista: lo de otra web ya se ha
-                // cortado arriba) en un POST.
+                // herramienta (`/tools/`, lo que usan los agentes por HTTP), y pide lo que manda la página
+                // de esta vista: `Origin` (de aquí: lo de otra web ya se ha cortado arriba) y el token que
+                // va dentro de la página (`token_de_vista`); un `curl` con un `Origin` inventado no basta.
                 (Method::Post, "/api/verify") => {
-                    if cabecera("Origin").is_none() {
+                    if cabecera("Origin").is_none() || cabecera(CABECERA_VISTA).as_deref() != Some(vista.as_str()) {
                         return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
                     }
                     let v = cuerpo_json(&mut peticion)?;

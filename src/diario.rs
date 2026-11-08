@@ -365,6 +365,10 @@ pub(crate) fn relativo(f: &str, raiz: &str) -> String {
 /// La ruta real de `p` (la de su carpeta más cercana que exista, si `p` ya no está), sin el `\\?\` de
 /// Windows.
 fn real(p: &std::path::Path) -> Option<String> {
+    // Una ruta de red no se resuelve: abriría una conexión SMB (ver `proyecto::ruta_de_red`).
+    if !crate::proyecto::ruta_local(p) {
+        return None;
+    }
     let mut resto = Vec::new();
     let mut actual = p;
     loop {

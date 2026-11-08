@@ -833,7 +833,14 @@ pub fn fugas_en(db: &Connection, campos: &[(&'static str, String)]) -> Result<Ve
     let mut v = fugas(db, &texto)?;
     for f in &mut v {
         let buscado = norma(&f.text);
-        f.campo = campos_n.iter().find(|(_, t)| t.contains(&buscado)).map(|(c, _)| *c).unwrap_or("");
+        // Como palabra (con límites, como la detecta `fugas`): «acme» no es del campo que dice «acmeco»;
+        // si no sale así en ninguno (la detectó una variante), el primero que la contenga.
+        f.campo = campos_n
+            .iter()
+            .find(|(_, t)| aparece(t, &buscado))
+            .or_else(|| campos_n.iter().find(|(_, t)| t.contains(&buscado)))
+            .map(|(c, _)| *c)
+            .unwrap_or("");
     }
     Ok(v)
 }
@@ -1126,6 +1133,19 @@ mod tests {
         assert!(nombre("a b").is_err());
         assert!(nombre("-x").is_err());
         assert_eq!(lista("android, web android").unwrap(), ["android", "web"]);
+    }
+
+    /// El campo de una fuga es el que la tiene como palabra: «QA» sale en el contenido, no en el título
+    /// que dice «qatar» (antes se cogía el primero que la contuviera).
+    #[test]
+    fn el_campo_de_una_fuga_es_por_palabras() {
+        let t = crate::comun::Temporal::nueva("oficios-campo");
+        let db = crate::db::abrir(&t.join("o.db")).unwrap();
+        crate::proyecto::crear_espacio(&db, "QA").unwrap();
+        let campos = vec![("title", "Vuelos a Qatar".to_string()), ("content", "Lo vimos en QA ayer.".to_string())];
+        let f = fugas_en(&db, &campos).unwrap();
+        let qa = f.iter().find(|x| x.tipo == "space").unwrap();
+        assert_eq!(qa.campo, "content", "{f:?}");
     }
 
     #[test]

@@ -241,7 +241,7 @@ fn guarda_la_sesion_y_el_commit() {
 #[test]
 fn viajan_con_la_memoria() {
     let e = Entorno::nuevo("viaje");
-    let id = e.json(&["remember", "-k", "decision", "-t", "Viaja", "--global", "Con sello."])["id"].as_str().unwrap().to_string();
+    let id = e.json(&["remember", "-k", "decision", "-t", "Viaja", "Con sello."])["id"].as_str().unwrap().to_string();
     e.ok(&["verify", &id, "--by", "Marc", "--yes"]);
     let salida = e.ok(&["export"]);
     let linea: serde_json::Value = salida.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|l| l["id"] == id.as_str()).unwrap();
@@ -253,6 +253,51 @@ fn viajan_con_la_memoria() {
     otra.ok(&["import", f.to_str().unwrap()]);
     let m = otra.json(&["get", &id]);
     assert_eq!((&m["verified"]["by"], &m["provenance"]["commit"]), (&serde_json::json!("Marc"), &serde_json::json!(SHA)), "{m}");
+
+    // Desde la shell de un agente, la copia entra sin el sello (la huella se calcula con el texto: si
+    // no, cualquiera que escriba el fichero se verificaría a sí mismo) y lo dice.
+    let tercera = Entorno::nuevo("viaje3");
+    let f = tercera.dir.join("copia.jsonl");
+    std::fs::write(&f, &salida).unwrap();
+    let o = tercera.ok_con(&["import", f.to_str().unwrap()], &[("CLAUDECODE", "1")]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("they come in unverified"), "{}", String::from_utf8_lossy(&o.stderr));
+    let m = tercera.json(&["get", &id]);
+    assert!(m.get("verified").is_none(), "{m}");
+    assert_eq!(m["provenance"]["commit"], SHA, "lo demás llega: {m}");
+}
+
+/// La procedencia de una memoria global (o de un espacio, o de oficio) no lleva el commit ni la rama
+/// de la carpeta en la que se escribió: puede ser la de un cliente y esas memorias se ven desde otros.
+#[test]
+fn una_global_no_lleva_la_rama_del_cliente() {
+    let e = Entorno::nuevo("rama");
+    let git = e.dir.join("repo").join(".git");
+    std::fs::create_dir_all(git.join("refs").join("heads").join("feature")).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/feature/acme-secret-merger\n").unwrap();
+    std::fs::write(git.join("refs").join("heads").join("feature").join("acme-secret-merger"), format!("{SHA}\n")).unwrap();
+    let sesion = [("OMOIKANE_SESSION", "s-1")];
+    let global: serde_json::Value = serde_json::from_slice(&e.ok_con(&["remember", "-k", "fact", "-t", "Global", "--global", "--json", "De todos."], &sesion).stdout).unwrap();
+    assert_eq!(global["provenance"], serde_json::json!({ "session": "s-1" }), "{global}");
+    let gid = global["id"].as_str().unwrap();
+    assert_eq!(e.json(&["get", gid])["provenance"], serde_json::json!({ "session": "s-1" }));
+    // La del proyecto, entera.
+    let suya: serde_json::Value = serde_json::from_slice(&e.ok_con(&["remember", "-k", "fact", "-t", "Del proyecto", "--json", "Mía."], &sesion).stdout).unwrap();
+    assert_eq!(suya["provenance"]["branch"], "feature/acme-secret-merger");
+    // Ni por MCP, ni en la copia, ni en la web.
+    let r = e.herramienta("remember", serde_json::json!({ "kind": "fact", "title": "Global por MCP", "content": "Para todos.", "global": true, "force": true }));
+    assert!(e.json(&["get", r["id"].as_str().unwrap()]).get("provenance").is_none_or(|p| p.get("branch").is_none()));
+    let salida = e.ok(&["export"]);
+    for l in salida.lines().filter(|l| l.contains("Global")) {
+        assert!(!l.contains("acme-secret-merger"), "{l}");
+    }
+    // Promovida a un oficio, ninguna; movida a global, sin commit ni rama.
+    let sid = suya["id"].as_str().unwrap();
+    e.ok(&["update", sid, "--trade", "android", "-r", "x"]);
+    assert!(e.json(&["get", sid]).get("provenance").is_none(), "{}", e.ok(&["get", sid]));
+    let otra = e.json(&["remember", "-k", "fact", "-t", "Se mueve", "--force", "Luego global."]);
+    let oid = otra["id"].as_str().unwrap();
+    e.ok(&["update", oid, "--global", "-r", "x"]);
+    assert!(!e.ok(&["export"]).lines().any(|l| l.contains(oid) && l.contains("acme-secret-merger")));
 }
 
 /// La revisión pone delante, en cada tipo de aviso, las decisiones y trampas sin verificar, y lo
@@ -271,7 +316,8 @@ fn la_revision_prioriza_lo_no_verificado() {
     assert_eq!(orden, [d.as_str(), f.as_str(), g.as_str()], "{r}");
 }
 
-/// La vista web: el botón va por `POST /api/verify`, que solo acepta lo que manda un navegador.
+/// La vista web: el botón va por `POST /api/verify`, que solo acepta lo que manda la página de la
+/// vista (su `Origin` y el token que va dentro de la página), no un `curl` con un `Origin` inventado.
 #[test]
 fn la_web_verifica_solo_desde_el_navegador() {
     let e = Entorno::nuevo("web");
@@ -287,10 +333,10 @@ fn la_web_verifica_solo_desde_el_navegador() {
         }
     }
     let _servidor = Cerrar(hijo);
-    let pedir = |cuerpo: &str, origen: Option<&str>| -> (u16, String) {
-        let origen = origen.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+    let pedir = |metodo: &str, ruta: &str, cuerpo: &str, cabeceras: &[(&str, &str)]| -> (u16, String) {
+        let extra: String = cabeceras.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
         let peticion = format!(
-            "POST /api/verify HTTP/1.1\r\nHost: 127.0.0.1:{puerto}\r\n{origen}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cuerpo}",
+            "{metodo} {ruta} HTTP/1.1\r\nHost: 127.0.0.1:{puerto}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cuerpo}",
             cuerpo.len()
         );
         for _ in 0..100 {
@@ -306,16 +352,27 @@ fn la_web_verifica_solo_desde_el_navegador() {
         }
         panic!("el servidor no arrancó: {}", std::fs::read_to_string(&log).unwrap_or_default());
     };
+    let origen = format!("http://127.0.0.1:{puerto}");
+    // El token de la vista, de la página (lo que hace el botón).
+    let (_, pagina) = pedir("GET", "/", "", &[]);
+    let marca = "name=\"omoikane-view\" content=\"";
+    let i = pagina.find(marca).expect("la página lleva el token") + marca.len();
+    let token = pagina[i..].split('"').next().unwrap().to_string();
+    assert!(token.len() >= 32 && !token.contains("OMOIKANE"), "{token}");
+    let verificar = |cuerpo: &str, cabeceras: &[(&str, &str)]| pedir("POST", "/api/verify", cuerpo, cabeceras);
     let cuerpo = serde_json::json!({ "id": id, "by": "Marc" }).to_string();
     // Sin Origin (curl, un agente): no.
-    assert_eq!(pedir(&cuerpo, None).0, 403);
+    assert_eq!(verificar(&cuerpo, &[]).0, 403);
     // De otra web: no.
-    assert_eq!(pedir(&cuerpo, Some("http://malo.example")).0, 403);
+    assert_eq!(verificar(&cuerpo, &[("Origin", "http://malo.example"), ("X-Omoikane-View", &token)]).0, 403);
+    // Un `curl -H "Origin: …"` con el Origin de la vista pero sin su token (o con otro): tampoco.
+    assert_eq!(verificar(&cuerpo, &[("Origin", &origen)]).0, 403);
+    assert_eq!(verificar(&cuerpo, &[("Origin", &origen), ("X-Omoikane-View", "0123456789abcdef0123456789abcdef")]).0, 403);
     assert!(e.json(&["get", &id]).get("verified").is_none());
-    let (estado, r) = pedir(&cuerpo, Some(&format!("http://127.0.0.1:{puerto}")));
+    let (estado, r) = verificar(&cuerpo, &[("Origin", &origen), ("X-Omoikane-View", &token)]);
     assert_eq!(estado, 200, "{r}");
     assert_eq!(e.json(&["get", &id])["verified"]["by"], "Marc");
-    let (estado, _) = pedir(&serde_json::json!({ "id": id, "unverify": true }).to_string(), Some(&format!("http://127.0.0.1:{puerto}")));
+    let (estado, _) = verificar(&serde_json::json!({ "id": id, "unverify": true }).to_string(), &[("Origin", &origen), ("X-Omoikane-View", &token)]);
     assert_eq!(estado, 200);
     assert!(e.json(&["get", &id]).get("verified").is_none());
 }

@@ -11,11 +11,15 @@
 //! que recibe (`remember`, `update` y `data` no llegan a esta clave, y `update` sobre el texto la
 //! quita); el endpoint `/tools/` de `omoi serve` es el MCP, así que tampoco. Verifican la persona en
 //! la CLI (`omoi verify`, que en una terminal pregunta y fuera de ella pide `--yes`, y que se niega
-//! dentro de la shell de un agente), en la vista web (un botón, `POST /api/verify`, que solo acepta
-//! peticiones del propio navegador) y al importar un bundle OKF (`omoi import --okf`, que pone el
-//! sello de los `verified` de personas con su fecha, salvo dentro de la shell de un agente). Un agente con shell que quiera saltárselo a propósito puede
-//! (como puede editar la base): esto no es una frontera de seguridad sino que ningún camino normal
-//! del agente acabe en «verificada».
+//! dentro de la shell de un agente) y en la vista web (un botón, `POST /api/verify`, que pide el
+//! `Origin` de la vista y el token que `omoi serve` mete en la página). Además llegan sellos al
+//! importar, nunca dentro de la shell de un agente: `omoi import --okf` (el `verified` de una persona
+//! de un bundle firmado por esta base y con el mismo texto, o de otro con `--trust-verified`; ver
+//! `okf`) y `omoi import <fichero>` (los sellos del fichero). La sincronización trae los de los otros
+//! equipos de la persona, por su repositorio cifrado: son su confianza. Un agente con shell que
+//! quiera saltárselo a propósito puede (como puede editar la base o cargar la página para leer el
+//! token): esto no es una frontera de seguridad sino que ningún camino normal del agente acabe en
+//! «verificada».
 //!
 //! **Cambiar el texto la des-verifica.** La persona verificó ese texto, no el que venga después: si
 //! un agente lo cambia, la memoria vuelve a ser «escrita por un agente» hasta que alguien la mire
@@ -33,6 +37,9 @@ use sha2::{Digest, Sha256};
 
 /// La clave del sello en `memory.extra` (y el campo `verified` de la línea que viaja).
 pub const CLAVE: &str = "verified";
+/// Cuándo la persona le quitó la verificación por última vez (`memory.extra`), para que reimportar un
+/// bundle viejo no la vuelva a verificar.
+pub const DESVERIFICADA: &str = "unverified_at";
 
 /// Lo que se enseña: quién la verificó y cuándo. Solo si la verificación sigue valiendo.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +58,7 @@ struct Sello {
 }
 
 /// La huella del texto que se verifica: tipo, título y contenido (32 cifras hex).
-fn huella(kind: &str, title: &str, content: &str) -> String {
+pub(crate) fn huella(kind: &str, title: &str, content: &str) -> String {
     let mut h = Sha256::new();
     for parte in [kind, title, content] {
         h.update(parte.as_bytes());
@@ -108,6 +115,12 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
         Some(a) => tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)", [a], |f| f.get(0))?,
         None => None,
     };
+    // Una fecha de más de un día en el futuro no es de cuando se verificó (un reloj mal puesto, o un
+    // bundle que quiere quedar por delante de cualquier cambio): no se acepta.
+    if let Some(a) = &dada {
+        let futura: bool = tx.query_row("SELECT ?1 > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day')", [a], |f| f.get(0))?;
+        ensure!(!futura, tr!("the verification date {a} is in the future", "la fecha de verificación {a} es del futuro"));
+    }
     let at = match dada {
         Some(a) => a,
         None => tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?,
@@ -123,12 +136,29 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
     Ok((m, true))
 }
 
-/// Le quita la verificación. `false` si no tenía.
+/// Le quita la verificación y apunta cuándo ([`DESVERIFICADA`]): reimportar un bundle exportado antes
+/// no la vuelve a verificar. `false` si no tenía.
 pub fn desverificar(db: &mut Connection, id: &str) -> Result<bool> {
     let tx = crate::memoria::escribir_tx(db)?;
     let hay = poner(&tx, id, None)?;
+    if hay {
+        let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+        let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
+        let ahora: String = tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?;
+        o.insert(DESVERIFICADA.into(), ahora.into());
+        tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
+    }
     tx.commit()?;
     Ok(hay)
+}
+
+/// Cuándo le quitó la persona la verificación por última vez ([`desverificar`]), si se sabe.
+pub(crate) fn desverificada_en(db: &Connection, id: &str) -> Result<Option<String>> {
+    let extra: Option<String> = db.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+    Ok(extra
+        .filter(|e| e.contains(DESVERIFICADA))
+        .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok())
+        .and_then(|v| v.get(DESVERIFICADA).and_then(|x| x.as_str()).map(str::to_string)))
 }
 
 /// Pone o quita el sello con un sello de tiempo nuevo. `false` si no había nada que quitar.

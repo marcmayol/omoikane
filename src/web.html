@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="omoikane-view" content="__OMOIKANE_VIEW__">
 <title>Omoikane</title>
 <link rel="icon" href="/icono.png">
 <style>
@@ -868,7 +869,9 @@ async function conectar(el, m) {
   q('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
   // Verificar no es una herramienta del agente: va por su propia ruta (ver `verificado`).
   q('verificar').onclick = () => accion(async () => {
-    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
+    // Con el token que `omoi serve` mete en esta página al servirla: un POST que no la ha cargado no lo tiene.
+    const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
     if (!r.ok) throw new Error(await r.text());
   });
   q('mover').onclick = () => {

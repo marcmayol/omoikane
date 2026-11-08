@@ -476,7 +476,7 @@ fn un_tipo_desconocido_se_conserva() {
     std::fs::write(&fichero, &texto).unwrap();
     let ruta2 = dir.join("otra.db");
     let mut otra = db::abrir(&ruta2).unwrap();
-    omoikane::copia::importar(&mut otra, &ruta2, &fichero, "", None, false).unwrap();
+    omoikane::copia::importar(&mut otra, &ruta2, &fichero, "", None, false, false).unwrap();
     let kind: String = otra.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
 }

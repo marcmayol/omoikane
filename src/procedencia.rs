@@ -16,7 +16,10 @@
 //! en el mismo proyecto no se adivina: mejor sin sesión que con la de otra conversación.
 //!
 //! Una memoria de oficio no lleva procedencia: es de todos los proyectos de su oficio y no debe
-//! llevar nada de un cliente (ni el nombre de su rama).
+//! llevar nada de un cliente (ni el nombre de su rama). Una global o de un espacio sin proyecto, solo
+//! la sesión: el commit y la rama son de la carpeta en la que se escribió, que puede ser la de un
+//! cliente, y esas memorias se ven desde otros. Lo mismo al moverla después (promoverla a un oficio la
+//! deja sin procedencia; a global, sin commit ni rama) y al leerla o exportarla ([`para_memoria`]).
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -71,6 +74,48 @@ pub fn actual(db: &Connection, proyecto: &str) -> Option<Procedencia> {
     let (commit, branch) = if proyecto.is_empty() { None } else { commit_de(Path::new(proyecto)) }.unwrap_or_default();
     let p = Procedencia { session, commit, branch };
     (!p.vacia()).then_some(p)
+}
+
+/// Solo la sesión del agente (sin commit ni rama), para lo que no es del proyecto de la carpeta
+/// `proyecto`: una memoria global, de un espacio sin proyecto o de oficio no debe llevar la rama de la
+/// carpeta en la que se escribió, que puede ser de un cliente (`feature/acme-…`) y se vería desde
+/// cualquier otro.
+pub fn solo_sesion(db: &Connection, proyecto: &str) -> Option<Procedencia> {
+    let p = Procedencia { session: sesion(db, proyecto).unwrap_or_default(), ..Default::default() };
+    (!p.vacia()).then_some(p)
+}
+
+/// La que puede llevar una memoria según dónde está ahora: ninguna si es de oficio (es de todos los
+/// proyectos de su oficio), solo la sesión si no es de un proyecto (global o de un espacio), y entera si
+/// es de un proyecto. Vale para lo que se guardó antes de recortarla y para lo que se mueve después.
+pub(crate) fn para_memoria(p: Option<Procedencia>, project_id: i64, tags: &[String]) -> Option<Procedencia> {
+    let mut p = p?;
+    if tags.iter().any(|t| t.starts_with(crate::oficios::PREFIJO)) {
+        return None;
+    }
+    if project_id == 0 {
+        p.commit.clear();
+        p.branch.clear();
+    }
+    (!p.vacia()).then_some(p)
+}
+
+/// [`para_memoria`] sobre un `extra` (el de `memory.extra` o el de una línea que sale): quita la clave
+/// o la recorta. `true` si ha cambiado algo.
+pub(crate) fn recortar_extra(extra: &mut serde_json::Map<String, serde_json::Value>, project_id: i64, tags: &[String]) -> bool {
+    // Una que no se entiende (de una versión futura con otra forma) se deja como está.
+    let Some(antes) = extra.get(CLAVE).and_then(|v| serde_json::from_value::<Procedencia>(v.clone()).ok()) else { return false };
+    match para_memoria(Some(antes.clone()), project_id, tags) {
+        Some(p) if p == antes => false,
+        Some(p) => {
+            extra.insert(CLAVE.into(), serde_json::to_value(p).unwrap_or_default());
+            true
+        }
+        None => {
+            extra.remove(CLAVE);
+            true
+        }
+    }
 }
 
 /// Lo que se pone en `memory.extra` al crear una memoria con esta procedencia.

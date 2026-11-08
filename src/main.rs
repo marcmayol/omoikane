@@ -478,6 +478,12 @@ enum Orden {
         /// With --okf: into this space (a client), without a project.
         #[arg(long, requires = "okf")]
         space: Option<String>,
+        /// With --okf: into the global memories (every project sees them). Needed to import from the home folder.
+        #[arg(long, requires = "okf", conflicts_with = "space")]
+        global: bool,
+        /// With --okf: also keep the "verified by a person" of a bundle that wasn't exported from this database (someone else's). Never from a coding agent's shell.
+        #[arg(long, requires = "okf")]
+        trust_verified: bool,
         /// Import even what looks like a memory already saved.
         #[arg(short, long)]
         force: bool,
@@ -928,23 +934,80 @@ fn exportar_okf(c: &Comun, carpeta: &Path, space: Option<String>) -> Result<()> 
 }
 
 /// `omoi import --okf`: aparte de `ejecutar` para no agrandar su marco de pila.
-fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, dry_run: bool) -> Result<()> {
+fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, confiar: bool, dry_run: bool) -> Result<()> {
+    // Desde la carpeta personal, todo iría a lo global (lo ve cualquier proyecto): solo si se pide.
+    let actual = proyecto_de(c)?;
+    anyhow::ensure!(
+        space.is_some() || global || !proyecto::es_general(&actual),
+        tr!(
+            "this is your home folder, not a project: importing here would make every concept global (seen from every project). Run it in the project's folder (or give --dir <project>), use --space <name> for a client, or --global if you do want them global",
+            "esta es tu carpeta personal, no un proyecto: importar aquí haría globales todos los conceptos (los vería cualquier proyecto). Lánzalo en la carpeta del proyecto (o con --dir <proyecto>), usa --space <nombre> para un cliente, o --global si de verdad las quieres globales"
+        )
+    );
     let bundle = omoikane::okf::leer(carpeta)?;
+    for a in &bundle.avisos {
+        eprintln!("omoikane: {a}");
+    }
     if let Some(v) = bundle.version.as_deref().filter(|v| !v.starts_with("0.")) {
         eprintln!("{}", tr!("omoikane: the bundle says OKF {v}; this version reads 0.2: importing what it understands", "omoikane: el bundle dice OKF {v}; esta versión lee la 0.2: se importa lo que entiende"));
     }
     let (mut db, modelo) = abrir_con_modelo(c)?;
     let destino = match space {
         Some(s) => omoikane::okf::Destino::Espacio(proyecto::buscar_espacio(&db, &s)?),
-        None => {
-            let actual = proyecto_de(c)?;
-            omoikane::okf::Destino::Proyecto(if proyecto::es_general(&actual) { String::new() } else { actual })
-        }
+        None if global => omoikane::okf::Destino::Proyecto(String::new()),
+        None => omoikane::okf::Destino::Proyecto(actual),
     };
     // Importar es cosa de la persona: el `verified` de una persona pone el sello, salvo dentro de la
-    // shell de un agente (como `omoi verify`).
+    // shell de un agente (como `omoi verify`), y solo el de lo exportado de esta base salvo con
+    // --trust-verified.
     let agente = omoikane::verificado::shell_de_agente();
-    let r = omoikane::okf::importar(&mut db, modelo.as_ref(), &bundle, &destino, dry_run, agente.is_none())?;
+    let op = omoikane::okf::Opciones { en_seco: dry_run, verificar: agente.is_none(), confiar_verificadas: confiar && agente.is_none() };
+    let r = omoikane::okf::importar_con(&mut db, modelo.as_ref(), &bundle, &destino, op)?;
+    if r.untrusted_verified > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} concepts say a person verified them, but the bundle wasn't exported from this database: they come in unverified. If you trust whoever made it, import again with --trust-verified",
+                "omoikane: {} conceptos dicen que una persona los verificó, pero el bundle no se exportó de esta base: entran sin verificar. Si te fías de quien lo hizo, vuelve a importar con --trust-verified",
+                r.untrusted_verified
+            )
+        );
+    }
+    if r.stale_verified > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} concepts carry a verification that no longer holds (their text changed since, you unverified them later, or the date is in the future): they come in unverified",
+                "omoikane: {} conceptos traen una verificación que ya no vale (su texto ha cambiado desde entonces, la quitaste después o la fecha es del futuro): entran sin verificar",
+                r.stale_verified
+            )
+        );
+    }
+    if r.ignored_global + r.ignored_pinned > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: the bundle wasn't exported from this database: {} concepts asked to be global and go to {} instead; {} asked to be pinned and come in unpinned",
+                "omoikane: el bundle no se exportó de esta base: {} conceptos pedían ser globales y van a {} en su lugar; {} pedían estar fijados y entran sin fijar",
+                r.ignored_global,
+                match &destino {
+                    omoikane::okf::Destino::Proyecto(p) if !p.is_empty() => p.clone(),
+                    _ => tr!("the destination", "el destino").to_string(),
+                },
+                r.ignored_pinned
+            )
+        );
+    }
+    if r.skipped_forgotten > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} concepts are memories you forgot here: skipped (to bring one back, `omoi restore <id>`)",
+                "omoikane: {} conceptos son memorias que olvidaste aquí: saltados (para recuperar una, `omoi restore <id>`)",
+                r.skipped_forgotten
+            )
+        );
+    }
     if let Some(var) = agente.filter(|_| r.not_verified > 0) {
         eprintln!(
             "{}",
@@ -985,6 +1048,16 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, dry_run: bool)
                 r.failed,
                 r.verdicts
             )
+        );
+    }
+    if r.global + r.pinned > 0 {
+        println!(
+            "{}",
+            if dry_run {
+                tr!("{} would come in as global (seen from every project) and {} pinned", "{} entrarían como globales (las ve cualquier proyecto) y {} fijadas", r.global, r.pinned)
+            } else {
+                tr!("{} came in as global (seen from every project) and {} pinned", "{} entraron como globales (las ve cualquier proyecto) y {} fijadas", r.global, r.pinned)
+            }
         );
     }
     if r.verified > 0 {
@@ -1159,8 +1232,15 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
             };
             let antes = omoikane::revisar::antes(&db)?;
-            // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
-            let provenance = if de_oficio { None } else { omoikane::procedencia::actual(&db, if project.is_empty() { &actual } else { &project }) };
+            // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto;
+            // las globales y las de un espacio, solo la sesión (la rama de esta carpeta puede ser de un cliente).
+            let provenance = if de_oficio {
+                None
+            } else if project.is_empty() || space_id.is_some() {
+                omoikane::procedencia::solo_sesion(&db, &actual)
+            } else {
+                omoikane::procedencia::actual(&db, &project)
+            };
             let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, ..Default::default() };
             if let Some(k) = key {
                 return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
@@ -1505,14 +1585,26 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let all = all || proyecto::es_general(&proyecto);
             omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
         }
-        Orden::Import { okf: Some(carpeta), space, dry_run, .. } => importar_okf(c, &carpeta, space, dry_run),
+        Orden::Import { okf: Some(carpeta), space, global, trust_verified, dry_run, .. } => importar_okf(c, &carpeta, space, global, trust_verified, dry_run),
         Orden::Import { fichero, force, dry_run, .. } => {
             let fichero = fichero.context("missing file")?;
             let actual = proyecto_de(c)?;
             if omoikane::copia::es_propio(&fichero)? {
                 let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
                 let (mut db, modelo) = abrir_con_modelo(c)?;
-                let (cuenta, r) = omoikane::copia::importar(&mut db, &ruta, &fichero, &actual, modelo.as_ref(), dry_run)?;
+                // Desde la shell de un agente, sin los sellos de verificada (como `import --okf`).
+                let agente = omoikane::verificado::shell_de_agente();
+                let (cuenta, r) = omoikane::copia::importar(&mut db, &ruta, &fichero, &actual, modelo.as_ref(), dry_run, agente.is_some())?;
+                if let Some(var) = agente.filter(|_| cuenta.unverified > 0) {
+                    eprintln!(
+                        "{}",
+                        tr!(
+                            "omoikane: {} memories carry a person's verification, but this looks like a coding agent's shell ({var} is set): they come in unverified. Import again from your own terminal to keep it",
+                            "omoikane: {} memorias llevan la verificación de una persona, pero esto parece la shell de un agente ({var} está puesta): entran sin verificar. Vuelve a importar desde tu terminal para conservarla",
+                            cuenta.unverified
+                        )
+                    );
+                }
                 if c.json {
                     return json(&serde_json::json!({ "file": cuenta, "new": r.nuevas, "updated": r.actualizadas, "forgotten": r.olvidadas, "skipped_lines": r.ilegibles, "dry_run": dry_run }));
                 }

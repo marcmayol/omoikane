@@ -51,6 +51,10 @@ pub struct Cuenta {
     pub projects: usize,
     /// Líneas de un tipo que esta versión no conoce (de un omoi más nuevo): se saltan.
     pub unknown: usize,
+    /// Memorias con el sello de verificada por una persona que entran sin él (importando desde la shell
+    /// de un agente). No cuenta en `total`: son memorias de `memories` o `forgotten`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unverified: usize,
 }
 
 impl Cuenta {
@@ -312,10 +316,33 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
     Ok(cuenta)
 }
 
+/// Le quita a una línea el sello de verificada por una persona (`extra.verified`, el de la memoria o
+/// el de la que va a la papelera). `true` si lo llevaba.
+fn sin_sello(l: &mut Linea) -> bool {
+    match l {
+        Linea::Memory(c) => c.extra.remove(crate::verificado::CLAVE).is_some(),
+        Linea::Forgotten { memory, .. } => memory.extra.remove(crate::verificado::CLAVE).is_some(),
+        _ => false,
+    }
+}
+
 /// Importa un fichero de este formato. Primero lo lee entero para comprobarlo (sin aplicar nada), y
 /// solo entonces aplica línea a línea. Con `dry_run`, solo cuenta.
-pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, modelo: Option<&Modelo>, dry_run: bool) -> Result<(Cuenta, Resumen)> {
-    let cuenta = leer(ruta_db, ruta, |_| Ok(()))?;
+///
+/// Con `sin_verificar` (quien importa está en la shell de un agente, `verificado::shell_de_agente`),
+/// las memorias entran sin el sello de verificada por una persona: el fichero lo puede haber escrito
+/// cualquiera y la huella del sello se calcula con el texto, así que traerlo sería que un agente se
+/// verificara a sí mismo. Se cuentan en `Cuenta::unverified` para avisar. (La sincronización sí trae
+/// los sellos: vienen de los otros equipos de la misma persona, por su repositorio cifrado.)
+pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, modelo: Option<&Modelo>, dry_run: bool, sin_verificar: bool) -> Result<(Cuenta, Resumen)> {
+    let mut selladas = 0;
+    let mut cuenta = leer(ruta_db, ruta, |mut l| {
+        if sin_verificar && sin_sello(&mut l) {
+            selladas += 1;
+        }
+        Ok(())
+    })?;
+    cuenta.unverified = selladas;
     let mut r = Resumen::default();
     if dry_run {
         return Ok((cuenta, r));
@@ -330,7 +357,10 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
     }
     let mut aplicador = Aplicador::nuevo(db, None, Some(actual))?;
     let nombre = ruta.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    leer(ruta_db, ruta, |l| {
+    leer(ruta_db, ruta, |mut l| {
+        if sin_verificar {
+            sin_sello(&mut l);
+        }
         let origen = match l.machine() {
             "" => format!("import:{nombre}"),
             m => m.to_string(),

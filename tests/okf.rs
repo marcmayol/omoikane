@@ -92,19 +92,20 @@ fn ida_y_vuelta_a_una_base_vacia() {
     let b = okf::leer(&bundle).unwrap();
     assert_eq!((b.version.as_deref(), b.conceptos.len()), (Some("0.2"), 8));
 
-    // A una base vacía: lo mismo, con los mismos ids.
+    // A una base vacía (otra: el bundle no lleva su firma): lo mismo, con los mismos ids, pero lo global
+    // va al destino y nada entra fijado; el sello, solo confiando en el bundle (`--trust-verified`).
     let mut z = db::abrir(&dir.join("z.db")).unwrap();
-    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+    let confiando = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
+    let r = okf::importar_con(&mut z, None, &b, &Destino::Proyecto("/q".into()), confiando).unwrap();
     assert_eq!((r.concepts, r.created, r.updated, r.failed, r.verdicts, r.verified), (6, 6, 0, 0, 1, 1), "{r:?}");
+    assert_eq!((r.foreign, r.ignored_global, r.ignored_pinned, r.global, r.pinned), (6, 1, 1, 0, 0), "{r:?}");
     let (va, vz) = (todas(&a), todas(&z));
     assert_eq!(va.len(), vz.len());
     for (x, y) in va.iter().zip(&vz) {
-        assert_eq!((&x.id, &x.title, &x.content, x.kind, &x.tags, &x.paths, x.pinned, x.global()), (&y.id, &y.title, &y.content, y.kind, &y.tags, &y.paths, y.pinned, y.global()));
+        assert_eq!((&x.id, &x.title, &x.content, x.kind, &x.tags, &x.paths), (&y.id, &y.title, &y.content, y.kind, &y.tags, &y.paths));
         assert_eq!((&x.created_at, &x.updated_at), (&y.created_at, &y.updated_at), "{}", x.title);
         assert_eq!(x.verified, y.verified, "el sello vuelve con su fecha: {}", x.title);
-        if !x.global() {
-            assert_eq!(y.project, "/q");
-        }
+        assert!(!y.pinned && !y.global() && y.project == "/q", "{y:?}");
     }
     let d = memoria::datos_de(&z, &[clave.as_str()]).unwrap();
     assert_eq!(d.get(&clave), Some(&json!({ "edad": 3 })));
@@ -114,14 +115,14 @@ fn ida_y_vuelta_a_una_base_vacia() {
     let _ = (trampa, receta);
 
     // Otra vez: nada nuevo ni cambiado.
-    let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+    let r = okf::importar_con(&mut z, None, &b, &Destino::Proyecto("/q".into()), confiando).unwrap();
     assert_eq!((r.created, r.updated, r.unchanged, r.verdicts, r.verified), (0, 0, 6, 0, 0), "el mismo sello no se vuelve a poner: {r:?}");
     assert_eq!(todas(&z).len(), 6);
 
     // Y la exportación de la base nueva da los mismos conceptos (salvo el nombre del proyecto).
     let otra = dir.join("otra");
     okf::exportar(&z, &otra, Que::Personal).unwrap();
-    let quitar = |s: String| s.replace("/q/", "/p/").lines().filter(|l| !l.starts_with("  project: ") && !l.starts_with("  project_key: ")).collect::<Vec<_>>().join("\n");
+    let quitar = |s: String| s.replace("/q/", "/p/").lines().filter(|l| !l.starts_with("  project: ") && !l.starts_with("  project_key: ") && !l.starts_with("  sig: ")).collect::<Vec<_>>().join("\n");
     assert_eq!(quitar(leer(&otra.join("q/decision/la-autenticación-va-con-jwt.md"))), quitar(jwt));
 }
 
@@ -150,7 +151,7 @@ fn un_bundle_de_otro() {
     assert_eq!(b.conceptos.len(), 3);
     let en_seco = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), true, true).unwrap();
     assert_eq!((en_seco.created, todas(&db).len()), (3, 0), "en seco no escribe");
-    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false, true).unwrap();
+    let r = okf::importar_con(&mut db, None, &b, &Destino::Proyecto("/r".into()), okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true }).unwrap();
     assert_eq!((r.created, r.failed, r.verified, r.not_verified), (3, 0, 1, 0), "{r:?}");
     assert_eq!(r.redacted.len(), 1, "el token se tapa: {r:?}");
     let g = memoria::por_clave(&db, &Ambito::Todos, "okf:architecture/governance-model").unwrap().unwrap();
@@ -174,7 +175,7 @@ fn un_bundle_de_otro() {
     assert_eq!((estilo.kind, estilo.content.as_str()), (Tipo::Preference, "Go style"));
 
     // Dos veces: sin duplicar.
-    let r = okf::importar(&mut db, None, &b, &Destino::Proyecto("/r".into()), false, true).unwrap();
+    let r = okf::importar_con(&mut db, None, &b, &Destino::Proyecto("/r".into()), okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true }).unwrap();
     assert_eq!((r.created, r.unchanged, r.verified), (0, 3, 0), "{r:?}");
     assert_eq!(todas(&db).len(), 3);
 
@@ -251,7 +252,7 @@ fn una_etiqueta_no_verifica() {
         "---\ntype: Fact\ntitle: Vigente\ngenerated: { by: agent/cli, at: \"2026-03-01T10:00:00+02:00\" }\nverified: [{ by: human:ana, at: 2026-03-01T09:00:00Z }]\n---\nD.\n",
     )
     .unwrap();
-    let r = okf::importar(&mut z, None, &okf::leer(&ajeno).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    let r = okf::importar_con(&mut z, None, &okf::leer(&ajeno).unwrap(), &Destino::Proyecto("/q".into()), okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true }).unwrap();
     assert_eq!((r.created, r.verified, r.not_verified), (4, 1, 0), "{r:?}");
     let selladas: Vec<String> = todas(&z).into_iter().filter(|m| m.verified.is_some()).map(|m| m.title).collect();
     assert_eq!(selladas, ["Vigente"]);
@@ -386,8 +387,225 @@ fn por_la_cli() {
     assert!(ok && s.contains("they come in unverified") && s.contains("CLAUDECODE"), "{s}");
     let (ok, s) = omoi(&["get", "--key", "okf:a", "--json"]);
     assert!(ok && !s.contains("\"ana\""), "{s}");
-    let (ok, s) = omoi(&["import", "--okf", a]);
+    let (ok, s) = omoi(&["import", "--okf", a, "--trust-verified"]);
     assert!(ok && s.contains("1 marked as verified by a person"), "{s}");
     let (ok, s) = omoi(&["get", "--key", "okf:a", "--json"]);
     assert!(ok && s.contains("\"by\": \"ana\"") && s.contains("2026-06-25T09:00:00.000Z"), "{s}");
+}
+
+/// Una copia de la base (la misma firma), sin las memorias `ids` y sin rastro de ellas (ni papelera ni
+/// marca de olvido): como si nunca hubieran estado, para que el bundle las cree con su id.
+fn copia_sin(a: &Connection, destino: &Path, ids: &[&str]) -> Connection {
+    a.execute("VACUUM INTO ?1", [destino.to_str().unwrap()]).unwrap();
+    let mut c = db::abrir(destino).unwrap();
+    for id in ids {
+        memoria::olvidar_del_todo(&mut c, id).unwrap();
+        c.execute("DELETE FROM tombstone WHERE id = ?1", [id]).unwrap();
+    }
+    c
+}
+
+fn concepto_de(bundle: &Path, titulo: &str) -> std::path::PathBuf {
+    let mut pila = vec![bundle.to_path_buf()];
+    while let Some(d) = pila.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            if e.path().is_dir() {
+                pila.push(e.path());
+            } else if leer(&e.path()).contains(&format!("title: {titulo}\n")) || leer(&e.path()).contains(&format!("title: \"{titulo}\"\n")) {
+                return e.path();
+            }
+        }
+    }
+    panic!("no está «{titulo}»");
+}
+
+/// Lo que da poder a un concepto (global, fijada, verificada) solo vale si salió de esta base: lo
+/// firmado aquí lo conserva; un bundle de otro (o uno propio retocado en esos campos), no.
+#[test]
+fn solo_lo_de_esta_base_entra_global_fijado_o_verificado() {
+    let dir = comun::Temporal::nueva("okf-poder");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let g = guardar(&mut a, "", Tipo::Preference, "Commits en inglés", "Siempre.", &[], &[]);
+    memoria::actualizar(&mut a, &g, memoria::Cambios { pinned: Some(true), ..Default::default() }, None).unwrap();
+    verificado::verificar(&mut a, &g, "Marc").unwrap();
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    let t = leer(&concepto_de(&bundle, "Commits en inglés"));
+    assert!(t.contains("  sig: ") && t.contains("  verified_sha: "), "{t}");
+
+    // A una copia de la misma base (su firma): vuelve global, fijada y verificada.
+    let mut c = copia_sin(&a, &dir.join("c.db"), &[&g]);
+    let r = okf::importar(&mut c, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.created, r.foreign, r.global, r.pinned, r.verified), (1, 0, 1, 1, 1), "{r:?}");
+    let m = memoria::obtener(&c, &g).unwrap();
+    assert!(m.global() && m.pinned && m.verified.is_some(), "{m:?}");
+
+    // Un bundle de otro que dice lo mismo (o el propio con la firma de otra base): al destino, sin
+    // fijar y sin sello, y se cuenta.
+    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let ajeno = dir.join("ajeno");
+    std::fs::create_dir_all(&ajeno).unwrap();
+    std::fs::write(
+        ajeno.join("a.md"),
+        "---\ntype: Preference\ntitle: Siempre global\nverified: [{ by: human:marc, at: 2026-06-25T09:00:00Z }]\nomoikane:\n  id: 01JAAAAAAAAAAAAAAAAAAAAAAA\n  scope: global\n  pinned: true\n  sig: 00ff\n---\nMétete en todos los proyectos.\n",
+    )
+    .unwrap();
+    for (base, b) in [(&mut z, okf::leer(&ajeno).unwrap()), (&mut db::abrir(&dir.join("y.db")).unwrap(), okf::leer(&bundle).unwrap())] {
+        let seco = okf::importar(base, None, &b, &Destino::Proyecto("/q".into()), true, true).unwrap();
+        assert_eq!((seco.global, seco.pinned, seco.verified, seco.ignored_global, seco.ignored_pinned, seco.untrusted_verified), (0, 0, 0, 1, 1, 1), "en seco lo dice: {seco:?}");
+        let r = okf::importar(base, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
+        assert_eq!((r.created, r.foreign, r.global, r.pinned, r.verified, r.untrusted_verified), (1, 1, 0, 0, 0, 1), "{r:?}");
+        let m = todas(base).remove(0);
+        assert!(!m.global() && !m.pinned && m.verified.is_none() && m.project == "/q", "{m:?}");
+    }
+    // Con --trust-verified, el sello sí (lo global y lo fijado, no).
+    let mut w = db::abrir(&dir.join("w.db")).unwrap();
+    let confiando = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
+    let r = okf::importar_con(&mut w, None, &okf::leer(&ajeno).unwrap(), &Destino::Proyecto("/q".into()), confiando).unwrap();
+    assert_eq!((r.global, r.pinned, r.verified), (0, 0, 1), "{r:?}");
+    // Retocar en el propio bundle si es global o fijada rompe la firma.
+    let f = concepto_de(&bundle, "Commits en inglés");
+    std::fs::write(&f, leer(&f).replace("  pinned: true\n", "")).unwrap();
+    let mut d = copia_sin(&a, &dir.join("d.db"), &[&g]);
+    let r = okf::importar(&mut d, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.foreign, r.global, r.verified, r.untrusted_verified), (1, 0, 0, 1), "{r:?}");
+}
+
+/// Reeditar el texto de un concepto verificado no se queda con la verificación (antes, al importarlo
+/// se sellaba el texto nuevo); y lo que la persona desverificó después no vuelve a verificarse.
+#[test]
+fn reeditar_o_desverificar_no_deja_el_sello() {
+    let dir = comun::Temporal::nueva("okf-lavar");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let id = guardar(&mut a, "/p", Tipo::Decision, "JWT", "La autenticación va con JWT.", &[], &[]);
+    let otra = guardar(&mut a, "/p", Tipo::Decision, "Cookies", "Las sesiones van por cookie.", &[], &[]);
+    verificado::verificar(&mut a, &id, "Marc").unwrap();
+    verificado::verificar(&mut a, &otra, "Marc").unwrap();
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    // Otro cambia el texto en el Markdown (y deja el `verified` y la firma como estaban).
+    let f = concepto_de(&bundle, "JWT");
+    std::fs::write(&f, leer(&f).replace("La autenticación va con JWT.", "La autenticación va sin nada.")).unwrap();
+    let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.updated, r.verified, r.stale_verified), (1, 0, 1), "{r:?}");
+    let m = memoria::obtener(&a, &id).unwrap();
+    assert_eq!((m.content.as_str(), m.verified.is_none()), ("La autenticación va sin nada.", true), "{m:?}");
+
+    // La persona desverifica la otra; reimportar el bundle de antes no la vuelve a verificar.
+    assert!(verificado::desverificar(&mut a, &otra).unwrap());
+    let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.verified, r.stale_verified), (0, 2), "{r:?}");
+    assert!(memoria::obtener(&a, &otra).unwrap().verified.is_none());
+
+    // Una fecha de verificación del futuro no vale (ni importando ni a mano).
+    let ajeno = dir.join("ajeno");
+    std::fs::create_dir_all(&ajeno).unwrap();
+    std::fs::write(ajeno.join("a.md"), "---\ntype: Fact\ntitle: Del futuro\nverified: [{ by: human:ana, at: 2099-01-01T00:00:00Z }]\n---\nA.\n").unwrap();
+    let confiando = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
+    let r = okf::importar_con(&mut a, None, &okf::leer(&ajeno).unwrap(), &Destino::Proyecto("/p".into()), confiando).unwrap();
+    assert_eq!((r.created, r.verified, r.stale_verified), (1, 0, 1), "{r:?}");
+    assert!(verificado::verificar_en(&mut a, &id, "Marc", Some("2099-01-01T00:00:00Z")).is_err());
+    assert!(verificado::verificar_en(&mut a, &id, "Marc", Some("2026-01-01T00:00:00Z")).is_ok());
+}
+
+/// Importar no resucita lo olvidado con su mismo id: ni lo que está en la papelera ni lo que solo
+/// tiene la marca de olvido (como en la sincronización); se salta y se cuenta.
+#[test]
+fn lo_olvidado_no_vuelve() {
+    let dir = comun::Temporal::nueva("okf-olvido");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let papelera = guardar(&mut a, "/p", Tipo::Fact, "A la papelera", "Uno.", &[], &[]);
+    let del_todo = guardar(&mut a, "/p", Tipo::Fact, "Del todo", "Dos.", &[], &[]);
+    let viva = guardar(&mut a, "/p", Tipo::Fact, "Viva", "Tres.", &[], &[]);
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    memoria::olvidar(&mut a, &papelera).unwrap();
+    memoria::olvidar_del_todo(&mut a, &del_todo).unwrap();
+    let b = okf::leer(&bundle).unwrap();
+    let seco = okf::importar(&mut a, None, &b, &Destino::Proyecto("/p".into()), true, true).unwrap();
+    assert_eq!(seco.skipped_forgotten, 2, "{seco:?}");
+    let r = okf::importar(&mut a, None, &b, &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.skipped_forgotten, r.created, r.unchanged), (2, 0, 1), "{r:?}");
+    let ids: Vec<String> = todas(&a).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, [viva]);
+}
+
+/// Un bundle sin límites no cuelga ni deja memorias a medias: los enlaces simbólicos (y las uniones de
+/// Windows) no se siguen, un concepto de más de 1 MB se salta avisando y unos datos de más de 64 KB
+/// hacen fallar el concepto sin crear la memoria.
+#[test]
+fn bundles_con_limites() {
+    let dir = comun::Temporal::nueva("okf-limites");
+    let raiz = dir.join("b");
+    std::fs::create_dir_all(raiz.join("sub")).unwrap();
+    std::fs::write(raiz.join("sub").join("a.md"), "---\ntype: Fact\ntitle: Pequeño\n---\nA.\n").unwrap();
+    std::fs::write(raiz.join("grande.md"), format!("---\ntype: Fact\ntitle: Grande\n---\n{}\n", "x".repeat(1_100_000))).unwrap();
+    // Un bucle: dentro del bundle, un enlace a su propia raíz.
+    #[cfg(windows)]
+    let enlazado = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(raiz.join("sub").join("bucle")).arg(&raiz).output().unwrap().status.success();
+    #[cfg(unix)]
+    let enlazado = std::os::unix::fs::symlink(&raiz, raiz.join("sub").join("bucle")).is_ok();
+    assert!(enlazado);
+    let b = okf::leer(&raiz).unwrap();
+    assert_eq!(b.conceptos.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["sub/a"]);
+    assert!(b.avisos.iter().any(|a| a.contains("grande.md") && a.contains("1 MB")), "{:?}", b.avisos);
+    assert!(b.avisos.iter().any(|a| a.contains("bucle") && a.contains("symbolic link")), "{:?}", b.avisos);
+
+    let datos = dir.join("datos");
+    std::fs::create_dir_all(&datos).unwrap();
+    std::fs::write(
+        datos.join("d.md"),
+        format!("---\ntype: Fact\ntitle: Con datos\nomoikane:\n  id: 01JBBBBBBBBBBBBBBBBBBBBBBB\n  data: {{ x: \"{}\" }}\n---\nD.\n", "y".repeat(70_000)),
+    )
+    .unwrap();
+    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let r = okf::importar(&mut db, None, &okf::leer(&datos).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!((r.created, r.failed), (0, 1), "{r:?}");
+    assert!(todas(&db).is_empty(), "sin memoria a medias");
+}
+
+/// Desde la carpeta personal, importar un bundle lo haría todo global: se niega sin --global; y la
+/// CLI dice cuántas entrarían globales, fijadas o verificadas.
+#[test]
+fn desde_casa_y_lo_que_entraria() {
+    let dir = comun::Temporal::nueva("okf-casa");
+    let casa = dir.join("casa");
+    std::fs::create_dir_all(casa.join("repo").join(".git")).unwrap();
+    let omoi = |donde: &Path, args: &[&str]| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_omoi"));
+        c.args(args)
+            .current_dir(donde)
+            .env("OMOIKANE_DB", dir.join("o.db"))
+            .env("OMOIKANE_MODELS", dir.join("models"))
+            .env("OMOIKANE_AUTO_UPDATE", "0")
+            .env("OMOIKANE_SYNC_AUTO", "0")
+            .env("OMOIKANE_HOME", dir.join("home-omoikane"))
+            .env("USERPROFILE", &casa)
+            .env("HOME", &casa)
+            .env_remove("OMOIKANE_LANG");
+        for v in ["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT"] {
+            c.env_remove(v);
+        }
+        let o = c.output().unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    let ajeno = dir.join("ajeno");
+    std::fs::create_dir_all(&ajeno).unwrap();
+    std::fs::write(
+        ajeno.join("a.md"),
+        "---\ntype: Fact\ntitle: Pide mucho\nverified: [{ by: human:ana, at: 2026-06-25T09:00:00Z }]\nomoikane:\n  scope: global\n  pinned: true\n---\nA.\n",
+    )
+    .unwrap();
+    let a = ajeno.to_str().unwrap();
+    let (ok, s) = omoi(&casa, &["import", "--okf", a]);
+    assert!(!ok && s.contains("home folder") && s.contains("--global"), "{s}");
+    let (ok, s) = omoi(&casa, &["import", "--okf", a, "--global", "--dry-run"]);
+    assert!(ok && s.contains("1 would come in as global") && s.contains("wasn't exported from this database"), "{s}");
+    let repo = casa.join("repo");
+    let (ok, s) = omoi(&repo, &["import", "--okf", a, "--dry-run", "--json"]);
+    assert!(ok, "{s}");
+    let j: serde_json::Value = serde_json::from_str(&s[..s.rfind('}').unwrap() + 1][s.find('{').unwrap()..]).unwrap();
+    assert_eq!((&j["global"], &j["pinned"], &j["ignored_global"], &j["ignored_pinned"], &j["untrusted_verified"]), (&json!(0), &json!(0), &json!(1), &json!(1), &json!(1)), "{j}");
+    let (ok, s) = omoi(&repo, &["import", "--okf", a, "--trust-verified"]);
+    assert!(ok && s.contains("1 marked as verified by a person"), "{s}");
 }

@@ -369,11 +369,14 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     let tipo = kind.parse::<Tipo>().ok();
     let (title, content): (String, String) = (f.get(3)?, f.get(4)?);
     let verified = crate::verificado::de_columna(f.get::<_, Option<String>>(17)?.as_deref(), &kind, &title, &content);
-    let provenance = crate::procedencia::de_columna(f.get::<_, Option<String>>(18)?.as_deref());
+    let tags = lista(6)?;
+    let project_id: i64 = f.get(14)?;
+    // Lo que puede llevar según dónde está ahora (una global no enseña la rama de un cliente).
+    let provenance = crate::procedencia::para_memoria(crate::procedencia::de_columna(f.get::<_, Option<String>>(18)?.as_deref()), project_id, &tags);
     Ok(Memoria {
         id: f.get(0)?,
         project: f.get(1)?,
-        project_id: f.get(14)?,
+        project_id,
         project_key: f.get(15)?,
         space: f.get(16)?,
         kind: tipo.unwrap_or(Tipo::Fact),
@@ -381,7 +384,7 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         title,
         content,
         paths: lista(5)?,
-        tags: lista(6)?,
+        tags,
         pinned: f.get(7)?,
         source: f.get(8)?,
         created_at: f.get(9)?,
@@ -906,9 +909,10 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
             author,
             space_id,
             content_hlc,
-            match (origen, &nueva.provenance) {
+            // La procedencia, solo lo que le toca según dónde cae (ver `procedencia::para_memoria`).
+            match (origen, crate::procedencia::para_memoria(nueva.provenance.clone(), project_id, &tags)) {
                 (Some(o), _) => o.extra.to_string(),
-                (None, Some(p)) => crate::procedencia::extra(p),
+                (None, Some(p)) => crate::procedencia::extra(&p),
                 (None, None) => "{}".to_string(),
             },
         ],
@@ -1111,6 +1115,9 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
                 tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
             }
         }
+        if origen.is_none() && se_mueve {
+            recortar_procedencia(tx, id)?;
+        }
         return Ok((Memoria { redacted, ..leer(tx, id)? }, cambiados));
     }
     // La foto anterior va al historial.
@@ -1142,6 +1149,9 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
     if let Some(o) = origen {
         tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
     }
+    if origen.is_none() && (se_mueve || despues.tags != antes.tags) {
+        recortar_procedencia(tx, id)?;
+    }
     desindexar(tx, n)?;
     let m = leer(tx, id)?;
     indexar(tx, n, &m)?;
@@ -1155,6 +1165,22 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
         }
     }
     Ok((Memoria { redacted, unverified, ..m }, cambiados))
+}
+
+/// Tras moverla o cambiar sus etiquetas desde aquí: quita de `memory.extra` la procedencia que ya no le
+/// toca (`procedencia::para_memoria`): promovida a un oficio, ninguna; global o de un espacio, solo la
+/// sesión. Va en la misma transacción que el cambio, que ya le ha puesto un sello nuevo.
+fn recortar_procedencia(tx: &Transaction, id: &str) -> Result<()> {
+    let (extra, project_id, tags): (String, i64, String) = tx.query_row("SELECT extra, project_id, tags FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
+    if !extra.contains(crate::procedencia::CLAVE) {
+        return Ok(());
+    }
+    let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
+    let tags: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
+    if crate::procedencia::recortar_extra(&mut o, project_id, &tags) {
+        tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
+    }
+    Ok(())
 }
 
 /// Cuelga una foto de `m` del historial de `id`, con el número siguiente al último que tiene.
@@ -1787,6 +1813,12 @@ fn datos_listos(datos: Option<serde_json::Value>, tapados: &mut Vec<&'static str
         ensure!(serde_json::to_string(d)?.len() <= DATOS_MAX, tr!("data over {DATOS_MAX} bytes", "datos de más de {DATOS_MAX} bytes"));
     }
     Ok(datos)
+}
+
+/// Si [`poner_datos`] aceptaría estos datos (después de tapar lo que parezca un secreto), sin escribir:
+/// para comprobarlo antes de crear la memoria a la que van.
+pub(crate) fn comprobar_datos(datos: &serde_json::Value) -> Result<()> {
+    datos_listos(Some(datos.clone()), &mut Vec::new()).map(|_| ())
 }
 
 /// [`poner_datos`] dentro de una transacción, con los datos ya listos y el id entero. `false` si ya
