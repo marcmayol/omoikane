@@ -55,13 +55,124 @@ pub struct Verificada {
     pub at: String,
 }
 
-/// Lo que se guarda: lo anterior y la huella del texto verificado.
+/// Lo que se guarda: lo anterior, la huella del texto verificado y la firma de quien lo puso ([`Llaves`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Sello {
     by: String,
     at: String,
     #[serde(default)]
     sha: String,
+    /// HMAC-SHA256 del sello (id de la memoria, `by`, `at` y `sha`) con la clave de sellos de la
+    /// persona que lo puso: dice que es suyo sin fiarse de `by`, que cualquiera puede escribir.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    mac: String,
+}
+
+// --- De quién es un sello ----------------------------------------------------------------------------
+//
+// Por el repositorio de un espacio (compartido con otras personas) llegan sellos que puso otra persona:
+// su confianza, no la de quien usa esta base (`sync::sello_de_otro`). El `by` de la línea no sirve para
+// saberlo: cualquiera que comparta el espacio puede escribir `"by": "Marc"`. Lo que decide es una firma
+// que solo puede calcular esta persona: un HMAC del sello con su **clave de sellos**, que sale de la
+// clave de su repositorio general (el personal, cifrado, que solo tienen sus equipos: nunca viaja por
+// el de un espacio) y por eso es la misma en todos sus equipos. Sin repositorio general, una clave
+// aleatoria de esta base (`meta('sello_firma')`, que no viaja): sus sellos valen aquí y en ningún otro
+// equipo. Un sello sin firma, con la de otra persona o copiado de otra memoria (la firma cubre el id) o
+// de otro texto (cubre la huella) no es de esta persona.
+
+/// La clave de esta base para firmar sellos sin repositorio general (hex, 32 bytes).
+const META_SELLOS: &str = "sello_firma";
+/// Lo que se firma con la clave del repositorio general para sacar la de sellos (nunca se usa esa
+/// clave tal cual: es la del cifrado).
+const DERIVAR: &[u8] = b"omoikane-verified-seal-key-1";
+
+/// Las claves de sellos de esta persona en este equipo: con cuál firma y con cuáles valen.
+pub(crate) struct Llaves {
+    firmar: Option<Vec<u8>>,
+    validas: Vec<Vec<u8>>,
+}
+
+fn hmac(clave: &[u8], texto: &[u8]) -> Vec<u8> {
+    ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave), texto).as_ref().to_vec()
+}
+
+/// Las claves de sellos de esta base: una por cada clave del repositorio general (con la vigente se
+/// firma; con las de antes de rotarla siguen valiendo los sellos de entonces) y la propia de la base
+/// (con la que se firma si no hay repositorio general). Con `crear`, la de la base se crea si hace falta
+/// para firmar.
+pub(crate) fn llaves(db: &Connection, crear: bool) -> Result<Llaves> {
+    let mut l = Llaves { firmar: None, validas: Vec::new() };
+    if let Some(ruta) = db.path().filter(|p| !p.is_empty()) {
+        let r = crate::sync::rutas(std::path::Path::new(ruta));
+        if crate::proyecto::existe(&r.clave)
+            && let Ok(c) = crate::sync::leer_claves(&r)
+        {
+            for k in c.por_orden() {
+                let d = hmac(k, DERIVAR);
+                l.validas.push(d.clone());
+                l.firmar = Some(d);
+            }
+        }
+    }
+    let hay: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [META_SELLOS], |f| f.get(0)).optional()?;
+    let mut propia = hay.as_deref().and_then(de_hex).filter(|k| k.len() == 32);
+    if propia.is_none() && crear && l.firmar.is_none() {
+        let mut b = [0u8; 32];
+        getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![META_SELLOS, a_hex(&b)])?;
+        propia = Some(b.to_vec());
+    }
+    if let Some(p) = propia {
+        if l.firmar.is_none() {
+            l.firmar = Some(p.clone());
+        }
+        l.validas.push(p);
+    }
+    Ok(l)
+}
+
+fn a_hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn de_hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+}
+
+/// Lo que firma la clave de sellos: cada campo con su largo delante.
+fn texto_mac(id: &str, s: &Sello) -> String {
+    let mut t = String::from("omoikane-seal-1");
+    for c in [id, s.by.as_str(), s.at.as_str(), s.sha.as_str()] {
+        t += &format!("\n{}:{c}", c.len());
+    }
+    t
+}
+
+/// Si el sello (el valor de [`CLAVE`] en `extra`) de la memoria `id` lo puso esta persona: su firma vale
+/// con alguna de sus claves de sellos.
+pub(crate) fn sello_propio(l: &Llaves, id: &str, v: &serde_json::Value) -> bool {
+    let Ok(s) = serde_json::from_value::<Sello>(v.clone()) else { return false };
+    let Some(f) = de_hex(&s.mac) else { return false };
+    let texto = texto_mac(id, &s);
+    l.validas.iter().any(|k| ring::hmac::verify(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, k), texto.as_bytes(), &f).is_ok())
+}
+
+/// Firma de nuevo un sello con la clave de esta persona (al hacerlo suyo: `omoi import <fichero>
+/// --trust-verified`). `false` si no es un sello o no hay con qué firmar.
+pub(crate) fn resellar(l: &Llaves, id: &str, v: &mut serde_json::Value) -> bool {
+    let (Ok(mut s), Some(k)) = (serde_json::from_value::<Sello>(v.clone()), l.firmar.as_ref()) else { return false };
+    s.mac = a_hex(&hmac(k, texto_mac(id, &s).as_bytes()));
+    match serde_json::to_value(&s) {
+        Ok(x) => {
+            *v = x;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// La huella del texto que se verifica: tipo, título y contenido (32 cifras hex).
@@ -194,8 +305,15 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
     if antes.verified.as_ref().is_some_and(|v| v.by == by && v.at == at) {
         return Ok((antes, false));
     }
-    let sello = serde_json::to_value(Sello { by, at, sha: huella(&kind, &title, &content) })?;
-    poner(&tx, id, Some(sello))?;
+    let mut sello = Sello { by, at, sha: huella(&kind, &title, &content), mac: String::new() };
+    // Firmado con la clave de sellos de esta persona (ver `Llaves`): así cuenta como suyo en sus otros
+    // equipos aunque llegue por el repositorio de un espacio.
+    if let Some(k) = llaves(&tx, true)?.firmar {
+        sello.mac = a_hex(&hmac(&k, texto_mac(id, &sello).as_bytes()));
+    }
+    poner(&tx, id, Some(serde_json::to_value(sello)?))?;
+    // Si lo había marcado como de otra persona (`SELLO_AJENO`), ya no: ahora es suyo.
+    tx.execute("DELETE FROM meta WHERE k = ?1", [format!("{SELLO_AJENO}{id}")])?;
     let m = crate::memoria::leer(&tx, id)?;
     tx.commit()?;
     Ok((m, true))

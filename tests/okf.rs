@@ -405,6 +405,28 @@ fn por_la_cli() {
     assert!(ok && s.contains("1 marked as verified by a person"), "{s}");
     let (ok, s) = omoi(&["get", "--key", "okf:a", "--json"]);
     assert!(ok && s.contains("\"by\": \"ana\"") && s.contains("2026-06-25T09:00:00.000Z"), "{s}");
+
+    // Al espacio de un cliente (su repositorio lo comparten otras personas), lo personal, lo fijado o lo
+    // verificado se avisa y, sin nadie delante, no entra sin --yes. Antes entraba sin decir nada.
+    let (ok, s) = omoi(&["space", "add", "cliente"]);
+    assert!(ok, "{s}");
+    let antes = omoi(&["list", "--all", "--json"]).1;
+    let (ok, s) = omoi(&["import", "--okf", b, "--space", "cliente"]);
+    assert!(!ok && s.contains("space «cliente»") && s.contains("1 memories from outside that space") && s.contains("--yes"), "{s}");
+    assert_eq!(omoi(&["list", "--all", "--json"]).1, antes, "nada importado");
+    let (ok, s) = omoi(&["import", "--okf", a, "--space", "cliente", "--trust-verified"]);
+    assert!(!ok && s.contains("1 verified by a person") && s.contains("--yes"), "{s}");
+    // En seco, lo dice sin pedir nada; con --yes, entra.
+    let (ok, s) = omoi(&["import", "--okf", b, "--space", "cliente", "--dry-run"]);
+    assert!(ok && s.contains("1 memories from outside that space"), "{s}");
+    let (ok, s) = omoi(&["import", "--okf", b, "--space", "cliente", "--yes"]);
+    assert!(ok && s.contains("1 new"), "{s}");
+    // Un bundle ajeno sin nada de eso entra sin preguntar.
+    let limpio = dir.join("limpio");
+    std::fs::create_dir_all(&limpio).unwrap();
+    std::fs::write(limpio.join("c.md"), "---\ntype: Fact\ntitle: Del cliente\n---\nC.\n").unwrap();
+    let (ok, s) = omoi(&["import", "--okf", limpio.to_str().unwrap(), "--space", "cliente"]);
+    assert!(ok && !s.contains("--yes"), "{s}");
 }
 
 /// Una copia de la base (la misma firma), sin las memorias `ids` y sin rastro de ellas (ni papelera ni
@@ -774,4 +796,124 @@ fn un_bundle_en_una_ruta_de_red_no_se_abre() {
         assert!(okf::exportar(&a, Path::new(r), Que::Personal).is_err(), "{r}");
         assert!(t.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", t.elapsed());
     }
+}
+
+/// Un concepto firmado por esta base, copiado con el texto intacto y retocado en lo demás, ya no es de
+/// esta base: antes, la firma cubría el texto, el id, si era global o fijada, la verificación, la clave,
+/// el proyecto y los oficios, pero la importación aplicaba también a la memoria de aquí sus etiquetas,
+/// rutas, datos, `status`, `stale_after` y los veredictos `superseded_by`/`contradicts` hacia otro
+/// concepto (también uno ajeno). Ahora la firma cubre todo lo que se aplica: con cualquier retoque,
+/// entra aparte como concepto ajeno y la memoria de aquí no cambia; y un veredicto nunca junta un
+/// concepto de esta base con uno sin su firma.
+#[test]
+fn la_firma_cubre_todo_lo_que_se_aplica() {
+    let dir = comun::Temporal::nueva("okf-firma-todo");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let x = memoria::guardar_por_clave(
+        &mut a,
+        "auth-jwt",
+        Nueva { project: "/p".into(), kind: Some(Tipo::Decision), title: "JWT".into(), content: "La autenticación va con JWT.".into(), tags: vec!["auth".into()], paths: vec!["src/a.rs".into()], ..Default::default() },
+        Some(json!({ "k": 1 })),
+        None,
+    )
+    .unwrap()
+    .memoria
+    .id;
+    let y = guardar(&mut a, "/p", Tipo::Fact, "Cookies", "Van por cookie.", &[], &[]);
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    let fx = concepto_de(&bundle, "JWT");
+    let original = leer(&fx);
+    let ruta_de = |b: &Path, t: &str| format!("/{}", concepto_de(b, t).strip_prefix(b).unwrap().to_string_lossy().replace('\\', "/"));
+    let ruta_y = ruta_de(&bundle, "Cookies");
+    let antes = memoria::obtener(&a, &x).unwrap();
+    let datos_antes = memoria::datos_de(&a, &[x.as_str()]).unwrap().remove(&x);
+    let retoques: Vec<(&str, String)> = vec![
+        ("etiquetas", original.replace("tags: [auth]", "tags: [auth, deprecated, trade:web]")),
+        ("una etiqueta menos", original.replace("tags: [auth]\n", "")),
+        ("rutas", original.replace("code_refs: [src/a.rs]", "code_refs: [src/a.rs, src/b.rs]")),
+        ("rutas absolutas", original.replace("  created: ", "  paths: [\"C:/Windows/x.rs\"]\n  created: ")),
+        ("datos", original.replace("    k: 1", "    k: 2")),
+        ("status", original.replace("tags: [auth]\n", "tags: [auth]\nstatus: draft\n")),
+        ("status deprecated", original.replace("tags: [auth]\n", "tags: [auth]\nstatus: deprecated\n")),
+        ("stale_after", original.replace("tags: [auth]\n", "tags: [auth]\nstale_after: 2026-01-01T00:00:00Z\n")),
+        ("superseded_by", original.replace("  created: ", &format!("  superseded_by: [\"{ruta_y}\"]\n  created: "))),
+        ("contradicts", original.replace("  created: ", &format!("  contradicts: [\"{ruta_y}\"]\n  created: "))),
+        ("updated", original.replace("  updated: 20", "  updated: 21")),
+        ("source", original.replace("  created: ", "  source: mcp:otro\n  created: ")),
+        ("key", original.replace("  key: auth-jwt", "  key: auth-jwt2")),
+    ];
+    for (que, texto) in &retoques {
+        assert_ne!(texto, &original, "{que}: el retoque no cambió nada");
+        std::fs::write(&fx, texto).unwrap();
+        let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+        assert_eq!((r.foreign, r.verdicts), (1, 0), "{que}: {r:?}");
+        let m = memoria::obtener(&a, &x).unwrap();
+        assert_eq!((&m.tags, &m.paths, &m.content), (&antes.tags, &antes.paths, &antes.content), "{que}: la memoria de aquí no cambia");
+        assert_eq!(memoria::datos_de(&a, &[x.as_str()]).unwrap().remove(&x), datos_antes, "{que}: ni sus datos");
+        assert!(veredictos::parejas(&a).unwrap().is_empty(), "{que}: ni veredictos");
+        // Lo que entró aparte (al destino), fuera, para el siguiente retoque.
+        for m in todas(&a).into_iter().filter(|m| m.id != x && m.id != y) {
+            memoria::olvidar_del_todo(&mut a, &m.id).unwrap();
+        }
+    }
+    // Sin retocar, sigue siendo de esta base.
+    std::fs::write(&fx, &original).unwrap();
+    let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.foreign, r.created, r.verdicts), (0, 0, 0), "{r:?}");
+
+    // Un veredicto firmado (de un concepto de esta base) cuyo destino se cambia por un concepto ajeno con
+    // la misma ruta, y un concepto ajeno que dice que lo de aquí está sustituido por él o lo contradice:
+    // ningún veredicto.
+    let mut b2 = db::abrir(&dir.join("b2.db")).unwrap();
+    let viejo = guardar(&mut b2, "/p", Tipo::Fact, "Puerto 80", "El servidor usa el 80.", &[], &[]);
+    let nuevo = guardar(&mut b2, "/p", Tipo::Fact, "Puerto 443", "El servidor usa el 443.", &[], &[]);
+    veredictos::poner(&b2, &viejo, &nuevo, veredictos::SUSTITUIDA, "", "").unwrap();
+    let bundle2 = dir.join("b2");
+    okf::exportar(&b2, &bundle2, Que::Personal).unwrap();
+    let ruta_80 = ruta_de(&bundle2, "Puerto 80");
+    let f_nuevo = concepto_de(&bundle2, "Puerto 443");
+    b2.execute("DELETE FROM verdict", []).unwrap();
+    std::fs::write(&f_nuevo, "---\ntype: Fact\ntitle: Puerto 443\n---\nEl servidor usa el 8443.\n").unwrap();
+    std::fs::write(bundle2.join("ajeno.md"), format!("---\ntype: Fact\ntitle: Ajeno\nomoikane:\n  superseded_by: [\"{ruta_80}\"]\n  contradicts: [\"{ruta_80}\"]\n---\nNada.\n")).unwrap();
+    let r = okf::importar(&mut b2, None, &okf::leer(&bundle2).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.verdicts, r.foreign), (0, 2), "{r:?}");
+    assert!(veredictos::parejas(&b2).unwrap().is_empty());
+}
+
+/// Importar un bundle viejo de esta base no vuelve atrás: antes devolvía la memoria a su texto de
+/// entonces y la volvía a verificar con la fecha de entonces. Ahora, si el `updated` del concepto
+/// (firmado) es anterior al de la memoria de aquí, no se toca (ni texto, ni sello, ni veredictos) y se
+/// cuenta en `skipped_older`. Uno al día se aplica como siempre.
+#[test]
+fn un_bundle_viejo_no_vuelve_atras() {
+    let dir = comun::Temporal::nueva("okf-atras");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let x = guardar(&mut a, "/p", Tipo::Decision, "JWT", "La autenticación va con JWT.", &["auth"], &[]);
+    let y = guardar(&mut a, "/p", Tipo::Decision, "Cookies", "Van por cookie.", &[], &[]);
+    verificado::verificar(&mut a, &x, "Marc").unwrap();
+    veredictos::poner(&a, &x, &y, veredictos::CONTRADICE, "", "").unwrap();
+    let viejo = dir.join("viejo");
+    okf::exportar(&a, &viejo, Que::Personal).unwrap();
+    a.execute("DELETE FROM verdict", []).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // La persona la cambia (y pierde el sello).
+    memoria::actualizar(&mut a, &x, memoria::Cambios { content: Some("La autenticación va con passkeys.".into()), reason: Some("x".into()), ..Default::default() }, None).unwrap();
+    assert!(memoria::obtener(&a, &x).unwrap().verified.is_none());
+    let r = okf::importar(&mut a, None, &okf::leer(&viejo).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.skipped_older, r.verified, r.foreign, r.created), (1, 0, 0, 0), "{r:?}");
+    let m = memoria::obtener(&a, &x).unwrap();
+    assert_eq!((m.content.as_str(), m.verified.is_none()), ("La autenticación va con passkeys.", true), "no vuelve atrás: {m:?}");
+    // El `contradicts` de su concepto viejo, tampoco (el de Cookies, al día, no dice nada de JWT).
+    assert!(veredictos::parejas(&a).unwrap().is_empty());
+    // Exportado ahora, se aplica como siempre (nada cambia).
+    let nuevo = dir.join("nuevo");
+    okf::exportar(&a, &nuevo, Que::Personal).unwrap();
+    let r = okf::importar(&mut a, None, &okf::leer(&nuevo).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.skipped_older, r.unchanged, r.foreign), (0, 2, 0), "{r:?}");
+    // A una copia sin la memoria (la crea con su id), el bundle viejo sí entra, verificado: es su texto.
+    let mut c = copia_sin(&a, &dir.join("c.db"), &[&x]);
+    let r = okf::importar(&mut c, None, &okf::leer(&viejo).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
+    assert_eq!((r.created, r.verified, r.skipped_older), (1, 1, 0), "{r:?}");
+    assert_eq!(memoria::obtener(&c, &x).unwrap().content, "La autenticación va con JWT.");
 }

@@ -476,7 +476,7 @@ fn un_tipo_desconocido_se_conserva() {
     std::fs::write(&fichero, &texto).unwrap();
     let ruta2 = dir.join("otra.db");
     let mut otra = db::abrir(&ruta2).unwrap();
-    omoikane::copia::importar(&mut otra, &ruta2, &fichero, "", None, false, false).unwrap();
+    omoikane::copia::importar(&mut otra, &ruta2, &fichero, "", None, false, Default::default()).unwrap();
     let kind: String = otra.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
 }
@@ -660,6 +660,48 @@ fn por_id_tampoco_se_cruza_de_espacio() {
     // Con una global, sí: se ve desde los dos.
     let (t, error) = llamar(&a_web, "update", serde_json::json!({ "id": acme, "compatible": [global] }));
     assert!(!error, "{t}");
+}
+
+/// `remember` con `supersedes`/`contradicts` hacia una memoria de otro espacio: antes guardaba la
+/// memoria y después fallaba el veredicto con un error que decía el id entero y el NOMBRE del otro
+/// espacio («… are in different spaces («acme» and «globex»)»). Ahora se comprueba antes de guardar
+/// (como en `update`): error sin ids ni nombres, y nada guardado. También con un trozo del id, desde la
+/// carpeta del usuario hacia un proyecto (`project`) de otro espacio, y como espacio (`space`).
+#[test]
+fn remember_no_juzga_otro_espacio_ni_lo_nombra() {
+    let Clientes { dir, db, a_web, .. } = clientes("remember-juzga");
+    let id_de = |t: &str| -> String { db.query_row("SELECT id FROM memory WHERE title = ?1", [t], |f| f.get(0)).unwrap() };
+    let (globex, acme) = (id_de("Globex web: puerto zafiro"), id_de("Acme web: puerto zafiro"));
+    let antes = uno(&db, "SELECT count(*) FROM memory");
+    drop(db);
+    let ruta = dir.join("o.db");
+    let llamar = |desde: &str, args: serde_json::Value| -> (String, bool) {
+        omoikane::mcp::herramienta(ruta.clone(), Some(PathBuf::from(desde)), Some("remember"), &args.to_string(), "test").unwrap()
+    };
+    let home = std::env::home_dir().unwrap().display().to_string();
+    let casos = [
+        (a_web.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "supersedes": [globex] })),
+        (a_web.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "contradicts": [&globex[..20]] })),
+        (a_web.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "supersedes": [globex.to_lowercase()], "force": true })),
+        (home.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "project": a_web, "supersedes": [globex] })),
+        (home.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "space": "acme", "contradicts": [globex] })),
+        (home.clone(), serde_json::json!({ "title": "Puerto nuevo", "content": "Ahora el 8080.", "kind": "fact", "project": a_web, "contradicts": [acme, globex] })),
+    ];
+    for (desde, args) in casos {
+        let (t, error) = llamar(&desde, args.clone());
+        assert!(error, "{args}: {t}");
+        let l = t.to_lowercase();
+        assert!(!l.contains(&globex.to_lowercase()) && !l.contains(&globex[..10].to_lowercase()) && !l.contains("globex") && !l.contains("acme"), "{args}: {t}");
+        let db = db::abrir(&ruta).unwrap();
+        assert_eq!(uno(&db, "SELECT count(*) FROM memory"), antes, "nada guardado: {args}");
+        assert_eq!(uno(&db, "SELECT count(*) FROM verdict"), 0);
+    }
+    // Desde la carpeta del usuario, el error de `update` entre espacios tampoco dice ids ni nombres.
+    let (t, error) = omoikane::mcp::herramienta(ruta.clone(), Some(PathBuf::from(&home)), Some("update"), &serde_json::json!({ "id": acme, "supersedes": [globex], "reason": "x" }).to_string(), "test").unwrap();
+    assert!(error && t.contains("different spaces") && !t.contains(&globex) && !t.contains(&acme) && !t.contains("globex") && !t.contains("acme"), "{t}");
+    // Dentro de su espacio, sí juzga.
+    let (t, error) = llamar(&a_web, serde_json::json!({ "title": "Puerto nuevo de Acme", "content": "Ahora el 8443.", "kind": "fact", "supersedes": [acme], "force": true }));
+    assert!(!error && t.contains("\"judged\": 1"), "{t}");
 }
 
 /// `fundir` y `mover` entre proyectos de espacios distintos: error (de qué espacio a cuál) salvo con

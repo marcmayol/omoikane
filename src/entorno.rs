@@ -45,20 +45,23 @@ pub fn casa() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty()) {
         return casa_de(&h.to_string_lossy());
     }
-    std::env::home_dir().filter(|h| h.is_absolute()).map(|h| h.join(".omoikane"))
+    crate::proyecto::casa_local().map(|h| h.join(".omoikane"))
 }
 
 /// `OMOIKANE_HOME` como ruta: absoluta tal cual, `~` o `~/…` desde la carpeta de usuario; otra, `None`.
+/// Tampoco una de red (`\\servidor\recurso`, `//host/x`, `~/\\host\x`…): cada orden abriría la base
+/// y los ficheros de la sincronización ahí (ver `proyecto::ruta_local`).
 fn casa_de(h: &str) -> Option<PathBuf> {
-    let usuario = || std::env::home_dir().filter(|u| u.is_absolute());
+    let usuario = crate::proyecto::casa_local;
     if h == "~" {
         return usuario();
     }
-    if let Some(resto) = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")) {
-        return usuario().map(|u| u.join(resto));
-    }
-    let p = PathBuf::from(h);
-    p.is_absolute().then_some(p)
+    let p = if let Some(resto) = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")) {
+        usuario()?.join(resto)
+    } else {
+        PathBuf::from(h)
+    };
+    (p.is_absolute() && crate::proyecto::ruta_local(&p)).then_some(p)
 }
 
 /// El error de un `OMOIKANE_HOME` que no vale (relativo, o con `~` sin carpeta de usuario); `None` si
@@ -67,9 +70,30 @@ pub fn casa_mala() -> Option<String> {
     let h = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty())?;
     let h = h.to_string_lossy();
     casa_de(&h).is_none().then(|| {
+        let tras_casa = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")).unwrap_or(&h);
+        let local = |r: &str| crate::proyecto::ruta_local(std::path::Path::new(r));
+        if !local(&h) || !local(tras_casa) {
+            tr!(
+                "OMOIKANE_HOME must be a folder on this computer (it is «{h}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…); map the share to a drive letter if you need it",
+                "OMOIKANE_HOME tiene que ser una carpeta de este equipo (es «{h}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…); si la necesitas, asígnale una letra de unidad"
+            )
+        } else {
+            tr!(
+                "OMOIKANE_HOME must be an absolute path (it is «{h}»): a relative one would change with the folder each command runs in",
+                "OMOIKANE_HOME tiene que ser una ruta absoluta (es «{h}»): una relativa cambiaría con la carpeta en la que se ejecuta cada orden"
+            )
+        }
+    })
+}
+
+/// El error de una base (`--db`, `OMOIKANE_DB`) o una carpeta de modelos (`OMOIKANE_MODELS`) que no es
+/// de este equipo; `None` si vale. Se mira antes de abrir nada.
+pub fn ruta_mala(que: &str, p: &std::path::Path) -> Option<String> {
+    (!crate::proyecto::ruta_local(p)).then(|| {
         tr!(
-            "OMOIKANE_HOME must be an absolute path (it is «{h}»): a relative one would change with the folder each command runs in",
-            "OMOIKANE_HOME tiene que ser una ruta absoluta (es «{h}»): una relativa cambiaría con la carpeta en la que se ejecuta cada orden"
+            "{que} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…); map the share to a drive letter if you need it",
+            "{que} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…); si la necesitas, asígnale una letra de unidad",
+            p.display()
         )
     })
 }
@@ -157,6 +181,14 @@ mod tests {
         if let Some(u) = std::env::home_dir().filter(|u| u.is_absolute()) {
             assert_eq!(casa_de("~/omoi"), Some(u.join("omoi")));
             assert_eq!(casa_de("~"), Some(u));
+        }
+    }
+
+    /// Un `OMOIKANE_HOME` de red (también tras `~/`) no vale: cada orden abriría ahí la base.
+    #[test]
+    fn casa_de_red_no_vale() {
+        for h in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"~/\\10.255.255.1\x", r"~\//10.255.255.1/x"] {
+            assert_eq!(casa_de(h), None, "{h}");
         }
     }
 }

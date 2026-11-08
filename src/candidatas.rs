@@ -474,11 +474,14 @@ pub fn de_turnos(turnos: Vec<Turno>) -> Vec<Candidata> {
 /// Kiro en `Stop`): por su id, en las carpetas que usa cada uno.
 pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     let id = session_id.trim();
-    if id.is_empty() || id.contains(['/', '\\', '.']) {
+    // Ni carpetas ni unidades (`C:x`): el id lo da el hook y se junta con una carpeta.
+    if id.is_empty() || id.contains(['/', '\\', '.', ':']) {
         return None;
     }
-    let casa = std::env::home_dir()?;
-    let copilot = std::env::var_os("COPILOT_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| casa.join(".copilot"));
+    // Las carpetas de las variables, solo si son de este equipo (ver `proyecto::ruta_local`).
+    let casa = crate::proyecto::casa_local()?;
+    let de_variable = |v: &str| std::env::var_os(v).map(std::path::PathBuf::from).and_then(crate::proyecto::local);
+    let copilot = de_variable("COPILOT_HOME").unwrap_or_else(|| casa.join(".copilot"));
     [
         copilot.join("session-state").join(id).join("events.jsonl"),
         copilot.join("session-state").join(format!("{id}.jsonl")),
@@ -488,7 +491,7 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     .find(|p| p.is_file())
     .or_else(|| {
         // Grok: `~/.grok/sessions/<carpeta codificada>/<id>/chat_history.jsonl`.
-        let grok = std::env::var_os("GROK_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| casa.join(".grok"));
+        let grok = de_variable("GROK_HOME").unwrap_or_else(|| casa.join(".grok"));
         std::fs::read_dir(grok.join("sessions")).ok()?.flatten().map(|d| d.path().join(id).join("chat_history.jsonl")).find(|p| p.is_file())
     })
 }

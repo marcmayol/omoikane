@@ -201,7 +201,7 @@ pub fn exportar(db: &Connection, dir: &Path, que: Que) -> Result<Cuenta> {
         }
         let rel = Relaciones { sustituida_por: rutas_de(sustituida_por.get(&m.id)), sustituye_a: rutas_de(sustituye_a.get(&m.id)), contradice: rutas_de(contradice.get(&m.id)) };
         let descripcion = descripcion(&m.content, &m.title);
-        let texto = concepto(m, &grupo(m).titulo, datos.get(&m.id), &rel, &descripcion, &pie, clave.as_deref());
+        let texto = concepto(m, r, &grupo(m).titulo, datos.get(&m.id), &rel, &descripcion, &pie, clave.as_deref());
         let fichero = dir.join(format!("{r}.md"));
         escribir(&fichero, &texto, Some(&mut c))?;
         escritos.insert(fichero);
@@ -472,7 +472,8 @@ fn es_humano(by: &str) -> bool {
     b == "human" || b.starts_with("human:") || b.starts_with("human/")
 }
 
-fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones, descripcion: &str, pie: &[String], clave: Option<&[u8]>) -> String {
+#[allow(clippy::too_many_arguments)]
+fn concepto(m: &Memoria, id_concepto: &str, proyecto: &str, datos: Option<&Value>, rel: &Relaciones, descripcion: &str, pie: &[String], clave: Option<&[u8]>) -> String {
     // Lo que trajo de OKF y Omoikane no tiene, y lo demás de sus datos.
     let (okf, resto): (Map<String, Value>, Option<Value>) = match datos {
         Some(Value::Object(o)) => {
@@ -587,34 +588,31 @@ fn concepto(m: &Memoria, proyecto: &str, datos: Option<&Value>, rel: &Relaciones
     if !sha.is_empty() {
         o.insert("verified_sha".into(), json!(sha));
     }
-    if let Some(k) = clave {
-        let v = m.verified.as_ref().map(|v| (v.by.as_str(), v.at.as_str()));
-        let texto = crate::verificado::huella(m.tipo_texto(), &m.title, m.content.trim());
-        let project_key = if !m.global() && m.project_id != 0 { m.project_key.as_str() } else { "" };
-        let oficios = firma::oficios(&m.tags);
-        let f = firma::Firmado {
-            id: &m.id,
-            global: m.global(),
-            fijada: m.pinned,
-            verificada: v,
-            verified_sha: &sha,
-            texto: &texto,
-            project_key,
-            clave: memoria::clave_de(m).unwrap_or(""),
-            oficios: &oficios,
-        };
-        o.insert("sig".into(), json!(firma::firmar(k, &firma::texto(&f))));
-    }
-    f.insert("omoikane".into(), Value::Object(o));
-    let mut s = String::from("---\n");
-    for (k, v) in &f {
-        yaml::bloque(&mut s, k, v, 0);
-    }
-    s += "---\n\n";
-    s += m.content.trim_end();
-    s += "\n";
-    if !pie.is_empty() {
-        s += &format!("\n{PIE}\n{}\n", pie.join("\n"));
+    f.insert("omoikane".into(), Value::Object(o.clone()));
+    let escrito = |f: &Map<String, Value>| {
+        let mut s = String::from("---\n");
+        for (k, v) in f {
+            yaml::bloque(&mut s, k, v, 0);
+        }
+        s += "---\n\n";
+        s += m.content.trim_end();
+        s += "\n";
+        if !pie.is_empty() {
+            s += &format!("\n{PIE}\n{}\n", pie.join("\n"));
+        }
+        s
+    };
+    let s = escrito(&f);
+    // La firma, de lo que la importación sacará de este mismo texto (ver `firma`): se lee como se leerá
+    // al importarlo y se firma eso. Si no se pudiera leer (no pasa), va sin firma: entraría como de otro.
+    if let Some(k) = clave
+        && let Some((cabecera, cuerpo)) = separar(&s)
+        && let Ok(cabecera) = yaml::leer(cabecera)
+        && let Ok(e) = entrada(&Concepto { id: id_concepto.to_string(), cabecera, cuerpo: cuerpo.to_string() })
+    {
+        o.insert("sig".into(), json!(firma::firmar(k, &texto_firmado(&e))));
+        f.insert("omoikane".into(), Value::Object(o));
+        return escrito(&f);
     }
     s
 }
@@ -693,11 +691,14 @@ fn es_nuestro_concepto(p: &Path) -> bool {
 
 /// Cómo se sabe que un concepto salió de ESTA base: cada uno lleva en `omoikane.sig` un HMAC-SHA256,
 /// con una clave aleatoria de esta base (`meta('okf_firma')`, que no viaja con la sincronización ni con
-/// `omoi export`), de lo que le da poder al importarlo o decide adónde va (`Firmado`): su id, su texto,
-/// si es global, si está fijada, su verificación, su clave, su proyecto y sus oficios. Un bundle de
-/// otro (otra persona, otra base, uno escrito a mano o retocado) no lo puede calcular: nada de eso se
-/// cree (el texto sí se importa, como el de cualquier bundle, en una memoria nueva). Que los ids
-/// existan aquí no basta: cualquiera que haya visto un bundle tuyo los tiene.
+/// `omoi export`), de TODO lo que la importación aplica de él ([`texto_firmado`]): su ruta, su id, su
+/// clave, su proyecto, si es global o fijada, su tipo, título y contenido, sus rutas, sus etiquetas
+/// (también las de `status` y `stale_after`), sus datos, sus fechas, su origen, sus relaciones
+/// (`superseded_by`, `contradicts`) y su verificación. Al exportar se calcula leyendo el concepto ya
+/// escrito igual que al importarlo, así que lo firmado es exactamente lo que se aplicará. Un bundle de
+/// otro (otra persona, otra base, uno escrito a mano o retocado en cualquier campo) no lo puede
+/// calcular: nada de eso se cree (el texto sí se importa, como el de cualquier bundle, en una memoria
+/// nueva). Que los ids existan aquí no basta: cualquiera que haya visto un bundle tuyo los tiene.
 mod firma {
     use anyhow::{Result, anyhow};
     use rusqlite::{Connection, OptionalExtension, params};
@@ -732,52 +733,6 @@ mod firma {
         Ok(Some(b.to_vec()))
     }
 
-    /// Lo que se firma de un concepto: todo lo que le da poder al importarlo o decide adónde va.
-    pub struct Firmado<'a> {
-        pub id: &'a str,
-        pub global: bool,
-        pub fijada: bool,
-        /// Quién la verificó y cuándo.
-        pub verificada: Option<(&'a str, &'a str)>,
-        /// `omoikane.verified_sha`.
-        pub verified_sha: &'a str,
-        /// La huella de su tipo, título y contenido (`verificado::huella`): un concepto firmado no
-        /// puede cambiar de texto y seguir siendo global o fijado.
-        pub texto: &'a str,
-        /// La clave de su proyecto (decide a qué proyecto vuelve).
-        pub project_key: &'a str,
-        /// Su clave (`remember --key`): por ella se casa con lo que ya hay.
-        pub clave: &'a str,
-        /// Sus etiquetas de oficio (`trade:…`, `trade-for:…`), ordenadas: deciden a qué proyectos llega
-        /// una global.
-        pub oficios: &'a [String],
-    }
-
-    /// El texto que se firma, cada campo con su largo delante (un campo con un salto de línea no puede
-    /// hacerse pasar por dos).
-    pub fn texto(f: &Firmado) -> String {
-        let (by, at) = f.verificada.unwrap_or_default();
-        let oficios = f.oficios.join("\n");
-        let campos = [f.id, if f.global { "global" } else { "" }, if f.fijada { "pinned" } else { "" }, by, at, f.verified_sha, f.texto, f.project_key, f.clave, oficios.as_str()];
-        let mut s = String::from("omoikane-okf-2");
-        for c in campos {
-            s += &format!("\n{}:{c}", c.len());
-        }
-        s
-    }
-
-    /// Las etiquetas de oficio de unas etiquetas, como se firman.
-    pub fn oficios(tags: &[String]) -> Vec<String> {
-        let mut v: Vec<String> = tags
-            .iter()
-            .map(|t| t.trim().trim_start_matches('#').to_lowercase())
-            .filter(|t| t.starts_with(crate::oficios::PREFIJO) || t.starts_with(crate::oficios::PARA))
-            .collect();
-        v.sort();
-        v.dedup();
-        v
-    }
-
     pub fn firmar(clave: &[u8], texto: &str) -> String {
         let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave);
         hex(ring::hmac::sign(&k, texto.as_bytes()).as_ref())
@@ -788,6 +743,38 @@ mod firma {
         let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, clave);
         ring::hmac::verify(&k, texto.as_bytes(), &f).is_ok()
     }
+}
+
+/// Lo que se firma de un concepto: todo lo que la importación saca de él y aplica (ver `firma`), tal
+/// como sale de [`entrada`], en JSON (los mapas en el orden en que vienen: otro orden es otra firma).
+/// Menos la firma misma y lo que no se aplica (el pie de enlaces, `description` de un concepto propio).
+fn texto_firmado(e: &Entrada) -> String {
+    let n = &e.nueva;
+    let v = json!({
+        "concept": e.concepto,
+        "id": e.id,
+        "key": e.su_clave,
+        "match_key": e.clave,
+        "global": e.global,
+        "project_key": e.project_key,
+        "kind": n.kind.map(|k| k.as_str()),
+        "kind_text": n.kind_text,
+        "title": n.title,
+        "content": n.content,
+        "paths": n.paths,
+        "tags": n.tags,
+        "pinned": n.pinned,
+        "source": n.source,
+        "data": e.datos,
+        "created": e.creada,
+        "updated": e.cambiada,
+        "generated": e.generada,
+        "superseded_by": e.sustituida_por,
+        "contradicts": e.contradice,
+        "verified": e.verificada,
+        "verified_sha": e.verified_sha,
+    });
+    format!("omoikane-okf-3\n{v}")
 }
 
 // --- Leer un bundle --------------------------------------------------------------------------------
@@ -837,20 +824,66 @@ fn separar(texto: &str) -> Option<(&str, &str)> {
 /// tiene una cabecera YAML legible con un `type` no vacío. Si la carpeta no tiene `index.md` pero sí
 /// `knowledge/`, lee esa (la carpeta de un repositorio con su bundle).
 pub fn leer(dir: &Path) -> Result<Bundle> {
-    leer_con_topes(dir, MAX_FICHEROS, MAX_BYTES)
+    leer_con_topes(dir, &Topes::default())
 }
 
 /// Cuántas entradas (ficheros y carpetas) se recorren como mucho al leer un bundle.
 pub const MAX_FICHEROS: usize = 20_000;
-/// Cuántos bytes de conceptos se leen como mucho al leer un bundle.
-pub const MAX_BYTES: u64 = 200 << 20;
+/// Cuántos bytes de conceptos se leen como mucho al leer un bundle. Un bundle de verdad es mucho
+/// menos: el de una base real de 230 memorias ocupa 0,4 MB, y 20.000 conceptos de 2 KB son 40 MB.
+pub const MAX_BYTES: u64 = 50 << 20;
+/// Lo más que mide la cabecera YAML de un concepto (o de `index.md`). Una de verdad no pasa de unos
+/// pocos KB (la de un concepto exportado de Omoikane, con su firma, ~1 KB); lo demás va en el cuerpo.
+pub const MAX_CABECERA: usize = 256 << 10;
+/// Lo más que miden todas las cabeceras juntas: 20.000 conceptos de 800 bytes.
+pub const MAX_CABECERAS: usize = 16 << 20;
+/// Cuántos valores YAML (cada texto, número, lista o mapa) se leen como mucho entre todas las
+/// cabeceras. Leída, una cabecera ocupa en memoria unas 40 veces lo que mide si es todo listas
+/// cortas (`[a, a, a, …]`): 192 MB de cabeceras así eran 60 s y 7,5 GB de RAM. Con este tope, unos
+/// 200 MB como mucho; una cabecera de verdad tiene de 10 a 40 valores.
+pub const MAX_NODOS: usize = 2_000_000;
+
+/// Los topes al leer un bundle (ver las constantes; los tests los bajan).
+#[derive(Clone, Copy, Debug)]
+pub struct Topes {
+    pub ficheros: usize,
+    pub bytes: u64,
+    pub cabecera: usize,
+    pub cabeceras: usize,
+    pub nodos: usize,
+}
+
+impl Default for Topes {
+    fn default() -> Topes {
+        Topes { ficheros: MAX_FICHEROS, bytes: MAX_BYTES, cabecera: MAX_CABECERA, cabeceras: MAX_CABECERAS, nodos: MAX_NODOS }
+    }
+}
+
+/// Cuántos valores tiene un valor leído: él y los de dentro.
+fn nodos(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => 1 + a.iter().map(nodos).sum::<usize>(),
+        Value::Object(o) => 1 + o.values().map(nodos).sum::<usize>(),
+        _ => 1,
+    }
+}
+
+/// El error de un bundle que pasa de un tope, para que se vea que no es un fallo de un concepto.
+fn demasiado(raiz: &Path, que: String) -> anyhow::Error {
+    anyhow!(tr!(
+        "{} {que}: too much for a knowledge bundle (is it the right folder?); nothing was imported",
+        "{} {que}: demasiado para un bundle de conocimiento (¿es la carpeta buena?); no se ha importado nada",
+        raiz.display()
+    ))
+}
 
 /// Si una entrada se puede leer sin seguir un enlace: ni enlace simbólico ni unión de Windows.
 fn sin_enlace(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink()) && !es_union(p)
 }
 
-fn leer_con_topes(dir: &Path, max_ficheros: usize, max_bytes: u64) -> Result<Bundle> {
+fn leer_con_topes(dir: &Path, topes: &Topes) -> Result<Bundle> {
+    let (max_ficheros, max_bytes) = (topes.ficheros, topes.bytes);
     crate::proyecto::exigir_local(dir)?;
     if !dir.is_dir() {
         bail!(tr!("{} is not a folder", "{} no es una carpeta", dir.display()));
@@ -874,7 +907,13 @@ fn leer_con_topes(dir: &Path, max_ficheros: usize, max_bytes: u64) -> Result<Bun
     };
     if indice_vale {
         let t = std::fs::read_to_string(&indice).with_context(|| indice.display().to_string())?;
-        if let Some((cabecera, _)) = separar(&t) {
+        if let Some((cabecera, _)) = separar(&t).filter(|(c, _)| {
+            let cabe = c.len() <= topes.cabecera;
+            if !cabe {
+                avisos.push(tr!("index.md: a YAML header over {} KB, skipped", "index.md: una cabecera YAML de más de {} KB, saltado", topes.cabecera >> 10));
+            }
+            cabe
+        }) {
             let c = yaml::leer(cabecera).map_err(|e| anyhow!(tr!("{}: the YAML header can't be read: {e}", "{}: no se puede leer la cabecera YAML: {e}", indice.display())))?;
             version = c.get("okf_version").map(|v| match v {
                 Value::String(s) => s.clone(),
@@ -933,6 +972,10 @@ fn leer_con_topes(dir: &Path, max_ficheros: usize, max_bytes: u64) -> Result<Bun
     ficheros.sort();
     let mut conceptos = Vec::new();
     let mut malos = Vec::new();
+    // Primero, los textos y lo que miden sus cabeceras (sin leer el YAML): una cabecera enorme no se
+    // llega a leer, y las de todos juntos tienen su tope antes de leer ninguna.
+    let mut leidos: Vec<(String, String, String)> = Vec::new();
+    let mut en_cabeceras = 0usize;
     for p in &ficheros {
         let rel = p.strip_prefix(&raiz).unwrap_or(p).to_string_lossy().replace('\\', "/");
         let id = rel.strip_suffix(".md").or_else(|| rel.strip_suffix(".MD")).unwrap_or(&rel).to_string();
@@ -943,10 +986,27 @@ fn leer_con_topes(dir: &Path, max_ficheros: usize, max_bytes: u64) -> Result<Bun
                 continue;
             }
         };
-        let Some((cabecera, cuerpo)) = separar(&texto) else {
+        let Some((cabecera, _)) = separar(&texto) else {
             malos.push(tr!("{rel}: no YAML header (--- … ---)", "{rel}: sin cabecera YAML (--- … ---)"));
             continue;
         };
+        if cabecera.len() > topes.cabecera {
+            malos.push(tr!(
+                "{rel}: a YAML header over {} KB (a concept's header holds a few fields; the rest goes in the body)",
+                "{rel}: una cabecera YAML de más de {} KB (la de un concepto lleva unos pocos campos; lo demás va en el cuerpo)",
+                topes.cabecera >> 10
+            ));
+            continue;
+        }
+        en_cabeceras += cabecera.len();
+        if en_cabeceras > topes.cabeceras {
+            return Err(demasiado(&raiz, tr!("holds over {} MB of YAML headers", "tiene más de {} MB de cabeceras YAML", topes.cabeceras >> 20)));
+        }
+        leidos.push((rel, id, texto));
+    }
+    let mut en_nodos = 0usize;
+    for (rel, id, texto) in leidos {
+        let Some((cabecera, cuerpo)) = separar(&texto) else { continue };
         let c = match yaml::leer(cabecera) {
             Ok(c) => c,
             Err(e) => {
@@ -954,6 +1014,10 @@ fn leer_con_topes(dir: &Path, max_ficheros: usize, max_bytes: u64) -> Result<Bun
                 continue;
             }
         };
+        en_nodos += c.values().map(nodos).sum::<usize>();
+        if en_nodos > topes.nodos {
+            return Err(demasiado(&raiz, tr!("holds over {} values in its YAML headers", "tiene más de {} valores en sus cabeceras YAML", topes.nodos)));
+        }
         if !c.get("type").is_some_and(|t| !escalar_texto(t).trim().is_empty()) {
             malos.push(tr!("{rel}: the header has no `type`", "{rel}: la cabecera no tiene `type`"));
             continue;
@@ -1054,6 +1118,8 @@ pub struct Resumen {
     pub ignored_pinned: usize,
     /// Los que son de una memoria olvidada aquí (en la papelera o con su marca de olvido): no vuelven.
     pub skipped_forgotten: usize,
+    /// Los de esta base más viejos que su memoria de aquí (exportados antes de cambiarla): no la tocan.
+    pub skipped_older: usize,
     /// Los títulos de las memorias en las que se tapó algo que parecía un secreto.
     pub redacted: Vec<String>,
 }
@@ -1084,8 +1150,6 @@ struct Entrada {
     verified_sha: Option<String>,
     /// La firma de la base de la que salió (`omoikane.sig`, ver `firma`).
     firma: Option<String>,
-    /// La huella del tipo, el título y el contenido tal como vienen (lo que cubre la firma).
-    huella: String,
 }
 
 /// La clave por la que se guarda un concepto: la que trae de Omoikane, `okf:<id de memoria>` si salió
@@ -1248,11 +1312,6 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
         generada: f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).filter(|a| !a.trim().is_empty()),
         verified_sha: texto("verified_sha").filter(|s| !s.is_empty()),
         firma: texto("sig").filter(|s| !s.is_empty()),
-        huella: crate::verificado::huella(
-            om.get("kind").and_then(Value::as_str).unwrap_or_default(),
-            &f.get("title").map(escalar_texto).unwrap_or_default(),
-            if nuestra { cuerpo.trim() } else { "" },
-        ),
     })
 }
 
@@ -1262,6 +1321,18 @@ fn tipo_okf_de(t: Tipo) -> String {
 
 fn es_resumen(c: &Concepto) -> bool {
     c.cabecera.get("omoikane").and_then(|o| o.get("hub")).and_then(Value::as_bool) == Some(true)
+}
+
+/// Cuántos conceptos de un bundle salieron de Omoikane (llevan `omoikane:`) fuera del espacio de clave
+/// `espacio`: memorias personales (sin espacio) o de otro cliente. Importadas con `--space`, irían al
+/// repositorio de ese espacio, que comparten otras personas.
+pub fn de_fuera_del_espacio(b: &Bundle, espacio: &str) -> usize {
+    b.conceptos
+        .iter()
+        .filter(|c| !es_resumen(c))
+        .filter_map(|c| c.cabecera.get("omoikane").and_then(Value::as_object))
+        .filter(|o| o.get("space").and_then(Value::as_str).unwrap_or("") != espacio)
+        .count()
 }
 
 /// El espacio de un bundle exportado desde un espacio (el `omoikane.space` de sus conceptos).
@@ -1377,11 +1448,13 @@ pub fn importar_con(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, de
     // Los resúmenes de grupo de una exportación de Omoikane no son memorias.
     let conceptos: Vec<&Concepto> = b.conceptos.iter().filter(|c| !es_resumen(c)).collect();
     let mut r = Resumen { concepts: conceptos.len(), ..Resumen::default() };
-    // Id de concepto (en minúsculas) → id de memoria, y las relaciones que trae cada uno.
-    let mut ids: HashMap<String, String> = HashMap::new();
+    // Id de concepto (en minúsculas) → id de memoria, si es de esta base y si se saltó por más viejo que
+    // su memoria de aquí (`None`: dos conceptos con la misma ruta salvo mayúsculas, que no se sabe cuál
+    // es), y las relaciones que trae cada uno.
+    let mut ids: HashMap<String, Option<(String, bool, bool)>> = HashMap::new();
     // Las memorias que ya ha tocado esta importación.
     let mut tocadas: BTreeSet<String> = BTreeSet::new();
-    let mut relaciones: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    let mut relaciones: Vec<(String, bool, Vec<String>, Vec<String>)> = Vec::new();
     for c in conceptos {
         match importar_uno(db, modelo, c, destino, op, clave.as_deref(), &mut tocadas) {
             Ok((u, e)) => {
@@ -1409,9 +1482,13 @@ pub fn importar_con(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, de
                 if u.tapado {
                     r.redacted.push(e.nueva.title.clone());
                 }
+                r.skipped_older += usize::from(u.mas_viejo);
                 if let Some(id) = u.id {
-                    ids.insert(e.concepto.to_lowercase(), id.clone());
-                    relaciones.push((id, e.sustituida_por, e.contradice));
+                    ids.entry(e.concepto.to_lowercase()).and_modify(|x| *x = None).or_insert_with(|| Some((id.clone(), u.propio, u.mas_viejo)));
+                    // Las relaciones de uno que no se ha aplicado (más viejo que la memoria de aquí), no.
+                    if !u.mas_viejo {
+                        relaciones.push((id, u.propio, e.sustituida_por, e.contradice));
+                    }
                 }
             }
             Err(err) => {
@@ -1426,15 +1503,18 @@ pub fn importar_con(db: &mut Connection, modelo: Option<&Modelo>, b: &Bundle, de
     // Los veredictos entre lo importado: `superseded_by` y `contradicts` llevan a otros conceptos del
     // bundle (`/ruta.md`). Uno que ya vale no se vuelve a poner.
     let vigentes = veredictos::parejas(db)?;
-    let id_de = |ruta: &str| -> Option<&String> {
+    let id_de = |ruta: &str| -> Option<&(String, bool, bool)> {
         let r = ruta.trim().trim_start_matches('/');
         let r = r.strip_suffix(".md").unwrap_or(r);
-        ids.get(&r.to_lowercase())
+        ids.get(&r.to_lowercase()).and_then(Option::as_ref)
     };
-    for (id, sustituida_por, contradice) in &relaciones {
+    for (id, propio, sustituida_por, contradice) in &relaciones {
         for (relacion, otras) in [(veredictos::SUSTITUIDA, sustituida_por), (veredictos::CONTRADICE, contradice)] {
-            for otra in otras.iter().filter_map(|o| id_de(o)) {
-                if otra == id {
+            for (otra, otra_propia, otra_vieja) in otras.iter().filter_map(|o| id_de(o)) {
+                // Nunca entre un concepto de esta base y uno sin su firma: uno ajeno no puede dar por
+                // sustituida (ni contradecir) una memoria de aquí, ni al revés con lo que diga un concepto
+                // propio copiado junto a otros de fuera. Ni hacia uno que no se aplicó por viejo.
+                if otra == id || otra_propia != propio || *otra_vieja {
                     continue;
                 }
                 let ya = vigentes.get(&veredictos::pareja(id, otra)).is_some_and(|v| v.relation == relacion && (relacion == veredictos::CONTRADICE || v.memory_id == *id));
@@ -1483,6 +1563,10 @@ struct Uno {
     sin_fijar: bool,
     /// Entra como global.
     global: bool,
+    /// Lleva la firma de esta base.
+    propio: bool,
+    /// Es de esta base pero más viejo que la memoria de aquí (su `updated` es anterior): no la toca.
+    mas_viejo: bool,
 }
 
 /// Error si la entrada deja (o crea) una memoria de oficio —global, con `trade:`— con algo de un
@@ -1548,28 +1632,13 @@ fn despues_de(db: &Connection, a: &str, b: &str) -> Result<bool> {
 /// Importa un concepto: qué pasó y su entrada.
 fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, destino: &Destino, op: Opciones, clave: Option<&[u8]>, tocadas: &mut BTreeSet<String>) -> Result<(Uno, Entrada)> {
     let mut e = entrada(c)?;
-    // ¿Salió de esta base? Su firma cubre su id, su texto, si es global, si está fijada, su
-    // verificación, su proyecto, su clave y sus oficios (ver `firma::Firmado`).
+    // ¿Salió de esta base? Su firma cubre todo lo que se aplica de él (ver `firma` y `texto_firmado`):
+    // un campo cambiado, quitado o añadido lo deja sin firma.
     let propio = match (clave, &e.firma, &e.id) {
-        (Some(k), Some(f), Some(id)) => {
-            let v = e.verificada.as_ref().map(|(by, at)| (by.as_str(), at.as_deref().unwrap_or("")));
-            let oficios = firma::oficios(&e.nueva.tags);
-            let firmado = firma::Firmado {
-                id,
-                global: e.global,
-                fijada: e.nueva.pinned,
-                verificada: v,
-                verified_sha: e.verified_sha.as_deref().unwrap_or(""),
-                texto: &e.huella,
-                project_key: e.project_key.as_deref().unwrap_or(""),
-                clave: e.su_clave.as_deref().unwrap_or(""),
-                oficios: &oficios,
-            };
-            firma::vale(k, &firma::texto(&firmado), f)
-        }
+        (Some(k), Some(f), Some(_)) => firma::vale(k, &texto_firmado(&e), f),
         _ => false,
     };
-    let mut u = Uno { id: None, hecho: Hecho::Igual, tapado: false, sello: Sello::Nada, ajeno: !propio, sin_global: false, sin_fijar: false, global: false };
+    let mut u = Uno { id: None, hecho: Hecho::Igual, tapado: false, sello: Sello::Nada, ajeno: !propio, sin_global: false, sin_fijar: false, global: false, propio, mas_viejo: false };
     if !propio {
         // De otro: ni global, ni fijada; va al destino pedido como cualquier concepto.
         if e.global {
@@ -1665,6 +1734,24 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
         (None, None) if con_su_id.is_some() => None,
         (None, None) => existente(db, &proyecto, project_id, space_id, &e.clave)?,
     };
+    // Vuelta atrás: un concepto de esta base más viejo que la memoria de aquí (su `updated`, firmado, es
+    // anterior al de ella: un bundle exportado antes de cambiarla) no la toca. Ni su texto, ni sus
+    // etiquetas, rutas o datos, ni sus veredictos, ni el sello: devolvería la memoria a lo de entonces y
+    // la verificaría con la fecha de entonces.
+    if propio && let Some((id, _)) = &antes {
+        let aqui: String = db.query_row("SELECT updated_at FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+        let mas_viejo = match &e.cambiada {
+            Some(c) => despues_de(db, &aqui, c)?,
+            None => true,
+        };
+        if mas_viejo {
+            u.mas_viejo = true;
+            u.hecho = Hecho::Igual;
+            u.id = Some(id.clone());
+            tocadas.insert(id.clone());
+            return Ok((u, e));
+        }
+    }
     // Si el `verified` de una persona puede poner el sello.
     u.sello = match &e.verificada {
         None => Sello::Nada,
@@ -1753,6 +1840,16 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
                     params![instante_sql(v), id],
                 )?;
             }
+        }
+    }
+    // El sello vuelve solo si el texto que se verificó (`verified_sha`) es el que la memoria tiene AHORA,
+    // ya escrita (al guardarla se pudo tapar un secreto, o la memoria a la que fue tenía otro texto).
+    if u.sello == Sello::Puesto
+        && let Some(sha) = &e.verified_sha
+    {
+        let m = memoria::obtener(db, &id)?;
+        if crate::verificado::huella(m.tipo_texto(), &m.title, &m.content) != *sha {
+            u.sello = Sello::Viejo;
         }
     }
     // El sello de verificada, después del texto (cambiarlo quita el que hubiera) y con la fecha original.
@@ -2535,10 +2632,24 @@ mod tests {
         let b = leer(&raiz).unwrap();
         assert!(b.version.is_none() && b.avisos.iter().any(|a| a.contains("index.md") && a.contains("1 MB")), "{:?}", b.avisos);
         assert_eq!(b.conceptos.len(), 5);
-        let e = format!("{}", leer_con_topes(&raiz, 4, MAX_BYTES).unwrap_err());
+        let e = format!("{}", leer_con_topes(&raiz, &Topes { ficheros: 4, ..Topes::default() }).unwrap_err());
         assert!(e.contains("over 4 files and folders") && e.contains("nothing was imported"), "{e}");
-        let e = format!("{}", leer_con_topes(&raiz, MAX_FICHEROS, 40).unwrap_err());
+        let e = format!("{}", leer_con_topes(&raiz, &Topes { bytes: 40, ..Topes::default() }).unwrap_err());
         assert!(e.contains("MB of concepts"), "{e}");
+        // Los topes de las cabeceras: cada una, todas juntas y los valores leídos.
+        let e = format!("{}", leer_con_topes(&raiz, &Topes { cabeceras: 40, ..Topes::default() }).unwrap_err());
+        assert!(e.contains("MB of YAML headers") && e.contains("nothing was imported"), "{e}");
+        let e = format!("{}", leer_con_topes(&raiz, &Topes { nodos: 3, ..Topes::default() }).unwrap_err());
+        assert!(e.contains("values in its YAML headers") && e.contains("nothing was imported"), "{e}");
+        assert_eq!(MAX_BYTES, 50 << 20);
+        assert_eq!(MAX_CABECERA, 256 << 10);
+        // Una cabecera de más de 256 KB (aquí, una lista `[…]` de 300 KB): el bundle no vale, sin leerla.
+        std::fs::write(raiz.join("sub").join("enorme.md"), format!("---\ntype: Fact\nx: [{}]\n---\nA.\n", "a, ".repeat(100_000))).unwrap();
+        let inicio = std::time::Instant::now();
+        let e = format!("{:#}", leer(&raiz).unwrap_err());
+        assert!(e.contains("sub/enorme.md") && e.contains("over 256 KB"), "{e}");
+        assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+        std::fs::remove_file(raiz.join("sub").join("enorme.md")).unwrap();
         // Un `index.md` que es un enlace (aquí, a un fichero de fuera) no se lee.
         let fuera = t.join("fuera.md");
         std::fs::write(&fuera, "---\nokf_version: \"9.9\"\n---\n").unwrap();

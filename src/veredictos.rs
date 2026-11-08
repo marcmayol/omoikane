@@ -87,6 +87,29 @@ pub fn autor(db: &Connection, origen: &str, memoria: &str) -> String {
     }
 }
 
+/// El error de un veredicto entre memorias de espacios distintos, sin decir cuáles ni de quién.
+pub fn distintos_espacios() -> String {
+    crate::tr!(
+        "these memories are in different spaces: a verdict can't join them",
+        "estas memorias son de espacios distintos: un veredicto no puede juntarlas"
+    )
+}
+
+/// Si un veredicto puede juntar la memoria `otra` (el id entero, viva) con una que es global (`global`)
+/// o de `espacio` (su clave; vacía, de ninguno): para comprobarlo antes de guardar la memoria nueva.
+pub fn comprobar_espacios(db: &Connection, otra: &str, global: bool, espacio: &str) -> Result<()> {
+    if global {
+        return Ok(());
+    }
+    if let Some((g, e)) = crate::memoria::alcance_de_memoria(db, otra)?
+        && !g
+        && e != espacio
+    {
+        anyhow::bail!(distintos_espacios());
+    }
+    Ok(())
+}
+
 /// Apunta un veredicto de este equipo. `other_id` vacío solo con `ok:<aviso>`. `motivo` y `autor`
 /// pueden ir vacíos (un «está bien así» no necesita motivo).
 pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, motivo: &str, autor: &str) -> Result<()> {
@@ -104,8 +127,8 @@ pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, m
         && !gb
         && ea != eb
     {
-        let nombre = |e: &str| if e.is_empty() { "no space".to_string() } else { format!("«{e}»") };
-        anyhow::bail!("{id} and {otra} are in different spaces ({} and {}): a verdict can't join them", nombre(&ea), nombre(&eb));
+        // Sin ids ni nombres de espacio: el de la otra puede ser de otro cliente.
+        anyhow::bail!(distintos_espacios());
     }
     // Posterior al último cambio de texto de las dos: aunque ese cambio venga de un equipo con la hora
     // muy adelantada (que no adelanta el reloj de aquí), el veredicto que se da ahora vale.

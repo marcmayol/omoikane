@@ -395,6 +395,14 @@ pub(crate) struct Cifra {
     claves: BTreeMap<u32, Vec<u8>>,
 }
 
+impl Cifra {
+    /// Las claves, de la más vieja a la vigente (para sacar de ellas la clave de sellos de la persona:
+    /// `verificado::llaves`).
+    pub(crate) fn por_orden(&self) -> impl Iterator<Item = &Vec<u8>> {
+        self.claves.values()
+    }
+}
+
 /// El id y el cuerpo de una línea con id de clave (`k2:…`, o sin prefijo: la 1). `None` si lleva una
 /// etiqueta que no es de clave.
 fn partir(linea: &str) -> Option<(u32, &str)> {
@@ -1014,15 +1022,18 @@ pub fn clave(project: &str, persona: &str) -> String {
 
 /// La URL del remoto `origin`, leyendo `.git/config` (rápido; en un worktree, el del repositorio).
 pub(crate) fn origen_git(raiz: &Path) -> Option<String> {
+    if !crate::proyecto::ruta_local(raiz) {
+        return None;
+    }
     let punto_git = raiz.join(".git");
     let config = if punto_git.is_dir() {
         punto_git.join("config")
     } else {
-        // Worktree: `.git` es un fichero «gitdir: <repo>/.git/worktrees/<nombre>».
+        // Worktree: `.git` es un fichero «gitdir: <repo>/.git/worktrees/<nombre>» (nunca de red).
         let t = std::fs::read_to_string(&punto_git).ok()?;
-        let gitdir = PathBuf::from(t.trim().strip_prefix("gitdir:")?.trim());
+        let gitdir = crate::proyecto::local(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
         let comun = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| gitdir.join(c.trim())).unwrap_or(gitdir);
-        comun.join("config")
+        crate::proyecto::local(comun)?.join("config")
     };
     let texto = std::fs::read_to_string(config).ok()?;
     let mut en_origin = false;
@@ -1821,23 +1832,28 @@ impl Resumen {
 }
 
 /// Si la línea de una memoria que llega por el repositorio de un espacio (compartido con otras
-/// personas) trae el sello de verificada de alguien que no es la persona de aquí: su `by` no es quien
-/// verifica aquí por defecto en ese espacio (`verificado::quien_aqui`: `OMOIKANE_AUTHOR`, el autor de
-/// `sync join` o el usuario del sistema) ni el autor de ese repositorio. Ese sello no cuenta aquí: es la
-/// confianza de otra persona, no la de quien usa esta base. Por el repositorio general (el de la
-/// persona, entre sus equipos) los sellos cuentan, como siempre. Devuelve lo que identifica ese sello
-/// (`by` y `at`, para [`crate::verificado::SELLO_AJENO`]).
-fn sello_de_otro(db: &Connection, c: &Config, space_key: &str, extra: &Extra) -> Result<Option<String>> {
+/// personas) trae un sello de verificada que no puso la persona de aquí. Lo decide la firma del sello
+/// con la clave de sellos de esta persona (`verificado::sello_propio`; sale de su repositorio general,
+/// que nadie más tiene), nunca su `by`: cualquiera que comparta el espacio puede escribir
+/// `"by": "<tu nombre>"`. Ese sello no cuenta aquí: es la confianza de otra persona. Por el repositorio
+/// general (el de la persona, entre sus equipos) los sellos cuentan, como siempre. Devuelve lo que
+/// identifica ese sello (`by` y `at`, para [`crate::verificado::SELLO_AJENO`]).
+fn sello_de_otro(db: &Connection, c: &Config, id: &str, extra: &Extra) -> Result<Option<String>> {
     if c.space.is_none() {
         return Ok(None);
     }
     let Some(v) = extra.get(crate::verificado::CLAVE) else { return Ok(None) };
     let texto = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    let (by, at) = (texto("by"), texto("at"));
-    let mismo = |a: &str| !a.trim().is_empty() && a.trim().eq_ignore_ascii_case(by.trim());
-    // (No `c.person`: al unirse con un código es la de quien invitó.)
-    let propio = mismo(&crate::verificado::quien_aqui(db, space_key)?) || c.author.as_deref().is_some_and(mismo);
-    Ok((!propio).then(|| format!("{by}\n{at}")))
+    // Uno suyo, pero anterior a cuando la persona le quitó aquí la verificación: otro del espacio puede
+    // volver a mandar un sello viejo de la persona (lleva su firma) para deshacer ese «ya no».
+    let desverificada_despues = match crate::verificado::desverificada_en(db, id)? {
+        Some(d) => d > texto("at"),
+        None => false,
+    };
+    if !desverificada_despues && crate::verificado::sello_propio(&crate::verificado::llaves(db, false)?, id, v) {
+        return Ok(None);
+    }
+    Ok(Some(format!("{}\n{}", texto("by"), texto("at"))))
 }
 
 fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
@@ -2159,7 +2175,7 @@ impl<'a> Aplicador<'a> {
                 // `meta` que aquí no vale: `memoria::COLUMNAS` no lo da por verificado.
                 if let Some(c) = self.config {
                     let marca = format!("{}{id}", crate::verificado::SELLO_AJENO);
-                    match sello_de_otro(db, c, &space_key, &extra)? {
+                    match sello_de_otro(db, c, &id, &extra)? {
                         Some(sello) => {
                             r.sellos_ajenos += 1;
                             db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![marca, sello])?;

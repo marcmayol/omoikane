@@ -481,9 +481,12 @@ enum Orden {
         /// With --okf: into the global memories (every project sees them). Needed to import from the home folder.
         #[arg(long, requires = "okf", conflicts_with = "space")]
         global: bool,
-        /// With --okf: also keep the "verified by a person" of a bundle that wasn't exported from this database (someone else's). Never from a coding agent's shell.
-        #[arg(long, requires = "okf")]
+        /// Also keep the "verified by a person" that someone else put: in a bundle that wasn't exported from this database, or in a file whose verifications you didn't sign (someone else's export). Never from a coding agent's shell.
+        #[arg(long)]
         trust_verified: bool,
+        /// With --okf --space: import without asking even if it brings pinned, verified or personal memories into the client's space (its repository is shared).
+        #[arg(long, requires = "space")]
+        yes: bool,
         /// Import even what looks like a memory already saved.
         #[arg(short, long)]
         force: bool,
@@ -862,6 +865,15 @@ fn main() -> Result<()> {
     if let Some(e) = omoikane::entorno::casa_mala() {
         bail!(e);
     }
+    // La base y los modelos, solo en este equipo: con `\\servidor\recurso` (o `//host/x`) en `--db`,
+    // `OMOIKANE_DB` u `OMOIKANE_MODELS`, cada orden abriría ahí una conexión SMB.
+    if !sin_base
+        && (cli.comun.db.is_some() || omoikane::entorno::hay_donde_guardar())
+        && let Some(e) = omoikane::entorno::ruta_mala(&tr!("the database", "la base"), &cli.comun.db.clone().unwrap_or_else(db::ruta_por_defecto))
+            .or_else(|| omoikane::entorno::ruta_mala("OMOIKANE_MODELS", &omoikane::modelos::carpeta()))
+    {
+        bail!(e);
+    }
     if !sin_base && cli.comun.db.is_none() && !omoikane::entorno::hay_donde_guardar() {
         bail!(omoikane::entorno::sin_casa());
     }
@@ -934,7 +946,7 @@ fn exportar_okf(c: &Comun, carpeta: &Path, space: Option<String>) -> Result<()> 
 }
 
 /// `omoi import --okf`: aparte de `ejecutar` para no agrandar su marco de pila.
-fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, confiar: bool, dry_run: bool) -> Result<()> {
+fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, confiar: bool, si: bool, dry_run: bool) -> Result<()> {
     // Desde la carpeta personal, todo iría a lo global (lo ve cualquier proyecto): solo si se pide.
     let actual = proyecto_de(c)?;
     anyhow::ensure!(
@@ -962,6 +974,33 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, 
     // --trust-verified.
     let agente = omoikane::verificado::shell_de_agente();
     let op = omoikane::okf::Opciones { en_seco: dry_run, verificar: agente.is_none(), confiar_verificadas: confiar && agente.is_none() };
+    // Al espacio de un cliente (su repositorio lo comparten otras personas): lo fijado, lo verificado y
+    // lo personal (memorias de Omoikane de fuera de ese espacio) se avisa, y sin --yes se pregunta (sin
+    // nadie delante, se para).
+    if let omoikane::okf::Destino::Espacio(e) = &destino {
+        let previa = omoikane::okf::importar_con(&mut db, modelo.as_ref(), &bundle, &destino, omoikane::okf::Opciones { en_seco: true, ..op })?;
+        let clave = proyecto::clave_espacio(&db, Some(*e))?;
+        let fuera = omoikane::okf::de_fuera_del_espacio(&bundle, &clave);
+        if previa.pinned + previa.verified + fuera > 0 {
+            let aviso = tr!(
+                "this goes into the space «{clave}», whose sync repository other people share: {} pinned, {} verified by a person and {} memories from outside that space (personal or another client's) would come in",
+                "esto va al espacio «{clave}», cuyo repositorio de sincronización comparten otras personas: entrarían {} fijadas, {} verificadas por una persona y {} memorias de fuera de ese espacio (personales o de otro cliente)",
+                previa.pinned,
+                previa.verified,
+                fuera
+            );
+            eprintln!("omoikane: {aviso}");
+            if !dry_run && !si {
+                anyhow::ensure!(
+                    omoikane::entorno::puede_preguntar(),
+                    tr!("nothing was imported: add --yes if that is what you want", "no se ha importado nada: añade --yes si es lo que quieres")
+                );
+                if !preguntar_si(&tr!("Import them into the space?", "¿Importarlas al espacio?"), false)? {
+                    bail!(tr!("nothing was imported", "no se ha importado nada"));
+                }
+            }
+        }
+    }
     let r = omoikane::okf::importar_con(&mut db, modelo.as_ref(), &bundle, &destino, op)?;
     if r.untrusted_verified > 0 {
         eprintln!(
@@ -1005,6 +1044,16 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, 
                 "omoikane: {} concepts are memories you forgot here: skipped (to bring one back, `omoi restore <id>`)",
                 "omoikane: {} conceptos son memorias que olvidaste aquí: saltados (para recuperar una, `omoi restore <id>`)",
                 r.skipped_forgotten
+            )
+        );
+    }
+    if r.skipped_older > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} concepts are older than their memory here (exported before it changed): left as they are here, with no verification or verdicts from the bundle",
+                "omoikane: {} conceptos son más viejos que su memoria de aquí (exportados antes de que cambiara): se quedan como están aquí, sin la verificación ni los veredictos del bundle",
+                r.skipped_older
             )
         );
     }
@@ -1585,16 +1634,30 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             let all = all || proyecto::es_general(&proyecto);
             omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
         }
-        Orden::Import { okf: Some(carpeta), space, global, trust_verified, dry_run, .. } => importar_okf(c, &carpeta, space, global, trust_verified, dry_run),
-        Orden::Import { fichero, force, dry_run, .. } => {
+        Orden::Import { okf: Some(carpeta), space, global, trust_verified, yes, dry_run, .. } => importar_okf(c, &carpeta, space, global, trust_verified, yes, dry_run),
+        Orden::Import { fichero, force, dry_run, trust_verified, .. } => {
             let fichero = fichero.context("missing file")?;
+            // Un fichero de red no se abre (ver `proyecto::ruta_local`).
+            proyecto::exigir_local(&fichero)?;
             let actual = proyecto_de(c)?;
             if omoikane::copia::es_propio(&fichero)? {
                 let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
                 let (mut db, modelo) = abrir_con_modelo(c)?;
-                // Desde la shell de un agente, sin los sellos de verificada (como `import --okf`).
+                // Los sellos de verificada, como en `import --okf`: los que puso esta persona; los de otra,
+                // solo con --trust-verified; y desde la shell de un agente, ninguno.
                 let agente = omoikane::verificado::shell_de_agente();
-                let (cuenta, r) = omoikane::copia::importar(&mut db, &ruta, &fichero, &actual, modelo.as_ref(), dry_run, agente.is_some())?;
+                let sellos = omoikane::copia::Sellos { agente: agente.is_some(), confiar: trust_verified };
+                let (cuenta, r) = omoikane::copia::importar(&mut db, &ruta, &fichero, &actual, modelo.as_ref(), dry_run, sellos)?;
+                if agente.is_none() && cuenta.untrusted_verified > 0 {
+                    eprintln!(
+                        "{}",
+                        tr!(
+                            "omoikane: {} memories carry a person's verification that you didn't put (someone else's file, or an export from a computer without your general sync repository): they come in unverified. If you trust whoever made it, import again with --trust-verified",
+                            "omoikane: {} memorias llevan la verificación de una persona que no pusiste tú (un fichero de otra persona, o exportado en un equipo sin tu repositorio general de sincronización): entran sin verificar. Si te fías de quien lo hizo, vuelve a importar con --trust-verified",
+                            cuenta.untrusted_verified
+                        )
+                    );
+                }
                 if let Some(var) = agente.filter(|_| cuenta.unverified > 0) {
                     eprintln!(
                         "{}",

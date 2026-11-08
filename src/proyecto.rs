@@ -42,6 +42,17 @@ pub fn ruta_local(p: &Path) -> bool {
     true
 }
 
+/// La ruta si es local ([`ruta_local`]); `None` si no. Para las carpetas que salen de una variable de
+/// entorno (`HOME`, `USERPROFILE`, `OMOIKANE_HOME`, `COPILOT_HOME`…) antes de mirar nada dentro.
+pub fn local(p: PathBuf) -> Option<PathBuf> {
+    ruta_local(&p).then_some(p)
+}
+
+/// La carpeta del usuario si es local (ver [`local`]).
+pub fn casa_local() -> Option<PathBuf> {
+    std::env::home_dir().filter(|h| h.is_absolute()).and_then(local)
+}
+
 /// `is_dir` de una ruta que puede venir de fuera (de una línea de la sincronización, de un fichero, de
 /// un agente): solo si es local ([`ruta_local`]); una de red ni se mira.
 pub fn es_carpeta(p: &Path) -> bool {
@@ -101,7 +112,7 @@ pub fn es_general(project: &str) -> bool {
 /// cuesta un par de milisegundos, y el recall de cada mensaje pregunta varias veces por el ámbito.
 fn carpeta_personal() -> Option<&'static str> {
     static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| std::env::home_dir().and_then(|h| de(&h).ok())).as_deref()
+    HOME.get_or_init(|| casa_local().and_then(|h| de(&h).ok())).as_deref()
 }
 
 fn general_en(project: &str, home: &Path) -> bool {
@@ -124,12 +135,12 @@ pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> (String, Vec
     if !es_general(actual) {
         return (actual.to_string(), paths.to_vec());
     }
-    let home = std::env::home_dir().and_then(|h| de(&h).ok()).unwrap_or_default();
-    let home = Path::new(&home);
+    let home = carpeta_personal().unwrap_or_default();
+    let home = Path::new(home);
     let mut repos: Vec<String> = paths
         .iter()
         .cloned()
-        .chain(rutas_en(texto))
+        .chain(rutas_en(texto, home))
         .filter_map(|r| repo_de_ruta(&r, home))
         .collect();
     repos.sort();
@@ -143,21 +154,21 @@ pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> (String, Vec
 /// Palabras con pinta de ruta absoluta que cita un texto. Una ruta con espacios
 /// (`C:\Users\marcm\the codex\app\x.kt`) llega partida en palabras: se va alargando con las
 /// siguientes (como mucho `PALABRAS_MAX`) y se queda la que llega más hondo en el disco.
-fn rutas_en(texto: &str) -> Vec<String> {
+fn rutas_en(texto: &str, home: &Path) -> Vec<String> {
     const PALABRAS_MAX: usize = 6;
     let mut v = Vec::new();
     for trozo in texto.split(|c: char| c == '\n' || "`\"'«»()[]<>,;*".contains(c)) {
         let palabras: Vec<&str> = trozo.split(' ').filter(|p| !p.is_empty()).collect();
         for (i, p) in palabras.iter().enumerate() {
-            if expandir(p, Path::new("")).is_none() {
+            if expandir(p, home).is_none() {
                 continue;
             }
             let mut mejor = (*p).to_string();
-            let mut hondo = profundidad(&mejor);
+            let mut hondo = profundidad(&mejor, home);
             let mut candidata = mejor.clone();
             for siguiente in palabras.iter().skip(i + 1).take(PALABRAS_MAX) {
                 candidata = format!("{candidata} {siguiente}");
-                let h = profundidad(&candidata);
+                let h = profundidad(&candidata, home);
                 if h > hondo {
                     (mejor, hondo) = (candidata.clone(), h);
                 }
@@ -168,16 +179,16 @@ fn rutas_en(texto: &str) -> Vec<String> {
     v
 }
 
-/// Cuántos componentes de la ruta existen en el disco (la del antepasado existente más hondo).
-fn profundidad(ruta: &str) -> usize {
-    let r = PathBuf::from(ruta.trim_end_matches(['.', ':', '?', '!']));
-    if !ruta_local(&r) {
-        return 0;
-    }
+/// Cuántos componentes de la ruta existen en el disco (la del antepasado existente más hondo). Solo
+/// de una ruta absoluta y local (ver [`expandir`]): otra ni se mira.
+fn profundidad(ruta: &str, home: &Path) -> usize {
+    let Some(r) = expandir(ruta, home) else { return 0 };
     r.ancestors().find(|a| a.exists()).map_or(0, |a| a.components().count())
 }
 
-/// Una ruta absoluta (o con `~`), sin la puntuación del final; `None` si no lo es.
+/// Una ruta absoluta (o con `~`) y local ([`ruta_local`]), sin la puntuación del final; `None` si no lo
+/// es. Lo que sigue a `~/` puede ser otra ruta entera (`~/\\host\share`, `~\//host/x`, `~/C:\x`): al
+/// juntarla con la carpeta personal, `join` se queda con ella. Por eso se mira la ruta ya montada.
 fn expandir(ruta: &str, home: &Path) -> Option<PathBuf> {
     let ruta = ruta.trim_end_matches(['.', ':', '?', '!']);
     if ruta_de_red(ruta) {
@@ -186,18 +197,26 @@ fn expandir(ruta: &str, home: &Path) -> Option<PathBuf> {
     let b = ruta.as_bytes();
     let absoluta = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
         || (cfg!(unix) && ruta.len() > 1 && ruta.starts_with('/'));
-    if let Some(resto) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
-        Some(home.join(resto))
+    let p = if let Some(resto) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
+        // Sin carpeta personal (o con una que no es local), `~` no es nada.
+        if home.as_os_str().is_empty() || !home.is_absolute() {
+            return None;
+        }
+        home.join(resto)
     } else if absoluta {
-        Some(PathBuf::from(ruta))
+        PathBuf::from(ruta)
     } else {
-        None
-    }
+        return None;
+    };
+    (p.is_absolute() && ruta_local(&p)).then_some(p)
 }
 
 /// La ruta en forma canónica aunque el final aún no exista: el antepasado existente más hondo,
-/// canónico, más el resto tal cual.
+/// canónico, más el resto tal cual. `None` con una ruta que no es local (ni se mira).
 fn canonica_parcial(ruta: &Path) -> Option<PathBuf> {
+    if !ruta_local(ruta) {
+        return None;
+    }
     let existe = ruta.ancestors().find(|a| a.exists())?;
     let resto = ruta.strip_prefix(existe).ok()?;
     Some(PathBuf::from(texto(&canonica(existe).ok()?)).join(resto))
@@ -216,6 +235,9 @@ fn relativa_a(ruta: &str, repo: &str, home: &Path) -> String {
 /// es la carpeta del usuario.
 fn repo_de_ruta(ruta: &str, home: &Path) -> Option<String> {
     let ruta = expandir(ruta, home)?;
+    if !ruta_local(&ruta) {
+        return None;
+    }
     let existe = ruta.ancestors().find(|a| a.exists())?;
     let raiz = existe.ancestors().find(|d| d.join(".git").exists())?;
     let raiz = de(raiz).ok()?;
@@ -377,12 +399,16 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
 /// un fichero `gitdir: …` y esa carpeta tiene `commondir`) la del repositorio principal. `None` si no
 /// hay repositorio, o si `.git` es un fichero que no es de un worktree (un submódulo).
 pub(crate) fn git_comun(raiz: &Path) -> Option<PathBuf> {
+    if !ruta_local(raiz) {
+        return None;
+    }
     let punto = raiz.join(".git");
     let dir = if punto.is_dir() {
         punto
     } else {
         let t = std::fs::read_to_string(&punto).ok()?;
-        let gitdir = raiz.join(t.trim().strip_prefix("gitdir:")?.trim());
+        // Lo que dice el fichero `.git` (y su `commondir`) también puede ser una ruta de red.
+        let gitdir = local(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
         let comun = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
         gitdir.join(comun.trim())
     };
@@ -398,7 +424,7 @@ fn principal_de(comun: &Path) -> Option<String> {
 /// El nombre del repositorio de un worktree sin `origin`: el de la carpeta principal (o el del
 /// repositorio desnudo sin `.git`), en minúsculas. `None` si la carpeta no es un worktree.
 pub(crate) fn nombre_de_worktree(raiz: &Path) -> Option<String> {
-    if raiz.join(".git").is_dir() {
+    if !ruta_local(raiz) || raiz.join(".git").is_dir() {
         return None;
     }
     let comun = git_comun(raiz)?;
@@ -1234,10 +1260,10 @@ mod tests {
         std::fs::create_dir_all(repo.join("app")).unwrap();
         let fichero = repo.join("app").join("x.kt");
         let texto = format!("El fallo está en `{}` y en {}. Lo vi ayer.", fichero.display(), repo.join("app").display());
-        let v = rutas_en(&texto);
+        let home = PathBuf::from(de(&base).unwrap());
+        let v = rutas_en(&texto, &home);
         assert!(v.contains(&fichero.display().to_string()), "{v:?}");
         assert!(v.contains(&repo.join("app").display().to_string()), "{v:?}");
-        let home = PathBuf::from(de(&base).unwrap());
         let esperado = de(&repo).unwrap();
         assert!(v.iter().all(|r| repo_de_ruta(r, &home) == Some(esperado.clone())), "{v:?}");
         // Sin el repositorio, la palabra suelta no basta.
@@ -1288,5 +1314,53 @@ mod tests {
             assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
         }
         assert!(ruta_local(Path::new(r"C:\x\??\y")) && ruta_local(Path::new("src/a.rs")));
+    }
+
+    /// `~/` seguido de una ruta de red (`~/\\host\x`, `~\//host/x`, `~/\\?\UNC\…`): al juntarla con la
+    /// carpeta personal, `join` se queda con la de red. `remember` desde la carpeta personal busca el
+    /// repositorio de las rutas de la memoria (`para_guardar`) y las miraba en el disco: una conexión SMB
+    /// a lo que dijera la memoria. Ni se miran ni dan proyecto, también citadas en el texto.
+    #[test]
+    fn tilde_seguida_de_una_ruta_de_red_no_se_mira() {
+        let base = crate::comun::Temporal::nueva("tilde-red");
+        let home = PathBuf::from(de(&base).unwrap());
+        let malas = [
+            r"~/\\10.255.255.1\x\a.rs",
+            r"~\\\10.255.255.1\x\a.rs",
+            "~///10.255.255.1/x/a.rs",
+            r"~\//10.255.255.1/x/a.rs",
+            r"~/\\?\UNC\10.255.255.1\x\a.rs",
+            r"~/\??\UNC\10.255.255.1\x\a.rs",
+            r"~\\\.\pipe\x",
+            r"~/\\10.255.255.1\x.",
+        ];
+        for r in malas {
+            let inicio = std::time::Instant::now();
+            // `None`, o una ruta de la unidad de la carpeta personal (`~/\??\UNC\…` en Windows se queda
+            // en `C:\??\UNC\…`, una carpeta local que no puede existir): nunca una de red.
+            let e = expandir(r, &home);
+            assert!(e.as_ref().is_none_or(|p| ruta_local(p)), "{r}");
+            assert_eq!(repo_de_ruta(r, &home), None, "{r}");
+            assert_eq!(relativa_a(r, &home.to_string_lossy(), &home), r, "{r}");
+            if e.is_none() {
+                assert_eq!(profundidad(r, &home), 0, "{r}");
+                assert!(rutas_en(&format!("mira {r} y ya"), &home).is_empty(), "{r}");
+            }
+            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
+        }
+        for r in [r"\\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x"] {
+            assert_eq!(canonica_parcial(Path::new(r)), None, "{r}");
+        }
+        // Sin carpeta personal, `~` no es nada (antes era relativa a la carpeta actual).
+        assert_eq!(expandir("~/web/a.rs", Path::new("")), None);
+        // Desde la carpeta personal de verdad, `remember` con esas rutas y ese texto: global, enseguida.
+        if let Some(h) = carpeta_personal() {
+            let inicio = std::time::Instant::now();
+            let paths: Vec<String> = malas.iter().map(|s| s.to_string()).collect();
+            let (p, rutas) = para_guardar(h, &paths, &malas.join(" "));
+            assert_eq!(p, "");
+            assert_eq!(rutas, paths);
+            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+        }
     }
 }

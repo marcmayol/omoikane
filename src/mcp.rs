@@ -406,7 +406,7 @@ fn id_en_ambito(db: &Connection, proyecto: &str, id: &str, papelera: bool) -> Re
         let propio = proyecto::clave_espacio(db, base.espacio())?;
         return match memoria::alcance_de_memoria(db, &id)? {
             Some((global, espacio)) if !matches!(base, Ambito::Todos) && !global && espacio != propio => anyhow::bail!(
-                "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
+                "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
             ),
             _ => Ok(id),
         };
@@ -547,6 +547,24 @@ impl Servidor {
                 if space_id.is_none() && !project.is_empty() {
                     fuera_de_espacio(&Ambito::de(db, proyecto)?, &Ambito::de(db, &project)?)?;
                 }
+                // Las memorias que juzga (`supersedes`, `contradicts`), comprobadas ANTES de guardar nada,
+                // como en `update`: cada una se ve desde aquí y puede juntarse con donde irá la nueva. Si
+                // no, un error sin ids ni nombres de otro espacio, y la memoria no se guarda.
+                let global = project.is_empty() && space_id.is_none();
+                let su_espacio = match space_id {
+                    Some(s) => proyecto::clave_espacio(db, Some(s))?,
+                    None if project.is_empty() => String::new(),
+                    None => proyecto::clave_espacio(db, Ambito::de(db, &project)?.espacio())?,
+                };
+                let mut juzgar_a: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+                for (i, lista) in [&p.supersedes, &p.contradicts].into_iter().enumerate() {
+                    for otra in lista.iter().flatten() {
+                        let otra = id_en_ambito(db, proyecto, otra, false)?;
+                        veredictos::comprobar_espacios(db, &otra, global, &su_espacio)?;
+                        juzgar_a[i].push(otra);
+                    }
+                }
+                let [supersedes, contradicts] = juzgar_a;
                 // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
                 // Las globales y las de un espacio, solo la sesión: la rama de esta carpeta puede ser de un
                 // cliente y esas memorias se ven desde otros.
@@ -592,7 +610,7 @@ impl Servidor {
                     }
                 };
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
-                let juzgadas = juzgar(db, &m.id, p.supersedes, p.contradicts, None, &m.title, &origen)?;
+                let juzgadas = juzgar(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &origen)?;
                 let donde = if de_oficio {
                     format!("(trade {}{})", oficios.join(", "), para.as_deref().map(|x| format!(", {x} projects only")).unwrap_or_default())
                 } else if m.de_espacio() {

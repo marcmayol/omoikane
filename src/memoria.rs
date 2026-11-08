@@ -980,15 +980,15 @@ pub fn en_ambito(db: &Connection, base: &Ambito, id: &str) -> Result<()> {
     }
     if crate::oficios::oculta(db, &base.amplio(), id)? {
         bail!(tr!(
-            "memory {id} is a trade memory of a trade no project here has (see `context`): it is not in this scope",
-            "la memoria {id} es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
+            "that memory is a trade memory of a trade no project here has (see `context`): it is not in this scope",
+            "esa memoria es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
         ));
     }
     let propio = crate::proyecto::clave_espacio(db, base.espacio())?;
     match alcance_de_memoria(db, id)? {
         Some((global, espacio)) if !global && espacio != propio => bail!(tr!(
-            "memory {id} is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder",
-            "la memoria {id} no es de este ámbito: es de otro espacio, y desde este proyecto solo se llega a su espacio y a las globales; abre la sesión en ese proyecto, o en tu carpeta de usuario"
+            "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder",
+            "esa memoria no es de este ámbito: es de otro espacio, y desde este proyecto solo se llega a su espacio y a las globales; abre la sesión en ese proyecto, o en tu carpeta de usuario"
         )),
         _ => Ok(()),
     }

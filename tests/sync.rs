@@ -2543,6 +2543,9 @@ fn el_sello_de_otra_persona_no_cuenta_aqui() {
     let a = p.equipo("pc-a");
     let acme = p.otro_repo("acme");
     let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    // El repositorio general de Ana (el personal): de él sale su clave de sellos.
+    a.ok_en(&a.dir, &["sync", "init", &p.url(), "--yes"], &ana);
+    let general = a.ok(&["sync", "code"]).trim().to_string();
     a.ok_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &ana);
     let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
     let c = p.equipo("pc-c");
@@ -2559,9 +2562,66 @@ fn el_sello_de_otra_persona_no_cuenta_aqui() {
     // suyo sí cuenta.
     c.ok_en(&c.dir, &["verify", &id, "--by", "Carla", "--yes"], &[("OMOIKANE_AUTHOR", "Carla")]);
     assert_eq!(c.get(&id).unwrap()["verified"]["by"], "Carla");
-    // Desde otra base de Ana (la misma persona), el de Ana sí.
+    // Desde otra base de Ana (la misma persona, unida también a su repositorio general), el de Ana sí.
     let a2 = p.equipo("pc-a2");
+    a2.ok_en(&a2.dir, &["sync", "join", &general, "--yes"], &ana);
     a2.ok_en(&a2.dir, &["sync", "join", &codigo, "--yes"], &ana);
     let r = a2.ok_en(&a2.dir, &["--json", "sync"], &ana);
     assert_eq!(a2.get(&id).expect("llegó")["verified"]["by"], "Ana", "{r}");
+    // Sin el repositorio general, otra base de Ana no tiene su clave de sellos: ahí no cuenta.
+    let a3 = p.equipo("pc-a3");
+    a3.ok_en(&a3.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    let r = a3.ok_en(&a3.dir, &["--json", "sync"], &ana);
+    assert!(a3.get(&id).expect("llegó").get("verified").is_none(), "{r}");
+}
+
+/// Lo de arriba, pero Carla (otra persona del espacio) pone en el sello el NOMBRE de Ana (`verify --by
+/// Ana`; también con `OMOIKANE_AUTHOR=Ana` en su equipo y otras mayúsculas). Antes contaba como de Ana en la base de
+/// Ana (se comparaba el `by` con el autor de aquí). Ahora lo propio depende de la firma del sello con la
+/// clave de sellos de Ana, que sale de su repositorio general: Carla no la tiene. Los sellos de Ana
+/// (los de su otro equipo, que comparte ese repositorio general) sí cuentan.
+#[test]
+fn un_sello_con_el_nombre_de_aqui_puesto_por_otro_no_cuenta() {
+    let p = Prueba::nueva("sello-suplantado");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let carla = [("OMOIKANE_AUTHOR", "Carla")];
+    // Ana: su repositorio general (el personal) y el del espacio acme.
+    let a = p.equipo("pc-a");
+    a.ok_en(&a.dir, &["sync", "init", &p.url(), "--yes"], &ana);
+    let general = a.ok(&["sync", "code"]).trim().to_string();
+    let acme = p.otro_repo("acme");
+    a.ok_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &ana);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    // Carla, solo en el espacio.
+    let c = p.equipo("pc-c");
+    c.ok_en(&c.dir, &["sync", "join", &codigo, "--yes"], &carla);
+    a.ok(&["space", "add", "acme"]);
+    let id = a.guardar(&a.dir, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
+    let id2 = a.guardar(&a.dir, "decision", "Acme paga a 30 días", "Nunca a 60.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    c.ok_en(&c.dir, &["sync"], &carla);
+    // Carla verifica las dos «como Ana».
+    c.ok_en(&c.dir, &["verify", &id, "--by", "Ana", "--yes"], &carla);
+    c.ok_en(&c.dir, &["verify", &id2, "--by", "ana ", "--yes"], &ana);
+    c.ok_en(&c.dir, &["sync"], &carla);
+    let r: serde_json::Value = serde_json::from_str(&a.ok_en(&a.dir, &["--json", "sync"], &ana)).unwrap();
+    assert_eq!(r["sellos_ajenos"], 2, "{r}");
+    for x in [&id, &id2] {
+        let m = a.get(x).expect("está");
+        assert!(m.get("verified").is_none(), "el sello que puso Carla con el nombre de Ana no cuenta en la base de Ana: {m}");
+    }
+    // Ana verifica la primera ella misma: cuenta, y su otro equipo (unido a su repositorio general y al
+    // espacio) la ve verificada; la segunda, que solo «verificó» Carla, no.
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
+    a.ok_en(&a.dir, &["sync"], &ana);
+    let a2 = p.equipo("pc-a2");
+    a2.ok_en(&a2.dir, &["sync", "join", &general, "--yes"], &ana);
+    a2.ok_en(&a2.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    let r = a2.ok_en(&a2.dir, &["--json", "sync"], &ana);
+    assert_eq!(a2.get(&id).expect("llegó")["verified"]["by"], "Ana", "{r}");
+    assert!(a2.get(&id2).expect("llegó").get("verified").is_none(), "{r}");
+    // Y en la base de Carla, el sello de Ana no cuenta (es de otra persona).
+    c.ok_en(&c.dir, &["sync"], &carla);
+    assert!(c.get(&id).unwrap().get("verified").is_none());
 }

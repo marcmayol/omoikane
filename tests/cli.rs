@@ -791,3 +791,40 @@ fn el_diario_apunta_la_sesion_al_cerrar() {
     let export = e.ok(&["export", "--all"]);
     assert!(!export.contains("sesion-1") && !export.contains("sync.rs"), "{export}");
 }
+
+/// La base, la carpeta de Omoikane y los modelos, solo en este equipo: con una ruta de red en `--db`,
+/// `OMOIKANE_DB`, `OMOIKANE_HOME` (también tras `~/`) u `OMOIKANE_MODELS`, cada orden abría ahí una
+/// conexión SMB (unos 21 s contra un equipo que no responde, y el hash NTLM de la persona para él).
+/// Ahora es un error claro antes de tocar nada; e `import` de un fichero de red, también.
+#[test]
+fn ni_la_base_ni_sus_carpetas_en_una_ruta_de_red() {
+    let e = Entorno::nuevo("base-red");
+    let red = [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x"];
+    for r in red {
+        let base = format!("{r}/o.db");
+        type Caso<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
+        let casos: [Caso; 4] = [
+            (&["--db", base.as_str(), "recent"], &[]),
+            (&["recent"], &[("OMOIKANE_DB", base.as_str())]),
+            (&["recent"], &[("OMOIKANE_MODELS", r)]),
+            (&["import", base.as_str()], &[]),
+        ];
+        for (args, env) in casos {
+            let t = std::time::Instant::now();
+            let o = e.omoi_con(args, None, env);
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert!(!o.status.success() && err.contains("network paths"), "{args:?} {env:?}: {err}");
+            assert!(t.elapsed() < std::time::Duration::from_secs(5), "{args:?} {env:?}: {:?}", t.elapsed());
+        }
+    }
+    // `OMOIKANE_HOME` sin `OMOIKANE_DB`.
+    for h in [r"\\10.255.255.1\x", r"~/\\10.255.255.1\x"] {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
+        c.args(["recent"]).current_dir(e.dir.join("repo")).env_remove("OMOIKANE_DB").env("OMOIKANE_HOME", h).env("OMOIKANE_MODELS", e.dir.join("models")).env("OMOIKANE_AUTO_UPDATE", "0").env_remove("OMOIKANE_LANG");
+        let t = std::time::Instant::now();
+        let o = c.output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && err.contains("OMOIKANE_HOME") && err.contains("network paths"), "{h}: {err}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{h}: {:?}", t.elapsed());
+    }
+}

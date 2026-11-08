@@ -55,6 +55,10 @@ pub struct Cuenta {
     /// de un agente). No cuenta en `total`: son memorias de `memories` o `forgotten`.
     #[serde(skip_serializing_if = "is_zero")]
     pub unverified: usize,
+    /// Memorias con el sello de verificada de otra persona (no firmado por quien importa) que entran sin
+    /// él, sin `--trust-verified`. Tampoco cuenta en `total`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub untrusted_verified: usize,
 }
 
 impl Cuenta {
@@ -316,33 +320,77 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
     Ok(cuenta)
 }
 
-/// Le quita a una línea el sello de verificada por una persona (`extra.verified`, el de la memoria o
-/// el de la que va a la papelera). `true` si lo llevaba.
-fn sin_sello(l: &mut Linea) -> bool {
-    match l {
-        Linea::Memory(c) => c.extra.remove(crate::verificado::CLAVE).is_some(),
-        Linea::Forgotten { memory, .. } => memory.extra.remove(crate::verificado::CLAVE).is_some(),
-        _ => false,
+/// Qué se hace con los sellos de verificada de un fichero (ver [`importar`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sellos {
+    /// Quien importa está en la shell de un agente (`verificado::shell_de_agente`): ninguno vale.
+    pub agente: bool,
+    /// `--trust-verified`: también los que no puso esta persona (se firman como suyos).
+    pub confiar: bool,
+}
+
+/// Qué pasó con el sello de una línea.
+#[derive(PartialEq, Eq)]
+enum ConSello {
+    /// No traía, o se queda.
+    Nada,
+    /// Quitado por la shell de un agente.
+    Agente,
+    /// Quitado por no ser de esta persona (sin `--trust-verified`).
+    Ajeno,
+}
+
+/// El sello de verificada de una línea (`extra.verified`, el de la memoria o el de la que va a la
+/// papelera): se queda si lo puso esta persona (su firma vale con su clave de sellos, ver
+/// `verificado::Llaves`: su copia de seguridad, lo exportado en otro de sus equipos con su repositorio
+/// general) o con `--trust-verified` (y entonces se firma como suyo); si no, o en la shell de un agente,
+/// se quita.
+fn filtrar_sello(l: &mut Linea, llaves: &crate::verificado::Llaves, s: Sellos) -> ConSello {
+    let (id, extra) = match l {
+        Linea::Memory(c) => (c.id.clone(), &mut c.extra),
+        Linea::Forgotten { memory, .. } => (memory.id.clone(), &mut memory.extra),
+        _ => return ConSello::Nada,
+    };
+    let Some(v) = extra.get_mut(crate::verificado::CLAVE) else { return ConSello::Nada };
+    if s.agente {
+        extra.remove(crate::verificado::CLAVE);
+        return ConSello::Agente;
     }
+    if crate::verificado::sello_propio(llaves, &id, v) {
+        return ConSello::Nada;
+    }
+    if s.confiar {
+        // (En seco no se crea la clave con la que firmarlo: se queda tal cual, y no se escribe.)
+        crate::verificado::resellar(llaves, &id, v);
+        return ConSello::Nada;
+    }
+    extra.remove(crate::verificado::CLAVE);
+    ConSello::Ajeno
 }
 
 /// Importa un fichero de este formato. Primero lo lee entero para comprobarlo (sin aplicar nada), y
 /// solo entonces aplica línea a línea. Con `dry_run`, solo cuenta.
 ///
-/// Con `sin_verificar` (quien importa está en la shell de un agente, `verificado::shell_de_agente`),
-/// las memorias entran sin el sello de verificada por una persona: el fichero lo puede haber escrito
-/// cualquiera y la huella del sello se calcula con el texto, así que traerlo sería que un agente se
-/// verificara a sí mismo. Se cuentan en `Cuenta::unverified` para avisar. (La sincronización sí trae
-/// los sellos: vienen de los otros equipos de la misma persona, por su repositorio cifrado.)
-pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, modelo: Option<&Modelo>, dry_run: bool, sin_verificar: bool) -> Result<(Cuenta, Resumen)> {
-    let mut selladas = 0;
+/// Los sellos de verificada por una persona, con la misma regla que `import --okf`: el fichero lo puede
+/// haber escrito cualquiera (y la huella del sello se calcula con el texto), así que solo se quedan los
+/// que puso esta persona (firmados con su clave de sellos) y, con `--trust-verified`, los demás. Desde
+/// la shell de un agente (`sellos.agente`), ninguno: sería que un agente se verificara a sí mismo. Los
+/// quitados se cuentan en `Cuenta::unverified` (agente) y `Cuenta::untrusted_verified` (de otra
+/// persona) para avisar. (La sincronización sí trae los sellos de los otros equipos de la persona, por
+/// su repositorio cifrado: ver `sync::sello_de_otro`.)
+pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, modelo: Option<&Modelo>, dry_run: bool, sellos: Sellos) -> Result<(Cuenta, Resumen)> {
+    let llaves = crate::verificado::llaves(db, sellos.confiar && !sellos.agente && !dry_run)?;
+    let (mut de_agente, mut ajenos) = (0, 0);
     let mut cuenta = leer(ruta_db, ruta, |mut l| {
-        if sin_verificar && sin_sello(&mut l) {
-            selladas += 1;
+        match filtrar_sello(&mut l, &llaves, sellos) {
+            ConSello::Agente => de_agente += 1,
+            ConSello::Ajeno => ajenos += 1,
+            ConSello::Nada => {}
         }
         Ok(())
     })?;
-    cuenta.unverified = selladas;
+    cuenta.unverified = de_agente;
+    cuenta.untrusted_verified = ajenos;
     let mut r = Resumen::default();
     if dry_run {
         return Ok((cuenta, r));
@@ -358,9 +406,7 @@ pub fn importar(db: &mut Connection, ruta_db: &Path, ruta: &Path, actual: &str, 
     let mut aplicador = Aplicador::nuevo(db, None, Some(actual))?;
     let nombre = ruta.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     leer(ruta_db, ruta, |mut l| {
-        if sin_verificar {
-            sin_sello(&mut l);
-        }
+        filtrar_sello(&mut l, &llaves, sellos);
         let origen = match l.machine() {
             "" => format!("import:{nombre}"),
             m => m.to_string(),

@@ -154,13 +154,17 @@ fn sesion(db: &Connection, proyecto: &str) -> Option<String> {
 pub fn commit_de(raiz: &Path) -> Option<(String, String)> {
     // Cada fichero que se abre cuesta (en Windows, ~0,1 ms): los mínimos. Un repositorio normal: HEAD
     // y su rama; un worktree: además `.git` y `commondir`.
+    if !crate::proyecto::ruta_local(raiz) {
+        return None;
+    }
     let punto = raiz.join(".git");
     let (gitdir, comun) = match std::fs::read_to_string(&punto) {
         // `.git` es un fichero: un worktree (o un submódulo, sin `commondir`). La carpeta común (la del
-        // repositorio principal) es donde están las ramas.
+        // repositorio principal) es donde están las ramas. Ni una ni otra pueden ser de red.
         Ok(t) => {
-            let gitdir = raiz.join(t.trim().strip_prefix("gitdir:")?.trim());
+            let gitdir = crate::proyecto::local(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
             let comun = std::fs::read_to_string(gitdir.join("commondir")).map(|c| gitdir.join(c.trim())).unwrap_or_else(|_| gitdir.clone());
+            let comun = crate::proyecto::local(comun)?;
             (gitdir, comun)
         }
         Err(_) => (punto.clone(), punto),

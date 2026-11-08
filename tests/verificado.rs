@@ -257,12 +257,39 @@ fn viajan_con_la_memoria() {
     let linea: serde_json::Value = salida.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|l| l["id"] == id.as_str()).unwrap();
     assert_eq!(linea["verified"]["by"], "Marc", "{linea}");
     assert_eq!(linea["provenance"]["commit"], SHA, "{linea}");
+    // En otra base (otra persona, o un equipo sin el repositorio general de la persona: no tiene su clave
+    // de sellos), el sello no se cree sin --trust-verified, como en `import --okf`: lo dice y entra sin él.
     let otra = Entorno::nuevo("viaje2");
     let f = otra.dir.join("copia.jsonl");
     std::fs::write(&f, &salida).unwrap();
-    otra.ok(&["import", f.to_str().unwrap()]);
+    let o = otra.ok_con(&["import", f.to_str().unwrap()], &[]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--trust-verified"), "{}", String::from_utf8_lossy(&o.stderr));
+    let m = otra.json(&["get", &id]);
+    assert!(m.get("verified").is_none(), "{m}");
+    assert_eq!(m["provenance"]["commit"], SHA, "{m}");
+    // Con --trust-verified, sí (y desde entonces es un sello de esta persona).
+    let otra = Entorno::nuevo("viaje2b");
+    let f = otra.dir.join("copia.jsonl");
+    std::fs::write(&f, &salida).unwrap();
+    otra.ok(&["import", "--trust-verified", f.to_str().unwrap()]);
     let m = otra.json(&["get", &id]);
     assert_eq!((&m["verified"]["by"], &m["provenance"]["commit"]), (&serde_json::json!("Marc"), &serde_json::json!(SHA)), "{m}");
+    // En la misma base, su propio sello copiado a otra memoria (otro id, con su huella recalculada) no
+    // vale: la firma cubre el id y la huella. Se quita y se cuenta.
+    let nuevo = "01KZZZZZZZZZZZZZZZZZZZZZZZ";
+    let mut l = linea.clone();
+    l["id"] = serde_json::json!(nuevo);
+    let f = e.dir.join("falsa.jsonl");
+    let cabecera = salida.lines().next().unwrap();
+    let texto = l.to_string();
+    let mut fin: serde_json::Value = serde_json::from_str(salida.lines().last().unwrap()).unwrap();
+    fin["count"] = serde_json::json!(1);
+    use sha2::Digest;
+    fin["sha256"] = serde_json::json!(sha2::Sha256::digest(format!("{texto}\n").as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    std::fs::write(&f, format!("{cabecera}\n{texto}\n{fin}\n")).unwrap();
+    let r: serde_json::Value = serde_json::from_slice(&e.ok_con(&["--json", "import", f.to_str().unwrap()], &[]).stdout).unwrap();
+    assert_eq!(r["file"]["untrusted_verified"], 1, "{r}");
+    assert!(e.json(&["get", nuevo]).get("verified").is_none());
 
     // Desde la shell de un agente, la copia entra sin el sello (la huella se calcula con el texto: si
     // no, cualquiera que escriba el fichero se verificaría a sí mismo) y lo dice.

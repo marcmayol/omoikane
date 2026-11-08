@@ -70,10 +70,19 @@ pub struct Cambio {
 
 /// La carpeta personal; `OMOIKANE_SETUP_HOME` la cambia (para los tests).
 fn casa() -> Result<PathBuf> {
-    if let Some(h) = std::env::var_os("OMOIKANE_SETUP_HOME") {
-        return Ok(PathBuf::from(h));
-    }
-    std::env::home_dir().context(tr!("can't find the home folder", "no se encuentra la carpeta personal"))
+    let h = match std::env::var_os("OMOIKANE_SETUP_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => std::env::home_dir().context(tr!("can't find the home folder", "no se encuentra la carpeta personal"))?,
+    };
+    // Una carpeta personal de red no se mira (ver `proyecto::ruta_local`).
+    crate::proyecto::exigir_local(&h)?;
+    Ok(h)
+}
+
+/// Una carpeta de una variable de entorno (`XDG_CONFIG_HOME`, `GROK_HOME`, `APPDATA`), si está, no la
+/// tapa `OMOIKANE_SETUP_HOME` (los tests) y es de este equipo.
+fn de_variable(v: &str) -> Option<PathBuf> {
+    std::env::var_os(v).filter(|x| !x.is_empty() && std::env::var_os("OMOIKANE_SETUP_HOME").is_none()).map(PathBuf::from).and_then(crate::proyecto::local)
 }
 
 /// El binario que se registra: el que se está ejecutando, con barras normales (vale en las shells de
@@ -267,10 +276,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
             ordenes_en(&mut v, d.join("commands"), Formato::Md(false), &omoi);
         }
         "opencode" => {
-            let d = match std::env::var_os("XDG_CONFIG_HOME") {
-                Some(x) if std::env::var_os("OMOIKANE_SETUP_HOME").is_none() => PathBuf::from(x).join("opencode"),
-                _ => h.join(".config").join("opencode"),
-            };
+            let d = de_variable("XDG_CONFIG_HOME").map_or_else(|| h.join(".config").join("opencode"), |x| x.join("opencode"));
             if let Some(c) = json_cambio(d.join("opencode.json"), tr!("MCP server", "servidor MCP"), &|j| {
                 let servidores = objeto(j, "mcp")?;
                 if servidores.contains_key("omoikane") {
@@ -468,10 +474,7 @@ pub fn plan(agente: &str) -> Result<Vec<Cambio>> {
 /// automática les añade lo que traiga la versión nueva (7.6).
 pub fn configurados() -> Vec<&'static str> {
     let Ok(h) = casa() else { return Vec::new() };
-    let opencode = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(x) if std::env::var_os("OMOIKANE_SETUP_HOME").is_none() => PathBuf::from(x).join("opencode"),
-        _ => h.join(".config").join("opencode"),
-    };
+    let opencode = de_variable("XDG_CONFIG_HOME").map_or_else(|| h.join(".config").join("opencode"), |x| x.join("opencode"));
     let ficheros: [(&str, Vec<PathBuf>); 14] = [
         ("codex", vec![h.join(".codex").join("config.toml")]),
         ("gemini", vec![h.join(".gemini").join("settings.json")]),
@@ -497,7 +500,7 @@ pub fn configurados() -> Vec<&'static str> {
 
 /// La carpeta de Grok Build: `GROK_HOME` o `~/.grok`.
 fn carpeta_grok(h: &Path) -> PathBuf {
-    std::env::var_os("GROK_HOME").filter(|_| std::env::var_os("OMOIKANE_SETUP_HOME").is_none()).map(PathBuf::from).unwrap_or_else(|| h.join(".grok"))
+    de_variable("GROK_HOME").unwrap_or_else(|| h.join(".grok"))
 }
 
 /// El servidor MCP en un `config.toml` con `[mcp_servers.<nombre>]` (Codex y Grok).
@@ -603,10 +606,9 @@ fn fichero_propio(v: &mut Vec<Cambio>, fichero: PathBuf, que: String, contenido:
 /// La carpeta de configuración de Windows (`%APPDATA%`), o `~/.config` en los demás.
 fn config_sistema(h: &Path) -> PathBuf {
     if cfg!(windows)
-        && std::env::var_os("OMOIKANE_SETUP_HOME").is_none()
-        && let Some(a) = std::env::var_os("APPDATA")
+        && let Some(a) = de_variable("APPDATA")
     {
-        return PathBuf::from(a);
+        return a;
     }
     h.join(".config")
 }
