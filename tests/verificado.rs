@@ -8,8 +8,9 @@ use std::process::{Command, Output, Stdio};
 
 /// Las variables de la shell de un agente (Claude Code, Codex…) y de su sesión: fuera, salvo que el
 /// test las ponga, para que no cambie nada según desde dónde se lancen los tests.
-const DE_AGENTE: &[&str] =
-    &["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT", "CLAUDE_CODE_SESSION_ID", "OMOIKANE_SESSION"];
+fn de_agente() -> impl Iterator<Item = &'static str> {
+    omoikane::verificado::DE_AGENTE.iter().copied().chain(["OMOIKANE_SESSION"])
+}
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -41,7 +42,7 @@ impl Entorno {
             .env("HOME", self.dir.join("casa"))
             .env_remove("OMOIKANE_LANG")
             .env_remove("OMOIKANE_AUTHOR");
-        for v in DE_AGENTE {
+        for v in de_agente() {
             c.env_remove(v);
         }
         c
@@ -104,7 +105,16 @@ fn una_persona_verifica_y_se_ve_en_get_search_list_y_recall() {
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--yes"), "{}", String::from_utf8_lossy(&o.stderr));
     let o = e.omoi_con(&["verify", &id, "--by", "Marc", "--yes"], None, &[("CLAUDECODE", "1")]);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("CLAUDECODE"), "{}", String::from_utf8_lossy(&o.stderr));
+    // Las que ponen de verdad otros agentes (y Claude Code sin `CLAUDECODE`), también.
+    for (k, v) in [("CLAUDE_CODE_ENTRYPOINT", "cli"), ("CLAUDE_CODE_SESSION_ID", "s"), ("OPENCODE", "1"), ("CLINE_ACTIVE", "true"), ("COPILOT_AGENT", "1"), ("WINDSURF_CASCADE_TERMINAL", "1"), ("CODEX_THREAD_ID", "t")] {
+        let o = e.omoi_con(&["verify", &id, "--by", "Marc", "--yes"], None, &[(k, v)]);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains(k), "{k}: {}", String::from_utf8_lossy(&o.stderr));
+    }
     assert!(e.json(&["get", &id]).get("verified").is_none());
+    // Y la configuración que la persona tiene en su terminal no la confunde con un agente.
+    let o = e.omoi_con(&["verify", &id, "--by", "Marc", "--yes", "--json"], None, &[("CLAUDE_CODE_USE_BEDROCK", "1"), ("AIDER_MODEL", "x"), ("CURSOR_TRACE_ID", "x")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    e.ok(&["verify", &id, "--unverify", "--yes"]);
 
     let salida = e.ok(&["verify", &id, "--by", "Marc", "--yes"]);
     assert!(salida.contains("verified") && salida.contains("Marc"), "{salida}");

@@ -96,7 +96,12 @@ impl Equipo {
             .env("GIT_CONFIG_GLOBAL", self.raiz.join("gitconfig-vacio"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
+            .env_remove("OMOIKANE_AUTHOR")
             .stdin(Stdio::null());
+        // Sin las variables de la shell de un agente (si los tests corren en una, `verify` se niega).
+        for v in omoikane::verificado::DE_AGENTE {
+            c.env_remove(v);
+        }
         for (k, v) in env {
             c.env(k, v);
         }
@@ -2527,4 +2532,36 @@ fn las_memorias_de_oficio_no_pasan_por_un_cliente() {
     a.sync();
     c.sync();
     assert!(a.get(colada).is_none() && c.get(colada).is_none(), "ninguna memoria de oficio por un cliente");
+}
+
+/// Un sello de verificada que llega por el repositorio de un espacio (compartido con otras personas) y
+/// es de otra persona no cuenta aquí: es su confianza, no la de quien usa esta base. El de la misma
+/// persona (su otro equipo) sí.
+#[test]
+fn el_sello_de_otra_persona_no_cuenta_aqui() {
+    let p = Prueba::nueva("sello-ajeno");
+    let a = p.equipo("pc-a");
+    let acme = p.otro_repo("acme");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    a.ok_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &ana);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let c = p.equipo("pc-c");
+    c.ok_en(&c.dir, &["sync", "join", &codigo, "--yes"], &[("OMOIKANE_AUTHOR", "Carla")]);
+    a.ok(&["space", "add", "acme"]);
+    let id = a.guardar(&a.dir, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["--json", "sync"], &ana);
+    let r: serde_json::Value = serde_json::from_str(&c.ok_en(&c.dir, &["--json", "sync"], &[("OMOIKANE_AUTHOR", "Carla")])).unwrap();
+    assert_eq!(r["sellos_ajenos"], 1, "{r}");
+    let m = c.get(&id).expect("llegó");
+    assert!(m.get("verified").is_none(), "el sello de Ana no cuenta en la base de Carla: {m}");
+    // El sello sigue en la memoria (lo que C vuelva a escribir lo lleva) y, si Carla la verifica, el
+    // suyo sí cuenta.
+    c.ok_en(&c.dir, &["verify", &id, "--by", "Carla", "--yes"], &[("OMOIKANE_AUTHOR", "Carla")]);
+    assert_eq!(c.get(&id).unwrap()["verified"]["by"], "Carla");
+    // Desde otra base de Ana (la misma persona), el de Ana sí.
+    let a2 = p.equipo("pc-a2");
+    a2.ok_en(&a2.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    let r = a2.ok_en(&a2.dir, &["--json", "sync"], &ana);
+    assert_eq!(a2.get(&id).expect("llegó")["verified"]["by"], "Ana", "{r}");
 }

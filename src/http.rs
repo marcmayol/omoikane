@@ -124,6 +124,13 @@ fn ya_sirve(puerto: u16) -> bool {
     r.contains("\"ok\"")
 }
 
+/// Si dos secretos (el token de la vista, el de `OMOIKANE_HTTP_TOKEN`) son iguales, en tiempo
+/// constante: comparar byte a byte y parar en el primero distinto deja medir cuánto se ha acertado.
+fn mismo_secreto(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 fn error(estado: u16, mensaje: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     json(estado, serde_json::json!({ "error": mensaje }).to_string())
 }
@@ -207,6 +214,12 @@ fn mirar(
     let Some(d) = pedida.filter(|d| !d.trim().is_empty()) else {
         return Ok(Ok(servidor.clone()));
     };
+    // Una ruta de red no se mira (`proyecto::de` la rechaza antes de tocar el disco): cualquier web
+    // puede pedir esta URL con un `<img>`, y mirarla abriría una conexión SMB con el hash NTLM de la
+    // persona.
+    if !crate::proyecto::ruta_local(std::path::Path::new(&d)) {
+        return Ok(Err(error(400, "dir: not a folder on this computer (network paths are never opened)")));
+    }
     let Ok(proyecto) = crate::proyecto::de(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
     let base = Ambito::de(db, &proyecto)?;
     if !servidor.abarca(&base) {
@@ -321,7 +334,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
             }
             if let Some(t) = &token {
                 let esperado = format!("Bearer {t}");
-                let vale = peticion.headers().iter().any(|h| h.field.equiv("Authorization") && h.value.as_str() == esperado);
+                let vale = peticion.headers().iter().any(|h| h.field.equiv("Authorization") && mismo_secreto(h.value.as_str(), &esperado));
                 if !vale {
                     return Ok(error(401, "missing or wrong Authorization: Bearer token"));
                 }
@@ -408,7 +421,20 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                 (Method::Post, "/api/review/dismiss") => {
                     let v = cuerpo_json(&mut peticion)?;
                     let campo = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                    let (una, otra) = (campo("memory_id"), campo("other_id"));
+                    // Los ids enteros y en su forma (`resolver_id`) antes de mirar si se ven: uno en
+                    // minúsculas o un trozo no está tal cual en la base, `ve` lo daba por visible y
+                    // `descartar` sí lo encontraba (el de otro cliente incluido).
+                    let resuelto = |k: &str| -> Result<std::result::Result<String, String>> {
+                        let t = campo(k);
+                        if t.trim().is_empty() {
+                            return Ok(Ok(String::new()));
+                        }
+                        Ok(memoria::resolver_id(&base, &t).map_err(|e| format!("{e:#}")))
+                    };
+                    let (una, otra) = match (resuelto("memory_id")?, resuelto("other_id")?) {
+                        (Ok(u), Ok(o)) => (u, o),
+                        (Err(e), _) | (_, Err(e)) => return Ok(error(404, &e)),
+                    };
                     if !m.ve(&base, &una)? || (!otra.is_empty() && !m.ve(&base, &otra)?) {
                         return Ok(fuera());
                     }
@@ -478,7 +504,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                 // de esta vista: `Origin` (de aquí: lo de otra web ya se ha cortado arriba) y el token que
                 // va dentro de la página (`token_de_vista`); un `curl` con un `Origin` inventado no basta.
                 (Method::Post, "/api/verify") => {
-                    if cabecera("Origin").is_none() || cabecera(CABECERA_VISTA).as_deref() != Some(vista.as_str()) {
+                    if cabecera("Origin").is_none() || !cabecera(CABECERA_VISTA).is_some_and(|t| mismo_secreto(&t, &vista)) {
                         return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
                     }
                     let v = cuerpo_json(&mut peticion)?;

@@ -320,7 +320,7 @@ fn apuntar_visto(db: &Connection, proyecto: i64, fijo: Option<bool>) -> Result<(
 /// mano (`set`). Solo escribe si algo cambia o es la primera vez. Devuelve los oficios que cuentan.
 /// Una carpeta que no existe aquí no cambia nada.
 pub fn al_dia(db: &Connection, proyecto: i64, ruta: &str) -> Result<Vec<String>> {
-    if proyecto <= 0 || ruta.is_empty() || !Path::new(ruta).is_dir() {
+    if proyecto <= 0 || ruta.is_empty() || !crate::proyecto::es_carpeta(Path::new(ruta)) {
         return del_proyecto(db, proyecto);
     }
     let e = estado(db, proyecto)?;

@@ -987,8 +987,8 @@ fn importar_okf(c: &Comun, carpeta: &Path, space: Option<String>, global: bool, 
         eprintln!(
             "{}",
             tr!(
-                "omoikane: the bundle wasn't exported from this database: {} concepts asked to be global and go to {} instead; {} asked to be pinned and come in unpinned",
-                "omoikane: el bundle no se exportó de esta base: {} conceptos pedían ser globales y van a {} en su lugar; {} pedían estar fijados y entran sin fijar",
+                "omoikane: the bundle wasn't exported from this database: {} concepts asked to be global and go to {} instead; {} asked to be pinned and this import doesn't pin them",
+                "omoikane: el bundle no se exportó de esta base: {} conceptos pedían ser globales y van a {} en su lugar; {} pedían estar fijados y esta importación no los fija",
                 r.ignored_global,
                 match &destino {
                     omoikane::okf::Destino::Proyecto(p) if !p.is_empty() => p.clone(),
@@ -1849,7 +1849,7 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     {
         e.transcript_path = p.to_string_lossy().into_owned();
     }
-    let conversacion = Some(std::path::Path::new(&e.transcript_path)).filter(|p| !e.transcript_path.is_empty() && p.exists());
+    let conversacion = Some(std::path::Path::new(&e.transcript_path)).filter(|p| !e.transcript_path.is_empty() && proyecto::existe(p));
     if (conversacion.is_none() && e.session_id.trim().is_empty()) || !ruta_db.exists() {
         return Ok(());
     }

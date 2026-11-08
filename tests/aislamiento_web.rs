@@ -234,9 +234,22 @@ fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
         ("/api/restore", serde_json::json!({ "id": tirada_globex })),
         ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_vieja, "kind": "outdated", "other_id": globex_nueva })),
         ("/api/candidates/dismiss", serde_json::json!({ "id": cand_globex })),
+        // El id en minúsculas, o solo su principio, es el mismo id: tampoco (antes `ve` no la
+        // encontraba tal cual, la daba por visible y `descartar` sí la encontraba).
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_vieja.to_lowercase(), "kind": "outdated", "other_id": globex_nueva.to_lowercase() })),
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": &globex_vieja[..20], "kind": "outdated", "other_id": &globex_nueva[..20] })),
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex.to_lowercase(), "kind": "secret" })),
     ] {
         let (e, c) = s.post(ruta, cuerpo);
         assert_eq!(e, 403, "{ruta}: {c}");
+    }
+    // `?dir=` con una ruta de red: no se mira (cualquier web la puede pedir con un `<img>`; mirarla
+    // abría una conexión SMB, tardaba ~21 s y bloqueaba el servidor).
+    for d in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\??\UNC\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x"] {
+        let t = std::time::Instant::now();
+        let (e, c) = s.pedir("GET", &con_dir("/api/memories", Path::new(d)), "");
+        assert_eq!(e, 400, "{d}: {c}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{d}: {:?}", t.elapsed());
     }
     assert_eq!(p.cuenta("SELECT count(*) FROM memory WHERE id = ?1 AND pinned = 0 AND content LIKE '%sk-test%'", &globex), 1, "globex sigue igual");
     assert_eq!(p.cuenta("SELECT count(*) FROM forgotten WHERE id = ?1", &tirada_globex), 1, "sigue en la papelera");

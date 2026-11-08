@@ -37,6 +37,13 @@ use sha2::{Digest, Sha256};
 
 /// La clave del sello en `memory.extra` (y el campo `verified` de la línea que viaja).
 pub const CLAVE: &str = "verified";
+
+/// La marca local (en `meta`, que no viaja) de un sello de verificada de otra persona que llegó por el
+/// repositorio de un espacio (`sync::sello_de_otro`): `sello_ajeno:<id>` con su `by` y su `at` en dos
+/// líneas. Mientras la memoria lleve ese mismo sello, aquí no cuenta como verificada
+/// (`memoria::COLUMNAS`); el sello sigue en la memoria, tal cual, para los demás.
+pub const SELLO_AJENO: &str = "sello_ajeno:";
+
 /// Cuándo la persona le quitó la verificación por última vez (`memory.extra`), para que reimportar un
 /// bundle viejo no la vuelva a verificar.
 pub const DESVERIFICADA: &str = "unverified_at";
@@ -77,7 +84,12 @@ pub(crate) fn de_columna(json: Option<&str>, kind: &str, title: &str, content: &
 /// memoria (`OMOIKANE_AUTHOR` o el nombre con el que se unió a la sincronización), y si no hay, el
 /// usuario del sistema.
 pub fn quien_por_defecto(db: &Connection, m: &Memoria) -> Result<String> {
-    let a = crate::memoria::autor_en(db, &m.space)?;
+    quien_aqui(db, &m.space)
+}
+
+/// [`quien_por_defecto`] para lo de un espacio (su clave; vacía, sin espacio).
+pub(crate) fn quien_aqui(db: &Connection, espacio: &str) -> Result<String> {
+    let a = crate::memoria::autor_en(db, espacio)?;
     if !a.trim().is_empty() {
         return Ok(a);
     }
@@ -87,7 +99,60 @@ pub fn quien_por_defecto(db: &Connection, m: &Memoria) -> Result<String> {
 /// Las variables que pone la shell de un agente de programación: dentro de ella, `omoi verify` se
 /// niega (la verificación es de la persona). Es un freno para que un agente no la use sin querer o
 /// porque una memoria se lo pida, no una barrera contra quien la quiera saltar.
-const DE_AGENTE: &[&str] = &["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT"];
+///
+/// Solo las que pone el agente al lanzar sus órdenes (comprobado en su código o su documentación, o en
+/// la shell de Claude Code de verdad; la tabla de `detect-coding-agent` las recoge con su fuente), nunca
+/// las de configuración que la persona pone en su propia terminal: ni `CLAUDE_CODE_*` en general
+/// (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`… van en el perfil de la persona), ni
+/// `AIDER_*` (Aider no pone ninguna al ejecutar: todas son su configuración), ni `CURSOR_TRACE_ID` o
+/// `TERM_PROGRAM` (también están en la terminal de la persona dentro del editor). Con una de esas,
+/// `omoi verify` se negaría también a la persona.
+pub const DE_AGENTE: &[&str] = &[
+    // Genéricas (agents.md): las ponen Claude Code, Copilot en VS Code, Devin, OpenCode, Crush, Amp,
+    // Goose…
+    "AI_AGENT",
+    "AGENT",
+    // Claude Code (y Claude Cowork).
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_IS_COWORK",
+    // Gemini CLI, Qwen Code, Antigravity.
+    "GEMINI_CLI",
+    "QWEN_CODE",
+    "ANTIGRAVITY_AGENT",
+    // Codex.
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_CI",
+    // Cursor (agente del editor y CLI).
+    "CURSOR_AGENT",
+    // OpenCode y Kilo Code; Crush; Amp; Goose.
+    "OPENCODE",
+    "OPENCODE_SESSION_ID",
+    "KILO",
+    "CRUSH",
+    "AMP_CURRENT_THREAD_ID",
+    "GOOSE_TERMINAL",
+    // Cline y Roo Code.
+    "CLINE_ACTIVE",
+    "ROO_ACTIVE",
+    // GitHub Copilot: en VS Code, su CLI y su agente en la nube.
+    "COPILOT_AGENT",
+    "COPILOT_CLI",
+    "COPILOT_AGENT_SESSION_ID",
+    "COPILOT_AGENT_JOB_ID",
+    // Windsurf (Cascade), Augment, Pi, Junie, Kiro, Trae.
+    "WINDSURF_CASCADE_TERMINAL",
+    "AUGMENT_AGENT",
+    "PI_CODING_AGENT",
+    "JUNIE_DATA",
+    "KIRO_AGENT_PATH",
+    "TRAE_AI_SHELL_ID",
+];
 
 /// La variable de agente que hay en el entorno, si hay alguna.
 pub fn shell_de_agente() -> Option<&'static str> {

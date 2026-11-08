@@ -22,7 +22,14 @@ pub fn ruta_de_red(ruta: &str) -> bool {
 /// ni, en Windows, con otro prefijo que el de una unidad (`C:`): UNC, `\\?\` y `\\.\` fuera. Una unidad
 /// de red con letra (`Z:`) no se distingue sin preguntar al sistema y sí se mira.
 pub fn ruta_local(p: &Path) -> bool {
-    if ruta_de_red(&p.to_string_lossy()) {
+    let s = p.to_string_lossy();
+    if ruta_de_red(&s) {
+        return false;
+    }
+    // `\??\…` (el prefijo de las rutas de NT): Windows lo pasa tal cual, así que `\??\UNC\host\x` es
+    // un recurso de red aunque empiece por una sola barra (para `Path`, la raíz de la unidad actual).
+    let b = s.trim_start().as_bytes();
+    if b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[1] == b'?' && b[2] == b'?' && matches!(b[3], b'\\' | b'/') {
         return false;
     }
     #[cfg(windows)]
@@ -35,14 +42,47 @@ pub fn ruta_local(p: &Path) -> bool {
     true
 }
 
-/// Proyecto de la carpeta actual.
-pub fn actual() -> Result<String> {
-    de(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
+/// `is_dir` de una ruta que puede venir de fuera (de una línea de la sincronización, de un fichero, de
+/// un agente): solo si es local ([`ruta_local`]); una de red ni se mira.
+pub fn es_carpeta(p: &Path) -> bool {
+    ruta_local(p) && p.is_dir()
 }
 
-/// Proyecto de una carpeta.
+/// `exists`, con la misma condición que [`es_carpeta`].
+pub fn existe(p: &Path) -> bool {
+    ruta_local(p) && p.exists()
+}
+
+/// El error de una ruta que no es de este equipo.
+fn no_local(p: &Path) -> anyhow::Error {
+    anyhow::anyhow!(tr!(
+        "{} is not a folder on this computer: Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\…, \\??\\…); map it to a drive letter if you need it",
+        "{} no es una carpeta de este equipo: Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\…, \\??\\…); si la necesitas, asígnale una letra de unidad",
+        p.display()
+    ))
+}
+
+/// Error si la ruta no es local ([`ruta_local`]), antes de tocar el disco.
+pub fn exigir_local(p: &Path) -> Result<()> {
+    if ruta_local(p) { Ok(()) } else { Err(no_local(p)) }
+}
+
+/// Proyecto de la carpeta actual. Esta sí puede estar en un recurso de red: la persona ya está ahí (el
+/// sistema ya abrió esa conexión), no es una ruta que llegue de fuera.
+pub fn actual() -> Result<String> {
+    de_sin_mirar(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
+}
+
+/// Proyecto de una carpeta. Una ruta que no es local ([`ruta_local`]) da error sin tocar el disco: en
+/// Windows, solo con mirarla se abre una conexión SMB (que tarda en fallar y entrega el hash NTLM de la
+/// persona al servidor que diga), y la ruta puede venir de un agente (`project`) o de una web (`?dir=`).
 pub fn de(dir: &Path) -> Result<String> {
-    let dir = canonica(dir)?;
+    exigir_local(dir)?;
+    de_sin_mirar(dir)
+}
+
+fn de_sin_mirar(dir: &Path) -> Result<String> {
+    let dir = canonica_sin_mirar(dir)?;
     let raiz = dir.ancestors().find(|d| d.join(".git").exists()).unwrap_or(&dir);
     Ok(texto(raiz))
 }
@@ -66,7 +106,7 @@ fn carpeta_personal() -> Option<&'static str> {
 
 fn general_en(project: &str, home: &Path) -> bool {
     let p = Path::new(project);
-    !project.is_empty() && !p.join(".git").exists() && (home.starts_with(p) || p.parent().is_none())
+    !project.is_empty() && ruta_local(p) && !p.join(".git").exists() && (home.starts_with(p) || p.parent().is_none())
 }
 
 /// Proyecto de una carpeta que alguien da a propósito (`--project`, `project`): una carpeta general
@@ -189,7 +229,13 @@ fn repo_de_ruta(ruta: &str, home: &Path) -> Option<String> {
     (Path::new(&raiz) != home && !oculto).then_some(raiz)
 }
 
+/// La forma canónica de una ruta local; una que no lo es ([`ruta_local`]) da error sin tocar el disco.
 pub(crate) fn canonica(p: &Path) -> Result<PathBuf> {
+    exigir_local(p)?;
+    canonica_sin_mirar(p)
+}
+
+fn canonica_sin_mirar(p: &Path) -> Result<PathBuf> {
     let c = std::fs::canonicalize(p).with_context(|| tr!("{} doesn't exist", "no existe {}", p.display()))?;
     // En Windows, canonicalize devuelve `\\?\C:\…`: se quita el prefijo para guardar la ruta normal.
     #[cfg(windows)]
@@ -407,7 +453,7 @@ pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<St
         return Ok((0, None));
     }
     let ahora = ahora(db)?;
-    let existe = Path::new(ruta).is_dir();
+    let existe = es_carpeta(Path::new(ruta));
     if let Some((id, espacio)) = por_ruta(db, ruta)? {
         if existe {
             // La ruta que trajo otro equipo existe ahora aquí: es la primera carpeta de este equipo, y
@@ -457,7 +503,7 @@ fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Optio
         [id],
         |f| Ok((f.get(0)?, f.get(1)?)),
     )?;
-    if actual != ruta && Path::new(ruta).is_dir() && (ajena || actual.is_empty() || !Path::new(&actual).is_dir()) {
+    if actual != ruta && es_carpeta(Path::new(ruta)) && (ajena || actual.is_empty() || !es_carpeta(Path::new(&actual))) {
         db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![id, ruta, nombre_de(ruta, "")])?;
         return Ok((!ajena && !actual.is_empty()).then_some(actual));
     }
@@ -491,7 +537,7 @@ pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, 
     if let Some(id) = db.query_row("SELECT id FROM project WHERE key = ?1", [clave], |f| f.get(0)).optional()? {
         return Ok(id);
     }
-    let existe = !ruta_origen.is_empty() && Path::new(ruta_origen).is_dir();
+    let existe = !ruta_origen.is_empty() && es_carpeta(Path::new(ruta_origen));
     if existe && por_ruta(db, ruta_origen)?.is_none() {
         if crate::sync::clave(ruta_origen, persona) == clave {
             return registrar(db, ruta_origen);
@@ -508,7 +554,7 @@ pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, 
             return Ok(id);
         }
     }
-    let libre = |r: &str| -> Result<bool> { Ok(por_ruta(db, r)?.is_none() && !Path::new(r).exists()) };
+    let libre = |r: &str| -> Result<bool> { Ok(por_ruta(db, r)?.is_none() && !crate::proyecto::existe(Path::new(r))) };
     let mut ruta = if ruta_origen.is_empty() { format!("[{clave}]") } else { ruta_origen.to_string() };
     if !libre(&ruta)? {
         ruta = format!("{ruta_origen} [{clave}]");
@@ -617,7 +663,7 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
     let mut oficios = crate::oficios::de_proyectos(db)?;
     Ok(v.into_iter()
         .map(|(mut p, ajena, _)| {
-            p.gone = !ajena && !p.path.is_empty() && !Path::new(&p.path).is_dir();
+            p.gone = !ajena && !p.path.is_empty() && ruta_local(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
             p.status = estados.get(&p.id).cloned().unwrap_or_default();
             p.trades = oficios.remove(&p.id).unwrap_or_default();
             p
@@ -654,7 +700,7 @@ fn buscar_entre(db: &Connection, texto: &str, espacio: Option<Option<i64>>) -> R
     let t = texto.trim();
     anyhow::ensure!(!t.is_empty(), tr!("which project? give its folder or its name", "¿qué proyecto? di su carpeta o su nombre"));
     let parece_ruta = t.contains(['/', '\\']) || t == "." || t == "..";
-    if (parece_ruta || Path::new(t).is_dir())
+    if (parece_ruta || es_carpeta(Path::new(t)))
         && let Ok(ruta) = de(Path::new(t))
     {
         if let Some((id, _)) = resolver(db, &ruta)? {
@@ -1223,5 +1269,24 @@ mod tests {
         std::fs::create_dir_all(base.join("a")).unwrap();
         std::fs::write(base.join(".git"), "gitdir: /otro/sitio").unwrap();
         assert_eq!(de(&base.join("a")).unwrap(), de(&base).unwrap());
+    }
+
+    /// Una ruta de red (la `project` de un agente, el `?dir=` de una web) no se mira: `de`, `canonica`
+    /// y `buscar` la rechazan sin tocar el disco. Con 10.255.255.1 (sin nadie detrás), mirarla tardaba
+    /// unos 21 s en fallar y por el camino entregaba el hash NTLM de la persona.
+    #[test]
+    fn una_ruta_de_red_no_se_mira() {
+        let t = crate::comun::Temporal::nueva("red");
+        let db = crate::db::abrir(&t.join("o.db")).unwrap();
+        for r in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\/10.255.255.1\x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", "/??/UNC/10.255.255.1/x", r"\\.\pipe\x"] {
+            let inicio = std::time::Instant::now();
+            assert!(!ruta_local(Path::new(r)), "{r}");
+            assert!(format!("{}", de(Path::new(r)).unwrap_err()).contains("network"), "{r}");
+            assert!(de_carpeta(Path::new(r)).is_err() && canonica(Path::new(r)).is_err(), "{r}");
+            assert!(buscar(&db, r).is_err(), "{r}");
+            assert!(!es_carpeta(Path::new(r)) && !existe(Path::new(r)), "{r}");
+            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
+        }
+        assert!(ruta_local(Path::new(r"C:\x\??\y")) && ruta_local(Path::new("src/a.rs")));
     }
 }

@@ -570,7 +570,7 @@ fn la_verificacion_y_la_procedencia_pasan_por_la_10() {
     // Sin las variables de la shell de un agente (si los tests corren dentro de una, `verify` se niega).
     let sin_agente = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
         let mut c = a.comando(&a.dir);
-        for v in ["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT", "CLAUDE_CODE_SESSION_ID"] {
+        for v in omoikane::verificado::DE_AGENTE {
             c.env_remove(v);
         }
         for (k, x) in env {

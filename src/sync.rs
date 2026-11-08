@@ -1586,6 +1586,9 @@ pub struct Resumen {
     /// Líneas de memorias de un proyecto en pausa aquí (`proyecto::Pausa`): no se aplican hasta que la
     /// persona decida, y entonces se vuelven a leer.
     pub en_pausa: usize,
+    /// Memorias que llegaron por el repositorio de un espacio con el sello de verificada de otra
+    /// persona (ver `sello_de_otro`): aquí no cuentan como verificadas.
+    pub sellos_ajenos: usize,
     /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
@@ -1812,8 +1815,29 @@ impl Resumen {
         self.de_version_nueva += o.de_version_nueva;
         self.conflictos_de_espacio += o.conflictos_de_espacio;
         self.en_pausa += o.en_pausa;
+        self.sellos_ajenos += o.sellos_ajenos;
         self.avisos.extend(o.avisos);
     }
+}
+
+/// Si la línea de una memoria que llega por el repositorio de un espacio (compartido con otras
+/// personas) trae el sello de verificada de alguien que no es la persona de aquí: su `by` no es quien
+/// verifica aquí por defecto en ese espacio (`verificado::quien_aqui`: `OMOIKANE_AUTHOR`, el autor de
+/// `sync join` o el usuario del sistema) ni el autor de ese repositorio. Ese sello no cuenta aquí: es la
+/// confianza de otra persona, no la de quien usa esta base. Por el repositorio general (el de la
+/// persona, entre sus equipos) los sellos cuentan, como siempre. Devuelve lo que identifica ese sello
+/// (`by` y `at`, para [`crate::verificado::SELLO_AJENO`]).
+fn sello_de_otro(db: &Connection, c: &Config, space_key: &str, extra: &Extra) -> Result<Option<String>> {
+    if c.space.is_none() {
+        return Ok(None);
+    }
+    let Some(v) = extra.get(crate::verificado::CLAVE) else { return Ok(None) };
+    let texto = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let (by, at) = (texto("by"), texto("at"));
+    let mismo = |a: &str| !a.trim().is_empty() && a.trim().eq_ignore_ascii_case(by.trim());
+    // (No `c.person`: al unirse con un código es la de quien invitó.)
+    let propio = mismo(&crate::verificado::quien_aqui(db, space_key)?) || c.author.as_deref().is_some_and(mismo);
+    Ok((!propio).then(|| format!("{by}\n{at}")))
 }
 
 fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
@@ -2130,6 +2154,21 @@ impl<'a> Aplicador<'a> {
                 };
                 let tipo = kind.parse::<Tipo>().ok();
                 let kind_text = if tipo.is_none() { Some(kind.clone()) } else { None };
+                // El sello de verificada de otra persona no cuenta aquí (ver `sello_de_otro`). Se guarda tal
+                // cual (la línea que este equipo vuelva a escribir lo lleva, para los demás) y se apunta en
+                // `meta` que aquí no vale: `memoria::COLUMNAS` no lo da por verificado.
+                if let Some(c) = self.config {
+                    let marca = format!("{}{id}", crate::verificado::SELLO_AJENO);
+                    match sello_de_otro(db, c, &space_key, &extra)? {
+                        Some(sello) => {
+                            r.sellos_ajenos += 1;
+                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![marca, sello])?;
+                        }
+                        None => {
+                            db.execute("DELETE FROM meta WHERE k = ?1", [&marca])?;
+                        }
+                    }
+                }
                 // Los campos que esta versión no conoce se guardan con ella, para volver a escribirlos.
                 let extra = extra_a_texto(&extra);
                 let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author, extra: &extra };

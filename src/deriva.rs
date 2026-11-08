@@ -245,8 +245,21 @@ fn con_tope(mut c: std::process::Command, tope: std::time::Duration) -> Option<V
             }
         }
     };
-    let salida = lector.join().ok()?;
-    estado.filter(|e| e.success()).map(|_| salida)
+    // Sin éxito a tiempo, el hilo lector se suelta sin esperarlo: un nieto que heredó la tubería (el
+    // `git` de verdad bajo el lanzador de Git para Windows) la tiene abierta hasta que acaba, y
+    // `join` esperaba a ese nieto aunque al hijo ya se le hubiera parado (15 s con un tope de 0,5).
+    // El hilo acaba solo cuando el nieto cierra la tubería.
+    if !estado.is_some_and(|e| e.success()) {
+        return None;
+    }
+    // Y aunque el hijo acabe bien, la salida se espera solo hasta el tope, por lo mismo.
+    while !lector.is_finished() {
+        if std::time::Instant::now() >= fin {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    lector.join().ok()
 }
 
 /// Cuántas líneas tiene hoy un fichero (0 si es muy grande o no se puede leer).
@@ -642,6 +655,29 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(con_tope(c, std::time::Duration::from_millis(300)), None);
         assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    }
+
+    /// Un hijo que deja un nieto con la tubería abierta (como el lanzador de Git para Windows, cuyo `git`
+    /// de verdad la hereda) no hace esperar a ese nieto: ni si el hijo pasa del tope y se para, ni si
+    /// acaba enseguida.
+    #[test]
+    fn el_nieto_no_hace_esperar() {
+        // (con qué se queda colgado, cuánto tarda el hijo en irse)
+        let ordenes: Vec<Vec<&str>> = if cfg!(windows) {
+            vec![
+                vec!["cmd", "/C", "start /b powershell -NoProfile -Command Start-Sleep -Seconds 15 & powershell -NoProfile -Command Start-Sleep -Seconds 20"],
+                vec!["cmd", "/C", "start /b powershell -NoProfile -Command Start-Sleep -Seconds 15 & exit 0"],
+            ]
+        } else {
+            vec![vec!["sh", "-c", "sleep 15 & sleep 20"], vec!["sh", "-c", "sleep 15 & exit 0"]]
+        };
+        for o in ordenes {
+            let mut c = std::process::Command::new(o[0]);
+            c.args(&o[1..]).stdout(std::process::Stdio::piped()).stdin(std::process::Stdio::null());
+            let t = std::time::Instant::now();
+            assert_eq!(con_tope(c, std::time::Duration::from_millis(2500)), None, "{o:?}");
+            assert!(t.elapsed() < std::time::Duration::from_secs(8), "{o:?}: {:?}", t.elapsed());
+        }
     }
 
     /// Lo calculado no pisa lo que otro proceso guardó mientras (`refrescar`): solo se escribe si lo

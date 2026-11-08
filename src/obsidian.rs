@@ -48,6 +48,8 @@ pub enum Que {
 
 /// Exporta al vault y devuelve qué ha cambiado.
 pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
+    // Una carpeta de red no se mira (ver `proyecto::ruta_local`); con una letra de unidad, sí.
+    crate::proyecto::exigir_local(vault)?;
     let ambito = match que {
         Que::Personal => Ambito::Espacio(None),
         Que::Espacio(s) => Ambito::Espacio(Some(s)),

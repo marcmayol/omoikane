@@ -680,7 +680,7 @@ fn pasar_a_proyectos(tx: &Connection, persona: &str) -> Result<()> {
         let r = match remotos.get(&ruta) {
             Some(k) => Ruta { clave: k.clone(), ajena: true, existe: false, origen: String::new(), ruta },
             None => {
-                let existe = Path::new(&ruta).is_dir();
+                let existe = crate::proyecto::es_carpeta(Path::new(&ruta));
                 Ruta { clave: crate::sync::clave(&ruta, persona), ajena: false, existe, origen: crate::proyecto::origen(&ruta), ruta }
             }
         };

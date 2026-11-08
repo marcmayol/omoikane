@@ -177,7 +177,7 @@ fn de_engram(e: ExportEngram, forzado: Option<&str>, actual: &str) -> (Vec<Entra
             o.session_id
                 .as_ref()
                 .and_then(|s| dirs.get(s))
-                .filter(|d| Path::new(d).is_dir())
+                .filter(|d| proyecto::es_carpeta(Path::new(d)))
                 .and_then(|d| proyecto::de(Path::new(d)).ok())
                 .unwrap_or_else(|| actual.to_string())
         };
