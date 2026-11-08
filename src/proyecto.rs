@@ -1547,6 +1547,9 @@ mod tests {
     /// repositorio de las rutas de la memoria (`para_guardar`) y las miraba en el disco: una conexión SMB
     /// a lo que dijera la memoria. Ni se miran ni dan proyecto, también citadas en el texto.
     #[test]
+    // Solo en Windows: en Linux y macOS la barra invertida es una letra más del nombre y `//servidor`
+    // es una carpeta local, así que esas rutas no abren ninguna conexión.
+    #[cfg(windows)]
     fn tilde_seguida_de_una_ruta_de_red_no_se_mira() {
         let base = crate::comun::Temporal::nueva("tilde-red");
         let home = PathBuf::from(de(&base).unwrap());

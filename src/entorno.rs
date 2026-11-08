@@ -184,7 +184,10 @@ mod tests {
         }
     }
 
-    /// Un `OMOIKANE_HOME` de red (también tras `~/`) no vale: cada orden abriría ahí la base.
+    /// Un `OMOIKANE_HOME` de red (también tras `~/`) no vale: cada orden abriría ahí la base. Solo en
+    /// Windows: en Linux y macOS la barra invertida es una letra más del nombre y `//servidor` es una
+    /// carpeta local, así que esas rutas no abren ninguna conexión.
+    #[cfg(windows)]
     #[test]
     fn casa_de_red_no_vale() {
         for h in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"~/\\10.255.255.1\x", r"~\//10.255.255.1/x"] {
