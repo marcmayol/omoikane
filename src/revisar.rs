@@ -856,7 +856,14 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
         }
     }
     let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(TIPOS.len());
-    r.sort_by_key(|a| orden(&a.kind));
+    // Dentro de cada tipo de aviso, primero lo que más se equivoca si nadie lo mira: las decisiones y
+    // las trampas que escribió un agente y no ha verificado ninguna persona; lo verificado, al final.
+    let prioridad = |id: &str| match por_id.get(id) {
+        Some(m) if m.verified.is_some() => 2,
+        Some(m) if matches!(m.kind, crate::memoria::Tipo::Decision | crate::memoria::Tipo::Gotcha) => 0,
+        _ => 1,
+    };
+    r.sort_by_key(|a| (orden(&a.kind), prioridad(&a.memory_id)));
     Ok(r)
 }
 

@@ -97,6 +97,17 @@ pub struct Memoria {
     /// nada). No se guarda ni sale en el JSON: es para que quien guarda lo diga.
     #[serde(skip)]
     pub redacted: Vec<&'static str>,
+    /// Quién la verificó y cuándo, si una persona la verificó y el texto no ha cambiado desde entonces
+    /// (`verificado`, en `memory.extra`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<crate::verificado::Verificada>,
+    /// En qué sesión y en qué commit se escribió (`procedencia`, en `memory.extra`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::procedencia::Procedencia>,
+    /// La verificación que quitó el cambio de texto de esta llamada (`update`). No se guarda ni sale en
+    /// el JSON: es para que quien cambia lo diga.
+    #[serde(skip)]
+    pub unverified: Option<crate::verificado::Verificada>,
 }
 
 impl Memoria {
@@ -134,6 +145,8 @@ pub struct Nueva {
     pub tags: Vec<String>,
     pub pinned: bool,
     pub source: String,
+    /// De dónde sale (`procedencia::actual`), para lo que se escribe aquí: va a `memory.extra`.
+    pub provenance: Option<crate::procedencia::Procedencia>,
 }
 
 /// Solo cambia lo que viene en `Some`.
@@ -340,10 +353,12 @@ fn filas_fts(db: &Connection) -> Option<i64> {
     None
 }
 /// Las columnas de una memoria, sobre `memory m`. Lo del proyecto y el espacio, con subconsultas por
-/// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`).
-pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '')";
+/// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`). Las dos últimas,
+/// la verificación (`verificado`) y la procedencia (`procedencia`) de `memory.extra` (o NULL): el
+/// `instr` evita leer el JSON de las que no tienen, que son casi todas.
+pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END";
 /// Cuántas columnas son: lo que se pida detrás de `COLUMNAS` empieza en este índice.
-pub(crate) const NCOL: usize = 17;
+pub(crate) const NCOL: usize = 19;
 
 pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
@@ -352,6 +367,9 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     };
     let kind: String = f.get(2)?;
     let tipo = kind.parse::<Tipo>().ok();
+    let (title, content): (String, String) = (f.get(3)?, f.get(4)?);
+    let verified = crate::verificado::de_columna(f.get::<_, Option<String>>(17)?.as_deref(), &kind, &title, &content);
+    let provenance = crate::procedencia::de_columna(f.get::<_, Option<String>>(18)?.as_deref());
     Ok(Memoria {
         id: f.get(0)?,
         project: f.get(1)?,
@@ -360,8 +378,8 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         space: f.get(16)?,
         kind: tipo.unwrap_or(Tipo::Fact),
         kind_text: if tipo.is_none() { Some(kind) } else { None },
-        title: f.get(3)?,
-        content: f.get(4)?,
+        title,
+        content,
         paths: lista(5)?,
         tags: lista(6)?,
         pinned: f.get(7)?,
@@ -373,10 +391,13 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         author: f.get(13)?,
         content_hlc: String::new(),
         redacted: Vec::new(),
+        verified,
+        provenance,
+        unverified: None,
     })
 }
 
-fn escribir_tx(db: &mut Connection) -> Result<Transaction<'_>> {
+pub(crate) fn escribir_tx(db: &mut Connection) -> Result<Transaction<'_>> {
     Ok(db.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
@@ -786,7 +807,7 @@ pub(crate) fn guardar_con_id(db: &mut Connection, id: &str, nueva: Nueva, o: &Or
 }
 
 /// El sello de una memoria (vacío si no existe).
-fn hlc_de(db: &Connection, id: &str) -> Result<String> {
+pub(crate) fn hlc_de(db: &Connection, id: &str) -> Result<String> {
     Ok(db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
@@ -885,7 +906,11 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
             author,
             space_id,
             content_hlc,
-            origen.map_or("{}", |o| o.extra),
+            match (origen, &nueva.provenance) {
+                (Some(o), _) => o.extra.to_string(),
+                (None, Some(p)) => crate::procedencia::extra(p),
+                (None, None) => "{}".to_string(),
+            },
         ],
     )?;
     let n = tx.last_insert_rowid();
@@ -897,7 +922,7 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
     Ok(Memoria { redacted, ..m })
 }
 
-fn leer(db: &Connection, id: &str) -> Result<Memoria> {
+pub(crate) fn leer(db: &Connection, id: &str) -> Result<Memoria> {
     db.query_row(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.id = ?1"), [id], de_fila)
         .optional()?
         .ok_or_else(|| anyhow!(tr!("no memory with id {id}", "no existe la memoria {id}")))
@@ -1090,6 +1115,9 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
     }
     // La foto anterior va al historial.
     guardar_version(tx, id, &antes, None, c.reason.as_deref())?;
+    // La persona verificó el texto de antes, no este: cambiarlo desde aquí le quita la verificación
+    // (ver `verificado`). Lo que llega de otro equipo trae la suya en `extra`.
+    let unverified = if origen.is_none() && cambia_juzgado { crate::verificado::quitar_al_cambiar(tx, id, &antes)? } else { None };
     tx.execute(
         &format!(
             "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project_id = ?8, space_id = ?11,
@@ -1126,7 +1154,7 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
             }
         }
     }
-    Ok((Memoria { redacted, ..m }, cambiados))
+    Ok((Memoria { redacted, unverified, ..m }, cambiados))
 }
 
 /// Cuelga una foto de `m` del historial de `id`, con el número siguiente al último que tiene.
@@ -1377,6 +1405,7 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         tags: m.tags.clone(),
         pinned: m.pinned,
         source: m.source.clone(),
+        provenance: None,
     };
     // Vuelve con su texto de siempre: el sello de contenido, el de cuando se olvidó (los veredictos que
     // tenía siguen valiendo).

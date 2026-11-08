@@ -35,6 +35,7 @@ When something you remembered changes, `update` it with a reason; `forget` it on
 To fix one part of a memory use `update` with `replace` ([{find, with}], each `find` literal and found exactly once); to add a step, `append`; to merge several memories into one, `update` the one that stays with the merged text in `content` and the others' ids in `absorb` (they go to the trash, superseded by it, and their tags, paths and history move to it).
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
 When one memory replaces another, say so: `supersedes` (in `remember` or `update`) with the old one's id. When two disagree and you can't tell which holds, `contradicts`; when a warning pairs two that both hold, `compatible`. That judgment is kept, travels with sync and shows wherever the memories show up.
+A memory marked verified was checked by a person: trust it over an unverified one that disagrees. Only the user verifies (`omoi verify` or the web view); never do it yourself, and if you change its text, tell the user it is no longer verified.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 
 #[derive(Clone)]
@@ -273,6 +274,9 @@ struct Compacta {
     /// Por qué tomarla con cuidado (sustituida, contradicha, desfasada, sin revisar).
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    /// «by Marc, 2026-11-08» si la verificó una persona (`verificado`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verified: Option<String>,
 }
 
 const LARGO_FRAGMENTO: usize = 200;
@@ -300,6 +304,7 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
         pinned: m.pinned,
         similarity: similarity.map(|s| (s * 1000.0).round() / 1000.0),
         note: None,
+        verified: m.verified.as_ref().map(|v| format!("by {}, {}", v.by, v.at.get(..10).unwrap_or(&v.at))),
     }
 }
 
@@ -542,6 +547,8 @@ impl Servidor {
                 if space_id.is_none() && !project.is_empty() {
                     fuera_de_espacio(&Ambito::de(db, proyecto)?, &Ambito::de(db, &project)?)?;
                 }
+                // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
+                let provenance = if de_oficio { None } else { crate::procedencia::actual(db, if project.is_empty() { proyecto } else { &project }) };
                 let nueva = Nueva {
                     project,
                     space_id,
@@ -552,6 +559,7 @@ impl Servidor {
                     tags: if de_oficio { crate::oficios::etiquetas_de_oficio(tags, &oficios, para.as_deref()) } else { tags },
                     pinned: p.pinned.unwrap_or(false),
                     source: origen.clone(),
+                    provenance,
                     ..Default::default()
                 };
                 let datos = p.data.filter(|d| !d.is_null());
@@ -797,6 +805,14 @@ impl Servidor {
                 }
                 if !absorbidas.is_empty() {
                     r["absorbed"] = serde_json::json!(absorbidas);
+                }
+                // La persona verificó el texto de antes: el agente lo dice para que lo vuelva a mirar.
+                if let Some(u) = &m.unverified {
+                    r["unverified"] = serde_json::json!(format!(
+                        "It was verified by {} ({}); changing its text removed that. Tell the user, who can verify it again if it is still right.",
+                        u.by,
+                        u.at.get(..10).unwrap_or(&u.at)
+                    ));
                 }
                 Ok(r)
             })

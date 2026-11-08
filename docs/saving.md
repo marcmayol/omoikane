@@ -121,6 +121,30 @@ In Claude Code it also reads the session's subagents. For each one that finished
 
 It reads the conversation of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode and Grok Build (`omoi setup <agent>` adds the end-of-session hooks); not Antigravity, whose conversations are stored in an undocumented binary format. In agents with no recall at session start, such as Grok, what was set aside arrives through the `context` tool.
 
+## Verified by a person
+
+Agents write almost everything in the memory. When you check one and it is right, mark it: `omoi verify <id>` (it shows the memory and asks), or **Verify** on the memory in the web view. It keeps who and when (`--by <name>`; by default your sync name, `OMOIKANE_AUTHOR`, or the system user). The recall marks it `[decision, verified]`, and search, `get`, `list --json`, `recent` and `context` carry `verified: {by, at}`. The agent is told to trust a verified memory over an unverified one that disagrees. `omoi verify <id> --unverify` removes it.
+
+An agent can't verify anything. There is no MCP tool for it, `remember` and `update` ignore a `verified` field, and the HTTP tools (`/tools/…`) are the MCP ones. `omoi verify` asks in a terminal and refuses elsewhere without `--yes`, and it always refuses inside a coding agent's shell (`CLAUDECODE`, `AI_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX`… are set). The web button goes through its own route, `POST /api/verify`, which only takes a browser's request from the view itself. An agent that wants to get around this on purpose can, as it could edit the database: the point is that nothing an agent normally does ends in "verified".
+
+Changing the text removes the verification: you vouched for that text, not the next one. `update` says so (`unverified` in the answer) so the agent can tell you. Tags, paths, pinning or moving it don't touch it. The mark carries a fingerprint of the kind, title and content, so a change made by a version from before 1.8.5 (which keeps the mark without understanding it) also leaves it unverified.
+
+When it's time to review (Review, `omoi review`), unverified decisions and gotchas come first in each group, and verified memories last.
+
+**In Kumi.** What the person approves is verified; what the apprentice proposes isn't. `kumi.py` runs, after the person approves in Kumi and never from inside the apprentice's session:
+
+```python
+def aprobar(raiz, mem_id, respuesta, quien="Marc"):
+    omoi("--dir", raiz, "decisions", "--resolve", mem_id, "--answer", respuesta, "--json")
+    omoi("--dir", raiz, "verify", mem_id, "--by", quien, "--yes", "--json")
+```
+
+The same for an approved rule (a `preference` or a `procedure`): `verify` once it is saved with the person's wording. If `kumi.py` itself runs inside an agent's shell, it has to start `omoi` without those variables, on purpose: that is the person's path.
+
+## Where each memory came from
+
+Each new memory keeps the agent session and the commit it was written in: `get` shows `written in session … · commit … (branch)`, `history` too, and the JSON carries `provenance: {session, commit, branch}`. The session comes from `OMOIKANE_SESSION`, or from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for its shell and its MCP servers; otherwise, the only session the hooks registered in that project in the last 12 hours (with two at once it doesn't guess). The commit is the project's HEAD, read from `.git` without running `git` (worktrees and `packed-refs` included). It is the provenance of when the memory was written: later changes don't touch it. Trade memories don't carry it (nothing of a project goes to every client). It costs 0.4 to 0.5 ms per save.
+
 ## It doesn't keep secrets
 
 If a token, a private key or a password slips into a memory, it becomes `[redacted:<type>]` before it is saved, and the reply tells the agent. What was saved before shows in Review with a button to redact it, history included, and none of it leaves the computer when syncing.

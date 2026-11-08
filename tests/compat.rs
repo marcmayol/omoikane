@@ -552,6 +552,58 @@ fn los_datos_pasan_por_la_10_sin_perderse() {
     assert_eq!((&m["content"], &m["data"]), (&serde_json::json!("Cambiado por la 1.0."), &datos), "{m}");
 }
 
+/// 1.8.5: la verificación de una persona (`verified`) y la procedencia (`provenance`) viajan como
+/// campos de la línea que la 1.0 no conoce: los guarda y los reenvía. Si la 1.0 solo la fija, la
+/// verificación sigue valiendo; si cambia el texto, deja de valer (su huella ya no coincide), y la
+/// procedencia se queda.
+#[test]
+fn la_verificacion_y_la_procedencia_pasan_por_la_10() {
+    let Some(v10) = binario_10() else { return };
+    let p = Prueba::nueva("verificada");
+    let (a, viejo) = dos(&p, Path::new(NUEVO), &v10);
+    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
+    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+    a.sync();
+    if la_10_se_aparta(&p, &viejo, &clave) {
+        return;
+    }
+    // Sin las variables de la shell de un agente (si los tests corren dentro de una, `verify` se niega).
+    let sin_agente = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
+        let mut c = a.comando(&a.dir);
+        for v in ["CLAUDECODE", "AI_AGENT", "GEMINI_CLI", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CURSOR_AGENT", "CLAUDE_CODE_SESSION_ID"] {
+            c.env_remove(v);
+        }
+        for (k, x) in env {
+            c.env(k, x);
+        }
+        let o = c.arg("--json").args(args).stdin(Stdio::null()).output().unwrap();
+        assert!(o.status.success(), "omoi {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let id = sin_agente(&["remember", "-k", "decision", "-t", "Verificada por Marc", "--global", "Lo decidió Marc."], &[("OMOIKANE_SESSION", "s-compat")])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sin_agente(&["verify", &id, "--by", "Marc", "--yes"], &[]);
+    a.sync();
+    viejo.sync();
+    let guardado: String = viejo.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
+    let guardado: serde_json::Value = serde_json::from_str(&guardado).unwrap();
+    assert_eq!((&guardado["verified"]["by"], &guardado["provenance"]["session"]), (&serde_json::json!("Marc"), &serde_json::json!("s-compat")), "{guardado}");
+    viejo.ok(&["update", &id, "--pin"]);
+    viejo.sync();
+    a.sync();
+    let m = a.get(&id).unwrap();
+    assert_eq!((&m["pinned"], &m["verified"]["by"], &m["provenance"]["session"]), (&serde_json::json!(true), &serde_json::json!("Marc"), &serde_json::json!("s-compat")), "{m}");
+    viejo.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
+    viejo.sync();
+    a.sync();
+    let m = a.get(&id).unwrap();
+    assert_eq!(m["content"], "Cambiado por la 1.0.");
+    assert!(m.get("verified").is_none(), "la 1.0 cambió el texto que se verificó: {m}");
+    assert_eq!(m["provenance"]["session"], "s-compat", "{m}");
+}
+
 // --- La base ------------------------------------------------------------------------------------------
 
 /// Los ficheros de una base (`o.db`, `o.db-wal`…) con su contenido, para ver que nadie los toca.
