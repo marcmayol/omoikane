@@ -399,12 +399,10 @@ fn valor_de_contrasena(t: &str, j: usize) -> Option<(usize, usize)> {
         return t[fin..].starts_with('»').then_some((ini, fin));
     }
     let mut fin = t[j..].find(char::is_whitespace).map_or(t.len(), |x| j + x);
-    // Las comillas tipográficas que cierran («“password: x1”») no son parte del valor.
-    while let Some(c) = t[j..fin].chars().next_back().filter(|c| matches!(c, '»' | '”' | '’')) {
+    // Las comillas tipográficas que cierran («“password: x1”») y la puntuación del final no son parte
+    // del valor, en cualquier orden («“password: x1”.»).
+    while let Some(c) = t[j..fin].chars().next_back().filter(|c| matches!(c, '»' | '”' | '’' | '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '"' | '\'')) {
         fin -= c.len_utf8();
-    }
-    while fin > j && matches!(b[fin - 1], b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'"' | b'\'') {
-        fin -= 1;
     }
     (fin > j).then_some((j, fin))
 }
@@ -634,6 +632,8 @@ mod tests {
         assert!(hallazgos("x…password: abc").is_empty());
         assert_eq!(redactar("“password: x1”").0, "“password: x1”");
         assert_eq!(redactar("“password: Xy7#k2”").0, "“password: [redacted:password]”");
+        assert_eq!(redactar("“password: Xy7#k2”.").0, "“password: [redacted:password]”.");
+        assert_eq!(redactar("(password: Xy7#k2”),").0, "(password: [redacted:password]”),");
         assert_eq!(redactar("—password=Xy7#k2").0, "—password=[redacted:password]");
     }
 }

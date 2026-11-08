@@ -2908,3 +2908,32 @@ fn olvidar_las_claves_de_sellos_apuntadas() {
     let r: serde_json::Value = serde_json::from_str(&b.ok_en(&b.dir, &["--json", "sync", "forget-seal-keys", "--yes"], &bea)).unwrap();
     assert_eq!(r["forgotten"], 0, "{r}");
 }
+
+/// 1.8.6: un equipo que ya sincroniza el general como la misma persona (unido con la 1.8.5) y se une
+/// otra vez con `--another-person` sin apagar antes: se niega y dice cómo, en vez de contestar «ya
+/// tiene esa clave» y dejar la marca y las claves como estaban.
+#[test]
+fn unirse_como_otra_persona_sin_apagar_antes_se_niega() {
+    let (p, _a, _a2, general, codigo, _id) = ana_con_dos_equipos("otra-persona-sin-apagar");
+    let bea = [("OMOIKANE_AUTHOR", "Bea")];
+    let b = p.equipo("pc-b");
+    b.ok_en(&b.dir, &["sync", "join", &codigo, "--yes"], &bea);
+    b.ok_en(&b.dir, &["sync", "join", &general, "--another-person", "--yes"], &bea);
+    let config = b.dir.join("o.sync.json");
+    let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    c.as_object_mut().unwrap().remove("another_person");
+    std::fs::write(&config, serde_json::to_string_pretty(&c).unwrap()).unwrap();
+    let o = b.omoi_en(&b.dir, &["sync", "join", &general, "--another-person", "--yes"], &bea);
+    assert!(!o.status.success(), "tenía que negarse");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("sync off"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// 1.8.6: `forget-seal-keys` no corre en la shell de un agente (como `verify`).
+#[test]
+fn olvidar_claves_de_sellos_no_desde_un_agente() {
+    let p = Prueba::nueva("olvidar-claves-agente");
+    let a = p.equipo("pc-a");
+    let o = a.omoi_en(&a.dir, &["sync", "forget-seal-keys", "--yes"], &[("CLAUDECODE", "1")]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("CLAUDECODE"), "{}", String::from_utf8_lossy(&o.stderr));
+}

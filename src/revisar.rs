@@ -909,6 +909,9 @@ const CLAVE_DUPLICADAS_OFICIO: &str = "revision_duplicadas_oficio";
 const CLAVE_DUPLICADAS_LANZADO: &str = "revision_duplicadas_oficio_lanzado";
 /// Segundos entre dos lanzamientos del cálculo, aunque la huella cambie (una ráfaga de escrituras).
 const ENTRE_LANZAMIENTOS: u64 = 10;
+/// Tras lanzar el cálculo para una huella, cuánto se espera a que lo guarde antes de darlo por muerto y
+/// volver a lanzarlo (segundos).
+const MISMA_HUELLA: u64 = 600;
 
 /// Una pareja de duplicadas de oficio: (la más nueva, la más vieja, detalle).
 type Pareja = (String, String, String);
@@ -983,10 +986,17 @@ fn huella_duplicadas_guardadas(db: &Connection) -> Result<String> {
 /// vectores, todo de nuevo. Devuelve las parejas que se ven desde `ambito`, como
 /// [`duplicadas_de_oficio_guardadas`]. Nadie que atienda una petición lo llama.
 pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
+    duplicadas_de_oficio_con(db, ambito, false)
+}
+
+/// [`duplicadas_de_oficio`]; `desde_cero` compara todas las parejas otra vez (el diario: con el tiempo
+/// se mueven los pesos de las palabras y la media de los vectores, y una pareja que no llegaba por poco
+/// puede llegar sin que cambie ninguna de las dos).
+fn duplicadas_de_oficio_con(db: &Connection, ambito: &Ambito, desde_cero: bool) -> Result<Vec<Pareja>> {
     let huella = huella_oficio(db)?;
     let modelo = modelo_de_vectores(db)?;
     let (_, antes) = leer_calculadas(db)?;
-    let antes = if antes.modelo == modelo { antes } else { Calculadas::default() };
+    let antes = if antes.modelo == modelo && !desde_cero { antes } else { Calculadas::default() };
     let mut q = db.prepare(&format!(
         "SELECT {}, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
          WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 ORDER BY m.id",
@@ -1038,7 +1048,9 @@ pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<Pare
 /// desde `ambito`, sin veredicto y sin cambios desde que se calculó.
 pub fn duplicadas_de_oficio_guardadas(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
     let (huella_guardada, c) = leer_calculadas(db)?;
-    recalcular_si_cambio(db, &huella_guardada)?;
+    // Lanzarlo es solo para que lo guardado se ponga al día: si falla (la base ocupada por un sync
+    // largo), la lectura sigue con lo que hay.
+    let _ = recalcular_si_cambio(db, &huella_guardada);
     filtrar_duplicadas(db, ambito, c.parejas)
 }
 
@@ -1064,8 +1076,9 @@ fn cerrojo_duplicadas(ruta_db: &std::path::Path) -> std::path::PathBuf {
 
 /// Lanza `omoi review --refresh-trade-duplicates` aparte (un proceso suelto que nadie espera; no hay
 /// demonio): no si ya hay uno en marcha (tiene el bloqueo, y repite mientras las de oficio sigan
-/// cambiando), ni si ya se lanzó para esta `huella` o hace menos de `ENTRE_LANZAMIENTOS` (si aun así se
-/// queda atrás, la siguiente lectura o escritura lo vuelve a lanzar). Solo si quien corre es `omoi`
+/// cambiando), ni si ya se lanzó para esta `huella` hace menos de `MISMA_HUELLA`, ni si se lanzó otro hace
+/// menos de `ENTRE_LANZAMIENTOS`. Si el proceso murió sin guardar, pasada esa ventana la siguiente
+/// lectura o escritura lo vuelve a lanzar. Solo si quien corre es `omoi`
 /// (como `deriva`: desde un test el ejecutable es el de las pruebas).
 fn recalcular_aparte(db: &Connection, huella: &str) -> Result<()> {
     let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else { return Ok(()) };
@@ -1076,7 +1089,8 @@ fn recalcular_aparte(db: &Connection, huella: &str) -> Result<()> {
     let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let lanzado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DUPLICADAS_LANZADO], |f| f.get(0)).optional()?;
     if let Some((h, cuando)) = lanzado.as_deref().and_then(|v| v.split_once('\t'))
-        && (h == huella || cuando.parse::<u64>().is_ok_and(|t| ahora.saturating_sub(t) < ENTRE_LANZAMIENTOS))
+        && let Ok(t) = cuando.parse::<u64>()
+        && (ahora.saturating_sub(t) < ENTRE_LANZAMIENTOS || (h == huella && ahora.saturating_sub(t) < MISMA_HUELLA))
     {
         return Ok(());
     }
@@ -1087,8 +1101,9 @@ fn recalcular_aparte(db: &Connection, huella: &str) -> Result<()> {
 
 /// Calcula las duplicadas de oficio y las deja en `meta`: el proceso de fondo. Con el bloqueo, para que
 /// no haya dos a la vez (si ya hay uno, no hace nada: `None`), y otra vez si las de oficio cambiaron
-/// mientras (una ráfaga de `remember`), hasta 5 veces. Cuántas parejas.
-pub fn refrescar_duplicadas_de_oficio(db: &Connection) -> Result<Option<usize>> {
+/// mientras (una ráfaga de `remember`), hasta 5 veces. `desde_cero`: la primera vuelta compara todas las
+/// parejas (el diario). Cuántas parejas.
+pub fn refrescar_duplicadas_de_oficio(db: &Connection, desde_cero: bool) -> Result<Option<usize>> {
     let _cerrojo = match db.path().filter(|p| !p.is_empty()) {
         Some(ruta) => match crate::sync::Cerrojo::tomar_en(cerrojo_duplicadas(std::path::Path::new(ruta))) {
             Some(c) => Some(c),
@@ -1097,8 +1112,8 @@ pub fn refrescar_duplicadas_de_oficio(db: &Connection) -> Result<Option<usize>> 
         None => None,
     };
     let mut n = 0;
-    for _ in 0..5 {
-        n = duplicadas_de_oficio(db, &Ambito::Todos)?.len();
+    for vuelta in 0..5 {
+        n = duplicadas_de_oficio_con(db, &Ambito::Todos, desde_cero && vuelta == 0)?.len();
         if huella_duplicadas_guardadas(db)? == huella_oficio(db)? {
             break;
         }

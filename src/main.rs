@@ -1593,11 +1593,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             if refresh_drift {
                 // El proceso de fondo diario: la deriva y las duplicadas de oficio.
                 omoikane::deriva::refrescar(&db)?;
-                omoikane::revisar::refrescar_duplicadas_de_oficio(&db)?;
+                omoikane::revisar::refrescar_duplicadas_de_oficio(&db, true)?;
                 return Ok(());
             }
             if refresh_trade_duplicates {
-                omoikane::revisar::refrescar_duplicadas_de_oficio(&db)?;
+                omoikane::revisar::refrescar_duplicadas_de_oficio(&db, false)?;
                 return Ok(());
             }
             if let Some(id) = dismiss {
@@ -3481,7 +3481,16 @@ fn unirse_con(c: &Comun, ruta: &std::path::Path, codigo: &str, otra_url: Option<
     let mut db = abrir(c)?;
     let sync::Codigo { url, clave, id, persona, espacio } = sync::leer_codigo(codigo)?;
     let espacio = espacio_de(space)?.or(espacio);
-    if sync::leer_config_de(&sync::rutas_de(ruta, espacio.as_deref()))?.is_some() {
+    if let Some(config) = sync::leer_config_de(&sync::rutas_de(ruta, espacio.as_deref()))? {
+        // Unirse como otra persona al general con el que ya sincroniza como la misma (un equipo unido con
+        // la 1.8.5 o antes): sin apagar antes, las claves y la marca se quedarían como estaban y los
+        // sellos de la otra persona seguirían contando como suyos.
+        if another_person && espacio.is_none() && !config.another_person {
+            bail!(tr!(
+                "this computer already syncs this repository as the same person: run `omoi sync off` first, then join again with --another-person",
+                "este equipo ya sincroniza este repositorio como la misma persona: haz antes `omoi sync off` y vuelve a unirte con --another-person"
+            ));
+        }
         // Ya sincroniza con ese repositorio. Otra URL (un token nuevo en `OMOIKANE_SYNC_URL`) pasa a ser
         // la suya antes de nada: con la vieja quizá ya no se llega.
         // Si el código resulta ser de otro repositorio, la URL vuelve a ser la de antes.
@@ -3808,6 +3817,12 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
             Ok(())
         }
         Some(AccionSync::ForgetSealKeys { yes }) => {
+            if let Some(var) = omoikane::verificado::shell_de_agente() {
+                bail!(tr!(
+                    "forgetting verification keys is for a person, and this looks like a coding agent's shell ({var} is set): run it in your own terminal",
+                    "olvidar las claves de verificación es cosa de una persona, y esto parece la shell de un agente ({var} está puesta): hazlo en tu terminal"
+                ));
+            }
             let db = abrir(c)?;
             if !yes {
                 anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to forget them", "añade --yes para olvidarlas"));
