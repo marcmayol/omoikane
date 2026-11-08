@@ -4,6 +4,27 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.8.6 (2026-11-08)
+
+### Secret redaction
+- A password written by hand is redacted: a word that names one followed by `:` or `=` (`password: hunter2`, `DB_PASSWORD=…`, `PGPASSWORD=…`, `"password": "…"`, `passwd := '…'`, `pass=…`, `PWD=…`, `--password …`), or in a sentence, in Spanish or English, followed by "is"/"es" ("the wifi password is …", "la contraseña es …", "la contraseña del router es …"). Only the value becomes `[redacted:password]`. To tell it from ordinary prose ("la contraseña se guarda en el llavero", "password reset flow", "the password is required"), the value has to look like a password: 4 to 128 characters with a digit or a symbol, and not a placeholder or code (`$VAR`, `%VAR%`, `<yours>`, `${{ secrets.X }}`, `****`, a path, `os.environ["X"]`, `getpass()`, `config.db_password`, a comparison with `==`). A plain word is missed ("swordfish"): that is the price of not flagging prose. `pass` and `pwd` count only with `=` ("Tests pass: 45/45" isn't one). The 1,836 lines of `tests/corpus.txt` still give no false positive.
+- LinkedIn member ids (`ACoAA…`, and `ACwAA…` from Sales Navigator), which LinkedIn puts in its URLs (`?rcm=ACoAA…`, `/in/ACoAA…`), were redacted as tokens. They are a profile's public id, not a secret, and are left alone, as is the value of any `rcm=`. A real token in another parameter of the same URL is still redacted.
+
+### Proposed recipes
+- PowerShell cmdlets are recognized by the full list of approved verbs (`Get-Verb`) and count as a whole command: `Invoke-Pester`, `Restart-Service omoikane`, `Install-Module …` or `Compress-Archive …` are the steps `invoke-pester`, `restart-service`, `install-module` and `compress-archive`, and what follows them is an argument, never a subcommand. Before, a cmdlet whose verb was on a short list (`Invoke-`, `Start-`, `Register-`…) was dropped, and one whose verb wasn't (`Install-`, `Publish-`, `Update-`…) became a program with its argument as the subcommand. Those that only look, move files or shape the output (`Get-`, `Select-`, `Where-`, `Set-`, `New-`, `Remove-`, `Copy-`…, `Invoke-WebRequest`, `Start-Process`, `Start-Sleep`) are still left out, like `ls`, `rm` or `curl`. A lowercase name counts as a cmdlet only with an uppercase letter or a common PowerShell verb, so `update-grub`, `docker-compose up` and `pre-commit run` stay programs.
+- `sudo -u <user> <command>` is `<command>`: the user was taken for the program (`sudo -u postgres psql` gave `postgres`). The same with sudo's other options that take a value (`-g`, `-C`, `-D`, `-h`, `-p`…), `doas -u`, `runuser -u` and `env -u VAR`/`env -C <folder>`.
+
+### Downloads with time limits
+- Downloading the models and updates had no time limit: a network that hung halfway (a proxy that never answers, a WiFi that drops without closing the connection) left `omoi model install`, `omoi upgrade` or the background update waiting forever. Each download now has 30 s to resolve and connect (TLS included), 60 s to get the answer's headers and a limit for the whole body (60 minutes for a model file, 10 for an update), and a hang ends with a clear error that names the host or the file. A model file is still written to `.part` and renamed only when it arrived whole; now the `.part` is deleted when it fails. An update is held in memory and only written once its signature and SHA-256 check out.
+- The Claude Code plugin downloads the `omoi` binary with `curl --connect-timeout 30` and gives up on a transfer that moves under 1 KB/s for 60 s, within 290 s (`Invoke-WebRequest -TimeoutSec 290` in the PowerShell fallback), and `SHA256SUMS` within 60 s. It downloads to `<package>.part` and renames it only when it arrived whole, so a hang or a cut never leaves half a package under the real name.
+
+### Light model checked by SHA-256
+- The light model (potion-multilingual-128M int8) was installed without checking what was downloaded. Its three files now have fixed SHA-256s, as the meaning model's do, and a file that doesn't match fails that source (its files are deleted) and the next one is tried. The hashes were checked against the files on Hugging Face, the `lfs.oid` its API gives and the `digest` of the GitHub Release; they are the same files as always, so an installed model doesn't change.
+
+### Compatibility
+- Same as 1.8.0: the database schema stays at 10, `lector_minimo` doesn't move, and the sync lines and the Obsidian export format don't change. Versions 1.0 to 1.8 read a 1.8.6 database and sync with it.
+- Nothing new is stored: the redaction applies, as before, to what is saved or changed from now on (a password saved before shows up in Review with its button to redact it), `[redacted:password]` is ordinary text for older versions, and the recipe steps (`session_steps`) are local. A sequence already recorded with an old step name (`postgres`, `install-module psreadline`) simply stops repeating.
+
 ## 1.8.5 (2026-11-08)
 
 ### Leak check says where

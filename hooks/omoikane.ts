@@ -204,7 +204,7 @@ async function install($: any, version: string, windows: boolean, carpeta: strin
   const paquete = `omoi-${destino}.${windows ? 'zip' : 'tar.gz'}`
   const base = `https://github.com/${REPO}/releases/download/v${version}`
 
-  const sumas = await $.http.fetch(`${base}/SHA256SUMS`)
+  const sumas = await withTimeout($.http.fetch(`${base}/SHA256SUMS`), 60_000, "SHA256SUMS didn't arrive in 60 s")
   if (!sumas.ok) throw new Error(`can't download SHA256SUMS (HTTP ${sumas.status})`)
   const esperada = sumas.text
     .split('\n')
@@ -235,27 +235,56 @@ async function install($: any, version: string, windows: boolean, carpeta: strin
 // (CRYPT_E_NO_REVOCATION_CHECK): then it tries again with --ssl-revoke-best-effort, which still checks
 // but doesn't block when the check can't be done, and last with PowerShell. The SHA-256 is checked
 // afterwards either way.
+//
+// Every attempt has time limits: 30 s to connect, and a transfer that moves under 1 KB/s for 60 s is
+// given up (a network that hangs halfway, a proxy that never answers), all within 290 s, before the
+// process itself is stopped at 300 s. It downloads to `archivo.part` and renames it only when it
+// arrived whole, so a hang or a cut never leaves a half package under the real name.
 async function download($: any, url: string, archivo: string, windows: boolean): Promise<void> {
-  const intentos: string[][] = [['curl', '-fsSL', '--retry', '2', '-o', archivo, url]]
+  const parte = `${archivo}.part`
+  const limites = ['--connect-timeout', '30', '--speed-limit', '1024', '--speed-time', '60', '--max-time', '290']
+  const intentos: string[][] = [['curl', '-fsSL', '--retry', '2', ...limites, '-o', parte, url]]
   if (windows) {
-    intentos.push(['curl', '-fsSL', '--retry', '2', '--ssl-revoke-best-effort', '-o', archivo, url])
-    const ruta = archivo.replaceAll('/', '\\').replaceAll("'", "''")
+    intentos.push(['curl', '-fsSL', '--retry', '2', ...limites, '--ssl-revoke-best-effort', '-o', parte, url])
+    const ruta = parte.replaceAll('/', '\\').replaceAll("'", "''")
     intentos.push([
       'powershell', '-NoProfile', '-NonInteractive', '-Command',
-      `$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri '${url.replaceAll("'", "''")}' -OutFile '${ruta}'`,
+      `$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -TimeoutSec 290 -Uri '${url.replaceAll("'", "''")}' -OutFile '${ruta}'`,
     ])
   }
   let error = ''
   for (const orden of intentos) {
     try {
       const r = await $.process.run(orden, { timeoutMs: 300_000 })
-      if (r.exitCode === 0) return
-      error = (r.stderr || r.stdout || '').trim()
+      if (r.exitCode === 0) {
+        const mover = windows
+          ? await $.process.run(['cmd', '/c', 'move', '/y', parte.replaceAll('/', '\\'), archivo.replaceAll('/', '\\')])
+          : await $.process.run(['mv', '-f', parte, archivo])
+        if (mover.exitCode === 0) return
+        error = `can't rename the download: ${(mover.stderr || mover.stdout || '').trim()}`
+      } else {
+        error = (r.stderr || r.stdout || '').trim()
+      }
     } catch (err) {
+      // Stopped at 300 s, or it couldn't run at all.
       error = String((err as Error)?.message ?? err)
     }
+    await remove($, parte, windows)
   }
   throw new Error(`can't download ${url.split('/').pop()}: ${error.slice(0, 300)}`)
+}
+
+// `p`, or an error if it takes longer than `ms`.
+async function withTimeout<T>(p: Promise<T>, ms: number, mensaje: string): Promise<T> {
+  let reloj: ReturnType<typeof setTimeout> | undefined
+  const limite = new Promise<never>((_, rechazar) => {
+    reloj = setTimeout(() => rechazar(new Error(mensaje)), ms)
+  })
+  try {
+    return await Promise.race([p, limite])
+  } finally {
+    clearTimeout(reloj)
+  }
 }
 
 async function sha256($: any, archivo: string, windows: boolean): Promise<string> {
