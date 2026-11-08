@@ -92,7 +92,9 @@ fn orden_de_proveedores() -> Option<String> {
     Some(String::from_utf16_lossy(&datos[..n]).trim_end_matches('\0').to_string())
 }
 
-/// Si en un orden de proveedores P9NP va antes que el cliente SMB (o no hay cliente SMB).
+/// Si en un orden de proveedores P9NP va antes que el cliente SMB (o no hay cliente SMB). Solo existe
+/// en Windows (y en los tests, que lo prueban en todos los sistemas).
+#[cfg(any(windows, test))]
 fn p9np_antes_que_smb(orden: &str) -> bool {
     let v: Vec<String> = orden.split(',').map(|x| x.trim().to_ascii_lowercase()).collect();
     match (v.iter().position(|x| x == "p9np"), v.iter().position(|x| x == "lanmanworkstation")) {
