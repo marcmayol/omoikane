@@ -512,6 +512,10 @@ enum Orden {
         /// Open the web view in the browser (if a server is already running, just open it).
         #[arg(long)]
         open: bool,
+        /// Open (with --open) or print the link to this memory: its panel, with the Verify button
+        /// (`http://127.0.0.1:7438/#/memoria/<id>`). Its id or the beginning of it.
+        #[arg(long, value_name = "ID")]
+        memory: Option<String>,
     },
     /// Share memories between your computers (or with a team) through a private git repository of
     /// yours. Without an action, sync now.
@@ -1180,7 +1184,17 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         Orden::Doctor => doctor(c),
         Orden::Model { accion } => modelo(c, accion.unwrap_or(AccionModelo::Status)),
         Orden::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
-        Orden::Serve { port, open } => omoikane::http::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone(), port, open),
+        Orden::Serve { port, open, memory } => {
+            // El id entero, y que la vista de esta carpeta lo enseñe, antes de arrancar nada.
+            let memory = match memory {
+                Some(id) => {
+                    let db = abrir(c)?;
+                    Some(omoikane::http::memoria_del_enlace(&db, &proyecto_de(c)?, &id)?)
+                }
+                None => None,
+            };
+            omoikane::http::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone(), port, open, memory)
+        }
         Orden::Tool { nombre } => {
             let mut args = String::new();
             if nombre.is_some() {
@@ -3460,6 +3474,8 @@ fn unirse_con(c: &Comun, ruta: &std::path::Path, codigo: &str, otra_url: Option<
     let fija = if another_person { Some(local.clone()) } else { persona };
     let mut config = sync::config_con_persona(&url, &e, fija.as_deref(), &local);
     config.global &= espacio.is_none();
+    // El general de otra persona: su clave no es solo de esta (ver `verificado::llaves`).
+    config.another_person = another_person && espacio.is_none();
     config.space = espacio;
     if confirmar && !confirmar_subida(&db, &config, &e, eleccion.yes)? {
         return Ok(Union::Cancelada);

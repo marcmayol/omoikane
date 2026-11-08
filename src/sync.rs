@@ -220,6 +220,11 @@ pub struct Config {
     /// `sync.json` de antes no lo llevan: son el general.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// El repositorio general de otra persona (`join --another-person`, 1.8.6): su clave la tiene
+    /// también esa persona, así que de ella no sale la clave de sellos de esta (`verificado::llaves`).
+    /// Los `sync.json` de antes no lo llevan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub another_person: bool,
 }
 
 impl Config {
@@ -2549,7 +2554,7 @@ pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>, local: &s
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.proyectos.is_empty()).then(|| e.proyectos.iter().map(|p| clave(p, &person)).collect());
     let spaces = (!e.espacios.is_empty()).then(|| e.espacios.iter().map(|s| crate::proyecto::clave_de_espacio(s)).collect());
-    Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.autor.clone(), person, space: None }
+    Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.autor.clone(), person, space: None, another_person: false }
 }
 
 /// Tras `sync init` o `join`: si la persona de la sincronización (`nueva`) no es la de esta base, pasa
@@ -2627,7 +2632,22 @@ pub fn iniciar(db: &mut Connection, ruta_db: &Path, config: &Config) -> Result<(
         let _ = std::fs::remove_dir_all(&r.clon);
         bail!(ya_en_uso());
     }
-    guardar_config(db, &r, config, &Cifra::una(1, clave_nueva()?))
+    guardar_config(db, &r, config, &Cifra::una(1, clave_nueva()?))?;
+    tras_cambiar_claves(db, &r);
+    Ok(())
+}
+
+/// Tras cambiar las claves del repositorio general (`init`, `join`, una clave nueva de una rotación):
+/// las verificaciones de la persona siguen valiendo con la clave de sellos nueva
+/// (`verificado::tras_cambio_de_claves`). Si falla, se dice y la sincronización sigue: lo peor es que
+/// algún sello siga como estaba.
+fn tras_cambiar_claves(db: &Connection, r: &Rutas) {
+    if r.espacio.is_some() {
+        return;
+    }
+    if let Err(e) = crate::verificado::tras_cambio_de_claves(db) {
+        eprintln!("omoikane: {}: {e:#}", tr!("verification keys", "claves de verificación"));
+    }
 }
 
 fn clave_nueva() -> Result<Vec<u8>> {
@@ -2705,7 +2725,9 @@ pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, id: u32, cla
         let _ = std::fs::remove_dir_all(&r.clon);
         bail!(clave_ajena());
     }
-    guardar_config(db, &r, config, &cifra)
+    guardar_config(db, &r, config, &cifra)?;
+    tras_cambiar_claves(db, &r);
+    Ok(())
 }
 
 /// `omoi sync join <código>` en un equipo que ya sincroniza con ese repositorio (tras una rotación):
@@ -2731,6 +2753,7 @@ pub fn anadir_clave(db: &Connection, ruta_db: &Path, espacio: Option<&str>, id: 
     ensure!(Chequeo::leer(&r.clon).and_then(|c| c.lineas.get(&id).cloned()).is_some_and(|l| nueva.abre(id, &l)), otro());
     guardar_claves(&r, &cifra.con(id, clave.to_vec()))?;
     db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
+    tras_cambiar_claves(db, &r);
     Ok(true)
 }
 
@@ -2771,6 +2794,7 @@ pub fn rotar(db: &mut Connection, ruta_db: &Path, espacio: Option<&str>, actual:
     // Solo con la subida hecha: si no, el repositorio no sabe nada de la clave nueva.
     if let Some(c) = &cifra {
         guardar_claves(&r, c)?;
+        tras_cambiar_claves(db, &r);
     }
     apuntar(&r, &res);
     Ok((cifra.map_or(0, |c| c.vigente()), res?))
@@ -2781,6 +2805,11 @@ pub fn rotar(db: &mut Connection, ruta_db: &Path, espacio: Option<&str>, actual:
 pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Result<()> {
     let r = rutas_de(ruta_db, espacio);
     let c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+    // Antes de borrar la clave del general: la de sellos que sale de ella se queda apuntada aquí, para
+    // que las verificaciones de la persona hechas con ella sigan valiendo (`verificado::recordar`).
+    if r.espacio.is_none() {
+        crate::verificado::recordar(db)?;
+    }
     for f in [&r.config, &r.clave, &r.estado] {
         let _ = std::fs::remove_file(f);
     }

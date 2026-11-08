@@ -2667,3 +2667,139 @@ fn un_sello_ajeno_que_llega_en_la_papelera_no_cuenta_al_restaurar() {
     a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
     assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
 }
+
+/// Ana y sus dos equipos (A y A2), cada uno con su repositorio general y el del espacio acme, y una
+/// memoria de acme. Devuelve la prueba, los equipos, los códigos (general, acme) y el id.
+fn ana_con_dos_equipos(nombre: &str) -> (Prueba, Equipo, Equipo, String, String, String) {
+    let p = Prueba::nueva(nombre);
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let a = p.equipo("pc-a");
+    a.ok_en(&a.dir, &["sync", "init", &p.url(), "--yes"], &ana);
+    let general = a.ok(&["sync", "code"]).trim().to_string();
+    let acme = p.otro_repo("acme");
+    a.ok_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &ana);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    a.ok(&["space", "add", "acme"]);
+    let id = a.guardar(&a.dir, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    let a2 = p.equipo("pc-a2");
+    a2.ok_en(&a2.dir, &["sync", "join", &general, "--yes"], &ana);
+    a2.ok_en(&a2.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    a2.ok_en(&a2.dir, &["sync"], &ana);
+    (p, a, a2, general, codigo, id)
+}
+
+/// Tras rotar la clave del general (1.8.6): las verificaciones de Ana siguen contando en todos sus
+/// equipos. El que rota vuelve a firmar sus sellos con la clave nueva (así los acepta un equipo que solo
+/// tiene esa); el que aún no la tiene ve el sello nuevo como de otra persona hasta que se une con el
+/// código nuevo, y entonces cuenta sin esperar a que vuelva a llegar.
+#[test]
+fn las_verificaciones_siguen_contando_tras_rotar_la_clave() {
+    let (p, a, a2, _, codigo, id) = ana_con_dos_equipos("sello-rotar");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    a2.ok_en(&a2.dir, &["sync"], &ana);
+    assert_eq!(a2.get(&id).unwrap()["verified"]["by"], "Ana");
+    let r = a.json_en(&a.dir, &["sync", "rotate", "--yes"]);
+    let nuevo = r["code"].as_str().unwrap().to_string();
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana", "en el que rota sigue verificada");
+    a.ok_en(&a.dir, &["sync"], &ana);
+    // Un equipo nuevo de Ana, solo con la clave nueva: el sello (vuelto a firmar) cuenta.
+    let a3 = p.equipo("pc-a3");
+    a3.ok_en(&a3.dir, &["sync", "join", &nuevo, "--yes"], &ana);
+    a3.ok_en(&a3.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    let r = a3.ok_en(&a3.dir, &["--json", "sync"], &ana);
+    assert_eq!(a3.get(&id).expect("llegó")["verified"]["by"], "Ana", "{r}");
+    // A2 aún tiene solo la vieja: el sello firmado con la nueva no es suyo todavía...
+    let r: serde_json::Value = serde_json::from_str(&a2.ok_en(&a2.dir, &["--json", "sync"], &ana)).unwrap();
+    assert_eq!(r["sellos_ajenos"], 1, "{r}");
+    assert!(a2.get(&id).unwrap().get("verified").is_none());
+    // ...hasta que se une con el código nuevo: cuenta ya, sin otra sincronización.
+    a2.ok_en(&a2.dir, &["sync", "join", &nuevo, "--yes"], &ana);
+    assert_eq!(a2.get(&id).unwrap()["verified"]["by"], "Ana");
+}
+
+/// Tras `sync off` del general (1.8.6): las verificaciones que la persona hizo en sus otros equipos (con
+/// la clave de sellos de ese general) siguen contando aquí cuando llegan por el repositorio de un espacio.
+#[test]
+fn las_verificaciones_siguen_contando_tras_apagar_el_general() {
+    let (_p, a, a2, _, _, id) = ana_con_dos_equipos("sello-off");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let id2 = a.guardar(&a.dir, "decision", "Acme paga a 30 dias", "Nunca a 60.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    a.ok_en(&a.dir, &["sync", "off", "--yes"], &ana);
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
+    // A2 verifica otra con la clave del general que A ya no tiene.
+    a2.ok_en(&a2.dir, &["sync"], &ana);
+    a2.ok_en(&a2.dir, &["verify", &id2, "--by", "Ana", "--yes"], &ana);
+    a2.ok_en(&a2.dir, &["sync"], &ana);
+    let r: serde_json::Value = serde_json::from_str(&a.ok_en(&a.dir, &["--json", "sync"], &ana)).unwrap();
+    assert_eq!(r["sellos_ajenos"], 0, "{r}");
+    assert_eq!(a.get(&id2).unwrap()["verified"]["by"], "Ana", "{r}");
+    // Lo que A verifica ahora (sin general, con la clave de su base) cuenta en A.
+    a.ok_en(&a.dir, &["verify", &id, "--unverify", "--yes"], &ana);
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
+}
+
+/// Un equipo de Ana que verificó estando solo en el espacio (con la clave de su base) y luego se une a
+/// su general (1.8.6): esos sellos se vuelven a firmar con la clave del general y cuentan en sus otros
+/// equipos. Uno de otra persona que tenía marcado como ajeno no pasa a ser suyo.
+#[test]
+fn las_verificaciones_de_antes_de_unirse_al_general_cuentan() {
+    let (p, a, _a2, general, codigo, id) = ana_con_dos_equipos("sello-unirse");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let carla = [("OMOIKANE_AUTHOR", "Carla")];
+    // Carla (otra persona, solo en el espacio) verifica una.
+    let c = p.equipo("pc-c");
+    c.ok_en(&c.dir, &["sync", "join", &codigo, "--yes"], &carla);
+    let id_c = a.guardar(&a.dir, "decision", "Acme paga a 30 dias", "Nunca a 60.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    c.ok_en(&c.dir, &["sync"], &carla);
+    c.ok_en(&c.dir, &["verify", &id_c, "--by", "Ana", "--yes"], &carla);
+    c.ok_en(&c.dir, &["sync"], &carla);
+    // El tercer equipo de Ana, aún solo en el espacio, verifica la primera.
+    let a3 = p.equipo("pc-a3");
+    a3.ok_en(&a3.dir, &["sync", "join", &codigo, "--yes"], &ana);
+    a3.ok_en(&a3.dir, &["sync"], &ana);
+    a3.ok_en(&a3.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    assert!(a3.get(&id_c).unwrap().get("verified").is_none(), "el de Carla no cuenta en A3");
+    a3.ok_en(&a3.dir, &["sync"], &ana);
+    let r: serde_json::Value = serde_json::from_str(&a.ok_en(&a.dir, &["--json", "sync"], &ana)).unwrap();
+    assert!(a.get(&id).unwrap().get("verified").is_none(), "aún no se sabe que es de Ana: {r}");
+    // A3 se une al general de Ana: su sello se vuelve a firmar y, al llegar, cuenta en A.
+    a3.ok_en(&a3.dir, &["sync", "join", &general, "--yes"], &ana);
+    assert_eq!(a3.get(&id).unwrap()["verified"]["by"], "Ana");
+    assert!(a3.get(&id_c).unwrap().get("verified").is_none(), "el de Carla sigue sin contar en A3");
+    a3.ok_en(&a3.dir, &["sync"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
+    assert!(a.get(&id_c).unwrap().get("verified").is_none(), "el de Carla nunca");
+}
+
+/// `join --another-person` al general de otra persona (1.8.6): su clave la tienen las dos, así que no da
+/// clave de sellos. Los sellos de Ana que llegan a Bea por un espacio no cuentan como de Bea, y los de
+/// Bea no cuentan como de Ana; los que Bea hizo antes de unirse siguen contando en su base.
+#[test]
+fn el_general_de_otra_persona_no_da_clave_de_sellos() {
+    let (p, a, _a2, general, codigo, id) = ana_con_dos_equipos("sello-otra-persona");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let bea = [("OMOIKANE_AUTHOR", "Bea")];
+    let b = p.equipo("pc-b");
+    b.ok_en(&b.dir, &["sync", "join", &codigo, "--yes"], &bea);
+    b.ok_en(&b.dir, &["sync"], &bea);
+    let id_b = a.guardar(&a.dir, "decision", "Acme paga a 30 dias", "Nunca a 60.", &["--space=acme"]);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    b.ok_en(&b.dir, &["sync"], &bea);
+    b.ok_en(&b.dir, &["verify", &id_b, "--by", "Bea", "--yes"], &bea);
+    b.ok_en(&b.dir, &["sync", "join", &general, "--another-person", "--yes"], &bea);
+    assert_eq!(b.get(&id_b).unwrap()["verified"]["by"], "Bea", "lo suyo de antes sigue contando");
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    b.ok_en(&b.dir, &["sync"], &bea);
+    assert!(b.get(&id).unwrap().get("verified").is_none(), "el sello de Ana no es de Bea");
+    a.ok_en(&a.dir, &["sync"], &ana);
+    assert!(a.get(&id_b).unwrap().get("verified").is_none(), "el sello de Bea no es de Ana");
+}

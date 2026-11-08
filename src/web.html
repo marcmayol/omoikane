@@ -82,6 +82,7 @@ main { flex: 1; min-height: 0; position: relative; }
 button.chip:hover { border-color: var(--accent); }
 .sh { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 10px 8px 6px; }
 .vacio { color: var(--faint); padding: 24px 0; }
+.enlace-mal { max-width: 640px; margin: 48px auto; padding: 0 20px; color: var(--ink2); line-height: 1.55; overflow-wrap: anywhere; }
 
 /* Memorias: cronología */
 .mem { display: grid; grid-template-columns: 230px minmax(0,1fr); height: 100%; }
@@ -315,7 +316,7 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
 
 @media (max-width: 900px) {
   body { overflow: auto; height: auto; }
-  .mem, .pp, .pp.con-panel { grid-template-columns: 1fr; height: auto; }
+  .mem, .pp, .pp.con-panel { grid-template-columns: minmax(0,1fr); height: auto; }
   .rail { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
   .feed { padding: 14px 14px 30px; overflow: visible; }
   .day { grid-template-columns: 1fr; }
@@ -323,10 +324,10 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
   .ev { border-left: 0; padding-left: 0; }
   .row::before { display: none; }
   .fhd, .mas { margin-left: 0; }
-  .det { grid-template-columns: 1fr; }
-  .cols { grid-auto-flow: row; grid-template-columns: 1fr 1fr; }
-  .nums { grid-auto-flow: row; grid-template-columns: repeat(3, 1fr); }
-  .head { grid-template-columns: 1fr; }
+  .det { grid-template-columns: minmax(0,1fr); }
+  .cols { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .nums { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .head { grid-template-columns: minmax(0,1fr); }
   .panel { border-left: 0; border-top: 1px solid var(--line); }
 }
 </style>
@@ -358,6 +359,7 @@ const T = ES ? {
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
   creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
   verificadaF: 'Verificada', porQuien: (b, f) => `por ${b} · ${f}`, noVerificada: 'No: la escribió un agente', escritaEn: 'Escrita en', verificar: 'Verificar', desverificar: 'Quitar verificación',
+  enlaceNo: id => `No hay ninguna memoria ${id} a la vista: puede que se olvidara (mira la papelera en Revisar), que sea de otro espacio que el de la carpeta en la que arrancó omoi serve, o que el id esté mal copiado.`, enlaceVarias: id => `Hay varias memorias que empiezan por ${id}: el enlace necesita más caracteres del id.`,
   verificarT: 'Respondes de que este texto es correcto. Si alguien lo cambia, deja de estar verificada.',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
   olvidar: 'Olvidar', seguro: '¿Olvidarla para siempre?', si: 'Sí, olvidar', no: 'Cancelar', ultimoCambio: 'Último cambio', sinHist: 'Sin cambios anteriores.', cargando: 'Cargando…',
@@ -403,6 +405,7 @@ const T = ES ? {
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
   creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
   verificadaF: 'Verified', porQuien: (b, f) => `by ${b} · ${f}`, noVerificada: 'No: written by an agent', escritaEn: 'Written in', verificar: 'Verify', desverificar: 'Remove verification',
+  enlaceNo: id => `There is no memory ${id} in view: it may have been forgotten (see the trash in Review), belong to another space than the folder omoi serve started in, or the id may be mistyped.`, enlaceVarias: id => `Several memories start with ${id}: the link needs more characters of the id.`,
   verificarT: 'You vouch that this text is right. If anyone changes it, it is no longer verified.',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
   olvidar: 'Forget', seguro: 'Forget it for good?', si: 'Yes, forget', no: 'Cancel', ultimoCambio: 'Last change', sinHist: 'No earlier versions.', cargando: 'Loading…',
@@ -441,8 +444,13 @@ const ESTADO = 'status';
 const POR_PAGINA = 150, POR_COLUMNA = 12;
 
 // El token llega una vez en el hash (#token=…) y se guarda para esta pestaña.
-const token = new URLSearchParams(location.hash.slice(1)).get('token');
-if (token) { try { sessionStorage.setItem('omoi-token', token); } catch (e) {} history.replaceState(null, '', location.pathname + '#/'); }
+// Con `omoi serve --open --memory <id>` llega también adónde ir (`&to=/memoria/<id>`).
+const enHash = new URLSearchParams(location.hash.slice(1)), token = enHash.get('token');
+if (token) {
+  try { sessionStorage.setItem('omoi-token', token); } catch (e) {}
+  const a = enHash.get('to') || '';
+  history.replaceState(null, '', location.pathname + '#' + (/^\/memoria\/[0-9A-Za-z]+$/.test(a) ? a : '/'));
+}
 const clave = token || (() => { try { return sessionStorage.getItem('omoi-token'); } catch (e) { return null; } })();
 const cab = clave ? { Authorization: 'Bearer ' + clave } : {};
 
@@ -683,9 +691,10 @@ async function sincro() {
   } catch (e) { /* sin servidor: nada que enseñar */ }
 }
 
-/* ---------- Rutas: #/ (memorias), #/proyectos, #/proyecto/<carpeta> ---------- */
+/* ---------- Rutas: #/ (memorias), #/proyectos, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
 function ruta() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  if (h.startsWith('memoria/')) return { vista: 'memoria', id: h.slice('memoria/'.length) };
   if (h === 'proyectos') return { vista: 'proyectos' };
   if (h === 'revisar') return { vista: 'revisar' };
   if (h === 'panorama') return { vista: 'panorama' };
@@ -705,7 +714,26 @@ function pintar() {
   else if (r.vista === 'panorama') pintarPanorama();
   else if (r.vista === 'proyectos') pintarProyectos();
   else if (r.vista === 'proyecto') pintarProyecto(r.p);
+  else if (r.vista === 'memoria') pintarMemoria(r.id);
   else pintarMemorias();
+}
+
+/* ---------- Enlace a una memoria: #/memoria/<id> ---------- */
+// El enlace que manda un aviso (Kumi) para que la persona la mire y la verifique: abre su proyecto con
+// ella en el panel, donde está el botón Verificar. Vale el id entero o su principio (como en la CLI).
+// La dirección pasa a ser la del proyecto: así Esc y «atrás» funcionan como siempre.
+function pintarMemoria(id) {
+  const q = String(id || '').trim().toUpperCase();
+  const c = /^[0-9A-Z]{4,}$/.test(q) ? todas.filter(m => m.id.startsWith(q)) : [];
+  if (c.length === 1) {
+    elegidaPanel = c[0].id;
+    history.replaceState(null, '', location.pathname + enlaceProyecto(ambito(c[0])));
+    pintar();
+    // En una ventana estrecha el panel va debajo del proyecto: se baja hasta él.
+    if (matchMedia('(max-width: 900px)').matches) $('panel')?.scrollIntoView({ block: 'start' });
+    return;
+  }
+  $('vista').innerHTML = `<div class="enlace-mal"><p>${esc(c.length ? T.enlaceVarias(q) : T.enlaceNo(q))}</p><p><a class="btn" href="#/">${esc(T.memorias)}</a></p></div>`;
 }
 
 /* ---------- Memorias: cronología por días ---------- */
