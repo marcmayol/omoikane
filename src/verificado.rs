@@ -364,7 +364,10 @@ fn poner(tx: &Transaction, id: &str, sello: Option<serde_json::Value>) -> Result
 }
 
 /// Al cambiar el texto desde aquí (`memoria::actualizar_en`, que ya pone el sello de tiempo): quita la
-/// verificación y devuelve la que había, si valía.
+/// verificación, apunta cuándo ([`DESVERIFICADA`], como [`desverificar`]) y devuelve la que había, si
+/// valía. Sin la fecha, el sello viejo volvería con una línea más nueva que trajera el texto de antes
+/// (otro equipo de la persona que aún no vio el cambio, `import <fichero>`, un bundle OKF): con el texto
+/// de antes, su huella vuelve a coincidir.
 pub(crate) fn quitar_al_cambiar(tx: &Transaction, id: &str, antes: &Memoria) -> Result<Option<Verificada>> {
     let extra: Option<String> = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
     let Some(extra) = extra.filter(|e| e.contains("\"verified\"")) else { return Ok(None) };
@@ -372,8 +375,25 @@ pub(crate) fn quitar_al_cambiar(tx: &Transaction, id: &str, antes: &Memoria) -> 
     if o.remove(CLAVE).is_none() {
         return Ok(None);
     }
+    let ahora: String = tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?;
+    o.insert(DESVERIFICADA.into(), ahora.into());
     tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
     Ok(antes.verified.clone())
+}
+
+/// Lo que llega en una línea más nueva (sincronización, `import <fichero>`) para una memoria a la que
+/// aquí se le quitó la verificación en `desverificada` ([`DESVERIFICADA`]): la fecha se conserva (la más
+/// reciente de las dos, para la próxima vez) y, si `quitar_sello`, un sello de antes de esa fecha se
+/// quita. (Por el repositorio de un espacio el sello se queda en la línea para los demás y aquí no
+/// cuenta: ver `sync::sello_de_otro`.)
+pub(crate) fn sin_sello_viejo(extra: &mut serde_json::Map<String, serde_json::Value>, desverificada: &str, quitar_sello: bool) {
+    if extra.get(DESVERIFICADA).and_then(|x| x.as_str()).is_none_or(|d| d < desverificada) {
+        extra.insert(DESVERIFICADA.into(), desverificada.into());
+    }
+    let viejo = extra.get(CLAVE).and_then(|v| v.get("at")).and_then(|x| x.as_str()).is_some_and(|at| at < desverificada);
+    if viejo && quitar_sello {
+        extra.remove(CLAVE);
+    }
 }
 
 /// Lo que se enseña en una línea: «verified by Marc, 2026-11-08».

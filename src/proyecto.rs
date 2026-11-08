@@ -15,14 +15,105 @@ use std::path::{Path, PathBuf};
 /// servidor que diga). Esas no se miran nunca.
 pub fn ruta_de_red(ruta: &str) -> bool {
     let b = ruta.trim_start().as_bytes();
-    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/')
+    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/') && !de_wsl(ruta.trim_start())
+}
+
+// --- WSL ----------------------------------------------------------------------------------------------
+//
+// `\\wsl$\<distro>\…` y `\\wsl.localhost\<distro>\…` parecen rutas de red, pero no son SMB a otra
+// máquina: las sirve P9NP, el proveedor de red de WSL, que habla con la máquina virtual de WSL de este
+// equipo por un socket de Hyper-V (9P), sin NTLM y sin salir a la red. Por eso cuentan como locales
+// también cuando llegan de fuera (una ruta en una memoria, `project` por MCP, `?dir=`).
+//
+// Solo si P9NP está instalado y va antes que el cliente SMB (`LanmanWorkstation`) en el orden de
+// proveedores (`HKLM\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`), que es como queda al
+// instalar WSL: Windows le pregunta a cada proveedor por orden y se queda con el primero que reconoce
+// la ruta. Sin WSL (o con SMB delante), `wsl$` y `wsl.localhost` serían nombres de máquina como
+// cualquier otro y el cliente SMB los buscaría en la red (LLMNR, NetBIOS, DNS): alguien de la red podría
+// contestar y recibir el hash NTLM. Entonces son de red, como las demás. Medido en un equipo con WSL:
+// una distribución que no existe falla en 3-80 ms y no deja ninguna consulta DNS de `wsl.localhost`.
+// Lo que cuesta: mirar una ruta de una distribución parada puede arrancar WSL (unos segundos).
+
+/// Si un texto de ruta es de WSL (`\\wsl$\<distro>\…`, `\\wsl.localhost\<distro>\…`, también con
+/// `\\?\UNC\` delante o con `/`) y WSL atiende esas rutas en este equipo (ver arriba).
+fn de_wsl(ruta: &str) -> bool {
+    forma_wsl(ruta) && wsl_atiende()
+}
+
+/// Solo la forma: dos barras, `wsl$` o `wsl.localhost` y un nombre de distribución de verdad (ni vacío
+/// ni `.` ni `..`, que podrían salirse de ella al normalizar la ruta).
+fn forma_wsl(ruta: &str) -> bool {
+    let barra = |c: char| c == '\\' || c == '/';
+    let Some(resto) = ruta.strip_prefix(['\\', '/']).and_then(|r| r.strip_prefix(['\\', '/'])) else { return false };
+    let resto = match resto.get(..6) {
+        Some(p) if p.eq_ignore_ascii_case("?\\UNC\\") || p.eq_ignore_ascii_case("?/UNC/") => &resto[6..],
+        _ => resto,
+    };
+    let mut partes = resto.split(barra);
+    let servidor = partes.next().unwrap_or_default();
+    let distro = partes.next().unwrap_or_default();
+    (servidor.eq_ignore_ascii_case("wsl$") || servidor.eq_ignore_ascii_case("wsl.localhost")) && !matches!(distro, "" | "." | "..")
+}
+
+/// Si WSL atiende las rutas `\\wsl$` en este equipo: P9NP en el orden de proveedores de red antes que
+/// `LanmanWorkstation`. Se pregunta una vez por proceso.
+#[cfg(windows)]
+fn wsl_atiende() -> bool {
+    static ATIENDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ATIENDE.get_or_init(|| orden_de_proveedores().as_deref().is_some_and(p9np_antes_que_smb))
+}
+
+#[cfg(not(windows))]
+fn wsl_atiende() -> bool {
+    false
+}
+
+/// `ProviderOrder` del registro (`P9NP,RDPNP,LanmanWorkstation,webclient`), leído con `RegGetValueW`.
+#[cfg(windows)]
+fn orden_de_proveedores() -> Option<String> {
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(clave: isize, subclave: *const u16, valor: *const u16, flags: u32, tipo: *mut u32, datos: *mut u8, tam: *mut u32) -> i32;
+    }
+    // `HKEY_LOCAL_MACHINE` es `(HKEY)(ULONG_PTR)(LONG)0x80000002`: con el signo extendido.
+    const HKLM: isize = 0x8000_0002_u32 as i32 as isize;
+    const RRF_RT_REG_SZ: u32 = 0x2;
+    let ancho = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let subclave = ancho(r"SYSTEM\CurrentControlSet\Control\NetworkProvider\Order");
+    let valor = ancho("ProviderOrder");
+    let mut datos = vec![0u16; 2048];
+    let mut tam = (datos.len() * 2) as u32;
+    // SAFETY: cadenas terminadas en 0 que viven hasta el final de la llamada, y un búfer de `tam` bytes.
+    let r = unsafe { RegGetValueW(HKLM, subclave.as_ptr(), valor.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), datos.as_mut_ptr().cast(), &mut tam) };
+    if r != 0 {
+        return None;
+    }
+    let n = (tam as usize / 2).min(datos.len());
+    Some(String::from_utf16_lossy(&datos[..n]).trim_end_matches('\0').to_string())
+}
+
+/// Si en un orden de proveedores P9NP va antes que el cliente SMB (o no hay cliente SMB).
+fn p9np_antes_que_smb(orden: &str) -> bool {
+    let v: Vec<String> = orden.split(',').map(|x| x.trim().to_ascii_lowercase()).collect();
+    match (v.iter().position(|x| x == "p9np"), v.iter().position(|x| x == "lanmanworkstation")) {
+        (Some(p9), Some(smb)) => p9 < smb,
+        (Some(_), None) => true,
+        _ => false,
+    }
 }
 
 /// Si una ruta es de este equipo y se puede mirar en el disco sin salir a la red: ni [`ruta_de_red`]
 /// ni, en Windows, con otro prefijo que el de una unidad (`C:`): UNC, `\\?\` y `\\.\` fuera. Una unidad
-/// de red con letra (`Z:`) no se distingue sin preguntar al sistema y sí se mira.
+/// de red con letra (`Z:`) no se distingue sin preguntar al sistema y sí se mira. Las de WSL (`\\wsl$\…`,
+/// `\\wsl.localhost\…`) son de este equipo si WSL las atiende (ver [`de_wsl`]).
+///
+/// Es el filtro de todo lo que llega de fuera. La carpeta en la que la persona trabaja puede estar en
+/// una carpeta de red y se lee igual: ver [`legible`].
 pub fn ruta_local(p: &Path) -> bool {
     let s = p.to_string_lossy();
+    if de_wsl(s.trim_start()) {
+        return true;
+    }
     if ruta_de_red(&s) {
         return false;
     }
@@ -78,10 +169,89 @@ pub fn exigir_local(p: &Path) -> Result<()> {
     if ruta_local(p) { Ok(()) } else { Err(no_local(p)) }
 }
 
-/// Proyecto de la carpeta actual. Esta sí puede estar en un recurso de red: la persona ya está ahí (el
-/// sistema ya abrió esa conexión), no es una ruta que llegue de fuera.
+// --- La carpeta en la que se trabaja -----------------------------------------------------------------
+//
+// Hay dos clases de rutas. Las que llegan de FUERA (el texto y los `paths` de una memoria, `project` o
+// `dir` por MCP, `?dir=` de la web, `--dir`, lo que trae la sincronización, un bundle, una variable de
+// entorno) las puede escribir un agente, otra persona o cualquier web: pasan por [`ruta_local`] y una
+// de red no se abre nunca (en Windows, solo con mirarla se abre una conexión SMB con el servidor que
+// diga, que entrega el hash NTLM de la persona y puede tardar ~21 s en fallar).
+//
+// La carpeta en la que la persona TRABAJA no llega de fuera: es la del proceso (`omoi` lanzado ahí, el
+// servidor MCP del agente) o el `cwd` que manda el hook del propio agente, que es la carpeta de su
+// sesión. Esa puede estar en una carpeta de red (`\\servidor\recurso`, una unidad compartida, WSL) y ahí
+// se lee el repositorio como en la 1.8.0: su `origin` (la clave `git:` del proyecto), `.git/HEAD` (el
+// commit de la procedencia), su carpeta git común (worktrees) y si existe (`last_seen`). Si no, un
+// proyecto nuevo ahí recibía `dir:persona/nombre`, no se veía nunca y el hook fallaba.
+//
+// Lo que se confía es el recurso entero (`\\servidor\recurso`) de esa carpeta, no solo la carpeta: el
+// repositorio puede empezar más arriba (`\\srv\equipo\repo` trabajando en `\\srv\equipo\repo\src`) y la
+// carpeta git de un worktree puede estar al lado. Leer otra carpeta del mismo recurso no abre ninguna
+// conexión nueva ni habla con otra máquina: el sistema ya está conectado ahí porque la persona trabaja
+// ahí. Un recurso distinto, aunque sea del mismo servidor, sigue siendo de fuera. Y esto solo vale para
+// las lecturas del repositorio de la lista de arriba ([`legible`]): `de`, `canonica` y lo demás que
+// recibe rutas de fuera siguen con [`ruta_local`].
+
+/// Los recursos de red (`servidor\recurso`, en minúsculas) de las carpetas de trabajo que este proceso
+/// recibió de un hook ([`de_confianza`]). La del proceso se mira aparte, cada vez ([`de_trabajo`]).
+static RECURSOS_DE_TRABAJO: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// El recurso de red de una ruta UNC (`\\servidor\recurso\…` o `\\?\UNC\servidor\recurso\…`) en
+/// minúsculas; `None` si no es UNC (una unidad, una relativa, `\\.\…`, `\??\…`, o fuera de Windows).
+fn recurso_de_red(p: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(x)) = p.components().next()
+            && let Prefix::UNC(servidor, recurso) | Prefix::VerbatimUNC(servidor, recurso) = x.kind()
+        {
+            return Some(format!("{}\\{}", servidor.to_string_lossy(), recurso.to_string_lossy()).to_lowercase());
+        }
+    }
+    let _ = p;
+    None
+}
+
+/// Si `recurso` es el de una carpeta de trabajo: la del proceso o una recibida de un hook.
+fn de_trabajo(recurso: &str) -> bool {
+    std::env::current_dir().ok().and_then(|d| recurso_de_red(&d)).as_deref() == Some(recurso)
+        || RECURSOS_DE_TRABAJO.lock().is_ok_and(|v| v.iter().any(|r| r == recurso))
+}
+
+/// Si se puede leer el repositorio de una ruta: es local ([`ruta_local`]) o está en el mismo recurso de
+/// red que la carpeta en la que se trabaja (ver arriba). Solo para leer el repositorio de un proyecto
+/// (`origin`, `HEAD`, la carpeta git común, si existe); nunca para decidir si se acepta una ruta de fuera.
+pub fn legible(p: &Path) -> bool {
+    ruta_local(p) || recurso_de_red(p).is_some_and(|r| de_trabajo(&r))
+}
+
+/// La ruta si es [`legible`]; `None` si no.
+pub fn si_legible(p: PathBuf) -> Option<PathBuf> {
+    legible(&p).then_some(p)
+}
+
+/// Proyecto de la carpeta en la que trabaja la persona, que puede ser de red: la del proceso
+/// ([`actual`]) o el `cwd` que manda el hook del agente (la carpeta de su sesión). Desde aquí, su
+/// recurso de red cuenta como de trabajo para [`legible`]. Nunca para una ruta que llegue de fuera (un
+/// argumento, `project`, `?dir=`): esas van por [`de`].
+pub fn de_confianza(dir: &Path) -> Result<String> {
+    apuntar_de_trabajo(dir);
+    de_sin_mirar(dir)
+}
+
+/// Apunta el recurso de red de una carpeta de trabajo (si es de red), sin mirar nada en el disco.
+fn apuntar_de_trabajo(dir: &Path) {
+    if let Some(r) = recurso_de_red(dir)
+        && let Ok(mut v) = RECURSOS_DE_TRABAJO.lock()
+        && !v.contains(&r)
+    {
+        v.push(r);
+    }
+}
+
+/// Proyecto de la carpeta actual, que puede estar en un recurso de red (ver [`de_confianza`]).
 pub fn actual() -> Result<String> {
-    de_sin_mirar(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
+    de_confianza(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
 }
 
 /// Proyecto de una carpeta. Una ruta que no es local ([`ruta_local`]) da error sin tocar el disco: en
@@ -354,7 +524,7 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
     // (La principal no es la propia carpeta, tampoco escrita de otra forma: `CLAUDE~1` y su nombre largo.)
     if let Some(principal) = comun.as_deref().and_then(principal_de)
         && principal != ruta
-        && canonica(Path::new(ruta)).map(|p| texto(&p)).ok().as_deref() != Some(principal.as_str())
+        && canonica_legible(Path::new(ruta)).map(|p| texto(&p)).as_deref() != Some(principal.as_str())
         && let Some((id, espacio)) = por_ruta(db, &principal)?
     {
         return Ok(Decision::Unir(id, espacio));
@@ -399,7 +569,8 @@ fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
 /// un fichero `gitdir: …` y esa carpeta tiene `commondir`) la del repositorio principal. `None` si no
 /// hay repositorio, o si `.git` es un fichero que no es de un worktree (un submódulo).
 pub(crate) fn git_comun(raiz: &Path) -> Option<PathBuf> {
-    if !ruta_local(raiz) {
+    // Local, o en el recurso de red de la carpeta en la que se trabaja (ver `legible`).
+    if !legible(raiz) {
         return None;
     }
     let punto = raiz.join(".git");
@@ -407,12 +578,18 @@ pub(crate) fn git_comun(raiz: &Path) -> Option<PathBuf> {
         punto
     } else {
         let t = std::fs::read_to_string(&punto).ok()?;
-        // Lo que dice el fichero `.git` (y su `commondir`) también puede ser una ruta de red.
-        let gitdir = local(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+        // Lo que dice el fichero `.git` (y su `commondir`) también puede ser una ruta de red: de otro
+        // recurso, no se mira.
+        let gitdir = si_legible(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
         let comun = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
         gitdir.join(comun.trim())
     };
-    canonica(&dir).ok()
+    canonica_legible(&dir)
+}
+
+/// La forma canónica de una ruta [`legible`]; `None` si no lo es (sin tocar el disco) o no existe.
+fn canonica_legible(p: &Path) -> Option<PathBuf> {
+    if legible(p) { canonica_sin_mirar(p).ok() } else { None }
 }
 
 /// La carpeta de trabajo principal de una carpeta git común (`<principal>/.git`); `None` en un
@@ -424,7 +601,7 @@ fn principal_de(comun: &Path) -> Option<String> {
 /// El nombre del repositorio de un worktree sin `origin`: el de la carpeta principal (o el del
 /// repositorio desnudo sin `.git`), en minúsculas. `None` si la carpeta no es un worktree.
 pub(crate) fn nombre_de_worktree(raiz: &Path) -> Option<String> {
-    if !ruta_local(raiz) || raiz.join(".git").is_dir() {
+    if !legible(raiz) || raiz.join(".git").is_dir() {
         return None;
     }
     let comun = git_comun(raiz)?;
@@ -479,7 +656,8 @@ pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<St
         return Ok((0, None));
     }
     let ahora = ahora(db)?;
-    let existe = es_carpeta(Path::new(ruta));
+    // La carpeta de un proyecto puede estar en el recurso de red en el que se trabaja (ver `legible`).
+    let existe = legible(Path::new(ruta)) && Path::new(ruta).is_dir();
     if let Some((id, espacio)) = por_ruta(db, ruta)? {
         if existe {
             // La ruta que trajo otro equipo existe ahora aquí: es la primera carpeta de este equipo, y
@@ -689,7 +867,7 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
     let mut oficios = crate::oficios::de_proyectos(db)?;
     Ok(v.into_iter()
         .map(|(mut p, ajena, _)| {
-            p.gone = !ajena && !p.path.is_empty() && ruta_local(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
+            p.gone = !ajena && !p.path.is_empty() && legible(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
             p.status = estados.get(&p.id).cloned().unwrap_or_default();
             p.trades = oficios.remove(&p.id).unwrap_or_default();
             p
@@ -1314,6 +1492,52 @@ mod tests {
             assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
         }
         assert!(ruta_local(Path::new(r"C:\x\??\y")) && ruta_local(Path::new("src/a.rs")));
+    }
+
+    /// La carpeta en la que se trabaja puede ser de red: su recurso (`\\servidor\recurso`) es legible
+    /// para leer el repositorio, el de al lado no, y lo que llega de fuera sigue sin mirarse aunque sea
+    /// de ese mismo recurso. Sin tocar el disco (nadie contesta en 10.255.255.1).
+    #[test]
+    fn el_recurso_de_trabajo_es_de_confianza() {
+        let inicio = std::time::Instant::now();
+        let repo = Path::new(r"\\10.255.255.1\equipo-prueba\repo");
+        assert!(!legible(repo), "aún no es de trabajo");
+        apuntar_de_trabajo(&repo.join("src"));
+        if cfg!(windows) {
+            for r in [r"\\10.255.255.1\equipo-prueba\repo", r"\\10.255.255.1\EQUIPO-PRUEBA\repo\.git\HEAD", r"\\?\UNC\10.255.255.1\equipo-prueba\otro\.git"] {
+                assert!(legible(Path::new(r)), "{r}");
+                assert!(si_legible(PathBuf::from(r)).is_some(), "{r}");
+            }
+        }
+        // Otro recurso del mismo servidor, otro servidor, `\??\UNC\…` y `\\.\…`: no.
+        for r in [r"\\10.255.255.1\otro\repo", r"\\10.255.255.2\equipo-prueba\repo", r"\??\UNC\10.255.255.1\equipo-prueba\repo", r"\\.\pipe\equipo-prueba"] {
+            assert!(!legible(Path::new(r)), "{r}");
+        }
+        // Lo de fuera sigue igual: `de`, `canonica`, `es_carpeta`.
+        assert!(!ruta_local(repo) && de(repo).is_err() && canonica(repo).is_err() && !es_carpeta(repo));
+        assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+    }
+
+    /// WSL (`\\wsl$\<distro>`, `\\wsl.localhost\<distro>`) es de este equipo solo si su proveedor atiende
+    /// esas rutas antes que SMB; la forma tiene que ser exacta.
+    #[test]
+    fn wsl_solo_con_su_proveedor_delante() {
+        for r in [r"\\wsl$\Ubuntu\home\a.rs", r"\\WSL.localhost\Ubuntu", "//wsl$/Ubuntu/x", r"\\?\UNC\wsl.localhost\Debian\x"] {
+            assert!(forma_wsl(r), "{r}");
+        }
+        for r in [r"\\wsl$", r"\\wsl$\", r"\\wsl$\..\x", r"\\wsl$\.\x", r"\\wsl.localhost.evil.com\x\y", r"\\wsl\x", r"\\10.0.0.1\wsl$\x", r"\??\UNC\wsl$\x\y", r"C:\wsl$\x"] {
+            assert!(!forma_wsl(r), "{r}");
+        }
+        assert!(p9np_antes_que_smb("RDPNP,P9NP,LanmanWorkstation,webclient"));
+        assert!(p9np_antes_que_smb("P9NP"));
+        assert!(!p9np_antes_que_smb("RDPNP,LanmanWorkstation,P9NP"));
+        assert!(!p9np_antes_que_smb("RDPNP,LanmanWorkstation,webclient"));
+        assert!(!p9np_antes_que_smb(""));
+        // Con o sin WSL aquí, una ruta de WSL es local exactamente cuando WSL la atiende.
+        let w = Path::new(r"\\wsl$\Ubuntu\home");
+        assert_eq!(ruta_local(w), wsl_atiende(), "{}", w.display());
+        assert_eq!(ruta_de_red(r"\\wsl$\Ubuntu\home"), !wsl_atiende());
+        assert!(!ruta_local(Path::new(r"\\wsl$\..\x")));
     }
 
     /// `~/` seguido de una ruta de red (`~/\\host\x`, `~\//host/x`, `~/\\?\UNC\…`): al juntarla con la

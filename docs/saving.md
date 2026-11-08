@@ -131,7 +131,7 @@ Verifications also arrive by other ways, all of them yours: importing an OKF bun
 
 None of this is a security boundary. An agent with a shell that sets out to get around it can (it could also edit the database, or load the web page to read its token): the point is that nothing an agent normally does ends in "verified".
 
-Changing the text removes the verification: you vouched for that text, not the next one. `update` says so (`unverified` in the answer) so the agent can tell you. Tags, paths, pinning or moving it don't touch it. The mark carries a fingerprint of the kind, title and content, so a change made by a version from before 1.8.5 (which keeps the mark without understanding it) also leaves it unverified.
+Changing the text removes the verification: you vouched for that text, not the next one. `update` says so (`unverified` in the answer) so the agent can tell you. Tags, paths, pinning or moving it don't touch it. The mark carries a fingerprint of the kind, title and content, so a change made by a version from before 1.8.5 (which keeps the mark without understanding it) also leaves it unverified. It also records when it lost the verification, as `omoi verify --unverify` does: an old verification that comes back with the old text (from another of your computers that hadn't seen the change yet, or in a file you import) doesn't count.
 
 When it's time to review (Review, `omoi review`), unverified decisions and gotchas come first in each group, and verified memories last.
 

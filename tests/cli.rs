@@ -828,3 +828,82 @@ fn ni_la_base_ni_sus_carpetas_en_una_ruta_de_red() {
         assert!(t.elapsed() < std::time::Duration::from_secs(5), "{h}: {:?}", t.elapsed());
     }
 }
+
+/// La carpeta en la que la persona trabaja puede estar en una carpeta de red (una unidad compartida,
+/// `\\servidor\recurso`, WSL): ahí se lee su repositorio como en la 1.8.0. Con los arreglos de rutas de
+/// red de la 1.8.5 un proyecto nuevo desde ahí recibía `dir:persona/netrepo` en vez de su `git:`, sin
+/// commit en la procedencia ni `last_seen`, y el hook con ese `cwd` fallaba. Lo que llega de fuera
+/// (`project` por MCP) sigue sin abrirse. Se simula con `\\localhost\C$\…` (el recurso administrativo
+/// de la unidad de la carpeta temporal); si este equipo no lo deja abrir, el test lo dice y no comprueba
+/// nada (la lógica la cubre `proyecto::tests::el_recurso_de_trabajo_es_de_confianza`).
+#[cfg(windows)]
+#[test]
+fn la_carpeta_de_trabajo_puede_ser_de_red() {
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+    let e = Entorno::nuevo("trabajo-red");
+    let repo = e.dir.join("netrepo");
+    let git = repo.join(".git");
+    std::fs::create_dir_all(git.join("refs").join("heads")).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(git.join("config"), "[remote \"origin\"]\n\turl = https://github.com/acme/netrepo.git\n").unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(git.join("refs").join("heads").join("main"), format!("{SHA}\n")).unwrap();
+    let local = std::fs::canonicalize(&repo).unwrap().to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let unc = format!(r"\\localhost\{}$\{}", &local[..1], &local[3..]);
+    if !Path::new(&unc).join("src").is_dir() {
+        eprintln!("{unc} no se puede abrir en este equipo: no se comprueba");
+        return;
+    }
+    let omoi = |cwd: &str, args: &[&str], entrada: Option<&str>| -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
+        c.args(args)
+            .current_dir(cwd)
+            .env("OMOIKANE_DB", e.dir.join("o.db"))
+            .env("OMOIKANE_MODELS", e.dir.join("models"))
+            .env("OMOIKANE_AUTO_UPDATE", "0")
+            .env("OMOIKANE_SYNC_AUTO", "0")
+            .env("OMOIKANE_HOME", e.dir.join("home-omoikane"))
+            .env_remove("OMOIKANE_LANG")
+            .env_remove("OMOIKANE_SESSION")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .stdin(if entrada.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut hijo = c.spawn().unwrap();
+        if let Some(t) = entrada {
+            use std::io::Write;
+            hijo.stdin.take().unwrap().write_all(t.as_bytes()).unwrap();
+        }
+        hijo.wait_with_output().unwrap()
+    };
+    let src = format!(r"{unc}\src");
+    let o = omoi(&src, &["remember", "-k", "fact", "-t", "Desde la red", "--force", "--json", "Guardada desde una carpeta compartida."], None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let id = serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"].as_str().unwrap().to_string();
+    // Su clave es la del repositorio (`origin`), y su carpeta se ha visto aquí.
+    let o = omoi(&src, &["projects", "--json"], None);
+    let p: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let net = p.as_array().unwrap().iter().find(|x| x["path"].as_str().is_some_and(|s| s.ends_with("netrepo"))).unwrap_or_else(|| panic!("{p}"));
+    assert_eq!(net["key"], "git:github.com/acme/netrepo", "{p}");
+    let db = rusqlite::Connection::open(e.dir.join("o.db")).unwrap();
+    let visto: Option<String> = db.query_row("SELECT last_seen FROM project_path WHERE path LIKE '%netrepo'", [], |f| f.get(0)).unwrap();
+    assert!(visto.is_some(), "last_seen");
+    drop(db);
+    // La procedencia lleva el commit de su HEAD.
+    let o = omoi(&src, &["get", &id, "--json"], None);
+    let m: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(m["provenance"]["commit"], SHA, "{m}");
+    // El hook del agente con `cwd` de red (la carpeta de su sesión), lanzado desde otra carpeta.
+    let fuera = e.dir.to_string_lossy().into_owned();
+    let entrada = serde_json::json!({ "session_id": "s-red", "cwd": src, "source": "startup" }).to_string();
+    for args in [&["recall", "--session-start", "--format", "plain"][..], &["recall", "--format", "plain"], &["recall", "--session-end"]] {
+        let o = omoi(&fuera, args, Some(&entrada));
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    // Lo que llega de fuera, no: `project` de red por MCP, también desde la carpeta de red.
+    let t = std::time::Instant::now();
+    let o = omoi(&src, &["tool", "remember"], Some(&serde_json::json!({ "kind": "fact", "title": "x", "content": "y", "project": r"\\10.255.255.1\x" }).to_string()));
+    let salida = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert!(salida.contains("network paths"), "{salida}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+}

@@ -1918,7 +1918,9 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     }
     let project = match (&c.dir, e.cwd.is_empty()) {
         (Some(d), _) => proyecto::de(d)?,
-        (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
+        // El `cwd` del hook es la carpeta de la sesión del propio agente: puede ser de red (ver
+        // `proyecto::de_confianza`). `--dir` llega de fuera y va por `proyecto::de`.
+        (None, false) => proyecto::de_confianza(std::path::Path::new(&e.cwd))?,
         (None, true) => proyecto::actual()?,
     };
     let db = db::abrir(&ruta_db)?;
@@ -1971,7 +1973,9 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     }
     let project = match (&c.dir, e.cwd.is_empty()) {
         (Some(d), _) => proyecto::de(d)?,
-        (None, false) => proyecto::de(std::path::Path::new(&e.cwd))?,
+        // El `cwd` del hook es la carpeta de la sesión del propio agente: puede ser de red (ver
+        // `proyecto::de_confianza`). `--dir` llega de fuera y va por `proyecto::de`.
+        (None, false) => proyecto::de_confianza(std::path::Path::new(&e.cwd))?,
         (None, true) => proyecto::actual()?,
     };
     let ruta = c.db.clone().unwrap_or_else(db::ruta_por_defecto);

@@ -132,7 +132,7 @@ Las verificaciones también llegan por otros caminos, todos tuyos. Importar un b
 
 Nada de esto es una frontera de seguridad. Un agente con shell que se proponga saltárselo puede (también podría editar la base, o cargar la página web para leer su token); lo que se busca es que nada de lo que un agente hace normalmente acabe en «verificada».
 
-Cambiar el texto quita la verificación: respondiste de ese texto, no del siguiente. `update` lo dice (`unverified` en la respuesta) para que el agente te avise. Las etiquetas, las rutas, fijarla o moverla no la tocan. La marca lleva una huella del tipo, el título y el contenido, así que un cambio hecho por una versión anterior a la 1.8.5 (que conserva la marca sin entenderla) también la deja sin verificar.
+Cambiar el texto quita la verificación: respondiste de ese texto, no del siguiente. `update` lo dice (`unverified` en la respuesta) para que el agente te avise. Las etiquetas, las rutas, fijarla o moverla no la tocan. La marca lleva una huella del tipo, el título y el contenido, así que un cambio hecho por una versión anterior a la 1.8.5 (que conserva la marca sin entenderla) también la deja sin verificar. Además apunta cuándo perdió la verificación, como `omoi verify --unverify`: una verificación vieja que vuelva con el texto de antes (desde otro de tus equipos que aún no había visto el cambio, o en un fichero que importes) no cuenta.
 
 Cuando toca revisar (Revisar, `omoi review`), en cada grupo salen primero las decisiones y las trampas sin verificar, y lo verificado al final.
 

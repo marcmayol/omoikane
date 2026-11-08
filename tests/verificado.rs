@@ -162,7 +162,9 @@ fn cambiar_el_texto_la_desverifica() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("no longer verified"), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(e.json(&["get", &id]).get("verified").is_none());
     let extra: String = e.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
-    assert!(!extra.contains("verified"), "el sello se va: {extra}");
+    let extra: serde_json::Value = serde_json::from_str(&extra).unwrap();
+    assert!(extra.get("verified").is_none(), "el sello se va: {extra}");
+    assert!(extra.get("unverified_at").is_some(), "y se apunta cuándo: {extra}");
 
     // Por MCP: el agente cambia el texto y la respuesta se lo dice.
     e.ok(&["verify", &id, "--by", "Marc", "--yes"]);
@@ -178,6 +180,47 @@ fn cambiar_el_texto_la_desverifica() {
     assert!(extra.contains("\"verified\""), "{extra}");
     assert!(e.json(&["get", &id]).get("verified").is_none());
     assert!(e.ok(&["get", &id]).contains("verified   no"));
+}
+
+/// Cambiar el texto apunta cuándo se le quitó el sello (`extra.unverified_at`, como `verify --unverify`):
+/// una línea más nueva que trae el texto de antes con su sello viejo (otro equipo de la persona que aún
+/// no había visto el cambio, una copia de `import <fichero>`) no la deja verificada otra vez. El sello
+/// lleva la huella del texto, pero con el texto de antes la huella vuelve a coincidir.
+#[test]
+fn un_sello_viejo_no_vuelve_tras_cambiar_el_texto() {
+    let e = Entorno::nuevo("sello-viejo");
+    let id = e.guardar("decision", "Sello viejo", "Texto que la persona vio.");
+    e.ok(&["verify", &id, "--by", "Marc", "--yes"]);
+    let salida = e.ok(&["export"]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    e.ok(&["update", &id, "--append", "Y lo que añadió un agente.", "-r", "más"]);
+    let (extra, hlc): (String, String) = e.base().query_row("SELECT extra, hlc FROM memory WHERE id = ?1", [&id], |f| Ok((f.get(0)?, f.get(1)?))).unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&extra).unwrap();
+    assert!(extra.get("verified").is_none() && extra["unverified_at"].as_str().is_some_and(|d| d.starts_with("20")), "{extra}");
+
+    // La línea exportada antes del cambio, con un sello de tiempo de después (de otro equipo).
+    let mut linea: serde_json::Value = salida.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|l| l["id"] == id.as_str()).unwrap();
+    assert_eq!(linea["verified"]["by"], "Marc", "{linea}");
+    let ms: u64 = hlc[..13].parse().unwrap();
+    let nuevo = format!("{:013}-0000000000-otro-equipo", ms + 10_000);
+    linea["hlc"] = serde_json::json!(nuevo);
+    if linea.get("content_hlc").is_some() {
+        linea["content_hlc"] = serde_json::json!(nuevo);
+    }
+    let texto = linea.to_string();
+    let mut fin: serde_json::Value = serde_json::from_str(salida.lines().last().unwrap()).unwrap();
+    fin["count"] = serde_json::json!(1);
+    use sha2::Digest;
+    fin["sha256"] = serde_json::json!(sha2::Sha256::digest(format!("{texto}\n").as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let f = e.dir.join("vieja.jsonl");
+    std::fs::write(&f, format!("{}\n{texto}\n{fin}\n", salida.lines().next().unwrap())).unwrap();
+    e.ok(&["import", f.to_str().unwrap()]);
+    let m = e.json(&["get", &id]);
+    assert_eq!(m["content"], "Texto que la persona vio.", "la línea más nueva gana: {m}");
+    assert!(m.get("verified").is_none(), "el sello es de antes de quitárselo: {m}");
+    // Y la fecha se conserva, para la siguiente vez que llegue.
+    let extra: String = e.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
+    assert!(extra.contains("unverified_at"), "{extra}");
 }
 
 /// Ningún camino del agente acaba en «verificada»: no hay herramienta, `remember` y `update` ignoran

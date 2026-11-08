@@ -1022,18 +1022,20 @@ pub fn clave(project: &str, persona: &str) -> String {
 
 /// La URL del remoto `origin`, leyendo `.git/config` (rápido; en un worktree, el del repositorio).
 pub(crate) fn origen_git(raiz: &Path) -> Option<String> {
-    if !crate::proyecto::ruta_local(raiz) {
+    // Local, o en el recurso de red de la carpeta en la que se trabaja (`proyecto::legible`).
+    if !crate::proyecto::legible(raiz) {
         return None;
     }
     let punto_git = raiz.join(".git");
     let config = if punto_git.is_dir() {
         punto_git.join("config")
     } else {
-        // Worktree: `.git` es un fichero «gitdir: <repo>/.git/worktrees/<nombre>» (nunca de red).
+        // Worktree: `.git` es un fichero «gitdir: <repo>/.git/worktrees/<nombre>» (nunca de otro recurso
+        // de red).
         let t = std::fs::read_to_string(&punto_git).ok()?;
-        let gitdir = crate::proyecto::local(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+        let gitdir = crate::proyecto::si_legible(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
         let comun = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| gitdir.join(c.trim())).unwrap_or(gitdir);
-        crate::proyecto::local(comun)?.join("config")
+        crate::proyecto::si_legible(comun)?.join("config")
     };
     let texto = std::fs::read_to_string(config).ok()?;
     let mut en_origin = false;
@@ -2184,6 +2186,16 @@ impl<'a> Aplicador<'a> {
                             db.execute("DELETE FROM meta WHERE k = ?1", [&marca])?;
                         }
                     }
+                }
+                // Aquí se le quitó la verificación (`verify --unverify`, o se cambió su texto): la fecha se
+                // queda y un sello de antes no vuelve, aunque la línea sea más nueva y traiga el texto que se
+                // verificó (otro equipo que aún no había visto el cambio, una copia). Por el repositorio de
+                // un espacio se queda en la línea para los demás y aquí no cuenta (`sello_de_otro`).
+                let mut extra = extra;
+                if local.is_some()
+                    && let Some(d) = crate::verificado::desverificada_en(db, &id)?
+                {
+                    crate::verificado::sin_sello_viejo(&mut extra, &d, self.config.is_none_or(|c| c.space.is_none()));
                 }
                 // Los campos que esta versión no conoce se guardan con ella, para volver a escribirlos.
                 let extra = extra_a_texto(&extra);
