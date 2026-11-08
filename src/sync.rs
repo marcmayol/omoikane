@@ -2267,10 +2267,27 @@ impl<'a> Aplicador<'a> {
                 }
                 let origen = if memory.machine.is_empty() { format!("sync:{origen}") } else { format!("sync:{}", memory.machine) };
                 let texto = a_papelera(&memory.a_memoria(&origen), &memory.extra, &extra)?;
-                db.execute(
+                let n = db.execute(
                     "INSERT OR IGNORE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![id, texto, serde_json::to_string(&versions)?, hlc, deleted_at, by],
                 )?;
+                // Como en una línea `memory`: el sello de otra persona que llega en la papelera por el
+                // repositorio de un espacio no cuenta aquí si se restaura (`memoria::restaurar` lo
+                // conserva tal cual).
+                if n > 0
+                    && let Some(c) = self.config
+                {
+                    let marca = format!("{}{id}", crate::verificado::SELLO_AJENO);
+                    match sello_de_otro(db, c, &id, &memory.extra)? {
+                        Some(sello) => {
+                            r.sellos_ajenos += 1;
+                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![marca, sello])?;
+                        }
+                        None => {
+                            db.execute("DELETE FROM meta WHERE k = ?1", [&marca])?;
+                        }
+                    }
+                }
                 Ok(())
             }
         }

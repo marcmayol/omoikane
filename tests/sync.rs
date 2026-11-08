@@ -2625,3 +2625,45 @@ fn un_sello_con_el_nombre_de_aqui_puesto_por_otro_no_cuenta() {
     c.ok_en(&c.dir, &["sync"], &carla);
     assert!(c.get(&id).unwrap().get("verified").is_none());
 }
+
+/// Lo de arriba por la papelera: Carla (otra persona del espacio) crea una memoria, la «verifica como
+/// Ana», la olvida y escribe a mano en el repositorio del espacio su línea `forgotten` (la de su `omoi
+/// export`), con el sello dentro. A Ana le llega a la papelera. Al restaurarla (`omoi restore`, que
+/// también puede ejecutar un agente), ese sello sin la firma de Ana no cuenta.
+#[test]
+fn un_sello_ajeno_que_llega_en_la_papelera_no_cuenta_al_restaurar() {
+    let p = Prueba::nueva("sello-papelera");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let carla = [("OMOIKANE_AUTHOR", "Carla")];
+    let a = p.equipo("pc-a");
+    a.ok_en(&a.dir, &["sync", "init", &p.url(), "--yes"], &ana);
+    let acme = p.otro_repo("acme");
+    a.ok_en(&a.dir, &["sync", "init", "--space", "acme", &acme, "--yes"], &ana);
+    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    let c = p.equipo("pc-c");
+    c.ok_en(&c.dir, &["sync", "join", &codigo, "--yes"], &carla);
+    a.ok(&["space", "add", "acme"]);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    c.ok_en(&c.dir, &["sync"], &carla);
+    let id = c.guardar(&c.dir, "decision", "Acme no factura IVA", "Nunca.", &["--space=acme"]);
+    c.ok_en(&c.dir, &["verify", &id, "--by", "Ana", "--yes"], &carla);
+    c.ok_en(&c.dir, &["forget", &id, "--yes"], &carla);
+    let export = c.ok_en(&c.dir, &["export", "--all"], &carla);
+    let olvido: serde_json::Value = export
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|j| j["type"] == "forgotten" && j["id"] == id.as_str())
+        .expect("la línea forgotten en el export");
+    assert_eq!(olvido["memory"]["verified"]["by"], "Ana", "{olvido}");
+    let clave = clave_del_codigo(&codigo);
+    p.subir_a_mano_en(&acme, "acme/pc-c-papelera.jsonl", &(cifrar_linea(&clave, &olvido) + "
+"));
+    a.ok_en(&a.dir, &["sync"], &ana);
+    assert!(a.get(&id).is_none(), "llega olvidada");
+    a.ok_en(&a.dir, &["restore", &id], &ana);
+    let m = a.get(&id).expect("restaurada");
+    assert!(m.get("verified").is_none(), "el sello que puso Carla con el nombre de Ana no cuenta al restaurarla: {m}");
+    // Y si Ana la verifica ella misma, sí.
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    assert_eq!(a.get(&id).unwrap()["verified"]["by"], "Ana");
+}

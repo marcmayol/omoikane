@@ -50,6 +50,7 @@ How it works is in [docs/](docs/).
 - Reading an OKF header with a `[…]` spread over many lines was quadratic (400 KB took 15 s): it is linear now. `index.md` has the same limits as a concept.
 - The code-drift check's `git log` stops at its time limit even when `git` leaves a child holding its output (Git for Windows' launcher does): it waited for that child, 15 s with a 0.5 s limit.
 - `omoi serve` compares its tokens (`OMOIKANE_HTTP_TOKEN` and the view's) in constant time.
+- Sync: a verification that arrived inside a trash line (`forgotten`) through a space repository counted as yours once you restored it (`omoi restore`), whoever wrote it. It now follows the same rule as a `memory` line: without your signature it is someone else's and doesn't count here.
 
 ### Compatibility
 - Same as 1.8.0: the database schema stays at 10, `lector_minimo` doesn't move, and the sync lines and the Obsidian export format don't change. Versions 1.0 to 1.8 read a 1.8.5 database and sync with it.
