@@ -449,7 +449,12 @@ fn linea(m: &Memoria, actual: i64, propio: Option<&str>) -> String {
         Some(yo) if m.author == yo => String::new(),
         _ => format!(" [by {}]", m.author),
     };
-    format!("- [{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
+    format!("- [{}{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, marca(m), m.title, m.id.chars().take(12).collect::<String>())
+}
+
+/// La marca de una memoria que verificó una persona (`verificado`), detrás del tipo: `[decision, verified]`.
+fn marca(m: &Memoria) -> &'static str {
+    if m.verified.is_some() { ", verified" } else { "" }
 }
 
 /// La advertencia de `revisar` sobre una memoria, para el final de su línea (o nada).
@@ -708,7 +713,7 @@ fn linea_corta(m: &Memoria, actual: i64, propio: Option<&str>) -> String {
         _ => String::new(),
     };
     let fecha = m.updated_at.get(..10).unwrap_or(&m.updated_at);
-    format!("- {fecha} [{}]{donde}{de} {} (id {})", m.kind, m.title, m.id.chars().take(12).collect::<String>())
+    format!("- {fecha} [{}{}]{donde}{de} {} (id {})", m.kind, marca(m), m.title, m.id.chars().take(12).collect::<String>())
 }
 
 /// En cada mensaje: lo que tiene que ver con él y no se ha inyectado ya en esta sesión, o nada.

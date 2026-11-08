@@ -450,6 +450,39 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
+                // El botón «Verificar» de la vista: la marca de una persona (`verificado`). No es una
+                // herramienta (`/tools/`, lo que usan los agentes por HTTP), y solo vale desde un
+                // navegador, que manda siempre `Origin` (de esta misma vista: lo de otra web ya se ha
+                // cortado arriba) en un POST.
+                (Method::Post, "/api/verify") => {
+                    if cabecera("Origin").is_none() {
+                        return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
+                    }
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = match memoria::resolver_id(&base, v["id"].as_str().unwrap_or_default()) {
+                        Ok(id) => id,
+                        Err(e) => return Ok(error(404, &format!("{e:#}"))),
+                    };
+                    if !m.ve(&base, &id)? {
+                        return Ok(fuera());
+                    }
+                    let r = if v["unverify"].as_bool().unwrap_or(false) {
+                        crate::verificado::desverificar(&mut base, &id)?;
+                        memoria::obtener(&base, &id)?
+                    } else {
+                        let actual = memoria::obtener(&base, &id)?;
+                        let by = match v["by"].as_str().map(str::trim).filter(|b| !b.is_empty()) {
+                            Some(b) => b.to_string(),
+                            None => crate::verificado::quien_por_defecto(&base, &actual)?,
+                        };
+                        match crate::verificado::verificar(&mut base, &id, &by) {
+                            Ok(r) => r,
+                            Err(e) => return Ok(error(400, &format!("{e:#}"))),
+                        }
+                    };
+                    crate::sync::programar(&ruta_db);
+                    Ok(json(200, serde_json::to_string(&r)?))
+                }
                 (Method::Get, "/api/candidates") => {
                     // Lo apartado lleva la carpeta de su sesión: solo las de proyectos que se ven.
                     let mut ambitos: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
@@ -535,7 +568,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool) -> Re
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, POST /api/verify, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

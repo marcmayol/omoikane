@@ -2160,6 +2160,7 @@ impl<'a> Aplicador<'a> {
                         tags,
                         pinned,
                         source: format!("sync:{origen}"),
+                        provenance: None,
                     };
                     memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
                     r.nuevas += 1;

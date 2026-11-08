@@ -4,6 +4,23 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.8.5 (unreleased)
+
+### Verified by a person
+- A memory can be **verified by a person**, apart from what agents write: `omoi verify <id>` (it shows the memory and asks; `--by <name>`, by default your sync name or the system user; `--unverify` removes it) or the new **Verify** button in the web view. It keeps who and when. The recall marks it `[decision, verified]`; search, `get`, `list --json`, `recent`, `context` and the MCP results carry `verified` (`{by, at}`, or `"by Marc, 2026-11-08"` in compact results), and the web view shows a ✓.
+- An agent can't verify anything: there is no MCP tool, `remember` and `update` ignore a `verified` field, the HTTP tools are the MCP ones, `omoi verify` refuses without a terminal unless `--yes` and always refuses inside a coding agent's shell (`CLAUDECODE`, `AI_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX`…), and the web button goes through `POST /api/verify`, which only takes a browser's request from the view. The agent's instructions say to trust a verified memory over an unverified one that disagrees and never to verify on its own.
+- Changing the text (title, content or kind) removes the verification, and `update` says so (`unverified`, on stderr and in the JSON) so the agent tells the person. Tags, paths, pinning and moving keep it. The mark carries a fingerprint of the verified text, so a change made by an older version, which keeps the mark without understanding it, leaves the memory unverified too.
+- The review puts unverified decisions and gotchas first in each group, and verified memories last.
+- Kumi: `kumi.py` verifies what the person approves (`decisions --resolve`, then `verify --by <name> --yes`), never from inside the apprentice's session ([saving.md](docs/saving.md#verified-by-a-person)).
+
+### Provenance
+- Each new memory keeps the agent session and the commit it was written in: `provenance: {session, commit, branch}` in the JSON, and a `written in` line in `get` and `history`. The session comes from `OMOIKANE_SESSION`, `CLAUDE_CODE_SESSION_ID` (Claude Code sets it for its shell and its MCP servers) or the only session the hooks registered in that project in the last 12 hours; the commit is the project's HEAD, read from `.git` without running `git` (worktrees and `packed-refs` included). Later changes don't touch it, and trade memories don't carry it.
+- Measured in-process (release, 400 interleaved saves, no model): saving goes from 0.97 to 1.32 ms in a normal repository and from 1.20 to 1.71 ms in a worktree (two more files to open). A whole `omoi remember` (release, new process each time, 30 interleaved rounds) doesn't show it: median 563 ms in a repository with a commit against 608 ms in one without, both noise.
+
+### Compatibility
+- The database schema stays at 10 and `lector_minimo` doesn't move. The verification and the provenance live in `memory.extra` under their own keys (`verified`, `provenance`) and travel as fields of the memory's line that versions 1.0 to 1.8 don't know: they keep them and send them on unchanged, also after editing the memory (`tests/compat.rs` checks it against 1.0.0). They just don't show them, and a text change made there leaves the memory unverified when this version reads it.
+- MCP: compact results may carry `verified`, `get` and the full results `verified` and `provenance`, and `update` may answer `unverified`; no tool or argument is removed. `GET /api/memories` carries both fields, and there is a new `POST /api/verify` for the web view. Clients that don't know these fields can ignore them.
+
 ## 1.8.0 (2026-11-07)
 
 ### Trades: memory for each stack

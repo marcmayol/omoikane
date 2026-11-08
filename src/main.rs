@@ -205,6 +205,22 @@ struct Lista {
     space: Option<String>,
 }
 
+/// `omoi verify`: la marca de una persona (ver `verificado`). Aparte, para no agrandar `Orden`.
+#[derive(Args)]
+struct Verificar {
+    /// Memory id (its start is enough).
+    id: String,
+    /// Who verifies it. By default, your name in the sync (OMOIKANE_AUTHOR or the one you joined with), or the system user.
+    #[arg(long, value_name = "NAME")]
+    by: Option<String>,
+    /// Remove its verification instead.
+    #[arg(long, conflicts_with = "by")]
+    unverify: bool,
+    /// Don't ask (for a program you drive, after you approved it there). Without it, omoi asks in a terminal and refuses elsewhere. It always refuses inside a coding agent's shell.
+    #[arg(short, long)]
+    yes: bool,
+}
+
 #[derive(Args)]
 struct HistoriaFicheros {
     /// Files, relative to the repository or absolute. Without any (or with -), one per line from the standard input, such as the output of `git diff --name-only`.
@@ -328,6 +344,8 @@ enum Orden {
         /// Memory id (its start is enough).
         id: String,
     },
+    /// Mark a memory as verified by you, a person (agents write the rest). Recall, search and get show it; editing its text removes it. Agents can't do this.
+    Verify(Verificar),
     /// The latest saved or changed memories.
     Recent {
         /// How many.
@@ -831,7 +849,7 @@ fn main() -> Result<()> {
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
         omoikane::actualizar::quizas_en_segundo_plano();
     }
-    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update(..) | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update(..) | Orden::Verify(..) | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
     // Remember, update, forget y restore saben qué memoria tocan y ponen al día la revisión solo con
     // ella (`revisar::al_dia_de`); una importación o lo que se haga en la vista, entera.
     let sin_saber_que = matches!(cli.orden, Orden::Import { .. } | Orden::Tui { .. });
@@ -1024,7 +1042,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
             };
             let antes = omoikane::revisar::antes(&db)?;
-            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, ..Default::default() };
+            // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
+            let provenance = if de_oficio { None } else { omoikane::procedencia::actual(&db, if project.is_empty() { &actual } else { &project }) };
+            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, ..Default::default() };
             if let Some(k) = key {
                 return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
             }
@@ -1161,10 +1181,14 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
+            avisar_desverificada(&m);
             if c.json {
                 let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
                 if !cambiados.is_empty() {
                     v["changed"] = serde_json::json!(cambiados);
+                }
+                if let Some(u) = &m.unverified {
+                    v["unverified"] = serde_json::json!(u);
                 }
                 return json(&v);
             }
@@ -1198,6 +1222,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             Ok(())
         }
         Orden::Restore { id } => restaurar_cli(c, id),
+        Orden::Verify(v) => verificar_cli(c, v),
         Orden::Trash { empty, yes } => {
             let db = abrir(c)?;
             if !empty {
@@ -2632,6 +2657,64 @@ fn texto_o_entrada(t: Option<String>) -> Result<String> {
 }
 
 /// Por stderr (también con `--json`): lo guardado no es lo que se escribió.
+/// Si el cambio le quitó la verificación de una persona: que lo sepa quien cambia.
+fn avisar_desverificada(m: &Memoria) {
+    if let Some(v) = &m.unverified {
+        eprintln!(
+            "{}",
+            tr!(
+                "its text changed, so it is no longer verified (it was by {}): `omoi verify {}` if it is still right",
+                "su texto ha cambiado, así que ya no está verificada (lo estaba por {}): `omoi verify {}` si sigue siendo correcta",
+                v.by,
+                corto(&m.id)
+            )
+        );
+    }
+}
+
+/// `omoi verify`: solo una persona. En una terminal pregunta; fuera, pide `--yes`; dentro de la shell
+/// de un agente se niega siempre (ver `verificado`).
+fn verificar_cli(c: &Comun, v: Verificar) -> Result<()> {
+    if let Some(var) = omoikane::verificado::shell_de_agente() {
+        bail!(tr!(
+            "verifying is for a person, and this looks like a coding agent's shell ({var} is set): run it in your own terminal, or use the web view (`omoi serve --open`)",
+            "verificar es cosa de una persona, y esto parece la shell de un agente ({var} está puesta): hazlo en tu terminal, o en la vista web (`omoi serve --open`)"
+        ));
+    }
+    let mut db = abrir(c)?;
+    let m = memoria::obtener(&db, &v.id)?;
+    if v.unverify {
+        let habia = omoikane::verificado::desverificar(&mut db, &m.id)?;
+        if c.json {
+            return json(&serde_json::json!({ "id": m.id, "verified": false, "changed": habia }));
+        }
+        println!("{}", if habia { tr!("{} is no longer verified", "{} ya no está verificada", corto(&m.id)) } else { tr!("{} was not verified", "{} no estaba verificada", corto(&m.id)) });
+        return Ok(());
+    }
+    let by = match v.by {
+        Some(b) => b,
+        None => omoikane::verificado::quien_por_defecto(&db, &m)?,
+    };
+    if !v.yes {
+        if !omoikane::entorno::puede_preguntar() {
+            bail!(tr!("add --yes to verify {} without asking", "añade --yes para verificar {} sin preguntar", corto(&m.id)));
+        }
+        println!("{}  {}\n{}\n\n{}\n", corto(&m.id), m.kind, m.title, m.content);
+        let quien = if by.trim().is_empty() { tr!("(no name: give --by)", "(sin nombre: di --by)") } else { by.clone() };
+        if !preguntar_si(&tr!("Verify it as {quien}? You vouch that this text is right.", "¿Verificarla como {quien}? Respondes de que este texto es correcto."), false)? {
+            println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
+            return Ok(());
+        }
+    }
+    let m = omoikane::verificado::verificar(&mut db, &m.id, &by)?;
+    if c.json {
+        return json(&m);
+    }
+    let quien = m.verified.as_ref().map(|x| x.by.clone()).unwrap_or(by);
+    println!("{}", tr!("verified {} by {quien}", "verificada {} por {quien}", corto(&m.id)));
+    Ok(())
+}
+
 fn avisar_redactados(m: &Memoria) {
     if !m.redacted.is_empty() {
         let r = omoikane::secretos::resumen(&m.redacted);
@@ -2692,7 +2775,8 @@ fn una_linea(s: &str, max: usize) -> String {
 
 fn lista(m: &Memoria, con_proyecto: bool) {
     let fijada = if m.pinned { tr!(" (pinned)", " (fijada)") } else { String::new() };
-    println!("{}  {:<10} {}{fijada}", corto(&m.id), m.kind.as_str(), m.title);
+    let verificada = m.verified.as_ref().map(|v| tr!(" (verified by {})", " (verificada por {})", v.by)).unwrap_or_default();
+    println!("{}  {:<10} {}{fijada}{verificada}", corto(&m.id), m.kind.as_str(), m.title);
     let mut extra: Vec<String> = m.paths.clone();
     extra.extend(m.tags.iter().filter(|t| !t.starts_with(omoikane::oficios::PREFIJO) && !t.starts_with(omoikane::oficios::PARA)).map(|t| format!("#{t}")));
     let oficios = omoikane::oficios::de_memoria(m);
@@ -2731,6 +2815,13 @@ fn entera(m: &Memoria) {
     };
     println!("{}{proyecto}", tr!("project    ", "proyecto   "));
     println!("{}{}", tr!("source     ", "origen     "), m.source);
+    if let Some(p) = &m.provenance {
+        println!("{}{}", tr!("written in ", "escrita en "), p.texto());
+    }
+    match &m.verified {
+        Some(v) => println!("{}", tr!("verified   by {} ({})", "verificada por {} ({})", v.by, v.at)),
+        None => println!("{}", tr!("verified   no: written by an agent, or changed since", "verificada no: la escribió un agente, o cambió después")),
+    }
     println!("{}", tr!("created    {}   changed {}", "creada     {}   cambiada {}", m.created_at, m.updated_at));
     if m.recall_count > 0 {
         let ultima = m.recalled_at.as_deref().unwrap_or("-");
@@ -2742,6 +2833,12 @@ fn entera(m: &Memoria) {
 
 fn historial(m: &Memoria, v: &[Version]) {
     println!("{}  {}", corto(&m.id), m.title);
+    if let Some(p) = &m.provenance {
+        println!("{}", tr!("written in {} ({})", "escrita en {} ({})", p.texto(), m.created_at));
+    }
+    if let Some(x) = &m.verified {
+        println!("{}", tr!("verified by {} ({})", "verificada por {} ({})", x.by, x.at));
+    }
     if v.is_empty() {
         println!("{}", tr!("no previous versions", "sin versiones anteriores"));
         return;
@@ -3442,6 +3539,12 @@ fn en_espanol(c: Command) -> Command {
             ("yes", "Sin preguntar antes de vaciar."),
         ]),
         ("history", "Versiones anteriores de una memoria.", &[("id", "Id de la memoria (basta con el principio).")]),
+        ("verify", "Marca una memoria como verificada por ti, una persona (el resto lo escriben agentes). El recall, la búsqueda y get lo enseñan; cambiar su texto lo quita. Un agente no puede hacerlo.", &[
+            ("id", "Id de la memoria (basta con el principio)."),
+            ("by", "Quién la verifica. Por defecto, tu nombre en la sincronización (OMOIKANE_AUTHOR o con el que te uniste), o el usuario del sistema."),
+            ("unverify", "Quitarle la verificación."),
+            ("yes", "Sin preguntar (para un programa que llevas tú, después de aprobarlo ahí). Sin él, omoi pregunta en una terminal y se niega en cualquier otro sitio. Dentro de la shell de un agente se niega siempre."),
+        ]),
         ("review", "Lo que conviene revisar: memorias que otra más nueva contradice, estados viejos, rutas rotas, sin uso y demasiado largas.", &[
             ("all", "De todos los proyectos."),
             ("dismiss", "«Está bien así»: deja de avisar de esta memoria (hasta que cambie). Su id."),

@@ -25,7 +25,7 @@ Varios agentes pueden usar la misma base a la vez (subagentes, varias sesiones, 
 
 ## Por HTTP, para scripts y apps
 
-`omoi serve` sirve las mismas herramientas por HTTP en `127.0.0.1:7438` para scripts y apps que no hablan MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `GET /api/overview?months=…` (el panorama por cliente, en JSON), `POST /tools/<nombre>` con los argumentos JSON de la herramienta. Con `OMOIKANE_HTTP_TOKEN`, cada petición tiene que llevar `Authorization: Bearer <token>`.
+`omoi serve` sirve las mismas herramientas por HTTP en `127.0.0.1:7438` para scripts y apps que no hablan MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `GET /api/overview?months=…` (el panorama por cliente, en JSON), `POST /tools/<nombre>` con los argumentos JSON de la herramienta. Verificar una memoria no es una herramienta: es el botón de la vista web (`POST /api/verify`, solo desde el navegador) u `omoi verify` ([saving.es.md](saving.es.md#verificada-por-una-persona)). Con `OMOIKANE_HTTP_TOKEN`, cada petición tiene que llevar `Authorization: Bearer <token>`.
 
 La vista web y la API ven lo mismo que la CLI y el MCP desde la carpeta en la que arrancó `omoi serve`. En un proyecto de un cliente, el espacio de ese cliente (todos sus proyectos y lo del espacio) y las memorias globales; en un proyecto sin espacio, los proyectos sin espacio y las globales; en la carpeta del usuario, todo. Vale para todas las páginas (Memorias, Proyectos, Panorama, Revisar, la papelera, lo apartado de las sesiones, la búsqueda) y para lo que escribe: fijar, mover, olvidar, decidir, restaurar o redactar una memoria de fuera da error (403 en `/api/*`, 400 en `/tools/*`, como por MCP). La cabecera dice desde dónde miras («Solo ◇ Acme»), así que compartir pantalla con un cliente no enseña a los demás. `?dir=<carpeta>` elige otro proyecto para una petición, pero solo dentro de lo que el servidor ya enseña (otro proyecto del mismo espacio; desde la carpeta del usuario, cualquiera): nunca amplía la vista (403).
 
@@ -44,6 +44,7 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_NONINTERACTIVE=1` | no hay nadie delante: ni preguntas, ni descargas, ni actualizaciones, ni sincronización de fondo ([unattended.es.md](unattended.es.md)) |
 | `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | unirse a la sincronización con un código (y otra URL) sin preguntar ([unattended.es.md](unattended.es.md)) |
 | `OMOIKANE_AUTHOR` | quién firma lo que se guarda aquí |
+| `OMOIKANE_SESSION` | la sesión del agente que se guarda con cada memoria nueva (si no, `CLAUDE_CODE_SESSION_ID` o la de los hooks) |
 | `OMOIKANE_SYNC_AUTO=0` / `1` | apaga o enciende la sincronización de fondo (encendida por defecto, apagada con `OMOIKANE_NONINTERACTIVE=1`) |
 | `OMOIKANE_LANG=es` | mensajes en español |
 | `OMOIKANE_BIN` | qué `omoi` ejecuta el plugin de Claude Code |

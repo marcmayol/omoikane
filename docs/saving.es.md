@@ -122,6 +122,30 @@ En Claude Code lee también los subagentes de la sesión. De cada uno que haya t
 
 Lee la conversación de Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Cursor, Kiro, OpenCode y Grok Build (`omoi setup <agente>` añade los hooks de cierre); no la de Antigravity, que la guarda en un formato binario sin documentar. En los agentes sin recall al empezar, como Grok, lo apartado llega con la herramienta `context`.
 
+## Verificada por una persona
+
+Casi todo lo que hay en la memoria lo escriben agentes. Cuando revises una y esté bien, márcala: `omoi verify <id>` (te la enseña y pregunta) o **Verificar** en la memoria, en la vista web. Guarda quién y cuándo (`--by <nombre>`; por defecto tu nombre en la sincronización, `OMOIKANE_AUTHOR` o el usuario del sistema). El recall la marca `[decision, verified]`, y la búsqueda, `get`, `list --json`, `recent` y `context` llevan `verified: {by, at}`. Al agente se le dice que se fíe más de una verificada que de otra sin verificar que diga lo contrario. `omoi verify <id> --unverify` la quita.
+
+Un agente no puede verificar nada. No hay herramienta MCP para eso, `remember` y `update` no hacen caso de un campo `verified`, y las herramientas por HTTP (`/tools/…`) son las del MCP. `omoi verify` pregunta en una terminal y, fuera de ella, sin `--yes` se niega; dentro de la shell de un agente se niega siempre (están `CLAUDECODE`, `AI_AGENT`, `GEMINI_CLI`, `CODEX_SANDBOX`…). El botón de la web va por su propia ruta, `POST /api/verify`, que solo acepta la petición de un navegador desde la propia vista. Un agente que quiera saltárselo a propósito puede, igual que podría editar la base; lo que se busca es que nada de lo que un agente hace normalmente acabe en «verificada».
+
+Cambiar el texto quita la verificación: respondiste de ese texto, no del siguiente. `update` lo dice (`unverified` en la respuesta) para que el agente te avise. Las etiquetas, las rutas, fijarla o moverla no la tocan. La marca lleva una huella del tipo, el título y el contenido, así que un cambio hecho por una versión anterior a la 1.8.5 (que conserva la marca sin entenderla) también la deja sin verificar.
+
+Cuando toca revisar (Revisar, `omoi review`), en cada grupo salen primero las decisiones y las trampas sin verificar, y lo verificado al final.
+
+**En Kumi.** Lo que aprueba la persona queda verificado; lo que propone el aprendiz, no. `kumi.py` lo hace después de que la persona apruebe en Kumi, nunca desde dentro de la sesión del aprendiz:
+
+```python
+def aprobar(raiz, mem_id, respuesta, quien="Marc"):
+    omoi("--dir", raiz, "decisions", "--resolve", mem_id, "--answer", respuesta, "--json")
+    omoi("--dir", raiz, "verify", mem_id, "--by", quien, "--yes", "--json")
+```
+
+Igual con una regla aprobada (una `preference` o una `procedure`): `verify` en cuanto está guardada con las palabras de la persona. Si el propio `kumi.py` corre dentro de la shell de un agente, tiene que lanzar `omoi` sin esas variables, a propósito: es el camino de la persona.
+
+## De dónde salió cada memoria
+
+Cada memoria nueva guarda la sesión del agente y el commit en que se escribió: `get` enseña `escrita en session … · commit … (rama)`, `history` también, y el JSON lleva `provenance: {session, commit, branch}`. La sesión sale de `OMOIKANE_SESSION` o de `CLAUDE_CODE_SESSION_ID`, que Claude Code pone en su shell y en sus servidores MCP; si no hay, de la única sesión que los hooks apuntaron en ese proyecto en las últimas 12 horas (con dos a la vez no adivina). El commit es el HEAD del proyecto, leído de `.git` sin lanzar `git` (con worktrees y `packed-refs`). Es la de cuando se escribió: cambiarla después no la toca. Las memorias de oficio no la llevan (nada de un proyecto va a todos los clientes). Cuesta entre 0,4 y 0,5 ms por guardado.
+
 ## No guarda secretos
 
 Si un token, una clave privada o una contraseña se cuela en una memoria, se cambia por `[redacted:<tipo>]` antes de guardarla, y la respuesta se lo dice al agente. Lo que se guardó antes sale en Revisar con un botón para redactarlo, historial incluido, y nada de eso sale del equipo al sincronizar.

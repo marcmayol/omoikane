@@ -25,7 +25,7 @@ Many agents can share one database at once (subagents, several sessions, CI jobs
 
 ## Over HTTP, for scripts and apps
 
-`omoi serve` serves the same tools over HTTP on `127.0.0.1:7438` for scripts and apps that don't speak MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `GET /api/overview?months=…` (the overview by client, as JSON), `POST /tools/<name>` with the tool's JSON arguments. Set `OMOIKANE_HTTP_TOKEN` to require `Authorization: Bearer <token>`.
+`omoi serve` serves the same tools over HTTP on `127.0.0.1:7438` for scripts and apps that don't speak MCP: `GET /health`, `GET /tools`, `GET /search?q=…`, `GET /api/overview?months=…` (the overview by client, as JSON), `POST /tools/<name>` with the tool's JSON arguments. Verifying a memory is not a tool: it is the web view's button (`POST /api/verify`, only from the browser) or `omoi verify` ([saving.md](saving.md#verified-by-a-person)). Set `OMOIKANE_HTTP_TOKEN` to require `Authorization: Bearer <token>`.
 
 The web view and the API see what the CLI and the MCP see from the folder where `omoi serve` started. In a client's project, that client's space (all its projects, its own memories) and the global memories; in a project with no space, the projects with no space and the global memories; in the home folder, everything. That holds for every page (Memories, Projects, Overview, Review, the trash, what was set aside from sessions, search) and for every write: pinning, moving, forgetting, deciding, restoring or redacting a memory from outside is an error (403 from `/api/*`, 400 from `/tools/*`, as over MCP). The header says where you are looking from ("Only ◇ Acme"), so sharing your screen with one client doesn't show the others. `?dir=<folder>` picks another project for a request, but only inside what the server already shows (another project of the same space; from the home folder, any): it never widens the view (403).
 
@@ -44,6 +44,7 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_NONINTERACTIVE=1` | nobody at the keyboard: no prompts, downloads, updates or background sync ([unattended.md](unattended.md)) |
 | `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | join sync from a code (and another URL) without asking ([unattended.md](unattended.md)) |
 | `OMOIKANE_AUTHOR` | who signs what is saved here |
+| `OMOIKANE_SESSION` | the agent session saved with each new memory (otherwise `CLAUDE_CODE_SESSION_ID`, or the hooks') |
 | `OMOIKANE_SYNC_AUTO=0` / `1` | background sync off or on (on by default, off with `OMOIKANE_NONINTERACTIVE=1`) |
 | `OMOIKANE_LANG=es` | messages in Spanish |
 | `OMOIKANE_BIN` | which `omoi` the Claude Code plugin runs |

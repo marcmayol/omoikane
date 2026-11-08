@@ -23,6 +23,7 @@ pub mod modelos;
 pub mod nombres;
 pub mod obsidian;
 pub mod oficios;
+pub mod procedencia;
 pub mod proyecto;
 pub mod rapido;
 pub mod recall;
@@ -37,6 +38,7 @@ pub mod significado;
 pub mod sync;
 pub mod tui;
 pub mod vectores;
+pub mod verificado;
 pub mod veredictos;
 
 /// La carpeta temporal que se borra sola, la misma de los tests de `tests/`.

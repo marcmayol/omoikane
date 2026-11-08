@@ -76,6 +76,7 @@ main { flex: 1; min-height: 0; position: relative; }
 .kt { font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .kt.fact { color: var(--fact); } .kt.decision { color: var(--decision); } .kt.gotcha { color: var(--gotcha); } .kt.preference { color: var(--preference); } .kt.procedure { color: var(--procedure); }
 .stl { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; line-height: 16px; }
+.vf { color: var(--accent); font-weight: 700; }
 .chip { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; line-height: 20px; }
 button.chip:hover { border-color: var(--accent); }
 .sh { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 10px 8px 6px; }
@@ -355,6 +356,8 @@ const T = ES ? {
   mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
   creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
+  verificadaF: 'Verificada', porQuien: (b, f) => `por ${b} · ${f}`, noVerificada: 'No: la escribió un agente', escritaEn: 'Escrita en', verificar: 'Verificar', desverificar: 'Quitar verificación',
+  verificarT: 'Respondes de que este texto es correcto. Si alguien lo cambia, deja de estar verificada.',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
   olvidar: 'Olvidar', seguro: '¿Olvidarla para siempre?', si: 'Sí, olvidar', no: 'Cancelar', ultimoCambio: 'Último cambio', sinHist: 'Sin cambios anteriores.', cargando: 'Cargando…',
   hecho: 'Hecho', error: 'Error', sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla',
@@ -398,6 +401,8 @@ const T = ES ? {
   mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
   creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
+  verificadaF: 'Verified', porQuien: (b, f) => `by ${b} · ${f}`, noVerificada: 'No: written by an agent', escritaEn: 'Written in', verificar: 'Verify', desverificar: 'Remove verification',
+  verificarT: 'You vouch that this text is right. If anyone changes it, it is no longer verified.',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
   olvidar: 'Forget', seguro: 'Forget it for good?', si: 'Yes, forget', no: 'Cancel', ultimoCambio: 'Last change', sinHist: 'No earlier versions.', cargando: 'Loading…',
   hecho: 'Done', error: 'Error', sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing',
@@ -787,7 +792,7 @@ function filaHTML(e) {
   const m = e.m, k = claveEv(e), open = abierta === k;
   const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
   return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
-    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}</div>
+    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : ''}</div>
     <div class="r">${pastilla(ambito(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
     <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
     ${open ? detalleHTML(m, false) : ''}
@@ -833,7 +838,9 @@ function detalleHTML(m, vertical) {
         <span>${T.cambiadaF}</span><b>${esc(fecha(m.updated_at))}</b>
         <span>${T.recordadaF}</span><b>${esc(T.veces(m.recall_count))}${m.recalled_at ? ' · ' + esc(corta(m.recalled_at)) : ''}</b>
         ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
+        <span>${T.verificadaF}</span><b>${m.verified ? '✓ ' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) : esc(T.noVerificada)}</b>
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
+        ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
         <span>${T.id}</span><b class="mono">${m.id}</b>
         ${enlacesHTML(m)}
       </div>
@@ -841,6 +848,7 @@ function detalleHTML(m, vertical) {
     <div class="ultimo">${m.versions ? `<p class="vacio" style="padding:0">${T.cargando}</p>` : ''}</div>
     <div class="acts">
       <button class="btn" data-a="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
+      <button class="btn" data-a="verificar" title="${esc(T.verificarT)}">${m.verified ? T.desverificar : T.verificar}</button>
       ${m.versions ? `<button class="btn" data-a="hist">${histAbierta[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
       <select data-a="destino"><option value="">${T.mover}</option>${a ? `<option value="@global">${T.global}</option>` : ''}
         ${espacios.filter(s => PRE_ESP + s.key !== a).map(s => `<option value="${esc(PRE_ESP + s.key)}">◇ ${esc(s.name)}</option>`).join('')}
@@ -858,6 +866,11 @@ async function conectar(el, m) {
   for (const b of el.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
   for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filtro.tema = b.dataset.tag; filtro.proyecto = '*'; pagina = 1; location.hash = '#/'; pintar(); };
   q('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
+  // Verificar no es una herramienta del agente: va por su propia ruta (ver `verificado`).
+  q('verificar').onclick = () => accion(async () => {
+    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
+    if (!r.ok) throw new Error(await r.text());
+  });
   q('mover').onclick = () => {
     let p = q('destino').value;
     if (!p) return;
