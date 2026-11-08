@@ -39,6 +39,21 @@ jobs:
               "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main/$f"
           done
 
+      # Un error de sintaxis en el JavaScript de la vista web la deja muerta y
+      # cargo no lo ve: se sacan los <script> de src/web.html y node los comprueba.
+      - name: Comprobar el JavaScript de la vista web
+        run: |
+          mkdir -p "$RUNNER_TEMP/webjs"
+          node -e '
+            const fs = require("fs");
+            const h = fs.readFileSync("src/web.html", "utf8");
+            const re = /<script[^>]*>([\s\S]*?)<\/script>/g;
+            let m, i = 0;
+            while ((m = re.exec(h))) fs.writeFileSync(`${process.argv[1]}/web-${++i}.js`, m[1]);
+            if (!i) { console.error("src/web.html sin <script>"); process.exit(1); }
+          ' "$RUNNER_TEMP/webjs"
+          for f in "$RUNNER_TEMP"/webjs/web-*.js; do node --check "$f"; done
+
       - run: cargo build --release --locked --all-targets
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: cargo test --release --locked -- --nocapture

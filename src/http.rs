@@ -668,4 +668,30 @@ mod tests {
         assert_eq!(url_vista(1, Some("t"), None), "http://127.0.0.1:1/#token=t");
         assert_eq!(url_vista(1, Some("t"), Some("01ABC")), "http://127.0.0.1:1/#token=t&to=/memoria/01ABC");
     }
+
+    /// 1.8.6: un apóstrofo sin escapar en un texto entre comillas simples («It's fine as it is») daba un
+    /// SyntaxError que dejaba la vista entera sin JavaScript. Cada `<script>` de la página pasa por
+    /// `node --check`; sin node en el equipo el test se salta (en la CI hay, y además lo comprueba ella).
+    #[test]
+    fn el_javascript_de_la_vista_compila() {
+        if std::process::Command::new("node").arg("--version").output().is_err() {
+            eprintln!("sin node: no se comprueba el JavaScript de la vista");
+            return;
+        }
+        let dir = crate::comun::Temporal::nueva("webjs");
+        let mut resto = super::PAGINA;
+        let mut n = 0;
+        while let Some(i) = resto.find("<script") {
+            let tras = &resto[i..];
+            let abre = tras.find('>').expect("<script sin cerrar") + 1;
+            let cierra = tras.find("</script>").expect("falta </script>");
+            n += 1;
+            let fichero = dir.join(format!("web-{n}.js"));
+            std::fs::write(&fichero, &tras[abre..cierra]).unwrap();
+            let salida = std::process::Command::new("node").arg("--check").arg(&fichero).output().unwrap();
+            assert!(salida.status.success(), "el <script> {n} de web.html no compila:\n{}", String::from_utf8_lossy(&salida.stderr));
+            resto = &tras[cierra..];
+        }
+        assert!(n > 0, "web.html sin <script>");
+    }
 }

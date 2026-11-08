@@ -279,3 +279,44 @@ fn los_datos_van_aparte_del_texto() {
     let d = memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap();
     assert!(!d[&r.memoria.id]["token"].as_str().unwrap().contains("abcdefghijklmnop"));
 }
+
+/// 1.8.6: la misma clave en dos bases; al importar una en la otra, la que pierde queda sustituida por la
+/// que manda. Si la persona dice «está bien así» (`compatible`), importar otra vez no vuelve a ponerla
+/// sustituida: antes solo se saltaba la pareja si su veredicto vigente era `superseded`.
+#[test]
+fn importar_otra_vez_respeta_esta_bien_asi() {
+    let dir = comun::Temporal::nueva("clave-descartada");
+    let omoi = |base: &str, args: &[&str]| -> String {
+        let o = Command::new(env!("CARGO_BIN_EXE_omoi"))
+            .args(args)
+            .current_dir(&*dir)
+            .env("OMOIKANE_DB", dir.join(base))
+            .env("OMOIKANE_MODELS", dir.join("models"))
+            .env("OMOIKANE_HOME", dir.join("home-omoikane"))
+            .env("OMOIKANE_AUTO_UPDATE", "0")
+            .env("OMOIKANE_SYNC_AUTO", "0")
+            .env("OMOIKANE_BACKUPS", "0")
+            .env_remove("OMOIKANE_LANG")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "omoi {args:?}: {}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let id_de = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap()["id"].as_str().unwrap().to_string();
+    let vieja = id_de(omoi("a.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test"]));
+    let nueva = id_de(omoi("b.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test, despliegue"]));
+    let export = dir.join("a.jsonl");
+    std::fs::write(&export, omoi("a.db", &["export", "--all"])).unwrap();
+    let export = export.to_str().unwrap();
+    let sustituida = || {
+        let rev: serde_json::Value = serde_json::from_str(&omoi("b.db", &["--json", "review"])).unwrap();
+        rev.as_array().unwrap().iter().any(|a| a["kind"] == "superseded" && a["memory_id"] == vieja.as_str())
+    };
+    omoi("b.db", &["import", export]);
+    assert!(sustituida(), "la que pierde queda sustituida al importar");
+    omoi("b.db", &["review", "--dismiss", &vieja, "--kind", "superseded", "--other", &nueva]);
+    assert!(!sustituida());
+    omoi("b.db", &["import", export]);
+    assert!(!sustituida(), "importar otra vez no vuelve a ponerla sustituida");
+}

@@ -2734,6 +2734,10 @@ pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, id: u32, cla
         bail!(clave_ajena());
     }
     guardar_config(db, &r, config, &cifra)?;
+    // El general de otra persona: lo que se hubiera apuntado de él antes (unido sin la marca) se olvida.
+    if config.another_person && r.espacio.is_none() {
+        crate::verificado::olvidar_las_del_general(db)?;
+    }
     tras_cambiar_claves(db, &r);
     Ok(())
 }
@@ -3208,7 +3212,16 @@ impl Cerrojo {
     }
 
     pub fn tomar(ruta_db: &Path) -> Option<Cerrojo> {
-        let p = rutas(ruta_db).cerrojo;
+        Cerrojo::tomar_en(rutas(ruta_db).cerrojo)
+    }
+
+    /// Si hay alguien con el cerrojo de `p` (y no está abandonado).
+    pub fn ocupado(p: &Path) -> bool {
+        p.exists() && !Cerrojo::abandonado(p)
+    }
+
+    /// Como `tomar`, con otro fichero de bloqueo (el del cálculo de las duplicadas de oficio).
+    pub fn tomar_en(p: PathBuf) -> Option<Cerrojo> {
         let ficha = ulid::Ulid::generate().to_string();
         for _ in 0..2 {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {

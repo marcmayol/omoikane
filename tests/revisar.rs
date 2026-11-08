@@ -223,3 +223,73 @@ fn las_cifras_rapidas_cuadran_con_la_revision() {
         assert!(rapidas.len() >= 5 && rapidas.contains_key(revisar::ESTADO_VIEJO), "{rapidas:?}");
     }
 }
+
+/// Texto inventado y estable para `n` memorias distintas: palabras de tres sílabas sacadas con un
+/// generador lineal (sin azar: el test da siempre lo mismo).
+fn texto_inventado(semilla: u64, palabras: usize) -> String {
+    const SILABAS: [&str; 16] = ["ka", "lo", "mi", "ra", "te", "su", "po", "ne", "di", "fa", "gu", "be", "zo", "chi", "ve", "tra"];
+    let mut x = semilla.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut v = Vec::with_capacity(palabras);
+    for _ in 0..palabras {
+        let mut p = String::new();
+        for _ in 0..3 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            p.push_str(SILABAS[(x >> 33) as usize % SILABAS.len()]);
+        }
+        v.push(p);
+    }
+    v.join(" ")
+}
+
+fn duplicadas_oficio(db: &Connection) -> Vec<(String, String)> {
+    revisar::avisos(db, &Ambito::Todos).unwrap().into_iter().filter(|a| a.kind == revisar::DUPLICADA_OFICIO).map(|a| (a.memory_id, a.other_id)).collect()
+}
+
+/// 1.8.6: sin modelo (sin vectores) las duplicadas de oficio se comparan por palabras, con el IDF de
+/// toda la base. Antes se calculaba en el ámbito global, donde las de oficio no se ven: con solo memorias
+/// de oficio el IDF salía negativo y nunca se encontraba ninguna. Y nadie que atienda una petición las
+/// calcula (el arranque de la sesión, `pendientes`, `context`, `review`, la web): leen lo que dejó el
+/// proceso de fondo (`duplicadas_de_oficio`).
+#[test]
+fn duplicadas_de_oficio_sin_modelo() {
+    let (_dir, mut db) = base("oficio-sin-modelo");
+    let vieja = guardar(&mut db, "", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.", &["trade:android"]);
+    for i in 0..6 {
+        guardar(&mut db, "", &texto_inventado(i, 4), &texto_inventado(100 + i, 30), &["trade:android"]);
+    }
+    let nueva = guardar(&mut db, "", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado: usa adb emu kill.", &["trade:android"]);
+    // De otro oficio, lo mismo: no es pareja de ninguna.
+    guardar(&mut db, "", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.", &["trade:web"]);
+    // Antes del proceso de fondo, nada: leer no calcula.
+    assert!(duplicadas_oficio(&db).is_empty());
+    assert_eq!(revisar::pendientes(&db, &Ambito::Todos).unwrap().get(revisar::DUPLICADA_OFICIO), None);
+    // El proceso de fondo: la encuentra sin vectores.
+    let pares = revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap();
+    assert_eq!(pares.iter().map(|p| (p.0.clone(), p.1.clone())).collect::<Vec<_>>(), vec![(nueva.clone(), vieja.clone())]);
+    // Y desde entonces la leen la revisión y el arranque.
+    assert_eq!(duplicadas_oficio(&db), vec![(vieja.clone(), nueva.clone())]);
+    assert_eq!(revisar::pendientes(&db, &Ambito::Todos).unwrap().get(revisar::DUPLICADA_OFICIO), Some(&1));
+    // «Está bien así»: deja de salir aunque lo guardado no cambie.
+    revisar::descartar(&db, &vieja, revisar::DUPLICADA_OFICIO, &nueva).unwrap();
+    assert!(duplicadas_oficio(&db).is_empty());
+}
+
+/// 1.8.6: con 300 memorias de oficio sin modelo, el cálculo (lo del proceso de fondo) contaba las mismas
+/// palabras en el índice una vez por pareja (42 memorias: 16,6 s). Ahora cada memoria cuenta sus
+/// palabras una vez; y el arranque de la sesión no calcula nada.
+#[test]
+fn duplicadas_de_oficio_con_300_sin_modelo_va_rapido() {
+    let (_dir, mut db) = base("oficio-300");
+    for i in 0..300 {
+        guardar(&mut db, "", &texto_inventado(i, 4), &texto_inventado(1000 + i, 40), &["trade:android"]);
+    }
+    let t = std::time::Instant::now();
+    let pares = revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap();
+    let calculo = t.elapsed();
+    assert!(pares.is_empty(), "{pares:?}");
+    // Holgado para una CI lenta en debug; en release, en local, unas decenas de ms (ver el CHANGELOG).
+    assert!(calculo < std::time::Duration::from_secs(20), "{calculo:?}");
+    let t = std::time::Instant::now();
+    revisar::pendientes(&db, &Ambito::Todos).unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+}

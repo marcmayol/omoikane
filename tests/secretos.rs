@@ -542,3 +542,25 @@ fn linkedin_rcm_no_es_secreto() {
         vec!["token"]
     );
 }
+
+/// 1.8.6: los 2 bytes de antes de «password» se miraban como `&str` (`--password`) y hacían panic si
+/// caían en mitad de un carácter de varios bytes. Por `remember`, y por `review --all` sobre lo que se
+/// guardó sin redactar.
+#[test]
+fn contrasenas_tras_caracteres_de_varios_bytes() {
+    for t in ["—password x1", "x…password: abc", "“password: x1”", "éé--password Xy7#k2"] {
+        let _ = hallazgos(t);
+    }
+    assert_eq!(redactar("“password: Xy7#k2”").0, "“password: [redacted:password]”");
+    assert_eq!(redactar("éé --password Xy7#k2").0, "éé --password [redacted:password]");
+
+    let e = Entorno::nuevo("multibyte");
+    for (i, t) in ["—password x1", "x…password: abc", "“password: x1”"].iter().enumerate() {
+        let o = e.omoi(&["--json", "remember", "-k", "fact", "-t", &format!("Texto {i}"), "--force", t], None, &[]);
+        let id = serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"].as_str().unwrap().to_string();
+        assert!(!e.contenido(&id).is_empty());
+        e.omoi(&["--json", "remember", "-k", "fact", "-t", &format!("Sin redactar {i}"), "--force", t], None, &[("OMOIKANE_REDACT", "0")]);
+    }
+    e.omoi(&["review", "--all"], None, &[]);
+    e.omoi(&["--json", "review", "--all"], None, &[]);
+}

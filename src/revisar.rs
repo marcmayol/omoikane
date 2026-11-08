@@ -274,6 +274,8 @@ pub fn al_dia_de(db: &Connection, antes: &Antes, ids: &[String]) -> Result<()> {
         [],
     )?;
     tx.commit()?;
+    // Si tocó una memoria de oficio, sus duplicadas se recalculan aparte (si falla, lo hará el diario).
+    let _ = duplicadas_al_escribir(db);
     Ok(())
 }
 
@@ -313,6 +315,9 @@ fn rehacer(db: &Connection, h: &str) -> Result<()> {
     tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_PARCIALES}', '0')"), [])?;
     tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [h])?;
     tx.commit()?;
+    // La base cambió (una sincronización, una importación, algo que escribió sin avisar): si cambió alguna
+    // de oficio, sus duplicadas se recalculan aparte.
+    let _ = duplicadas_al_escribir(db);
     Ok(())
 }
 
@@ -822,7 +827,9 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
             r.push(a);
         }
     }
-    for (nueva, vieja, detalle) in duplicadas_de_oficio(db, ambito)? {
+    // Comparar las de oficio entre sí lleva su tiempo: aquí solo se lee lo que calculó el proceso de
+    // fondo (ver `duplicadas_de_oficio_guardadas`).
+    for (nueva, vieja, detalle) in duplicadas_de_oficio_guardadas(db, ambito)? {
         if let (Some(n), Some(v)) = (por_id.get(nueva.as_str()), por_id.get(vieja.as_str())) {
             // Como una desfasada: la vieja, y la otra es la nueva (la vista web junta la vieja en la nueva).
             r.push(aviso(v, DUPLICADA_OFICIO, Some(n), detalle));
@@ -896,38 +903,232 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
     Ok(r)
 }
 
-/// Las memorias de un mismo oficio que dicen lo mismo, de las que se ven desde `ambito`: (la más nueva,
-/// la más vieja, detalle). Con la regla de los duplicados de `remember` (`vectores::duplicadas_entre`)
-/// entre las de cada oficio, salvo las parejas que ya tienen un veredicto (sustituida, se contradicen,
-/// o «está bien así», que es `compatible`). Las de oficio son pocas: se mira al leer.
-pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<(String, String, String)>> {
+/// Lo último calculado de las duplicadas de oficio: `huella_oficio` \t JSON de [`Calculadas`]. Local.
+const CLAVE_DUPLICADAS_OFICIO: &str = "revision_duplicadas_oficio";
+/// La huella para la que ya se lanzó el cálculo en segundo plano y cuándo (`huella \t segundos`).
+const CLAVE_DUPLICADAS_LANZADO: &str = "revision_duplicadas_oficio_lanzado";
+/// Segundos entre dos lanzamientos del cálculo, aunque la huella cambie (una ráfaga de escrituras).
+const ENTRE_LANZAMIENTOS: u64 = 10;
+
+/// Una pareja de duplicadas de oficio: (la más nueva, la más vieja, detalle).
+type Pareja = (String, String, String);
+
+/// Lo que guarda el cálculo de las duplicadas de oficio.
+#[derive(Default, Serialize, serde::Deserialize)]
+struct Calculadas {
+    /// El modelo de los vectores con el que se calculó: con otro, todo de nuevo.
+    modelo: String,
+    /// Cómo estaba cada memoria de oficio (`updated_at|tiene vector`): la siguiente vez solo se
+    /// comparan las que cambiaron.
+    memorias: BTreeMap<String, String>,
+    parejas: Vec<Calculada>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+struct Calculada {
+    nueva: String,
+    vieja: String,
+    detalle: String,
+    /// El `updated_at` de cada una cuando se calculó: si ya no es el de ahora, la pareja no se enseña.
+    cambio_nueva: String,
+    cambio_vieja: String,
+}
+
+/// Las memorias de oficio y cómo está cada una (`updated_at|tiene vector`), ordenadas por id.
+const SQL_OFICIO: &str = "SELECT m.id, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
+     WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 ORDER BY m.id";
+
+fn modelo_de_vectores(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?.unwrap_or_default())
+}
+
+/// Lo que cambia el resultado de las duplicadas de oficio: cada memoria de oficio (id, último cambio y
+/// si tiene vector) y el modelo de los vectores. Lo que cambie en las demás solo mueve un poco el IDF,
+/// y eso espera a que cambie una de oficio. Una consulta sobre columnas pequeñas de las globales.
+fn huella_oficio(db: &Connection) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut q = db.prepare(SQL_OFICIO)?;
+    let mut filas = q.query([])?;
+    while let Some(f) = filas.next()? {
+        h.update(format!("{}|{}\n", f.get::<_, String>(0)?, f.get::<_, String>(1)?));
+    }
+    h.update(modelo_de_vectores(db)?);
+    Ok(h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect())
+}
+
+/// Lo guardado: (huella, lo calculado). Vacío si no hay nada o no se entiende.
+fn leer_calculadas(db: &Connection) -> Result<(String, Calculadas)> {
+    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DUPLICADAS_OFICIO], |f| f.get(0)).optional()?;
+    Ok(match guardado.as_deref().and_then(|v| v.split_once('\t')) {
+        Some((h, json)) => match serde_json::from_str::<Calculadas>(json) {
+            Ok(c) => (h.to_string(), c),
+            Err(_) => (String::new(), Calculadas::default()),
+        },
+        None => (String::new(), Calculadas::default()),
+    })
+}
+
+/// La huella de lo guardado (vacía si no hay nada), sin leer las parejas.
+fn huella_duplicadas_guardadas(db: &Connection) -> Result<String> {
+    let h: Option<String> =
+        db.query_row("SELECT substr(v, 1, instr(v, char(9)) - 1) FROM meta WHERE k = ?1 AND instr(v, char(9)) > 0", [CLAVE_DUPLICADAS_OFICIO], |f| f.get(0)).optional()?;
+    Ok(h.unwrap_or_default())
+}
+
+/// Calcula las duplicadas de oficio y las deja en `meta` (local): lo que hace el proceso de fondo
+/// (`omoi review --refresh-trade-duplicates` tras una escritura, y el diario de `--refresh-drift`).
+/// Incremental: solo se comparan las memorias que cambiaron desde el último cálculo (o nuevas) con las
+/// de sus oficios; las parejas entre las que no cambiaron se quedan como estaban. Con otro modelo de
+/// vectores, todo de nuevo. Devuelve las parejas que se ven desde `ambito`, como
+/// [`duplicadas_de_oficio_guardadas`]. Nadie que atienda una petición lo llama.
+pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
+    let huella = huella_oficio(db)?;
+    let modelo = modelo_de_vectores(db)?;
+    let (_, antes) = leer_calculadas(db)?;
+    let antes = if antes.modelo == modelo { antes } else { Calculadas::default() };
     let mut q = db.prepare(&format!(
-        "SELECT {} FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 AND {} ORDER BY m.id",
-        crate::memoria::COLUMNAS,
-        ambito.sql()
+        "SELECT {}, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
+         WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 ORDER BY m.id",
+        crate::memoria::COLUMNAS
     ))?;
-    let todas: Vec<Memoria> = q.query_map([], crate::memoria::de_fila)?.collect::<rusqlite::Result<_>>()?;
-    let mut por_oficio: BTreeMap<String, Vec<&Memoria>> = BTreeMap::new();
-    for m in &todas {
+    let columnas = q.column_count();
+    let filas: Vec<(Memoria, String)> = q.query_map([], |f| Ok((crate::memoria::de_fila(f)?, f.get(columnas - 1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let todas: Vec<Memoria> = filas.iter().map(|(m, _)| m.clone()).collect();
+    let memorias: BTreeMap<String, String> = filas.into_iter().map(|(m, e)| (m.id, e)).collect();
+    // Las que cambiaron desde el último cálculo (o no estaban).
+    let cambiadas: HashSet<usize> = todas.iter().enumerate().filter(|(_, m)| antes.memorias.get(&m.id) != memorias.get(&m.id)).map(|(i, _)| i).collect();
+    let sin_cambios = |id: &str| memorias.get(id).is_some_and(|e| antes.memorias.get(id) == Some(e));
+    // Lo de antes entre dos que no cambiaron sigue valiendo.
+    let mut parejas: Vec<Calculada> = antes.parejas.into_iter().filter(|p| sin_cambios(&p.nueva) && sin_cambios(&p.vieja)).collect();
+    let mut por_oficio: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, m) in todas.iter().enumerate() {
         for o in crate::oficios::de_etiquetas(&m.tags) {
-            por_oficio.entry(o).or_default().push(m);
+            por_oficio.entry(o).or_default().push(i);
         }
     }
-    let juzgadas = crate::veredictos::parejas(db)?;
-    let mut vistas: BTreeSet<(String, String)> = BTreeSet::new();
-    let mut r = Vec::new();
-    for (oficio, ms) in &por_oficio {
-        for (i, j, sim) in crate::vectores::duplicadas_entre(db, ms)? {
-            let (a, b) = (ms[i], ms[j]);
-            let pareja = crate::veredictos::pareja(&a.id, &b.id);
-            if juzgadas.contains_key(&pareja) || !vistas.insert(pareja) {
-                continue;
-            }
+    let refs: Vec<&Memoria> = todas.iter().collect();
+    let oficios: Vec<&String> = por_oficio.keys().collect();
+    let grupos: Vec<Vec<usize>> = por_oficio.values().cloned().collect();
+    if !cambiadas.is_empty() {
+        for (i, j, sim) in crate::vectores::duplicadas_entre(db, &refs, &grupos, Some(&cambiadas))? {
+            let (a, b) = (&todas[i], &todas[j]);
+            // El primer oficio que comparten, para el detalle.
+            let oficio = grupos.iter().position(|g| g.contains(&i) && g.contains(&j)).map(|k| oficios[k].as_str()).unwrap_or_default();
             let (nueva, vieja) = if (a.created_at.as_str(), a.id.as_str()) >= (b.created_at.as_str(), b.id.as_str()) { (a, b) } else { (b, a) };
-            r.push((nueva.id.clone(), vieja.id.clone(), format!("says the same as the other one (trade:{oficio}, similarity {sim:.2}): merge them")));
+            parejas.push(Calculada {
+                nueva: nueva.id.clone(),
+                vieja: vieja.id.clone(),
+                detalle: format!("says the same as the other one (trade:{oficio}, similarity {sim:.2}): merge them"),
+                cambio_nueva: nueva.updated_at.clone(),
+                cambio_vieja: vieja.updated_at.clone(),
+            });
         }
     }
-    Ok(r)
+    parejas.sort_by(|a, b| (&a.vieja, &a.nueva).cmp(&(&b.vieja, &b.nueva)));
+    let c = Calculadas { modelo, memorias, parejas };
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_DUPLICADAS_OFICIO, &format!("{huella}\t{}", serde_json::to_string(&c)?)])?;
+    filtrar_duplicadas(db, ambito, c.parejas)
+}
+
+/// Lo mismo, de lo guardado y sin calcular nada nunca, ni la primera vez: es lo que leen el arranque de
+/// la sesión (`pendientes`), `context`, `omoi review` y la vista web. Si las de oficio cambiaron desde el
+/// último cálculo (o no lo hay), lanza el cálculo en segundo plano (sale en la siguiente). Lo guardado
+/// puede ir por detrás: una pareja solo sale si sus dos memorias siguen vivas, de oficio, visibles
+/// desde `ambito`, sin veredicto y sin cambios desde que se calculó.
+pub fn duplicadas_de_oficio_guardadas(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
+    let (huella_guardada, c) = leer_calculadas(db)?;
+    recalcular_si_cambio(db, &huella_guardada)?;
+    filtrar_duplicadas(db, ambito, c.parejas)
+}
+
+/// Tras una escritura que puede tocar memorias de oficio (`remember`, `update`, `forget`, una
+/// sincronización, una importación): si cambiaron desde el último cálculo, lo lanza en segundo plano.
+/// Nunca lo espera.
+pub fn duplicadas_al_escribir(db: &Connection) -> Result<()> {
+    recalcular_si_cambio(db, &huella_duplicadas_guardadas(db)?)
+}
+
+fn recalcular_si_cambio(db: &Connection, huella_guardada: &str) -> Result<()> {
+    let huella = huella_oficio(db)?;
+    if huella != huella_guardada {
+        recalcular_aparte(db, &huella)?;
+    }
+    Ok(())
+}
+
+/// El fichero de bloqueo del cálculo de las duplicadas de oficio, junto a la base.
+fn cerrojo_duplicadas(ruta_db: &std::path::Path) -> std::path::PathBuf {
+    ruta_db.with_extension("trade-duplicates.lock")
+}
+
+/// Lanza `omoi review --refresh-trade-duplicates` aparte (un proceso suelto que nadie espera; no hay
+/// demonio): no si ya hay uno en marcha (tiene el bloqueo, y repite mientras las de oficio sigan
+/// cambiando), ni si ya se lanzó para esta `huella` o hace menos de `ENTRE_LANZAMIENTOS` (si aun así se
+/// queda atrás, la siguiente lectura o escritura lo vuelve a lanzar). Solo si quien corre es `omoi`
+/// (como `deriva`: desde un test el ejecutable es el de las pruebas).
+fn recalcular_aparte(db: &Connection, huella: &str) -> Result<()> {
+    let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else { return Ok(()) };
+    let es_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
+    if !es_omoi || crate::sync::Cerrojo::ocupado(&cerrojo_duplicadas(&ruta)) {
+        return Ok(());
+    }
+    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let lanzado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DUPLICADAS_LANZADO], |f| f.get(0)).optional()?;
+    if let Some((h, cuando)) = lanzado.as_deref().and_then(|v| v.split_once('\t'))
+        && (h == huella || cuando.parse::<u64>().is_ok_and(|t| ahora.saturating_sub(t) < ENTRE_LANZAMIENTOS))
+    {
+        return Ok(());
+    }
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_DUPLICADAS_LANZADO, &format!("{huella}\t{ahora}")])?;
+    crate::sync::lanzar(&["review", "--refresh-trade-duplicates"], Some(&ruta));
+    Ok(())
+}
+
+/// Calcula las duplicadas de oficio y las deja en `meta`: el proceso de fondo. Con el bloqueo, para que
+/// no haya dos a la vez (si ya hay uno, no hace nada: `None`), y otra vez si las de oficio cambiaron
+/// mientras (una ráfaga de `remember`), hasta 5 veces. Cuántas parejas.
+pub fn refrescar_duplicadas_de_oficio(db: &Connection) -> Result<Option<usize>> {
+    let _cerrojo = match db.path().filter(|p| !p.is_empty()) {
+        Some(ruta) => match crate::sync::Cerrojo::tomar_en(cerrojo_duplicadas(std::path::Path::new(ruta))) {
+            Some(c) => Some(c),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    let mut n = 0;
+    for _ in 0..5 {
+        n = duplicadas_de_oficio(db, &Ambito::Todos)?.len();
+        if huella_duplicadas_guardadas(db)? == huella_oficio(db)? {
+            break;
+        }
+    }
+    Ok(Some(n))
+}
+
+/// De las parejas calculadas, las que valen ahora: las dos memorias vivas, aún de oficio, visibles desde
+/// `ambito` y sin cambios desde el cálculo (su `updated_at`), y la pareja sin veredicto.
+fn filtrar_duplicadas(db: &Connection, ambito: &Ambito, parejas: Vec<Calculada>) -> Result<Vec<Pareja>> {
+    if parejas.is_empty() {
+        return Ok(Vec::new());
+    }
+    let visibles: HashMap<String, String> = {
+        let mut q = db.prepare(&format!(
+            "SELECT m.id, m.updated_at FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 AND {}",
+            ambito.sql()
+        ))?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let juzgadas = crate::veredictos::parejas(db)?;
+    Ok(parejas
+        .into_iter()
+        .filter(|p| {
+            visibles.get(&p.nueva) == Some(&p.cambio_nueva)
+                && visibles.get(&p.vieja) == Some(&p.cambio_vieja)
+                && !juzgadas.contains_key(&crate::veredictos::pareja(&p.nueva, &p.vieja))
+        })
+        .map(|p| (p.nueva, p.vieja, p.detalle))
+        .collect())
 }
 
 /// Los tipos de lo que parece un secreto en el título y el contenido de una memoria, uno por hallazgo.
@@ -1163,7 +1364,7 @@ pub fn pendientes(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static 
     al_dia(db)?;
     let huella: String = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?.unwrap_or_default();
     let (n, sello): (i64, String) = db.query_row("SELECT count(*), COALESCE(max(hlc), '') FROM verdict", [], |f| Ok((f.get(0)?, f.get(1)?)))?;
-    let clave = format!("{}|{huella}|{n}|{sello}|{}", hoy(db)?, ambito.sql());
+    let clave = format!("{}|{huella}|{n}|{sello}|{}|{}", hoy(db)?, ambito.sql(), huella_duplicadas_guardadas(db)?);
     let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_CIFRAS], |f| f.get(0)).optional()?;
     if let Some((k, json)) = guardado.as_deref().and_then(|v| v.split_once('\t'))
         && k == clave
@@ -1231,7 +1432,8 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
             sumar(if v.relation == SUSTITUIDA { SUSTITUIDA } else { CONTRADICE });
         }
     }
-    for (nueva, vieja, _) in duplicadas_de_oficio(db, ambito)? {
+    // Al empezar la sesión no se comparan las de oficio: lo que calculó el proceso de fondo.
+    for (nueva, vieja, _) in duplicadas_de_oficio_guardadas(db, ambito)? {
         if en_ambito.contains(nueva.as_str()) && en_ambito.contains(vieja.as_str()) {
             sumar(DUPLICADA_OFICIO);
         }

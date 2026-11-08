@@ -16,7 +16,7 @@ use crate::memoria::{self, Ambito, Memoria};
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// Palabras útiles mínimas en el mensaje. «como ha ido todo?» no debe traer nada.
 pub const TERMINOS_MIN: usize = 3;
@@ -196,7 +196,9 @@ pub fn utiles(texto: &str) -> Vec<String> {
 /// memoria más larga conviene partirla.
 pub const LARGO_PARA_RECALL: usize = 6000;
 
-fn fichas(m: &Memoria) -> BTreeSet<String> {
+/// Las palabras de una memoria (título, el principio del contenido, etiquetas y rutas), en
+/// minúsculas y sin tildes: con las que se mira si una palabra está ([`esta`]).
+pub(crate) fn fichas(m: &Memoria) -> BTreeSet<String> {
     let largo = std::env::var("OMOIKANE_CALIBRAR_LARGO").ok().and_then(|v| v.parse().ok()).unwrap_or(LARGO_PARA_RECALL);
     let contenido: String = m.content.chars().take(largo).collect();
     let texto = format!("{} {} {} {}", m.title, contenido, m.tags.join(" "), m.paths.join(" "));
@@ -204,44 +206,105 @@ fn fichas(m: &Memoria) -> BTreeSet<String> {
 }
 
 fn esta(t: &str, fichas: &BTreeSet<String>) -> bool {
-    if t.chars().count() >= PREFIJO_MIN { fichas.iter().any(|p| p.starts_with(t)) } else { fichas.contains(t) }
+    // Las que empiezan por `t` van seguidas en el orden del conjunto, desde la primera que no es menor
+    // que `t`: basta mirar esa (antes se recorrían todas, y la revisión lo hace miles de veces).
+    if t.chars().count() >= PREFIJO_MIN { fichas.range::<str, _>((std::ops::Bound::Included(t), std::ops::Bound::Unbounded)).next().is_some_and(|p| p.starts_with(t)) } else { fichas.contains(t) }
 }
 
 /// Memorias del ámbito (el proyecto, su espacio y las globales; todas desde una carpeta general) y en
 /// cuántas aparece cada término.
 fn frecuencias(db: &Connection, project: &str, terminos: &[String]) -> Result<(f64, Vec<f64>)> {
-    let ambito = Ambito::de(db, project)?;
-    let n = memoria::cuantas(db, &ambito)?;
-    let mut q = if memoria::ve_todas(db, &ambito) {
-        db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
-    } else {
-        db.prepare(&format!(
-            "SELECT count(*) FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
-             WHERE memory_fts MATCH ?1 AND {}",
-            memoria::por_ambito(db),
-            ambito.sql()
-        ))?
-    };
-    let mut df = Vec::with_capacity(terminos.len());
-    for t in terminos {
-        let consulta = if t.chars().count() >= PREFIJO_MIN { format!("\"{t}\"*") } else { format!("\"{t}\"") };
-        df.push(q.query_row(params![consulta], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64);
+    Frecuencias::nuevas(db, &Ambito::de(db, project)?)?.de(terminos)
+}
+
+/// En cuántas memorias de un ámbito sale cada palabra, recordando las ya contadas: para quien mide
+/// muchos textos en el mismo ámbito (la revisión de duplicadas de oficio, que antes contaba las
+/// mismas palabras una vez por pareja).
+pub(crate) struct Frecuencias<'a> {
+    q: rusqlite::Statement<'a>,
+    /// Cuántas memorias hay en el ámbito.
+    pub n: f64,
+    contadas: HashMap<String, f64>,
+}
+
+impl<'a> Frecuencias<'a> {
+    pub fn nuevas(db: &'a Connection, ambito: &Ambito) -> Result<Frecuencias<'a>> {
+        let n = memoria::cuantas(db, ambito)? as f64;
+        let q = if memoria::ve_todas(db, ambito) {
+            db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
+        } else {
+            db.prepare(&format!(
+                "SELECT count(*) FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
+                 WHERE memory_fts MATCH ?1 AND {}",
+                memoria::por_ambito(db),
+                ambito.sql()
+            ))?
+        };
+        Ok(Frecuencias { q, n, contadas: HashMap::new() })
     }
-    Ok((n as f64, df))
+
+    /// `(n, df)` de `terminos`, como `frecuencias`.
+    pub fn de(&mut self, terminos: &[String]) -> Result<(f64, Vec<f64>)> {
+        let mut df = Vec::with_capacity(terminos.len());
+        for t in terminos {
+            if let Some(d) = self.contadas.get(t) {
+                df.push(*d);
+                continue;
+            }
+            let consulta = if t.chars().count() >= PREFIJO_MIN { format!("\"{t}\"*") } else { format!("\"{t}\"") };
+            let d = self.q.query_row(params![consulta], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
+            self.contadas.insert(t.clone(), d);
+            df.push(d);
+        }
+        Ok((self.n, df))
+    }
+}
+
+/// Los pesos (IDF) de las palabras de un texto, para medir cuánto de él cubren otras memorias sin
+/// volver a contarlas: [`Pesos::cobertura`].
+pub(crate) struct Pesos {
+    terminos: Vec<String>,
+    idf: Vec<f64>,
+    total: f64,
+}
+
+impl Pesos {
+    pub fn de(texto: &str, frecuencias: &mut Frecuencias) -> Result<Pesos> {
+        let terminos = utiles(texto);
+        let (n, df) = frecuencias.de(&terminos)?;
+        let idf: Vec<f64> = df.iter().map(|d| idf(n, *d)).collect();
+        let total = idf.iter().sum();
+        Ok(Pesos { terminos, idf, total })
+    }
+
+    /// Lo mismo que `cobertura` para una memoria de la que ya se tienen las `fichas`.
+    pub fn cobertura(&self, fichas: &BTreeSet<String>) -> f64 {
+        let dentro: f64 = self.terminos.iter().zip(&self.idf).filter(|(t, _)| esta(t, fichas)).map(|(_, i)| i).sum();
+        if self.total > 0.0 { dentro / self.total } else { 0.0 }
+    }
+}
+
+/// El IDF de Lucene de una palabra que sale en `df` de `n` memorias (ver `relevantes_con`).
+fn idf(n: f64, df: f64) -> f64 {
+    (1.0 + (n - df.max(1.0) + 0.5) / (df.max(1.0) + 0.5)).ln()
 }
 
 /// Qué parte del peso IDF de las palabras de `texto` está en cada memoria (IDF del ámbito, como en
 /// `relevantes`). La usa también el aviso de duplicados.
 pub fn cobertura<'a>(db: &Connection, project: &str, texto: &str, memorias: impl Iterator<Item = &'a Memoria>) -> Result<Vec<f64>> {
-    let terminos = utiles(texto);
-    let frecuencias = frecuencias(db, project, &terminos)?;
-    Ok(cobertura_con(&terminos, &frecuencias, memorias))
+    cobertura_en(db, &Ambito::de(db, project)?, texto, memorias)
+}
+
+/// `cobertura` con el IDF de un ámbito ya resuelto. Para las de oficio, `Ambito::Todos`: desde lo
+/// global no se ven (con su ámbito, el IDF de una base con solo memorias de oficio salía negativo).
+pub fn cobertura_en<'a>(db: &Connection, ambito: &Ambito, texto: &str, memorias: impl Iterator<Item = &'a Memoria>) -> Result<Vec<f64>> {
+    let pesos = Pesos::de(texto, &mut Frecuencias::nuevas(db, ambito)?)?;
+    Ok(memorias.map(|m| pesos.cobertura(&fichas(m))).collect())
 }
 
 /// `cobertura` con las frecuencias de `terminos` (las de `utiles(texto)`) ya calculadas.
 fn cobertura_con<'a>(terminos: &[String], (n, df): &(f64, Vec<f64>), memorias: impl Iterator<Item = &'a Memoria>) -> Vec<f64> {
-    let n = *n;
-    let idf: Vec<f64> = df.iter().map(|d| (1.0 + (n - d.max(1.0) + 0.5) / (d.max(1.0) + 0.5)).ln()).collect();
+    let idf: Vec<f64> = df.iter().map(|d| idf(*n, *d)).collect();
     let total: f64 = idf.iter().sum();
     memorias
         .map(|m| {

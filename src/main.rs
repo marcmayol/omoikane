@@ -426,9 +426,12 @@ enum Orden {
         /// With --dismiss on an outdated warning: the id of the newer memory.
         #[arg(long, requires = "dismiss")]
         other: Option<String>,
-        /// Recompute in the background which memories' files changed a lot (Omoikane launches it itself).
+        /// Recompute in the background which memories' files changed a lot, and which trade memories say the same (Omoikane launches it itself).
         #[arg(long, hide = true)]
         refresh_drift: bool,
+        /// Recompute in the background which trade memories say the same (Omoikane launches it itself).
+        #[arg(long, hide = true)]
+        refresh_trade_duplicates: bool,
     },
     /// A faithful copy: every memory with its history, forget marks, verdicts and the trash, one JSON line each (`omoi import` restores it exactly).
     #[command(group(clap::ArgGroup::new("espejo").args(["obsidian", "okf"])))]
@@ -759,6 +762,12 @@ enum AccionSync {
         /// Only this space's repository.
         #[arg(long, value_name = "NAME")]
         space: Option<String>,
+    },
+    /// Forget the verification keys noted from earlier general repositories. For a computer that joined a teammate's general repository with 1.8.5 (without --another-person noted): their verifications kept counting as yours. Yours signed only with a forgotten key stop counting here until you verify them again.
+    ForgetSealKeys {
+        /// Don't ask.
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
@@ -1579,10 +1588,16 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::FileHistory(h) => historia_ficheros_cli(c, h),
         Orden::Docs { accion } => docs_cli(c, accion.unwrap_or(AccionDocs::List)),
-        Orden::Review { all, dismiss, kind, other, refresh_drift } => {
+        Orden::Review { all, dismiss, kind, other, refresh_drift, refresh_trade_duplicates } => {
             let db = abrir(c)?;
             if refresh_drift {
+                // El proceso de fondo diario: la deriva y las duplicadas de oficio.
                 omoikane::deriva::refrescar(&db)?;
+                omoikane::revisar::refrescar_duplicadas_de_oficio(&db)?;
+                return Ok(());
+            }
+            if refresh_trade_duplicates {
+                omoikane::revisar::refrescar_duplicadas_de_oficio(&db)?;
                 return Ok(());
             }
             if let Some(id) = dismiss {
@@ -3792,6 +3807,28 @@ fn sync(c: &Comun, accion: Option<AccionSync>, background: bool, pull: bool) -> 
             println!("{}", tr!("sync is off on this computer", "sincronización apagada en este equipo"));
             Ok(())
         }
+        Some(AccionSync::ForgetSealKeys { yes }) => {
+            let db = abrir(c)?;
+            if !yes {
+                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to forget them", "añade --yes para olvidarlas"));
+                if !preguntar_si(
+                    &tr!(
+                        "Forget the verification keys of earlier general repositories? Your verifications signed only with them stop counting here until you verify them again.",
+                        "¿Olvidar las claves de verificación de repositorios generales anteriores? Tus verificaciones firmadas solo con ellas dejan de contar aquí hasta que las vuelvas a verificar."
+                    ),
+                    false,
+                )? {
+                    return Ok(());
+                }
+            }
+            let n = omoikane::verificado::olvidar_claves_apuntadas(&db)?;
+            if c.json {
+                println!("{}", serde_json::json!({ "forgotten": n }));
+            } else {
+                println!("{}", tr!("forgot {} verification key(s)", "olvidadas {} claves de verificación", n));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -4065,6 +4102,10 @@ fn en_espanol(c: Command) -> Command {
                 s.about("Deja de sincronizar en este equipo (sus memorias se quedan).")
                     .mut_arg("yes", |a| a.help("No preguntar."))
                     .mut_arg("space", |a| a.help("Solo el repositorio de este espacio.").value_name("NOMBRE"))
+            })
+            .mut_subcommand("forget-seal-keys", |s| {
+                s.about("Olvida las claves de verificación apuntadas de repositorios generales anteriores. Para un equipo que se unió al general de un compañero con la 1.8.5 (sin --another-person apuntado): sus verificaciones seguían contando como tuyas. Las tuyas firmadas solo con una clave olvidada dejan de contar aquí hasta que las vuelvas a verificar.")
+                    .mut_arg("yes", |a| a.help("No preguntar."))
             })
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();

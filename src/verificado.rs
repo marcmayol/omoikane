@@ -95,6 +95,11 @@ struct Sello {
 // - El general de otra persona (`join --another-person`) no da clave de sellos: su clave la tiene
 //   también la otra persona, y lo que firmara con ella contaría aquí como propio. Esta base sigue con
 //   la suya (la propia y las apuntadas).
+// - Un equipo que se unió al general de otra persona con la 1.8.5 no tiene la marca, y nada en la base
+//   lo distingue de un equipo de la misma persona (con `--another-person` la persona de la
+//   configuración ya era la local): las claves de ese general se apuntan como las de cualquiera. Volver a
+//   unirse con `--another-person` olvida las que reconoce ([`olvidar_las_del_general`]) y
+//   `omoi sync forget-seal-keys` las olvida todas ([`olvidar_claves_apuntadas`]).
 
 /// La clave de esta base para firmar sellos sin repositorio general (hex, 32 bytes).
 const META_SELLOS: &str = "sello_firma";
@@ -121,14 +126,78 @@ fn hmac(clave: &[u8], texto: &[u8]) -> Vec<u8> {
 /// (ninguna sin general, o si es el de otra persona).
 fn del_general(db: &Connection) -> Vec<Vec<u8>> {
     let Some(ruta) = db.path().filter(|p| !p.is_empty()) else { return Vec::new() };
+    if crate::sync::leer_config_de(&crate::sync::rutas(std::path::Path::new(ruta))).ok().flatten().is_some_and(|c| c.another_person) {
+        return Vec::new();
+    }
+    del_repositorio_general(db)
+}
+
+/// Las claves de sellos que saldrían del repositorio general de esta base, sea de quien sea.
+fn del_repositorio_general(db: &Connection) -> Vec<Vec<u8>> {
+    let Some(ruta) = db.path().filter(|p| !p.is_empty()) else { return Vec::new() };
     let r = crate::sync::rutas(std::path::Path::new(ruta));
-    if !crate::proyecto::existe(&r.clave) || crate::sync::leer_config_de(&r).ok().flatten().is_some_and(|c| c.another_person) {
+    if !crate::proyecto::existe(&r.clave) {
         return Vec::new();
     }
     match crate::sync::leer_claves(&r) {
         Ok(c) => c.por_orden().map(|k| hmac(k, DERIVAR)).collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Olvida claves de sellos apuntadas ([`META_ANTES`]): las que cumplen `quitar`. Cuántas. Si olvida
+/// alguna, los sellos de las memorias de un espacio que ya no valen con las claves que quedan pasan a
+/// ser de otra persona ([`SELLO_AJENO`]), como si acabaran de llegar por el repositorio del espacio: lo
+/// que se aceptó con una clave olvidada deja de contar aquí.
+fn olvidar_apuntadas(db: &Connection, quitar: impl Fn(&[u8]) -> bool) -> Result<usize> {
+    let v = apuntadas(db)?;
+    let quedan: Vec<String> = v.iter().filter(|k| !quitar(k)).map(|k| a_hex(k)).collect();
+    let n = v.len() - quedan.len();
+    if n == 0 {
+        return Ok(0);
+    }
+    let tx = db.unchecked_transaction()?;
+    if quedan.is_empty() {
+        tx.execute("DELETE FROM meta WHERE k = ?1", [META_ANTES])?;
+    } else {
+        tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![META_ANTES, quedan.join("\n")])?;
+    }
+    let l = llaves(&tx, false)?;
+    let filas: Vec<(String, String)> = {
+        let mut q = tx.prepare(
+            "SELECT m.id, m.extra FROM memory m WHERE instr(m.extra, '\"verified\"') > 0
+             AND (m.space_id IS NOT NULL OR m.project_id IN (SELECT id FROM project WHERE space_id IS NOT NULL))",
+        )?;
+        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, extra) in filas {
+        let Some(v) = serde_json::from_str::<serde_json::Value>(&extra).ok().and_then(|mut e| e.get_mut(CLAVE).map(serde_json::Value::take)) else { continue };
+        if sello_propio(&l, &id, &v) {
+            continue;
+        }
+        let texto = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+        tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![format!("{SELLO_AJENO}{id}"), format!("{}\n{}", texto("by"), texto("at"))])?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+/// `omoi sync forget-seal-keys`: olvida todas las claves de sellos apuntadas de generales anteriores. Para
+/// un equipo que se unió al general de otra persona con la 1.8.5 (sin la marca `another_person`): las
+/// claves de ese general se apuntaron como de esta persona (al apagarlo o al rotarlo) y los sellos de la
+/// otra persona seguían contando aquí como propios. Las verificaciones de esta persona firmadas solo con
+/// una de ellas dejan de contar en este equipo hasta que se vuelvan a verificar. Cuántas olvidó.
+pub fn olvidar_claves_apuntadas(db: &Connection) -> Result<usize> {
+    olvidar_apuntadas(db, |_| true)
+}
+
+/// Tras `join --another-person` al general: las claves de sellos de ese repositorio que se hubieran
+/// apuntado antes (un equipo que estuvo unido a él con la 1.8.5, sin la marca, y lo apagó para volver a
+/// unirse) se olvidan, y no vuelven a apuntarse ([`del_general`] no da ninguna con la marca). Las de
+/// antes de una rotación que este equipo no tiene no se reconocen: eso es `forget-seal-keys`.
+pub(crate) fn olvidar_las_del_general(db: &Connection) -> Result<usize> {
+    let suyas = del_repositorio_general(db);
+    olvidar_apuntadas(db, |k| suyas.iter().any(|s| s == k))
 }
 
 /// Las claves de sellos apuntadas de generales anteriores ([`META_ANTES`]).

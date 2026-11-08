@@ -740,6 +740,9 @@ fn gana_la_clave(a: &Memoria, b: &Memoria) -> std::cmp::Ordering {
     a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))
 }
 
+/// El principio del motivo del veredicto que pone [`resolver_claves_repetidas`].
+const MOTIVO_CLAVE_REPETIDA: &str = "same key ";
+
 /// Tras sincronizar o importar: las claves repetidas en un mismo ámbito (dos equipos que hicieron
 /// `remember --key` con la misma clave sin verse; en cada uno, la clave es atómica). Manda la que
 /// [`gana_la_clave`] y las demás quedan sustituidas por ella (`superseded`, un veredicto que viaja y que
@@ -764,12 +767,16 @@ pub fn resolver_claves_repetidas(db: &Connection) -> Result<usize> {
         v.sort_by(|a, b| gana_la_clave(b, a));
         let gana = &v[0];
         for otra in &v[1..] {
-            let ya = vigentes.get(&crate::veredictos::pareja(&otra.id, &gana.id)).is_some_and(|x| x.relation == crate::veredictos::SUSTITUIDA && x.memory_id == otra.id);
-            if ya {
+            // Con cualquier veredicto vigente la pareja ya está juzgada, como en `revisar::duplicadas_de_oficio`:
+            // tras «está bien así» (`compatible`) el siguiente sync o import volvía a ponerla sustituida.
+            // Solo se le da la vuelta a la que puso esto mismo al revés (la que perdía se cambió después
+            // y ahora es la que manda).
+            let al_reves = |x: &crate::veredictos::Veredicto| x.relation == crate::veredictos::SUSTITUIDA && x.memory_id == gana.id && x.reason.starts_with(MOTIVO_CLAVE_REPETIDA);
+            if vigentes.get(&crate::veredictos::pareja(&otra.id, &gana.id)).is_some_and(|x| !al_reves(x)) {
                 continue;
             }
             let autor = crate::veredictos::autor(db, "sync", &otra.id);
-            crate::veredictos::poner(db, &otra.id, &gana.id, crate::veredictos::SUSTITUIDA, &format!("same key {clave} written on two computers"), &autor)?;
+            crate::veredictos::poner(db, &otra.id, &gana.id, crate::veredictos::SUSTITUIDA, &format!("{MOTIVO_CLAVE_REPETIDA}{clave} written on two computers"), &autor)?;
             n += 1;
         }
     }

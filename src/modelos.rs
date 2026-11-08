@@ -167,14 +167,58 @@ pub struct Tiempos {
     pub respuesta: Duration,
     /// Para el cuerpo entero (ureq lo cuenta de principio a fin, no por lectura).
     pub cuerpo: Duration,
+    /// Lo más que puede pasar sin llegar ningún byte del cuerpo (`descargar_ficheros`): un cuelgue a
+    /// medias se corta por aquí, no por el total.
+    pub inactividad: Duration,
 }
 
-/// Los de los modelos: el cuerpo, de sobra para una conexión lenta (los 130 MB del modelo ligero a
-/// 100 KB/s son 22 minutos; el de significado, unos 450 MB, va fichero a fichero), y aun así un
-/// cuelgue acaba como error.
-pub(crate) const TIEMPOS_MODELO: Tiempos = Tiempos { conexion: Duration::from_secs(30), respuesta: Duration::from_secs(60), cuerpo: Duration::from_secs(60 * 60) };
-/// Los de las actualizaciones (el binario, `SHA256SUMS`, la última versión).
+/// Los de los modelos. Un fichero entero puede tardar mucho en una conexión lenta (el de significado
+/// son cientos de MB: a 100 KB/s, más de una hora; con el límite total de 60 minutos de antes no
+/// acababa nunca), así que lo que corta un cuelgue es la inactividad: 120 s sin recibir nada. El total
+/// (24 h) solo está para que el hilo que lee no se quede para siempre si nadie lo espera ya.
+pub(crate) const TIEMPOS_MODELO: Tiempos =
+    Tiempos { conexion: Duration::from_secs(30), respuesta: Duration::from_secs(60), cuerpo: Duration::from_secs(24 * 60 * 60), inactividad: Duration::from_secs(120) };
+/// Los de las actualizaciones (el binario, `SHA256SUMS`, la última versión): pocos MB, con el total basta.
 pub(crate) const TIEMPOS_PEQUENO: Tiempos = Tiempos { cuerpo: Duration::from_secs(10 * 60), ..TIEMPOS_MODELO };
+
+/// Copia `lector` en `salida` y falla (`TimedOut`) si pasa `inactividad` sin llegar ningún byte. ureq no
+/// tiene un tiempo máximo por lectura (el del cuerpo es para el cuerpo entero), así que lee un hilo
+/// aparte y aquí se espera cada trozo con su tiempo. Si se corta por inactividad, ese hilo se queda
+/// esperando hasta que ureq lo corte por el total, sin nada abierto de quien llama: lo escribe este.
+fn copiar_con_inactividad(lector: impl std::io::Read + Send + 'static, salida: &mut impl Write, inactividad: Duration) -> std::io::Result<u64> {
+    use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+    let (tx, rx) = sync_channel::<std::io::Result<Vec<u8>>>(8);
+    std::thread::spawn(move || {
+        let mut lector = lector;
+        let mut b = vec![0u8; 64 * 1024];
+        loop {
+            let r = match lector.read(&mut b) {
+                Ok(n) => Ok(b[..n].to_vec()),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => Err(e),
+            };
+            let fin = !matches!(&r, Ok(v) if !v.is_empty());
+            if tx.send(r).is_err() || fin {
+                return;
+            }
+        }
+    });
+    let mut total = 0u64;
+    loop {
+        match rx.recv_timeout(inactividad) {
+            Ok(Ok(v)) if v.is_empty() => return Ok(total),
+            Ok(Ok(v)) => {
+                salida.write_all(&v)?;
+                total += v.len() as u64;
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("no data for {} s", inactividad.as_secs_f32())));
+            }
+            Err(RecvTimeoutError::Disconnected) => return Err(std::io::Error::other("the download reader ended")),
+        }
+    }
+}
 
 /// GET con los certificados del sistema y, si falla sin que el servidor llegue a responder, otra vez
 /// con la lista de Mozilla: un Linux mínimo sin `ca-certificates` no tiene almacén del sistema. Un
@@ -235,7 +279,7 @@ fn descargar_ficheros_con(origen: &str, ficheros: &[&str], destino: &Path, aviso
         let parte = destino.join(format!("{f}.part"));
         let r = (|| -> Result<()> {
             let mut salida = std::fs::File::create(&parte)?;
-            let copiados = std::io::copy(&mut resp.into_body().into_reader(), &mut salida).map_err(|e| {
+            let copiados = copiar_con_inactividad(resp.into_body().into_reader(), &mut salida, tiempos.inactividad).map_err(|e| {
                 if es_cuelgue(&e) {
                     anyhow::anyhow!(tr!(
                         "the download of {f} from {host} stalled or took too long ({e}); nothing was left half-written",
@@ -372,8 +416,9 @@ mod tests {
         base
     }
 
+    /// El total del cuerpo, de sobra: lo que corta un cuelgue es la inactividad.
     fn rapidos() -> Tiempos {
-        Tiempos { conexion: Duration::from_secs(2), respuesta: Duration::from_millis(800), cuerpo: Duration::from_millis(800) }
+        Tiempos { conexion: Duration::from_secs(2), respuesta: Duration::from_millis(800), cuerpo: Duration::from_secs(60), inactividad: Duration::from_millis(800) }
     }
 
     fn carpeta_de_prueba(nombre: &str) -> PathBuf {
@@ -396,6 +441,29 @@ mod tests {
         let e = format!("{e:#}");
         assert!(e.contains("config.json") && (e.contains("stalled") || e.contains("colgó")), "{e}");
         assert!(!d.join("config.json").exists() && !d.join("config.json.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 1.8.6: el límite del cuerpo era para el fichero entero (60 minutos), y el modelo de significado a
+    /// unos 100 KB/s no acababa nunca. Ahora cuenta la inactividad: una descarga lenta pero que no para
+    /// llega entera aunque tarde mucho más que la inactividad permitida.
+    #[test]
+    fn una_descarga_lenta_que_no_para_llega_entera() {
+        // 100 bytes en 10 trozos, uno cada 300 ms: 3 s en total, con 800 ms de inactividad permitida.
+        let base = servidor(vec![Box::new(|s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+            for i in 0..10u8 {
+                let _ = s.write_all(&[b'0' + i; 10]);
+                let _ = s.flush();
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        })]);
+        let d = carpeta_de_prueba("lenta");
+        let inicio = std::time::Instant::now();
+        descargar_ficheros_con(&base, &["config.json"], &d, &mut |_| {}, rapidos()).unwrap();
+        assert!(inicio.elapsed() >= Duration::from_secs(2), "{:?}", inicio.elapsed());
+        assert_eq!(std::fs::read(d.join("config.json")).unwrap().len(), 100);
+        assert!(!d.join("config.json.part").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

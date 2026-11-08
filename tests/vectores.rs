@@ -287,3 +287,27 @@ fn duplicados_entre_memorias_de_oficio() {
     omoikane::revisar::descartar(&db, &vieja, omoikane::revisar::DUPLICADA_OFICIO, &nueva_id).unwrap();
     assert!(omoikane::revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap().is_empty());
 }
+
+/// 1.8.6: `duplicada_de_oficio` tomaba las 50 más parecidas de toda la base y luego se quedaba con las
+/// globales y las de sus oficios. Con muchas memorias de proyecto parecidas, la de oficio duplicada de
+/// verdad quedaba fuera de esas 50. Ahora busca solo entre las que cuentan.
+#[test]
+fn la_duplicada_de_oficio_no_la_tapan_las_de_proyecto() {
+    let Some(m) = modelo() else { return };
+    let (_dir, mut db) = base("duplicada-tapada");
+    let (t, c) = ("El emulador no se mata con taskkill", "Con taskkill el AVD se queda bloqueado: cerrarlo con adb emu kill.");
+    // Una base de verdad tiene de todo (si no, la media con la que se centran los vectores sería este
+    // mismo tema): las frases de `corpus.txt`, en otro proyecto.
+    let corpus = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus.txt")).unwrap();
+    for (i, l) in corpus.lines().filter(|l| !l.starts_with('#') && l.chars().filter(|c| c.is_alphabetic()).count() > 30).take(600).enumerate() {
+        memoria::guardar(&mut db, nueva("/otro", &format!("Nota {i}"), l), Some(&m)).unwrap();
+    }
+    // 60 de proyectos que dicen justo lo mismo: las más parecidas de toda la base.
+    for i in 0..60 {
+        memoria::guardar(&mut db, nueva(&format!("/p{i}"), t, c), Some(&m)).unwrap();
+    }
+    let n = Nueva { tags: vec!["trade:android".into()], ..nueva("", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.") };
+    let vieja = memoria::guardar(&mut db, n, Some(&m)).unwrap().id;
+    let d = vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, None).unwrap();
+    assert_eq!(d.map(|x| x.0.id), Some(vieja));
+}

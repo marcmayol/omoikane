@@ -669,6 +669,19 @@ fn lineal(
     minimo: f32,
     limite: usize,
 ) -> Result<Vec<(i64, f32)>> {
+    lineal_donde(db, consulta, media, &ambito.sql(), kind, minimo, limite)
+}
+
+/// `lineal` entre las memorias que cumplen `condicion` (SQL sobre `memory m`).
+fn lineal_donde(
+    db: &Connection,
+    consulta: &[f32],
+    media: &[f32],
+    condicion: &str,
+    kind: Option<Tipo>,
+    minimo: f32,
+    limite: usize,
+) -> Result<Vec<(i64, f32)>> {
     // Con `a` normalizado: cos(a - μ, q) = (a·q - μ·q) / |a - μ|, y |a - μ|² = 1 - 2·a·μ + μ·μ.
     // Así no hace falta centrar (ni copiar) cada vector guardado: bastan dos productos escalares.
     let mq: f32 = media.iter().zip(consulta).map(|(a, b)| a * b).sum();
@@ -677,8 +690,7 @@ fn lineal(
     {
         let mut q = db.prepare(&format!(
             "SELECT v.n, v.e FROM memory_vec v JOIN memory m ON m.n = v.n
-             WHERE {} AND (?1 IS NULL OR m.kind = ?1)",
-            ambito.sql()
+             WHERE {condicion} AND (?1 IS NULL OR m.kind = ?1)"
         ))?;
         let mut filas = q.query(params![kind.map(Tipo::as_str)])?;
         while let Some(f) = filas.next()? {
@@ -700,40 +712,68 @@ fn lineal(
 /// similitud.
 pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
     let nueva = texto(title, content);
-    let v = parecidas_en(db, modelo, &nueva, &Ambito::de(db, project)?, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
-    la_duplicada(db, project, &nueva, v)
+    let ambito = Ambito::de(db, project)?;
+    let v = parecidas_en(db, modelo, &nueva, &ambito, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    la_duplicada(db, &ambito, &nueva, v)
 }
 
 /// Como [`duplicada`], para una memoria de oficio (`oficios`, sin el prefijo): desde lo global no se ven
 /// las de oficio (ningún proyecto del ámbito tiene oficios), así que se compara con las globales y con
 /// las de oficio que comparten alguno de sus oficios, sean de quien sean para (`trade-for:`). Es lo que
 /// pasa al promover lo mismo desde dos clientes. `excluir`: la memoria de la que sale (al promover).
+///
+/// Se busca solo entre esas: antes se tomaban las 50 más parecidas de toda la base y luego se
+/// filtraban, y con muchas memorias de proyecto parecidas la duplicada de verdad se quedaba fuera. Las
+/// palabras pesan con el IDF de toda la base, como en [`duplicadas_entre`].
 pub fn duplicada_de_oficio(db: &Connection, modelo: &Modelo, oficios: &[String], title: &str, content: &str, excluir: Option<&str>) -> Result<Option<(Memoria, f32)>> {
     let nueva = texto(title, content);
-    // Desde todo (sin ocultar las de oficio), y luego solo las globales que tocan: con más candidatas,
-    // para que las de los proyectos no dejen fuera a las que cuentan.
-    let v: Vec<(Memoria, f32)> = parecidas_en(db, modelo, &nueva, &Ambito::Todos, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 50)?
-        .into_iter()
-        .filter(|(m, _)| m.global() && Some(m.id.as_str()) != excluir)
-        .filter(|(m, _)| {
-            let suyos = crate::oficios::de_etiquetas(&m.tags);
-            suyos.is_empty() || suyos.iter().any(|o| oficios.contains(o))
-        })
-        .take(5)
-        .collect();
-    la_duplicada(db, "", &nueva, v)
+    let mut candidatas: Vec<i64> = Vec::new();
+    {
+        let mut q = db.prepare("SELECT m.n, m.id, m.tags FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL")?;
+        let mut filas = q.query([])?;
+        while let Some(f) = filas.next()? {
+            let id: String = f.get(1)?;
+            let tags: Vec<String> = serde_json::from_str(&f.get::<_, String>(2)?).unwrap_or_default();
+            let suyos = crate::oficios::de_etiquetas(&tags);
+            if Some(id.as_str()) != excluir && (suyos.is_empty() || suyos.iter().any(|o| oficios.contains(o))) {
+                candidatas.push(f.get(0)?);
+            }
+        }
+    }
+    if candidatas.is_empty() {
+        return Ok(None);
+    }
+    let lista = candidatas.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let v = parecidas_donde(db, modelo, &nueva, &format!("m.n IN ({lista})"), SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    la_duplicada(db, &Ambito::Todos, &nueva, v)
+}
+
+/// Las más parecidas a `texto` entre las memorias que cumplen `condicion` (SQL sobre `memory m`),
+/// comparando con todos sus vectores: para un conjunto que no es un ámbito.
+fn parecidas_donde(db: &Connection, modelo: &Modelo, texto: &str, condicion: &str, minimo: f32, limite: usize) -> Result<Vec<(Memoria, f32)>> {
+    let resumen = al_dia(db)?.filter(|r| r.dim == modelo.dim() || r.cuantos == 0);
+    let media = match &resumen {
+        Some(r) if r.cuantos == 0 => return Ok(Vec::new()),
+        Some(r) => media_de(db, modelo, r)?,
+        None => media(db, modelo)?,
+    };
+    let consulta = normalizado(modelo.vector(texto)?.iter().zip(&media).map(|(x, m)| x - m).collect());
+    let sims = lineal_donde(db, &consulta, &media, condicion, None, minimo, limite)?;
+    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
+    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
 }
 
 /// De las parecidas (de la más a la menos), la duplicada: la primera si llega a `SIMILITUD_DUPLICADO`
-/// y, si no, la que más cubre las palabras de la nueva (al menos `COBERTURA_DUPLICADO`).
-fn la_duplicada(db: &Connection, project: &str, nueva: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
+/// y, si no, la que más cubre las palabras de la nueva (al menos `COBERTURA_DUPLICADO`, con el IDF de
+/// `ambito`).
+fn la_duplicada(db: &Connection, ambito: &Ambito, nueva: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
     if v.is_empty() {
         return Ok(None);
     }
-    let coberturas = crate::recall::cobertura(db, project, nueva, v.iter().map(|x| &x.0))?;
+    let coberturas = crate::recall::cobertura_en(db, ambito, nueva, v.iter().map(|x| &x.0))?;
     let mejor = coberturas.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
     Ok(mejor.map(|i| v.swap_remove(i)))
 }
@@ -781,52 +821,80 @@ fn media_guardada(db: &Connection) -> Result<Option<Vec<f32>>> {
 
 /// Las parejas de `memorias` (por su posición, `i < j`) que [`duplicada`] habría tomado por duplicadas
 /// al guardar la segunda, con su similitud: con los vectores ya guardados, sin cargar el modelo (para
-/// la revisión). La palabra la tiene la más nueva frente a la más vieja, como al guardar. Una memoria
-/// sin vector (sin modelo) se compara solo por palabras, y entonces tienen que cubrirse las dos a la
-/// otra (`COBERTURA_DUPLICADO` en los dos sentidos). Pensada para pocas memorias (las de un oficio).
-pub fn duplicadas_entre(db: &Connection, memorias: &[&Memoria]) -> Result<Vec<(usize, usize, f32)>> {
-    if memorias.len() < 2 {
+/// la revisión). Solo se comparan las de un mismo grupo de `grupos` (posiciones en `memorias`: las de
+/// cada oficio), y cada pareja sale una vez aunque compartan varios. La palabra la tiene la más nueva
+/// frente a la más vieja, como al guardar. Una memoria sin vector (sin modelo) se compara solo por
+/// palabras, y entonces tienen que cubrirse las dos a la otra (`COBERTURA_DUPLICADO` en los dos
+/// sentidos).
+///
+/// Las palabras pesan con el IDF de toda la base (`Ambito::Todos`): las de oficio no se ven desde lo
+/// global, y con ese ámbito (lo que se hacía antes) una base con solo memorias de oficio daba IDF
+/// negativos y ninguna cubría a ninguna. Las palabras, sus pesos y el vector centrado de cada memoria
+/// se calculan una vez, no una por pareja: con 42 memorias de oficio sin modelo, la revisión tardaba
+/// 16,6 s en contar las mismas palabras en el índice para cada pareja.
+///
+/// Con `solo`, solo las parejas en las que entra una de esas (las que cambiaron desde el último
+/// cálculo): las demás ya se juzgaron entonces.
+pub fn duplicadas_entre(db: &Connection, memorias: &[&Memoria], grupos: &[Vec<usize>], solo: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
+    use std::collections::{BTreeSet, HashMap};
+    let cuenta = |i: &usize| solo.is_none_or(|s| s.contains(i));
+    let grupos: Vec<&Vec<usize>> = grupos.iter().filter(|g| g.len() >= 2 && g.iter().any(cuenta)).collect();
+    if grupos.is_empty() {
         return Ok(Vec::new());
     }
     let media = media_guardada(db)?;
     let mut q = db.prepare("SELECT v.e FROM memory_vec v JOIN memory m ON m.n = v.n WHERE m.id = ?1")?;
-    let centrados: Vec<Option<Vec<f32>>> = memorias
-        .iter()
-        .map(|m| {
+    let mut frecuencias = crate::recall::Frecuencias::nuevas(db, &Ambito::Todos)?;
+    // Lo de cada memoria, calculado la primera vez que hace falta.
+    struct DeUna {
+        centrado: Option<Vec<f32>>,
+        pesos: crate::recall::Pesos,
+        fichas: BTreeSet<String>,
+    }
+    let mut de_una: HashMap<usize, DeUna> = HashMap::new();
+    let mut r = Vec::new();
+    let mut vistas: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for g in grupos {
+        for &i in g {
+            if de_una.contains_key(&i) {
+                continue;
+            }
+            let m = memorias[i];
             let e: Option<Vec<u8>> = q.query_row([&m.id], |f| f.get(0)).optional()?;
-            Ok(match (e, &media) {
+            let centrado = match (e, &media) {
                 (Some(e), Some(mu)) => {
                     let e = a_f32(&e);
                     (e.len() == mu.len()).then(|| normalizado(e.iter().zip(mu).map(|(x, m)| x - m).collect()))
                 }
                 _ => None,
-            })
-        })
-        .collect::<Result<_>>()?;
-    let mut r = Vec::new();
-    for i in 0..memorias.len() {
-        for j in i + 1..memorias.len() {
-            // La nueva frente a la vieja.
-            let (nueva, vieja) = if (memorias[i].created_at.as_str(), memorias[i].id.as_str()) >= (memorias[j].created_at.as_str(), memorias[j].id.as_str()) { (i, j) } else { (j, i) };
-            let texto_nueva = texto(&memorias[nueva].title, &memorias[nueva].content);
-            let cubre = |de: usize, a: usize| -> Result<f64> {
-                Ok(crate::recall::cobertura(db, "", &texto(&memorias[de].title, &memorias[de].content), std::iter::once(memorias[a]))?.first().copied().unwrap_or(0.0))
             };
-            let es = match (&centrados[i], &centrados[j]) {
-                (Some(a), Some(b)) => {
-                    let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-                    let dup = sim >= SIMILITUD_DUPLICADO
-                        || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS
-                            && crate::recall::cobertura(db, "", &texto_nueva, std::iter::once(memorias[vieja]))?.first().is_some_and(|c| *c >= COBERTURA_DUPLICADO));
-                    dup.then_some(sim)
+            let pesos = crate::recall::Pesos::de(&texto(&m.title, &m.content), &mut frecuencias)?;
+            de_una.insert(i, DeUna { centrado, pesos, fichas: crate::recall::fichas(m) });
+        }
+        for (x, &i) in g.iter().enumerate() {
+            for &j in &g[x + 1..] {
+                if i == j || !(cuenta(&i) || cuenta(&j)) || !vistas.insert((i.min(j), i.max(j))) {
+                    continue;
                 }
-                _ => {
-                    let c = cubre(nueva, vieja)?.min(cubre(vieja, nueva)?);
-                    (c >= COBERTURA_DUPLICADO).then_some(c as f32)
+                // La nueva frente a la vieja.
+                let (nueva, vieja) = if (memorias[i].created_at.as_str(), memorias[i].id.as_str()) >= (memorias[j].created_at.as_str(), memorias[j].id.as_str()) { (i, j) } else { (j, i) };
+                let cubre = |de: usize, a: usize| de_una[&de].pesos.cobertura(&de_una[&a].fichas);
+                let es = match (&de_una[&i].centrado, &de_una[&j].centrado) {
+                    (Some(a), Some(b)) => {
+                        let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+                        let dup = sim >= SIMILITUD_DUPLICADO || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS && cubre(nueva, vieja) >= COBERTURA_DUPLICADO);
+                        dup.then_some(sim)
+                    }
+                    _ => {
+                        // La segunda solo si la primera llega.
+                        let c = cubre(nueva, vieja);
+                        let c = if c >= COBERTURA_DUPLICADO { c.min(cubre(vieja, nueva)) } else { c };
+                        (c >= COBERTURA_DUPLICADO).then_some(c as f32)
+                    }
+                };
+                if let Some(sim) = es {
+                    r.push((i.min(j), i.max(j), sim));
                 }
-            };
-            if let Some(sim) = es {
-                r.push((i.min(j), i.max(j), sim));
             }
         }
     }

@@ -294,7 +294,7 @@ fn contrasenas(t: &str, v: &mut Vec<Hallazgo>) {
             }
             // `--password` de una orden: con `=` o con el valor detrás (`--password Xy7#k2`); tras un
             // solo guion es otra cosa (`no-password`).
-            let opcion = a >= 2 && &l[a - 2..a] == "--";
+            let opcion = a >= 2 && b[a - 2..a] == *b"--"; // por bytes: lo de antes puede ser un carácter de varios (`—password`)
             if a > 0 && b[a - 1] == b'-' && !opcion {
                 continue;
             }
@@ -399,8 +399,9 @@ fn valor_de_contrasena(t: &str, j: usize) -> Option<(usize, usize)> {
         return t[fin..].starts_with('»').then_some((ini, fin));
     }
     let mut fin = t[j..].find(char::is_whitespace).map_or(t.len(), |x| j + x);
-    if t[j..fin].ends_with('»') {
-        fin -= '»'.len_utf8();
+    // Las comillas tipográficas que cierran («“password: x1”») no son parte del valor.
+    while let Some(c) = t[j..fin].chars().next_back().filter(|c| matches!(c, '»' | '”' | '’')) {
+        fin -= c.len_utf8();
     }
     while fin > j && matches!(b[fin - 1], b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'"' | b'\'') {
         fin -= 1;
@@ -623,5 +624,16 @@ mod tests {
         assert!(!parece_aleatoria("01K8ZQ4V9N3X2M7P6R5T8W1Y0A")); // ULID
         assert!(!parece_aleatoria("3f9a1c2b4d5e6f7a8b9c0d1e2f3a4b5c")); // hash
         assert!(!parece_aleatoria("corto1A"));
+    }
+
+    /// 1.8.6: lo de antes de «password» puede ser un carácter de varios bytes; mirar si es `--` no
+    /// puede cortarlo por la mitad.
+    #[test]
+    fn contrasena_tras_caracter_de_varios_bytes() {
+        assert!(hallazgos("—password x1").is_empty());
+        assert!(hallazgos("x…password: abc").is_empty());
+        assert_eq!(redactar("“password: x1”").0, "“password: x1”");
+        assert_eq!(redactar("“password: Xy7#k2”").0, "“password: [redacted:password]”");
+        assert_eq!(redactar("—password=Xy7#k2").0, "—password=[redacted:password]");
     }
 }

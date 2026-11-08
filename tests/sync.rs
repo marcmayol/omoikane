@@ -799,6 +799,24 @@ fn los_secretos_no_salen_del_equipo() {
     }
 }
 
+/// 1.8.6: el detector de contraseñas miraba los 2 bytes de antes de «password» como `&str` y hacía
+/// panic si caían en mitad de un carácter de varios bytes (`—password`, `x…password`, `“password`).
+/// Lo guardado con `OMOIKANE_REDACT=0` pasa por él al sincronizar: el sync no puede caerse.
+#[test]
+fn redactar_al_sincronizar_con_caracteres_de_varios_bytes() {
+    let p = Prueba::nueva("secretos-multibyte");
+    let (a, b) = dos(&p, &[], &[]);
+    let mut ids = Vec::new();
+    for (i, texto) in ["—password x1", "x…password: abc", "“password: x1”", "la clave —password=Xy7#k2 va en la orden"].iter().enumerate() {
+        let salida = a.ok_en(&a.dir, &["--json", "remember", "-k", "fact", "-t", &format!("Texto {i}"), "--global", texto], &[("OMOIKANE_REDACT", "0")]);
+        ids.push(serde_json::from_str::<serde_json::Value>(&salida).unwrap()["id"].as_str().unwrap().to_string());
+    }
+    a.sync();
+    b.sync();
+    assert_eq!(b.get(&ids[0]).expect("llegó")["content"], "—password x1");
+    assert_eq!(b.get(&ids[3]).expect("llegó")["content"], "la clave —password=[redacted:password] va en la orden");
+}
+
 /// 0.19.1: si A restaura lo que olvidó B, en B vuelve a estar viva y sale de su papelera (antes se
 /// quedaba en las dos y `omoi restore` fallaba con `UNIQUE constraint failed`).
 #[test]
@@ -2837,4 +2855,56 @@ fn el_general_de_otra_persona_no_da_clave_de_sellos() {
     assert!(b.get(&id).unwrap().get("verified").is_none(), "el sello de Ana no es de Bea");
     a.ok_en(&a.dir, &["sync"], &ana);
     assert!(a.get(&id_b).unwrap().get("verified").is_none(), "el sello de Bea no es de Ana");
+}
+
+/// Bea se une al general de Ana como con la 1.8.5: sin la marca `another_person` en su `sync.json`.
+fn bea_unida_como_en_la_1_8_5(nombre: &str) -> (Prueba, Equipo, Equipo, String, String) {
+    let (p, a, _a2, general, codigo, id) = ana_con_dos_equipos(nombre);
+    let bea = [("OMOIKANE_AUTHOR", "Bea")];
+    let b = p.equipo("pc-b");
+    b.ok_en(&b.dir, &["sync", "join", &codigo, "--yes"], &bea);
+    b.ok_en(&b.dir, &["sync", "join", &general, "--another-person", "--yes"], &bea);
+    let config = b.dir.join("o.sync.json");
+    let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(c["another_person"], true);
+    c.as_object_mut().unwrap().remove("another_person");
+    std::fs::write(&config, serde_json::to_string_pretty(&c).unwrap()).unwrap();
+    b.ok_en(&b.dir, &["sync"], &bea);
+    // Apagar el general (y rotarlo) apunta su clave de sellos como de Bea: nada en su base dice que es de Ana.
+    b.ok_en(&b.dir, &["sync", "off", "--yes"], &bea);
+    (p, a, b, general, id)
+}
+
+/// 1.8.6: un equipo que se unió al general de otra persona con la 1.8.5 se quedaba para siempre con la
+/// clave de sellos de ese general apuntada (`sello_firma_antes`, al apagarlo o al rotarlo), así que tras
+/// volver a unirse con `--another-person` los sellos de la otra persona seguían contando como suyos.
+/// Volver a unirse así la olvida.
+#[test]
+fn volver_a_unirse_como_otra_persona_olvida_la_clave_apuntada() {
+    let (_p, a, b, general, id) = bea_unida_como_en_la_1_8_5("sello-1-8-5-unirse");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let bea = [("OMOIKANE_AUTHOR", "Bea")];
+    b.ok_en(&b.dir, &["sync", "join", &general, "--another-person", "--yes"], &bea);
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    b.ok_en(&b.dir, &["sync"], &bea);
+    assert!(b.get(&id).unwrap().get("verified").is_none(), "el sello de Ana no es de Bea");
+}
+
+/// 1.8.6: `omoi sync forget-seal-keys` olvida las claves de sellos apuntadas (también las de antes de una
+/// rotación, que volver a unirse no reconoce), y lo que se aceptó con ellas por un espacio deja de contar.
+#[test]
+fn olvidar_las_claves_de_sellos_apuntadas() {
+    let (_p, a, b, _general, id) = bea_unida_como_en_la_1_8_5("sello-1-8-5-olvidar");
+    let ana = [("OMOIKANE_AUTHOR", "Ana")];
+    let bea = [("OMOIKANE_AUTHOR", "Bea")];
+    a.ok_en(&a.dir, &["verify", &id, "--by", "Ana", "--yes"], &ana);
+    a.ok_en(&a.dir, &["sync"], &ana);
+    b.ok_en(&b.dir, &["sync"], &bea);
+    assert_eq!(b.get(&id).unwrap()["verified"]["by"], "Ana", "con la clave apuntada, cuenta (lo que se arregla)");
+    let r: serde_json::Value = serde_json::from_str(&b.ok_en(&b.dir, &["--json", "sync", "forget-seal-keys", "--yes"], &bea)).unwrap();
+    assert_eq!(r["forgotten"], 1, "{r}");
+    assert!(b.get(&id).unwrap().get("verified").is_none(), "el sello de Ana ya no cuenta como de Bea");
+    let r: serde_json::Value = serde_json::from_str(&b.ok_en(&b.dir, &["--json", "sync", "forget-seal-keys", "--yes"], &bea)).unwrap();
+    assert_eq!(r["forgotten"], 0, "{r}");
 }
