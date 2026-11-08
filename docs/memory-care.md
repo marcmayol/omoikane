@@ -30,6 +30,12 @@ Each kind has its own: decisions and procedures after 120 days untouched, facts 
 
 Some memories stop holding on a known day: a token that expires, an offer, a plan with a date. Save them with the tag `review:YYYY-MM-DD` (`omoi remember … --tag review:2026-11-25`, or in `tags` from the MCP) and that day the review flags them as *review date reached*, in Review, in `search` and also in the recall (it may no longer hold). The notice at the start of the session comes even with a single one. Touching the memory or "it's fine as it is" clears it; a tag that isn't a date is refused when saving.
 
+## Code that changed under it
+
+A memory that talks about files (its `paths`, and the ones it names with their folder, like `src/sync.rs`) can fall behind when those files change a lot after it was written. The review flags it as *code changed under them* (`code_drift`) when at least half of the lines of those files changed since it was written or last checked, according to git (and at least 20 lines), or, for files outside git, when they were edited in 5 different sessions of the [session diary](#session-diary). What changes in the first 6 hours doesn't count: saving the memory and then committing the work it describes is the normal thing. It only proposes a check and never changes the memory. "It's fine as it is" (`omoi review --dismiss <id> --kind code_drift`) marks it checked, and it comes back only if the files change a lot again. A file that no longer exists is a broken path.
+
+It never runs in each prompt's recall. It is worked out once a day in the background (one `git log` per repository, only with the files modified since), the result is kept until the memory changes, and the notice at the start of the session only reads what is kept.
+
 ## History and trash
 
 Changing a memory keeps the previous version with the reason, and `omoi history` shows them all.

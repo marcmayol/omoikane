@@ -44,7 +44,9 @@ pub const SECRETO: &str = "secret";
 pub const FECHA: &str = "review_date";
 /// La etiqueta de la fecha de revisión: `review:2026-11-25`.
 pub const ETIQUETA_FECHA: &str = "review:";
-const TIPOS: [&str; 11] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
+/// Sus ficheros han cambiado mucho desde que se escribió o se revisó (`deriva`).
+pub const DERIVA_CODIGO: &str = crate::deriva::DERIVA;
+const TIPOS: [&str; 12] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, ENLACE_ROTO, ESTADO_VIEJO, DERIVA_CODIGO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
@@ -812,7 +814,12 @@ pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
     let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
     let revisadas = crate::veredictos::oks(db, false)?;
     let hoy = hoy(db)?;
+    // Opcional, como el aviso: si git o el disco fallan, solo se pierde este.
+    let deriva = crate::deriva::de(db, &todas).unwrap_or_default();
     for m in &todas {
+        if let Some(d) = deriva.get(&m.id) {
+            r.push(aviso(m, DERIVA_CODIGO, None, d.clone()));
+        }
         if let Some(f) = fecha_llegada(m, &revisadas, &hoy) {
             r.push(aviso(m, FECHA, None, format!("review date {f} reached: is it still true?")));
         }
@@ -1174,6 +1181,10 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
         }
     }
     let hoy = hoy(db)?;
+    // Solo lo ya calculado: al empezar no se lanza git (`deriva::de_ambito`).
+    for _ in 0..crate::deriva::de_ambito(db, ambito).map(|d| d.len()).unwrap_or(0) {
+        sumar(DERIVA_CODIGO);
+    }
     for (m, largo) in &todas {
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
         if fecha_llegada(m, &revisadas, &hoy).is_some() {
@@ -1255,6 +1266,7 @@ fn nombre_aviso(kind: &str) -> &'static str {
         DESFASADA => "outdated",
         ENLACE_ROTO => "broken [[links]]",
         ESTADO_VIEJO => "stale status",
+        DERIVA_CODIGO => "code changed under them",
         POR_REVISAR => "due for a check",
         RUTA_ROTA => "broken paths",
         SIN_USO => "never recalled",
