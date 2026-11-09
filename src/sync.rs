@@ -2603,7 +2603,7 @@ pub(crate) fn en_el_general(db: &Connection, clave: &str) -> bool {
     cifra.claves.values().any(|k| r.clon.join(format!("p-{}", opaco(k, &[clave.as_bytes()]))).exists())
 }
 
-/// La clave de un proyecto cambió (`proyecto::clave_con_espacio`): la lista `projects` de los
+/// La clave de un proyecto cambió (`proyecto::cambiar_clave`): la lista `projects` de los
 /// repositorios que la nombran pasa a la nueva.
 pub(crate) fn cambiar_clave_en_configs(ruta_db: &Path, vieja: &str, nueva: &str) -> Result<()> {
     for r in repos(ruta_db) {
