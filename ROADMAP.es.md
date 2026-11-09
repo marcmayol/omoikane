@@ -38,7 +38,7 @@ Decidido que no, con el motivo:
 
 | Versión | Fecha | Qué trajo |
 |---|---|---|
-| 1.9.0 | 2026-11-09 | Papelera y espacios en la interfaz de terminal, lo editado en Obsidian vuelve, carpetas con el mismo nombre en dos clientes, copias cifradas con la clave de cada cliente, la traza en la procedencia, revisión 3,6 veces más rápida con 50.000 memorias, guardia de rendimiento en la CI |
+| 1.9.0 | 2026-11-10 | Papelera y espacios en la interfaz de terminal, lo editado en Obsidian vuelve, carpetas con el mismo nombre en dos clientes, copias cifradas con la clave de cada cliente, la traza en la procedencia, revisión 3,6 veces más rápida con 50.000 memorias, guardia de rendimiento en la CI |
 | 1.8.6 | 2026-11-08 | Enlace directo para verificar una memoria, verificaciones que sobreviven al cambio de claves, oficios duplicados, contraseñas escritas a mano redactadas, tiempo máximo en las descargas |
 | 1.8.5 | 2026-11-08 | Memorias verificadas por una persona, exportar e importar OKF, código que cambió bajo una memoria, procedencia |
 | 1.8.0 | 2026-11-07 | Oficios (memoria por stack), nombres de proyecto que toleran erratas, fechas de revisión, memorias con clave |

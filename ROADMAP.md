@@ -38,7 +38,7 @@ Decided against, with the reason:
 
 | Version | Date | What it brought |
 |---|---|---|
-| 1.9.0 | 2026-11-09 | Trash and spaces in the terminal viewer, Obsidian edits come back, same-name folders at two clients, encrypted copies with each client's key, the trace in the provenance, review 3.6 times faster at 50,000 memories, a speed guard in CI |
+| 1.9.0 | 2026-11-10 | Trash and spaces in the terminal viewer, Obsidian edits come back, same-name folders at two clients, encrypted copies with each client's key, the trace in the provenance, review 3.6 times faster at 50,000 memories, a speed guard in CI |
 | 1.8.6 | 2026-11-08 | A direct link to verify a memory, verifications that survive key changes, trade duplicates, hand-written passwords redacted, download time limits |
 | 1.8.5 | 2026-11-08 | Memories verified by a person, OKF export and import, code that changed under a memory, provenance |
 | 1.8.0 | 2026-11-07 | Trades (memory per stack), project names that tolerate typos, review dates, key-based memories |

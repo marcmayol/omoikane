@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.9.0 (2026-11-09)
+## 1.9.0 (2026-11-10)
 
 ### Two folders with the same name at two clients
 - Two folders without a git remote and with the same name (a `web` for Acme on one computer and a `web` for Beta on another) had the same project key for the same person: your name and the folder's. Each computer put the other's project on hold, and after `omoi projects keep` whatever came from the other client was rejected at every sync. If the other client's project had arrived first, the folder even joined it, and putting it in its own space asked for `--force`.
