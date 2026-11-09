@@ -1012,8 +1012,8 @@ fn importar_obsidian(c: &Comun, vault: &Path, space: Option<String>, prefer: Opt
         eprintln!(
             "{}{}",
             tr!(
-                "omoikane: {} notes say which memory they are but weren't exported from this database for this vault (another database, a version before 1.9, or those fields were edited): they don't touch any memory. Export again to refresh them; to bring one in as a new memory, remove its `omoikane:` line:",
-                "omoikane: {} notas dicen de qué memoria son pero no se exportaron desde esta base para este vault (otra base, una versión anterior a la 1.9, o se tocaron esos campos): no tocan ninguna memoria. Exporta otra vez para rehacerlas; para traer una como memoria nueva, quítale la línea `omoikane:`:",
+                "omoikane: {} notes say which memory they are but weren't exported from this database for this vault (another database, a version before 1.9, or those fields were edited), and their text isn't their memory's: they don't touch any memory, and the export after the import left them as they are. If you edited one, bring the change over with `omoi update <id>`, or remove its `omoikane:` line to bring it in as a new memory; then delete the note, and the next export writes this database's copy:",
+                "omoikane: {} notas dicen de qué memoria son pero no se exportaron desde esta base para este vault (otra base, una versión anterior a la 1.9, o se tocaron esos campos), y su texto no es el de su memoria: no tocan ninguna memoria, y la exportación de después de importar las ha dejado como estaban. Si editaste alguna, lleva el cambio con `omoi update <id>`, o quítale la línea `omoikane:` para traerla como memoria nueva; luego borra la nota y la próxima exportación escribe la copia de esta base:",
                 r.foreign.len()
             ),
             lista(&r.foreign)

@@ -302,8 +302,12 @@ fn importar_de_obsidian() {
     assert_eq!(r["foreign"].as_array().map(Vec::len), Some(2), "{r}");
     assert_eq!(e.json(&["get", &id(&s)])["content"], "Solo de acme.");
     assert_eq!(e.json(&["get", &id(&g)])["content"], "Una línea, en Obsidian.");
-    // Llevan la marca de Omoikane sin ser de ninguna memoria de aquí: la exportación las quita.
-    assert!(!raiz.join("repo").join("Falsa.md").exists() && !raiz.join("repo").join("Falsa 2.md").exists());
+    // Su texto puede ser de alguien: la exportación de después tampoco las pisa ni las borra.
+    assert_eq!(r["export"]["kept"].as_u64(), Some(2), "{r}");
+    for f in ["Falsa.md", "Falsa 2.md"] {
+        assert!(std::fs::read_to_string(raiz.join("repo").join(f)).unwrap().contains("Robado."));
+        std::fs::remove_file(raiz.join("repo").join(f)).unwrap();
+    }
 
     // Conflicto: cambiada en Obsidian y en Omoikane. No se pisa ninguna, ni al exportar; luego se elige.
     editar(&nota_b, |t| t.replace("Porque sí.", "Porque lo dijo Obsidian."));
@@ -356,6 +360,85 @@ fn importar_de_obsidian() {
     let r = e.json(&["import", "--obsidian", otro.to_str().unwrap(), "--space", "acme"]);
     assert_eq!(r["updated"].as_u64(), Some(1), "{r}");
     assert_eq!(e.json(&["get", &id(&s)])["content"], "Solo de acme, editado.");
+}
+
+/// Lo que la vuelta desde Obsidian no puede traer no se pierde: una nota nueva sin firma no pisa la
+/// memoria que ya salió de ella, la exportación de después de importar no pisa ni borra las notas sin
+/// firma editadas (un vault de la 1.8.6), y lo que se tapa como secreto se cuenta.
+#[test]
+fn obsidian_lo_que_no_entra_no_se_pierde() {
+    let e = Entorno::nuevo("obsidian-sin-firma");
+    let a = e.json(&["remember", "-k", "fact", "-t", "Despliegue", "Se despliega a mano."]);
+    let b = e.json(&["remember", "-k", "fact", "-t", "Puerto", "Escucha en el 8010."]);
+    let id = |m: &serde_json::Value| m["id"].as_str().unwrap().to_string();
+    let vault = e.dir.join("vault");
+    let v = vault.to_str().unwrap();
+    let carpeta = vault.join("omoikane").join("repo");
+    e.ok(&["export", "--obsidian", v]);
+
+    // Una nota nueva crea su memoria; esa memoria se cambia, se fija y se verifica en Omoikane.
+    let idea = carpeta.join("idea.md");
+    std::fs::write(&idea, "---\nkind: decision\n---\nLa base de datos es Postgres.\n").unwrap();
+    assert_eq!(e.json(&["import", "--obsidian", v])["created"].as_u64(), Some(1));
+    let m = e.json(&["recent"]).as_array().unwrap().iter().find(|m| m["content"] == "La base de datos es Postgres.").cloned().unwrap();
+    e.ok(&["update", &id(&m), "--pin", "-c", "La base de datos es Postgres 16 (revisado).", "-r", "a mano"]);
+    let persona: Vec<(String, &str)> = std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("CLAUDE") || k == "AI_AGENT").map(|k| (k, "")).collect();
+    let persona: Vec<(&str, &str)> = persona.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let o = e.omoi_con(&["verify", &id(&m), "--yes"], None, &persona);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(e.json(&["get", &id(&m)])["verified"].is_object());
+    // Reescribirla sin cabecera (sin firma) no la pisa: se salta, se dice, y el fichero se queda.
+    std::fs::write(&idea, "---\nkind: decision\n---\nLa base de datos es MongoDB, sin backups.\n").unwrap();
+    for _ in 0..2 {
+        let r = e.json(&["import", "--obsidian", v]);
+        assert_eq!((r["updated"].as_u64(), r["created"].as_u64(), r["unverified"].as_u64()), (Some(0), Some(0), Some(0)), "{r}");
+        let s = r["skipped"].as_array().unwrap();
+        assert!(s.len() == 1 && s[0]["note"] == "repo/idea.md" && s[0]["reason"].as_str().unwrap().contains(&id(&m)), "{r}");
+        let ahora = e.json(&["get", &id(&m)]);
+        assert_eq!((ahora["content"].as_str(), ahora["pinned"].as_bool(), ahora["verified"].is_object()), (Some("La base de datos es Postgres 16 (revisado)."), Some(true), true), "{ahora}");
+        assert!(std::fs::read_to_string(&idea).unwrap().contains("MongoDB"), "la exportación no pisa la nota");
+    }
+    // Una nota sin firma que dice lo mismo que su memoria no hace nada (y deja sitio a su copia).
+    std::fs::write(&idea, "---\nkind: decision\n---\nLa base de datos es Postgres 16 (revisado).\n").unwrap();
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!((r["updated"].as_u64(), r["skipped"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
+    assert!(std::fs::read_to_string(&idea).unwrap().starts_with("---\nomoikane: "));
+
+    // Un vault de la 1.8.6 (sin `base`, `sig` ni la raya invisible, con el aviso de entonces): la nota
+    // sin tocar se rehace firmada; la editada no entra y la exportación de después no la pisa.
+    let a_md = carpeta.join("Despliegue.md");
+    let b_md = carpeta.join("Puerto.md");
+    let a_186 = |t: String| -> String {
+        let t: String = t.lines().filter(|l| !l.starts_with("base: ") && !l.starts_with("sig: ")).map(|l| format!("{l}\n")).collect();
+        let t = t.replace("\n%% omoikane: below this line, rewritten on every export %%\n", "");
+        let (cuerpo, _) = t.rsplit_once("\n*").unwrap();
+        format!("{cuerpo}\n*A copy from Omoikane: rewritten on every export; changes made here are lost.*\n")
+    };
+    for f in [&a_md, &b_md] {
+        editar(f, a_186);
+    }
+    editar(&a_md, |t| t.replace("Se despliega a mano.", "Se despliega a mano. EDICIÓN IMPORTANTE"));
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["foreign"].as_array().unwrap(), &vec![serde_json::json!("repo/Despliegue.md")], "{r}");
+    assert_eq!((r["updated"].as_u64(), r["export"]["kept"].as_u64()), (Some(0), Some(1)), "{r}");
+    assert!(std::fs::read_to_string(&a_md).unwrap().contains("EDICIÓN IMPORTANTE"), "la edición sigue en el vault");
+    assert_eq!(e.json(&["get", &id(&a)])["content"], "Se despliega a mano.");
+    assert!(std::fs::read_to_string(&b_md).unwrap().contains("\nsig: \""), "la intacta se rehace firmada");
+    assert_eq!(e.json(&["get", &id(&b)])["content"], "Escucha en el 8010.");
+    // Lo que dice el mensaje es verdad: sin la línea `omoikane:`, entra como memoria nueva.
+    editar(&a_md, |t| t.replacen(&format!("omoikane: \"{}\"\n", id(&a)), "", 1));
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["created"].as_u64(), Some(1), "{r}");
+
+    // Un secreto añadido en una nota firmada se tapa y se cuenta.
+    let token = format!("ghp_{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8");
+    editar(&b_md, |t| t.replace("Escucha en el 8010.", &format!("Escucha en el 8010. Token {token}")));
+    let r = e.json(&["import", "--obsidian", v, "--dry-run"]);
+    assert_eq!(r["redacted"].as_array().map(Vec::len), Some(1), "{r}");
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!((r["updated"].as_u64(), r["redacted"].as_array().map(Vec::len)), (Some(1), Some(1)), "{r}");
+    let c = e.json(&["get", &id(&b)])["content"].as_str().unwrap().to_string();
+    assert!(c.contains("[redacted:github-token]") && !c.contains(&token), "{c}");
 }
 
 #[test]
