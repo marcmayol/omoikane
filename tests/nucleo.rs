@@ -308,7 +308,7 @@ fn visor() {
     };
     assert!(pantalla(&mut t, &mut e).contains("Pasarela de pago"));
     let tecla = |e: &mut Estado, db: &mut rusqlite::Connection, c: KeyCode| {
-        if e.tecla(KeyEvent::new(c, KeyModifiers::NONE), db).unwrap() {
+        if e.tecla(KeyEvent::new(c, KeyModifiers::NONE), db, None).unwrap() {
             e.cargar(db, None).unwrap();
         }
     };

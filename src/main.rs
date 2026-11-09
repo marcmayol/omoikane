@@ -464,9 +464,9 @@ enum Orden {
         #[arg(long)]
         list: bool,
     },
-    /// Browse, search, pin and forget memories in the terminal.
+    /// Browse, search, pin and forget memories in the terminal, and restore or delete them from the trash.
     Tui {
-        /// Start with every project (default: this one and the global ones).
+        /// Start with every project seen from here: its space (from the home folder, all of them). Default: this one and the global ones.
         #[arg(long)]
         all: bool,
     },

@@ -4,6 +4,19 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.9.0 (unreleased)
+
+### The terminal viewer knows spaces and the trash
+- `omoi tui` now sees exactly what the web view sees from the same folder, because it decides it the same way. Before, `a` (and `--all`) showed every memory of every project even from a client's project, so another client's memories were one key away. Now, from a project in a space, "all" is that space (its projects and its own memories) plus the global ones; from a project without a space, the projects without a space plus the global ones; from the home folder, everything.
+- Each memory says where it lives: in the list, when it mixes projects, a short column with its space (`◇Acme` for a memory of the space itself, `global`, or `-` for a project without a space); in the memory itself, its project and space.
+- `e` filters by space: each space seen from here, then the projects without a space, then no filter. Global memories always show, as in the web view.
+- `t` opens the trash (what is seen from here, narrowed by the space filter): when each memory was forgotten, on which computer, and how many days are left before it is deleted for good (`OMOIKANE_TRASH_DAYS`). `Enter` or `r` restores it, `x` deletes it for good and `E` empties what is listed, both after asking. From the home folder with no filter, `E` empties the whole trash like `omoi trash --empty`; from a project or with a filter, only what is listed, and another client's forgotten memories are never touched.
+- `h` (history) goes through the same scope check as `omoi history`.
+- It fits a terminal of 80×24 and smaller: the help line wraps instead of being cut off, and below 70 columns the memory goes under the list (or, with little room, opens with `Enter`).
+
+### Compatibility
+- The terminal viewer changes nothing in the database (schema 10), the sync lines or the `omoi export` format.
+
 ## 1.8.6 (2026-11-08)
 
 ### Duplicated trade memories

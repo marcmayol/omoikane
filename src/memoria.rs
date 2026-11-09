@@ -1409,6 +1409,18 @@ pub fn vaciar_papelera(db: &Connection) -> Result<usize> {
     Ok(db.execute("DELETE FROM forgotten", [])?)
 }
 
+/// Borra del todo estas memorias de la papelera (ids enteros), y solo esas: lo que vacía la TUI desde un
+/// proyecto, que no ve la papelera de otro espacio. Devuelve cuántas había.
+pub fn vaciar_papelera_de(db: &mut Connection, ids: &[String]) -> Result<usize> {
+    let tx = escribir_tx(db)?;
+    let mut n = 0;
+    for id in ids {
+        n += tx.execute("DELETE FROM forgotten WHERE id = ?1", [id])?;
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo. La memoria se
 /// guarda aparte por si hay que devolverla (`restaurar`).
 pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str, equipo: &str) -> Result<Memoria> {
