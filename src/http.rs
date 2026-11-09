@@ -168,38 +168,39 @@ fn parametros(consulta: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Desde dónde mira una petición: el proyecto (para las herramientas) y lo que se ve desde él.
+/// Desde dónde mira una petición: el proyecto (para las herramientas) y lo que se ve desde él. La TUI
+/// (`omoi tui`) mira con el mismo, para que enseñe exactamente lo que enseña la web.
 #[derive(Clone)]
-struct Mirador {
+pub(crate) struct Mirador {
     /// La carpeta que se pasa a las herramientas (`?dir=` o la del servidor).
     dir: Option<PathBuf>,
     /// El proyecto, como lo guarda la base.
     proyecto: String,
     /// Lo que se ve desde el proyecto (para la vista de responsable, que lo amplía ella).
-    base: Ambito,
+    pub(crate) base: Ambito,
     /// «Todos los proyectos» desde aquí: su espacio entero, los que no tienen espacio, o todo.
-    vista: Ambito,
+    pub(crate) vista: Ambito,
     /// Si se ve todo (carpeta del usuario).
-    todo: bool,
+    pub(crate) todo: bool,
     /// La clave del espacio desde el que se mira (vacía: ninguno, o todo).
-    espacio: String,
+    pub(crate) espacio: String,
 }
 
 impl Mirador {
     /// Si se ve lo de este espacio (su clave; vacía: sin espacio), o una memoria global.
-    fn ve_espacio(&self, clave: &str, global: bool) -> bool {
+    pub(crate) fn ve_espacio(&self, clave: &str, global: bool) -> bool {
         self.todo || global || clave == self.espacio
     }
 
     /// Si se ve la memoria `id`, viva o en la papelera. Una que no existe, sí: ya lo dirá quien la busque.
-    fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
+    pub(crate) fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
         // Una memoria de oficio, solo si algún proyecto de lo que se ve tiene ese oficio.
         Ok(self.todo
             || (memoria::alcance_de_memoria(db, id)?.is_none_or(|(global, clave)| self.ve_espacio(&clave, global)) && !crate::oficios::oculta(db, &self.vista, id)?))
     }
 
     /// Si se ve un ámbito pedido: desde todo, cualquiera; si no, uno que no sea todo y de su mismo espacio.
-    fn abarca(&self, otro: &Ambito) -> bool {
+    pub(crate) fn abarca(&self, otro: &Ambito) -> bool {
         self.todo || (!matches!(otro, Ambito::Todos) && self.base.espacio() == otro.espacio())
     }
 }
@@ -232,7 +233,7 @@ fn mirar(
 }
 
 impl Mirador {
-    fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, proyecto: String) -> Result<Mirador> {
+    pub(crate) fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, proyecto: String) -> Result<Mirador> {
         let base = Ambito::de(db, &proyecto)?;
         let todo = matches!(base, Ambito::Todos);
         let espacio = crate::proyecto::clave_espacio(db, base.espacio())?;

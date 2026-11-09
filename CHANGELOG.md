@@ -18,11 +18,20 @@ How it works is in [docs/](docs/).
 - `omoi export --all --encrypt` encrypted everything with the general repository's key, clients' memories included. Now each line goes with the key of its space's repository: Acme's with Acme's key, Beta's with Beta's, and what belongs to no space with the general one. If this computer doesn't have the repository of a space the copy would carry, nothing is written and the error names those spaces. The general repository is only needed when there is something outside every space.
 - `omoi import` opens each line with whichever key of this computer opens it, as before. A computer that lacks one of the keys imports nothing and says how to join the missing repository. Copies made by earlier versions import as before.
 
+### The terminal viewer knows spaces and the trash
+- `omoi tui` now sees exactly what the web view sees from the same folder, because it decides it the same way. Before, `a` (and `--all`) showed every memory of every project even from a client's project, so another client's memories were one key away. Now, from a project in a space, "all" is that space (its projects and its own memories) plus the global ones; from a project without a space, the projects without a space plus the global ones; from the home folder, everything.
+- Each memory says where it lives: in the list, when it mixes projects, a short column with its space (`◇Acme` for a memory of the space itself, `global`, or `-` for a project without a space); in the memory itself, its project and space.
+- `e` filters by space: each space seen from here, then the projects without a space, then no filter. Global memories always show, as in the web view.
+- `t` opens the trash (what is seen from here, narrowed by the space filter): when each memory was forgotten, on which computer, and how many days are left before it is deleted for good (`OMOIKANE_TRASH_DAYS`). `Enter` or `r` restores it, `x` deletes it for good and `E` empties what is listed, both after asking. From the home folder with no filter, `E` empties the whole trash like `omoi trash --empty`; from a project or with a filter, only what is listed, and another client's forgotten memories are never touched.
+- `h` (history) goes through the same scope check as `omoi history`.
+- It fits a terminal of 80×24 and smaller: the help line wraps instead of being cut off, and below 70 columns the memory goes under the list (or, with little room, opens with `Enter`).
+
 ### Compatibility
 - The database schema stays at 10 and `lector_minimo` doesn't move. The one addition is a column with a default value, `memory_version.extra`, added when the database is opened. Versions 1.0 to 1.8.6 name their columns when they write history, so they open, read and write a 1.9.0 database as before (their new history entries get an empty `extra`).
 - The sync lines and the export format don't change. A history entry may carry fields older versions don't know: they ignore them, and drop them only if they rewrite that history (forgetting and restoring the memory there). A key like `dir:<you>/acme/web` is just another key to them. One case stays split until every computer is updated: a computer on an older version that puts its own copy of that client's folder into the space keeps the old key, so both computers see two projects (`omoi projects merge` joins them).
 - An encrypted copy of everything is the same format as before, with each line under its space's key. Versions 1.0 to 1.8.6 already try every key of the computer on each line and read the whole file before applying anything: with all the keys they import it as before; missing one, they stop at that line and nothing is applied.
 - `export --all --encrypt` now refuses on a computer with a space that has memories and no sync repository of its own (before, that space went with the general key). Set up its repository, or export without `--encrypt`.
+- The terminal viewer changes nothing in the database (schema 10), the sync lines or the `omoi export` format.
 
 ## 1.8.6 (2026-11-08)
 
