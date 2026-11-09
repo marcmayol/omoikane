@@ -244,3 +244,18 @@ fn las_pantallas_caben_en_terminales_pequenas() {
     println!("--- borrar del todo 80x24 ---\n{confirmar}");
     assert!(confirmar.contains("s / n") || confirmar.contains("y / n"), "{confirmar}");
 }
+
+/// `omoi trash` y `omoi restore` miran la papelera con `http::papelera_desde`: desde un cliente, ni se
+/// lista ni se recupera lo olvidado de otro cliente.
+#[test]
+fn la_papelera_de_la_cli_no_ensena_otro_cliente() {
+    let b = base("papelera-cli");
+    let (desde_acme, todo) = omoikane::http::papelera_desde(&b.db, "/acme-web").unwrap();
+    assert!(!todo);
+    let t: Vec<&str> = desde_acme.iter().map(|o| o.title.as_str()).collect();
+    assert_eq!(t, vec!["Acme web: tirar"], "desde acme: {t:?}");
+    let (desde_casa, todo) = omoikane::http::papelera_desde(&b.db, &casa()).unwrap();
+    assert!(todo);
+    assert_eq!(desde_casa.len(), 2);
+    let _ = id_olvidada(&b.db, "Globex: tirar");
+}

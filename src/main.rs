@@ -1648,18 +1648,25 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         Orden::Restore { id } => restaurar_cli(c, id),
         Orden::Verify(v) => verificar_cli(c, v),
         Orden::Trash { empty, yes } => {
-            let db = abrir(c)?;
+            let mut db = abrir(c)?;
             if !empty {
                 return listar_papelera(c, &db);
             }
-            let n = memoria::papelera(&db)?.len();
+            // Desde un cliente, solo lo que se ve desde ahí (su espacio y lo global), como la web y la TUI.
+            let (visibles, todo) = omoikane::http::papelera_desde(&db, &proyecto_de(c)?)?;
+            let n = visibles.len();
             if !yes {
                 anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
                 if !preguntar_si(&tr!("Empty the trash ({n} memories)? They can't be brought back afterwards.", "¿Vaciar la papelera ({n} memorias)? Después no se pueden recuperar."), false)? {
                     return Ok(());
                 }
             }
-            let n = memoria::vaciar_papelera(&db)?;
+            let n = if todo {
+                memoria::vaciar_papelera(&db)?
+            } else {
+                let ids: Vec<String> = visibles.into_iter().map(|o| o.id).collect();
+                memoria::vaciar_papelera_de(&mut db, &ids)?
+            };
             if c.json {
                 return json(&serde_json::json!({ "emptied": n }));
             }
@@ -4360,6 +4367,8 @@ fn restaurar_cli(c: &Comun, id: Option<String>) -> Result<()> {
         return listar_papelera(c, &abrir(c)?);
     };
     let (mut db, modelo) = abrir_con_modelo(c)?;
+    // Con el id dado, como `forget` y `get`: quien lo escribe en su terminal ya lo tiene. Lo que se
+    // acota por carpeta es lo que se enseña sin pedirlo (la lista) y lo que se borra en bloque.
     let antes = omoikane::revisar::antes(&db)?;
     let m = memoria::restaurar(&mut db, &id, modelo.as_ref())?;
     let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
@@ -4372,7 +4381,7 @@ fn restaurar_cli(c: &Comun, id: Option<String>) -> Result<()> {
 }
 
 fn listar_papelera(c: &Comun, db: &Connection) -> Result<()> {
-    let v = memoria::papelera(db)?;
+    let (v, _) = omoikane::http::papelera_desde(db, &proyecto_de(c)?)?;
     if c.json {
         return json(&v);
     }

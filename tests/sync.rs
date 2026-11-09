@@ -1309,7 +1309,10 @@ fn de_personal_a_empresa() {
     for id in del_proyecto.iter().copied().chain([preferencia.as_str(), astro.as_str(), rss.as_str()]) {
         assert!(a.get(id).is_some(), "A perdió {id}");
     }
-    assert!(a.ok(&["trash"]).contains("Fastly"));
+    // La papelera desde la carpeta de usuario (ve todo); desde otra carpeta solo lo que se ve desde ahí.
+    let casa = a.dir.to_string_lossy().to_string();
+    assert!(a.ok_en(&a.dir, &["trash"], &[("USERPROFILE", &casa), ("HOME", &casa)]).contains("Fastly"));
+    assert!(a.ok_en(&web, &["trash"], &[]).contains("Fastly"));
     assert_eq!(historial(&a, &staging), hist_a);
     assert_eq!(veredicto(&a, &web)["reason"], ver_a["reason"]);
 }

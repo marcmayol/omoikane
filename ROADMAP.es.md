@@ -15,13 +15,8 @@ Hacia dónde va Omoikane, qué no va a hacer y por qué. No hay fechas: una vers
 
 Huecos conocidos, sin orden fijo:
 
-- La interfaz de terminal todavía no conoce la papelera ni los espacios.
-- Dos carpetas sin remoto de git, con el mismo nombre, en los espacios de dos clientes distintos, se pausan la una a la otra. Hace falta una clave de proyecto que incluya el espacio sin romper las que ya existen.
-- Con 50.000 memorias, `review --all` tarda unos 2 s y una búsqueda en todo, unos 600 ms. El recall, `remember` y `sync` ya van bien ahí.
-- `export --encrypt` de varios espacios a la vez usa la clave general; cada espacio debería llevar la suya.
-- Un campo nuevo dentro del historial de versiones de una memoria se pierde en versiones anteriores; hace falta un campo `extra` también ahí.
-- Una comprobación de rendimiento en la CI que falle si el recall o la búsqueda van más lentos que en la versión anterior.
-- Volver de un vault de Obsidian a Omoikane, si alguien lo pide (hoy la exportación solo va en un sentido).
+- Una carpeta sin remoto de git que ya se sincronizó por el repositorio general antes de entrar en el espacio de un cliente conserva su clave de siempre, así que dos carpetas con el mismo nombre en dos clientes siguen pausándose la una a la otra en ese caso (se resuelve con `omoi projects keep`). Las que entran en un espacio antes de salir del equipo ya llevan el espacio en la clave desde la 1.9.0.
+- Mientras un equipo siga en una versión anterior a la 1.9.0, la misma carpeta de un cliente puede quedar como dos proyectos (`omoi projects merge` los junta).
 
 ## Más adelante, quizá
 
@@ -43,6 +38,7 @@ Decidido que no, con el motivo:
 
 | Versión | Fecha | Qué trajo |
 |---|---|---|
+| 1.9.0 | 2026-11-09 | Papelera y espacios en la interfaz de terminal, lo editado en Obsidian vuelve, carpetas con el mismo nombre en dos clientes, copias cifradas con la clave de cada cliente, revisión 3,6 veces más rápida con 50.000 memorias, guardia de rendimiento en la CI |
 | 1.8.6 | 2026-11-08 | Enlace directo para verificar una memoria, verificaciones que sobreviven al cambio de claves, oficios duplicados, contraseñas escritas a mano redactadas, tiempo máximo en las descargas |
 | 1.8.5 | 2026-11-08 | Memorias verificadas por una persona, exportar e importar OKF, código que cambió bajo una memoria, procedencia |
 | 1.8.0 | 2026-11-07 | Oficios (memoria por stack), nombres de proyecto que toleran erratas, fechas de revisión, memorias con clave |

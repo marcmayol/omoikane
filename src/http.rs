@@ -232,6 +232,20 @@ fn mirar(
     Ok(Ok(Mirador::nuevo(db, Some(PathBuf::from(d)), proyecto)?))
 }
 
+/// La papelera vista desde el proyecto `proyecto` (`""` o la carpeta del usuario: todo), con el mismo
+/// criterio que la web y la TUI: desde un cliente, su espacio y lo global; nunca lo de otro cliente.
+/// Para `omoi trash` y `omoi restore`.
+pub fn papelera_desde(db: &rusqlite::Connection, proyecto: &str) -> Result<(Vec<memoria::Olvidada>, bool)> {
+    let m = Mirador::nuevo(db, None, proyecto.to_string())?;
+    let mut v = Vec::new();
+    for o in memoria::papelera(db)? {
+        if m.ve(db, &o.id)? {
+            v.push(o);
+        }
+    }
+    Ok((v, m.todo))
+}
+
 impl Mirador {
     pub(crate) fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, proyecto: String) -> Result<Mirador> {
         let base = Ambito::de(db, &proyecto)?;

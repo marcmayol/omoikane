@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.9.0 (unreleased)
+## 1.9.0 (2026-11-09)
 
 ### Two folders with the same name at two clients
 - Two folders without a git remote and with the same name (a `web` for Acme on one computer and a `web` for Beta on another) had the same project key for the same person: your name and the folder's. Each computer put the other's project on hold, and after `omoi projects keep` whatever came from the other client was rejected at every sync. If the other client's project had arrived first, the folder even joined it, and putting it in its own space asked for `--force`.
@@ -24,6 +24,7 @@ How it works is in [docs/](docs/).
 - `e` filters by space: each space seen from here, then the projects without a space, then no filter. Global memories always show, as in the web view.
 - `t` opens the trash (what is seen from here, narrowed by the space filter): when each memory was forgotten, on which computer, and how many days are left before it is deleted for good (`OMOIKANE_TRASH_DAYS`). `Enter` or `r` restores it, `x` deletes it for good and `E` empties what is listed, both after asking. From the home folder with no filter, `E` empties the whole trash like `omoi trash --empty`; from a project or with a filter, only what is listed, and another client's forgotten memories are never touched.
 - `h` (history) goes through the same scope check as `omoi history`.
+- `omoi trash` (and `omoi restore` without an id) had the same leak: from a client's project they listed the whole trash, other clients' forgotten memories included, and `omoi trash --empty` emptied all of it. They now see what the web view and the terminal viewer see from that folder: from a client's project, the list and `--empty` cover only that client's space and the global memories; from the home folder, the whole trash as before. `omoi restore <id>` still restores the id you name from anywhere, like `omoi forget <id>`.
 - It fits a terminal of 80×24 and smaller: the help line wraps instead of being cut off, and below 70 columns the memory goes under the list (or, with little room, opens with `Enter`).
 
 ### Faster review with many memories

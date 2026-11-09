@@ -15,13 +15,8 @@ Where Omoikane is going, what it won't do and why. There are no dates: a version
 
 Known gaps, in no fixed order:
 
-- The terminal UI doesn't know about the trash or spaces yet.
-- Two folders without a git remote, with the same name, in two different clients' spaces, pause each other. It needs a project key that includes the space without breaking the existing ones.
-- At 50,000 memories, `review --all` takes about 2 s and a search across everything about 600 ms. Recall, `remember` and `sync` are already fine there.
-- `export --encrypt` of several spaces at once uses the general key; each space should keep its own.
-- A field added inside a memory's version history is lost on older versions; it needs an `extra` field there too.
-- A performance check in the CI that fails if recall or search get slower than the previous version.
-- Going back from an Obsidian vault to Omoikane, if people ask for it (today the export only goes one way).
+- A folder without a git remote that was already synced through the general repository before going into a client's space keeps its old key, so two folders with the same name at two clients still pause each other in that case (`omoi projects keep` settles it). Folders that go into a space before leaving the computer carry the space in their key since 1.9.0.
+- While a computer is still on a version before 1.9.0, the same client folder can show up as two projects (`omoi projects merge` joins them).
 
 ## Later, maybe
 
@@ -43,6 +38,7 @@ Decided against, with the reason:
 
 | Version | Date | What it brought |
 |---|---|---|
+| 1.9.0 | 2026-11-09 | Trash and spaces in the terminal viewer, Obsidian edits come back, same-name folders at two clients, encrypted copies with each client's key, review 3.6 times faster at 50,000 memories, a speed guard in CI |
 | 1.8.6 | 2026-11-08 | A direct link to verify a memory, verifications that survive key changes, trade duplicates, hand-written passwords redacted, download time limits |
 | 1.8.5 | 2026-11-08 | Memories verified by a person, OKF export and import, code that changed under a memory, provenance |
 | 1.8.0 | 2026-11-07 | Trades (memory per stack), project names that tolerate typos, review dates, key-based memories |
