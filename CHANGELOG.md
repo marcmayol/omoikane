@@ -4,6 +4,13 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## Unreleased
+
+### The trace in the provenance
+- If the agent runs inside a trace (whoever launched it set `TRACEPARENT`, the W3C Trace Context standard that OpenTelemetry uses), each new memory also keeps its `trace_id` and `span_id`. `get` and `history` show `trace <trace_id>/<span_id>`, the web view too, and the JSON carries both in `provenance`. Claude Code passes `TRACEPARENT` on to its shell and to its MCP servers, so an agent factory that opens a span per step gets, from a run's trace, the memories it left, and from a memory, the step that wrote it. They are random ids with nothing of the project, so global memories and a space's own keep them; trade memories don't carry any provenance, as before. A malformed `TRACEPARENT` (wrong length, uppercase, all zeros, version `ff`) is ignored.
+
+**Compatibility**: reads everything 1.0–1.8 wrote. 1.8.5 and 1.8.6 keep the two new fields as they are, except when they trim the provenance of a memory moved to global, which rewrites it without them.
+
 ## 1.8.6 (2026-11-08)
 
 ### Duplicated trade memories

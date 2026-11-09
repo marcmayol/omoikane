@@ -869,7 +869,7 @@ function detalleHTML(m, vertical) {
         ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
         <span>${T.verificadaF}</span><b>${m.verified ? '✓ ' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) : esc(T.noVerificada)}</b>
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
-        ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
+        ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : '', m.provenance.trace_id ? 'trace ' + esc(m.provenance.trace_id) + '/' + esc(m.provenance.span_id || '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
         <span>${T.id}</span><b class="mono">${m.id}</b>
         ${enlacesHTML(m)}
       </div>
