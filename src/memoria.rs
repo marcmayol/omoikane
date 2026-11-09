@@ -1476,7 +1476,10 @@ pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
 pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
     // El id como en las demás órdenes: en mayúsculas, y un principio que valga para varias es un error.
     let id = id.trim().to_uppercase();
-    ensure!(!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()), tr!("invalid id: «{id}»", "id no válido: «{id}»"));
+    // Al menos 4 caracteres, como `get` y `forget` (`resolver_id`): con uno solo se podía ir sacando de
+    // la papelera, a ciegas, lo que la lista no enseña desde esta carpeta.
+    ensure!(id.len() >= 4, tr!("id too short: «{id}»", "id demasiado corto: «{id}»"));
+    ensure!(id.chars().all(|c| c.is_ascii_alphanumeric()), tr!("invalid id: «{id}»", "id no válido: «{id}»"));
     let tx = escribir_tx(db)?;
     let filas: Vec<(String, String, String, String)> = {
         let mut q = tx.prepare("SELECT id, memory, versions, hlc FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;

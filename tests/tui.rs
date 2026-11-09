@@ -259,3 +259,13 @@ fn la_papelera_de_la_cli_no_ensena_otro_cliente() {
     assert_eq!(desde_casa.len(), 2);
     let _ = id_olvidada(&b.db, "Globex: tirar");
 }
+
+/// `omoi restore` pide al menos 4 caracteres del id, como `get` y `forget`.
+#[test]
+fn recuperar_pide_al_menos_cuatro_caracteres() {
+    let mut b = base("restore-corto");
+    let id = id_olvidada(&b.db, "Globex: tirar");
+    assert!(memoria::restaurar(&mut b.db, &id[..1], None).is_err());
+    assert!(memoria::restaurar(&mut b.db, &id[..3], None).is_err());
+    assert!(memoria::restaurar(&mut b.db, &id, None).is_ok());
+}
