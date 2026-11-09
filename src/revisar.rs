@@ -102,15 +102,72 @@ pub fn comprobar_fecha(tags: &[String]) -> Result<()> {
 
 /// La fecha de revisión si ya ha llegado (`hoy`, el día local) y nadie ha tocado la memoria ni la ha
 /// dado por buena desde ese día. Recordarla no cuenta: que el agente la reciba no dice que siga valiendo.
-fn fecha_llegada<'a>(m: &'a Memoria, revisadas: &HashMap<(String, String), String>, hoy: &str) -> Option<&'a str> {
+fn fecha_llegada<'a>(m: &'a Memoria, revisadas: &HashMap<(String, String), String>, hoy: &Hoy) -> Option<&'a str> {
     let f = fecha_revision(&m.tags)?;
-    if f > hoy || m.updated_at.as_str() >= f {
+    if f > hoy.dia.as_str() {
         return None;
     }
-    if revisadas.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= f) {
+    // Las fechas guardadas son UTC y `f` es un día local: «desde ese día» es desde su medianoche local
+    // pasada a UTC. Comparando con `f` a secas, quien la daba por buena entre medianoche y la hora UTC
+    // (al este de Greenwich) dejaba un sello del día anterior y el aviso no se iba nunca.
+    let inicio = inicio_utc(f, hoy.desfase);
+    if m.updated_at.as_str() >= inicio.as_str() {
+        return None;
+    }
+    if revisadas.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= inicio.as_str()) {
         return None;
     }
     Some(f)
+}
+
+/// El día local y cuántos segundos va la hora local por delante de UTC.
+struct Hoy {
+    dia: String,
+    desfase: i64,
+}
+
+impl Hoy {
+    fn de(db: &Connection) -> Result<Hoy> {
+        let (dia, desfase) = db.query_row(
+            "SELECT date('now', 'localtime'), CAST(strftime('%s', 'now', 'localtime') AS INTEGER) - CAST(strftime('%s', 'now') AS INTEGER)",
+            [],
+            |f| Ok((f.get(0)?, f.get(1)?)),
+        )?;
+        Ok(Hoy { dia, desfase })
+    }
+}
+
+/// La medianoche local del día `f` (`AAAA-MM-DD`) en UTC, como `AAAA-MM-DDTHH:MM:SS`, comparable con
+/// las fechas guardadas (`…Z`).
+fn inicio_utc(f: &str, desfase: i64) -> String {
+    let n = |r: std::ops::Range<usize>| f.get(r).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let s = dias_desde_1970(n(0..4), n(5..7), n(8..10)) * 86_400 - desfase;
+    let (dias, resto) = (s.div_euclid(86_400), s.rem_euclid(86_400));
+    let (a, m, d) = civil(dias);
+    format!("{a:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", resto / 3600, resto % 3600 / 60, resto % 60)
+}
+
+/// Días desde 1970-01-01 (calendario gregoriano proléptico; algoritmo de H. Hinnant).
+fn dias_desde_1970(a: i64, m: i64, d: i64) -> i64 {
+    let a = if m <= 2 { a - 1 } else { a };
+    let era = a.div_euclid(400);
+    let ae = a - era * 400;
+    let dy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let de = ae * 365 + ae / 4 - ae / 100 + dy;
+    era * 146_097 + de - 719_468
+}
+
+/// La fecha de un número de días desde 1970-01-01.
+fn civil(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let de = z - era * 146_097;
+    let ae = (de - de / 1460 + de / 36_524 - de / 146_096) / 365;
+    let da = de - (365 * ae + ae / 4 - ae / 100);
+    let mp = (5 * da + 2) / 153;
+    let d = da - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (ae + era * 400 + i64::from(m <= 2), m, d)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -855,7 +912,7 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
     let ahora = chrono_ahora(db)?;
     let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
     let revisadas = crate::veredictos::oks(db, false)?;
-    let hoy = hoy(db)?;
+    let hoy = Hoy::de(db)?;
     // Opcional, como el aviso: si git o el disco fallan, solo se pierde este.
     let deriva = if esperar { crate::deriva::de(db, &todas) } else { crate::deriva::de_sin_esperar(db, &todas) }.unwrap_or_default();
     // Lo de cada memoria no depende de las demás (salvo leerlas, en `stale_status`): se reparte por
@@ -1325,7 +1382,7 @@ fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revisi
     // La fecha de revisión va también en el recall: dice que la memoria puede haber dejado de valer
     // (el token caducó, la oferta acabó). Los veredictos solo se leen si alguna lleva fecha.
     if memorias.iter().any(|m| fecha_revision(&m.tags).is_some()) {
-        let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, hoy(db)?);
+        let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, Hoy::de(db)?);
         for m in memorias {
             if !r.contains_key(&m.id)
                 && let Some(f) = fecha_llegada(m, &revisadas, &hoy)
@@ -1513,7 +1570,7 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
             *u = m.updated_at.as_str();
         }
     }
-    let hoy = hoy(db)?;
+    let hoy = Hoy::de(db)?;
     // Solo lo ya calculado: al empezar no se lanza git (`deriva::de_ambito`).
     for _ in 0..crate::deriva::de_ambito(db, ambito).map(|d| d.len()).unwrap_or(0) {
         sumar(DERIVA_CODIGO);
@@ -1645,5 +1702,20 @@ mod tests {
     #[test]
     fn frases_partidas() {
         assert_eq!(frases("uno. dos: tres\ncuatro v0.9.2 cinco"), vec!["uno", " dos", " tres", "cuatro v0.9.2 cinco"]);
+    }
+
+    #[test]
+    fn medianoche_local_en_utc() {
+        // Madrid en invierno (+1 h): el día 10 empieza el 9 a las 23:00 UTC.
+        assert_eq!(inicio_utc("2026-11-10", 3600), "2026-11-09T23:00:00");
+        assert_eq!(inicio_utc("2026-01-01", 3600), "2025-12-31T23:00:00");
+        assert_eq!(inicio_utc("2024-03-01", 7200), "2024-02-29T22:00:00");
+        // Al oeste de UTC, el mismo día.
+        assert_eq!(inicio_utc("2026-11-10", -5 * 3600), "2026-11-10T05:00:00");
+        assert_eq!(inicio_utc("2026-11-10", 0), "2026-11-10T00:00:00");
+        for dias in [-1, 0, 59, 10_000, 20_402] {
+            let (a, m, d) = civil(dias);
+            assert_eq!(dias_desde_1970(a, m, d), dias);
+        }
     }
 }
