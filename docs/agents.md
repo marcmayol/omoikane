@@ -4,7 +4,7 @@
 
 ## Claude Code
 
-Once the plugin is in, Claude Code does it by itself: it gets 8 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`), and on every prompt the memories that really relate to it are injected automatically (or nothing). The plugin is a Claude Code mod: it runs the binary directly, with no MCP server and no shell scripts, the same on Windows, macOS and Linux. Any other MCP client can use `omoi mcp` directly.
+Once the plugin is in, Claude Code does it by itself: it gets 9 tools (`remember`, `search`, `get`, `update`, `forget`, `history`, `context`, `recent`, `decisions`), and on every prompt the memories that really relate to it are injected automatically (or nothing). The plugin is a Claude Code mod: it runs the binary directly, with no MCP server and no shell scripts, the same on Windows, macOS and Linux. Any other MCP client can use `omoi mcp` directly.
 
 ## Other agents
 

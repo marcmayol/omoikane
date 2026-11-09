@@ -8,6 +8,7 @@ Omoikane no aloja nada: sincroniza a través de un repositorio git tuyo, dedicad
 
 ```
 omoi sync init git@github.com:tu-usuario/mi-memoria.git   # en el primer equipo: pregunta qué compartir
+omoi sync init --create mi-memoria                        # o crearlo antes como repositorio privado (con gh o glab)
 omoi sync code                                            # escribe un código que lleva la clave
 omoi sync join <código>                                   # en otro equipo (o `--url` para llegar por otra vía)
 ```

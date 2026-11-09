@@ -8,6 +8,7 @@ Omoikane hosts nothing: it syncs through a git repository of yours, used only fo
 
 ```
 omoi sync init git@github.com:you/my-memory.git   # on the first computer: asks what to share
+omoi sync init --create my-memory                 # or create it first as a private repo (with gh or glab)
 omoi sync code                                    # prints a code that carries the key
 omoi sync join <code>                             # on another computer (or `--url` to reach it another way)
 ```

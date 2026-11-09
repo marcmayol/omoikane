@@ -40,7 +40,7 @@ Nunca corre en el recall de cada mensaje. Se calcula una vez al día en segundo 
 
 Cambiar una memoria guarda la versión anterior con el motivo, y `omoi history` las enseña todas.
 
-**Papelera.** Olvidar una memoria (`forget`, desde el agente, la CLI o la vista web) la manda a la papelera con su historial, y un olvido tampoco vuelve desde otro equipo cuando sincronizas. `omoi restore <id>` la devuelve, con su historial, y gana en los demás equipos en la siguiente sincronización: un `forget` hecho por error en una máquina se deshace desde cualquiera. El agente lo hace con `update` y `restore: true`, sin herramienta nueva; la pestaña Revisar tiene el grupo **Papelera** con un botón para cada una. A los 30 días (`OMOIKANE_TRASH_DAYS`; 0 = nunca) se borran del todo; `forget --purge` no pasa por la papelera y `omoi trash --empty` la vacía.
+**Papelera.** Olvidar una memoria (`forget`, desde el agente, la CLI o la vista web) la manda a la papelera con su historial, y un olvido tampoco vuelve desde otro equipo cuando sincronizas. `omoi restore <id>` la devuelve, con su historial, y gana en los demás equipos en la siguiente sincronización: un `forget` hecho por error en una máquina se deshace desde cualquiera. El agente lo hace con `update` y `restore: true`, sin herramienta nueva; la pestaña Revisar tiene el grupo **Papelera** con un botón para cada una. A los 30 días (`OMOIKANE_TRASH_DAYS`; 0 = nunca) se borran del todo; `forget --purge` no pasa por la papelera. `omoi trash` enseña lo que se ve desde la carpeta donde lo lanzas, como la vista web: desde el proyecto de un cliente, solo el espacio de ese cliente y las globales; desde tu carpeta de usuario, todo. `omoi trash --empty` vacía esa misma lista, así que desde un cliente nunca toca lo olvidado de otro. `omoi restore <id>` devuelve el id que le des desde cualquier sitio, con al menos 4 caracteres. `omoi tui` también tiene la papelera (`t`).
 
 ## Diario de sesiones
 
@@ -128,7 +128,7 @@ La verificación solo la da una persona. Una etiqueta `verified` es una etiqueta
 
 ## Copia diaria
 
-Al empezar la primera sesión de cada día, Omoikane copia la base a `~/.omoikane/backups/omoikane-<fecha>.db` y conserva las 7 últimas (`OMOIKANE_BACKUPS`; 0 = apagado). `omoi backup` la hace ahora y `omoi doctor` dice cuándo fue la última.
+Al empezar la primera sesión de cada día, Omoikane copia la base a `~/.omoikane/backups/omoikane-<fecha>.db` y conserva las 7 últimas (`OMOIKANE_BACKUPS`; 0 = apagado). `omoi backup` la hace ahora (`--list` enseña las que hay) y `omoi doctor` dice cuándo fue la última.
 
 ## Importar de otras herramientas
 

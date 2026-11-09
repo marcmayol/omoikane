@@ -40,7 +40,7 @@ It never runs in each prompt's recall. It is worked out once a day in the backgr
 
 Changing a memory keeps the previous version with the reason, and `omoi history` shows them all.
 
-**Trash.** Forgetting a memory (`forget`, from the agent, the CLI or the web view) sends it to the trash with its history, and a forget doesn't come back from another computer when you sync either. `omoi restore <id>` brings it back, history included, and wins on the other computers at the next sync: a `forget` made by mistake on one machine is undone from any of them. The agent does it with `update` and `restore: true`, with no new tool; the Review tab has a **Trash** group with a button for each one. After 30 days (`OMOIKANE_TRASH_DAYS`; 0 = never) they are deleted for good; `forget --purge` skips the trash and `omoi trash --empty` empties it.
+**Trash.** Forgetting a memory (`forget`, from the agent, the CLI or the web view) sends it to the trash with its history, and a forget doesn't come back from another computer when you sync either. `omoi restore <id>` brings it back, history included, and wins on the other computers at the next sync: a `forget` made by mistake on one machine is undone from any of them. The agent does it with `update` and `restore: true`, with no new tool; the Review tab has a **Trash** group with a button for each one. After 30 days (`OMOIKANE_TRASH_DAYS`; 0 = never) they are deleted for good; `forget --purge` skips the trash. `omoi trash` lists what is seen from the folder you run it in, as the web view does: from a client's project, only that client's space and the global memories; from your home folder, everything. `omoi trash --empty` empties that same list, so from a client's project it never touches another client's forgotten memories. `omoi restore <id>` restores the id you give from anywhere, with at least 4 characters of it. `omoi tui` has the trash too (`t`).
 
 ## Session diary
 
@@ -128,7 +128,7 @@ Verification only ever comes from a person. A `verified` tag is just a tag, on e
 
 ## Daily copy
 
-At the first session start of each day, Omoikane copies the database to `~/.omoikane/backups/omoikane-<date>.db` and keeps the last 7 (`OMOIKANE_BACKUPS`; 0 = off). `omoi backup` does it now, and `omoi doctor` says when the last one was.
+At the first session start of each day, Omoikane copies the database to `~/.omoikane/backups/omoikane-<date>.db` and keeps the last 7 (`OMOIKANE_BACKUPS`; 0 = off). `omoi backup` does it now (`--list` shows the copies there are), and `omoi doctor` says when the last one was.
 
 ## Importing from other tools
 

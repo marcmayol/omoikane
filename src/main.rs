@@ -325,14 +325,14 @@ enum Orden {
         #[arg(long)]
         purge: bool,
     },
-    /// Bring back a memory from the trash, on this or any synced computer (without an id, list the trash).
+    /// Bring back a memory from the trash, on this or any synced computer (without an id, list the trash seen from here).
     Restore {
-        /// Memory id (its start is enough).
+        /// Memory id (its first 4 characters or more).
         id: Option<String>,
     },
-    /// What is in the trash: memories forgotten here or elsewhere, kept 30 days (OMOIKANE_TRASH_DAYS).
+    /// What is in the trash, seen from here (from a client's project, its space and the global ones): memories forgotten on this or another computer, kept 30 days (OMOIKANE_TRASH_DAYS).
     Trash {
-        /// Empty it now.
+        /// Empty it now (what is seen from here).
         #[arg(long)]
         empty: bool,
         /// Don't ask before emptying.
@@ -439,7 +439,7 @@ enum Orden {
         /// From every project (default: this one and the global ones).
         #[arg(long, conflicts_with = "espejo")]
         all: bool,
-        /// Encrypt every line with the sync key (AES-SIV), to keep the copy anywhere.
+        /// Encrypt every line with the key of its space's sync repository (AES-SIV; outside every space, the general one), to keep the copy anywhere.
         #[arg(long, conflicts_with = "espejo")]
         encrypt: bool,
         /// Instead: one Markdown note per memory in <vault>/omoikane/, for Obsidian's graph view (a mirror: rewritten on every export). Personal projects and the global ones by default.
@@ -540,9 +540,9 @@ enum Orden {
         #[arg(long, hide = true)]
         pull: bool,
     },
-    /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
+    /// Set up an agent to use Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp, kilo or grok.
     Setup {
-        /// The agent: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp or kilo.
+        /// The agent: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp, kilo or grok.
         agente: String,
         /// Don't ask before changing anything.
         #[arg(short, long)]
@@ -574,7 +574,7 @@ enum Orden {
     /// its JSON arguments on stdin and prints its result. Without a name, lists the tools.
     #[command(hide = true)]
     Tool {
-        /// The tool: remember, search, get, update, forget, history, context or recent.
+        /// The tool: remember, search, get, update, forget, history, context, recent or decisions.
         nombre: Option<String>,
     },
 }
@@ -4039,6 +4039,7 @@ fn en_espanol(c: Command) -> Command {
             ("tags", "Etiqueta libre (se puede repetir). `review:AAAA-MM-DD` la marca para revisar ese día."),
             ("pinned", "Se inyecta siempre en su proyecto."),
             ("global", "Vale para todos los proyectos, no solo para este."),
+            ("space", "Vale para todos los proyectos de un espacio: el de este proyecto (`--space`) o el que nombres (`--space=<nombre>`)."),
             ("trades", "Memoria de oficio (android, web, wordpress…; se puede repetir): la ven todos los proyectos de ese oficio, de cualquier cliente, y ningún otro. Solo conocimiento del stack, nada de un proyecto ni de un cliente."),
             ("para", "Con --trade, para quién es: client (solo proyectos en un espacio, de un cliente), personal (solo proyectos sin espacio) o both (por defecto)."),
             ("source", "Quién la guarda (por ejemplo «claude-code:<sesión>»)."),
@@ -4052,7 +4053,9 @@ fn en_espanol(c: Command) -> Command {
             ("kind", "Solo de este tipo."),
             ("limit", "Cuántos resultados."),
             ("tags", "Solo las que llevan esta etiqueta (se puede repetir)."),
-            ("all", "En todos los proyectos."),
+            ("all", "En todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "En este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "En este espacio."),
         ]),
         ("get", "Una memoria entera (basta con el principio del id).", &[
             ("id", "Id de la memoria (basta con el principio)."),
@@ -4072,6 +4075,7 @@ fn en_espanol(c: Command) -> Command {
             ("no_tags", "Quita todas las etiquetas."),
             ("project", "Llevarla al proyecto de esta carpeta."),
             ("global", "Hacerla global: vale para todos los proyectos."),
+            ("space", "Llevarla a este espacio: vale para todos sus proyectos."),
             ("trades", "Hacerla de oficio (se puede repetir): la ven todos los proyectos de ese oficio. Una personal conserva su id, su historial y sus veredictos; la de un cliente (en un espacio) pasa a una memoria de oficio NUEVA y la original se queda."),
             ("para", "En una memoria de oficio, para quién es: client (proyectos en un espacio), personal (proyectos sin espacio) o both."),
             ("no_trade", "Deja de ser de oficio (se queda como global corriente, no vuelve a su proyecto)."),
@@ -4088,9 +4092,9 @@ fn en_espanol(c: Command) -> Command {
             ("yes", "Sin preguntar. Sin él, omoi pregunta en una terminal y se niega en cualquier otro sitio."),
             ("purge", "Sin pasar por la papelera: la borra del todo."),
         ]),
-        ("restore", "Devuelve una memoria de la papelera, en este equipo o en cualquiera sincronizado (sin id, enseña la papelera).", &[("id", "Id de la memoria (basta con el principio).")]),
-        ("trash", "Lo que hay en la papelera: memorias olvidadas aquí o en otro equipo, 30 días (OMOIKANE_TRASH_DAYS).", &[
-            ("empty", "Vaciarla ahora."),
+        ("restore", "Devuelve una memoria de la papelera, en este equipo o en cualquiera sincronizado (sin id, enseña la papelera que se ve desde aquí).", &[("id", "Id de la memoria (sus 4 primeros caracteres o más).")]),
+        ("trash", "Lo que hay en la papelera, visto desde aquí (desde el proyecto de un cliente, su espacio y las globales): memorias olvidadas en este equipo o en otro, 30 días (OMOIKANE_TRASH_DAYS).", &[
+            ("empty", "Vaciarla ahora (lo que se ve desde aquí)."),
             ("yes", "Sin preguntar antes de vaciar."),
         ]),
         ("history", "Versiones anteriores de una memoria.", &[("id", "Id de la memoria (basta con el principio).")]),
@@ -4109,7 +4113,9 @@ fn en_espanol(c: Command) -> Command {
         ("recent", "Las últimas memorias guardadas o cambiadas.", &[
             ("limit", "Cuántas."),
             ("kind", "Solo de este tipo."),
-            ("all", "De todos los proyectos."),
+            ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "De este espacio."),
         ]),
         ("diary", "El diario de sesiones: una línea por sesión (cuándo, en qué proyecto, ficheros tocados, memorias recibidas y guardadas), de la más reciente a la más vieja. Solo de este equipo.", &[
             ("limit", "Cuántas."),
@@ -4144,11 +4150,12 @@ fn en_espanol(c: Command) -> Command {
             ("files", "Ficheros, relativos al repositorio o absolutos. Sin ninguno (o con -), uno por línea de la entrada estándar, como la salida de `git diff --name-only`."),
         ]),
         ("docs", "La documentación propia del proyecto en Markdown (una carpeta docs/, una wiki, una bóveda de Obsidian), en solo lectura: el recall trae el apartado que toca con cada mensaje. Sin acción, la lista.", &[]),
-        ("projects", "Proyectos con memorias.", &[]),
+        ("projects", "Proyectos con memorias (sin acción, la lista): mover uno a su carpeta nueva, o juntar dos.", &[]),
+        ("space", "Espacios: grupos de proyectos (un cliente, un producto con varios repositorios) cuyas memorias no llegan a otros espacios.", &[]),
         ("trades", "Oficios: el stack de un proyecto (android, web, wordpress…), detectado en sus ficheros. Las memorias de oficio llegan a todos los proyectos de su oficio. Sin acción, los de este proyecto.", &[]),
         ("export", "Una copia fiel: todas las memorias con su historial, las marcas de olvido, los veredictos y la papelera, una línea JSON cada una (`omoi import` la restaura exacta).", &[
             ("all", "De todos los proyectos (por defecto, este y las globales)."),
-            ("encrypt", "Cifra cada línea con la clave de la sincronización (AES-SIV), para guardar la copia en cualquier sitio."),
+            ("encrypt", "Cifra cada línea con la clave del repositorio de sincronización de su espacio (AES-SIV; fuera de todo espacio, la del general), para guardar la copia en cualquier sitio."),
             ("obsidian", "En su lugar: una nota Markdown por memoria en <vault>/omoikane/, para la vista de grafo de Obsidian (un espejo: se rehace en cada exportación). Por defecto, los proyectos personales y las globales."),
             ("okf", "En su lugar: un bundle OKF v0.2 (Open Knowledge Format) en esta carpeta, un concepto por memoria (un espejo: se rehace en cada exportación). Por defecto, los proyectos personales y las globales."),
             ("space", "Con --obsidian o --okf: solo este espacio (un cliente), sin las globales. Cada espacio, en su propia carpeta."),
@@ -4156,13 +4163,16 @@ fn en_espanol(c: Command) -> Command {
             ("interval", "Con --watch: segundos entre comprobaciones."),
         ]),
         ("backup", "Copia la base ahora en <su carpeta>/backups/omoikane-<fecha>.db (también se hace sola una vez al día; se conservan OMOIKANE_BACKUPS copias, 7 por defecto).", &[("list", "Solo enseñar las copias que hay.")]),
-        ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),
+        ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal, y recuperarlas o borrarlas de la papelera.", &[("all", "Empezar con todos los proyectos que se ven desde aquí: su espacio (desde la carpeta de usuario, todos). Por defecto, este y las globales.")]),
         ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir), una exportación de engram, un bundle OKF (--okf) o lo editado en un vault de Obsidian (--obsidian).", &[
             ("fichero", "El fichero exportado."),
             ("okf", "En su lugar: un bundle OKF v0.2 (una carpeta de conceptos en Markdown, como el knowledge/ de un repositorio). Cada concepto pone al día la misma memoria si se importa otra vez. Al proyecto de esta carpeta o, con --space, a ese espacio."),
             ("obsidian", "En su lugar: traer lo editado en un vault hecho con `omoi export --obsidian`. Una nota editada pone al día su memoria (con historial); una nota nueva en la carpeta de un proyecto, con `kind:`, entra como memoria nueva allí. Después se vuelve a exportar el vault."),
             ("prefer", "Con --obsidian: una nota editada en Obsidian cuya memoria también cambió aquí desde la exportación (un conflicto) se queda con lo de Obsidian (`obsidian`; lo de Omoikane queda en el historial) o con lo de Omoikane (`omoikane`; el cambio de la nota se pierde). Sin esto, no se toca ninguna de las dos."),
             ("space", "Con --okf o --obsidian: a este espacio (un cliente), sin proyecto. Con --obsidian, el espacio del que se exportó el vault."),
+            ("global", "Con --okf: a las memorias globales (las ven todos los proyectos). Hace falta para importar desde la carpeta de usuario."),
+            ("trust_verified", "Conservar también el «verificada por una persona» que puso otro: en un bundle que no se exportó de esta base, o en un fichero cuyas verificaciones no firmaste tú (la exportación de otro). Nunca desde la shell de un agente."),
+            ("yes", "Con --okf --space: importar sin preguntar aunque traiga memorias fijadas, verificadas o personales al espacio del cliente (su repositorio es compartido)."),
             ("force", "Importar también lo que parece una memoria ya guardada."),
             ("dry_run", "Solo decir qué se importaría."),
         ]),
@@ -4172,9 +4182,10 @@ fn en_espanol(c: Command) -> Command {
         ("serve", "Sirve las mismas herramientas por HTTP en 127.0.0.1 (para scripts y apps que no hablan MCP) y una vista web de todas las memorias en http://127.0.0.1:7438/.", &[
             ("port", "El puerto."),
             ("open", "Abrir la vista web en el navegador (si ya hay un servidor en marcha, solo la abre)."),
+            ("memory", "Abrir (con --open) o escribir el enlace a esta memoria: su panel, con el botón Verificar (`http://127.0.0.1:7438/#/memoria/<id>`). Su id o el principio."),
         ]),
-        ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo.", &[
-            ("agente", "El agente: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp o kilo."),
+        ("setup", "Prepara un agente para usar Omoikane: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp, kilo o grok.", &[
+            ("agente", "El agente: claude, codex, gemini, cursor, opencode, qwen, kiro, copilot, windsurf, antigravity, kimi, pi, amp, kilo o grok."),
             ("yes", "No preguntar antes de cambiar nada."),
             ("dry_run", "Solo enseñar lo que se haría."),
             ("no_auto_update", "Claude Code: no encender la actualización automática (la diaria de Omoikane y la del plugin)."),
@@ -4190,6 +4201,7 @@ fn en_espanol(c: Command) -> Command {
                 "session_end",
                 "Al cerrar o compactar una sesión: la apunta en el diario de sesiones (`omoi diary`) y aparta lo que quizá valga la pena guardar de la conversación (`transcript_path`) para el agente de la sesión siguiente. No escribe nada en la salida.",
             ),
+            ("format", "El formato del hook del agente: claude (también Codex y Qwen), gemini, cursor, copilot, antigravity o plain."),
         ]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),
         ("sync", "Comparte las memorias entre tus equipos (o con un equipo de personas) por un repositorio git privado tuyo. Sin acción, sincroniza ahora.", &[]),
@@ -4217,6 +4229,7 @@ fn en_espanol(c: Command) -> Command {
                 s.about("Enciende o apaga el modelo de significado (EmbeddingGemma). Apagado, Omoikane usa solo el modelo ligero, como antes de la 1.2: más rápido y con menos memoria, pero no entiende las preguntas hechas con otras palabras.")
                     .mut_arg("on", |a| a.help("Encenderlo."))
                     .mut_arg("off", |a| a.help("Apagarlo y cerrar su servicio."))
+                    .mut_arg("auto", |a| a.help("Que vuelva a decidir el tamaño de la memoria (por defecto)."))
                     .mut_arg("ram", |a| a.help("La RAM que puede usar al indexar, en MB (0: volver a la de por defecto). Con más, indexa más rápido por lotes; OMOIKANE_SEMANTIC_RAM manda por encima."))
             })
     });
@@ -4251,6 +4264,49 @@ fn en_espanol(c: Command) -> Command {
             .mut_subcommand("remove", |s| s.about("El proyecto no tiene estos oficios, aunque se detecten.").mut_arg("oficios", |a| a.value_name("OFICIO").help("Oficios: android, web, wordpress, seo-geo…")).mut_arg("project", proyecto_es))
             .mut_subcommand("set", |s| s.about("Exactamente estos oficios (sin ninguno, ninguno), y deja de detectarlos.").mut_arg("oficios", |a| a.value_name("OFICIO").help("Oficios: android, web, wordpress, seo-geo…")).mut_arg("project", proyecto_es))
             .mut_subcommand("auto", |s| s.about("Olvida lo puesto a mano y los vuelve a detectar en sus ficheros.").mut_arg("project", proyecto_es))
+    });
+    let c = c.mut_subcommand("projects", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("list", |s| s.about("Los proyectos con memorias, primero los de actividad más reciente (por defecto)."))
+            .mut_subcommand("move", |s| {
+                s.about("El proyecto vive ahora en otra carpeta (se movió sin un remoto git que lo reconozca), o pasa a un espacio: sus memorias lo siguen.")
+                    .mut_arg("proyecto", |a| a.help("El proyecto: su carpeta vieja, o su nombre o parte de él."))
+                    .mut_arg("carpeta", |a| a.help("Su carpeta nueva."))
+                    .mut_arg("space", |a| a.help("Meterlo en este espacio.").value_name("ESPACIO"))
+                    .mut_arg("force", |a| a.help("Juntarlo aunque la carpeta sea un proyecto de otro espacio, pasarlo de un espacio a otro, o meter en un espacio un proyecto en pausa (sus memorias cambian de espacio)."))
+            })
+            .mut_subcommand("keep", |s| {
+                s.about("Un proyecto en pausa se queda aquí donde está y vuelve a sincronizar: cuando otro equipo dice que está en otro espacio (para aceptarlo: `omoi projects move <proyecto> --space <espacio> --force`), o cuando esta carpeta se unió al proyecto de un espacio solo porque lo dice el repositorio de ese espacio (es de ese espacio; si es tuyo: `omoi space unassign <proyecto> --force`).")
+                    .mut_arg("proyecto", |a| a.help("El proyecto: su carpeta, o su nombre o parte de él."))
+            })
+            .mut_subcommand("prune", |s| s.about("Olvida los proyectos sin memorias (una carpeta en la que vuelvas a trabajar vuelve sola)."))
+            .mut_subcommand("distinct", |s| {
+                s.about("Le dice a la revisión que A y B son proyectos distintos (o, sin B, que A es un proyecto de verdad aunque su carpeta parezca temporal): deja de proponer juntarlos. Solo en este equipo.")
+                    .mut_arg("a", |a| a.help("Un proyecto (carpeta o nombre)."))
+                    .mut_arg("b", |a| a.help("El otro proyecto (carpeta o nombre)."))
+            })
+            .mut_subcommand("merge", |s| {
+                s.about("Junta el proyecto A en B: las memorias de A (con sus ids, historial y veredictos) y sus carpetas pasan a B.")
+                    .mut_arg("a", |a| a.help("El proyecto que desaparece (carpeta o nombre)."))
+                    .mut_arg("b", |a| a.help("El proyecto que se queda (carpeta o nombre)."))
+                    .mut_arg("force", |a| a.help("Juntarlos aunque estén en espacios distintos (las memorias cambian de espacio)."))
+            })
+    });
+    let c = c.mut_subcommand("space", |m| {
+        m.subcommand_help_heading("Acciones")
+            .mut_subcommand("list", |s| s.about("Los espacios, con sus proyectos (por defecto)."))
+            .mut_subcommand("add", |s| s.about("Crea un espacio.").mut_arg("nombre", |a| a.help("Su nombre (un cliente, un producto…).")))
+            .mut_subcommand("assign", |s| {
+                s.about("Mete un proyecto en un espacio (por defecto, el de esta carpeta).")
+                    .mut_arg("espacio", |a| a.help("El espacio."))
+                    .mut_arg("proyecto", |a| a.help("El proyecto: su carpeta, o su nombre o parte de él."))
+                    .mut_arg("force", |a| a.help("Moverlo aunque ya esté en otro espacio, o aunque esté en pausa (sus memorias van al repositorio de ese espacio)."))
+            })
+            .mut_subcommand("unassign", |s| {
+                s.about("Saca un proyecto de su espacio (por defecto, el de esta carpeta).")
+                    .mut_arg("proyecto", |a| a.help("El proyecto: su carpeta, o su nombre o parte de él."))
+                    .mut_arg("force", |a| a.help("Hacerlo: sin espacio, sus memorias van al repositorio general (personal)."))
+            })
     });
     let c = c.mut_subcommand("sync", |m| {
         m.subcommand_help_heading("Acciones")
@@ -4298,7 +4354,7 @@ fn en_espanol(c: Command) -> Command {
     });
     let nombres: Vec<String> = c.get_subcommands().map(|s| s.get_name().to_string()).collect();
     let c = nombres.iter().fold(c, |c, n| c.mut_subcommand(n, titulos_es));
-    ["model", "sync", "docs", "trades"].iter().fold(c, |c, sub| {
+    ["model", "sync", "docs", "trades", "projects", "space"].iter().fold(c, |c, sub| {
         c.mut_subcommand(*sub, |m| {
             let acciones: Vec<String> = m.get_subcommands().map(|s| s.get_name().to_string()).collect();
             acciones.iter().fold(m.disable_help_subcommand(true), |m, n| m.mut_subcommand(n, titulos_es))

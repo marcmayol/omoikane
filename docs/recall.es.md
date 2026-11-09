@@ -41,7 +41,7 @@ Las palabras encuentran una memoria cuando preguntas con las palabras que usa. S
 
 ## Busca en tu idioma
 
-La búsqueda empieza por palabras: le dan igual las tildes, mira también las rutas de fichero y da más peso a lo poco frecuente. Después, un modelo de embeddings local que abre en 2,7 ms rescata lo que se parece mucho aunque no comparta ninguna palabra. Dónde busca depende de dónde estés. Desde un proyecto, en él y en lo global; desde tu carpeta de usuario, en todo.
+La búsqueda empieza por palabras: le dan igual las tildes, mira también las rutas de fichero y da más peso a lo poco frecuente. Después, un modelo de embeddings local que abre en 2,7 ms rescata lo que se parece mucho aunque no comparta ninguna palabra. Dónde busca depende de dónde estés. Desde un proyecto, en él, en su espacio, en sus oficios y en lo global; desde tu carpeta de usuario, en todo.
 
 Funciona en 101 idiomas, con tildes o sin ellas. Con preguntas escritas a ciegas acierta la memoria a la primera el 90 % de las veces y entre las tres primeras el 97 %, con una mediana de 43 ms, y sigue igual de precisa con 3.183 memorias (50 ms por búsqueda). Cuatro procesos comparten el modelo con 13 MB de memoria cada uno. El modelo es [potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M) (int8), y abre en 2,7 ms en lugar de 1,78 s. Hasta que se descarga (~150 MB, una vez), la búsqueda va por palabras.
 
@@ -53,6 +53,7 @@ Si el proyecto ya tiene su documentación en Markdown (una carpeta `docs/`, una 
 omoi docs add docs                                   # la indexa en el momento
 omoi docs list
 omoi docs test "¿cómo vuelvo atrás un despliegue?"   # lo que traería el recall con eso
+omoi docs refresh                                    # pone el índice al día ahora
 omoi docs remove docs
 ```
 

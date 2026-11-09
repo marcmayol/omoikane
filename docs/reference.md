@@ -19,7 +19,7 @@ Many agents can share one database at once (subagents, several sessions, CI jobs
 
 ## See it and tidy it up
 
-`omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it. It sees what the web view sees from the same folder: from a client's project, only that client's space and the global memories (`a` widens the list to the whole space, never to other clients); from the home folder, everything, and `e` filters by space. Each memory says its project and space. `t` opens the trash: `Enter` or `r` restores, `x` deletes one for good and `E` empties what is listed, both after asking. It fits an 80×24 terminal; in a narrower one the memory goes below the list, or opens with `Enter`.
+`omoi tui` opens a terminal viewer: search as you type, read a memory and its history, pin or forget it (`/` searches, `Enter` opens, `h` history, `p` pins, `d` forgets, `q` quits). It sees what the web view sees from the same folder: from a client's project, only that client's space and the global memories (`a` widens the list to the whole space, never to other clients); from the home folder, everything, and `e` filters by space. Each memory says its project and space. `t` opens the trash: `Enter` or `r` restores, `x` deletes one for good and `E` empties what is listed, both after asking. It fits an 80×24 terminal; in a narrower one the memory goes below the list, or opens with `Enter`.
 
 `omoi serve --open` (or `/omoikane-web` in Claude Code) opens the same in your browser at `http://127.0.0.1:7438/`. **Memories** is a timeline by day of what was saved or changed (and, if you want, what the agent recalled), searchable the way the agent searches and filtered by kind, project or tag; a memory opens in place with its Markdown formatted, its last change as a diff, its full history, and buttons to pin, move or forget it. **Projects** shows where each project was left (its latest `status` memory) and opens a page per project with its memories in one column per kind. **Overview** shows, per space, what there is, who wrote it and what is outdated or paused ([details](sync-and-spaces.md#overview-by-client)). It follows the system's light or dark mode, and works offline: the fonts (IBM Plex and Shippori Mincho, SIL OFL, in `assets/fuentes`) are inside the binary. It only answers on your own computer, and refuses requests from other websites.
 
@@ -33,7 +33,7 @@ The web view and the API see what the CLI and the MCP see from the folder where 
 
 ## It keeps itself up to date, if you ask it to
 
-It comes off: until you say yes (`omoi upgrade --on`, or the question in `omoi setup claude`), `omoi` doesn't change itself. When on, once a day, the first time it runs, `omoi` checks in the background for a newer release of the same major version, installs it only if it is signed with Omoikane's key (Ed25519), and adds whatever the new version needs to the agents that already have it; the next session tells you. `omoi setup claude` asks (and turns on the plugin's update in Claude Code too); `omoi upgrade --off` or `OMOIKANE_AUTO_UPDATE=0` turns it off, `omoi upgrade` updates by hand, and a binary managed by cargo, Homebrew, Scoop or Nix is left to them. Before moving a database to a newer schema it keeps a copy.
+It comes off: until you say yes (`omoi upgrade --on`, or the question in `omoi setup claude`), `omoi` doesn't change itself. When on, once a day, the first time it runs, `omoi` checks in the background for a newer release of the same major version, installs it only if it is signed with Omoikane's key (Ed25519), and adds whatever the new version needs to the agents that already have it; the next session tells you. `omoi setup claude` asks (and turns on the plugin's update in Claude Code too); `omoi upgrade --off` or `OMOIKANE_AUTO_UPDATE=0` turns it off, `omoi upgrade` updates by hand (`--check` only says whether there is a newer version), and a binary managed by cargo, Homebrew, Scoop or Nix is left to them. Before moving a database to a newer schema it keeps a copy. A download that hangs ends with an error that names the host instead of waiting forever: 30 s to connect and 60 s for the answer to start, then 10 minutes for an update; a model file can take as long as it needs while data keeps arriving, and fails after 120 s without any.
 
 ## Environment variables
 
@@ -43,14 +43,18 @@ All of them appear on the pages above; here they are together.
 |---|---|
 | `OMOIKANE_DB` | where the database lives (default `omoikane.db` in `OMOIKANE_HOME`) |
 | `OMOIKANE_HOME` | the whole Omoikane folder: database, models, preferences (default `~/.omoikane`) |
+| `OMOIKANE_MODELS` | where the models live (default `models` in `OMOIKANE_HOME`) |
 | `OMOIKANE_NONINTERACTIVE=1` | nobody at the keyboard: no prompts, downloads, updates or background sync ([unattended.md](unattended.md)) |
 | `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | join sync from a code (and another URL) without asking ([unattended.md](unattended.md)) |
 | `OMOIKANE_AUTHOR` | who signs what is saved here |
 | `OMOIKANE_SESSION` | the agent session saved with each new memory (otherwise `CLAUDE_CODE_SESSION_ID`, or the hooks') |
+| `TRACEPARENT` | the W3C trace the agent runs in: each new memory keeps its `trace_id` and `span_id` ([saving.md](saving.md#where-each-memory-came-from)) |
 | `OMOIKANE_SYNC_AUTO=0` / `1` | background sync off or on (on by default, off with `OMOIKANE_NONINTERACTIVE=1`) |
+| `OMOIKANE_SYNC_EVERY` | seconds between looks at whether the remote brings something new, mid-session (120) |
 | `OMOIKANE_LANG=es` | messages in Spanish |
 | `OMOIKANE_BIN` | which `omoi` the Claude Code plugin runs |
 | `OMOIKANE_TRASH_DAYS` | days in the trash before deleting for good (30; 0 = never) |
+| `OMOIKANE_REDACT=0` | turns secret redaction off: secrets are saved as written (`omoi doctor` says so) |
 | `OMOIKANE_BACKUPS` | daily copies kept (7; 0 = off) |
 | `OMOIKANE_AUTO_UPDATE=0` | turns automatic updates off |
 | `OMOIKANE_HTTP_TOKEN` | token that `omoi serve` requires over HTTP |
@@ -63,3 +67,4 @@ All of them appear on the pages above; here they are together.
 | `OMOIKANE_SEMANTIC_RAM` | MB of RAM the meaning model may use while indexing (over `omoi model semantic --ram`; default 128, minimum 80) |
 | `OMOIKANE_SEMANTIC_MODEL` | a folder with EmbeddingGemma to use instead of the installed one |
 | `OMOIKANE_SEMANTIC_SOURCE` | where `omoi model install --semantic` downloads from (comma-separated) |
+| `OMOIKANE_MODEL_SOURCE` | where the light model is downloaded from (comma-separated; a mirror of your own) |
