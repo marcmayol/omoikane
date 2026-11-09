@@ -470,16 +470,23 @@ enum Orden {
         #[arg(long)]
         all: bool,
     },
-    /// Import an `omoi export` file (exactly: same ids, dates, history and verdicts; newest wins, so it is safe to repeat), an engram export or an OKF bundle (--okf).
+    /// Import an `omoi export` file (exactly: same ids, dates, history and verdicts; newest wins, so it is safe to repeat), an engram export, an OKF bundle (--okf) or what was edited in an Obsidian vault (--obsidian).
+    #[command(group(clap::ArgGroup::new("carpeta_importada").args(["okf", "obsidian"])))]
     Import {
         /// The export file.
-        #[arg(required_unless_present = "okf")]
+        #[arg(required_unless_present_any = ["okf", "obsidian"])]
         fichero: Option<PathBuf>,
         /// Instead: an OKF v0.2 bundle (a folder of Markdown concepts, like a repository's knowledge/). Each concept updates the same memory when imported again. Into this folder's project, or with --space into that space.
         #[arg(long, value_name = "FOLDER", conflicts_with = "fichero")]
         okf: Option<PathBuf>,
-        /// With --okf: into this space (a client), without a project.
-        #[arg(long, requires = "okf")]
+        /// Instead: bring back what was edited in a vault made by `omoi export --obsidian`. An edited note updates its memory (with history); a new note in a project's folder, with a `kind:`, becomes a new memory there. Then the vault is exported again.
+        #[arg(long, value_name = "VAULT", conflicts_with_all = ["fichero", "okf"])]
+        obsidian: Option<PathBuf>,
+        /// With --obsidian: a note edited in Obsidian whose memory also changed here since the export (a conflict) keeps Obsidian's version (`obsidian`; Omoikane's stays in the history) or Omoikane's (`omoikane`; the note's change is lost). Without it, neither is touched.
+        #[arg(long, requires = "obsidian", value_parser = ["obsidian", "omoikane"])]
+        prefer: Option<String>,
+        /// With --okf or --obsidian: into this space (a client), without a project. With --obsidian, the space the vault was exported from.
+        #[arg(long, requires = "carpeta_importada")]
         space: Option<String>,
         /// With --okf: into the global memories (every project sees them). Needed to import from the home folder.
         #[arg(long, requires = "okf", conflicts_with = "space")]
@@ -955,6 +962,129 @@ fn exportar_okf(c: &Comun, carpeta: &Path, space: Option<String>) -> Result<()> 
             n.deleted
         )
     );
+    Ok(())
+}
+
+/// `omoi import --obsidian`: aparte de `ejecutar` para no agrandar su marco de pila.
+fn importar_obsidian(c: &Comun, vault: &Path, space: Option<String>, prefer: Option<&str>, dry_run: bool) -> Result<()> {
+    use omoikane::obsidian::{Preferir, Que};
+    let (mut db, modelo) = abrir_con_modelo(c)?;
+    let que = match space {
+        Some(s) => Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        None => Que::Personal,
+    };
+    let preferir = match prefer {
+        Some("obsidian") => Preferir::Obsidian,
+        Some("omoikane") => Preferir::Omoikane,
+        _ => Preferir::Nada,
+    };
+    let r = omoikane::obsidian::importar(&mut db, modelo.as_ref(), vault, que, preferir, dry_run)?;
+    if !dry_run && r.updated + r.created > 0 {
+        omoikane::sync::programar(&ruta_db(c));
+    }
+    if c.json {
+        let mut v = serde_json::to_value(&r)?;
+        v["dry_run"] = serde_json::json!(dry_run);
+        return json(&v);
+    }
+    for a in &r.notices {
+        eprintln!("omoikane: {a}");
+    }
+    let lista = |v: &[String]| {
+        let mut s: String = v.iter().take(10).map(|x| format!("\n  {x}")).collect();
+        if v.len() > 10 {
+            s += &format!("\n  … (+{})", v.len() - 10);
+        }
+        s
+    };
+    if !r.conflicts.is_empty() {
+        eprintln!(
+            "{}{}",
+            tr!(
+                "omoikane: {} notes were edited in Obsidian and their memory also changed here after the export: neither was touched (the export won't overwrite them). Compare them with `omoi history <id>`, then import again with --prefer obsidian or --prefer omoikane:",
+                "omoikane: {} notas se editaron en Obsidian y su memoria también cambió aquí después de exportarlas: no se ha tocado ninguna de las dos (la exportación no las pisa). Compáralas con `omoi history <id>` y vuelve a importar con --prefer obsidian o --prefer omoikane:",
+                r.conflicts.len()
+            ),
+            lista(&r.conflicts)
+        );
+    }
+    if !r.foreign.is_empty() {
+        eprintln!(
+            "{}{}",
+            tr!(
+                "omoikane: {} notes say which memory they are but weren't exported from this database for this vault (another database, a version before 1.9, or those fields were edited): they don't touch any memory. Export again to refresh them; to bring one in as a new memory, remove its `omoikane:` line:",
+                "omoikane: {} notas dicen de qué memoria son pero no se exportaron desde esta base para este vault (otra base, una versión anterior a la 1.9, o se tocaron esos campos): no tocan ninguna memoria. Exporta otra vez para rehacerlas; para traer una como memoria nueva, quítale la línea `omoikane:`:",
+                r.foreign.len()
+            ),
+            lista(&r.foreign)
+        );
+    }
+    if !r.gone.is_empty() {
+        eprintln!(
+            "{}{}",
+            tr!(
+                "omoikane: {} edited notes are of memories that are no longer in this vault (forgotten, or moved elsewhere): left as they are, delete them when you're done:",
+                "omoikane: {} notas editadas son de memorias que ya no están en este vault (olvidadas, o llevadas a otro sitio): se quedan como están, bórralas cuando acabes con ellas:",
+                r.gone.len()
+            ),
+            lista(&r.gone)
+        );
+    }
+    for s in r.skipped.iter().chain(&r.failed) {
+        eprintln!("omoikane: {}: {}", s.note, s.reason);
+    }
+    if !r.redacted.is_empty() {
+        eprintln!("{}{}", tr!("omoikane: something that looked like a secret was hidden in:", "omoikane: se tapó algo que parecía un secreto en:"), lista(&r.redacted));
+    }
+    if r.unverified > 0 {
+        eprintln!(
+            "{}",
+            tr!(
+                "omoikane: {} memories verified by a person changed their text: they are no longer verified (`omoi verify` to verify them again)",
+                "omoikane: {} memorias verificadas por una persona han cambiado de texto: ya no están verificadas (`omoi verify` para volver a verificarlas)",
+                r.unverified
+            )
+        );
+    }
+    let resueltos = if r.conflicts_applied + r.conflicts_discarded > 0 {
+        tr!("; conflicts: {} with Obsidian's version, {} with Omoikane's", "; conflictos: {} con lo de Obsidian, {} con lo de Omoikane", r.conflicts_applied, r.conflicts_discarded)
+    } else {
+        String::new()
+    };
+    let saltadas = r.skipped.len() + r.foreign.len() + r.gone.len();
+    if dry_run {
+        println!(
+            "{}{resueltos}",
+            tr!(
+                "{} notes in {}: {} memories would be updated and {} created, {} unchanged, {} in conflict, {} skipped, {} failed",
+                "{} notas en {}: se pondrían al día {} memorias y se crearían {}, {} iguales, {} en conflicto, {} saltadas, {} fallidas",
+                r.notes,
+                vault.display(),
+                r.updated,
+                r.created,
+                r.unchanged,
+                r.conflicts.len(),
+                saltadas,
+                r.failed.len()
+            )
+        );
+    } else {
+        println!(
+            "{}{resueltos}",
+            tr!(
+                "imported {} notes from {}: {} memories updated, {} new, {} unchanged, {} in conflict, {} skipped, {} failed",
+                "importadas {} notas de {}: {} memorias puestas al día, {} nuevas, {} iguales, {} en conflicto, {} saltadas, {} fallidas",
+                r.notes,
+                vault.display(),
+                r.updated,
+                r.created,
+                r.unchanged,
+                r.conflicts.len(),
+                saltadas,
+                r.failed.len()
+            )
+        );
+    }
     Ok(())
 }
 
@@ -1689,6 +1819,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             omoikane::tui::ejecutar(&mut db, modelo.as_ref(), proyecto, all)
         }
         Orden::Import { okf: Some(carpeta), space, global, trust_verified, yes, dry_run, .. } => importar_okf(c, &carpeta, space, global, trust_verified, yes, dry_run),
+        Orden::Import { obsidian: Some(vault), space, prefer, dry_run, .. } => importar_obsidian(c, &vault, space, prefer.as_deref(), dry_run),
         Orden::Import { fichero, force, dry_run, trust_verified, .. } => {
             let fichero = fichero.context("missing file")?;
             // Un fichero de red no se abre (ver `proyecto::ruta_local`).
@@ -1791,6 +1922,17 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                             n.hubs
                         )
                     );
+                    if n.kept > 0 {
+                        eprintln!(
+                            "{}",
+                            tr!(
+                                "omoikane: {} notes edited in Obsidian and not imported yet were left as they are: `omoi import --obsidian {}` brings them in",
+                                "omoikane: {} notas editadas en Obsidian y aún sin importar se han dejado como estaban: `omoi import --obsidian {}` las trae",
+                                n.kept,
+                                vault.display()
+                            )
+                        );
+                    }
                 }
             };
             if watch {
@@ -3986,10 +4128,12 @@ fn en_espanol(c: Command) -> Command {
         ]),
         ("backup", "Copia la base ahora en <su carpeta>/backups/omoikane-<fecha>.db (también se hace sola una vez al día; se conservan OMOIKANE_BACKUPS copias, 7 por defecto).", &[("list", "Solo enseñar las copias que hay.")]),
         ("tui", "Ver, buscar, fijar y olvidar memorias en la terminal.", &[("all", "Empezar con todos los proyectos (por defecto, este y las globales).")]),
-        ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir), una exportación de engram o un bundle OKF (--okf).", &[
+        ("import", "Importa un fichero de `omoi export` (exacto: mismos ids, fechas, historial y veredictos; gana el más nuevo, así que se puede repetir), una exportación de engram, un bundle OKF (--okf) o lo editado en un vault de Obsidian (--obsidian).", &[
             ("fichero", "El fichero exportado."),
             ("okf", "En su lugar: un bundle OKF v0.2 (una carpeta de conceptos en Markdown, como el knowledge/ de un repositorio). Cada concepto pone al día la misma memoria si se importa otra vez. Al proyecto de esta carpeta o, con --space, a ese espacio."),
-            ("space", "Con --okf: a este espacio (un cliente), sin proyecto."),
+            ("obsidian", "En su lugar: traer lo editado en un vault hecho con `omoi export --obsidian`. Una nota editada pone al día su memoria (con historial); una nota nueva en la carpeta de un proyecto, con `kind:`, entra como memoria nueva allí. Después se vuelve a exportar el vault."),
+            ("prefer", "Con --obsidian: una nota editada en Obsidian cuya memoria también cambió aquí desde la exportación (un conflicto) se queda con lo de Obsidian (`obsidian`; lo de Omoikane queda en el historial) o con lo de Omoikane (`omoikane`; el cambio de la nota se pierde). Sin esto, no se toca ninguna de las dos."),
+            ("space", "Con --okf o --obsidian: a este espacio (un cliente), sin proyecto. Con --obsidian, el espacio del que se exportó el vault."),
             ("force", "Importar también lo que parece una memoria ya guardada."),
             ("dry_run", "Solo decir qué se importaría."),
         ]),

@@ -741,7 +741,7 @@ fn es_nuestro_concepto(p: &Path) -> bool {
 /// otro (otra persona, otra base, uno escrito a mano o retocado en cualquier campo) no lo puede
 /// calcular: nada de eso se cree (el texto sí se importa, como el de cualquier bundle, en una memoria
 /// nueva). Que los ids existan aquí no basta: cualquiera que haya visto un bundle tuyo los tiene.
-mod firma {
+pub(crate) mod firma {
     use anyhow::{Result, anyhow};
     use rusqlite::{Connection, OptionalExtension, params};
 
@@ -848,13 +848,13 @@ pub const MAX_CONCEPTO: u64 = 1 << 20;
 /// Vuelve a `\n` entero, para que un concepto de esta base siga valiendo con su firma (se firmó con
 /// `\n`) y no entre como uno nuevo, duplicado y sin su verificación. Un contenido con `\r\n` de verdad
 /// va en un fichero con la cabecera en `\n`, y no se toca.
-fn sin_crlf_de_git(texto: String) -> String {
+pub(crate) fn sin_crlf_de_git(texto: String) -> String {
     let t = texto.strip_prefix('\u{feff}').unwrap_or(&texto);
     if t.starts_with("---\r\n") { texto.replace("\r\n", "\n") } else { texto }
 }
 
 /// La cabecera y el cuerpo de un Markdown, si empieza por una cabecera `---` cerrada.
-fn separar(texto: &str) -> Option<(&str, &str)> {
+pub(crate) fn separar(texto: &str) -> Option<(&str, &str)> {
     let t = texto.strip_prefix('\u{feff}').unwrap_or(texto);
     let resto = t.strip_prefix("---\r\n").or_else(|| t.strip_prefix("---\n"))?;
     let mut i = 0;
@@ -930,7 +930,7 @@ fn demasiado(raiz: &Path, que: String) -> anyhow::Error {
 }
 
 /// Si una entrada se puede leer sin seguir un enlace: ni enlace simbólico ni unión de Windows.
-fn sin_enlace(p: &Path) -> bool {
+pub(crate) fn sin_enlace(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink()) && !es_union(p)
 }
 
@@ -1101,18 +1101,18 @@ fn leer_con_topes(dir: &Path, topes: &Topes) -> Result<Bundle> {
 /// Una unión (junction) de Windows: `file_type` no la da por enlace simbólico, pero es un punto de
 /// montaje que puede llevar a cualquier carpeta (también a una de arriba).
 #[cfg(windows)]
-fn es_union(p: &Path) -> bool {
+pub(crate) fn es_union(p: &Path) -> bool {
     use std::os::windows::fs::MetadataExt;
     const PUNTO_DE_REANALISIS: u32 = 0x400;
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & PUNTO_DE_REANALISIS != 0)
 }
 
 #[cfg(not(windows))]
-fn es_union(_: &Path) -> bool {
+pub(crate) fn es_union(_: &Path) -> bool {
     false
 }
 
-fn escalar_texto(v: &Value) -> String {
+pub(crate) fn escalar_texto(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -1120,7 +1120,7 @@ fn escalar_texto(v: &Value) -> String {
     }
 }
 
-fn lista_de_textos(v: Option<&Value>) -> Vec<String> {
+pub(crate) fn lista_de_textos(v: Option<&Value>) -> Vec<String> {
     match v {
         Some(Value::Array(a)) => a.iter().map(escalar_texto).filter(|s| !s.trim().is_empty()).collect(),
         Some(Value::String(s)) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),

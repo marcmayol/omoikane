@@ -4,6 +4,22 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.9.0 (unreleased)
+
+### Edits made in Obsidian come back
+- New `omoi import --obsidian <vault>` (with `--space <name>` for a client's vault, `--dry-run` to only see what it would do). Before, `export --obsidian` only went one way: what you edited in the vault was overwritten by the next export.
+- A note you edited updates its memory, with history (reason `obsidian import`): its text, its title (renaming the note in Obsidian, or its `aliases`), `kind`, plain tags and `paths`. Lines you didn't touch keep their original text exactly, links included; in the lines you changed, the export's links and `\#` go back to Omoikane's form, and a `[[note]]` to another memory becomes `[[<its id>]]` so Omoikane resolves it.
+- A new note in a project's folder of the vault, with `kind:` (or a tag that is a kind), becomes a new memory of that project, unpinned, with the key `obsidian:<its path>`, and its file becomes Omoikane's copy. Without a kind or outside a project's folder it isn't imported, and the import says why.
+- A note nobody touched does nothing: exporting and importing without editing changes nothing, and importing twice is the same as once. Group and file notes, and anything outside `omoikane/`, are ignored. Deleting a note doesn't forget its memory.
+- Conflicts: a note edited in Obsidian whose memory also changed in Omoikane after the export is not applied, and the memory isn't touched; the import lists them. `--prefer obsidian` applies the note (Omoikane's version stays in the history), `--prefer omoikane` drops the note's change.
+- The vault can't grant anything: a note never moves its memory to another project or space and never makes it global, pinned or verified; tags with `:` (`trade:`, `topic:`, `review:`…) aren't added or removed from it; a new note in `_global/` is not imported. Changing a verified memory's text removes the verification, as `update` does; a trade memory's change goes through the leak check; everything goes through the secret redaction.
+- Only notes exported by this database touch a memory: each one is now signed (`sig`, an HMAC with the database's own key, the one OKF export already uses, which never leaves the computer) over its memory, the scope it was exported from, the memory's version and a fingerprint of what can be edited (`base`). A note with someone else's id, from another database or from an older version doesn't touch any memory; the import says how many and how to bring them in.
+- `export --obsidian` (and `--watch`) no longer overwrites or deletes a note you edited and haven't imported yet (`kept` in `--json`, and the CLI says so). Its notes carry two new header fields (`base`, `sig`), an invisible Obsidian comment above the links and a new last line, so the first export with 1.9.0 rewrites every note once.
+
+### Compatibility
+- The Obsidian vault is a view, not a sync format: a vault exported by 1.9.0 is rewritten by an older version's export (which drops `base` and `sig`), and notes exported by an older version are refreshed by the next 1.9.0 export. Edits made on notes from an older export can't be imported (they aren't signed): export again first.
+- Nothing changes in the database schema, `lector_minimo`, the sync lines or the `omoi export` and OKF formats. The signing key is the existing local `meta('okf_firma')`, which doesn't sync.
+
 ## 1.8.6 (2026-11-08)
 
 ### Duplicated trade memories
