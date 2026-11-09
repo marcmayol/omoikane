@@ -227,6 +227,137 @@ fn export_a_obsidian() {
     assert_eq!((n["created"].as_u64(), n["updated"].as_u64(), n["deleted"].as_u64()), (Some(0), Some(0), Some(0)));
 }
 
+/// Lee una nota y la vuelve a escribir cambiada.
+fn editar(ruta: &Path, f: impl FnOnce(String) -> String) {
+    let t = std::fs::read_to_string(ruta).unwrap();
+    let nuevo = f(t.clone());
+    assert_ne!(t, nuevo, "la edición no cambia nada en {}", ruta.display());
+    std::fs::write(ruta, nuevo).unwrap();
+}
+
+#[test]
+fn importar_de_obsidian() {
+    let e = Entorno::nuevo("obsidian-vuelta");
+    let a = e.json(&["remember", "-k", "gotcha", "-t", "Cuidado con X", "--tag", "nota-a", "--tag", "review:2099-01-01", "Ver [[nota-b]] y [[no-existe]].\nEl rojo es #d62828.\nTercera línea."]);
+    let b = e.json(&["remember", "-k", "decision", "-t", "Usamos Y", "--tag", "nota-b", "Porque sí."]);
+    let g = e.json(&["remember", "-k", "preference", "-t", "Commits en inglés", "--global", "--pinned", "Una línea."]);
+    e.ok(&["space", "add", "acme"]);
+    let s = e.json(&["remember", "-k", "fact", "-t", "Del cliente", "--space=acme", "Solo de acme."]);
+    let id = |m: &serde_json::Value| m["id"].as_str().unwrap().to_string();
+    let vault = e.dir.join("vault");
+    let v = vault.to_str().unwrap();
+    let raiz = vault.join("omoikane");
+    let nota_a = raiz.join("repo").join("Cuidado con X.md");
+    let nota_b = raiz.join("repo").join("Usamos Y.md");
+    let nota_g = raiz.join("_global").join("Commits en inglés.md");
+    e.ok(&["export", "--obsidian", v]);
+    let texto = std::fs::read_to_string(&nota_a).unwrap();
+    assert!(texto.contains("\nbase: \"") && texto.contains("\nsig: \"") && texto.contains("%% omoikane:"), "{texto}");
+
+    // Exportar e importar sin tocar nada no cambia nada, y repetir tampoco.
+    let antes = e.json(&["get", &id(&a)]);
+    for _ in 0..2 {
+        let r = e.json(&["import", "--obsidian", v]);
+        assert_eq!((r["updated"].as_u64(), r["created"].as_u64(), r["unchanged"].as_u64()), (Some(0), Some(0), Some(3)), "{r}");
+        assert_eq!((r["export"]["created"].as_u64(), r["export"]["updated"].as_u64(), r["export"]["deleted"].as_u64()), (Some(0), Some(0), Some(0)), "{r}");
+    }
+    assert_eq!(e.json(&["get", &id(&a)]), antes);
+    assert_eq!(e.json(&["history", &id(&a)]).as_array().map(Vec::len), Some(0));
+
+    // Una nota editada pone al día su memoria, con historial; las líneas sin tocar se quedan como eran
+    // (los enlaces y el `#` del contenido), y la cambiada vuelve a la forma de Omoikane.
+    editar(&nota_a, |t| {
+        t.replace("Tercera línea.", "Tercera línea, editada en \\#obsidian y con [[Usamos Y]].")
+            .replace("aliases: [\"Cuidado con X\"]", "aliases: [\"Cuidado con X y Z\"]")
+            .replace("tags: [\"gotcha\", \"nota-a\", \"review-2099-01-01\"]", "tags: [\"gotcha\", \"nota-a\", \"nueva\", \"trade:web\"]")
+            .replace("kind: gotcha", "kind: fact")
+    });
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!((r["updated"].as_u64(), r["unchanged"].as_u64()), (Some(1), Some(2)), "{r}");
+    let m = e.json(&["get", &id(&a)]);
+    assert_eq!(m["title"], "Cuidado con X y Z");
+    assert_eq!(m["kind"], "fact");
+    assert_eq!(m["content"], format!("Ver [[nota-b]] y [[no-existe]].\nEl rojo es #d62828.\nTercera línea, editada en #obsidian y con [[{}]].", id(&b)));
+    let tags: Vec<&str> = m["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert!(tags.contains(&"nueva") && tags.contains(&"review:2099-01-01") && !tags.iter().any(|t| t.starts_with("trade")), "las que llevan `:` no se tocan: {tags:?}");
+    let h = e.json(&["history", &id(&a)]);
+    assert_eq!(h[0]["title"], "Cuidado con X");
+    assert_eq!(h[0]["reason"], "obsidian import");
+    // El vault queda al día (la nota, con su nuevo nombre) y otra importación no hace nada.
+    assert!(!nota_a.exists() && raiz.join("repo").join("Cuidado con X y Z.md").exists());
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!((r["updated"].as_u64(), r["unchanged"].as_u64()), (Some(0), Some(3)), "{r}");
+
+    // Nada da privilegios: en la global fijada, lo que cambia el ámbito no se aplica (y el texto sí).
+    editar(&nota_g, |t| t.replace("pinned: true\n", "").replace("project: \"Global\"", "project: \"repo\"").replace("Una línea.", "Una línea, en Obsidian."));
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["updated"].as_u64(), Some(1), "{r}");
+    let m = e.json(&["get", &id(&g)]);
+    assert_eq!((m["pinned"].as_bool(), m["project"].as_str(), m["content"].as_str()), (Some(true), Some(""), Some("Una línea, en Obsidian.")), "{m}");
+    // Una nota que apunta a otra memoria (a mano, o a una de un espacio) no la toca: no lleva su firma.
+    let texto_b = std::fs::read_to_string(&nota_b).unwrap();
+    std::fs::write(raiz.join("repo").join("Falsa.md"), texto_b.replace(&id(&b), &id(&s)).replace("Porque sí.", "Robado.")).unwrap();
+    std::fs::write(raiz.join("repo").join("Falsa 2.md"), texto_b.replace(&id(&b), &id(&g)).replace("Porque sí.", "Robado.")).unwrap();
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["foreign"].as_array().map(Vec::len), Some(2), "{r}");
+    assert_eq!(e.json(&["get", &id(&s)])["content"], "Solo de acme.");
+    assert_eq!(e.json(&["get", &id(&g)])["content"], "Una línea, en Obsidian.");
+    // Llevan la marca de Omoikane sin ser de ninguna memoria de aquí: la exportación las quita.
+    assert!(!raiz.join("repo").join("Falsa.md").exists() && !raiz.join("repo").join("Falsa 2.md").exists());
+
+    // Conflicto: cambiada en Obsidian y en Omoikane. No se pisa ninguna, ni al exportar; luego se elige.
+    editar(&nota_b, |t| t.replace("Porque sí.", "Porque lo dijo Obsidian."));
+    e.ok(&["update", &id(&b), "-c", "Porque lo dijo Omoikane."]);
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["conflicts"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["export"]["kept"].as_u64(), Some(1), "{r}");
+    assert_eq!(e.json(&["get", &id(&b)])["content"], "Porque lo dijo Omoikane.");
+    assert!(std::fs::read_to_string(&nota_b).unwrap().contains("Porque lo dijo Obsidian."));
+    let n = e.json(&["export", "--obsidian", v]);
+    assert_eq!(n["kept"].as_u64(), Some(1), "{n}");
+    assert!(std::fs::read_to_string(&nota_b).unwrap().contains("Porque lo dijo Obsidian."));
+    let r = e.json(&["import", "--obsidian", v, "--prefer", "obsidian"]);
+    assert_eq!((r["updated"].as_u64(), r["conflicts_applied"].as_u64()), (Some(1), Some(1)), "{r}");
+    assert_eq!(e.json(&["get", &id(&b)])["content"], "Porque lo dijo Obsidian.");
+    editar(&nota_b, |t| t.replace("Porque lo dijo Obsidian.", "Otra vez Obsidian."));
+    e.ok(&["update", &id(&b), "-c", "Otra vez Omoikane."]);
+    let r = e.json(&["import", "--obsidian", v, "--prefer", "omoikane"]);
+    assert_eq!(r["conflicts_discarded"].as_u64(), Some(1), "{r}");
+    assert!(std::fs::read_to_string(&nota_b).unwrap().contains("Otra vez Omoikane."));
+    assert_eq!(e.json(&["get", &id(&b)])["content"], "Otra vez Omoikane.");
+
+    // Notas nuevas: en la carpeta de un proyecto y con tipo, entran; sin tipo, en _global o sin
+    // proyecto, no (y se dice por qué).
+    std::fs::write(raiz.join("repo").join("Idea nueva.md"), "---\nkind: decision\ntags: [\"x\", \"trade:web\"]\npinned: true\n---\nUsar Z.\n").unwrap();
+    std::fs::write(raiz.join("repo").join("Sin tipo.md"), "Algo.\n").unwrap();
+    std::fs::write(raiz.join("_global").join("Global a mano.md"), "---\nkind: fact\n---\nPara todos.\n").unwrap();
+    std::fs::create_dir_all(raiz.join("otra")).unwrap();
+    std::fs::write(raiz.join("otra").join("Suelta.md"), "---\nkind: fact\n---\nDe nadie.\n").unwrap();
+    let r = e.json(&["import", "--obsidian", v, "--dry-run"]);
+    assert_eq!((r["created"].as_u64(), r["skipped"].as_array().map(Vec::len)), (Some(1), Some(3)), "{r}");
+    assert!(raiz.join("repo").join("Idea nueva.md").exists());
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!(r["created"].as_u64(), Some(1), "{r}");
+    let nuevas = e.json(&["recent"]);
+    let nueva = nuevas.as_array().unwrap().iter().find(|m| m["title"] == "Idea nueva").expect("la nota nueva es una memoria");
+    assert_eq!((nueva["kind"].as_str(), nueva["pinned"].as_bool(), nueva["project"].as_str().is_some_and(|p| p.ends_with("repo"))), (Some("decision"), Some(false), true), "{nueva}");
+    assert!(!nueva["tags"].as_array().unwrap().iter().any(|t| t.as_str().unwrap().starts_with("trade:")), "{nueva}");
+    // Su fichero pasa a ser la copia de Omoikane, y otra importación no la duplica.
+    assert!(std::fs::read_to_string(raiz.join("repo").join("Idea nueva.md")).unwrap().starts_with("---\nomoikane: "));
+    let r = e.json(&["import", "--obsidian", v]);
+    assert_eq!((r["created"].as_u64(), r["updated"].as_u64()), (Some(0), Some(0)), "{r}");
+
+    // Un vault de un espacio se importa con su --space; sin él, no.
+    let otro = e.dir.join("vault-acme");
+    e.ok(&["export", "--obsidian", otro.to_str().unwrap(), "--space", "acme"]);
+    let o = e.omoi(&["import", "--obsidian", otro.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--space acme"), "{}", String::from_utf8_lossy(&o.stderr));
+    editar(&otro.join("omoikane").join("_acme").join("Del cliente.md"), |t| t.replace("Solo de acme.", "Solo de acme, editado."));
+    let r = e.json(&["import", "--obsidian", otro.to_str().unwrap(), "--space", "acme"]);
+    assert_eq!(r["updated"].as_u64(), Some(1), "{r}");
+    assert_eq!(e.json(&["get", &id(&s)])["content"], "Solo de acme, editado.");
+}
+
 #[test]
 fn ayuda_en_ingles_y_en_espanol() {
     let e = Entorno::nuevo("idioma");
