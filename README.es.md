@@ -21,7 +21,7 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Nada se pierde.** Sin duplicados, con historial y motivo, lo viejo marcado, los secretos tachados, una papelera desde la que todo vuelve y una copia de la base cada día.
 - **De ti solo a una empresa entera.** La misma memoria en todos tus equipos y con compañeros, por un repositorio git tuyo y cifrada. Los espacios separan las memorias de cada cliente, y los oficios llevan lo que enseña un stack (Android, web, WordPress…) a todos los proyectos de ese stack.
 - **15 agentes, una sola memoria.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode y los demás; `omoi setup <agente>` deja cada uno listo. Dos están probados a mano, el resto según su documentación.
-- **Un binario y ningún servidor.** 8 herramientas MCP, SQLite dentro, ni Python, ni Node, ni Docker. Funciona sin internet, y en Windows igual que en Linux y macOS.
+- **Un binario y ningún servidor.** 9 herramientas MCP, SQLite dentro, ni Python, ni Node, ni Docker. Funciona sin internet, y en Windows igual que en Linux y macOS.
 
 ## Instalación
 
@@ -52,7 +52,7 @@ O `cargo install omoikane`. Los instaladores también añaden el plugin si Claud
 
 ## Estable desde la 1.0
 
-Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las 8 herramientas y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
+Durante toda la 1.x, la base, la línea de sincronización y el formato de `omoi export` no cambian de forma que rompa nada: una 1.3 y una 1.0 sincronizan entre sí, y un equipo con la 1.0 guarda y vuelve a enviar lo que no entiende de una versión más nueva. Las herramientas MCP y sus parámetros tampoco se rompen; solo se añaden cosas. Si algún día hace falta romper algo, será la 2.0, con migración y aviso.
 
 Versión 1.9.0, en crates.io y en las Releases, con integración continua en Windows, Linux y macOS. Se usa a diario en Windows y Linux. Cómo funciona está en [docs/](docs/), lo que cambia en cada versión, en el [CHANGELOG](CHANGELOG.md), y hacia dónde va, en la [hoja de ruta](ROADMAP.es.md).
 
@@ -68,13 +68,13 @@ Con 137 notas reales y preguntas escritas a ciegas por otro agente, que nunca se
 | hook del recall | 15-26 ms |
 | modelo de embeddings ([potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M), int8) | abre en 2,7 ms; 13 MB por proceso |
 
-El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). Un benchmark público y reproducible está en preparación.
+El método completo y todos los números: [BENCHMARK.es.md](BENCHMARK.es.md). El benchmark público y reproducible (3.000 notas de proyectos abiertos, 250 preguntas escritas a ciegas) está en [omoikane-bench](https://github.com/marcmayol/omoikane-bench).
 
 ## Documentación
 
 - [Recall y búsqueda](docs/recall.es.md): cuándo habla y cuándo calla, lo que se queda viejo, la búsqueda en 101 idiomas y qué tiene frente a CLAUDE.md.
 - [Qué es una memoria y cómo se guarda](docs/saving.es.md): tipos, duplicados, `/omoikane`, guardar al cerrar la sesión, secretos, recetas y enlaces.
-- [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, verla en Obsidian, copia diaria e importar de engram.
+- [Que siga siendo cierta y no se pierda](docs/memory-care.es.md): lo desfasado, veredictos, juntar, fechas de revisión, historial, papelera, export, Obsidian en los dos sentidos, bundles OKF, copia diaria e importar de engram.
 - [Sincronización, proyectos y espacios](docs/sync-and-spaces.es.md): compartir entre equipos y con compañeros, el cifrado, un espacio por cliente y los oficios.
 - [Agentes](docs/agents.es.md): el plugin de Claude Code, `omoi setup` y qué funciona en cada uno de los 15 agentes.
 - [Agentes sin nadie delante](docs/unattended.es.md): CI, servidores y contenedores, configurados por variables de entorno, con un ejemplo de GitHub Actions.

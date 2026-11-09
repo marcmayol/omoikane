@@ -41,7 +41,7 @@ Words find a memory when you ask with the words it uses. When you ask the same t
 
 ## It searches in your language
 
-Search starts with words: accents don't matter, file paths count too, and rare words weigh more. Then a local embedding model, which opens in 2.7 ms, finds what is very close in meaning even with no word in common. Where it searches depends on where you are: from a project, that project and the global memories; from your home folder, everything.
+Search starts with words: accents don't matter, file paths count too, and rare words weigh more. Then a local embedding model, which opens in 2.7 ms, finds what is very close in meaning even with no word in common. Where it searches depends on where you are: from a project, that project, its space, its trades and the global memories; from your home folder, everything.
 
 It works in 101 languages, accents or not. On questions written blind it finds the right memory first 90 % of the time and within the top three 97 %, with a median of 43 ms, and stays as accurate at 3,183 memories (50 ms per search). Four processes share the model at 13 MB of memory each. The model is [potion-multilingual-128M](https://huggingface.co/minishlab/potion-multilingual-128M) (int8), and it opens in 2.7 ms instead of 1.78 s. Until it has downloaded (~150 MB, once), search works by words.
 
@@ -53,6 +53,7 @@ If the project already keeps its documentation in Markdown (a `docs/` folder, an
 omoi docs add docs                               # indexes it now
 omoi docs list
 omoi docs test "how do I roll back a deploy?"    # what recall would bring for that
+omoi docs refresh                                # brings the index up to date now
 omoi docs remove docs
 ```
 

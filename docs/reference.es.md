@@ -19,7 +19,7 @@ Varios agentes pueden usar la misma base a la vez (subagentes, varias sesiones, 
 
 ## La ves y la ordenas tú
 
-`omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala. Ve lo mismo que la vista web desde la misma carpeta: desde el proyecto de un cliente, solo el espacio de ese cliente y las globales (`a` amplía la lista a todo el espacio, nunca a otros clientes); desde tu carpeta de usuario, todo, y `e` filtra por espacio. Cada memoria dice su proyecto y su espacio. `t` abre la papelera: `Intro` o `r` recupera, `x` borra una del todo y `E` vacía lo que se ve, las dos preguntando antes. Cabe en una terminal de 80×24; en una más estrecha la memoria va debajo de la lista, o se abre con `Intro`.
+`omoi tui` abre un visor en la terminal: busca mientras escribes, lee una memoria y su historial, fíjala u olvídala (`/` busca, `Intro` abre, `h` historial, `p` fija, `d` olvida, `q` sale). Ve lo mismo que la vista web desde la misma carpeta: desde el proyecto de un cliente, solo el espacio de ese cliente y las globales (`a` amplía la lista a todo el espacio, nunca a otros clientes); desde tu carpeta de usuario, todo, y `e` filtra por espacio. Cada memoria dice su proyecto y su espacio. `t` abre la papelera: `Intro` o `r` recupera, `x` borra una del todo y `E` vacía lo que se ve, las dos preguntando antes. Cabe en una terminal de 80×24; en una más estrecha la memoria va debajo de la lista, o se abre con `Intro`.
 
 `omoi serve --open` (o `/omoikane-web` en Claude Code) abre lo mismo en el navegador, en `http://127.0.0.1:7438/`. **Memorias** es una cronología por días de lo que se guardó o cambió (y, si quieres, de lo que el agente recordó), con un buscador que busca como el agente y filtros por tipo, proyecto o etiqueta; cada memoria se abre ahí mismo con su Markdown con formato, su último cambio como diff, el historial completo y botones para fijarla, moverla u olvidarla. **Proyectos** enseña en qué punto se quedó cada proyecto (su última memoria `status`) y abre una página por proyecto con sus memorias en una columna por tipo. **Panorama** enseña, por espacio, qué hay, quién lo escribió y qué está desfasado o en pausa ([detalles](sync-and-spaces.es.md#panorama-por-cliente)). Sigue el modo claro u oscuro del sistema y funciona sin internet: las fuentes (IBM Plex y Shippori Mincho, licencia SIL OFL, en `assets/fuentes`) van dentro del binario. Solo responde en tu propio equipo y rechaza las peticiones de otras webs.
 
@@ -33,7 +33,7 @@ La vista web y la API ven lo mismo que la CLI y el MCP desde la carpeta en la qu
 
 ## Se mantiene al día, si se lo pides
 
-Viene apagado: hasta que digas que sí (`omoi upgrade --on`, o la pregunta de `omoi setup claude`), `omoi` no se cambia a sí mismo. Encendido, una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane (Ed25519) y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano, y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia.
+Viene apagado: hasta que digas que sí (`omoi upgrade --on`, o la pregunta de `omoi setup claude`), `omoi` no se cambia a sí mismo. Encendido, una vez al día, la primera vez que se ejecuta, `omoi` mira en segundo plano si hay una Release más nueva de la misma versión mayor, la instala solo si está firmada con la clave de Omoikane (Ed25519) y añade a los agentes que ya lo tienen lo que traiga la versión nueva; la sesión siguiente te lo dice. `omoi setup claude` lo pregunta (y enciende también la actualización del plugin en Claude Code); `omoi upgrade --off` u `OMOIKANE_AUTO_UPDATE=0` lo apagan, `omoi upgrade` actualiza a mano (`--check` solo dice si hay una versión más nueva), y un binario que gestiona cargo, Homebrew, Scoop o Nix se deja a ellos. Antes de pasar una base a un esquema nuevo guarda una copia. Una descarga que se cuelga acaba en un error que nombra el servidor, en vez de esperar para siempre: 30 s para conectar y 60 s para que empiece la respuesta, y luego 10 minutos para una actualización; un fichero del modelo puede tardar lo que haga falta mientras sigan llegando datos, y falla tras 120 s sin recibir nada.
 
 ## Variables de entorno
 
@@ -43,14 +43,18 @@ Todas salen en las páginas de arriba; aquí están juntas.
 |---|---|
 | `OMOIKANE_DB` | dónde está la base (por defecto, `omoikane.db` en `OMOIKANE_HOME`) |
 | `OMOIKANE_HOME` | la carpeta de Omoikane entera: base, modelos y preferencias (por defecto, `~/.omoikane`) |
+| `OMOIKANE_MODELS` | dónde están los modelos (por defecto, `models` en `OMOIKANE_HOME`) |
 | `OMOIKANE_NONINTERACTIVE=1` | no hay nadie delante: ni preguntas, ni descargas, ni actualizaciones, ni sincronización de fondo ([unattended.es.md](unattended.es.md)) |
 | `OMOIKANE_SYNC_CODE` / `OMOIKANE_SYNC_URL` | unirse a la sincronización con un código (y otra URL) sin preguntar ([unattended.es.md](unattended.es.md)) |
 | `OMOIKANE_AUTHOR` | quién firma lo que se guarda aquí |
 | `OMOIKANE_SESSION` | la sesión del agente que se guarda con cada memoria nueva (si no, `CLAUDE_CODE_SESSION_ID` o la de los hooks) |
+| `TRACEPARENT` | la traza W3C en la que corre el agente: cada memoria nueva guarda su `trace_id` y su `span_id` ([saving.es.md](saving.es.md#de-dónde-salió-cada-memoria)) |
 | `OMOIKANE_SYNC_AUTO=0` / `1` | apaga o enciende la sincronización de fondo (encendida por defecto, apagada con `OMOIKANE_NONINTERACTIVE=1`) |
+| `OMOIKANE_SYNC_EVERY` | cada cuántos segundos se mira, a mitad de sesión, si el remoto trae algo nuevo (120) |
 | `OMOIKANE_LANG=es` | mensajes en español |
 | `OMOIKANE_BIN` | qué `omoi` ejecuta el plugin de Claude Code |
 | `OMOIKANE_TRASH_DAYS` | días en la papelera antes de borrar del todo (30; 0 = nunca) |
+| `OMOIKANE_REDACT=0` | apaga la redacción de secretos: se guardan tal cual (`omoi doctor` lo dice) |
 | `OMOIKANE_BACKUPS` | copias diarias que se guardan (7; 0 = apagado) |
 | `OMOIKANE_AUTO_UPDATE=0` | apaga la actualización automática |
 | `OMOIKANE_HTTP_TOKEN` | token que pide `omoi serve` por HTTP |
@@ -63,3 +67,4 @@ Todas salen en las páginas de arriba; aquí están juntas.
 | `OMOIKANE_SEMANTIC_RAM` | MB de RAM que puede usar el modelo de significado al indexar (por encima de `omoi model semantic --ram`; 128 por defecto, mínimo 80) |
 | `OMOIKANE_SEMANTIC_MODEL` | una carpeta con EmbeddingGemma para usarla en vez de la instalada |
 | `OMOIKANE_SEMANTIC_SOURCE` | de dónde descarga `omoi model install --semantic` (separadas por comas) |
+| `OMOIKANE_MODEL_SOURCE` | de dónde se descarga el modelo ligero (separadas por comas; un espejo propio) |
