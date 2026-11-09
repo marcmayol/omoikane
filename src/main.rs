@@ -1615,57 +1615,78 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 return Ok(());
             }
             let ambito = ambito_pedido(c, &db, all, None, None)?;
-            let v = omoikane::revisar::avisos(&db, &ambito)?;
             if c.json {
-                return json(&v);
+                return json(&omoikane::revisar::avisos(&db, &ambito)?);
             }
-            // Los proyectos que ya no están en su carpeta, o cuyo `origin` cambió (de los que se ven desde aquí).
-            let filtro = if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) };
+            // Los proyectos en pausa, los que ya no están en su carpeta o cuyo `origin` cambió y los
+            // repetidos (de los que se ven desde aquí) no dependen de los avisos: se miran a la vez, con
+            // otra conexión de solo lectura (cada lista de proyectos recorre la tabla de memorias). Si
+            // esa no se puede abrir o falla, después, con la de siempre.
+            let filtro = omoikane::nombres::filtro_de(&ambito);
+            let de_proyectos = |db: &Connection| -> Result<_> {
+                let pausados = proyecto::en_pausa(db)?;
+                let proyectos = proyecto::lista(db, None, filtro, usize::MAX)?;
+                let propuestas = omoikane::nombres::propuestas_de(db, &proyectos)?;
+                Ok((pausados, proyectos, propuestas))
+            };
+            let ruta = db.path().filter(|r| !r.is_empty()).map(PathBuf::from);
+            let (v, aparte) = std::thread::scope(|s| {
+                let aparte = s.spawn(|| {
+                    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+                    ruta.as_ref().and_then(|r| Connection::open_with_flags(r, flags).ok()).map(|otra| de_proyectos(&otra))
+                });
+                (omoikane::revisar::avisos(&db, &ambito), aparte.join())
+            });
+            let v = v?;
+            let (pausados, proyectos, propuestas) = match aparte {
+                Ok(Some(Ok(x))) => x,
+                _ => de_proyectos(&db)?,
+            };
+            // Con miles de avisos, `println!` escribía línea a línea (una llamada al sistema por cada una).
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             // Y los que están en otro espacio en otro equipo de la sincronización, con la orden, y los
             // que están en pausa, con las dos.
             let choques = omoikane::sync::choques(&ruta_db(c));
-            let pausados = proyecto::en_pausa(&db)?;
-            for p in proyecto::lista(&db, None, filtro, usize::MAX)? {
+            for p in &proyectos {
                 if let Some(x) = pausados.iter().find(|x| x.key == p.key) {
-                    println!("{:<12}  {}  {}", "project_paused", p.name, p.path);
-                    println!("{:<12}  {}", "", omoikane::sync::texto_pausa(&ruta_db(c), x));
+                    writeln!(out, "{:<12}  {}  {}", "project_paused", p.name, p.path)?;
+                    writeln!(out, "{:<12}  {}", "", omoikane::sync::texto_pausa(&ruta_db(c), x))?;
                 }
                 if p.gone {
-                    println!("{:<12}  {}  {}", "project_gone", p.name, p.path);
-                    println!("{:<12}  {}", "", tr!("the folder no longer exists: `omoi projects move {} <new folder>`", "la carpeta ya no existe: `omoi projects move {} <carpeta nueva>`", p.name));
+                    writeln!(out, "{:<12}  {}  {}", "project_gone", p.name, p.path)?;
+                    writeln!(out, "{:<12}  {}", "", tr!("the folder no longer exists: `omoi projects move {} <new folder>`", "la carpeta ya no existe: `omoi projects move {} <carpeta nueva>`", p.name))?;
                 }
                 if let Some(x) = choques.iter().find(|x| x.key == p.key) {
-                    println!("{:<12}  {}  {}", "project_space", p.name, p.path);
-                    println!("{:<12}  {}", "", x.texto());
+                    writeln!(out, "{:<12}  {}  {}", "project_space", p.name, p.path)?;
+                    writeln!(out, "{:<12}  {}", "", x.texto())?;
                 }
                 if !p.origin_changed.is_empty() {
-                    println!("{:<12}  {}  {}", "origin", p.name, p.path);
-                    println!("{:<12}  {}", "", tr!("its git origin is now {} (its sync key stays {})", "su origin de git ahora es {} (su clave de sincronización sigue siendo {})", p.origin_changed, p.key));
+                    writeln!(out, "{:<12}  {}  {}", "origin", p.name, p.path)?;
+                    writeln!(out, "{:<12}  {}", "", tr!("its git origin is now {} (its sync key stays {})", "su origin de git ahora es {} (su clave de sincronización sigue siendo {})", p.origin_changed, p.key))?;
                 }
             }
             // Los proyectos duplicados o en carpetas temporales: se proponen, nunca se juntan solos.
-            let propuestas = omoikane::nombres::propuestas(&db, &ambito)?;
             for x in &propuestas {
                 let otro = if x.other.is_empty() { String::new() } else { format!("  →  {}  {}", x.other, x.other_path) };
-                println!("{:<12}  {}  {}{otro}", format!("project_{}", x.kind), x.project, x.path);
-                println!("{:<12}  {}", "", x.detail);
+                writeln!(out, "{:<12}  {}  {}{otro}", format!("project_{}", x.kind), x.project, x.path)?;
+                writeln!(out, "{:<12}  {}", "", x.detail)?;
                 let no = if x.other.is_empty() { tr!("a real project:", "es un proyecto de verdad:") } else { tr!("not the same:", "no son el mismo:") };
-                println!("{:<12}  {}  ·  {no} {}", "", x.command, x.dismiss);
+                writeln!(out, "{:<12}  {}  ·  {no} {}", "", x.command, x.dismiss)?;
             }
             let cs = omoikane::candidatas::todas(&db)?;
             if v.is_empty() && cs.is_empty() && pausados.is_empty() && propuestas.is_empty() {
-                println!("{}", tr!("nothing to review", "nada que revisar"));
+                writeln!(out, "{}", tr!("nothing to review", "nada que revisar"))?;
             }
             if !cs.is_empty() {
-                println!("{}", tr!("From your recent sessions, possibly worth keeping:", "De tus últimas sesiones, quizá valga la pena guardar:"));
+                writeln!(out, "{}", tr!("From your recent sessions, possibly worth keeping:", "De tus últimas sesiones, quizá valga la pena guardar:"))?;
                 for x in &cs {
-                    println!("  [{}] {}", x.kind, x.text.chars().take(160).collect::<String>());
+                    writeln!(out, "  [{}] {}", x.kind, x.text.chars().take(160).collect::<String>())?;
                 }
-                println!();
+                writeln!(out)?;
             }
             for a in &v {
                 let id: String = a.memory_id.chars().take(12).collect();
-                println!("{:<12}  {id}  {}", a.kind, a.title.chars().take(90).collect::<String>());
+                writeln!(out, "{:<12}  {id}  {}", a.kind, a.title.chars().take(90).collect::<String>())?;
                 if let Some(t) = &a.other_title {
                     let etiqueta = match a.kind.as_str() {
                         omoikane::revisar::SUSTITUIDA if a.via > 1 => tr!("by (via {}):", "por (via {}):", a.via),
@@ -1673,10 +1694,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                         omoikane::revisar::CONTRADICE => tr!("against:", "frente a:"),
                         _ => tr!("newer:", "nueva:"),
                     };
-                    println!("{:<12}  {etiqueta} {}  {}", "", a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>());
+                    writeln!(out, "{:<12}  {etiqueta} {}  {}", "", a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>())?;
                 }
-                println!("{:<12}  {}", "", a.detail);
+                writeln!(out, "{:<12}  {}", "", a.detail)?;
             }
+            out.flush()?;
             Ok(())
         }
         Orden::Projects { accion } => proyectos_cli(c, accion.unwrap_or(AccionProyectos::List)),

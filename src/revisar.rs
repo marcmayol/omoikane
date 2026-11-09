@@ -170,6 +170,12 @@ fn huella(db: &Connection) -> Result<String> {
 const CLAVE_COMUNES: &str = "revision_comunes";
 /// Cuántas escrituras se han revisado por partes desde el último recálculo entero.
 const CLAVE_PARCIALES: &str = "revision_parciales";
+/// Hilos con los que se miran las memorias en [`avisos`], como mucho, y memorias por hilo, como poco
+/// (con menos, arrancar los hilos cuesta más de lo que ahorran).
+const MAXIMO_HILOS: usize = 8;
+const MINIMO_POR_HILO: usize = 2_000;
+/// Desde cuántas memorias se sueltan en otro hilo al acabar [`avisos`].
+const SOLTAR_APARTE: usize = 10_000;
 /// Por debajo de este número de memorias se recalcula siempre entero: es barato y el tope de las raras
 /// aún se mueve con cada memoria (`tope_raras`).
 pub const MINIMO_POR_PARTES: usize = 2_000;
@@ -852,7 +858,10 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
     let hoy = hoy(db)?;
     // Opcional, como el aviso: si git o el disco fallan, solo se pierde este.
     let deriva = if esperar { crate::deriva::de(db, &todas) } else { crate::deriva::de_sin_esperar(db, &todas) }.unwrap_or_default();
-    for m in &todas {
+    // Lo de cada memoria no depende de las demás (salvo leerlas, en `stale_status`): se reparte por
+    // trozos seguidos entre los núcleos y se junta en el mismo orden, así que sale lo mismo que de una
+    // en una. Con 50.000 memorias, solo los secretos eran medio segundo.
+    let de_una = |m: &Memoria, r: &mut Vec<Aviso>| {
         if let Some(d) = deriva.get(&m.id) {
             r.push(aviso(m, DERIVA_CODIGO, None, d.clone()));
         }
@@ -890,6 +899,31 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
         if largo > LARGO_PARA_RECALL && !descartado(LARGA) {
             r.push(aviso(m, LARGA, None, format!("{largo} characters; recall only reads the first {LARGO_PARA_RECALL}: consider splitting it")));
         }
+    };
+    let hilos = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAXIMO_HILOS);
+    let trozo = todas.len().div_ceil(hilos).max(MINIMO_POR_HILO);
+    if todas.len() <= trozo {
+        for m in &todas {
+            de_una(m, &mut r);
+        }
+    } else {
+        let partes: Vec<Vec<Aviso>> = std::thread::scope(|s| {
+            let hechos: Vec<_> = todas
+                .chunks(trozo)
+                .map(|ms| {
+                    let de_una = &de_una;
+                    s.spawn(move || {
+                        let mut v = Vec::new();
+                        for m in ms {
+                            de_una(m, &mut v);
+                        }
+                        v
+                    })
+                })
+                .collect();
+            hechos.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        });
+        r.extend(partes.into_iter().flatten());
     }
     let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(TIPOS.len());
     // Dentro de cada tipo de aviso, primero lo que más se equivoca si nadie lo mira: las decisiones y
@@ -899,7 +933,14 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
         Some(m) if matches!(m.kind, crate::memoria::Tipo::Decision | crate::memoria::Tipo::Gotcha) => 0,
         _ => 1,
     };
-    r.sort_by_key(|a| (orden(&a.kind), prioridad(&a.memory_id)));
+    // Con la clave de cada aviso calculada una vez (con 50.000 memorias, calcularla en cada comparación
+    // eran más de 100 ms); estable, como `sort_by_key`.
+    r.sort_by_cached_key(|a| (orden(&a.kind), prioridad(&a.memory_id)));
+    // Soltar muchas memorias es liberar memoria que nadie espera (con 50.000, 40 ms): en otro hilo.
+    drop(por_id);
+    if todas.len() > SOLTAR_APARTE {
+        std::thread::spawn(move || drop(todas));
+    }
     Ok(r)
 }
 

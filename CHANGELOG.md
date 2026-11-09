@@ -26,12 +26,21 @@ How it works is in [docs/](docs/).
 - `h` (history) goes through the same scope check as `omoi history`.
 - It fits a terminal of 80×24 and smaller: the help line wraps instead of being cut off, and below 70 columns the memory goes under the list (or, with little room, opens with `Enter`).
 
+### Faster review with many memories
+- `omoi review --all` with 50,000 memories takes 0.52 s instead of 1.85 s; from a project of that database, 127 ms instead of 284; with 3,000 memories, 65 ms instead of 106. Median of 20 interleaved rounds of the whole process (release, Windows, synthetic databases made from the benchmark corpus in 40 projects). The output is the same byte for byte, as text and with `--json`. The `context` tool, the notice at the start of a session and the web view's Review tab go through the same code.
+- How: reading every memory of a scope (the review, code drift, links, the Obsidian and OKF exports, the web view) is one pass over the table, sorted afterwards, instead of one query per memory in date order; from 10,000 memories on, the table is read in ranges at the same time by read-only connections, and if another process writes meanwhile it is read again the usual way. The checks of each memory (secrets, dates, unused, too long…) run on every core and are put back in the same order. The projects (paused, gone, repeated) are listed once, while the review runs. The review writes its output in one go instead of line by line.
+- Search, recall and the start of a session don't change: with 50,000 memories, `search` was already 41-73 ms (median, whole process; without a model and with the light model) and about 120 ms with the meaning model, so it was left as it was.
+
+### A speed guard in CI
+- A new workflow (`perf.yml`, on every push and before every release) checks that recall and search aren't slower than in the last release: it downloads that release's `omoi`, checks it like an update does (the signature of `SHA256SUMS` and the package's SHA-256), and runs `recall`, `search` from a project and `search --all` with both binaries on the same runner, interleaved, on the same synthetic database of 10,000 memories. It fails when a median is more than 25 % and 5 ms above the release's twice in a row. The same command runs locally: `cargo run --release --example rendimiento` ([CONTRIBUTING.md](CONTRIBUTING.md#changes-to-search-recall-or-ranking)).
+
 ### Compatibility
 - The database schema stays at 10 and `lector_minimo` doesn't move. The one addition is a column with a default value, `memory_version.extra`, added when the database is opened. Versions 1.0 to 1.8.6 name their columns when they write history, so they open, read and write a 1.9.0 database as before (their new history entries get an empty `extra`).
 - The sync lines and the export format don't change. A history entry may carry fields older versions don't know: they ignore them, and drop them only if they rewrite that history (forgetting and restoring the memory there). A key like `dir:<you>/acme/web` is just another key to them. One case stays split until every computer is updated: a computer on an older version that puts its own copy of that client's folder into the space keeps the old key, so both computers see two projects (`omoi projects merge` joins them).
 - An encrypted copy of everything is the same format as before, with each line under its space's key. Versions 1.0 to 1.8.6 already try every key of the computer on each line and read the whole file before applying anything: with all the keys they import it as before; missing one, they stop at that line and nothing is applied.
 - `export --all --encrypt` now refuses on a computer with a space that has memories and no sync repository of its own (before, that space went with the general key). Set up its repository, or export without `--encrypt`.
 - The terminal viewer changes nothing in the database (schema 10), the sync lines or the `omoi export` format.
+- Same as 1.8.6: the database schema stays at 10, `lector_minimo` doesn't move, and the sync lines and the export formats don't change. Versions 1.0 to 1.8.6 read a 1.9.0 database and sync with it.
 
 ## 1.8.6 (2026-11-08)
 
