@@ -45,6 +45,9 @@ How it works is in [docs/](docs/).
 - Only notes exported by this database touch a memory: each one is now signed (`sig`, an HMAC with the database's own key, the one OKF export already uses, which never leaves the computer) over its memory, the scope it was exported from, the memory's version and a fingerprint of what can be edited (`base`). A note with someone else's id, from another database or from an older version doesn't touch any memory; the import says how many and how to bring them in.
 - `export --obsidian` (and `--watch`) no longer overwrites or deletes a note you edited and haven't imported yet (`kept` in `--json`, and the CLI says so). Its notes carry two new header fields (`base`, `sig`), an invisible Obsidian comment above the links and a new last line, so the first export with 1.9.0 rewrites every note once.
 
+### The trace in the provenance
+- If the agent runs inside a trace (whoever launched it set `TRACEPARENT`, the W3C Trace Context standard that OpenTelemetry uses), each new memory also keeps its `trace_id` and `span_id`. `get` and `history` show `trace <trace_id>/<span_id>`, the web view too, and the JSON carries both in `provenance`. Claude Code passes `TRACEPARENT` on to its shell and to its MCP servers, so an agent factory that opens a span per step gets, from a run's trace, the memories it left, and from a memory, the step that wrote it. They are random ids with nothing of the project, so global memories and a space's own keep them; trade memories don't carry any provenance, as before. A malformed `TRACEPARENT` (wrong length, uppercase, all zeros, version `ff`) is ignored.
+
 ### Compatibility
 - The database schema stays at 10 and `lector_minimo` doesn't move. The one addition is a column with a default value, `memory_version.extra`, added when the database is opened. Versions 1.0 to 1.8.6 name their columns when they write history, so they open, read and write a 1.9.0 database as before (their new history entries get an empty `extra`).
 - The sync lines and the export format don't change. A history entry may carry fields older versions don't know: they ignore them, and drop them only if they rewrite that history (forgetting and restoring the memory there). A key like `dir:<you>/acme/web` is just another key to them. One case stays split until every computer is updated: a computer on an older version that puts its own copy of that client's folder into the space keeps the old key, so both computers see two projects (`omoi projects merge` joins them).
@@ -54,6 +57,8 @@ How it works is in [docs/](docs/).
 - Same as 1.8.6: the database schema stays at 10, `lector_minimo` doesn't move, and the sync lines and the export formats don't change. Versions 1.0 to 1.8.6 read a 1.9.0 database and sync with it.
 - The Obsidian vault is a view, not a sync format: a vault exported by 1.9.0 is rewritten by an older version's export (which drops `base` and `sig`), and notes exported by an older version are refreshed by the next 1.9.0 export. Edits made on notes from an older export can't be imported (they aren't signed): export again first.
 - Nothing changes in the database schema, `lector_minimo`, the sync lines or the `omoi export` and OKF formats. The signing key is the existing local `meta('okf_firma')`, which doesn't sync.
+- The trace in the provenance: reads everything 1.0–1.8 wrote. 1.8.5 and 1.8.6 keep the two new fields as they are, except when they trim the provenance of a memory moved to global, which rewrites it without them.
+
 
 ## 1.8.6 (2026-11-08)
 

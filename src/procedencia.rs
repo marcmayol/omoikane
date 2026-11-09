@@ -15,6 +15,12 @@
 //! sesión que los hooks hayan apuntado en ese proyecto en las últimas 12 horas. Con varias a la vez
 //! en el mismo proyecto no se adivina: mejor sin sesión que con la de otra conversación.
 //!
+//! La traza (1.9): si quien lanzó al agente le pasó `TRACEPARENT` (W3C Trace Context, el estándar de
+//! OpenTelemetry; una central de agentes lo pone por paso y Claude Code lo hereda a su shell y a sus
+//! servidores MCP), se apuntan su `trace_id` y su `span_id`. Con eso, desde la traza de una ejecución
+//! se llega a las memorias que dejó, y desde una memoria al paso exacto que la escribió. Son ids
+//! aleatorios, sin nada del proyecto, así que van también en las globales y en las de un espacio.
+//!
 //! Una memoria de oficio no lleva procedencia: es de todos los proyectos de su oficio y no debe
 //! llevar nada de un cliente (ni el nombre de su rama). Una global o de un espacio sin proyecto, solo
 //! la sesión: el commit y la rama son de la carpeta en la que se escribió, que puede ser la de un
@@ -41,11 +47,17 @@ pub struct Procedencia {
     /// La rama de ese HEAD (vacía con un HEAD suelto).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// El `trace_id` de `TRACEPARENT` (32 hex), si el agente corría dentro de una traza.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trace_id: String,
+    /// El `span_id` de `TRACEPARENT` (16 hex): el paso de esa traza que lanzó al agente.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub span_id: String,
 }
 
 impl Procedencia {
     pub fn vacia(&self) -> bool {
-        self.session.is_empty() && self.commit.is_empty()
+        self.session.is_empty() && self.commit.is_empty() && self.trace_id.is_empty()
     }
 
     /// En una línea: «session 2bd891d2… · commit e564a66 (master)».
@@ -57,6 +69,9 @@ impl Procedencia {
         if !self.commit.is_empty() {
             let rama = if self.branch.is_empty() { String::new() } else { format!(" ({})", self.branch) };
             v.push(format!("commit {}{rama}", self.commit.get(..12).unwrap_or(&self.commit)));
+        }
+        if !self.trace_id.is_empty() {
+            v.push(format!("trace {}/{}", self.trace_id, self.span_id));
         }
         v.join(" · ")
     }
@@ -72,7 +87,8 @@ pub(crate) fn de_columna(json: Option<&str>) -> Option<Procedencia> {
 pub fn actual(db: &Connection, proyecto: &str) -> Option<Procedencia> {
     let session = sesion(db, proyecto).unwrap_or_default();
     let (commit, branch) = if proyecto.is_empty() { None } else { commit_de(Path::new(proyecto)) }.unwrap_or_default();
-    let p = Procedencia { session, commit, branch };
+    let (trace_id, span_id) = traza().unwrap_or_default();
+    let p = Procedencia { session, commit, branch, trace_id, span_id };
     (!p.vacia()).then_some(p)
 }
 
@@ -81,7 +97,8 @@ pub fn actual(db: &Connection, proyecto: &str) -> Option<Procedencia> {
 /// carpeta en la que se escribió, que puede ser de un cliente (`feature/acme-…`) y se vería desde
 /// cualquier otro.
 pub fn solo_sesion(db: &Connection, proyecto: &str) -> Option<Procedencia> {
-    let p = Procedencia { session: sesion(db, proyecto).unwrap_or_default(), ..Default::default() };
+    let (trace_id, span_id) = traza().unwrap_or_default();
+    let p = Procedencia { session: sesion(db, proyecto).unwrap_or_default(), trace_id, span_id, ..Default::default() };
     (!p.vacia()).then_some(p)
 }
 
@@ -125,6 +142,23 @@ pub(crate) fn extra(p: &Procedencia) -> String {
 
 fn variable(k: &str) -> Option<String> {
     std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 200)
+}
+
+/// `trace_id` y `span_id` de `TRACEPARENT`, si es válido: `vv-<32 hex>-<16 hex>-<2 hex>`, versión que
+/// no sea `ff` (una versión futura puede añadir campos detrás: se leen los cuatro primeros), ids que no
+/// sean todo ceros. Uno mal formado se ignora, como manda el estándar.
+fn traza() -> Option<(String, String)> {
+    traza_de(&variable("TRACEPARENT")?)
+}
+
+pub(crate) fn traza_de(v: &str) -> Option<(String, String)> {
+    let mut partes = v.split('-');
+    let (version, trace, span, flags) = (partes.next()?, partes.next()?, partes.next()?, partes.next()?);
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let ceros = |s: &str| s.bytes().all(|b| b == b'0');
+    (hex(version, 2) && version != "ff" && (version != "00" || partes.next().is_none()) && hex(trace, 32) && hex(span, 16) && hex(flags, 2)
+        && !ceros(trace) && !ceros(span))
+        .then(|| (trace.to_string(), span.to_string()))
 }
 
 /// La sesión del agente que guarda (ver el principio del módulo).
@@ -239,8 +273,34 @@ mod tests {
     }
 
     #[test]
+    fn traceparent_valido_e_invalidos() {
+        let t = "4bf92f3577b34da6a3ce929d0e0e4736";
+        let s = "00f067aa0ba902b7";
+        assert_eq!(traza_de(&format!("00-{t}-{s}-01")), Some((t.into(), s.into())));
+        // Una versión futura puede traer campos detrás; la 00, no.
+        assert_eq!(traza_de(&format!("01-{t}-{s}-01-extra")), Some((t.into(), s.into())));
+        assert_eq!(traza_de(&format!("00-{t}-{s}-01-extra")), None);
+        assert_eq!(traza_de(&format!("ff-{t}-{s}-01")), None);
+        assert_eq!(traza_de(&format!("00-{}-{s}-01", "0".repeat(32))), None);
+        assert_eq!(traza_de(&format!("00-{t}-{}-01", "0".repeat(16))), None);
+        assert_eq!(traza_de(&format!("00-{}-{s}-01", t.to_uppercase())), None);
+        assert_eq!(traza_de(&format!("00-{t}-{s}")), None);
+        assert_eq!(traza_de("basura"), None);
+    }
+
+    #[test]
+    fn solo_con_traza_no_esta_vacia_y_se_ve() {
+        let p = Procedencia { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(), span_id: "00f067aa0ba902b7".into(), ..Default::default() };
+        assert!(!p.vacia());
+        assert_eq!(p.texto(), "trace 4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7");
+        // Una global la conserva (son ids sin nada del proyecto); una de oficio, no.
+        assert_eq!(para_memoria(Some(p.clone()), 0, &[]), Some(p.clone()));
+        assert_eq!(para_memoria(Some(p), 3, &[format!("{}android", crate::oficios::PREFIJO)]), None);
+    }
+
+    #[test]
     fn texto_corto() {
-        let p = Procedencia { session: "s1".into(), commit: "0123456789abcdef0123456789abcdef01234567".into(), branch: "main".into() };
+        let p = Procedencia { session: "s1".into(), commit: "0123456789abcdef0123456789abcdef01234567".into(), branch: "main".into(), ..Default::default() };
         assert_eq!(p.texto(), "session s1 · commit 0123456789ab (main)");
         assert!(de_columna(Some("{}")).is_none());
     }
