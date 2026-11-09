@@ -2250,11 +2250,8 @@ impl<'a> Aplicador<'a> {
                 // está en la papelera.
                 db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
                 // El historial que venga: lo que ya hay con ese número se queda.
-                for v in versions {
-                    db.execute(
-                        "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                        params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason],
-                    )?;
+                for v in &versions {
+                    memoria::poner_version(db, &id, v)?;
                 }
                 Ok(())
             }
@@ -2591,6 +2588,33 @@ pub fn adoptar_persona(db: &mut Connection, ruta_db: &Path, nueva: &str) -> Resu
         escribir_privado(&r.config, &serde_json::to_string_pretty(&c)?)?;
     }
     Ok(n)
+}
+
+/// Si la clave de un proyecto ya está en el repositorio general, según el clon de este equipo (sin red):
+/// la subió este equipo u otro. Sin repositorio general, no. Si no se pueden leer sus claves, se da por
+/// que sí (`proyecto::clave_con_espacio` deja entonces la clave como estaba).
+pub(crate) fn en_el_general(db: &Connection, clave: &str) -> bool {
+    let Some(ruta) = db.path().filter(|p| !p.is_empty()) else { return false };
+    let r = rutas(Path::new(ruta));
+    if !r.config.exists() {
+        return false;
+    }
+    let Ok(cifra) = leer_claves(&r) else { return true };
+    cifra.claves.values().any(|k| r.clon.join(format!("p-{}", opaco(k, &[clave.as_bytes()]))).exists())
+}
+
+/// La clave de un proyecto cambió (`proyecto::clave_con_espacio`): la lista `projects` de los
+/// repositorios que la nombran pasa a la nueva.
+pub(crate) fn cambiar_clave_en_configs(ruta_db: &Path, vieja: &str, nueva: &str) -> Result<()> {
+    for r in repos(ruta_db) {
+        let Some(mut c) = leer_config_de(&r)? else { continue };
+        let Some(p) = c.projects.as_mut().filter(|p| p.iter().any(|k| k == vieja)) else { continue };
+        for k in p.iter_mut().filter(|k| *k == vieja) {
+            *k = nueva.to_string();
+        }
+        escribir_privado(&r.config, &serde_json::to_string_pretty(&c)?)?;
+    }
+    Ok(())
 }
 
 fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) -> Result<()> {

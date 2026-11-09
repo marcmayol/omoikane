@@ -822,12 +822,33 @@ pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, 
         return Ok(id);
     }
     let existe = !ruta_origen.is_empty() && es_carpeta(Path::new(ruta_origen));
+    // En una copia (no por la sincronización), la clave de la 1.9.0 de una carpeta que aquí ya está
+    // apuntada con la de siempre (`dir:<persona>/x` y la copia dice `dir:<persona>/acme/x`), sin espacio
+    // o en ese mismo: es esta carpeta, que en la base de la copia entró en acme. Toma esa clave, como
+    // la habría tomado al meterla aquí en el espacio (si la de siempre no ha salido de este equipo).
+    if de_copia
+        && existe
+        && let Some(e) = espacio_en_clave_dir(clave)
+        && let Some((id, espacio)) = por_ruta(db, ruta_origen)?
+        && let vieja = clave_de(db, id)?
+        && clave_dir_en_espacio(&vieja, e).as_deref() == Some(clave)
+        && (espacio.is_none() || clave_espacio(db, espacio)? == e)
+        && !crate::sync::en_el_general(db, &vieja)
+    {
+        db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![id, clave])?;
+        return Ok(id);
+    }
     if existe && por_ruta(db, ruta_origen)?.is_none() {
         if crate::sync::clave(ruta_origen, persona) == clave {
             return registrar(db, ruta_origen);
         }
         let suya = clave.strip_prefix("dir:").and_then(|r| r.split_once('/')).map(|(p, _)| p);
-        if de_copia && suya.is_some_and(|p| crate::sync::clave(ruta_origen, p) == clave) {
+        // (Con la clave de la 1.9.0, la de esa carpeta en el espacio que dice la clave.)
+        let es_esta = |p: &str| {
+            let k = crate::sync::clave(ruta_origen, p);
+            k == clave || espacio_en_clave_dir(clave).and_then(|e| clave_dir_en_espacio(&k, e)).as_deref() == Some(clave)
+        };
+        if de_copia && suya.is_some_and(es_esta) {
             let ahora = ahora(db)?;
             db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![clave, nombre_de(ruta_origen, clave), ruta_origen, ahora])?;
             let id = db.last_insert_rowid();
@@ -1145,6 +1166,12 @@ pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> 
     let (antes, previo, pausa): (Option<i64>, String, String) =
         db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
     let pausada = !pausa.is_empty();
+    // La primera vez que una carpeta sin remoto entra en un espacio sin que su clave haya salido de
+    // este equipo, la clave pasa a llevar el espacio (`clave_con_espacio`).
+    let previo = match (antes, espacio, previo.is_empty() && !pausada) {
+        (None, Some(e), true) => en_una_transaccion(db, || clave_con_espacio(db, proyecto, e))?.unwrap_or(previo),
+        _ => previo,
+    };
     if antes != espacio || previo.is_empty() || pausada {
         let previo = match Pausa::de(&pausa) {
             Some(p) if crate::reloj::mayor(&p.hlc, &previo) => p.hlc,
@@ -1154,6 +1181,109 @@ pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> 
         db.execute("UPDATE project SET space_id = ?2, hlc = ?3, paused = '' WHERE id = ?1", params![proyecto, espacio, hlc])?;
     }
     Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [proyecto], |f| f.get::<_, i64>(0))? as usize)
+}
+
+/// `f` en una transacción: la de quien llama si ya hay una (con un `SAVEPOINT`), o una `IMMEDIATE`
+/// (una diferida que lee y después escribe puede dar `BUSY_SNAPSHOT` sin esperar: ver `db`).
+fn en_una_transaccion<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let (abrir, cerrar, deshacer) = if db.is_autocommit() {
+        ("BEGIN IMMEDIATE", "COMMIT", "ROLLBACK")
+    } else {
+        ("SAVEPOINT clave_con_espacio", "RELEASE clave_con_espacio", "ROLLBACK TO clave_con_espacio; RELEASE clave_con_espacio")
+    };
+    db.execute_batch(abrir)?;
+    match f() {
+        Ok(v) => {
+            db.execute_batch(cerrar)?;
+            Ok(v)
+        }
+        Err(e) => {
+            let _ = db.execute_batch(deshacer);
+            Err(e)
+        }
+    }
+}
+
+/// La clave `dir:` de una carpeta sin remoto que entra en el espacio `espacio` (su clave):
+/// `dir:<persona>/<espacio>/<carpeta>` (1.9.0). `None` si no es una clave `dir:` de las de siempre
+/// (`dir:<persona>/<carpeta>`, con o sin `~2`): una `git:`, o una que ya lleva espacio.
+pub fn clave_dir_en_espacio(clave: &str, espacio: &str) -> Option<String> {
+    let (persona, nombre) = clave.strip_prefix("dir:")?.split_once('/')?;
+    if nombre.is_empty() || nombre.contains('/') || espacio.is_empty() || espacio.contains('/') {
+        return None;
+    }
+    // El `~2` de la segunda carpeta con ese nombre en este equipo: con el espacio delante ya no hace
+    // falta (si aún choca, `clave_con_espacio` pone otro).
+    let nombre = match nombre.rsplit_once('~') {
+        Some((n, d)) if !n.is_empty() && !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) => n,
+        _ => nombre,
+    };
+    Some(format!("dir:{persona}/{espacio}/{nombre}"))
+}
+
+/// El espacio de una clave `dir:<persona>/<espacio>/<carpeta>` (las de la 1.9.0); `None` en las demás.
+pub fn espacio_en_clave_dir(clave: &str) -> Option<&str> {
+    let (_, resto) = clave.strip_prefix("dir:")?.split_once('/')?;
+    let (espacio, nombre) = resto.split_once('/')?;
+    (!espacio.is_empty() && !nombre.is_empty() && !nombre.contains('/')).then_some(espacio)
+}
+
+/// Dos carpetas sin remoto con el mismo nombre, de la misma persona, en dos clientes (la `web` de acme
+/// en un equipo y la de beta en otro) tenían la misma clave `dir:<persona>/web` y cada una pausaba a
+/// la otra. Desde la 1.9.0, cuando una carpeta sin remoto entra por primera vez en un espacio (aquí
+/// no estaba en ninguno ni lo estuvo nunca: `project.hlc` vacío), y su clave aún no ha salido de este
+/// equipo, la clave pasa a ser `dir:<persona>/<espacio>/<carpeta>`: la de acme y la de beta ya no
+/// coinciden. Que no haya salido: sin espacio, solo la lleva el repositorio general, así que basta con
+/// que no esté en su clon (`sync::en_el_general`); si ya está, otros equipos la conocen con esa clave
+/// y se queda como estaba (lo de siempre, y el aviso de la pausa).
+///
+/// Las claves de antes no cambian nunca por esto, y lo que llega de fuera no cambia ninguna: solo
+/// ocurre al decidirlo aquí la persona (`space assign`, `projects move --space`, `merge`). Si la clave
+/// nueva ya es la de un proyecto que aquí no tiene ninguna carpeta propia y está en ese mismo espacio
+/// (llegó del repositorio de ese espacio: es esta misma carpeta en otro equipo de la persona), se juntan
+/// (lo suyo pasa a este, sin cambiar de espacio); si no, la nueva lleva sufijo (`~2`). Devuelve el sello
+/// de espacio del que se juntó, para que el nuevo vaya detrás.
+fn clave_con_espacio(db: &Connection, proyecto: i64, espacio: i64) -> Result<Option<String>> {
+    let clave = clave_de(db, proyecto)?;
+    let e = clave_espacio(db, Some(espacio))?;
+    let Some(base) = clave_dir_en_espacio(&clave, &e) else { return Ok(None) };
+    if carpetas_propias(db, proyecto)? == 0 || crate::sync::en_el_general(db, &clave) {
+        return Ok(None);
+    }
+    let mut k = base.clone();
+    let mut n = 2;
+    let mut sello = None;
+    loop {
+        let otro: Option<(i64, Option<i64>, i64, String, String)> = db
+            .query_row(
+                "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0), p.hlc, p.paused FROM project p WHERE p.key = ?1",
+                [&k],
+                |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)),
+            )
+            .optional()?;
+        match otro {
+            None => break,
+            Some((o, Some(s), 0, hlc, pausa)) if s == espacio && pausa.is_empty() => {
+                juntar(db, o, proyecto)?;
+                sello = Some(hlc);
+                break;
+            }
+            Some(_) => {
+                k = format!("{base}~{n}");
+                n += 1;
+            }
+        }
+    }
+    db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![proyecto, k])?;
+    // Lo de su papelera vuelve a este proyecto (va por la clave).
+    db.execute(
+        "UPDATE forgotten SET memory = json_set(memory, '$.project_key', ?2) WHERE json_valid(memory) AND json_extract(memory, '$.project_key') = ?1",
+        params![clave, k],
+    )?;
+    if let Some(ruta) = db.path().filter(|p| !p.is_empty()) {
+        crate::sync::cambiar_clave_en_configs(Path::new(ruta), &clave, &k)?;
+    }
+    Ok(Some(sello.unwrap_or_default()))
 }
 
 /// Un proyecto en pausa: una línea `project` (de otro equipo, o escrita a mano por quien tenga la clave
@@ -1472,6 +1602,20 @@ mod tests {
         let suelta = base.join("suelta");
         std::fs::create_dir_all(&suelta).unwrap();
         assert!(de(&suelta).unwrap().ends_with("suelta"));
+    }
+
+    #[test]
+    fn clave_dir_con_espacio() {
+        assert_eq!(clave_dir_en_espacio("dir:ana/web", "acme").as_deref(), Some("dir:ana/acme/web"));
+        assert_eq!(clave_dir_en_espacio("dir:ana/web~2", "acme").as_deref(), Some("dir:ana/acme/web"));
+        assert_eq!(clave_dir_en_espacio("dir:ana/v~1.2", "acme").as_deref(), Some("dir:ana/acme/v~1.2"));
+        assert_eq!(clave_dir_en_espacio("dir:ana/acme/web", "beta"), None, "ya lleva espacio");
+        assert_eq!(clave_dir_en_espacio("git:github.com/acme/web", "acme"), None);
+        assert_eq!(clave_dir_en_espacio("dir:ana/web", ""), None);
+        assert_eq!(espacio_en_clave_dir("dir:ana/acme/web"), Some("acme"));
+        assert_eq!(espacio_en_clave_dir("dir:ana/acme/web~2"), Some("acme"));
+        assert_eq!(espacio_en_clave_dir("dir:ana/web"), None);
+        assert_eq!(espacio_en_clave_dir("git:github.com/acme/web"), None);
     }
 
     #[test]

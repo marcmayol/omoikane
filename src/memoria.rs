@@ -203,6 +203,11 @@ pub struct Version {
     /// Cuándo dejó de ser la versión viva.
     pub changed_at: String,
     pub reason: Option<String>,
+    /// Los campos de una versión que esta no conoce (de un omoi más nuevo): se guardan con ella
+    /// (`memory_version.extra`) y se vuelven a escribir igual, en la sincronización, en `omoi export` y
+    /// en la papelera (1.9.0). Antes se perdían.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Qué memorias se ven. Desde un proyecto, las suyas, las de su espacio y las globales; nunca las de
@@ -1494,11 +1499,8 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
     tx.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
     crate::sync::guardar_extra_olvido(&tx, &id, &Default::default())?;
     let r = insertar_en(&tx, &id, nueva, Some(&o), modelo)?;
-    for v in versiones {
-        tx.execute(
-            "INSERT OR IGNORE INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason],
-        )?;
+    for v in &versiones {
+        poner_version(&tx, &id, v)?;
     }
     tx.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
     tx.commit()?;
@@ -1568,8 +1570,21 @@ fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> R
     Ok(m)
 }
 
+/// Apunta una versión que viene de fuera (otro equipo, una copia, la papelera). La que ya hay con ese
+/// número se queda; si no tenía campos desconocidos y esta los trae (la vio antes una versión de omoi
+/// que no los conservaba), los toma.
+pub(crate) fn poner_version(db: &Connection, id: &str, v: &Version) -> Result<()> {
+    let extra = if v.extra.is_empty() { "{}".to_string() } else { serde_json::to_string(&v.extra)? };
+    db.execute(
+        "INSERT INTO memory_version(memory_id, version, title, content, kind, paths, tags, changed_at, reason, extra) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(memory_id, version) DO UPDATE SET extra = excluded.extra WHERE memory_version.extra = '{}' AND excluded.extra != '{}'",
+        params![id, v.version, v.title, v.content, v.kind, serde_json::to_string(&v.paths)?, serde_json::to_string(&v.tags)?, v.changed_at, v.reason, extra],
+    )?;
+    Ok(())
+}
+
 /// Una versión de `memory_version` desde las columnas `version, kind, title, content, paths, tags,
-/// changed_at, reason` (a partir de la columna `desde`).
+/// changed_at, reason, extra` (a partir de la columna `desde`).
 fn version_de_fila(f: &Row, desde: usize) -> rusqlite::Result<Version> {
     let lista = |i: usize| -> rusqlite::Result<Vec<String>> { Ok(serde_json::from_str(&f.get::<_, String>(desde + i)?).unwrap_or_default()) };
     Ok(Version {
@@ -1581,6 +1596,7 @@ fn version_de_fila(f: &Row, desde: usize) -> rusqlite::Result<Version> {
         tags: lista(5)?,
         changed_at: f.get(desde + 6)?,
         reason: f.get(desde + 7)?,
+        extra: serde_json::from_str(&f.get::<_, String>(desde + 8)?).unwrap_or_default(),
     })
 }
 
@@ -1588,7 +1604,7 @@ fn version_de_fila(f: &Row, desde: usize) -> rusqlite::Result<Version> {
 pub fn historial(db: &Connection, id: &str) -> Result<Vec<Version>> {
     let id = resolver_id(db, id)?;
     let mut q = db.prepare(
-        "SELECT version, kind, title, content, paths, tags, changed_at, reason
+        "SELECT version, kind, title, content, paths, tags, changed_at, reason, extra
          FROM memory_version WHERE memory_id = ?1 ORDER BY version DESC",
     )?;
     let v = q.query_map([&id], |f| version_de_fila(f, 0))?.collect::<rusqlite::Result<_>>()?;
@@ -1599,7 +1615,7 @@ pub fn historial(db: &Connection, id: &str) -> Result<Vec<Version>> {
 /// consulta por memoria era lo más lento de `omoi sync` con una base grande).
 pub(crate) fn historiales(db: &Connection) -> Result<std::collections::HashMap<String, Vec<Version>>> {
     let mut q = db.prepare(
-        "SELECT memory_id, version, kind, title, content, paths, tags, changed_at, reason
+        "SELECT memory_id, version, kind, title, content, paths, tags, changed_at, reason, extra
          FROM memory_version ORDER BY memory_id, version DESC",
     )?;
     let mut v: std::collections::HashMap<String, Vec<Version>> = std::collections::HashMap::new();

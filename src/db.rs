@@ -341,12 +341,18 @@ fn al_dia_al_abrir(db: &mut Connection) -> Result<()> {
 /// Una base del esquema 10 de una versión sin publicar a la que le falta `project.hlc` (el sello del
 /// último cambio de espacio del proyecto, que viaja en las líneas `project`) o `project.paused` (la
 /// pausa en la que lo deja una línea `project` que dice otro espacio): se añaden, vacías.
+///
+/// Y desde la 1.9.0, `memory_version.extra` (los campos de una versión del historial que esta versión
+/// no conoce, como `memory.extra`): una columna con valor por defecto que se añade al abrir, sin subir
+/// el esquema ni `lector_minimo`. Las versiones de la 1.0 a la 1.8.6 escriben en `memory_version`
+/// nombrando sus columnas, así que siguen abriendo y escribiendo la base (sus versiones nuevas llevan
+/// `'{}'`).
 fn al_dia_10(db: &Connection) -> Result<()> {
     if version(db)? == 10 {
-        for columna in ["hlc", "paused"] {
-            let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project') WHERE name = ?1)", [columna], |f| f.get(0))?;
+        for (tabla, columna, defecto) in [("project", "hlc", "''"), ("project", "paused", "''"), ("memory_version", "extra", "'{}'")] {
+            let tiene: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)", [tabla, columna], |f| f.get(0))?;
             if !tiene {
-                db.execute_batch(&format!("ALTER TABLE project ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"))?;
+                db.execute_batch(&format!("ALTER TABLE {tabla} ADD COLUMN {columna} TEXT NOT NULL DEFAULT {defecto}"))?;
             }
         }
     }

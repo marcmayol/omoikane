@@ -17,8 +17,13 @@
 //! Con `--encrypt`, cada línea va cifrada con la clave vigente de la sincronización (AES-SIV) y con su
 //! id delante (`k2:…`; sin nada, la 1), como en el repositorio, para guardar la copia en cualquier
 //! sitio: la del repositorio del espacio del ámbito exportado (la copia de un cliente, con la clave de
-//! ese cliente) o, con `--all` o sin espacio, la del general. Al importarla vale cualquiera de las
-//! claves que tenga el equipo, del general o de un espacio.
+//! ese cliente) o, sin espacio, la del general. Con `--all` (1.9.0), cada línea con la de su espacio:
+//! lo de acme con la de acme, lo de beta con la de beta y lo que no es de ningún espacio con la del
+//! general; si falta la clave de alguno, error antes de escribir nada (antes iba todo con la del
+//! general). El formato no cambia: al importarla, cada línea se abre con la primera clave del equipo
+//! que la abre, también en las versiones de antes, que ya lo hacían así. A un equipo al que le falte
+//! alguna de esas claves no se le aplica nada: el import lee el fichero entero antes de aplicarlo y
+//! falla en la primera línea que no abre.
 //!
 //! Y la copia diaria: una vez al día, al empezar la primera sesión, `VACUUM INTO` a
 //! `<carpeta de la base>/backups/omoikane-AAAA-MM-DD.db`, conservando las últimas
@@ -75,9 +80,104 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Con qué se cifra cada línea de una copia.
+enum Cifrado {
+    /// Sin `--encrypt`.
+    Nada,
+    /// Todo con las claves de un repositorio: el del espacio del ámbito, o el general.
+    Una(Cifra),
+    /// `--all`: cada línea con las del repositorio de su espacio (`""`: el general). Lo que no es de
+    /// ningún espacio concreto (el cierre, un veredicto de una memoria que aquí ya no está) va con las
+    /// del general o, sin él, con las del primer espacio.
+    PorEspacio(std::collections::BTreeMap<String, Cifra>),
+}
+
+impl Cifrado {
+    /// Las claves de una línea del espacio `espacio` (su clave; `None`: de ninguno concreto).
+    fn para(&self, espacio: Option<&str>) -> Option<&Cifra> {
+        match self {
+            Cifrado::Nada => None,
+            Cifrado::Una(c) => Some(c),
+            Cifrado::PorEspacio(v) => match espacio.and_then(|e| v.get(e)) {
+                Some(c) => Some(c),
+                None => v.get("").or_else(|| v.values().next()),
+            },
+        }
+    }
+
+    fn cifrar(&self, espacio: Option<&str>, texto: &str) -> Result<String> {
+        match self.para(espacio) {
+            Some(c) => c.cifrar(texto),
+            None => Ok(texto.to_string()),
+        }
+    }
+}
+
+/// Los espacios (su clave; `""`: ninguno) de todo lo que lleva una copia de todo: memorias vivas, en la
+/// papelera y marcas de olvido. Los veredictos van con su memoria.
+fn espacios_de_todo(db: &Connection) -> Result<std::collections::BTreeSet<String>> {
+    let mut v = std::collections::BTreeSet::new();
+    for consulta in [
+        "SELECT DISTINCT COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '') FROM memory m",
+        "SELECT DISTINCT space_key FROM tombstone",
+    ] {
+        let mut q = db.prepare(consulta)?;
+        for e in q.query_map([], |f| f.get::<_, String>(0))? {
+            v.insert(e?);
+        }
+    }
+    let mut q = db.prepare("SELECT memory FROM forgotten")?;
+    for t in q.query_map([], |f| f.get::<_, String>(0))? {
+        v.insert(sync::espacio_de_papelera(db, &t?)?);
+    }
+    Ok(v)
+}
+
+/// `--all --encrypt`: las claves de cada espacio que lleva la copia (y las del general para lo que no
+/// es de ninguno). Error, antes de escribir nada, con los espacios cuyo repositorio no está en este
+/// equipo: lo de un cliente nunca va con la clave personal ni con la de otro cliente.
+fn cifras_por_espacio(db: &Connection, ruta_db: &Path) -> Result<Cifrado> {
+    let mut v = std::collections::BTreeMap::new();
+    let general = sync::rutas(ruta_db);
+    if general.clave.exists() {
+        v.insert(String::new(), sync::leer_claves(&general)?);
+    }
+    let mut faltan = Vec::new();
+    for espacio in espacios_de_todo(db)? {
+        if espacio.is_empty() {
+            if !v.contains_key("") {
+                faltan.push(tr!("no space (the general repository)", "ninguno (el repositorio general)"));
+            }
+            continue;
+        }
+        match sync::repo_de_espacio(ruta_db, &espacio).filter(|r| r.clave.exists()) {
+            Some(r) => {
+                v.insert(espacio, sync::leer_claves(&r)?);
+            }
+            None => faltan.push(espacio),
+        }
+    }
+    ensure!(
+        faltan.is_empty(),
+        tr!(
+            "encrypting a copy of everything puts each space under the key of its own sync repository, and this computer has none for: {}. Set them up first (`omoi sync init <git url> --space <space>`, or `omoi sync init <git url>` for the general one) or export without --encrypt",
+            "una copia cifrada de todo lleva cada espacio con la clave de su propio repositorio de sincronización, y este equipo no tiene la de: {}. Configúralos antes (`omoi sync init <url de git> --space <espacio>`, u `omoi sync init <url de git>` para el general) o exporta sin --encrypt",
+            faltan.join(", ")
+        )
+    );
+    ensure!(
+        !v.is_empty(),
+        tr!(
+            "encrypting needs the key of the general sync repository: set up `omoi sync init <git url>` (or `omoi sync join <code>`) first",
+            "para cifrar hace falta la clave del repositorio general de la sincronización: configura antes `omoi sync init <url de git>` (o `omoi sync join <código>`)"
+        )
+    );
+    Ok(Cifrado::PorEspacio(v))
+}
+
 /// Las claves con las que se cifra una copia de este ámbito: las del repositorio de su espacio (desde
-/// un proyecto de acme, las de acme: la copia de un cliente no se abre con la clave personal) o, con
-/// `--all` o desde algo sin espacio, las del general.
+/// un proyecto de acme, las de acme: la copia de un cliente no se abre con la clave personal) o, desde
+/// algo sin espacio, las del general. Con `--all`, las de cada espacio (`cifras_por_espacio`).
 fn cifra_para(db: &Connection, ruta_db: &Path, ambito: &Ambito) -> Result<Cifra> {
     let espacio = crate::proyecto::clave_espacio(db, ambito.espacio())?;
     if espacio.is_empty() {
@@ -110,7 +210,12 @@ fn todas_las_cifras(ruta_db: &Path) -> Result<Vec<Cifra>> {
 
 /// Escribe el fichero. Devuelve cuántas líneas van entre la cabecera y el cierre.
 pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, salida: &mut impl Write) -> Result<Cuenta> {
-    let cifra = if cifrar { Some(cifra_para(db, ruta_db, ambito)?) } else { None };
+    let todo = matches!(ambito, Ambito::Todos);
+    let cifra = match (cifrar, todo) {
+        (false, _) => Cifrado::Nada,
+        (true, true) => cifras_por_espacio(db, ruta_db)?,
+        (true, false) => Cifrado::Una(cifra_para(db, ruta_db, ambito)?),
+    };
     // Las mismas claves que exporta la sincronización: las de la tabla `project` (una ruta que llegó
     // de otro equipo lleva la clave con la que llegó, no una calculada aquí).
     let equipo = crate::reloj::equipo(db)?;
@@ -127,21 +232,18 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
     salida.write_all(b"\n")?;
     let mut hash = Sha256::new();
     let mut cuenta = Cuenta::default();
-    let mut escribir = |l: &Linea, salida: &mut dyn Write| -> Result<()> {
+    // Cada línea, con las claves del espacio `espacio` (ver `Cifrado::para`).
+    let mut escribir = |l: &Linea, espacio: Option<&str>, salida: &mut dyn Write| -> Result<()> {
         let texto = serde_json::to_string(l)?;
         hash.update(texto.as_bytes());
         hash.update(b"\n");
-        match &cifra {
-            Some(c) => salida.write_all(c.cifrar(&texto)?.as_bytes())?,
-            None => salida.write_all(texto.as_bytes())?,
-        }
+        salida.write_all(cifra.cifrar(espacio, &texto)?.as_bytes())?;
         salida.write_all(b"\n")?;
         Ok(())
     };
     // Sin `--all` (un proyecto o un espacio), de la papelera, los olvidos y los veredictos solo va lo de
     // ese ámbito: una copia de un cliente no lleva nada de otro. La papelera de este ámbito, primero:
     // los olvidos y los veredictos dependen de ella.
-    let todo = matches!(ambito, Ambito::Todos);
     let mut en_papelera: HashSet<String> = HashSet::new();
     let mut con_copia: HashSet<String> = HashSet::new();
     {
@@ -168,7 +270,8 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
             if !todo && !en_papelera.contains(&id) && (con_copia.contains(&id) || espacio != espacio_del_ambito) {
                 continue;
             }
-            escribir(&Linea::olvido(id, f.get(1)?, f.get(2)?, espacio, &equipo, sync::extra_de(&extra)), salida)?;
+            let l = Linea::olvido(id, f.get(1)?, f.get(2)?, espacio.clone(), &equipo, sync::extra_de(&extra));
+            escribir(&l, Some(&espacio), salida)?;
             cuenta.tombstones += 1;
         }
     }
@@ -185,8 +288,9 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
             let (hlc, content_hlc, extra): (String, String, String) = (f.get(NCOL)?, f.get(NCOL + 1)?, f.get(NCOL + 2)?);
             let versions = if sin_historial.contains(&m.id) { Vec::new() } else { memoria::historial(db, &m.id)? };
             van.insert(m.id.clone());
+            let espacio = m.space.clone();
             let l = sync::linea_de(m, hlc, content_hlc, &equipo, versions, sync::extra_de(&extra));
-            escribir(&l, salida)?;
+            escribir(&l, Some(&espacio), salida)?;
             cuenta.memories += 1;
         }
     }
@@ -200,8 +304,9 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
             }
             let (memoria, versiones): (String, String) = (f.get(1)?, f.get(2)?);
             let versions = serde_json::from_str(&versiones).unwrap_or_default();
+            let espacio = if todo { sync::espacio_de_papelera(db, &memoria)? } else { String::new() };
             let Some(l) = Linea::papelera(db, id, &memoria, versions, f.get(3)?, f.get(4)?, f.get(5)?)? else { continue };
-            escribir(&l, salida)?;
+            escribir(&l, Some(&espacio), salida)?;
             cuenta.forgotten += 1;
         }
     }
@@ -210,15 +315,14 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         if !todo && !(van.contains(&v.memory_id) && (v.other_id.is_empty() || van.contains(&v.other_id))) {
             continue;
         }
-        escribir(&Linea::veredicto(v, &equipo), salida)?;
+        // Con la clave del espacio de su memoria (la de aquí, viva o en la papelera).
+        let espacio = if todo { sync::espacio_aqui(db, &v.memory_id)? } else { None };
+        escribir(&Linea::veredicto(v, &equipo), espacio.as_deref(), salida)?;
         cuenta.verdicts += 1;
     }
     // El cierre va como las demás líneas (cifrado si ellas lo van), pero no entra en el SHA.
     let fin = serde_json::to_string(&Linea::End { count: cuenta.total(), sha256: hex(&hash.finalize()) })?;
-    match &cifra {
-        Some(c) => salida.write_all(c.cifrar(&fin)?.as_bytes())?,
-        None => salida.write_all(fin.as_bytes())?,
-    }
+    salida.write_all(cifra.cifrar(None, &fin)?.as_bytes())?;
     salida.write_all(b"\n")?;
     Ok(cuenta)
 }
@@ -282,7 +386,17 @@ fn leer(ruta_db: &Path, ruta: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
             let claro = cifras.iter().find_map(|c| c.descifrar(&l).map_err(|e| fallo.get_or_insert(e)).ok());
             match claro {
                 Some(t) => t,
-                None => return Err(fallo.unwrap_or_else(|| anyhow::anyhow!("?"))).with_context(|| tr!("line {}", "línea {}", i + 2)),
+                // (Una copia de todo lleva cada espacio con la clave de su repositorio: lo normal es que
+                // a este equipo le falte la de alguno.)
+                None => {
+                    return Err(fallo.unwrap_or_else(|| anyhow::anyhow!("?"))).with_context(|| {
+                        tr!(
+                            "line {} doesn't open with any sync key of this computer, so nothing was imported. A copy of everything carries each space under the key of its own sync repository: join the repositories of the spaces it has (`omoi sync join --space <space> <code>`) and import it again",
+                            "la línea {} no se abre con ninguna clave de sincronización de este equipo, así que no se ha importado nada. Una copia de todo lleva cada espacio con la clave de su propio repositorio: únete a los repositorios de los espacios que lleva (`omoi sync join --space <espacio> <código>`) e impórtala otra vez",
+                            i + 2
+                        )
+                    });
+                }
             }
         } else {
             l
