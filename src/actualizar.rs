@@ -199,6 +199,14 @@ pub fn verificar(sumas: &[u8], firma: &[u8], nombre: &str, datos: &[u8]) -> Resu
 
 /// Baja, comprueba e instala `nueva` en lugar de `exe`.
 fn instalar(exe: &Path, nueva: &str) -> Result<()> {
+    let nuevo = bajar_version(nueva, &carpeta().context("home")?.join("actualizacion"))?;
+    reemplazar(exe, &nuevo)
+}
+
+/// Baja el `omoi` de la Release `nueva` para este sistema a `dir` (que vacía antes), comprueba la firma
+/// de `SHA256SUMS` y la suma del paquete, lo desempaqueta y devuelve la ruta del binario, que dice ser
+/// esa versión. Lo usan la actualización y la guardia de rendimiento (`examples/rendimiento.rs`).
+pub fn bajar_version(nueva: &str, dir: &Path) -> Result<PathBuf> {
     let nombre = paquete().context(tr!("no prebuilt binary for this system", "no hay binario para este sistema"))?;
     let sumas = bajar(&url_de(nueva, "SHA256SUMS"))?;
     let firma = bajar(&url_de(nueva, "SHA256SUMS.sig")).context(tr!("the release isn't signed", "la Release no está firmada"))?;
@@ -206,9 +214,8 @@ fn instalar(exe: &Path, nueva: &str) -> Result<()> {
     verificar(&sumas, &firma, nombre, &datos)?;
     // Se desempaqueta en una carpeta propia con el tar del sistema (en Windows, el de System32, que
     // también abre zip; el de Git que pueda haber antes en el PATH no).
-    let dir = carpeta().context("home")?.join("actualizacion");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir)?;
     let archivo = dir.join(nombre);
     std::fs::write(&archivo, &datos)?;
     let tar = if cfg!(windows) {
@@ -216,7 +223,7 @@ fn instalar(exe: &Path, nueva: &str) -> Result<()> {
     } else {
         PathBuf::from("tar")
     };
-    let o = std::process::Command::new(&tar).arg("-xf").arg(&archivo).arg("-C").arg(&dir).output()?;
+    let o = std::process::Command::new(&tar).arg("-xf").arg(&archivo).arg("-C").arg(dir).output()?;
     if !o.status.success() {
         bail!("tar: {}", String::from_utf8_lossy(&o.stderr).trim());
     }
@@ -225,7 +232,7 @@ fn instalar(exe: &Path, nueva: &str) -> Result<()> {
     if !String::from_utf8_lossy(&v.stdout).contains(nueva) {
         bail!(tr!("the new binary doesn't say it is {nueva}", "el binario nuevo no dice ser la {nueva}"));
     }
-    reemplazar(exe, &nuevo)
+    Ok(nuevo)
 }
 
 /// Pone `nuevo` en el sitio de `exe`. En Windows un exe en uso no se puede sobrescribir pero sí

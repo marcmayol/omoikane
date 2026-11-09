@@ -305,10 +305,23 @@ pub fn propuestas(db: &Connection, ambito: &Ambito) -> Result<Vec<Propuesta>> {
     propuestas_con(db, ambito, &es_temporal)
 }
 
+/// `propuestas` con los proyectos que ya tiene quien llama: `proyecto::lista(db, None, filtro_de(ambito),
+/// usize::MAX)` (`omoi review` los lista antes, y cada lista recorre la tabla de memorias).
+pub fn propuestas_de(db: &Connection, todos: &[Proyecto]) -> Result<Vec<Propuesta>> {
+    propuestas_entre(db, todos, &es_temporal)
+}
+
+/// El filtro de espacio con el que `propuestas` lista los proyectos de `ambito`.
+pub fn filtro_de(ambito: &Ambito) -> Option<Option<i64>> {
+    if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) }
+}
+
 /// `propuestas`, con otra forma de decir qué carpeta es temporal (los tests viven en `%TEMP%`).
 pub fn propuestas_con(db: &Connection, ambito: &Ambito, es_temporal: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
-    let filtro = if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) };
-    let todos = proyecto::lista(db, None, filtro, usize::MAX)?;
+    propuestas_entre(db, &proyecto::lista(db, None, filtro_de(ambito), usize::MAX)?, es_temporal)
+}
+
+fn propuestas_entre(db: &Connection, todos: &[Proyecto], es_temporal: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
     let fuera = distintos(db)?;
     let creado = creados(db)?;
     let espacio: HashMap<i64, Option<i64>> = todos.iter().map(|p| Ok((p.id, proyecto::espacio_de(db, p.id)?))).collect::<Result<_>>()?;

@@ -1,8 +1,9 @@
 name: release
 
 # Un tag v* compila omoi para cada sistema, comprueba que se sigue entendiendo con la 1.0.0
-# (compat.yml) y publica la Release con los binarios, sus sumas y, como notas, la sección de esa
-# versión de CHANGELOG.md.
+# (compat.yml) y que el recall y la búsqueda no van más lentos que en la Release anterior (perf.yml),
+# y publica la Release con los binarios, sus sumas y, como notas, la sección de esa versión de
+# CHANGELOG.md.
 # A mano (workflow_dispatch) solo compila y deja los paquetes como artefactos, para probar.
 on:
   push:
@@ -64,8 +65,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/compat.yml
 
+  # Ni una versión con el recall o la búsqueda más lentos que la anterior (perf.yml).
+  perf:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/perf.yml
+
   publicar:
-    needs: [compilar, compat]
+    needs: [compilar, compat, perf]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

@@ -290,11 +290,6 @@ fn desde(m_updated: &str, ok: Option<&String>) -> String {
     }
 }
 
-/// Lo último calculado: el día y `id → (desde, detalle)`.
-fn leer_cache(db: &Connection) -> Result<(String, Guardado)> {
-    Ok(de_texto(crudo(db)?.as_deref()))
-}
-
 /// Lo guardado (`crudo`) como el día y `id → (desde, detalle)`.
 fn de_texto(v: Option<&str>) -> (String, Guardado) {
     let mut r = HashMap::new();
@@ -334,29 +329,55 @@ fn hoy(db: &Connection) -> Result<String> {
 pub fn de_ambito(db: &Connection, ambito: &Ambito) -> Result<HashMap<String, String>> {
     let mut q = db.prepare(&format!("SELECT m.id, m.updated_at FROM memory m WHERE {}", ambito.sql()))?;
     let filas: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-    let (r, dia) = de_lo_guardado(db, filas, |_| {})?;
+    let (r, dia) = de_lo_guardado(db, crudo(db)?.as_deref(), filas.iter().map(|(id, u)| (id.as_str(), u.as_str())), |_| {})?;
     refrescar_aparte(db, &dia)?;
     Ok(r)
 }
 
-/// Lo guardado para `filas` (`id`, último cambio) cuyo «desde» no ha cambiado, y de qué día es. Las que
-/// no tienen nada guardado van a `falta`.
-fn de_lo_guardado(db: &Connection, filas: Vec<(String, String)>, mut falta: impl FnMut(String)) -> Result<(HashMap<String, String>, String)> {
-    let (dia, cache) = leer_cache(db)?;
+/// Lo guardado (`guardado`, lo de [`crudo`]) para `filas` (`id`, último cambio) cuyo «desde» no ha
+/// cambiado, y de qué día es. Las que no tienen nada guardado van a `falta`. Sin copiar nada de lo que
+/// no se devuelve: con 50.000 memorias, copiar cada id y cada fecha para buscarlos era casi todo el tiempo.
+fn de_lo_guardado<'a>(
+    db: &Connection,
+    guardado: Option<&str>,
+    filas: impl Iterator<Item = (&'a str, &'a str)>,
+    mut falta: impl FnMut(&'a str),
+) -> Result<(HashMap<String, String>, String)> {
+    let (dia, cache) = de_texto_prestado(guardado);
     let oks = crate::veredictos::oks(db, false)?;
+    // El «está bien así» de este aviso de cada memoria (lo que mira `desde`).
+    let ok: HashMap<&str, &str> = oks.iter().filter(|((_, aviso), _)| aviso == DERIVA).map(|((id, _), at)| (id.as_str(), at.as_str())).collect();
     let mut r = HashMap::new();
     for (id, updated) in filas {
-        let d = desde(&updated, oks.get(&(id.clone(), DERIVA.to_string())));
-        match cache.get(&id) {
+        let d = match ok.get(id) {
+            Some(at) if *at > updated => *at,
+            _ => updated,
+        };
+        match cache.get(id) {
             Some((dc, det)) if *dc == d => {
                 if !det.is_empty() {
-                    r.insert(id, det.clone());
+                    r.insert(id.to_string(), det.to_string());
                 }
             }
             _ => falta(id),
         }
     }
     Ok((r, dia))
+}
+
+/// [`de_texto`] sin copiar: `id → (desde, detalle)` prestados de `v`.
+fn de_texto_prestado(v: Option<&str>) -> (String, HashMap<&str, (&str, &str)>) {
+    let mut r = HashMap::new();
+    let Some(v) = v else { return (String::new(), r) };
+    let mut ls = v.lines();
+    let dia = ls.next().unwrap_or("").to_string();
+    for l in ls {
+        let mut p = l.splitn(3, '\t');
+        if let (Some(id), Some(d), Some(det)) = (p.next(), p.next(), p.next()) {
+            r.insert(id, (d, det));
+        }
+    }
+    (dia, r)
 }
 
 /// Si lo guardado es de otro día (`dia`), lanza `omoi review --refresh-drift` sobre esta base, una vez
@@ -403,7 +424,7 @@ pub fn de(db: &Connection, memorias: &[Memoria]) -> Result<HashMap<String, Strin
     let mut faltan = Vec::new();
     // Lo guardado tal cual se lee: se escribe encima solo si nadie lo ha cambiado mientras (ver abajo).
     let crudo_antes = crudo(db)?;
-    let (mut r, dia) = de_lo_guardado(db, memorias.iter().map(|m| (m.id.clone(), m.updated_at.clone())).collect(), |id| faltan.push(id))?;
+    let (mut r, dia) = de_lo_guardado(db, crudo_antes.as_deref(), memorias.iter().map(|m| (m.id.as_str(), m.updated_at.as_str())), |id| faltan.push(id.to_string()))?;
     refrescar_aparte(db, &dia)?;
     if faltan.is_empty() {
         return Ok(r);

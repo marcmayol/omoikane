@@ -1610,11 +1610,80 @@ pub(crate) fn historiales(db: &Connection) -> Result<std::collections::HashMap<S
     Ok(v)
 }
 
+/// Un `limite` de [`recientes`] desde el que se piden todas (quien las quiere todas pasa `usize::MAX >> 1`).
+const TODAS: usize = 1 << 20;
+/// Desde cuántas filas (de `n` más bajo a más alto) se leen en paralelo (ver [`en_paralelo`]).
+const PARALELO_DESDE: i64 = 10_000;
+/// Conexiones a la vez, como mucho.
+const PARALELO_HILOS: usize = 8;
+
+/// Las filas de `sql` (`SELECT {COLUMNAS} FROM memory m WHERE …`, con el tipo en `?1`) leídas por trozos
+/// de `n` a la vez, cada trozo con su conexión de solo lectura: con 50.000 memorias, leerlas de una en
+/// una conexión es medio segundo, casi todo SQLite y `de_fila`. `None` (y quien llama las lee como
+/// siempre) si no merece la pena o no se puede asegurar que es lo mismo: una base sin fichero, pocas
+/// filas, una transacción abierta en `db` (las otras conexiones no verían lo que lleva escrito) o
+/// cualquier error. Las conexiones nuevas ven lo último confirmado, como `db` fuera de una transacción;
+/// si otro proceso confirma algo mientras tanto (cambia `data_version`), los trozos podrían venir de
+/// dos momentos distintos y tampoco vale.
+fn en_paralelo(db: &Connection, sql: &str, kind: Option<Tipo>) -> Option<Vec<Memoria>> {
+    let ruta = db.path().filter(|r| !r.is_empty())?.to_string();
+    if !db.is_autocommit() {
+        return None;
+    }
+    let hilos = std::thread::available_parallelism().map_or(1, |n| n.get()).min(PARALELO_HILOS) as i64;
+    let (desde, hasta): (i64, i64) = db.query_row("SELECT COALESCE(min(n), 0), COALESCE(max(n), -1) FROM memory", [], |f| Ok((f.get(0)?, f.get(1)?))).ok()?;
+    if hilos < 2 || hasta - desde + 1 < PARALELO_DESDE {
+        return None;
+    }
+    let version = || db.query_row("PRAGMA data_version", [], |f| f.get::<_, i64>(0)).ok();
+    let antes = version()?;
+    let paso = (hasta - desde + hilos) / hilos;
+    let sql = format!("{sql} AND m.n BETWEEN ?2 AND ?3");
+    let trozos: Vec<Option<Vec<Memoria>>> = std::thread::scope(|s| {
+        let hechos: Vec<_> = (0..hilos)
+            .map(|i| {
+                let (sql, ruta) = (&sql, &ruta);
+                let (a, b) = (desde + i * paso, (desde + (i + 1) * paso - 1).min(hasta));
+                s.spawn(move || -> Option<Vec<Memoria>> {
+                    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+                    let c = Connection::open_with_flags(ruta, flags).ok()?;
+                    let mut q = c.prepare(sql).ok()?;
+                    q.query_map(params![kind.map(Tipo::as_str), a, b], de_fila).ok()?.collect::<rusqlite::Result<_>>().ok()
+                })
+            })
+            .collect();
+        hechos.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    if version()? != antes {
+        return None;
+    }
+    trozos.into_iter().try_fold(Vec::new(), |mut v, t| {
+        v.extend(t?);
+        Some(v)
+    })
+}
+
 /// Las últimas guardadas o cambiadas.
 pub fn recientes(db: &Connection, ambito: &Ambito, kind: Option<Tipo>, limite: usize) -> Result<Vec<Memoria>> {
     // Con tipo, `m.kind = ?1` a secas: con el `IS NULL OR` SQLite no usa el tipo del índice
     // `memory_scope` y lee todas las del ámbito (las recetas del recall, en cada mensaje).
     let tipo = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
+    // Todas las del ámbito (la revisión, la deriva, los enlaces, las exportaciones a Obsidian y OKF): de una pasada por la
+    // tabla, en el orden en que están en el disco, y ordenadas aquí. Por el índice, cada fila se leía
+    // con su consulta y saltando por el fichero; con `ORDER BY`, SQLite ordenaba las filas enteras en
+    // un fichero temporal. Con 50.000 memorias: 0,85 s por el índice, 3,5 s con `ORDER BY`, 0,5 s de
+    // una pasada y 0,2 s por trozos en paralelo. El orden es el mismo: `updated_at` y `id` se comparan
+    // byte a byte, como los compara SQLite (`BINARY`), y el `id` es único.
+    if limite >= TODAS {
+        let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {tipo}", ambito.sql());
+        let mut v = match en_paralelo(db, &sql, kind) {
+            Some(v) => v,
+            None => db.prepare(&sql)?.query_map([kind.map(Tipo::as_str)], de_fila)?.collect::<rusqlite::Result<_>>()?,
+        };
+        v.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.id.cmp(&a.id)));
+        v.truncate(limite);
+        return Ok(v);
+    }
     // Sin tipo, por `memory_reciente` (ver `db::LOCALES`), que va ya en el orden pedido: se para en
     // las `limite` primeras del ámbito y solo esas se leen enteras.
     let hay_indice = db
@@ -1969,6 +2038,44 @@ pub fn cuantas(db: &Connection, ambito: &Ambito) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Leer todas de una pasada, por trozos en paralelo o dentro de una transacción da lo mismo, y en
+    /// el mismo orden, que leerlas por el índice de una en una.
+    #[test]
+    fn todas_igual_que_por_el_indice() {
+        let dir = crate::comun::Temporal::nueva("todas-paralelo");
+        let mut db = crate::db::abrir(&dir.join("o.db")).unwrap();
+        db.execute_batch("PRAGMA synchronous = OFF").unwrap();
+        let p = dir.join("p");
+        std::fs::create_dir_all(&p).unwrap();
+        let clave = crate::proyecto::de(&p).unwrap();
+        for i in 0..300 {
+            let project = if i % 3 == 0 { String::new() } else { clave.clone() };
+            let kind = Some(if i % 4 == 0 { Tipo::Decision } else { Tipo::Fact });
+            guardar(&mut db, Nueva { project, kind, title: format!("memoria {i}"), content: format!("lo que dice la {i}"), ..Default::default() }, None).unwrap();
+        }
+        // Empates de fecha (decide el id) y un `n` lejos de los demás, para que se lea por trozos.
+        db.execute_batch(
+            "UPDATE memory SET updated_at = '2026-01-01T00:00:00.000Z' WHERE n % 7 = 0;
+             UPDATE memory SET n = n + 50000 WHERE n = (SELECT max(n) FROM memory);",
+        )
+        .unwrap();
+        let json = |v: Vec<Memoria>| v.iter().map(|m| serde_json::to_string(m).unwrap()).collect::<Vec<_>>();
+        for ambito in [Ambito::Todos, Ambito::de(&db, &clave).unwrap()] {
+            for kind in [None, Some(Tipo::Decision)] {
+                let tipo = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
+                let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {tipo}", ambito.sql());
+                assert!(en_paralelo(&db, &sql, kind).is_some(), "por trozos");
+                let por_indice = json(recientes(&db, &ambito, kind, 1_000).unwrap());
+                assert!(por_indice.len() > 50);
+                assert_eq!(json(recientes(&db, &ambito, kind, usize::MAX >> 1).unwrap()), por_indice);
+                db.execute_batch("BEGIN").unwrap();
+                assert!(en_paralelo(&db, &sql, kind).is_none(), "en una transacción, no");
+                assert_eq!(json(recientes(&db, &ambito, kind, usize::MAX >> 1).unwrap()), por_indice);
+                db.execute_batch("ROLLBACK").unwrap();
+            }
+        }
+    }
 
     #[test]
     fn normaliza_rutas_y_etiquetas() {
