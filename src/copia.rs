@@ -86,9 +86,9 @@ enum Cifrado {
     Nada,
     /// Todo con las claves de un repositorio: el del espacio del ámbito, o el general.
     Una(Cifra),
-    /// `--all`: cada línea con las del repositorio de su espacio (`""`: el general). Lo que no es de
-    /// ningún espacio concreto (el cierre, un veredicto de una memoria que aquí ya no está) va con las
-    /// del general o, sin él, con las del primer espacio.
+    /// `--all`: cada línea con las del repositorio de su espacio (`""`: el general). El cierre, que no
+    /// es de ningún espacio (ni lleva nada de ninguno), va con las del general o, sin él, con las del
+    /// primer espacio. Un veredicto de una memoria de la que aquí no queda nada no sale.
     PorEspacio(std::collections::BTreeMap<String, Cifra>),
 }
 
@@ -315,8 +315,13 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
         if !todo && !(van.contains(&v.memory_id) && (v.other_id.is_empty() || van.contains(&v.other_id))) {
             continue;
         }
-        // Con la clave del espacio de su memoria (la de aquí, viva o en la papelera).
-        let espacio = if todo { sync::espacio_aqui(db, &v.memory_id)? } else { None };
+        // Con la clave del espacio de su memoria: la de aquí, viva o en la papelera, o la de su marca de
+        // olvido si se borró del todo. Si no se sabe, cifrado no sale: antes eso que la clave de otro
+        // cliente o la personal.
+        let espacio = if todo { espacio_del_veredicto(db, &v.memory_id)? } else { None };
+        if todo && espacio.is_none() && !matches!(cifra, Cifrado::Nada) {
+            continue;
+        }
         escribir(&Linea::veredicto(v, &equipo), espacio.as_deref(), salida)?;
         cuenta.verdicts += 1;
     }
@@ -325,6 +330,16 @@ pub fn exportar(db: &Connection, ruta_db: &Path, ambito: &Ambito, cifrar: bool, 
     salida.write_all(cifra.cifrar(None, &fin)?.as_bytes())?;
     salida.write_all(b"\n")?;
     Ok(cuenta)
+}
+
+/// El espacio (su clave; vacía: ninguno) del veredicto de la memoria `id`: el de la memoria, viva o en
+/// la papelera, o el de su marca de olvido (`tombstone.space_key`) si se borró del todo. `None` si
+/// aquí no queda nada de ella.
+fn espacio_del_veredicto(db: &Connection, id: &str) -> Result<Option<String>> {
+    if let Some(e) = sync::espacio_aqui(db, id)? {
+        return Ok(Some(e));
+    }
+    Ok(db.query_row("SELECT space_key FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?)
 }
 
 /// Si una memoria de la papelera (`texto`, lo que guarda `forgotten.memory`) es de este ámbito: su

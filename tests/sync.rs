@@ -3204,3 +3204,92 @@ fn una_copia_cifrada_de_todo_lleva_cada_espacio_con_su_clave() {
         assert!(e.get(id).is_some(), "{id}");
     }
 }
+
+/// `export --all --encrypt` sin repositorio general: un veredicto entre dos memorias de beta borradas
+/// del todo va con la clave de beta (el espacio de su marca de olvido), no con la de acme. Uno cuyo
+/// espacio no se puede saber no sale (antes eso que la clave de otro cliente).
+#[test]
+fn una_copia_cifrada_de_todo_lleva_el_veredicto_huerfano_con_la_clave_de_su_espacio() {
+    let p = Prueba::nueva("copia-veredicto-huerfano");
+    let a = p.equipo("pc-a");
+    let (acme, beta) = (p.otro_repo("acme"), p.otro_repo("beta"));
+    a.ok(&["space", "add", "acme"]);
+    a.ok(&["space", "add", "beta"]);
+    let aweb = a.proyecto("acme-web", Some("git@github.com:acme/web.git"));
+    let bweb = a.proyecto("beta-web", Some("git@github.com:beta/web.git"));
+    a.ok_en(&aweb, &["space", "assign", "acme"], &[]);
+    a.ok_en(&bweb, &["space", "assign", "beta"], &[]);
+    a.guardar(&aweb, "fact", "Acme", "Algo de acme.", &[]);
+    let x1 = a.guardar(&bweb, "decision", "Beta precio", "Beta paga 700 SOLOBETA.", &[]);
+    let x2 = a.guardar(&bweb, "decision", "Beta precio nuevo", "Beta paga ahora 750 por hora SOLOBETA2.", &["--force"]);
+    a.ok_en(&bweb, &["review", "--dismiss", &x1, "--kind", "outdated", "--other", &x2], &[]);
+    for x in [&x1, &x2] {
+        a.ok_en(&bweb, &["forget", x, "--yes", "--purge"], &[]);
+    }
+    a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
+    a.ok(&["sync", "init", "--space", "beta", &beta, "--yes"]);
+    let k_acme = clave_del_codigo(a.ok(&["sync", "code", "--space", "acme"]).trim());
+    let k_beta = clave_del_codigo(a.ok(&["sync", "code", "--space", "beta"]).trim());
+    let copia = a.ok(&["export", "--all", "--encrypt"]);
+    let mut veredictos = 0;
+    for l in copia.lines().filter(|l| !l.is_empty()).skip(1) {
+        let abren = la_abren(&[&k_acme, &k_beta], l);
+        assert_eq!(abren.len(), 1, "{l}");
+        let claro = descifrar_linea([&k_acme, &k_beta][abren[0]], l);
+        if claro["type"] == "verdict" {
+            veredictos += 1;
+            assert_eq!(abren[0], 1, "el veredicto de beta, con la clave de beta: {claro}");
+        }
+    }
+    assert_eq!(veredictos, 1, "{copia}");
+    // Sin la marca de olvido no se sabe de qué espacio era: no sale (sin cifrar, sí).
+    base(&a).execute("DELETE FROM tombstone WHERE id = ?1", [&x1]).unwrap();
+    let copia = a.ok(&["export", "--all", "--encrypt"]);
+    for l in copia.lines().filter(|l| !l.is_empty()).skip(1) {
+        let abren = la_abren(&[&k_acme, &k_beta], l);
+        assert_eq!(abren.len(), 1, "{l}");
+        assert_ne!(descifrar_linea([&k_acme, &k_beta][abren[0]], l)["type"], "verdict", "{l}");
+    }
+    assert!(a.ok(&["export", "--all"]).contains("\"verdict\""));
+}
+
+/// Un `omoi import` de una copia en la que esta carpeta sin remoto ya entró en acme (su clave lleva el
+/// espacio) le da esa clave aquí: la lista `projects` del general que la eligió por la clave de antes y
+/// lo de su papelera pasan a la nueva, como al meterla aquí en el espacio. Si no, dejaría de
+/// sincronizarse y lo de la papelera volvería a un proyecto fantasma.
+#[test]
+fn la_clave_con_espacio_de_una_copia_no_saca_el_proyecto_del_general() {
+    let p = Prueba::nueva("clave-de-copia");
+    let a = p.equipo("pc-a");
+    let notas = a.proyecto("notas", None);
+    a.ok(&["sync", "init", &p.url(), "--yes", "--project", notas.to_str().unwrap()]);
+    let config = a.dir.join("o.sync.json");
+    let elegidos = |c: &Path| -> serde_json::Value { serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(c).unwrap()).unwrap()["projects"].clone() };
+    let viva = a.guardar(&notas, "fact", "Notas", "Algo de las notas VIVA.", &[]);
+    let vieja = claves_de(&a).into_iter().find(|k| k.ends_with("/notas")).expect("la clave de notas");
+    assert_eq!(elegidos(&config), serde_json::json!([vieja]));
+    let tirada = a.guardar(&notas, "fact", "Notas viejas", "Lo que se tiró TIRADA.", &[]);
+    a.ok_en(&notas, &["forget", &tirada, "--yes"], &[]);
+
+    // La misma base en otra copia (la misma persona), donde la carpeta entró en acme.
+    let b = p.equipo("pc-b");
+    base(&a).execute_batch(&format!("VACUUM INTO '{}'", b.dir.join("o.db").to_string_lossy().replace('\'', "''"))).unwrap();
+    b.ok(&["space", "add", "acme"]);
+    b.ok_en(&notas, &["space", "assign", "acme"], &[]);
+    let nueva = claves_de(&b).into_iter().find(|k| k.ends_with("/notas")).unwrap();
+    assert!(nueva.ends_with("/acme/notas"), "{nueva}");
+    let de_b = b.guardar(&notas, "fact", "Notas de la copia", "Lo nuevo de la copia DEB.", &[]);
+    let fichero = p.dir.join("de-b.jsonl");
+    std::fs::write(&fichero, b.ok(&["export", "--all"])).unwrap();
+
+    a.ok(&["import", fichero.to_str().unwrap()]);
+    assert!(claves_de(&a).contains(&nueva), "{:?}", claves_de(&a));
+    assert_eq!(elegidos(&config), serde_json::json!([nueva]), "el general sigue llevando notas");
+    let en_papelera: String = base(&a)
+        .query_row("SELECT json_extract(memory, '$.project_key') FROM forgotten WHERE id = ?1", [&tirada], |f| f.get(0))
+        .unwrap();
+    assert_eq!(en_papelera, nueva);
+    a.sync();
+    assert!(p.ficheros_compartidos().iter().any(|(_, t)| !t.is_empty()), "lo de notas sale por el general");
+    assert!(a.get(&viva).is_some() && a.get(&de_b).is_some());
+}

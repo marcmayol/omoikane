@@ -835,7 +835,7 @@ pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, 
         && (espacio.is_none() || clave_espacio(db, espacio)? == e)
         && !crate::sync::en_el_general(db, &vieja)
     {
-        db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![id, clave])?;
+        cambiar_clave(db, id, &vieja, clave)?;
         return Ok(id);
     }
     if existe && por_ruta(db, ruta_origen)?.is_none() {
@@ -1274,16 +1274,23 @@ fn clave_con_espacio(db: &Connection, proyecto: i64, espacio: i64) -> Result<Opt
             }
         }
     }
-    db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![proyecto, k])?;
-    // Lo de su papelera vuelve a este proyecto (va por la clave).
+    cambiar_clave(db, proyecto, &clave, &k)?;
+    Ok(Some(sello.unwrap_or_default()))
+}
+
+/// La clave del proyecto `proyecto` pasa de `vieja` a `nueva` (`clave_con_espacio`, o la de una copia en
+/// `de_clave`): con ella, lo de su papelera (va por la clave: si no, volvería a un proyecto fantasma) y
+/// la lista `projects` de los repositorios que lo eligieron (si no, dejaría de sincronizarse).
+fn cambiar_clave(db: &Connection, proyecto: i64, vieja: &str, nueva: &str) -> Result<()> {
+    db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![proyecto, nueva])?;
     db.execute(
         "UPDATE forgotten SET memory = json_set(memory, '$.project_key', ?2) WHERE json_valid(memory) AND json_extract(memory, '$.project_key') = ?1",
-        params![clave, k],
+        params![vieja, nueva],
     )?;
     if let Some(ruta) = db.path().filter(|p| !p.is_empty()) {
-        crate::sync::cambiar_clave_en_configs(Path::new(ruta), &clave, &k)?;
+        crate::sync::cambiar_clave_en_configs(Path::new(ruta), vieja, nueva)?;
     }
-    Ok(Some(sello.unwrap_or_default()))
+    Ok(())
 }
 
 /// Un proyecto en pausa: una línea `project` (de otro equipo, o escrita a mano por quien tenga la clave
