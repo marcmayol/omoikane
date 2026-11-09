@@ -56,11 +56,13 @@ pub enum Que {
 
 /// Exporta al vault y devuelve qué ha cambiado.
 pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
-    exportar_con(db, vault, que, &BTreeSet::new())
+    exportar_con(db, vault, que, &BTreeSet::new(), &BTreeSet::new())
 }
 
-/// Exporta; las notas de `pisar` se rehacen aunque estén editadas sin importar (`--prefer omoikane`).
-fn exportar_con(db: &Connection, vault: &Path, que: Que, pisar: &BTreeSet<PathBuf>) -> Result<Cuenta> {
+/// Exporta; las notas de `pisar` se rehacen aunque estén editadas sin importar (`--prefer omoikane`), y
+/// las de `respetar` no se escriben ni se borran (lo que la importación no ha podido traer: notas sin la
+/// firma de esta base que dicen otra cosa que su memoria, notas nuevas que no pueden tocar la suya).
+fn exportar_con(db: &Connection, vault: &Path, que: Que, pisar: &BTreeSet<PathBuf>, respetar: &BTreeSet<PathBuf>) -> Result<Cuenta> {
     // Una carpeta de red no se mira (ver `proyecto::ruta_local`); con una letra de unidad, sí.
     crate::proyecto::exigir_local(vault)?;
     let p = preparar(db, que)?;
@@ -77,6 +79,7 @@ fn exportar_con(db: &Connection, vault: &Path, que: Que, pisar: &BTreeSet<PathBu
             guardar.insert(ruta);
         }
     }
+    guardar.extend(respetar.iter().filter(|r| !pisar.contains(*r)).cloned());
 
     let mut escritos: BTreeSet<PathBuf> = BTreeSet::new();
     let mut c = Cuenta { memories: p.notas.len(), kept: guardar.len(), ..Cuenta::default() };
@@ -718,6 +721,9 @@ struct Propuesta {
     kind: Option<Tipo>,
     tags: Vec<String>,
     paths: Vec<String>,
+    /// Si al guardarla se tapa algo que parece un secreto (en la memoria ya no se ve: `actualizar` no
+    /// lo vuelve a encontrar, así que se cuenta aquí).
+    tapada: bool,
 }
 
 impl Propuesta {
@@ -769,8 +775,9 @@ fn proponer(l: &Leida, m: &Memoria, b: &Leida, nombres: &HashMap<String, String>
         !content.trim().is_empty(),
         tr!("the note's text is empty: to forget the memory, use `omoi forget`", "el texto de la nota está vacío: para olvidar la memoria, `omoi forget`")
     );
-    let (title, content, paths, tags) = crate::memoria::como_se_guarda(&title, &content, &paths, &tags)?;
-    Ok(Propuesta { title, content, kind, tags, paths })
+    let mut tapados = Vec::new();
+    let (title, content, paths, tags) = crate::memoria::como_se_guarda(&title, &content, &paths, &tags, &mut tapados)?;
+    Ok(Propuesta { title, content, kind, tags, paths, tapada: !tapados.is_empty() })
 }
 
 /// El texto nuevo de una memoria: cada línea de la nota editada (`e`) que sigue igual que en la
@@ -861,6 +868,28 @@ fn pendiente(l: &Leida, p: &Preparado, por_id: &HashMap<&str, usize>, clave: &[u
     proponer(l, &n.m, &b, &p.nombres).map(|x| !x.igual(&n.m)).unwrap_or(true)
 }
 
+/// Si una nota sin la firma de esta base (de una versión anterior a la 1.9.0, de otra base o con la
+/// firma rota) dice lo mismo que la que la exportación escribiría ahora para su memoria: rehacerla no
+/// pierde nada. Una de antes de la 1.9.0 no lleva [`PIE`], así que su texto sigue con los enlaces de
+/// debajo de la raya: cuentan como intactos si son los de ahora (la última línea, el aviso, cambió).
+/// Ante la duda, no: la importación la deja como está.
+fn ajena_intacta(l: &Leida, p: &Preparado, por_id: &HashMap<&str, usize>) -> bool {
+    let Some(i) = l.id().and_then(|id| por_id.get(id.as_str()).copied()) else { return false };
+    let n = &p.notas[i];
+    let Some(b) = leer_texto(&stem_de(&n.rel), &n.texto) else { return false };
+    if vista(l) == vista(&b) {
+        return true;
+    }
+    let sin_aviso = |t: &str| t.rsplit_once("\n\n*").map_or(t, |(a, _)| a).trim_end().to_string();
+    let Some((_, debajo)) = n.texto.rsplit_once(PIE) else { return false };
+    if sin_aviso(&l.cuerpo) != format!("{}\n\n{}", b.cuerpo, sin_aviso(debajo.trim())) {
+        return false;
+    }
+    let mut l = l.clone();
+    l.cuerpo = b.cuerpo.clone();
+    vista(&l) == vista(&b)
+}
+
 /// Qué hacer con una nota editada cuya memoria también ha cambiado en Omoikane desde la exportación.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preferir {
@@ -894,7 +923,9 @@ pub struct Resumen {
     pub conflicts_applied: usize,
     pub conflicts_discarded: usize,
     /// Con `omoikane:` pero sin la firma de esta base y de este alcance (otra base, otra versión, o
-    /// retocadas en esos campos): no tocan ninguna memoria.
+    /// retocadas en esos campos) y con otro texto que su memoria: no tocan ninguna memoria, y la
+    /// exportación de después no las pisa ni las borra (las que dicen lo mismo cuentan en `unchanged`
+    /// y se rehacen firmadas).
     pub foreign: Vec<String>,
     /// Editadas, pero su memoria ya no sale en este vault (olvidada, o llevada a otro sitio).
     pub gone: Vec<String>,
@@ -912,8 +943,8 @@ pub struct Resumen {
     pub export: Option<Cuenta>,
 }
 
-/// La clave por la que se guarda una nota nueva: `obsidian:<su ruta>` (importarla otra vez la pone al
-/// día en vez de duplicarla).
+/// La clave por la que se guarda una nota nueva: `obsidian:<su ruta>` (importarla otra vez no la
+/// duplica; sin firma, tampoco cambia la memoria que ya salió de ella).
 fn clave_de_nota(rel: &str) -> String {
     let r = rel.to_lowercase();
     let r = r.strip_suffix(".md").unwrap_or(&r);
@@ -944,7 +975,10 @@ fn clave_de_nota(rel: &str) -> String {
 ///   este vault) y con `kind:` (o una etiqueta que es un tipo) entra como memoria nueva de ese proyecto
 ///   (o del espacio, en `_<espacio>/`), por la clave `obsidian:<ruta>`, sin fijar y con origen
 ///   `import:obsidian`; su fichero pasa a ser la copia de Omoikane. En `_global/` no: lo global no se
-///   crea desde un fichero que puede escribir cualquiera.
+///   crea desde un fichero que puede escribir cualquiera. Si de esa ruta ya salió una memoria, la nota
+///   (sin firma) no la cambia: se salta y se queda en el vault.
+/// - Una nota con `omoikane:` sin la firma de esta base (de una versión anterior, de otra base) no
+///   toca ninguna memoria; si su texto no es el de su memoria, la exportación de después la deja.
 /// - Las notas de grupo y de fichero, lo de fuera de `omoikane/` y lo borrado en el vault no hacen nada.
 ///
 /// Todo lo que entra pasa por la redacción de secretos, como cualquier escritura. Después, si no es en
@@ -982,6 +1016,11 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
         ));
     }
 
+    let por_id: HashMap<&str, usize> = p.notas.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
+    let mut pisar: BTreeSet<PathBuf> = BTreeSet::new();
+    // Lo que la exportación de después no escribe ni borra: lo que no ha podido entrar y es texto de
+    // alguien (ver `exportar_con`).
+    let mut respetar: BTreeSet<PathBuf> = BTreeSet::new();
     let mut por_memoria: BTreeMap<String, Vec<(PathBuf, Leida)>> = BTreeMap::new();
     let mut nuevas: Vec<(PathBuf, Leida)> = Vec::new();
     for (ruta, l) in notas {
@@ -994,13 +1033,19 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
             && firma_vale(&l, k, &alcance)
         {
             por_memoria.entry(id).or_default().push((ruta, l));
+        } else if ajena_intacta(&l, &p, &por_id) {
+            // Sin firma pero igual que su memoria (un vault de una versión anterior sin tocar): la
+            // exportación la rehace firmada y no se pierde nada.
+            r.notes += 1;
+            r.unchanged += 1;
         } else {
+            // Sin firma y con otro texto: puede ser una edición (un vault de la 1.8 editado), que no
+            // entra en ninguna memoria; la exportación tampoco la pisa ni la borra.
             r.foreign.push(rel_de(&ruta));
+            respetar.insert(ruta);
         }
     }
 
-    let por_id: HashMap<&str, usize> = p.notas.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
-    let mut pisar: BTreeSet<PathBuf> = BTreeSet::new();
     for (id, copias) in por_memoria {
         r.notes += 1;
         let editadas: Vec<&(PathBuf, Leida)> = copias.iter().filter(|(_, l)| editada(l)).collect();
@@ -1091,13 +1136,18 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
         }
         if en_seco {
             r.updated += 1;
+            if propuesta.tapada {
+                r.redacted.push(propuesta.title.clone());
+            }
             continue;
         }
         match crate::memoria::actualizar(db, &m.id, cambios, modelo) {
             Ok(x) => {
                 r.updated += 1;
                 pisar.insert(ruta.clone());
-                if !x.redacted.is_empty() {
+                // `actualizar` ya no ve el secreto (lo tapó `proponer`, para comparar): se cuenta por
+                // la propuesta.
+                if propuesta.tapada || !x.redacted.is_empty() {
                     r.redacted.push(x.title.clone());
                 }
                 r.unverified += usize::from(x.unverified.is_some());
@@ -1181,8 +1231,45 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
                 |f| Ok((f.get(0)?, f.get(1)?)),
             )
             .optional()?;
+        // De esta nota ya salió una memoria. Sin firma, la nota no la cambia: cualquiera que escriba en
+        // el vault podría pisar lo que se cambió, fijó o verificó después en Omoikane (y su nota
+        // exportada es la que se edita). Si dice lo mismo, no hay nada que hacer; si no, se queda como
+        // está, la exportación no la pisa y se dice cómo traerla.
+        if let Some((id, _)) = &antes {
+            let m = match crate::memoria::obtener(db, id) {
+                Ok(m) => m,
+                Err(e) => {
+                    r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
+                    respetar.insert(ruta);
+                    continue;
+                }
+            };
+            let mut tapados = Vec::new();
+            let igual = crate::memoria::como_se_guarda(&nueva.title, &nueva.content, &nueva.paths, &nueva.tags, &mut tapados)
+                .is_ok_and(|(t, c, _, _)| t == m.title && c == m.content && Some(m.kind) == nueva.kind);
+            if igual {
+                r.unchanged += 1;
+                if !en_seco {
+                    // Lo mismo que su memoria: la exportación escribe su copia.
+                    let _ = std::fs::remove_file(&ruta);
+                }
+            } else {
+                r.skipped.push(Saltada {
+                    note: rel,
+                    reason: tr!(
+                        "the memory {} «{}» already came from this note, and a note without Omoikane's signature doesn't change an existing memory: it was left as it is. Bring the change over with `omoi update {}` (or rename the note to save it as a new memory), then delete it",
+                        "de esta nota ya salió la memoria {} «{}», y una nota sin la firma de Omoikane no cambia una memoria que ya existe: se queda como está. Lleva el cambio con `omoi update {}` (o cambia el nombre de la nota para guardarla como memoria nueva) y luego bórrala",
+                        m.id,
+                        m.title,
+                        m.id
+                    ),
+                });
+                respetar.insert(ruta);
+            }
+            continue;
+        }
         if en_seco {
-            if antes.is_some() { r.updated += 1 } else { r.created += 1 }
+            r.created += 1;
             continue;
         }
         let (titulo, contenido) = (nueva.title.clone(), nueva.content.clone());
@@ -1212,7 +1299,7 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
     }
 
     if !en_seco {
-        r.export = Some(exportar_con(db, vault, que, &pisar)?);
+        r.export = Some(exportar_con(db, vault, que, &pisar, &respetar)?);
     }
     Ok(r)
 }

@@ -438,11 +438,10 @@ fn contenido(c: &str) -> Result<String> {
 
 /// Cómo quedarían título, contenido, rutas y etiquetas al cambiarlos aquí (con la redacción de
 /// secretos), sin escribir nada: para saber si un cambio que llega ya está aplicado (la vuelta desde
-/// Obsidian, `obsidian::importar`).
-pub(crate) fn como_se_guarda(title: &str, content: &str, paths: &[String], tags: &[String]) -> Result<(String, String, Vec<String>, Vec<String>)> {
-    let mut nada = Vec::new();
-    let t = titulo(&sin_secretos(title, &mut nada))?;
-    let c = contenido(&sin_secretos(&contenido(content)?, &mut nada))?;
+/// Obsidian, `obsidian::importar`). Lo que se tapa, a `tapados`.
+pub(crate) fn como_se_guarda(title: &str, content: &str, paths: &[String], tags: &[String], tapados: &mut Vec<&'static str>) -> Result<(String, String, Vec<String>, Vec<String>)> {
+    let t = titulo(&sin_secretos(title, tapados))?;
+    let c = contenido(&sin_secretos(&contenido(content)?, tapados))?;
     Ok((t, c, rutas(paths), etiquetas(tags)))
 }
 
