@@ -662,6 +662,16 @@ fn la_10_abre_la_base_del_commit() {
         assert!(viejo.ok(&["trash"]).contains("Una que sobra"));
         let de_10 = viejo.guardar(&proyecto, "fact", "Escrita por la 1.0", "En la base del commit.", &[]);
         viejo.ok_en(&proyecto, &["update", &id, "--pin"]);
+        // 1.9.0: el historial tiene `extra` (columna con valor por defecto): la 1.0 escribe en él
+        // nombrando sus columnas, y el commit lo lee.
+        viejo.ok_en(&proyecto, &["update", &id, "-c", "Todos los importes en enteros de céntimos, sin decimales.", "-r", "1.0"]);
+        assert_eq!(nuevo.json_en(&proyecto, &["history", &id]).as_array().unwrap().len(), 2);
+        let extras: Vec<String> = {
+            let db = nuevo.base();
+            let mut q = db.prepare("SELECT extra FROM memory_version WHERE memory_id = ?1").unwrap();
+            q.query_map([&id], |f| f.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(extras, vec!["{}".to_string(), "{}".to_string()]);
         assert_eq!(version_de(&nuevo.base()), version, "la 1.0 no le baja el esquema");
         // Y el commit sigue con ella.
         assert_eq!(nuevo.get(&de_10).expect("el commit ve lo de la 1.0")["content"], "En la base del commit.");
