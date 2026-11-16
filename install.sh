@@ -55,7 +55,11 @@ chmod +x "$dir/omoi"
 echo "Installed: $dir/omoi ($("$dir/omoi" --version))"
 case ":$PATH:" in
   *":$dir:"*) ;;
-  *) echo "Note: $dir is not on your PATH. Add it (for example in ~/.profile): export PATH=\"$dir:\$PATH\"" ;;
+  *)
+    # macOS uses zsh by default, which doesn't read ~/.profile.
+    case "$(uname -s)" in Darwin) rc="~/.zshrc" ;; *) rc="~/.profile" ;; esac
+    echo "Note: $dir is not on your PATH. Add it (for example in $rc): export PATH=\"$dir:\$PATH\""
+    echo "      Claude Code's plugin doesn't need it: it finds or installs its own copy." ;;
 esac
 
 if [ -z "${OMOIKANE_NO_MODEL:-}" ]; then
