@@ -21,7 +21,8 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 - **Nothing gets lost.** No duplicates, history with reasons, stale memories flagged, secrets redacted, a trash everything comes back from and a copy of the database every day.
 - **From you alone to a whole company.** The same memory on all your computers and with teammates, through a git repository of yours, encrypted. Spaces keep each client's memories apart, and trades share what one stack teaches (Android, web, WordPress…) with every project of that stack.
 - **15 agents, one memory.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode and the rest; `omoi setup <agent>` gets each one ready. Two are tested by hand, the rest going by their documentation.
-- **One binary, no server.** 9 MCP tools, SQLite built in, no Python, Node or Docker. It works offline, and on Windows just like on Linux and macOS.
+- **From memory to team skill.** `omoi skill` turns a memory into a skill in the repository (`.agents/skills` and `.claude/skills`) that every agent loads, and tells when it fell behind the memory.
+- **One binary, no server.** 10 MCP tools, SQLite built in, no Python, Node or Docker. It works offline, and on Windows just like on Linux and macOS.
 
 ## Install
 

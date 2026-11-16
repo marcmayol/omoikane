@@ -56,7 +56,7 @@ pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", 
 
 const INICIO: &str = "<!-- omoikane -->";
 const FIN: &str = "<!-- /omoikane -->";
-const INSTRUCCIONES: &str = "## Long-term memory (Omoikane)\n\nYou have the `omoikane` memory tools (MCP). At the start of a session, call `context`. Before working on something, `search` it. When you learn something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, short and in the user's language. If `remember` says it's a duplicate, `update` that memory instead.";
+const INSTRUCCIONES: &str = "## Long-term memory (Omoikane)\n\nYou have the `omoikane` memory tools (MCP). At the start of a session, call `context`. Before working on something, `search` it. When you learn something worth knowing next time (a non-obvious trap, a decision and its reasons, how the user wants things done), save it with `remember`, short and in the user's language. If `remember` says it's a duplicate, `update` that memory instead. When a memory changes what you do, say so in one line with its id.";
 
 /// Un fichero que cambia: cuál, por qué y cómo queda.
 #[derive(Debug)]

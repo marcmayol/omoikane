@@ -36,6 +36,7 @@ pub mod revisar;
 pub mod riesgo;
 pub mod secretos;
 pub mod setup;
+pub mod skill;
 pub mod significado;
 pub mod sync;
 pub mod tui;

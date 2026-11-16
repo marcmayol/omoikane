@@ -4,6 +4,21 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.10.0 (2026-11-16)
+
+### From memory to repository skill
+- `omoi skill <id>` (and the new `skill` MCP tool, the tenth) writes a memory as a skill of the repository: `.agents/skills/<name>/SKILL.md`, read by Codex, Cursor, Gemini CLI, Copilot, OpenCode and others, and `.claude/skills/<name>/SKILL.md` for Claude Code (`--to agents|claude` for one of them). Once committed, every agent and teammate loads it when its description matches the task, with or without Omoikane. The description is the title plus a procedure's `when:` words, or the memory's files; the fixed words go in the memory's language.
+- No id needed: `omoi skill` on its own lists, below the repository's skills, the memories that could be skills with the exact command for each (the project's procedures, and memories the agent applied in 2 sessions or more; `--suggest` for just those, `suggest: true` in the tool). Instead of an id it also takes a few words of the title (`omoi skill "publish release"`): it takes the memory whose title has the most of them and says which, or lists the candidates with their ids if two tie.
+- Each file carries the memory's id and a fingerprint. `omoi skill` with no id lists the repository's skills as up to date, outdated (the memory changed: `--refresh` regenerates them, keeping their folder even if the title changed), edited by hand (never overwritten without `--force`) or orphan (the memory is gone). Line endings changed by git on Windows don't count as an edit.
+- It doesn't overwrite a skill that isn't from Omoikane (the new one takes the end of the id in its name), refuses a memory that looks like it holds a secret, and needs a repository. `--dry-run` says what it would write. The idea comes from Beacon's `beacon memory skills install`, which doesn't track what happens to the file afterwards.
+
+### Applied memories
+- The instructions now ask the agent to cite, in one line, the id of a memory that changes what it does. When the session ends, those ids found in the agent's messages are noted in the session diary as `applied` (the ones saved or changed in that session don't count). `omoi diary`, the `recent` tool with `sessions: true` and `--json` show them, and `omoi get` says in how many sessions a memory was applied and when last.
+
+### Compatibility
+- The database schema stays at 10 and `lector_minimo` doesn't move. The session diary (local, never synced) gains an `applied` column the first time 1.10.0 writes a line; versions 1.4 to 1.9 name their columns when they read and write the diary, so they keep working with it. Sync lines and `omoi export` don't change.
+- Skills are plain files in the repository: any version, or none, can read them.
+
 ## 1.9.0 (2026-11-10)
 
 ### Two folders with the same name at two clients

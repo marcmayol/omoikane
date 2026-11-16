@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS diary (
   files      TEXT NOT NULL DEFAULT '[]',
   recalled   TEXT NOT NULL DEFAULT '[]',
   saved      TEXT NOT NULL DEFAULT '[]',
+  applied    TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (session, project_id)
 );
 CREATE INDEX IF NOT EXISTS diary_last ON diary(last_at);
@@ -54,7 +55,17 @@ const MAX_BYTES_SUBAGENTES: u64 = 32 * 1024 * 1024;
 /// hace ni eso de más.
 pub fn crear_tabla(db: &Connection) -> Result<()> {
     db.execute_batch(TABLA)?;
+    // `applied` (1.10): una tabla de antes no la tiene. Una versión anterior nombra sus columnas al
+    // escribir y al leer, así que la columna de más no le estorba.
+    if !hay_aplicadas(db)? {
+        db.execute_batch("ALTER TABLE diary ADD COLUMN applied TEXT NOT NULL DEFAULT '[]'")?;
+    }
     Ok(())
+}
+
+/// Si la tabla ya tiene la columna `applied` (1.10). Al leer no se añade: la lectura no escribe.
+fn hay_aplicadas(db: &Connection) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('diary') WHERE name = 'applied')", [], |f| f.get(0))?)
 }
 
 pub(crate) fn hay_tabla(db: &Connection) -> Result<bool> {
@@ -414,14 +425,19 @@ fn juntar(viejos: Vec<String>, nuevos: Vec<String>, max: usize) -> Vec<String> {
     viejos.into_iter().chain(nuevos).filter(|x| vistos.insert(x.clone())).take(max).collect()
 }
 
+/// La clave de la sesión en el diario: su id o, sin él, el nombre del fichero de la conversación.
+pub fn nombre_sesion(session: &str, conversacion: Option<&Path>) -> String {
+    match session.trim() {
+        "" => conversacion.and_then(|c| c.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        s => s.to_string(),
+    }
+}
+
 /// Al cerrar o compactar: apunta (o completa) la línea de la sesión en el proyecto. `conversacion` es
 /// la ruta de la conversación, si el agente la da; sin ella, solo lo que sabe la base (las memorias
 /// recibidas). Sin id de sesión, el nombre del fichero de la conversación.
 pub fn apuntar(db: &Connection, project: &str, session: &str, conversacion: Option<&Path>) -> Result<bool> {
-    let sesion = match session.trim() {
-        "" => conversacion.and_then(|c| c.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-        s => s.to_string(),
-    };
+    let sesion = nombre_sesion(session, conversacion);
     if sesion.is_empty() {
         return Ok(false);
     }
@@ -507,6 +523,8 @@ pub struct Linea {
     pub files: Vec<String>,
     pub recalled: Vec<Nombrada>,
     pub saved: Vec<Nombrada>,
+    /// Las que el agente dijo seguir, citando su id (1.10): con qué memorias se hizo el trabajo.
+    pub applied: Vec<Nombrada>,
 }
 
 /// Qué líneas leer.
@@ -573,8 +591,9 @@ pub fn lineas(db: &Connection, ambito: &Ambito, f: &Filtro) -> Result<Vec<Linea>
     // El proyecto 0 existe con la ruta vacía: sin el `NULLIF`, una línea sin proyecto no diría su carpeta.
     let mut sql = format!(
         "SELECT d.session, d.project_id, d.folder, COALESCE(NULLIF((SELECT path FROM project WHERE id = d.project_id), ''), d.folder),
-                d.first_at, d.last_at, d.files, d.recalled, d.saved
+                d.first_at, d.last_at, d.files, d.recalled, d.saved, {}
          FROM diary d WHERE {}",
+        if hay_aplicadas(db)? { "d.applied" } else { "'[]'" },
         donde(ambito)
     );
     let mut valores: Vec<String> = Vec::new();
@@ -624,9 +643,85 @@ pub fn lineas(db: &Connection, ambito: &Ambito, f: &Filtro) -> Result<Vec<Linea>
             files,
             recalled: nombrar(&fila.get::<_, String>(7)?)?,
             saved: nombrar(&fila.get::<_, String>(8)?)?,
+            applied: nombrar(&fila.get::<_, String>(9)?)?,
         });
     }
     Ok(r)
+}
+
+/// Cuántos ids citados en una sesión se miran como mucho (el hook de cierre tiene poco tiempo).
+const MAX_CITADAS: usize = 200;
+
+/// Los ids de memoria que el agente cita en lo que escribe (`textos`), resueltos contra la base: solo
+/// los que son de una memoria que existe, sin repetir. Un id es una palabra de 8 a 26 caracteres del
+/// alfabeto de los ULID (mayúsculas sin I, L, O ni U, y cifras), que empieza por 0-7 y mezcla letras y
+/// cifras: así no cuentan palabras en mayúsculas («README») ni números. Basta el principio único (el
+/// recall enseña los 12 primeros).
+pub fn citadas<'a>(db: &Connection, textos: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
+    let mut vistas = BTreeSet::new();
+    let mut r = Vec::new();
+    let mut miradas = 0;
+    for t in textos {
+        for w in t.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if !parece_id(w) || !vistas.insert(w.to_string()) {
+                continue;
+            }
+            miradas += 1;
+            if miradas > MAX_CITADAS {
+                return Ok(r);
+            }
+            if let Ok(id) = crate::memoria::resolver_id(db, w)
+                && !r.contains(&id)
+            {
+                r.push(id);
+            }
+        }
+    }
+    Ok(r)
+}
+
+fn parece_id(w: &str) -> bool {
+    let b = w.as_bytes();
+    (8..=26).contains(&b.len())
+        && (b'0'..=b'7').contains(&b[0])
+        && b.iter().all(|c| c.is_ascii_digit() || (c.is_ascii_uppercase() && !matches!(c, b'I' | b'L' | b'O' | b'U')))
+        && b.iter().any(u8::is_ascii_uppercase)
+        && b.iter().filter(|c| c.is_ascii_digit()).count() >= 2
+}
+
+/// Apunta en la línea de la sesión las memorias que el agente dijo seguir (`ids`, ya resueltos), sin
+/// las que guardó o cambió en ella: citar la que acaba de escribir no es aplicarla. Se suma a lo que
+/// hubiera (tras compactar, la conversación sigue y se vuelve a leer entera). Sin línea, nada.
+pub fn apuntar_aplicadas(db: &Connection, project: &str, session: &str, conversacion: Option<&Path>, ids: &[String]) -> Result<usize> {
+    let session = nombre_sesion(session, conversacion);
+    if ids.is_empty() || session.is_empty() || !hay_tabla(db)? {
+        return Ok(0);
+    }
+    crear_tabla(db)?;
+    let general = crate::proyecto::es_general(project);
+    let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0) };
+    let clave = params![session, project_id];
+    let fila: Option<(String, String)> =
+        db.query_row("SELECT saved, applied FROM diary WHERE session = ?1 AND project_id = ?2", clave, |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
+    let Some((guardadas, antes)) = fila else { return Ok(0) };
+    let guardadas: Vec<String> = serde_json::from_str(&guardadas).unwrap_or_default();
+    let nuevas: Vec<String> = ids.iter().filter(|id| !guardadas.contains(id)).cloned().collect();
+    let todas = juntar(serde_json::from_str(&antes).unwrap_or_default(), nuevas, usize::MAX);
+    db.execute("UPDATE diary SET applied = ?3 WHERE session = ?1 AND project_id = ?2", params![session, project_id, serde_json::to_string(&todas)?])?;
+    Ok(todas.len())
+}
+
+/// Cuántas sesiones del diario aplicaron la memoria `id` y cuándo fue la última (vacío si ninguna).
+pub fn aplicada(db: &Connection, id: &str) -> Result<(i64, Option<String>)> {
+    if !hay_tabla(db)? || !hay_aplicadas(db)? {
+        return Ok((0, None));
+    }
+    // El id entero va entre comillas en la lista JSON: `LIKE` con él no confunde uno con otro.
+    Ok(db.query_row(
+        "SELECT count(*), max(last_at) FROM diary WHERE applied LIKE '%\"' || ?1 || '\"%'",
+        [id],
+        |f| Ok((f.get(0)?, f.get(1)?)),
+    )?)
 }
 
 fn lista_de(db: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<String>> {

@@ -364,8 +364,28 @@ enum Orden {
         #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
         space: Option<String>,
     },
-    /// The session diary: one line per session (when, which project, files touched, memories recalled and saved), newest first. Only on this computer.
+    /// The session diary: one line per session (when, which project, files touched, memories recalled, applied and saved), newest first. Only on this computer.
     Diary(Diario),
+    /// Turn a memory into a skill of this repository (`.agents/skills/<name>/SKILL.md` and `.claude/skills/<name>/SKILL.md`), so every agent and teammate gets it once committed. Without an id, lists the repository's skills from Omoikane and which are outdated or edited by hand.
+    Skill {
+        /// The memory: its id (or the start of it), or a few words to find it ("publish release"). Without it, lists the repository's skills and the memories that could be skills, with the command for each.
+        id: Option<String>,
+        /// Only the memories that could be skills (procedures, and memories the agent applied in 2 sessions or more), with their ids.
+        #[arg(long, conflicts_with_all = ["id", "refresh"])]
+        suggest: bool,
+        /// Bring up to date every skill whose memory changed since (not the ones edited by hand).
+        #[arg(long, conflicts_with = "id")]
+        refresh: bool,
+        /// Where to write it: both (default), agents (`.agents/skills`) or claude (`.claude/skills`).
+        #[arg(long, value_name = "TARGET")]
+        to: Option<String>,
+        /// Replace a skill edited by hand or not from Omoikane, and write it even if it looks like it holds a secret.
+        #[arg(long)]
+        force: bool,
+        /// Say what it would write without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Every memory with these tags in this project (its space's and the global ones), newest first, with no search or ranking: for programs that save something under a tag and must always find it again.
     List(Lista),
     /// Open decisions waiting for the user (kind decision, tag `open`): blocking ones (tag `blocking`) first, then the ones for later.
@@ -1519,7 +1539,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 return json(&memoria::con_datos(&db, vec![m])?.remove(0));
             }
             let datos = memoria::datos_de(&db, &[m.id.as_str()])?;
-            entera(&m);
+            entera(&m, omoikane::diario::aplicada(&db, &m.id).ok());
             if let Some(d) = datos.get(&m.id) {
                 println!("\ndata: {}", serde_json::to_string_pretty(d)?);
             }
@@ -1706,6 +1726,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             Ok(())
         }
         Orden::Diary(d) => diario_cli(c, d),
+        Orden::Skill { id, suggest, refresh, to, force, dry_run } => skill_cli(c, id, suggest, refresh, to, force, dry_run),
         Orden::Decisions(d) => decisiones_cli(c, d),
         Orden::List(l) => {
             let db = abrir(c)?;
@@ -2159,6 +2180,18 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     }
     // La conversación se lee una vez para las candidatas y para los pasos de las recetas.
     let turnos = conversacion.and_then(|r| omoikane::candidatas::turnos(r).map_err(|err| eprintln!("omoikane: {err:#}")).ok());
+    // Las memorias que el agente dijo seguir, citando su id: van a la línea del diario.
+    if let Some(t) = &turnos {
+        let textos = t.iter().filter_map(|x| match x {
+            omoikane::candidatas::Turno::Agente(s) => Some(s.as_str()),
+            _ => None,
+        });
+        let aplicadas = omoikane::diario::citadas(&db, textos)
+            .and_then(|ids| omoikane::diario::apuntar_aplicadas(&db, &project, &e.session_id, conversacion, &ids));
+        if let Err(err) = aplicadas {
+            eprintln!("omoikane: {err:#}");
+        }
+    }
     let pasos = turnos.as_deref().map(omoikane::recetas::pasos_de_turnos).unwrap_or_default();
     if let (Some(ruta), Some(t)) = (conversacion, turnos)
         && let Err(err) = omoikane::candidatas::apartar_con(&db, &project, &e.session_id, ruta, t)
@@ -2462,6 +2495,89 @@ fn abrir(c: &Comun) -> Result<Connection> {
     db::abrir(&c.db.clone().unwrap_or_else(db::ruta_por_defecto))
 }
 
+fn skill_cli(c: &Comun, id: Option<String>, suggest: bool, refresh: bool, to: Option<String>, force: bool, dry_run: bool) -> Result<()> {
+    let mut db = abrir(c)?;
+    let project = proyecto_de(c)?;
+    let escritas = match (&id, refresh) {
+        (Some(pedida), _) => {
+            let id = omoikane::skill::resolver(&mut db, &project, pedida)?;
+            // Si se pidió con palabras, que se vea cuál se eligió.
+            if !c.json && !id.starts_with(&pedida.trim().to_uppercase()) {
+                let m = memoria::obtener(&db, &id)?;
+                println!("{}", tr!("memory {}  {}", "memoria {}  {}", corto(&id), m.title));
+            }
+            omoikane::skill::escribir(&db, &project, &id, omoikane::skill::Destino::de(to.as_deref())?, force, dry_run)?
+        }
+        (None, true) => omoikane::skill::refrescar(&db, &project, dry_run)?,
+        (None, false) => {
+            let skills = if suggest { Vec::new() } else { omoikane::skill::listar(&db, &project)? };
+            let ideas = omoikane::skill::sugerencias(&db, &project)?;
+            if c.json {
+                return if suggest { json(&ideas) } else { json(&skills) };
+            }
+            if skills.is_empty() && !suggest {
+                println!("{}", tr!("no skills from Omoikane in this repository yet", "aún no hay skills de Omoikane en este repositorio"));
+            }
+            for s in &skills {
+                let estado = match s.state {
+                    omoikane::skill::Estado::UpToDate => tr!("up to date", "al día"),
+                    omoikane::skill::Estado::Outdated => tr!("outdated: the memory changed (omoi skill --refresh)", "desfasada: la memoria cambió (omoi skill --refresh)"),
+                    omoikane::skill::Estado::Edited => tr!("edited by hand", "editada a mano"),
+                    omoikane::skill::Estado::Orphan => tr!("its memory no longer exists", "su memoria ya no existe"),
+                };
+                let corto: String = s.memory_id.chars().take(12).collect();
+                println!("{}  {corto}  {estado}", s.path);
+            }
+            if ideas.is_empty() {
+                if suggest || skills.is_empty() {
+                    println!("{}", tr!(
+                        "No memory of this project stands out as a skill yet (procedures, or memories applied in 2 sessions or more). Any memory works: `omoi skill \"a few words\"` or `omoi skill <id>`.",
+                        "Aún no destaca ninguna memoria del proyecto como skill (recetas, o memorias aplicadas en 2 sesiones o más). Vale cualquiera: `omoi skill \"unas palabras\"` u `omoi skill <id>`."
+                    ));
+                }
+                return Ok(());
+            }
+            if !suggest {
+                println!();
+            }
+            println!("{}", tr!("Could be skills:", "Podrían ser skills:"));
+            for i in &ideas {
+                let porque = match (i.kind == omoikane::memoria::Tipo::Procedure, i.applied_sessions) {
+                    (_, 1) => tr!("applied in 1 session", "aplicada en 1 sesión"),
+                    (_, n) if n > 1 => tr!("applied in {n} sessions", "aplicada en {n} sesiones"),
+                    _ => tr!("procedure", "receta"),
+                };
+                println!("  omoi skill {}   {}  ({porque})", corto(&i.id), i.title);
+            }
+            return Ok(());
+        }
+    };
+    if c.json {
+        return json(&escritas);
+    }
+    if escritas.is_empty() {
+        println!("{}", tr!("nothing to bring up to date", "nada que poner al día"));
+    }
+    for e in &escritas {
+        let que = match (e.action, dry_run) {
+            ("created", false) => tr!("created", "creada"),
+            ("created", true) => tr!("would create", "se crearía"),
+            ("updated", false) => tr!("updated", "puesta al día"),
+            ("updated", true) => tr!("would update", "se pondría al día"),
+            ("unchanged", _) => tr!("already up to date", "ya estaba al día"),
+            _ => tr!("skipped", "no se toca"),
+        };
+        match &e.reason {
+            Some(r) => println!("{}  {que}: {r}", e.path),
+            None => println!("{}  {que}", e.path),
+        }
+    }
+    if !dry_run && escritas.iter().any(|e| matches!(e.action, "created" | "updated")) {
+        println!("{}", tr!("Commit it so the team and every agent get it.", "Haz commit para que lo tengan el equipo y todos los agentes."));
+    }
+    Ok(())
+}
+
 fn proyecto_de(c: &Comun) -> Result<String> {
     match &c.dir {
         Some(d) => proyecto::de(d),
@@ -2608,7 +2724,7 @@ fn diario_cli(c: &Comun, d: Diario) -> Result<()> {
         if !l.files.is_empty() {
             println!("  {} {}", tr!("files:", "ficheros:"), l.files.join(", "));
         }
-        for (que, ms) in [(tr!("recalled:", "recibidas:"), &l.recalled), (tr!("saved:", "guardadas:"), &l.saved)] {
+        for (que, ms) in [(tr!("recalled:", "recibidas:"), &l.recalled), (tr!("applied:", "aplicadas:"), &l.applied), (tr!("saved:", "guardadas:"), &l.saved)] {
             for m in ms.iter() {
                 let corto: String = m.id.chars().take(12).collect();
                 match &m.title {
@@ -3310,7 +3426,7 @@ fn lista(m: &Memoria, con_proyecto: bool) {
     println!("              {}", una_linea(&m.content, 160));
 }
 
-fn entera(m: &Memoria) {
+fn entera(m: &Memoria, aplicada: Option<(i64, Option<String>)>) {
     println!("{}  {}{}", m.id, m.kind, if m.pinned { tr!("  (pinned)", "  (fijada)") } else { String::new() });
     println!("{}\n", m.title);
     println!("{}\n", m.content);
@@ -3344,6 +3460,10 @@ fn entera(m: &Memoria) {
         let n = m.recall_count;
         let veces = if n == 1 { tr!("once", "1 vez") } else { tr!("{n} times", "{n} veces") };
         println!("{}", tr!("recalled   {veces} (last {ultima})", "recuperada {veces} (la última, {ultima})"));
+    }
+    if let Some((n, Some(ultima))) = aplicada.filter(|(n, _)| *n > 0) {
+        let veces = if n == 1 { tr!("in 1 session", "en 1 sesión") } else { tr!("in {n} sessions", "en {n} sesiones") };
+        println!("{}", tr!("applied    {veces} (last {ultima})", "aplicada   {veces} (la última, {ultima})"));
     }
 }
 
@@ -4117,7 +4237,7 @@ fn en_espanol(c: Command) -> Command {
             ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
             ("space", "De este espacio."),
         ]),
-        ("diary", "El diario de sesiones: una línea por sesión (cuándo, en qué proyecto, ficheros tocados, memorias recibidas y guardadas), de la más reciente a la más vieja. Solo de este equipo.", &[
+        ("diary", "El diario de sesiones: una línea por sesión (cuándo, en qué proyecto, ficheros tocados, memorias recibidas, aplicadas y guardadas), de la más reciente a la más vieja. Solo de este equipo.", &[
             ("limit", "Cuántas."),
             ("since", "Sesiones que acabaron ese día o después (2026-11-03, o 7d para los últimos 7 días)."),
             ("until", "Sesiones que empezaron ese día o antes."),
@@ -4125,6 +4245,14 @@ fn en_espanol(c: Command) -> Command {
             ("all", "De todos los proyectos (de su espacio, si el proyecto está en uno)."),
             ("project", "De este proyecto: su carpeta, o su nombre o parte de él."),
             ("space", "De este espacio."),
+        ]),
+        ("skill", "Convierte una memoria en skill de este repositorio (`.agents/skills/<nombre>/SKILL.md` y `.claude/skills/<nombre>/SKILL.md`): al hacer commit la tienen todos los agentes y el equipo. Sin id, lista las skills de Omoikane del repositorio y cuáles están desfasadas o editadas a mano.", &[
+            ("id", "La memoria: su id (o el principio), o unas palabras para encontrarla («publicar versión»). Sin ella, lista las skills del repositorio y las memorias que podrían serlo, con la orden de cada una."),
+            ("suggest", "Solo las memorias que podrían ser skills (recetas, y las que el agente aplicó en 2 sesiones o más), con su id."),
+            ("refresh", "Pone al día las skills cuya memoria cambió después (no las editadas a mano)."),
+            ("to", "Dónde escribirla: both (por defecto), agents (`.agents/skills`) o claude (`.claude/skills`)."),
+            ("force", "Sustituye una skill editada a mano o que no es de Omoikane, y la escribe aunque parezca llevar un secreto."),
+            ("dry_run", "Dice lo que escribiría sin tocar nada."),
         ]),
         ("decisions", "Las decisiones abiertas que esperan a la persona (tipo decision, etiqueta `open`): primero las bloqueantes (etiqueta `blocking`), luego las de después.", &[
             ("blocking", "Solo las bloqueantes (sin la respuesta no se puede seguir)."),

@@ -318,3 +318,63 @@ fn fichero_unicode_y_limite() {
     let v = diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &f).unwrap();
     assert_eq!(v.iter().map(|l| l.session.as_str()).collect::<Vec<_>>(), vec!["uno"]);
 }
+
+/// 1.10: las memorias que el agente dice seguir, citando su id, quedan como aplicadas en la línea de la
+/// sesión; las que acaba de guardar no cuentan, ni las palabras en mayúsculas ni los ids que no existen.
+#[test]
+fn aplicadas_por_cita() {
+    let d = dir("aplicadas");
+    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
+    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let seguida = guardar(&mut db, &repo, "Compilar antes del smoke test", false);
+    let nueva = guardar(&mut db, &repo, "El puerto es el 8010", false);
+    let conv = d.join("s9.jsonl");
+    escribir(
+        &conv,
+        &[
+            herramienta("t1", "mcp__omoikane__remember", json!({"kind": "fact", "title": "El puerto es el 8010", "content": "…"})),
+            resultado("t1", &json!({"saved": true, "id": nueva}).to_string()),
+        ],
+    );
+    assert!(diario::apuntar(&db, &repo, "s9", Some(&conv)).unwrap());
+    let corto = &seguida[..12];
+    let textos = [
+        format!("Sigo {corto}: compilo antes del smoke test."),
+        format!("Guardada como {nueva}. README, HTTP2 y 01AAAAAAAAAAAAAAAAAAAAAAAA no son memorias."),
+    ];
+    let ids = diario::citadas(&db, textos.iter().map(String::as_str)).unwrap();
+    assert_eq!(ids, vec![seguida.clone(), nueva.clone()]);
+    assert_eq!(diario::apuntar_aplicadas(&db, &repo, "s9", Some(&conv), &ids).unwrap(), 1);
+    // Otra vez (tras compactar se relee entera): no se duplica.
+    assert_eq!(diario::apuntar_aplicadas(&db, &repo, "s9", Some(&conv), &ids).unwrap(), 1);
+    let l = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    assert_eq!(l[0].applied.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), vec![seguida.clone()]);
+    let (n, ultima) = diario::aplicada(&db, &seguida).unwrap();
+    assert!(n == 1 && ultima.is_some());
+    assert_eq!(diario::aplicada(&db, &nueva).unwrap().0, 0);
+    // Sin línea de la sesión, no se apunta nada.
+    assert_eq!(diario::apuntar_aplicadas(&db, &repo, "otra", None, &ids).unwrap(), 0);
+}
+
+/// Un diario creado por una versión anterior (sin la columna `applied`) se lee igual y gana la
+/// columna al escribir la primera línea.
+#[test]
+fn diario_de_antes_sin_aplicadas() {
+    let d = dir("antes");
+    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
+    let db = db::abrir(&d.join("o.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE diary (session TEXT NOT NULL, project_id INTEGER NOT NULL DEFAULT 0, folder TEXT NOT NULL DEFAULT '',
+           first_at TEXT NOT NULL, last_at TEXT NOT NULL, files TEXT NOT NULL DEFAULT '[]', recalled TEXT NOT NULL DEFAULT '[]',
+           saved TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (session, project_id));
+         INSERT INTO diary(session, folder, first_at, last_at) VALUES ('vieja', '', '2026-11-01T10:00:00Z', strftime('%Y-%m-%dT%H:%M:%fZ','now'));",
+    )
+    .unwrap();
+    let l = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    assert!(l.len() == 1 && l[0].applied.is_empty());
+    assert_eq!(diario::aplicada(&db, "01M").unwrap().0, 0);
+    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    assert!(diario::apuntar(&db, &repo, "nueva", None).unwrap());
+    assert_eq!(diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap().len(), 2);
+}

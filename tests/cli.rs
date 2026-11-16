@@ -1000,7 +1000,7 @@ fn el_diario_apunta_la_sesion_al_cerrar() {
     // Sin `sessions`, `recent` sigue siendo lo de siempre.
     assert_eq!(tool("{}")[0]["title"], "Puerto del servidor");
     let lista: serde_json::Value = serde_json::from_str(&e.ok(&["tool"])).unwrap();
-    assert_eq!(lista["tools"].as_array().map(Vec::len), Some(9));
+    assert_eq!(lista["tools"].as_array().map(Vec::len), Some(10));
     // Ni la sincronización ni `omoi export` lo llevan: es de este equipo.
     let export = e.ok(&["export", "--all"]);
     assert!(!export.contains("sesion-1") && !export.contains("sync.rs"), "{export}");

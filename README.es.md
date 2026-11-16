@@ -21,7 +21,8 @@ Tu agente aprende cosas en cada sesión: un bug que solo sale en Windows, por qu
 - **Nada se pierde.** Sin duplicados, con historial y motivo, lo viejo marcado, los secretos tachados, una papelera desde la que todo vuelve y una copia de la base cada día.
 - **De ti solo a una empresa entera.** La misma memoria en todos tus equipos y con compañeros, por un repositorio git tuyo y cifrada. Los espacios separan las memorias de cada cliente, y los oficios llevan lo que enseña un stack (Android, web, WordPress…) a todos los proyectos de ese stack.
 - **15 agentes, una sola memoria.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode y los demás; `omoi setup <agente>` deja cada uno listo. Dos están probados a mano, el resto según su documentación.
-- **Un binario y ningún servidor.** 9 herramientas MCP, SQLite dentro, ni Python, ni Node, ni Docker. Funciona sin internet, y en Windows igual que en Linux y macOS.
+- **De memoria a skill del equipo.** `omoi skill` convierte una memoria en una skill del repositorio (`.agents/skills` y `.claude/skills`) que cargan todos los agentes, y avisa cuando se queda atrás de la memoria.
+- **Un binario y ningún servidor.** 10 herramientas MCP, SQLite dentro, ni Python, ni Node, ni Docker. Funciona sin internet, y en Windows igual que en Linux y macOS.
 
 ## Instalación
 

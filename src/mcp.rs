@@ -24,6 +24,8 @@ When you follow a procedure and a step fails or has changed, `update` the proced
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
+When a memory changes what you do, say so in one line with its id (\"Following 01M6DSPWW7NZ: build before the smoke test\"): Omoikane counts it as applied in the session diary, so the user can see which memories the work ran under. Don't cite the ones you just saved.
+When the user wants a memory to reach the whole team and every agent as a file in the repository (\"make it a skill\"), use `skill` with its id: it writes `.agents/skills/<name>/SKILL.md` and `.claude/skills/<name>/SKILL.md`, which they commit. Procedures and conventions that apply to many tasks fit best; one-off gotchas stay in memory. `skill` with suggest=true proposes candidates with their ids, so the user doesn't have to look for them; with no id it lists the repository's skills and says which are outdated (the memory changed since) or edited by hand; `refresh` brings the outdated ones up to date.
 If the session runs in a folder that is not a project (such as the home folder), a memory about one project goes to that project: pass its folder as `project`, or its absolute paths in `paths`. Otherwise it is saved as global.
 Projects can belong to a space (a client, a product with several repositories): what applies to every project of the space but not to other clients goes with `space: true` instead of `global`. From a project you see its memories, its space's and the global ones, never another space's. `search` and `recent` take `project` (a folder or part of a project's name) and `space`; `context` says where you are and lists the projects.
 Each project has trades (its stack: android, web, wordpress, rust…, detected from its files; `context` lists them). A trap or know-how about the stack itself, that would help any project of that trade of any client (\"don't kill the Android emulator with taskkill\"), goes with `trade: \"android\"`: every project of that trade sees it, and no other. Only knowledge of the stack: never a project's or client's name, paths, repository URLs, domains or data (Omoikane refuses it, see trade_leaks); anything about this project or its client stays in the project. Any kind can be a trade memory: a trade preference (\"new screens go in a Scaffold\") applies from the first session of every project of that trade; `for: \"client\"` keeps it for client projects only (those in a space), `for: \"personal\"` for the user's own. A memory saved in the project that turns out to be of the trade is promoted with `update` and `trade`, rewritten without the client: from a client's project (one in a space) that creates a new trade memory with no history and the client's one stays; from a personal project it keeps its id and history. `force` only skips the duplicate check; if trade_leaks flags something you checked is a false positive (a library's name), pass allow_leaks=true, never by default.
@@ -121,6 +123,22 @@ pub enum EspacioParam {
 pub struct Id {
     /// Memory id (its first characters are enough).
     id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct Skill {
+    /// The memory to turn into a skill: its id (the first characters are enough) or a few words to find it. Without it (and without refresh or suggest), lists the repository's skills from Omoikane with their state.
+    id: Option<String>,
+    /// Instead, the memories of this project that could be skills and aren't yet (procedures, and memories you applied in 2 sessions or more), with their ids.
+    suggest: Option<bool>,
+    /// Bring up to date every skill whose memory changed since (not the ones edited by hand).
+    refresh: Option<bool>,
+    /// Where: "both" (default: `.agents/skills` and `.claude/skills`), "agents" or "claude".
+    to: Option<String>,
+    /// Replace a skill edited by hand or not from Omoikane, and write it even if it looks like it holds a secret. Only when the user asks.
+    force: Option<bool>,
+    /// Say what it would write without touching anything.
+    dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -941,6 +959,29 @@ impl Servidor {
         Ok(r.map(|m| json(&serde_json::json!({ "forgotten": m.id, "title": m.title }))).unwrap_or_else(fallo))
     }
 
+    #[tool(description = "Turn a memory into a skill of this repository: writes `.agents/skills/<name>/SKILL.md` (Codex, Cursor, Gemini CLI, Copilot, OpenCode…) and `.claude/skills/<name>/SKILL.md` (Claude Code), with the memory's id, so every agent and teammate loads it once committed. `id` can also be a few words; several matches come back as an error listing them. With suggest=true, the project's memories that could be skills, with ids: offer them when the user asks what could be a skill. Without id, lists the repository's skills from Omoikane: up_to_date, outdated (the memory changed: refresh), edited (by hand: left alone) or orphan (its memory is gone). Refuses a memory that looks like it holds a secret. Tell the user to commit the files; never commit them yourself unless asked.")]
+    async fn skill(&self, Parameters(p): Parameters<Skill>) -> Result<CallToolResult, ErrorData> {
+        let r = self
+            .con_base(move |db, _, proyecto| {
+                let force = p.force.unwrap_or(false);
+                let simulacro = p.dry_run.unwrap_or(false);
+                if p.suggest.unwrap_or(false) {
+                    return Ok(serde_json::to_value(crate::skill::sugerencias(db, proyecto)?)?);
+                }
+                Ok(match (p.id.as_deref(), p.refresh.unwrap_or(false)) {
+                    (Some(pedida), _) => {
+                        let id = crate::skill::resolver(db, proyecto, pedida)?;
+                        let id = id_en_ambito(db, proyecto, &id, false)?;
+                        serde_json::to_value(crate::skill::escribir(db, proyecto, &id, crate::skill::Destino::de(p.to.as_deref())?, force, simulacro)?)?
+                    }
+                    (None, true) => serde_json::to_value(crate::skill::refrescar(db, proyecto, simulacro)?)?,
+                    (None, false) => serde_json::to_value(crate::skill::listar(db, proyecto)?)?,
+                })
+            })
+            .await;
+        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+    }
+
     #[tool(description = "Previous versions of a memory, newest first, with the reason for each change.")]
     async fn history(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self.con_base(move |db, _, proyecto| memoria::historial_en(db, &Ambito::de(db, proyecto)?, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
@@ -1096,6 +1137,7 @@ pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args
             "context" => s.context().await,
             "recent" => s.recent(Parameters(serde_json::from_value(v)?)).await,
             "decisions" => s.decisions(Parameters(serde_json::from_value(v)?)).await,
+            "skill" => s.skill(Parameters(serde_json::from_value(v)?)).await,
             otro => anyhow::bail!("unknown tool: {otro}"),
         })
     })?;
