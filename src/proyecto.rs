@@ -126,17 +126,15 @@ pub fn ruta_local(p: &Path) -> bool {
     // `\??\…` (el prefijo de las rutas de NT): Windows lo pasa tal cual, así que `\??\UNC\host\x` es
     // un recurso de red aunque empiece por una sola barra (para `Path`, la raíz de la unidad actual).
     let b = s.trim_start().as_bytes();
-    if b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[1] == b'?' && b[2] == b'?' && matches!(b[3], b'\\' | b'/') {
-        return false;
-    }
+    let nt = b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[1] == b'?' && b[2] == b'?' && matches!(b[3], b'\\' | b'/');
     #[cfg(windows)]
     {
         use std::path::{Component, Prefix};
-        if let Some(Component::Prefix(x)) = p.components().next() {
+        if !nt && let Some(Component::Prefix(x)) = p.components().next() {
             return matches!(x.kind(), Prefix::Disk(_));
         }
     }
-    true
+    !nt
 }
 
 /// Si un texto de ruta es el de una unidad con el prefijo de ruta extendida de Windows (`\\?\C:\…`, la
@@ -523,19 +521,20 @@ fn canonica_sin_mirar(p: &Path) -> Result<PathBuf> {
     Ok(c)
 }
 
+/// La ruta como texto, con la letra de unidad en mayúscula en Windows: así coinciden las rutas que
+/// llegan de sitios distintos.
+#[cfg(windows)]
 pub(crate) fn texto(p: &Path) -> String {
-    let s = p.to_string_lossy().into_owned();
-    // La letra de unidad en mayúscula: así coinciden las rutas que llegan de sitios distintos.
-    #[cfg(windows)]
-    {
-        let mut b = s.into_bytes();
-        if b.len() >= 2 && b[1] == b':' {
-            b[0] = b[0].to_ascii_uppercase();
-        }
-        return String::from_utf8(b).expect("ruta UTF-8");
+    let mut b = p.to_string_lossy().into_owned().into_bytes();
+    if b.len() >= 2 && b[1] == b':' {
+        b[0] = b[0].to_ascii_uppercase();
     }
-    #[allow(unreachable_code)]
-    s
+    String::from_utf8(b).expect("ruta UTF-8")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn texto(p: &Path) -> String {
+    p.to_string_lossy().into_owned()
 }
 
 // --- Proyectos y espacios en la base (esquema 10) -------------------------------------------------
