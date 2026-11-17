@@ -104,6 +104,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__omoikane__context' }, ($, e) => runTool($, 'context', e))
   on('tool.call', { tool: 'mcp__omoikane__recent' }, ($, e) => runTool($, 'recent', e))
   on('tool.call', { tool: 'mcp__omoikane__skill' }, ($, e) => runTool($, 'skill', e))
+  on('tool.call', { tool: 'mcp__omoikane__decisions' }, ($, e) => runTool($, 'decisions', e))
 }
 
 // Whichever hook comes first starts the preparation (classic.SessionStart can fire before
