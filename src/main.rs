@@ -1802,6 +1802,10 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 println!("{}", tr!("ok: it won't warn about it again until the memory changes", "hecho: no volverá a avisar hasta que la memoria cambie"));
                 return Ok(());
             }
+            let mut db = db;
+            if omoikane::revisar::limpiar_callado(&mut db) {
+                omoikane::sync::programar(&ruta_db(c));
+            }
             let ambito = ambito_pedido(c, &db, all, None, None)?;
             if c.json {
                 return json(&omoikane::revisar::avisos(&db, &ambito)?);
@@ -2673,6 +2677,9 @@ fn decisiones_cli(c: &Comun, d: Decisiones) -> Result<()> {
         }
         println!("{}", tr!("resolved {}: {}", "resuelta {}: {}", corto(&m.id), m.title));
         return Ok(());
+    }
+    if omoikane::revisar::limpiar_callado(&mut db) {
+        omoikane::sync::programar(&ruta_db(c));
     }
     let ambito = ambito_pedido(c, &db, d.all, d.project.as_deref(), d.space.as_deref())?;
     let v = memoria::decisiones(&db, &ambito, d.blocking, &d.tags, d.limit)?;

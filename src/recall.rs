@@ -634,7 +634,9 @@ fn autor_propio(db: &Connection, actual: i64) -> Option<String> {
 }
 
 pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
-    // Una vez por sesión: los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
+    // Una vez por sesión: lo que se arregla solo (estados viejos con otro más nuevo, decisiones ya
+    // resueltas por su tarea) y luego los avisos y los enlaces al día (tras actualizar, o lo que trajo la sync).
+    crate::revisar::limpiar_callado(db);
     crate::revisar::al_dia(db)?;
     let actualizado = crate::actualizar::aviso();
     // El proyecto de la sesión queda apuntado (con su clave, calculada una vez) y su `origin` al día. Si
