@@ -33,6 +33,7 @@ impl Entorno {
             .stdin(if entrada.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        comun::sin_la_sesion(&mut c);
         let mut hijo = c.spawn().unwrap();
         if let Some(e) = entrada {
             use std::io::Write;

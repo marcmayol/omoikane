@@ -378,6 +378,14 @@ fn los_datos_no_se_buscan_y_se_cambian_solos() {
     json(omoi(&otra, raiz, &["import", copia.to_str().unwrap(), "--json"], None));
     let db2 = db::abrir(&otra.join("o.db")).unwrap();
     assert_eq!(memoria::datos_de(&db2, &[id.as_str()]).unwrap()[&id]["fase"], "alpha");
+    // La importación lanza aparte `omoi review --refresh-trade-duplicates` sobre esta base. Si el test
+    // borra la carpeta antes de que ese proceso la abra, la vuelve a crear y se queda en la temporal:
+    // se espera a que guarde su cálculo (luego, si aún la tiene abierta, `Temporal` reintenta).
+    let calculado = || db2.query_row("SELECT 1 FROM meta WHERE k = 'revision_duplicadas_oficio'", [], |_| Ok(())).is_ok();
+    let desde = std::time::Instant::now();
+    while !calculado() && desde.elapsed() < std::time::Duration::from_secs(20) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// El ciclo de una decisión de Kumi con el texto limpio: abierta-bloqueante de una tarea, la puerta

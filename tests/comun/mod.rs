@@ -52,6 +52,24 @@ pub fn puerto_libre() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
 }
 
+/// Las variables que pone la sesión de un agente y que cambian lo que guarda `omoi`: Claude Code pone
+/// `TRACEPARENT` (la procedencia lleva su traza) y un orquestador que firma lo de sus agentes,
+/// `OMOIKANE_AUTHOR` (el autor). En la CI no existen; si los tests corren dentro de una sesión, sí.
+#[allow(dead_code)]
+pub const DE_LA_SESION: &[&str] = &["OMOIKANE_AUTHOR", "TRACEPARENT", "TRACESTATE"];
+
+/// Quita de la orden las variables de `DE_LA_SESION`, para que el test dé lo mismo desde una sesión de
+/// agente que en la CI. Va en la orden y no en `.cargo/config.toml`: ese fichero solo lo lee Cargo si
+/// se lanza desde dentro del repo, no con `--manifest-path` desde otra carpeta. Un test que necesita
+/// una la pone después.
+#[allow(dead_code)]
+pub fn sin_la_sesion(c: &mut std::process::Command) -> &mut std::process::Command {
+    for v in DE_LA_SESION {
+        c.env_remove(v);
+    }
+    c
+}
+
 impl Drop for Temporal {
     fn drop(&mut self) {
         // Un proceso que lanzó el test (`omoi serve`, la sincronización de fondo) puede tardar un

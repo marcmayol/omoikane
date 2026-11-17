@@ -140,6 +140,7 @@ impl Equipo {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        comun::sin_la_sesion(&mut c);
         let mut hijo = c.spawn().unwrap();
         {
             use std::io::Write;
@@ -225,9 +226,13 @@ fn lo_que_no_firmo_nadie_cuenta_como_del_equipo() {
     guardar(&mut db, ("/acme/api", None), Tipo::Fact, ("API: a medias", "Sin firma."), &["status"], "");
     let t = recall::al_empezar(&mut db, "/acme/web", &entrada("s1", "startup")).unwrap().unwrap();
     assert!(t.contains("First session in this project") && t.contains("- api (1 memories): API: a medias"), "{t}");
-    assert!(t.contains("Who writes in this space (memories each): Bea (1, the user)."), "{t}");
-    // Si todo lo del espacio es suyo, no hay bienvenida.
-    db.execute("UPDATE memory SET author = 'Bea'", []).unwrap();
+    // «the user» es quien firma aquí. Este test llama a la biblioteca en su proceso: desde la sesión de
+    // un agente con `OMOIKANE_AUTHOR`, quien firma es ese agente y no Bea.
+    let de_la_sesion = omoikane::entorno::autor();
+    let bea = if de_la_sesion.as_deref().is_some_and(|a| a != "Bea") { "Bea (1)." } else { "Bea (1, the user)." };
+    assert!(t.contains(&format!("Who writes in this space (memories each): {bea}")), "{t}");
+    // Si todo lo del espacio es de quien firma aquí, no hay bienvenida.
+    db.execute("UPDATE memory SET author = ?1", [de_la_sesion.as_deref().unwrap_or("Bea")]).unwrap();
     let t = recall::al_empezar(&mut db, "/acme/app", &entrada("s2", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
 }

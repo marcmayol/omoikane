@@ -40,8 +40,8 @@ impl Entorno {
             .env("OMOIKANE_HOME", self.dir.join("home-omoikane"))
             .env("USERPROFILE", self.dir.join("casa"))
             .env("HOME", self.dir.join("casa"))
-            .env_remove("OMOIKANE_LANG")
-            .env_remove("OMOIKANE_AUTHOR");
+            .env_remove("OMOIKANE_LANG");
+        comun::sin_la_sesion(&mut c);
         for v in de_agente() {
             c.env_remove(v);
         }

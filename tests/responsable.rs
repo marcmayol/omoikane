@@ -33,6 +33,7 @@ impl Prueba {
             .env("USERPROFILE", &casa)
             .env("HOME", &casa)
             .env_remove("OMOIKANE_LANG");
+        comun::sin_la_sesion(&mut c);
         c
     }
 

@@ -96,8 +96,8 @@ impl Equipo {
             .env("GIT_CONFIG_GLOBAL", self.raiz.join("gitconfig-vacio"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
-            .env_remove("OMOIKANE_AUTHOR")
             .stdin(Stdio::null());
+        comun::sin_la_sesion(&mut c);
         // Sin las variables de la shell de un agente (si los tests corren en una, `verify` se niega).
         for v in omoikane::verificado::DE_AGENTE {
             c.env_remove(v);
@@ -152,6 +152,7 @@ impl Equipo {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        comun::sin_la_sesion(&mut c);
         let mut hijo = c.spawn().unwrap();
         {
             use std::io::Write;

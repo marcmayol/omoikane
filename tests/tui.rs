@@ -11,6 +11,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use rusqlite::Connection;
 
+/// Al desarmarla, `let Base { _dir, mut db }` con `_dir` delante: las variables de un patrón se
+/// sueltan al revés de como se declaran, y la base tiene que cerrarse antes de borrar su carpeta (en
+/// Windows no se borra un fichero abierto y la carpeta se quedaba en la temporal).
 struct Base {
     db: Connection,
     _dir: comun::Temporal,
@@ -78,7 +81,7 @@ fn casa() -> String {
 
 #[test]
 fn desde_un_cliente_no_se_ve_otro_cliente_en_la_tui() {
-    let Base { mut db, _dir } = base("tuiaisla");
+    let Base { _dir, mut db } = base("tuiaisla");
     let mut e = Estado::nuevo("/acme-api".into());
     e.cargar(&mut db, None).unwrap();
     let t = titulos(&e);
@@ -135,7 +138,7 @@ fn desde_un_cliente_no_se_ve_otro_cliente_en_la_tui() {
 
 #[test]
 fn un_proyecto_sin_espacio_no_ve_ningun_cliente() {
-    let Base { mut db, _dir } = base("tuisinesp");
+    let Base { _dir, mut db } = base("tuisinesp");
     let mut e = Estado::nuevo("/notas".into());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();
@@ -149,7 +152,7 @@ fn un_proyecto_sin_espacio_no_ve_ningun_cliente() {
 
 #[test]
 fn desde_la_carpeta_del_usuario_se_filtra_por_espacio() {
-    let Base { mut db, _dir } = base("tuifiltro");
+    let Base { _dir, mut db } = base("tuifiltro");
     let mut e = Estado::nuevo(casa());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();
@@ -184,7 +187,7 @@ fn desde_la_carpeta_del_usuario_se_filtra_por_espacio() {
 
 #[test]
 fn recuperar_y_borrar_del_todo_desde_la_papelera() {
-    let Base { mut db, _dir } = base("tuipapel");
+    let Base { _dir, mut db } = base("tuipapel");
     let mut e = Estado::nuevo("/acme-web".into());
     e.cargar(&mut db, None).unwrap();
     assert!(!titulos(&e).contains(&"Acme web: tirar".into()));
@@ -217,7 +220,7 @@ fn recuperar_y_borrar_del_todo_desde_la_papelera() {
 /// Las pantallas nuevas caben en 80×24, en 120×40 y en una terminal pequeña. Con `--nocapture` se ven.
 #[test]
 fn las_pantallas_caben_en_terminales_pequenas() {
-    let Base { mut db, _dir } = base("tuipantallas");
+    let Base { _dir, mut db } = base("tuipantallas");
     let mut e = Estado::nuevo(casa());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();

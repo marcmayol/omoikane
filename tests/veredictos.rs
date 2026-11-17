@@ -266,12 +266,17 @@ fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
 #[test]
 fn el_autor_es_la_persona_de_la_sync_o_el_cliente() {
     let (_dir, db) = base("autor");
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "agent:claude-code");
-    assert_eq!(veredictos::autor(&db, "mcp", ""), "agent");
-    assert_eq!(veredictos::autor(&db, "", ""), "agent");
-    assert_eq!(veredictos::autor(&db, "cli", ""), "cli");
+    // Se llama a la biblioteca en este proceso, que hereda el entorno de quien lanza `cargo test`: si
+    // es la sesión de un agente con `OMOIKANE_AUTHOR`, firma ese autor por encima de todo (y quitarla
+    // aquí sería tocar el entorno de un proceso con varios hilos de tests).
+    let de_la_sesion = omoikane::entorno::autor();
+    let espera = |sin: &str| de_la_sesion.clone().unwrap_or_else(|| sin.to_string());
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), espera("agent:claude-code"));
+    assert_eq!(veredictos::autor(&db, "mcp", ""), espera("agent"));
+    assert_eq!(veredictos::autor(&db, "", ""), espera("agent"));
+    assert_eq!(veredictos::autor(&db, "cli", ""), espera("cli"));
     db.execute("INSERT INTO meta(k, v) VALUES ('autor', 'Marc')", []).unwrap();
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), "Marc");
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), espera("Marc"));
 }
 
 /// A sustituida por B y B por C: la nota de A lleva a C, con el motivo del último eslabón.

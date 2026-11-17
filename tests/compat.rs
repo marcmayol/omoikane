@@ -159,6 +159,7 @@ impl Equipo {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
             .env_remove("OMOIKANE_SOURCE");
+        comun::sin_la_sesion(&mut c);
         c
     }
 
