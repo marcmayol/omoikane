@@ -72,13 +72,22 @@ pub fn sin_la_sesion(c: &mut std::process::Command) -> &mut std::process::Comman
 
 impl Drop for Temporal {
     fn drop(&mut self) {
-        // Un proceso que lanzó el test (`omoi serve`, la sincronización de fondo) puede tardar un
-        // momento en soltar sus ficheros: en Windows no se borran hasta entonces.
-        for _ in 0..20 {
-            if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
-                return;
+        // Un proceso que lanzó el test (`omoi serve`, la sincronización de fondo, git) o el antivirus
+        // pueden tardar en soltar sus ficheros: en Windows no se borran hasta entonces. Con la máquina
+        // cargada por otras compilaciones, 5 s no bastaron (quedaron 8 carpetas de `tests/sync.rs` en
+        // una batería de 751 s); esperar más solo cuesta en ese caso.
+        let limite = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let error = loop {
+            match std::fs::remove_dir_all(&self.0) {
+                Ok(()) => return,
+                Err(_) if !self.0.exists() => return,
+                Err(e) if std::time::Instant::now() >= limite => break e,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+        };
+        // Por `io::stderr` y no `eprintln!`: el `Drop` corre dentro del test, con la captura del arnés
+        // activa, y con la macro el aviso solo se vería si el test falla.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "aviso: no se pudo borrar la carpeta temporal {}: {error}", self.0.display());
     }
 }
