@@ -1152,3 +1152,31 @@ fn la_carpeta_de_trabajo_puede_ser_de_red() {
     assert!(salida.contains("network paths"), "{salida}");
     assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
 }
+
+/// 1.10.1: una etiqueta nueva que es variante de una que ya existe aquí (`ideas` con `idea`) se guarda
+/// como la existente; las del sistema no se tocan; `omoi tags` lista las parejas que ya hubiera y
+/// `--merge` une una en otra con historial.
+#[test]
+fn etiquetas_sin_variantes() {
+    let e = Entorno::nuevo("etiquetas");
+    e.ok(&["remember", "-k", "fact", "-t", "Primera", "--tag", "idea", "--tag", "opens", "Una idea."]);
+    let o = e.omoi(&["remember", "-k", "fact", "-t", "Segunda", "--tag", "Ideas", "--tag", "open", "Otra idea distinta del todo."]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("«Ideas» → «idea»"), "{}", String::from_utf8_lossy(&o.stderr));
+    let r = e.json(&["search", "otra idea distinta"]);
+    let tags: Vec<&str> = r[0]["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert!(tags.contains(&"idea") && tags.contains(&"open") && !tags.contains(&"ideas"), "{tags:?}");
+
+    // Una pareja que ya estaba en la base (de antes de la 1.10.1, o importada): la lista y la une.
+    let db = rusqlite::Connection::open(e.dir.join("o.db")).unwrap();
+    db.execute("UPDATE memory SET tags = '[\"tests\"]' WHERE title = 'Primera'", []).unwrap();
+    db.execute("UPDATE memory SET tags = '[\"test\",\"open\"]' WHERE title = 'Segunda'", []).unwrap();
+    drop(db);
+    let p = e.json(&["tags"]);
+    assert_eq!(p.as_array().unwrap().len(), 1, "{p}");
+    assert!(e.ok(&["tags"]).contains("omoi tags --merge"));
+    let m = e.json(&["tags", "--merge", "tests", "test"]);
+    assert_eq!(m["changed"], 1, "{m}");
+    assert_eq!(e.json(&["tags"]).as_array().unwrap().len(), 0);
+    assert!(!e.omoi(&["tags", "--merge", "opens", "open"]).status.success(), "las del sistema no se unen");
+}

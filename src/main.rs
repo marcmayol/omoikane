@@ -386,6 +386,21 @@ enum Orden {
         #[arg(long)]
         dry_run: bool,
     },
+    /// The tags here that are variants of each other (`idea` and `ideas`, `test` and `tests`), with how many memories carry each. With --merge, one replaces the other in every memory here.
+    Tags {
+        /// Replace the tag FROM with TO in every memory here that carries it (each change keeps its history).
+        #[arg(long, num_args = 2, value_names = ["FROM", "TO"])]
+        merge: Option<Vec<String>>,
+        /// In every project (of this space, if the project is in one).
+        #[arg(long)]
+        all: bool,
+        /// In this project instead: its folder, or its name or part of it.
+        #[arg(long, value_name = "PROJECT", conflicts_with = "all")]
+        project: Option<String>,
+        /// In this space instead.
+        #[arg(long, value_name = "SPACE", conflicts_with_all = ["all", "project"])]
+        space: Option<String>,
+    },
     /// Every memory with these tags in this project (its space's and the global ones), newest first, with no search or ranking: for programs that save something under a tag and must always find it again.
     List(Lista),
     /// Open decisions waiting for the user (kind decision, tag `open`): blocking ones (tag `blocking`) first, then the ones for later.
@@ -921,7 +936,7 @@ fn main() -> Result<()> {
     if !matches!(cli.orden, Orden::Upgrade { .. }) {
         omoikane::actualizar::quizas_en_segundo_plano();
     }
-    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Update(..) | Orden::Verify(..) | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
+    let escribe = matches!(cli.orden, Orden::Remember { .. } | Orden::Tags { merge: Some(_), .. } | Orden::Update(..) | Orden::Verify(..) | Orden::Forget { .. } | Orden::Restore { .. } | Orden::Import { .. } | Orden::Tui { .. });
     // Remember, update, forget y restore saben qué memoria tocan y ponen al día la revisión solo con
     // ella (`revisar::al_dia_de`); una importación o lo que se haga en la vista, entera.
     let sin_saber_que = matches!(cli.orden, Orden::Import { .. } | Orden::Tui { .. });
@@ -1468,6 +1483,16 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             } else {
                 omoikane::procedencia::actual(&db, &project)
             };
+            // Una variante de una etiqueta que ya existe donde irá (`ideas` con `idea`), por esa.
+            let tags = if de_oficio {
+                tags
+            } else {
+                let (tags, cambios) = omoikane::etiquetas::cerrar(&db, &omoikane::etiquetas::ambito_de(&db, &project, space_id)?, tags)?;
+                for x in &cambios {
+                    eprintln!("{}", tr!("  tag «{}» → «{}» (it already existed)", "  etiqueta «{}» → «{}» (ya existía)", x.from, x.to));
+                }
+                tags
+            };
             let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, ..Default::default() };
             if let Some(k) = key {
                 return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
@@ -1727,6 +1752,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         }
         Orden::Diary(d) => diario_cli(c, d),
         Orden::Skill { id, suggest, refresh, to, force, dry_run } => skill_cli(c, id, suggest, refresh, to, force, dry_run),
+        Orden::Tags { merge, all, project, space } => etiquetas_cli(c, merge, all, project, space),
         Orden::Decisions(d) => decisiones_cli(c, d),
         Orden::List(l) => {
             let db = abrir(c)?;
@@ -2493,6 +2519,33 @@ fn modelo(c: &Comun, accion: AccionModelo) -> Result<()> {
 
 fn abrir(c: &Comun) -> Result<Connection> {
     db::abrir(&c.db.clone().unwrap_or_else(db::ruta_por_defecto))
+}
+
+fn etiquetas_cli(c: &Comun, merge: Option<Vec<String>>, all: bool, project: Option<String>, space: Option<String>) -> Result<()> {
+    let mut db = abrir(c)?;
+    let ambito = ambito_pedido(c, &db, all, project.as_deref(), space.as_deref())?;
+    if let Some([de, a]) = merge.as_deref() {
+        let n = omoikane::etiquetas::unir(&mut db, &ambito, de, a)?;
+        if c.json {
+            return json(&serde_json::json!({ "from": de, "to": a, "changed": n }));
+        }
+        println!("{}", tr!("«{}» → «{}» in {} memories", "«{}» → «{}» en {} memorias", de, a, n));
+        return Ok(());
+    }
+    let parejas = omoikane::etiquetas::parejas(&db, &ambito)?;
+    if c.json {
+        let v: Vec<_> = parejas.iter().map(|(a, na, b, nb)| serde_json::json!({ "tag": a, "count": na, "variant": b, "variant_count": nb })).collect();
+        return json(&v);
+    }
+    if parejas.is_empty() {
+        println!("{}", tr!("no tags here are variants of each other", "aquí no hay etiquetas que sean variantes unas de otras"));
+        return Ok(());
+    }
+    for (a, na, b, nb) in &parejas {
+        println!("{a} ({na})  ~  {b} ({nb})");
+        println!("    omoi tags --merge {b} {a}");
+    }
+    Ok(())
 }
 
 fn skill_cli(c: &Comun, id: Option<String>, suggest: bool, refresh: bool, to: Option<String>, force: bool, dry_run: bool) -> Result<()> {
@@ -4253,6 +4306,12 @@ fn en_espanol(c: Command) -> Command {
             ("to", "Dónde escribirla: both (por defecto), agents (`.agents/skills`) o claude (`.claude/skills`)."),
             ("force", "Sustituye una skill editada a mano o que no es de Omoikane, y la escribe aunque parezca llevar un secreto."),
             ("dry_run", "Dice lo que escribiría sin tocar nada."),
+        ]),
+        ("tags", "Las etiquetas de aquí que son variantes unas de otras (`idea` e `ideas`, `test` y `tests`), con cuántas memorias lleva cada una. Con --merge, una sustituye a la otra en todas las memorias de aquí.", &[
+            ("merge", "Cambia la etiqueta DE por A en todas las memorias de aquí que la lleven (cada cambio guarda su historial)."),
+            ("all", "En todos los proyectos (de su espacio, si el proyecto está en uno)."),
+            ("project", "En este proyecto: su carpeta, o su nombre o parte de él."),
+            ("space", "En este espacio."),
         ]),
         ("decisions", "Las decisiones abiertas que esperan a la persona (tipo decision, etiqueta `open`): primero las bloqueantes (etiqueta `blocking`), luego las de después.", &[
             ("blocking", "Solo las bloqueantes (sin la respuesta no se puede seguir)."),

@@ -598,6 +598,8 @@ impl Servidor {
                 } else {
                     crate::procedencia::actual(db, &project)
                 };
+                // Una variante de una etiqueta que ya existe donde irá (`ideas` con `idea`), por esa.
+                let (tags, tags_merged) = if de_oficio { (tags, Vec::new()) } else { crate::etiquetas::cerrar(db, &crate::etiquetas::ambito_de(db, &project, space_id)?, tags)? };
                 let nueva = Nueva {
                     project,
                     space_id,
@@ -644,6 +646,9 @@ impl Servidor {
                     m.project.clone()
                 };
                 let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": donde });
+                if !tags_merged.is_empty() {
+                    r["tags_merged"] = serde_json::json!(tags_merged);
+                }
                 if de_oficio && let Some(aqui) = Ambito::de(db, proyecto)?.proyecto() {
                     let propios = crate::oficios::del_proyecto(db, aqui)?;
                     let ajenos: Vec<&String> = oficios.iter().filter(|o| !propios.contains(o)).collect();

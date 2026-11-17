@@ -28,6 +28,7 @@
 //! | sustituida por otra (veredicto vigente) | `status: deprecated` y el enlace a la que la sustituye; al importar, el veredicto vuelve |
 //! | etiquetas `draft` y `deprecated` | `status: draft` / `status: deprecated` |
 //! | `source` | `generated.by` (`<agente>/omoikane`), con `generated.at` = su último cambio |
+//! | la procedencia (commit, rama, sesión, traza) | `sources` (1.10.1, ids `omoikane-*`, rehechas en cada export) y exacta en `omoikane.provenance` |
 //! | el resto (id, clave, fijada, fechas, autor, datos) | `omoikane:` (una clave más, que OKF manda conservar) |
 //!
 //! Lo que trae un concepto de otro y Omoikane no tiene (`sources`, `resource`, `generated`, los
@@ -569,6 +570,17 @@ fn concepto(m: &Memoria, id_concepto: &str, proyecto: &str, datos: Option<&Value
     if !verificado.is_empty() {
         f.insert("verified".into(), Value::Array(verificado));
     }
+    // De qué salió (OKF «sources»): la procedencia, detrás de los `sources` que trajo de otro bundle.
+    let propias = fuentes_de(m);
+    if !propias.is_empty() {
+        let mut v: Vec<Value> = match okf.get("sources") {
+            Some(Value::Array(a)) => a.iter().filter(|s| !es_fuente_nuestra(s)).cloned().collect(),
+            Some(otra) => vec![otra.clone()],
+            None => Vec::new(),
+        };
+        v.extend(propias);
+        f.insert("sources".into(), Value::Array(v));
+    }
     let mut guardadas = Vec::new();
     for (k, v) in &okf {
         if !f.contains_key(k) && k != "omoikane" {
@@ -607,6 +619,9 @@ fn concepto(m: &Memoria, id_concepto: &str, proyecto: &str, datos: Option<&Value
     }
     o.insert("created".into(), json!(m.created_at));
     o.insert("updated".into(), json!(m.updated_at));
+    if let Some(p) = &m.provenance {
+        o.insert(crate::procedencia::CLAVE.into(), json!(p));
+    }
     for (k, v) in [("superseded_by", &rel.sustituida_por), ("supersedes", &rel.sustituye_a), ("contradicts", &rel.contradice)] {
         if !v.is_empty() {
             o.insert(k.into(), json!(v));
@@ -654,6 +669,39 @@ fn concepto(m: &Memoria, id_concepto: &str, proyecto: &str, datos: Option<&Value
 }
 
 /// Una ruta dentro del repositorio: ni absoluta (`/x`, `C:/x`, `\\servidor`) ni con `..`.
+/// El prefijo del `id` de los `sources` que salen de la procedencia de una memoria.
+const FUENTE: &str = "omoikane-";
+
+/// La procedencia de una memoria como `sources` de OKF (1.10.1): el commit (un enlace al commit si el
+/// proyecto está en GitHub, GitLab o Codeberg; si no, `git:<sha>`), la sesión del agente y la traza de
+/// OpenTelemetry. Lo exacto viaja en `omoikane.provenance`; esto es para quien lea el bundle.
+fn fuentes_de(m: &Memoria) -> Vec<Value> {
+    let Some(p) = &m.provenance else { return Vec::new() };
+    let mut v = Vec::new();
+    if !p.commit.is_empty() {
+        let repo = m.project_key.strip_prefix("git:").filter(|r| ["github.com/", "gitlab.com/", "codeberg.org/"].iter().any(|h| r.starts_with(h)));
+        let resource = match repo {
+            Some(r) => format!("https://{r}/commit/{}", p.commit),
+            None => format!("git:{}", p.commit),
+        };
+        let rama = if p.branch.is_empty() { String::new() } else { format!(" ({})", p.branch) };
+        v.push(json!({ "id": format!("{FUENTE}commit"), "resource": resource, "title": format!("commit {}{rama}", p.commit.get(..12).unwrap_or(&p.commit)) }));
+    }
+    if !p.session.is_empty() {
+        let quien = if m.source.is_empty() { String::new() } else { format!(" ({})", m.source) };
+        v.push(json!({ "id": format!("{FUENTE}session"), "resource": format!("session:{}", p.session), "title": format!("agent session{quien}") }));
+    }
+    if !p.trace_id.is_empty() {
+        v.push(json!({ "id": format!("{FUENTE}trace"), "resource": format!("trace:{}/{}", p.trace_id, p.span_id), "title": "OpenTelemetry trace" }));
+    }
+    v
+}
+
+/// Si una entrada de `sources` es de las que salen de la procedencia (se rehacen al exportar).
+fn es_fuente_nuestra(s: &Value) -> bool {
+    s.get("id").and_then(Value::as_str).is_some_and(|i| i.starts_with(FUENTE))
+}
+
 fn es_relativa(p: &str) -> bool {
     let p = p.replace('\\', "/");
     !p.starts_with('/') && !p.starts_with('~') && !p.contains(':') && !p.split('/').any(|x| x == "..")
@@ -792,7 +840,7 @@ pub(crate) mod firma {
 /// Menos la firma misma y lo que no se aplica (el pie de enlaces, `description` de un concepto propio).
 fn texto_firmado(e: &Entrada) -> String {
     let n = &e.nueva;
-    let v = json!({
+    let mut v = json!({
         "concept": e.concepto,
         "id": e.id,
         "key": e.su_clave,
@@ -816,6 +864,10 @@ fn texto_firmado(e: &Entrada) -> String {
         "verified": e.verificada,
         "verified_sha": e.verified_sha,
     });
+    // Solo si la hay (1.10.1): lo firmado por una 1.8.5–1.10.0, sin procedencia, sigue valiendo.
+    if let Some(p) = &n.provenance {
+        v["provenance"] = json!(p);
+    }
     format!("omoikane-okf-3\n{v}")
 }
 
@@ -1304,6 +1356,10 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
                 okf.insert(k, v.clone());
             }
         }
+        // `sources` la escribe Omoikane (la procedencia): lo que alguien añada ahí también se queda.
+        if let Some(v) = f.get("sources") {
+            okf.insert("sources".into(), v.clone());
+        }
     } else {
         for (k, v) in f {
             if !MAPEADAS.contains(&k.as_str()) {
@@ -1319,6 +1375,13 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
         let procesos: Vec<Value> = entradas_verificadas(Some(&v)).into_iter().filter(|x| !es_humano(por_de(x))).collect();
         if !procesos.is_empty() {
             okf.insert("verified".into(), Value::Array(procesos));
+        }
+    }
+    // De `sources`, las que salen de la procedencia no son datos: vuelven en `omoikane.provenance`.
+    if let Some(Value::Array(a)) = okf.get_mut("sources") {
+        a.retain(|s| !es_fuente_nuestra(s));
+        if a.is_empty() {
+            okf.remove("sources");
         }
     }
     let datos = match (om.get("data").cloned(), okf.is_empty()) {
@@ -1355,6 +1418,7 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
             tags,
             pinned: om.get("pinned").and_then(Value::as_bool).unwrap_or(false),
             source: texto("source").unwrap_or_else(|| if nuestra { String::new() } else { "import:okf".into() }),
+            provenance: om.get(crate::procedencia::CLAVE).and_then(|p| serde_json::from_value::<crate::procedencia::Procedencia>(p.clone()).ok()).filter(|p| !p.vacia()),
             ..Default::default()
         },
         datos,

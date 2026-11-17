@@ -981,3 +981,51 @@ fn nombres_con_tildes_en_nfd() {
     }
     assert!(fs.contains("p/fact/café-con-leche.md"), "{fs:?}");
 }
+
+/// 1.10.1: la procedencia (commit, rama, sesión, traza) sale como `sources` de OKF («¿de qué salió
+/// esto?») y vuelve exacta al importar, sin que esas entradas acaben en los datos; las `sources` de
+/// otro bundle se conservan delante de las nuestras.
+#[test]
+fn la_procedencia_va_en_sources() {
+    use omoikane::procedencia::Procedencia;
+    let dir = comun::Temporal::nueva("okf-sources");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let p = Procedencia {
+        session: "2bd891d2-sesion".into(),
+        commit: "9aa084b5c3d1e2f30000".into(),
+        branch: "master".into(),
+        trace_id: "0af7651916cd43dd8448eb211c80319c".into(),
+        span_id: "b7ad6b7169203331".into(),
+    };
+    let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Con procedencia".into(), content: "Salió de una sesión.".into(), source: "mcp:claude-code".into(), provenance: Some(p.clone()), ..Default::default() };
+    memoria::guardar(&mut a, n, None).unwrap();
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    let f = concepto_de(&bundle, "Con procedencia");
+    let t = leer(&f);
+    assert!(t.contains("sources:\n"), "{t}");
+    assert!(t.contains("id: omoikane-commit") && t.contains("resource: git:9aa084b5c3d1e2f30000,") && t.contains("commit 9aa084b5c3d1 (master)"), "{t}");
+    assert!(t.contains("resource: session:2bd891d2-sesion,") && t.contains("agent session (mcp:claude-code)"), "{t}");
+    assert!(t.contains("resource: trace:0af7651916cd43dd8448eb211c80319c/b7ad6b7169203331,"), "{t}");
+
+    // Otra base: la procedencia vuelve tal cual, y nada de eso queda en los datos.
+    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    okf::importar(&mut z, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    let m = todas(&z).remove(0);
+    assert_eq!(m.provenance.as_ref(), Some(&p), "{m:?}");
+    assert_eq!(memoria::datos_de(&z, &[m.id.as_str()]).unwrap().get(&m.id), None, "sin data.okf.sources");
+
+    // Un `sources` de otro bundle se guarda y sale delante de los nuestros al volver a exportar.
+    std::fs::write(&f, t.replacen("sources:\n", "sources:\n  - { id: wiki, resource: \"https://wiki.example/pagina\" }\n", 1)).unwrap();
+    let mut y = db::abrir(&dir.join("y.db")).unwrap();
+    okf::importar(&mut y, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    let m = todas(&y).remove(0);
+    assert_eq!(m.provenance.as_ref(), Some(&p));
+    let d = memoria::datos_de(&y, &[m.id.as_str()]).unwrap().remove(&m.id).unwrap();
+    assert_eq!(d["okf"]["sources"].as_array().map(Vec::len), Some(1), "{d}");
+    let otra = dir.join("otra");
+    okf::exportar(&y, &otra, Que::Personal).unwrap();
+    let t2 = leer(&concepto_de(&otra, "Con procedencia"));
+    let (w, c) = (t2.find("https://wiki.example/pagina").unwrap(), t2.find("omoikane-commit").unwrap());
+    assert!(w < c && t2.matches("omoikane-commit").count() == 1, "{t2}");
+}

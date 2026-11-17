@@ -4,6 +4,22 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.10.1 (2026-11-17)
+
+### Where a memory came from, in OKF
+- `omoi export --okf` now writes each memory's provenance as OKF `sources`, the field OKF v0.2 uses to answer "what was this made from?": the commit it was written at (a link to the commit when the project is on GitHub, GitLab or Codeberg, `git:<sha>` otherwise) with its branch, the agent's session and the OpenTelemetry trace. Any OKF reader can now see it; before, it stayed inside Omoikane.
+- The exact provenance also travels in the `omoikane:` key, so `omoi import --okf` brings it back to the memory. The `sources` entries made from it are rebuilt on every export and don't end up in the memory's data. Entries someone else put in `sources` (another bundle's, or one added by hand to a concept of yours) are kept and come out first.
+
+### One vocabulary of tags
+- Agents invent variants of tags that already exist: `ideas` next to `idea`, `tests` next to `test`. Each variant splits `list --tag` and the tag filters in two. A real database had 378 different tags for about 190 memories. Now, when `remember` (MCP tool or CLI) gets a tag that doesn't exist yet where the memory goes but is a variant of one that does (the same letters ignoring case, accents, `-`, `_` and a plural `-s` or `-es`), it saves the existing tag and says so: `tags_merged` in the tool's answer, a line on stderr in the CLI.
+- Omoikane's own tags (`open`, `blocking`, `status`, `draft`, `deprecated`, `verified`, the ones with `:`) are never changed and are never a target. Trade memories, imports and sync keep their tags exactly as they come.
+- `omoi tags` lists the pairs of variants already in the database (`--all`, `--project`, `--space`, `--json`), each with the command to fix it. `omoi tags --merge ideas idea` replaces one tag with the other in every memory in scope, each change kept in the memory's history.
+- The idea comes from a comment on Tony Seale's Vault-LD: in markdown memories the format isn't the hard part, keeping the vocabulary closed is.
+
+### Compatibility
+- The database schema stays at 10, and sync lines and `omoi export` don't change.
+- An OKF bundle from 1.10.1 imports in 1.8.5–1.10.0 as before, without the provenance: those versions ignore it. Concepts exported by 1.8.5–1.10.0 keep their signature in 1.10.1, because the provenance is only signed when it is present.
+
 ## 1.10.0 (2026-11-16)
 
 ### From memory to repository skill

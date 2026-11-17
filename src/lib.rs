@@ -13,6 +13,7 @@ pub mod documentos;
 pub mod embeber;
 pub mod entorno;
 pub mod enlaces;
+pub mod etiquetas;
 pub mod gemma;
 pub mod http;
 pub mod idioma;
