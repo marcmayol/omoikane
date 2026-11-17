@@ -147,7 +147,7 @@ fn sesiones(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>
 
 /// Si dos rutas son el mismo fichero: iguales (sin mirar mayúsculas ni barras), o una acaba en la otra
 /// por una carpeta (`D:/repo/src/a.rs` y `src/a.rs`: las memorias guardan la ruta como la dio el agente).
-fn misma(a: &str, b: &str) -> bool {
+pub(crate) fn misma(a: &str, b: &str) -> bool {
     let (a, b) = (a.to_lowercase().replace('\\', "/"), b.to_lowercase().replace('\\', "/"));
     let (largo, corto) = if a.len() >= b.len() { (&a, &b) } else { (&b, &a) };
     largo == corto || (!corto.is_empty() && largo.ends_with(corto.as_str()) && largo.as_bytes()[largo.len() - corto.len() - 1] == b'/')

@@ -311,3 +311,63 @@ fn el_hook_de_claude_code() {
     let (ok, out, _) = hook(&dir, &[], "esto no es json");
     assert!(ok && out.is_empty());
 }
+
+/// 1.11: al abrir un fichero (`PreToolUse` de Read, Edit, Write) llegan las memorias que lo llevan en
+/// sus rutas aunque el mensaje no lo nombre, la trampa primero; una vez por sesión, nunca otro fichero
+/// con el mismo final de nombre a medias, y nada con una herramienta que no abre ficheros.
+#[test]
+fn al_abrir_un_fichero_llegan_sus_memorias() {
+    let (_dir, mut db) = base("abrir");
+    let guardar = |db: &mut Connection, kind: Tipo, titulo: &str, rutas: &[&str]| {
+        let n = Nueva { project: "/p".into(), kind: Some(kind), title: titulo.into(), content: format!("{titulo}."), paths: rutas.iter().map(|r| r.to_string()).collect(), ..Default::default() };
+        memoria::guardar(db, n, None).unwrap().id
+    };
+    let hecho = guardar(&mut db, Tipo::Fact, "Cómo se firma el bundle", &["src/okf.rs"]);
+    let trampa = guardar(&mut db, Tipo::Gotcha, "El YAML entrecomilla distinto", &["/p/src/okf.rs", "tests/okf.rs"]);
+    let otra = guardar(&mut db, Tipo::Gotcha, "Otro fichero que acaba igual", &["src/xokf.rs"]);
+    let abrir = |sesion: &str, tool: &str, f: &str| Entrada { session_id: sesion.into(), tool_name: tool.into(), tool_input: serde_json::json!({ "file_path": f }), ..Default::default() };
+
+    let t = recall::al_abrir(&mut db, "/p", &abrir("s1", "Read", "/p/src/okf.rs")).unwrap().expect("sus memorias");
+    assert!(t.contains("Memories about `src/okf.rs`"), "{t}");
+    let (i_trampa, i_hecho) = (t.find(&trampa[..12]).expect("la trampa"), t.find(&hecho[..12]).expect("el hecho"));
+    assert!(i_trampa < i_hecho, "la trampa primero: {t}");
+    assert!(!t.contains(&otra[..12]), "`xokf.rs` no es `okf.rs`: {t}");
+
+    // Otra vez en la misma sesión: ya las tiene. En otra sesión, vuelven.
+    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s1", "Edit", "src/okf.rs")).unwrap(), None);
+    assert!(recall::al_abrir(&mut db, "/p", &abrir("s2", "Edit", "src/okf.rs")).unwrap().is_some());
+    // Lo que no abre ficheros, o un fichero sin memorias: nada.
+    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s3", "Bash", "src/okf.rs")).unwrap(), None);
+    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s3", "Read", "README.md")).unwrap(), None);
+    // Y lo que ya llegó con un mensaje no se repite al abrir.
+    let t = recall::al_abrir(&mut db, "/p", &abrir("s4", "Read", "tests/okf.rs")).unwrap().unwrap();
+    assert!(t.contains(&trampa[..12]));
+    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s4", "Read", "src/okf.rs")).unwrap().map(|t| t.contains(&trampa[..12])), Some(false));
+}
+
+/// Por la CLI, como lo llama el mod: `omoi recall --file-open` con el JSON del hook.
+#[test]
+fn recall_file_open_por_la_cli() {
+    let (dir, mut db) = base("abrir-cli");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let raiz = omoikane::proyecto::de(&repo).unwrap();
+    let n = Nueva { project: raiz.clone(), kind: Some(Tipo::Gotcha), title: "Cuidado con el lector".into(), content: "Lee en NFC.".into(), paths: vec!["src/lector.rs".into()], ..Default::default() };
+    memoria::guardar(&mut db, n, None).unwrap();
+    drop(db);
+    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi"))
+        .args(["--dir", raiz.as_str(), "recall", "--file-open"])
+        .env("OMOIKANE_DB", dir.join("o.db"))
+        .env("OMOIKANE_MODELS", dir.join("models"))
+        .env("OMOIKANE_AUTO_UPDATE", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let e = serde_json::json!({ "session_id": "x", "tool_name": "Write", "tool_input": { "file_path": repo.join("src").join("lector.rs") } });
+    hijo.stdin.take().unwrap().write_all(e.to_string().as_bytes()).unwrap();
+    let o = hijo.wait_with_output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&o.stdout)));
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("Cuidado con el lector"), "{v}");
+}

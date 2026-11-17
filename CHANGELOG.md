@@ -4,6 +4,19 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.11.0 (2026-11-17)
+
+### Memories arrive when the agent opens their file
+- Until now a memory tied to a file (a gotcha with `paths: src/okf.rs`) only reached the agent when your prompt named that file or matched it by words. If the agent opened the file on its own, nothing warned it, and it could repeat the mistake the memory was about.
+- Now, in Claude Code, the first time in a session that the agent reads, edits or writes a file (Read, Edit, Write, MultiEdit, NotebookEdit), it gets the memories tied to that file by their paths, along with the call itself. Gotchas and pinned ones go first, at most 3, plus that file's line from the session diary (how often it changes and what changes with it). A memory that already reached the session doesn't come twice, and a file opened again costs nothing.
+- It uses no model and reads only the memories' paths. A file with no memories costs about 70 ms the first time; most files have none, and then nothing is injected. A path counts if it is the file itself, relative or absolute, or a full trailing part of it: `src/xokf.rs` is not `okf.rs`.
+- `omoi recall --file-open` does it for any agent with a pre-tool hook. It reads the hook's JSON (`session_id`, `tool_name`, `tool_input.file_path`) and answers as a `PreToolUse` hook (`hookSpecificOutput.additionalContext`). The Claude Code plugin calls it from its mod.
+- The idea comes from CortexDB, whose plugin injects memories on every file read. The other three ideas from that comparison stay out: two needed a model on every message, about 1 s against the recall's budget of tens of milliseconds, and private blocks already existed since 0.19.0.
+
+### Compatibility
+- The database schema stays at 10, and sync lines and `omoi export` don't change. Memories injected on opening a file go to the same per-session log as the rest of the recall (`recall_log`).
+- The plugin's mod needs this `omoi`: an older binary doesn't know `--file-open`, prints its usage error to stderr and injects nothing, so the tool call goes on as usual.
+
 ## 1.10.1 (2026-11-17)
 
 ### Where a memory came from, in OKF

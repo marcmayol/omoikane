@@ -599,6 +599,10 @@ enum Orden {
         /// session. Prints nothing.
         #[arg(long, conflicts_with = "session_start")]
         session_end: bool,
+        /// Before a tool opens a file (the `PreToolUse` hook of Read, Edit and Write): the memories tied to
+        /// that file by their paths, and its history in the session diary, once per session.
+        #[arg(long, conflicts_with_all = ["session_start", "session_end"])]
+        file_open: bool,
         /// The agent's hook format: claude (also Codex and Qwen), gemini, cursor, copilot, antigravity or plain.
         #[arg(long, value_enum, default_value = "claude")]
         format: recall::Formato,
@@ -1387,9 +1391,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
         Orden::Upgrade { check, on, off, background, after } => upgrade(check, on, off, background, after),
         Orden::Sync { accion, background, pull } => sync(c, accion, background, pull),
         Orden::Recall { session_end: true, .. } => recall_al_cerrar(c),
-        Orden::Recall { session_start, format, .. } => {
+        Orden::Recall { session_start, file_open, format, .. } => {
             // Un hook no debe molestar nunca: si algo falla, se dice por stderr y no se inyecta nada.
-            if let Err(e) = recall(c, session_start, format) {
+            if let Err(e) = recall(c, session_start, file_open, format) {
                 eprintln!("omoikane: {e:#}");
             }
             Ok(())
@@ -2241,7 +2245,7 @@ fn recall_al_cerrar(c: &Comun) -> Result<()> {
     Ok(())
 }
 
-fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
+fn recall(c: &Comun, al_empezar: bool, al_abrir: bool, formato: recall::Formato) -> Result<()> {
     let mut entrada = String::new();
     std::io::stdin().read_to_string(&mut entrada)?;
     let mut e: recall::Entrada = serde_json::from_str(&entrada).unwrap_or_default();
@@ -2267,7 +2271,9 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
         return Ok(()); // sin memorias todavía: nada que inyectar
     }
     let mut db = db::abrir(&ruta)?;
-    let (evento, texto) = if al_empezar {
+    let (evento, texto) = if al_abrir {
+        ("PreToolUse", recall::al_abrir(&mut db, &project, &e)?)
+    } else if al_empezar {
         // Una vez al día: la copia de la base y la purga de la papelera.
         omoikane::copia::diaria(&db, &ruta);
         let general = matches!(omoikane::sync::leer_config(&ruta), Ok(Some(_)));
@@ -2301,7 +2307,9 @@ fn recall(c: &Comun, al_empezar: bool, formato: recall::Formato) -> Result<()> {
     }
     // Lo que otros equipos subieron a mitad de sesión: cada 2 minutos como mucho, aparte y sin
     // esperarlo (sin sincronización, nada).
-    if !al_empezar {
+    if al_abrir {
+        // Nada más: abrir ficheros no debe costar una sincronización.
+    } else if !al_empezar {
         omoikane::sync::traer_si_toca(&db, &ruta);
     } else {
         // Y el índice de la documentación del proyecto, también aparte.
@@ -4388,6 +4396,7 @@ fn en_espanol(c: Command) -> Command {
                 "session_end",
                 "Al cerrar o compactar una sesión: la apunta en el diario de sesiones (`omoi diary`) y aparta lo que quizá valga la pena guardar de la conversación (`transcript_path`) para el agente de la sesión siguiente. No escribe nada en la salida.",
             ),
+            ("file_open", "Antes de que una herramienta abra un fichero (el hook `PreToolUse` de Read, Edit y Write): las memorias ligadas a ese fichero por sus rutas y su historial en el diario de sesiones, una vez por sesión."),
             ("format", "El formato del hook del agente: claude (también Codex y Qwen), gemini, cursor, copilot, antigravity o plain."),
         ]),
         ("doctor", "Comprueba SQLite, FTS5 y sqlite-vec, y dice dónde está la base.", &[]),

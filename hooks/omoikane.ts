@@ -20,6 +20,11 @@ type Listo = { omoi: string; instrucciones: string }
 
 let listo: Promise<Listo | undefined> | undefined
 
+// The tools that open a file, and the files already looked up in this session (`classic.PreToolUse`).
+const ABREN = ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']
+const abiertos = new Set<string>()
+let sesionVista: string | undefined
+
 export const register: Register = on => {
   // Subagents named "Project: task" (it was the agent-names plugin): see nombres.ts.
   nombres(on)
@@ -90,6 +95,30 @@ export const register: Register = on => {
     const l = await ready($)
     if (l === undefined) return r
     const recuerdo = await recall($, l.omoi, ['recall'], JSON.stringify(e))
+    if (recuerdo === undefined) return r
+    return { ...r, additionalContext: [...(r.additionalContext ?? []), recuerdo] }
+  })
+
+  // Before Read, Edit or Write opens a file: the memories tied to that file by their paths, even if the
+  // prompt never named it (`omoi recall --file-open`). Once per file and session, asked here first so
+  // reopening a file costs nothing; `omoi` also skips memories this session already got.
+  on('classic.PreToolUse', async ($, e, next) => {
+    const r = await next(e)
+    if (r.deny !== undefined || !ABREN.includes(e.tool)) return r
+    const args = e as unknown as Record<string, unknown>
+    const fichero = [args.file_path, args.notebook_path].find((f): f is string => typeof f === 'string' && f !== '')
+    if (fichero === undefined) return r
+    const sesion: string = await $.session.id()
+    if (sesion !== sesionVista) {
+      sesionVista = sesion
+      abiertos.clear()
+    }
+    if (abiertos.has(fichero)) return r
+    abiertos.add(fichero)
+    const l = await ready($)
+    if (l === undefined) return r
+    const entrada = JSON.stringify({ session_id: sesion, tool_name: e.tool, tool_input: { file_path: fichero } })
+    const recuerdo = await recall($, l.omoi, ['recall', '--file-open'], entrada)
     if (recuerdo === undefined) return r
     return { ...r, additionalContext: [...(r.additionalContext ?? []), recuerdo] }
   })

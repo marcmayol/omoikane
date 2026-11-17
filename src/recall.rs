@@ -8,6 +8,10 @@
 //!   palabras tienen que pesar (por IDF) al menos `COBERTURA_MIN` de lo que pesa el mensaje.
 //! - Además, las memorias cuyas rutas se mencionan en el mensaje (los `gotcha` de un fichero).
 //!
+//! - Al abrir un fichero (1.11, `omoi recall --file-open`, el hook `PreToolUse` de Read, Edit y
+//!   Write): las memorias ligadas a ese fichero por sus rutas, aunque el mensaje no lo nombre, más su
+//!   historial del diario (`riesgo`). Sin modelo y solo con `memory_path`.
+//!
 //! Cada memoria se inyecta una vez por sesión (tabla `recall_log`), salvo tras compactar.
 
 use crate::buscar::{self, Opciones};
@@ -143,6 +147,86 @@ pub struct Entrada {
     /// La conversación (Claude Code y la mayoría: un `.jsonl`), para sacar candidatas al cerrar.
     #[serde(default, alias = "transcriptPath")]
     pub transcript_path: String,
+    /// La herramienta y sus argumentos (`PreToolUse`): de ahí sale el fichero que se va a abrir.
+    #[serde(default, alias = "toolName")]
+    pub tool_name: String,
+    #[serde(default, alias = "toolInput")]
+    pub tool_input: serde_json::Value,
+}
+
+/// Las herramientas que abren un fichero: con ellas `PreToolUse` dice qué fichero (`fichero_de`).
+pub const ABREN_FICHERO: [&str; 5] = ["Read", "Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// Cuántas memorias de un fichero se inyectan al abrirlo.
+pub const MAXIMO_AL_ABRIR: usize = 3;
+
+/// El fichero que va a abrir la herramienta de un `PreToolUse` (`file_path`, `notebook_path` o
+/// `path`), si es una de [`ABREN_FICHERO`] (o no dice cuál).
+pub fn fichero_de(e: &Entrada) -> Option<String> {
+    if !e.tool_name.is_empty() && !ABREN_FICHERO.contains(&e.tool_name.as_str()) {
+        return None;
+    }
+    ["file_path", "notebook_path", "path"].iter().find_map(|k| e.tool_input.get(k)?.as_str().map(str::trim).filter(|f| !f.is_empty()).map(str::to_string))
+}
+
+/// Al abrir un fichero (`PreToolUse` de Read, Edit o Write): las memorias que lo llevan en sus rutas
+/// y no han llegado ya en esta sesión (las trampas y las fijadas primero, como mucho
+/// [`MAXIMO_AL_ABRIR`]), y la línea de su historial en el diario si no se dijo ya. Nada si no hay
+/// ninguna: lo normal. Antes de juntar `memory_path` con `memory` se mira si alguna ruta coincide,
+/// así que abrir un fichero sin memorias cuesta una lectura de las rutas distintas.
+pub fn al_abrir(db: &mut Connection, project: &str, e: &Entrada) -> Result<Option<String>> {
+    let Some(f) = fichero_de(e) else { return Ok(None) };
+    let rel = crate::diario::relativo(&f, project);
+    let coincide = |ruta: &str| crate::riesgo::misma(&crate::diario::relativo(ruta, project), &rel);
+    let mut todas = db.prepare("SELECT DISTINCT path FROM memory_path")?;
+    let alguna = todas.query_map([], |f| f.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|r| coincide(r));
+    drop(todas);
+    let mut elegidas: Vec<Memoria> = Vec::new();
+    if alguna {
+        let vistas = ya_inyectadas(db, &e.session_id)?;
+        let mut q = db.prepare(&format!("SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id WHERE {}", Ambito::de(db, project)?.sql()))?;
+        let rutas: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        drop(q);
+        let mut ids: Vec<String> = Vec::new();
+        for (id, ruta) in rutas {
+            if coincide(&ruta) && !vistas.contains(&id) && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        for id in &ids {
+            elegidas.push(memoria::obtener(db, id)?);
+        }
+        let peso = |m: &Memoria| (m.kind != memoria::Tipo::Gotcha, !m.pinned);
+        elegidas.sort_by(|a, b| peso(a).cmp(&peso(b)).then(b.updated_at.cmp(&a.updated_at)));
+        elegidas.truncate(MAXIMO_AL_ABRIR);
+    }
+    let historia = crate::riesgo::al_preguntar(db, project, &e.session_id, &rel).unwrap_or_else(|x| {
+        eprintln!("omoikane: history: {x:#}");
+        None
+    });
+    if elegidas.is_empty() && historia.is_none() {
+        return Ok(None);
+    }
+    let actual = proyecto_actual(db, project);
+    let propio = autor_propio(db, actual);
+    let mut s = String::from("<omoikane>\n");
+    if !elegidas.is_empty() {
+        let notas = crate::revisar::notas(db, &Ambito::de(db, project)?, &elegidas.iter().collect::<Vec<_>>())?;
+        s.push_str(&format!("Memories about `{rel}`, the file you are opening (`get` an id for the whole memory):\n"));
+        for m in &elegidas {
+            s.push_str(&linea(m, actual, propio.as_deref()));
+            s.push_str(&nota(&notas, m));
+            s.push('\n');
+        }
+    }
+    if let Some(h) = &historia {
+        s.push_str(h);
+        s.push('\n');
+    }
+    s.push_str("</omoikane>");
+    let ids: Vec<String> = elegidas.iter().map(|m| m.id.clone()).collect();
+    apuntar(db, &e.session_id, &ids, actual.max(0))?;
+    Ok(Some(s))
 }
 
 /// En qué formato responde el hook.

@@ -38,6 +38,7 @@ Decidido que no, con el motivo:
 
 | Versión | Fecha | Qué trajo |
 |---|---|---|
+| 1.11.0 | 2026-11-17 | Las memorias de un fichero llegan cuando el agente lo abre (`omoi recall --file-open`), no solo cuando el mensaje lo nombra |
 | 1.10.1 | 2026-11-17 | La procedencia como `sources` de OKF, las etiquetas en un solo vocabulario (`omoi tags`) |
 | 1.10.0 | 2026-11-16 | Las memorias se convierten en skills del repositorio (`omoi skill`) que saben cuándo se quedan atrás, memorias aplicadas en el diario de sesiones |
 | 1.9.0 | 2026-11-10 | Papelera y espacios en la interfaz de terminal, lo editado en Obsidian vuelve, carpetas con el mismo nombre en dos clientes, copias cifradas con la clave de cada cliente, la traza en la procedencia, revisión 3,6 veces más rápida con 50.000 memorias, guardia de rendimiento en la CI |

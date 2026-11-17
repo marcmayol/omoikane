@@ -38,6 +38,7 @@ Decided against, with the reason:
 
 | Version | Date | What it brought |
 |---|---|---|
+| 1.11.0 | 2026-11-17 | Memories tied to a file arrive when the agent opens that file (`omoi recall --file-open`), not only when the prompt names it |
 | 1.10.1 | 2026-11-17 | Provenance as OKF `sources`, tags kept to one vocabulary (`omoi tags`) |
 | 1.10.0 | 2026-11-16 | Memories become repository skills (`omoi skill`) that know when they fell behind, applied memories in the session diary |
 | 1.9.0 | 2026-11-10 | Trash and spaces in the terminal viewer, Obsidian edits come back, same-name folders at two clients, encrypted copies with each client's key, the trace in the provenance, review 3.6 times faster at 50,000 memories, a speed guard in CI |
