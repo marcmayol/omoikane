@@ -16,6 +16,9 @@ How it works is in [docs/](docs/).
 - `omoi tags` lists the pairs of variants already in the database (`--all`, `--project`, `--space`, `--json`), each with the command to fix it. `omoi tags --merge ideas idea` replaces one tag with the other in every memory in scope, each change kept in the memory's history.
 - The idea comes from a comment on Tony Seale's Vault-LD: in markdown memories the format isn't the hard part, keeping the vocabulary closed is.
 
+### Fixed
+- In Claude Code, the `decisions` tool always failed with "no hook answered this call" (1.10.0): the plugin's mod listed it but had no handler for it. A test now checks that every tool of `omoi tool` has one.
+
 ### Compatibility
 - The database schema stays at 10, and sync lines and `omoi export` don't change.
 - An OKF bundle from 1.10.1 imports in 1.8.5–1.10.0 as before, without the provenance: those versions ignore it. Concepts exported by 1.8.5–1.10.0 keep their signature in 1.10.1, because the provenance is only signed when it is present.
