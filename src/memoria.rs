@@ -1866,6 +1866,45 @@ pub const RESUELTA: &str = "resolved";
 /// Una ya resuelta no se resuelve otra vez (error). En una decisión de oficio la respuesta pasa por
 /// `oficios::fugas` como cualquier texto nuevo (salvo lo que deje pasar `permitir_fugas`): si nombra
 /// algo de un proyecto o de un cliente no se guarda y vuelven las fugas (`Ok(Err(…))`).
+/// Parte una memoria demasiado larga en varias (el botón «Partir» de Revisar, 1.12.1): la primera parte
+/// se queda en la memoria de siempre (su id, historial, enlaces y fijación), y cada una de las demás es
+/// una memoria nueva del mismo proyecto o espacio, tipo, rutas y etiquetas (menos `status`: el estado
+/// del proyecto sigue siendo uno). Las nuevas se guardan antes de cambiar la original, así que si algo
+/// falla a medias no se pierde texto. Devuelve la original cambiada y las nuevas, en orden.
+pub fn partir(db: &mut Connection, id: &str, partes: &[(String, String)], motivo: &str) -> Result<Vec<Memoria>> {
+    ensure!(partes.len() >= 2, tr!("splitting needs at least two parts", "para partirla hacen falta al menos dos partes"));
+    ensure!(
+        partes.iter().all(|(t, c)| !t.trim().is_empty() && !c.trim().is_empty()),
+        tr!("every part needs a title and some text", "cada parte necesita un título y algo de texto")
+    );
+    let m = obtener(db, id)?;
+    let space_id: Option<i64> = if m.project_id == 0 && !m.space.is_empty() {
+        Some(db.query_row("SELECT id FROM space WHERE key = ?1", [&m.space], |f| f.get(0))?)
+    } else {
+        None
+    };
+    let tags: Vec<String> = m.tags.iter().filter(|t| *t != ESTADO).cloned().collect();
+    let mut nuevas = Vec::new();
+    for (titulo, contenido) in &partes[1..] {
+        let n = Nueva {
+            project_id: (m.project_id != 0).then_some(m.project_id),
+            space_id,
+            kind: Some(m.kind),
+            title: titulo.trim().to_string(),
+            content: contenido.trim().to_string(),
+            paths: m.paths.clone(),
+            tags: tags.clone(),
+            source: "web".into(),
+            ..Default::default()
+        };
+        nuevas.push(guardar(db, n, None)?);
+    }
+    let (titulo, contenido) = &partes[0];
+    let c = Cambios { title: Some(titulo.trim().to_string()), content: Some(contenido.trim().to_string()), reason: Some(motivo.to_string()), ..Default::default() };
+    let primera = actualizar(db, &m.id, c, None)?;
+    Ok(std::iter::once(primera).chain(nuevas).collect())
+}
+
 pub fn resolver_decision(
     db: &mut Connection,
     id: &str,
