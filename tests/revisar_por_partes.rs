@@ -119,7 +119,8 @@ fn huella_al_dia(db: &Connection) -> bool {
             |f| f.get(0),
         )
         .unwrap();
-    guardada == real
+    // 1.12.0: la huella lleva detrás la versión del binario, para recalcular al actualizar.
+    guardada == format!("{real}|{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn parciales(db: &Connection) -> i64 {

@@ -54,6 +54,152 @@ const TIPOS: [&str; 13] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, DU
 
 /// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
 pub const DIAS_ESTADO: f64 = 7.0;
+/// Días sin tocar a partir de los que un estado viejo se va solo a la papelera, si su proyecto ya tiene
+/// otro más nuevo (`limpiar`): para entonces ya avisó dos semanas y no lo lee nadie, porque al empezar
+/// sale el último.
+pub const DIAS_ESTADO_A_PAPELERA: f64 = 21.0;
+/// Un estado global no es de ningún proyecto: lo que cambie en las demás globales no lo deja atrás. Avisa
+/// solo cuando lleva este tiempo sin tocar.
+pub const DIAS_ESTADO_GLOBAL: f64 = 30.0;
+
+/// Si un estado cuenta un trabajo ya cerrado («hecho», «publicada», «descartado») y no deja nada
+/// pendiente: no se queda viejo, porque lo que dice no va a cambiar. Mira el título y el principio.
+pub fn estado_cerrado(m: &Memoria) -> bool {
+    let principio: String = m.content.chars().take(240).collect();
+    let t = normal(&format!("{}\n{}", m.title, frases(&principio).first().copied().unwrap_or("")));
+    (contiene_palabra(&t, HECHO) || contiene_palabra(&t, CERRADO)) && !contiene_palabra(&t, PENDIENTE)
+}
+
+/// Lo que, además de [`HECHO`], dice que un trabajo se cerró.
+const CERRADO: &[&str] = &["descartado", "descartada", "cerrado", "cerrada", "completado", "completada", "finished", "closed", "discarded"];
+
+/// `limpiar` sin cortar a quien llama (un error solo se cuenta en stderr) y, si cambió algo, con los
+/// avisos al día. Devuelve si cambió algo, para programar la sincronización.
+pub fn limpiar_callado(db: &mut Connection) -> bool {
+    match limpiar(db) {
+        Ok(l) => {
+            let algo = !(l.estados_a_papelera.is_empty() && l.decisiones_cerradas.is_empty() && l.bloqueantes_rebajadas.is_empty());
+            if algo && let Err(e) = al_dia(db) {
+                eprintln!("omoikane: review: {e:#}");
+            }
+            algo
+        }
+        Err(e) => {
+            eprintln!("omoikane: cleanup: {e:#}");
+            false
+        }
+    }
+}
+
+/// Lo que `limpiar` cambió solo.
+#[derive(Debug, Default, Serialize)]
+pub struct Limpieza {
+    /// Estados viejos que se fueron a la papelera (su proyecto ya tiene uno más nuevo).
+    pub estados_a_papelera: Vec<String>,
+    /// Decisiones abiertas que se cerraron: otra posterior de la misma tarea ya está resuelta.
+    pub decisiones_cerradas: Vec<String>,
+    /// Bloqueantes que pasan a «para después»: en su proyecto ya se resolvió una tarea posterior.
+    pub bloqueantes_rebajadas: Vec<String>,
+}
+
+/// Si una memoria está escrita en español (lo que `limpiar` le añade va en su idioma, no en el de quien
+/// la limpia): más palabras sueltas de español que de inglés, o alguna letra que solo tiene el español.
+fn en_espanol(t: &str) -> bool {
+    let t = format!(" {} ", t.to_lowercase());
+    let cuenta = |ws: &[&str]| ws.iter().map(|w| t.matches(&format!(" {w} ")).count()).sum::<usize>();
+    let es = cuenta(&["el", "la", "los", "las", "de", "que", "en", "y", "con", "para", "por", "una", "no", "se"]);
+    let en = cuenta(&["the", "of", "and", "to", "in", "is", "for", "with", "that", "it", "not", "on"]);
+    es > en || (es == en && t.contains(['ñ', 'á', 'é', 'í', 'ó', 'ú']))
+}
+
+/// Si la dejó el agente de tareas Kumi: por la etiqueta o por el título («Kumi: …»), que algunas de sus
+/// aprobaciones llevan sin la etiqueta.
+fn de_kumi(m: &Memoria) -> bool {
+    m.tags.iter().any(|t| t == "kumi") || m.title.starts_with("Kumi:")
+}
+
+/// Las etiquetas que atan una memoria a una tarea de un agente (`tarea:…`, `trabajo:…`).
+fn de_tarea(m: &Memoria) -> Vec<&str> {
+    m.tags.iter().map(String::as_str).filter(|t| t.starts_with("tarea:") || t.starts_with("trabajo:") || t.starts_with("task:")).collect()
+}
+
+/// Lo que se arregla solo, sin preguntar a nadie, y siempre con vuelta atrás (la papelera o el
+/// historial). Corre al empezar la sesión, al abrir la vista web y en `omoi review` / `omoi decisions`:
+///
+/// - Un estado vivo que lleva [`DIAS_ESTADO_A_PAPELERA`] sin tocar, cuando su proyecto ya tiene uno más
+///   nuevo, se va a la papelera: avisaba desde hacía dos semanas y al empezar solo se lee el último.
+/// - Una decisión abierta de una tarea (`tarea:X`) se cierra cuando otra memoria posterior de esa tarea
+///   ya está resuelta: la respuesta dice cuál.
+/// - Una bloqueante de un agente (Kumi: `kumi` + `blocking`) pasa a «para después» cuando en su proyecto
+///   ya se resolvió una decisión de una tarea posterior: el trabajo siguió sin ella.
+pub fn limpiar(db: &mut Connection) -> Result<Limpieza> {
+    use crate::memoria::{self, ABIERTA, BLOQUEANTE, ESTADO, RESUELTA};
+    let mut r = Limpieza::default();
+    let ahora = chrono_ahora(db)?;
+
+    // Estados: de cada proyecto, el más nuevo se queda; los demás, viejos y vivos, a la papelera.
+    let estados = memoria::con_etiqueta(db, &Ambito::Todos, ESTADO)?;
+    let mut vistos: HashSet<(i64, String)> = HashSet::new();
+    for m in &estados {
+        if m.project_id == 0 {
+            continue;
+        }
+        if !vistos.insert((m.project_id, m.space.clone())) && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO_A_PAPELERA && !estado_cerrado(m) && !m.pinned {
+            memoria::olvidar(db, &m.id)?;
+            r.estados_a_papelera.push(m.id.clone());
+        }
+    }
+
+    // Decisiones abiertas.
+    let abiertas: Vec<Memoria> = memoria::con_etiqueta(db, &Ambito::Todos, ABIERTA)?.into_iter().filter(|m| m.kind == memoria::Tipo::Decision).collect();
+    if abiertas.is_empty() {
+        return Ok(r);
+    }
+    let resueltas = memoria::con_etiqueta(db, &Ambito::Todos, RESUELTA)?;
+    for d in &abiertas {
+        let tareas = de_tarea(d);
+        let prueba = resueltas.iter().find(|x| x.id != d.id && x.updated_at > d.updated_at && de_tarea(x).iter().any(|t| tareas.contains(t)));
+        if let Some(x) = prueba {
+            let titulo: String = x.title.chars().take(100).collect();
+            let corto = &x.id[..12.min(x.id.len())];
+            let respuesta = if en_espanol(&d.content) {
+                format!("Cerrada sola: otra memoria posterior de la misma tarea ya está resuelta ({corto} «{titulo}»).")
+            } else {
+                format!("Closed by itself: a later memory of the same task is already resolved ({corto} «{titulo}»).")
+            };
+            if let Ok(Ok(_)) = memoria::resolver_decision(db, &d.id, &respuesta, Some("closed by Omoikane: same task resolved later".into()), false) {
+                r.decisiones_cerradas.push(d.id.clone());
+            }
+            continue;
+        }
+        let de_agente = de_kumi(d);
+        if d.bloqueante() && de_agente && d.project_id != 0 {
+            let despues = resueltas.iter().find(|x| {
+                x.project_id == d.project_id && x.kind == memoria::Tipo::Decision && x.created_at > d.created_at && de_kumi(x) && !de_tarea(x).iter().any(|t| tareas.contains(t))
+            });
+            if let Some(x) = despues {
+                let tags: Vec<String> = d.tags.iter().filter(|t| *t != BLOQUEANTE).cloned().collect();
+                let corto = &x.id[..12.min(x.id.len())];
+                let nota = if en_espanol(&d.content) {
+                    format!("Ya no bloquea: después se resolvió otra tarea de este proyecto ({corto}). Decídela cuando puedas.")
+                } else {
+                    format!("No longer blocking: a later task of this project was resolved after it ({corto}). Decide it when you can.")
+                };
+                let c = memoria::Cambios { tags: Some(tags), append: Some(nota), reason: Some("no longer blocking: the project moved on".into()), ..Default::default() };
+                memoria::actualizar(db, &d.id, c, None)?;
+                r.bloqueantes_rebajadas.push(d.id.clone());
+            }
+        }
+    }
+    Ok(r)
+}
+
+/// Si un estado puede avisar de que se ha quedado atrás: lleva la etiqueta, no cuenta algo cerrado y,
+/// si es global, lleva [`DIAS_ESTADO_GLOBAL`] sin tocar (si no, [`DIAS_ESTADO`]).
+fn estado_que_avisa(m: &Memoria, dias: f64) -> bool {
+    let global = m.project_id == 0 && m.space.is_empty();
+    m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias > if global { DIAS_ESTADO_GLOBAL } else { DIAS_ESTADO } && !estado_cerrado(m)
+}
 /// Días desde que se creó sin recordarse nunca.
 pub const DIAS_SIN_USO: f64 = 30.0;
 
@@ -76,6 +222,14 @@ pub fn dias_para_revisar(m: &Memoria) -> Option<f64> {
 /// La fecha de revisión de una memoria (la etiqueta `review:AAAA-MM-DD`), si lleva una válida.
 pub fn fecha_revision(tags: &[String]) -> Option<&str> {
     tags.iter().filter_map(|t| t.strip_prefix(ETIQUETA_FECHA)).find(|f| es_fecha(f))
+}
+
+/// La fecha de revisión que va escrita en el texto y no en una etiqueta: «[review-after] 10-nov-2026»
+/// (así la dejan algunos agentes). Sin esto, el aviso de fecha no salía nunca.
+pub fn fecha_escrita(texto: &str) -> Option<String> {
+    let i = texto.find("[review-after]")?;
+    let resto: String = texto[i + "[review-after]".len()..].chars().take(40).collect();
+    fechas(&normal(&resto)).into_iter().next()
 }
 
 /// `AAAA-MM-DD` con un mes y un día posibles (el 31 de cualquier mes vale: basta para comparar).
@@ -102,8 +256,13 @@ pub fn comprobar_fecha(tags: &[String]) -> Result<()> {
 
 /// La fecha de revisión si ya ha llegado (`hoy`, el día local) y nadie ha tocado la memoria ni la ha
 /// dado por buena desde ese día. Recordarla no cuenta: que el agente la reciba no dice que siga valiendo.
-fn fecha_llegada<'a>(m: &'a Memoria, revisadas: &HashMap<(String, String), String>, hoy: &Hoy) -> Option<&'a str> {
-    let f = fecha_revision(&m.tags)?;
+fn fecha_llegada(m: &Memoria, revisadas: &HashMap<(String, String), String>, hoy: &Hoy) -> Option<String> {
+    let f = fecha_revision(&m.tags).map(str::to_string).or_else(|| fecha_escrita(&m.content))?;
+    // Una decisión ya resuelta no espera a nadie, aunque su texto lleve la fecha.
+    if m.tags.iter().any(|t| t == crate::memoria::RESUELTA) {
+        return None;
+    }
+    let f = f.as_str();
     if f > hoy.dia.as_str() {
         return None;
     }
@@ -117,7 +276,7 @@ fn fecha_llegada<'a>(m: &'a Memoria, revisadas: &HashMap<(String, String), Strin
     if revisadas.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= inicio.as_str()) {
         return None;
     }
-    Some(f)
+    Some(f.to_string())
 }
 
 /// El día local y cuántos segundos va la hora local por delante de UTC.
@@ -220,7 +379,9 @@ fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize
 fn huella(db: &Connection) -> Result<String> {
     let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
     let sello: String = db.query_row("SELECT COALESCE(max(hlc), '') FROM memory", [], |f| f.get(0))?;
-    Ok(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}"))
+    // Con la versión: si el detector cambia (1.12.0: la historia de un diario ya no cuenta), lo guardado
+    // con el de antes se recalcula al actualizar, y no espera a que cambie alguna memoria.
+    Ok(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}|{}", env!("CARGO_PKG_VERSION")))
 }
 
 /// Lo guardado del último recálculo entero: cuántas memorias había y las palabras que no eran raras.
@@ -279,7 +440,7 @@ pub fn antes(db: &Connection) -> Result<Antes> {
     let guardada: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
     let huella = guardada.filter(|g| {
         let p: Vec<&str> = g.split('|').collect();
-        p.len() == 5 && p[0] == n && p[1] == ultimo && p[3] == proyectos && p[4] == espacios
+        p.len() == 6 && p[0] == n && p[1] == ultimo && p[3] == proyectos && p[4] == espacios && p[5] == env!("CARGO_PKG_VERSION")
     });
     Ok(Antes { huella })
 }
@@ -297,7 +458,7 @@ fn huella_tras(db: &Connection, antes: &str, ids: &BTreeSet<String>) -> Result<O
         sello = sello.max(s);
     }
     let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
-    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}")))
+    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}|{}", env!("CARGO_PKG_VERSION"))))
 }
 
 /// Pone al día la revisión tras escribir `ids` (guardadas, cambiadas, olvidadas o recuperadas), sin
@@ -421,6 +582,10 @@ struct Ficha {
     contenido: BTreeSet<String>,
     texto: String,
     versiones: BTreeMap<String, BTreeSet<Vec<u64>>>,
+    /// Las versiones que afirma en presente: sin las líneas de historia (con una fecha, «vA → vB» o
+    /// «desde la X»). «19-oct-2026 (v0.6.1 → 0.6.2): …» cuenta lo que pasó y sigue siendo verdad; no
+    /// dice que hoy vaya en la 0.6.2. Es lo que se compara de la vieja con la nueva.
+    vigentes: BTreeMap<String, BTreeSet<Vec<u64>>>,
 }
 
 /// Lo que no distingue a una memoria de otra.
@@ -532,8 +697,33 @@ fn ficha(m: &Memoria, hlc: String) -> Ficha {
         titulo: palabras(&m.title),
         contenido: palabras(&contenido),
         versiones: versiones(&todo),
+        vigentes: versiones(&format!("{}\n{}", normal(&m.title), sin_historia(&texto))),
         texto,
     }
+}
+
+/// El texto sin sus líneas de historia: las que empiezan por una fecha (la entrada de un diario,
+/// «**19-oct-2026 (v0.6.1 → 0.6.2):** …»), las que cuentan un cambio de versión («0.6.1 → 0.6.2») y las
+/// de «desde la X». Por líneas y no por frases: en una entrada fechada, las frases de después de la
+/// fecha también son de ese día. Una fecha en medio («la v0.2.0, publicada el 28-oct-2026») no la
+/// hace historia: dice dónde está el proyecto.
+fn sin_historia(t: &str) -> String {
+    let empieza_por_fecha = |l: &str| {
+        let inicio: String = l.trim_start_matches(|c: char| !c.is_alphanumeric()).chars().take(14).collect();
+        !fechas(&inicio).is_empty()
+    };
+    // «desde la 0.4.0», «desde v0.4.0», «since 0.4.0»: la palabra y, detrás, una versión o su artículo.
+    let desde = |l: &str| {
+        let ws: Vec<&str> = l.split_whitespace().map(|w| w.trim_start_matches(|c: char| !c.is_alphanumeric())).collect();
+        ws.windows(2).any(|p| {
+            matches!(p[0], "desde" | "since")
+                && (matches!(p[1], "la" | "el" | "version") || p[1].trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit()))
+        })
+    };
+    t.lines()
+        .filter(|l| !empieza_por_fecha(l) && !l.contains('→') && !l.contains("->") && !desde(l))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Frases (por puntuación de final o salto de línea).
@@ -579,7 +769,7 @@ fn texto_version(v: &[u64]) -> String {
 /// («rusqlite 0.41.0») sí, porque el nombre ya las ata.
 fn motivos(vieja: &Ficha, nueva: &Ficha, mismo_tema: bool, raras: &dyn Fn(&BTreeSet<String>) -> BTreeSet<String>) -> Vec<String> {
     let mut r = Vec::new();
-    for (cosa, va) in &vieja.versiones {
+    for (cosa, va) in &vieja.vigentes {
         if let Some(vb) = nueva.versiones.get(cosa)
             && let (Some(a), Some(b)) = (va.last(), vb.last())
             && b > a
@@ -802,7 +992,7 @@ fn descartados(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
 /// Dónde está una ruta de una memoria en este equipo, si se puede saber (relativa a su proyecto).
 fn ruta_en_disco(m: &Memoria, ruta: &str) -> Option<std::path::PathBuf> {
     // Una ruta de red no se mira nunca (abriría una conexión SMB: ver `proyecto::ruta_de_red`).
-    if crate::proyecto::ruta_de_red(ruta) {
+    if crate::proyecto::ruta_de_red(ruta) || de_otro_sistema(ruta) {
         return None;
     }
     let p = std::path::Path::new(ruta.trim_start_matches("~/"));
@@ -818,6 +1008,14 @@ fn ruta_en_disco(m: &Memoria, ruta: &str) -> Option<std::path::PathBuf> {
         raiz.join(p)
     };
     crate::proyecto::ruta_local(&d).then_some(d)
+}
+
+/// Una ruta de Windows (`D:/…`, `C:\\…`) vista desde macOS o Linux, o una de Unix (`/Users/…`) vista
+/// desde Windows: es del otro equipo de la persona (llega por la sincronización), no una ruta rota.
+fn de_otro_sistema(ruta: &str) -> bool {
+    let b = ruta.as_bytes();
+    let de_windows = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\');
+    if cfg!(windows) { ruta.starts_with('/') } else { de_windows }
 }
 
 fn dirs_casa() -> Option<std::path::PathBuf> {
@@ -929,7 +1127,7 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
             r.push(aviso(m, POR_REVISAR, None, format!("untouched for {n} days: is it still true?")));
         }
         let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
-        if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias(&m.updated_at) > DIAS_ESTADO && !descartado(ESTADO_VIEJO) {
+        if estado_que_avisa(m, dias(&m.updated_at)) && !descartado(ESTADO_VIEJO) {
             let despues = todas.iter().filter(|x| x.project_id == m.project_id && x.space == m.space && x.id != m.id && x.updated_at > m.updated_at).count();
             if despues > 0 {
                 r.push(aviso(m, ESTADO_VIEJO, None, format!("{despues} memories of this project changed after it; untouched for {} days", dias(&m.updated_at) as i64)));
@@ -1402,7 +1600,7 @@ fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revisi
         {
             let corto: String = titulo.chars().take(80).collect();
             r.insert(m.id.clone(), format!("may be outdated: newer {} «{corto}» ({detalle})", otra.chars().take(12).collect::<String>()));
-        } else if m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO {
+        } else if estado_que_avisa(m, dias_entre(&m.updated_at, &ahora)) {
             let despues: i64 = db.query_row(
                 "SELECT count(*) FROM memory WHERE project_id = ?1 AND id != ?2 AND updated_at > ?3",
                 params![m.project_id, m.id, m.updated_at],
@@ -1583,8 +1781,7 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
         if sin_revisar(m, &revisadas, &ahora).is_some() {
             sumar(POR_REVISAR);
         }
-        if m.tags.iter().any(|t| t == crate::memoria::ESTADO)
-            && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO
+        if estado_que_avisa(m, dias_entre(&m.updated_at, &ahora))
             && !descartado(ESTADO_VIEJO)
             && ultimo.get(&(m.project_id, m.space.as_str())).is_some_and(|u| *u > m.updated_at.as_str())
         {
@@ -1680,6 +1877,37 @@ pub fn texto_aviso(cifras: &BTreeMap<&'static str, usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_fecha_escrita_en_el_texto_cuenta_como_fecha_de_revision() {
+        assert_eq!(fecha_escrita("[review-after] 10-nov-2026. Para el servidor"), Some("2026-11-10".into()));
+        assert_eq!(fecha_escrita("[review-after] 2026-12-01"), Some("2026-12-01".into()));
+        assert_eq!(fecha_escrita("sin fecha de revisión, solo 10-nov-2026"), None);
+    }
+
+    #[test]
+    fn la_historia_de_un_diario_no_cuenta_como_version_vigente() {
+        let d = normal("Desde v0.4.0 también Bluesky\nVa en la 0.7.4 ya");
+        assert!(!versiones(&sin_historia(&d)).values().flatten().any(|x| x == &vec![0, 4, 0]));
+        let t = normal("Plugin social-publish v0.3.0 en marcha\n**19-oct-2026 (v0.6.1 → 0.6.2):** herramienta humanizar\nVa en la 0.7.4 desde ayer");
+        let v = versiones(&sin_historia(&t));
+        assert!(v.values().flatten().any(|x| x == &vec![0, 3, 0]), "{v:?} {:?}", sin_historia(&t));
+        assert!(!v.values().flatten().any(|x| x == &vec![0, 6, 2]), "{v:?}");
+    }
+
+    #[test]
+    fn lo_que_anade_la_limpieza_va_en_el_idioma_de_la_memoria() {
+        assert!(en_espanol("[blocking] android: YA EXISTÍA, no lo trae esta tarea: con letra 1,5 la pantalla"));
+        assert!(!en_espanol("The release is blocked until the tests pass on Windows and the tag is pushed"));
+    }
+
+    #[test]
+    fn rutas_del_otro_sistema_no_estan_rotas() {
+        assert_eq!(de_otro_sistema("D:/Omoikane/src/okf.rs"), !cfg!(windows));
+        assert_eq!(de_otro_sistema("C:\\Users\\marcm\\x.md"), !cfg!(windows));
+        assert_eq!(de_otro_sistema("/Users/marc/x.md"), cfg!(windows));
+        assert!(!de_otro_sistema("src/okf.rs"));
+    }
 
     #[test]
     fn fechas_y_versiones() {

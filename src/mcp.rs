@@ -1101,6 +1101,7 @@ impl Servidor {
                     crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::json!({ "resolved": true, "memory": compacta(m, false, None) }));
                 }
+                crate::revisar::limpiar_callado(db);
                 let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
                 let v = memoria::decisiones(db, &ambito, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
                 Ok(serde_json::to_value(v)?)

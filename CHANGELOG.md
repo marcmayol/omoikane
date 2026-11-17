@@ -4,6 +4,34 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.12.0 (2026-11-18)
+
+### What fixes itself
+- The review warned and waited for a person. Some warnings never went away: an old `status` kept warning for weeks after the project had a newer one, and decisions an agent left open stayed open after the work moved on. Now three things fix themselves, always in a way that can be undone (the trash or the memory's history), at the start of a session, when the web view opens and in `omoi review` / `omoi decisions` (CLI and MCP):
+  - A `status` still open after 21 days untouched goes to the trash when its project already has a newer one. A pinned one stays.
+  - An open decision tagged with an agent's task (`tarea:`, `trabajo:`, `task:`) is resolved when a later memory of the same task is already resolved, with an answer that says which one.
+  - A blocking decision of Kumi becomes "for later" when a later task of the same project has been resolved, with a note in the memory's language.
+
+### Fewer false warnings
+- A version in a dated or changelog-like line («19-oct-2026 (v0.6.1 → 0.6.2): …», «since 0.4.0») is history: it is no longer compared as the memory's current version, so diary-like memories stop showing up as outdated.
+- A `status` that tells of finished work («done», «published», «discarded», nothing pending) no longer warns as left behind. A global `status` warns after 30 days untouched instead of whenever any other global memory changes.
+- A Windows path (`D:/…`) seen from macOS or Linux, or a Unix one seen from Windows, belongs to your other computer: it is no longer a broken path.
+- A review date written in the text as `[review-after] 10-nov-2026` now counts like a `review:` tag. A resolved decision doesn't warn for its date.
+- On a real database these went from 71 warnings to 43 (`stale_status` 22 → 2, `outdated` 4 → 0, `broken_path` 7 → 3; the three left are files that really moved).
+
+### Web view
+- **Trash** has its own page, linked from the top bar with its count. It used to be a group at the end of Review, behind every warning, and was easy to miss.
+- In Review, opening or acting on a card no longer scrolls the list back to the top. "Open" looked like it did nothing because the card it opened ended up off screen.
+- Next to every `omoi` command that Review used to offer only to copy (merge or separate projects, keep a paused one, move one to a space, unassign one), there is now **Run**. It asks for a second click before doing it. The server runs only that closed list of `omoi` commands (`POST /api/run`, with the view token like Verify), with the same binary and database, never a shell. Commands with something still to fill in (`<new folder>`) stay copy-only.
+- A broken `[[link]]` has **Remove the link**, which keeps the text and drops the brackets, recorded in its history.
+- Clearer buttons on outdated memories: **See both**, **Not outdated** and **They are the same: merge**.
+- An open decision has **Keep the assumption**, to close it with what the agent assumed, without writing anything.
+- The top bar wraps on narrow screens instead of cutting off its last link.
+
+### Compatibility
+- The database schema stays at 10, and sync lines and `omoi export` don't change. Self-fixes are ordinary `forget` and `update` operations, so older versions sync them as usual.
+- The review's saved fingerprint now carries the binary's version, so after updating, the outdated pairs worked out by the old detector are recalculated once instead of staying until some memory changes.
+
 ## 1.11.0 (2026-11-17)
 
 ### Memories arrive when the agent opens their file

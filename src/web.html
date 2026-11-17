@@ -54,9 +54,10 @@ code, .mono { font-family: var(--mono); }
 .brand img { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 0 0 1px var(--line2), 0 0 18px var(--halo); }
 .word { font: 600 19px/1 var(--serif); letter-spacing: .01em; }
 .word .kj { color: var(--glow); margin-right: 6px; }
-.nav { display: flex; gap: 2px; }
+.nav { display: flex; gap: 2px; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.nav::-webkit-scrollbar { display: none; }
 .nav a { padding: 6px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13.5px; white-space: nowrap; }
-@media (max-width: 480px) { .nav a { padding: 6px 8px; } }
+@media (max-width: 480px) { .nav { flex-wrap: wrap; overflow: visible; row-gap: 4px; } .nav a { padding: 6px 7px; font-size: 13px; } .nav .cuenta { margin-left: 4px; } }
 .nav a[aria-current=page] { background: var(--panel2); color: var(--ink); box-shadow: 0 0 0 1px var(--line2); }
 .search { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
 .search:focus-within { border-color: var(--accent); }
@@ -250,6 +251,7 @@ button.chip:hover { border-color: var(--accent); }
 .grafo .fact { fill: var(--fact); } .grafo .decision { fill: var(--decision); } .grafo .gotcha { fill: var(--gotcha); } .grafo .preference { fill: var(--preference); } .grafo .procedure { fill: var(--procedure); }
 
 /* Revisar */
+.nav .cuenta.neutra { background: var(--line2); color: var(--ink2); }
 .nav .cuenta { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 600 11px/18px var(--sans); text-align: center; }
 .rev { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
 .rev .grupo { margin: 22px 0 10px; display: flex; align-items: center; gap: 10px; }
@@ -335,7 +337,7 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
 <body>
 <header class="bar">
   <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
-  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a></nav>
+  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a><a id="nav-pap" href="#/papelera"><span></span><span class="cuenta neutra" hidden></span></a></nav>
   <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
   <span class="pill alc" id="alcance" hidden><span class="dot"></span><span></span></span>
   <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
@@ -350,16 +352,16 @@ const T = ES ? {
   alcTodo: 'Todos los espacios', alcSolo: n => `Solo ${n}`, alcNinguno: 'Solo sin espacio',
   espacio: 'Espacio', espacios: 'espacios', sinEspacio: 'Sin espacio', ambito: 'Ámbito', espacioDe: n => `espacio «${n}»`, espacioPath: n => `vale para todos los proyectos de ${n}`,
   enEspacio: (p, m) => `${p} proyecto${p === 1 ? '' : 's'} · ${m} memoria${m === 1 ? '' : 's'}`, personal: 'Sin espacio', personalSub: 'Proyectos que no son de ningún espacio.', globalSub: 'Lo que vale en todos los proyectos de todos los espacios.',
-  yaNoEsta: 'ya no está', copiar: 'Copiar', copiado: 'Copiado', carpetaNueva: '<carpeta nueva>', otroProyecto: '<otro proyecto>',
+  yaNoEsta: 'ya no está', copiar: 'Copiar', copiado: 'Copiado', ejecutar: 'Ejecutar', ejecutarSeguro: '¿Seguro? Pulsa otra vez', ejecutado: 'Hecho', carpetaNueva: '<carpeta nueva>', otroProyecto: '<otro proyecto>',
   pausa: ['Proyectos en pausa', 'Otro equipo dice que el proyecto está en otro espacio, o una carpeta tuya ha entrado en un espacio solo porque lo dice su repositorio. Aquí no se ha movido: queda en pausa, sin subir ni aceptar nada suyo, hasta que decidas con una de las dos órdenes (la primera lo deja como está; la segunda lo cambia).'],
   fuera: ['Proyectos en otro espacio en otro equipo', 'Otro equipo de la sincronización tiene el proyecto en otro espacio: lo que llega de él no se aplica hasta que los dos coincidan. La orden lo arregla (léela antes: dice en qué equipo va).'],
-  dups: ['Proyectos repetidos o que no lo son', 'Omoikane no junta nada solo: si es el mismo proyecto, copia la orden; si no, la de «no son el mismo» y no volverá a salir.'], dupNo: 'No son el mismo:', dupVer: 'Sus memorias:', dupReal: 'Es un proyecto de verdad:', dupSi: 'Si es el mismo:', dupTipos: { same_name: 'Mismo nombre (sin mayúsculas, acentos ni separadores)', one_letter: 'A una letra, y una carpeta ya no está, o el nuevo casi no tiene memorias, o comparten origin', continued: 'Su carpeta ya no existe y el otro, más nuevo, lo nombra', temp_folder: 'Carpeta temporal o de subidas, no un proyecto: haz globales sus memorias (`omoi update <id> --global`) o júntalas con su proyecto' },
+  dups: ['Proyectos repetidos o que no lo son', 'Omoikane no junta nada solo: si es el mismo proyecto, pulsa «Ejecutar» en la orden de juntar; si no, en la de «no son el mismo», y no volverá a salir. Pide confirmación antes de hacer nada.'], dupNo: 'No son el mismo:', dupVer: 'Sus memorias:', dupReal: 'Es un proyecto de verdad:', dupSi: 'Si es el mismo:', dupTipos: { same_name: 'Mismo nombre (sin mayúsculas, acentos ni separadores)', one_letter: 'A una letra, y una carpeta ya no está, o el nuevo casi no tiene memorias, o comparten origin', continued: 'Su carpeta ya no existe y el otro, más nuevo, lo nombra', temp_folder: 'Carpeta temporal o de subidas, no un proyecto: haz globales sus memorias (`omoi update <id> --global`) o júntalas con su proyecto' },
   idos: ['Proyectos que ya no están', 'Su carpeta ya no existe en este equipo. Si la moviste, apunta la nueva; si era una copia de otro proyecto, júntalo con ese (sus memorias pasan al otro).'], mueveLa: 'Si la moviste:', juntalo: 'Si era otro proyecto:',
   mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
   creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
   verificadaF: 'Verificada', porQuien: (b, f) => `por ${b} · ${f}`, noVerificada: 'No: la escribió un agente', escritaEn: 'Escrita en', verificar: 'Verificar', desverificar: 'Quitar verificación',
-  enlaceNo: id => `No hay ninguna memoria ${id} a la vista: puede que se olvidara (mira la papelera en Revisar), que sea de otro espacio que el de la carpeta en la que arrancó omoi serve, o que el id esté mal copiado.`, enlaceVarias: id => `Hay varias memorias que empiezan por ${id}: el enlace necesita más caracteres del id.`,
+  enlaceNo: id => `No hay ninguna memoria ${id} a la vista: puede que se olvidara (mira la Papelera, arriba), que sea de otro espacio que el de la carpeta en la que arrancó omoi serve, o que el id esté mal copiado.`, enlaceVarias: id => `Hay varias memorias que empiezan por ${id}: el enlace necesita más caracteres del id.`,
   verificarT: 'Respondes de que este texto es correcto. Si alguien lo cambia, deja de estar verificada.',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
   olvidar: 'Olvidar', seguro: '¿Olvidarla para siempre?', si: 'Sí, olvidar', no: 'Cancelar', ultimoCambio: 'Último cambio', sinHist: 'Sin cambios anteriores.', cargando: 'Cargando…',
@@ -368,12 +370,12 @@ const T = ES ? {
   memoriasN: n => `${n} memoria${n === 1 ? '' : 's'}`, conEstado: 'con estado', donde: 'Dónde se quedó', sinEstado: 'Sin memoria de estado todavía.', globalPath: 'vale para todos los proyectos',
   masN: n => `+ ${n} más`, menos: 'Ver menos', cerrar: 'Cerrar', titulo: 'Título',
   revisar: 'Revisar', revTitulo: 'Qué conviene revisar', revSub: 'Lo que Omoikane ha visto en la memoria. El agente también recibe estos avisos cuando le llega una de estas memorias.',
-  nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Comparar', bien: 'Está bien así', olvidarVieja: 'Olvidar la vieja',
+  nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Ver las dos', bien: 'Está bien así', bienDesfasada: 'No está desfasada', quitarEnlace: n => n > 1 ? 'Quitar los enlaces' : 'Quitar el enlace', quitarEnlaceT: 'Deja el texto y quita los [[ ]]: el enlace no lleva a ninguna memoria', quitarMotivo: 'enlace que no llevaba a nada, quitado desde la vista web', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
-  juntar: 'Juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web', parejaCambiada: 'Alguna de las dos ha cambiado desde que se compararon: se volverán a comparar. No se ha juntado nada.',
-  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', fugas: l => `No se ha guardado: es una memoria de oficio (la ven todos los clientes) y nombra lo que parece de un proyecto o de un cliente (${l}). Escríbelo sin eso.`, bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
+  juntar: 'Juntar', juntarIguales: 'Son lo mismo: juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web', parejaCambiada: 'Alguna de las dos ha cambiado desde que se compararon: se volverán a comparar. No se ha juntado nada.',
+  abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', seQueda: 'Se queda lo supuesto', seQuedaT: 'El agente siguió con lo que asumió y te vale: la cierra con eso como respuesta', seQuedaRespuesta: 'Se queda lo que se supuso.', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', fugas: l => `No se ha guardado: es una memoria de oficio (la ven todos los clientes) y nombra lo que parece de un proyecto o de un cliente (${l}). Escríbelo sin eso.`, bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
-  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
+  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', papeleraVacia: 'La papelera está vacía.', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
   pan: {
     nav: 'Panorama', titulo: 'Panorama por cliente', sub: 'Para quien lleva un cliente o la factory entera: en cada espacio, qué hay, quién lo escribió y qué está desfasado o en pausa.',
     todo: 'Ves todos los espacios: el servidor arrancó en tu carpeta de usuario.', solo: n => `Solo ves el espacio ${n}: el servidor arrancó en uno de sus proyectos. Desde tu carpeta de usuario se ven todos.`, soloNinguno: 'Solo ves los proyectos sin espacio: el servidor arrancó en uno de ellos. Desde tu carpeta de usuario se ven todos.',
@@ -396,16 +398,16 @@ const T = ES ? {
   alcTodo: 'All spaces', alcSolo: n => `Only ${n}`, alcNinguno: 'Only no space',
   espacio: 'Space', espacios: 'spaces', sinEspacio: 'No space', ambito: 'Scope', espacioDe: n => `space “${n}”`, espacioPath: n => `applies to every project in ${n}`,
   enEspacio: (p, m) => `${p} project${p === 1 ? '' : 's'} · ${m} memor${m === 1 ? 'y' : 'ies'}`, personal: 'No space', personalSub: 'Projects that belong to no space.', globalSub: 'What applies to every project in every space.',
-  yaNoEsta: 'gone', copiar: 'Copy', copiado: 'Copied', carpetaNueva: '<new folder>', otroProyecto: '<other project>',
+  yaNoEsta: 'gone', copiar: 'Copy', copiado: 'Copied', ejecutar: 'Run', ejecutarSeguro: 'Sure? Click again', ejecutado: 'Done', carpetaNueva: '<new folder>', otroProyecto: '<other project>',
   pausa: ['Paused projects', 'Another computer says the project is in another space, or a folder of yours joined a space only because its repository says so. It has not moved here: it stays paused, nothing of it uploaded or accepted, until you decide with one of the two commands (the first leaves it as it is; the second changes it).'],
   fuera: ['Projects in another space on another computer', 'Another computer in the sync has the project in another space: what comes from it is not applied until both agree. The command fixes it (read it first: it says which computer it is for).'],
-  dups: ['Duplicated projects, or not projects', 'Omoikane merges nothing by itself: if it is the same project, copy the command; if not, the "not the same" one and it will not come back.'], dupNo: 'Not the same:', dupVer: 'Its memories:', dupReal: 'It is a real project:', dupSi: 'If it is the same:', dupTipos: { same_name: 'Same name (ignoring case, accents and separators)', one_letter: 'One letter apart, and a folder is gone, or the newer one has hardly any memories, or they share their origin', continued: 'Its folder no longer exists and the other, newer one mentions it', temp_folder: 'A temporary or uploads folder, not a project: make its memories global (`omoi update <id> --global`) or merge them into their project' },
+  dups: ['Duplicated projects, or not projects', 'Omoikane merges nothing by itself: if it is the same project, press "Run" on the merge command; if not, on the "not the same" one, and it will not come back. It asks you to confirm first.'], dupNo: 'Not the same:', dupVer: 'Its memories:', dupReal: 'It is a real project:', dupSi: 'If it is the same:', dupTipos: { same_name: 'Same name (ignoring case, accents and separators)', one_letter: 'One letter apart, and a folder is gone, or the newer one has hardly any memories, or they share their origin', continued: 'Its folder no longer exists and the other, newer one mentions it', temp_folder: 'A temporary or uploads folder, not a project: make its memories global (`omoi update <id> --global`) or merge them into their project' },
   idos: ['Projects that are gone', 'Their folder no longer exists on this computer. If you moved it, point to the new one; if it was a copy of another project, merge it into that one (its memories move there).'], mueveLa: 'If you moved it:', juntalo: 'If it was another project:',
   mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
   creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
   verificadaF: 'Verified', porQuien: (b, f) => `by ${b} · ${f}`, noVerificada: 'No: written by an agent', escritaEn: 'Written in', verificar: 'Verify', desverificar: 'Remove verification',
-  enlaceNo: id => `There is no memory ${id} in view: it may have been forgotten (see the trash in Review), belong to another space than the folder omoi serve started in, or the id may be mistyped.`, enlaceVarias: id => `Several memories start with ${id}: the link needs more characters of the id.`,
+  enlaceNo: id => `There is no memory ${id} in view: it may have been forgotten (see Trash, at the top), belong to another space than the folder omoi serve started in, or the id may be mistyped.`, enlaceVarias: id => `Several memories start with ${id}: the link needs more characters of the id.`,
   verificarT: 'You vouch that this text is right. If anyone changes it, it is no longer verified.',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
   olvidar: 'Forget', seguro: 'Forget it for good?', si: 'Yes, forget', no: 'Cancel', ultimoCambio: 'Last change', sinHist: 'No earlier versions.', cargando: 'Loading…',
@@ -414,12 +416,12 @@ const T = ES ? {
   memoriasN: n => `${n} memor${n === 1 ? 'y' : 'ies'}`, conEstado: 'with status', donde: 'Where it was left', sinEstado: 'No status memory yet.', globalPath: 'applies to every project',
   masN: n => `+ ${n} more`, menos: 'Show less', cerrar: 'Close', titulo: 'Title',
   revisar: 'Review', revTitulo: 'What is worth reviewing', revSub: 'What Omoikane has noticed in the memory. The agent gets these warnings too whenever one of these memories reaches it.',
-  nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'Compare', bien: "It's fine as it is", olvidarVieja: 'Forget the old one',
+  nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'See both', bien: "It's fine as it is", bienDesfasada: 'Not outdated', quitarEnlace: n => n > 1 ? 'Remove the links' : 'Remove the link', quitarEnlaceT: 'Keeps the text and removes the [[ ]]: the link leads to no memory', quitarMotivo: 'link that led nowhere, removed in the web view', olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
-  juntar: 'Merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view', parejaCambiada: 'One of the two has changed since they were compared: they will be compared again. Nothing was merged.',
-  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', decidido: 'Decided', decididoMotivo: 'decided in the web view', fugas: l => `Not saved: it is a trade memory (every client sees it) and it names what looks like a project or a client (${l}). Write it without them.`, bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
+  juntar: 'Merge', juntarIguales: 'They are the same: merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view', parejaCambiada: 'One of the two has changed since they were compared: they will be compared again. Nothing was merged.',
+  abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', seQueda: 'Keep the assumption', seQuedaT: 'The agent went on with what it assumed and that is fine: close it with that as the answer', seQuedaRespuesta: 'What was assumed stays.', decidido: 'Decided', decididoMotivo: 'decided in the web view', fugas: l => `Not saved: it is a trade memory (every client sees it) and it names what looks like a project or a client (${l}). Write it without them.`, bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
-  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
+  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', papeleraVacia: 'The trash is empty.', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
   pan: {
     nav: 'Overview', titulo: 'Overview by client', sub: 'For whoever runs a client or the whole factory: in each space, what there is, who wrote it and what is outdated or paused.',
     todo: 'You see every space: the server started in your home folder.', solo: n => `You only see the space ${n}: the server started in one of its projects. From your home folder you see them all.`, soloNinguno: 'You only see the projects in no space: the server started in one of them. From your home folder you see them all.',
@@ -481,6 +483,23 @@ function pastilla(a) {
 }
 // Un argumento para la línea de órdenes, entre comillas si lleva espacios o comillas.
 const arg = s => /[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
+// «Ejecutar»: solo las órdenes que el servidor acepta (`orden_permitida` en http.rs), y nunca las que
+// llevan algo por rellenar (<carpeta>). Las demás se quedan con «Copiar».
+const ejecutable = c => /^omoi (projects (merge|distinct|keep) |projects move .*--space |space unassign )/.test(c) && !/[<>]/.test(c);
+const botonEjecutar = c => ejecutable(c) ? `<button class="btn pri" data-ejecuta="${esc(c)}">${esc(T.ejecutar)}</button>` : '';
+function conectarEjecutar(v) {
+  for (const b of v.querySelectorAll('[data-ejecuta]')) b.onclick = () => {
+    // Juntar proyectos no se deshace con un clic: se pide confirmar en el propio botón.
+    if (!b.dataset.seguro) { b.dataset.seguro = '1'; b.textContent = T.ejecutarSeguro; return; }
+    b.disabled = true;
+    accion(async () => {
+      const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+      const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ command: b.dataset.ejecuta }) });
+      if (!r.ok) throw new Error(await r.text());
+      aviso(T.ejecutado);
+    });
+  };
+}
 const loc = ES ? 'es-ES' : undefined;
 const fecha = s => s ? new Date(s).toLocaleString(loc, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 const hora = s => new Date(s).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
@@ -661,6 +680,8 @@ async function cargar() {
   if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
   const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length + duplicados.length;
   c.textContent = n; c.hidden = !n;
+  const cp = $('nav-pap').querySelector('.cuenta');
+  cp.textContent = papelera.length; cp.hidden = !papelera.length;
   pintar();
 }
 
@@ -691,12 +712,13 @@ async function sincro() {
   } catch (e) { /* sin servidor: nada que enseñar */ }
 }
 
-/* ---------- Rutas: #/ (memorias), #/proyectos, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
+/* ---------- Rutas: #/ (memorias), #/proyectos, #/revisar, #/papelera, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
 function ruta() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   if (h.startsWith('memoria/')) return { vista: 'memoria', id: h.slice('memoria/'.length) };
   if (h === 'proyectos') return { vista: 'proyectos' };
   if (h === 'revisar') return { vista: 'revisar' };
+  if (h === 'papelera') return { vista: 'papelera' };
   if (h === 'panorama') return { vista: 'panorama' };
   if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
   return { vista: 'memorias' };
@@ -708,9 +730,20 @@ function pintar() {
   $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
   $('nav-pj').setAttribute('aria-current', r.vista === 'proyectos' || r.vista === 'proyecto' ? 'page' : 'false');
   $('nav-rev').setAttribute('aria-current', r.vista === 'revisar' ? 'page' : 'false');
+  $('nav-pap').setAttribute('aria-current', r.vista === 'papelera' ? 'page' : 'false');
   $('nav-pan').setAttribute('aria-current', r.vista === 'panorama' ? 'page' : 'false');
   $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
+  // Revisar y Papelera se repintan enteras tras cada botón: sin esto, la lista volvía arriba del todo y
+  // lo que se acababa de abrir («Ver») quedaba fuera de la pantalla, como si el botón no hiciera nada.
+  const lista = document.querySelector('#vista > .rev'), seguir = lista && vistaPintada === r.vista ? lista.scrollTop : null;
+  vistaPintada = r.vista;
+  pintarVista(r);
+  if (seguir !== null) { const nueva = document.querySelector('#vista > .rev'); if (nueva) nueva.scrollTop = seguir; }
+}
+let vistaPintada = null;
+function pintarVista(r) {
   if (r.vista === 'revisar') pintarRevisar();
+  else if (r.vista === 'papelera') pintarPapelera();
   else if (r.vista === 'panorama') pintarPanorama();
   else if (r.vista === 'proyectos') pintarProyectos();
   else if (r.vista === 'proyecto') pintarProyecto(r.p);
@@ -943,14 +976,6 @@ function pintarRevisar() {
       <div class="t">${esc(c.text)}</div>
       <div class="acts"><button class="btn" data-r="guardar">${esc(T.guardarComo)}</button><button class="btn" data-r="dejar">${esc(T.dejar)}</button></div>
     </div>`).join('')}`;
-  const basura = !papelera.length ? '' : `
-    <div class="grupo"><h2>${esc(T.papelera)}</h2><span class="n">${papelera.length}</span></div>
-    <p class="vacio" style="padding:0 0 10px">${esc(T.papeleraSub)}</p>
-    ${papelera.map(o => `<div class="av trash" data-t="${esc(o.id)}">
-      <div class="cab"><span class="t">${esc(o.title)}</span></div>
-      <div class="cab">${pastilla(o.project || (o.space ? PRE_ESP + o.space : ''))} <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
-      <div class="acts"><button class="btn pri" data-r="restaurar">${esc(T.restaurar)}</button></div>
-    </div>`).join('')}`;
   // Proyectos cuya carpeta ya no existe (lo que dicen `omoi review` y `omoi doctor`), con el comando
   // que lo arregla.
   const idos = fichas.filter(x => x.gone), otros = fichas.filter(x => !x.gone);
@@ -963,8 +988,8 @@ function pintarRevisar() {
       return `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.name)}</span>${x.space ? pastilla(PRE_ESP + x.space) : ''}<span class="what">${esc(T.memoriasN(x.memories))}${x.last_update ? ' · ' + esc(corta(x.last_update)) : ''}</span></div>
       <div class="det2 mono">${esc(x.path)}</div>
-      <div class="cmd"><span class="det2">${esc(T.mueveLa)}</span><code>${esc(mover)}</code><button class="btn" data-copia="${esc(mover)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><span class="det2">${esc(T.juntalo)}</span><code>${esc(fundir)}</code><button class="btn" data-copia="${esc(fundir)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(T.mueveLa)}</span><code>${esc(mover)}</code>${botonEjecutar(mover)}<button class="btn" data-copia="${esc(mover)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(T.juntalo)}</span><code>${esc(fundir)}</code>${botonEjecutar(fundir)}<button class="btn" data-copia="${esc(fundir)}">${esc(T.copiar)}</button></div>
     </div>`;
     }).join('')}`;
   // Proyectos que otro equipo tiene en otro espacio (lo que dicen `omoi sync status` y `omoi review`).
@@ -974,7 +999,7 @@ function pintarRevisar() {
     ${fueraDeEspacio.map(x => `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.there ? ' → ' + esc(x.there) : ''}</span></div>
       ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
-      <div class="cmd"><code>${esc(x.command)}</code><button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.command)}</code>${botonEjecutar(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
   // Proyectos en pausa: otro equipo dice que están en otro espacio (o el repositorio de un espacio dice
   // que una carpeta de aquí es suya); las dos órdenes que lo deciden, primero la que lo deja como está.
@@ -984,8 +1009,8 @@ function pintarRevisar() {
     ${enPausa.map(x => `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.space ? ' → ' + esc(x.space) : ''}</span></div>
       ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
-      <div class="cmd"><code>${esc(x.keep)}</code><button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><code>${esc(x.accept)}</code><button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.keep)}</code>${botonEjecutar(x.keep)}<button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.accept)}</code>${botonEjecutar(x.accept)}<button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
   // Proyectos repetidos o en carpetas temporales (`nombres::propuestas`): la orden que los junta y la
   // que dice que no son el mismo.
@@ -996,13 +1021,13 @@ function pintarRevisar() {
       <div class="cab"><span class="t">${esc(x.project)}${x.other ? ' → ' + esc(x.other) : ''}</span><span class="what">${esc(T.memoriasN(x.memories))}</span></div>
       <div class="det2 mono">${esc(x.path)}${x.other_path ? ' → ' + esc(x.other_path) : ''}</div>
       <div class="det2">${esc(T.dupTipos[x.kind] || x.detail)}</div>
-      <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code><button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code><button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code>${botonEjecutar(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code>${botonEjecutar(x.dismiss)}<button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.length && !candidatas.length && !papelera.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
+  const cuerpo = !avisos.length && !candidatas.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
-    ${grupos[k].map(avisoHTML).join('')}`).join('') + basura;
+    ${grupos[k].map(avisoHTML).join('')}`).join('');
   $('vista').innerHTML = `<div class="rev">
     <div class="hero"><div><h1>${esc(T.revTitulo)}</h1><p>${esc(T.revSub)}</p></div></div>
     ${cuerpo}
@@ -1032,15 +1057,10 @@ function pintarRevisar() {
       await dejar();
     });
   }
+  conectarEjecutar(v);
   for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
   };
-  for (const el of v.querySelectorAll('.av.trash')) {
-    el.querySelector('[data-r="restaurar"]').onclick = () => accion(async () => {
-      const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: el.dataset.t }) });
-      if (!r.ok) throw new Error(await r.text());
-    });
-  }
   for (const el of v.querySelectorAll('.av:not(.cand):not(.trash):not(.ido)')) {
     const a = avisos.find(x => claveAv(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
@@ -1066,6 +1086,13 @@ function pintarRevisar() {
       const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
       if (!r.ok) throw new Error(await r.text());
     });
+    if (q('quitar')) q('quitar').onclick = () => accion(async () => {
+      // Se lee la memoria justo antes: la de la página puede ser vieja y se pisaría lo de después.
+      const actual = await herramienta('get', { id: a.memory_id });
+      let content = actual.content;
+      for (const l of enlacesRotos(a, actual)) content = content.split(`[[${l}]]`).join(l);
+      await herramienta('update', { id: a.memory_id, content, reason: T.quitarMotivo });
+    });
     if (q('redactar')) q('redactar').onclick = () => accion(async () => {
       const r = await fetch('/api/redact', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: a.memory_id }) });
       if (!r.ok) throw new Error(await r.text());
@@ -1077,6 +1104,10 @@ function pintarRevisar() {
     };
   }
 }
+// Los enlaces del aviso (`links to nothing: [[a]], [[b]]`) que siguen escritos en la memoria.
+function enlacesRotos(a, m) {
+  return [...new Set([...a.detail.matchAll(/\[\[([^\]]+)\]\]/g)].map(x => x[1]))].filter(l => m && m.content.includes(`[[${l}]]`));
+}
 function avisoHTML(a) {
   const m = todas.find(x => x.id === a.memory_id), o = a.other_id && todas.find(x => x.id === a.other_id), abierto = revAbiertos[claveAv(a)];
   if (!m) return '';
@@ -1085,6 +1116,8 @@ function avisoHTML(a) {
   const juntable = o && ['outdated', 'trade_duplicate', 'superseded', 'contradicts'].includes(a.kind);
   const [nueva, vieja] = !o ? [null, null] : a.kind === 'contradicts' && m.updated_at > o.updated_at ? [m, o] : [o, m];
   const juntando = juntable && revJuntar[claveAv(a)];
+  // Los [[enlaces]] que no llevan a nada, para «Quitar el enlace» (solo los que siguen en el texto).
+  const rotos = a.kind === 'broken_link' ? enlacesRotos(a, m) : [];
   const par = !o ? '' : `<div class="par">
       <div><span class="lb">${esc(a.kind === 'superseded' ? T.sustituida : a.kind === 'contradicts' ? T.unaEt : T.vieja)}</span><span class="t">${esc(m.title)}</span><div class="md">${md(m.content)}</div></div>
       <div><span class="lb nueva">${esc(a.kind === 'superseded' ? T.sustituta : a.kind === 'contradicts' ? T.otraEt : T.nuevaEt)}</span><span class="t">${esc(o.title)}</span><div class="md">${md(o.content)}</div></div>
@@ -1103,8 +1136,9 @@ function avisoHTML(a) {
     ${cont}
     <div class="acts">
       <button class="btn" data-r="ver">${abierto ? T.ocultar : (o ? T.verDos : T.ver)}</button>
-      <button class="btn" data-r="bien">${esc(T.bien)}</button>
-      ${juntable ? `<button class="btn" data-r="juntar">${esc(juntando ? T.no : T.juntar)}</button>` : ''}
+      ${rotos.length ? `<button class="btn pri" data-r="quitar" title="${esc(T.quitarEnlaceT)}">${esc(T.quitarEnlace(rotos.length))}</button>` : ''}
+      <button class="btn" data-r="bien">${esc(a.kind === 'outdated' ? T.bienDesfasada : T.bien)}</button>
+      ${juntable ? `<button class="btn" data-r="juntar">${esc(juntando ? T.no : a.kind === 'outdated' || a.kind === 'contradicts' ? T.juntarIguales : T.juntar)}</button>` : ''}
       ${juntando ? `<button class="btn pri" data-r="confirmar">${esc(T.juntarBtn)}</button>` : ''}
       <span class="sp"></span>
       ${a.kind === 'secret' ? `<button class="btn pri" data-r="redactar">${esc(T.redactar)}</button>` : ''}
@@ -1112,6 +1146,27 @@ function avisoHTML(a) {
 
     </div>
   </div>`;
+}
+
+/* ---------- Papelera: #/papelera ---------- */
+// Lo olvidado aquí o en otro equipo, que se puede devolver durante los días de la papelera (30 por
+// defecto, OMOIKANE_TRASH_DAYS). Antes iba al final de Revisar, detrás de todos los avisos, y no se veía.
+function pintarPapelera() {
+  const filas = papelera.map(o => `<div class="av trash" data-t="${esc(o.id)}">
+      <div class="cab"><span class="t">${esc(o.title)}</span></div>
+      <div class="cab">${pastilla(o.project || (o.space ? PRE_ESP + o.space : ''))} <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
+      <div class="acts"><button class="btn pri" data-r="restaurar">${esc(T.restaurar)}</button></div>
+    </div>`).join('');
+  $('vista').innerHTML = `<div class="rev">
+    <div class="hero"><div><h1>${esc(T.papelera)}</h1><p>${esc(T.papeleraSub)}</p></div></div>
+    ${filas || `<p class="vacio">${esc(T.papeleraVacia)}</p>`}
+  </div>`;
+  for (const el of $('vista').querySelectorAll('.av.trash')) {
+    el.querySelector('[data-r="restaurar"]').onclick = () => accion(async () => {
+      const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: el.dataset.t }) });
+      if (!r.ok) throw new Error(await r.text());
+    });
+  }
 }
 
 /* ---------- Proyectos ---------- */
@@ -1231,8 +1286,8 @@ function pintarPanorama() {
         <span class="t">${esc(p.name)}<span class="pz">${esc(P.pausado)}</span></span><span class="n">${esc(p.machine)}${p.space ? ' → ' + esc(p.space) : ''}</span>
         ${ES ? '' : `<span class="d dos" title="${esc(p.text)}">${esc(p.text)}</span>`}
       </div>
-      <div class="cmd"><code>${esc(p.keep)}</code><button class="btn" data-copia="${esc(p.keep)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><code>${esc(p.accept)}</code><button class="btn" data-copia="${esc(p.accept)}">${esc(T.copiar)}</button></div>`).join('');
+      <div class="cmd"><code>${esc(p.keep)}</code>${botonEjecutar(p.keep)}<button class="btn" data-copia="${esc(p.keep)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(p.accept)}</code>${botonEjecutar(p.accept)}<button class="btn" data-copia="${esc(p.accept)}">${esc(T.copiar)}</button></div>`).join('');
     return `<div class="blq">
       <h3>${esc(P.desfasado)}<span>${r.count} ${esc(P.aRevisar)}</span></h3>
       ${r.count ? `<div class="cuentas">${cuentas}</div>
@@ -1268,6 +1323,7 @@ function pintarPanorama() {
   </div>`;
   const v = $('vista');
   for (const b of v.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
+  conectarEjecutar(v);
   for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
     try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
   };
@@ -1293,7 +1349,7 @@ function abiertasHTML() {
       <div class="cab">${marcaPrioridad(m)}<span class="t">${esc(m.title)}</span>${pastilla(ambito(m))}<span class="what">${esc(corta(m.updated_at))}</span></div>
       <div class="md">${md(m.content)}</div>
       <textarea placeholder="${esc(T.respuesta)}" rows="2"></textarea>
-      <div><button class="btn pri" data-r="decidir">${esc(T.decidir)}</button></div>
+      <div class="acts"><button class="btn pri" data-r="decidir">${esc(T.decidir)}</button><button class="btn" data-r="supuesto" title="${esc(T.seQuedaT)}">${esc(T.seQueda)}</button></div>
     </div>`).join('')}
   </div>`;
 }
@@ -1303,11 +1359,13 @@ function abiertasHTML() {
 function conectarAbiertas() {
   for (const el of $('vista').querySelectorAll('[data-abierta]')) {
     const id = el.dataset.abierta;
-    const boton = el.querySelector('[data-r="decidir"]');
+    const boton = el.querySelector('[data-r="decidir"]'), supuesto = el.querySelector('[data-r="supuesto"]');
+    // «Se queda lo supuesto»: el agente siguió con lo que asumió y está bien; sin escribir nada.
+    supuesto.onclick = () => { el.querySelector('textarea').value = T.seQuedaRespuesta; boton.onclick(); };
     boton.onclick = async () => {
       const respuesta = el.querySelector('textarea').value.trim();
       if (!respuesta) { el.querySelector('textarea').focus(); return; }
-      boton.disabled = true;
+      boton.disabled = true; supuesto.disabled = true;
       try {
         await accion(async () => {
           const actual = await herramienta('get', { id });
@@ -1320,7 +1378,7 @@ function conectarAbiertas() {
         });
       } finally {
         // Si salió bien, la página ya se pintó de nuevo sin ella; si no, se puede volver a intentar.
-        boton.disabled = false;
+        boton.disabled = false; supuesto.disabled = false;
       }
     };
   }
@@ -1432,6 +1490,7 @@ $('nav-mem').textContent = T.memorias;
 $('nav-pj').textContent = T.proyectos;
 $('nav-pan').textContent = T.pan.nav;
 $('nav-rev').firstElementChild.textContent = T.revisar;
+$('nav-pap').firstElementChild.textContent = T.papelera;
 cargar();
 </script>
 </body>

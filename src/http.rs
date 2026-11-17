@@ -17,6 +17,10 @@
 //!   `POST /api/candidates/dismiss` con `{id}` para dejarlo
 //! - `GET /api/trash` → la papelera (`memoria::papelera`), y `POST /api/restore` con `{id}` para
 //!   devolver una memoria
+//! - `POST /api/run` con `{command}` → el botón «Ejecutar» de Revisar: una de las órdenes que la propia
+//!   vista propone (juntar o separar proyectos, dejar uno en pausa donde está…), de una lista cerrada
+//!   (`orden_permitida`). Corre el mismo binario sobre la misma base, nunca un shell; pide el token de la
+//!   vista, como «Verificar»
 //! - `POST /api/redact` con `{id}` → la memoria sin lo que parece un secreto (`memoria::redactar`), con
 //!   el motivo «redacted» en su historial
 //! - `GET /health` → `{"ok": true, "version": …}`
@@ -402,6 +406,10 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
             };
             match (metodo, ruta) {
                 (Method::Get, "/api/memories") => {
+                    // La vista pide esto primero: lo que se arregla solo, antes de enseñar nada.
+                    if crate::revisar::limpiar_callado(&mut base) {
+                        crate::sync::programar(&ruta_db);
+                    }
                     let v = memoria::recientes(&base, &m.vista, None, usize::MAX >> 1)?;
                     // Con cuántas versiones anteriores tiene cada una, para la cronología de la vista.
                     let mut q = base.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
@@ -547,6 +555,29 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                 // herramienta (`/tools/`, lo que usan los agentes por HTTP), y pide lo que manda la página
                 // de esta vista: `Origin` (de aquí: lo de otra web ya se ha cortado arriba) y el token que
                 // va dentro de la página (`token_de_vista`); un `curl` con un `Origin` inventado no basta.
+                (Method::Post, "/api/run") => {
+                    if cabecera("Origin").is_none() || !cabecera(CABECERA_VISTA).is_some_and(|t| mismo_secreto(&t, &vista)) {
+                        return Ok(error(403, "this runs from the button in the web view only"));
+                    }
+                    let v = cuerpo_json(&mut peticion)?;
+                    let args = match orden_permitida(v["command"].as_str().unwrap_or_default()) {
+                        Ok(a) => a,
+                        Err(e) => return Ok(error(400, &e)),
+                    };
+                    let salida = std::process::Command::new(std::env::current_exe()?)
+                        .args(&args)
+                        .arg("--db")
+                        .arg(&ruta_db)
+                        .stdin(std::process::Stdio::null())
+                        .output()?;
+                    let texto = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+                    let (out, err) = (texto(&salida.stdout), texto(&salida.stderr));
+                    if !salida.status.success() {
+                        return Ok(error(400, if err.is_empty() { &out } else { &err }));
+                    }
+                    crate::sync::programar(&ruta_db);
+                    Ok(json(200, serde_json::json!({ "ok": true, "output": if out.is_empty() { err } else { out } }).to_string()))
+                }
                 (Method::Post, "/api/verify") => {
                     if cabecera("Origin").is_none() || !cabecera(CABECERA_VISTA).is_some_and(|t| mismo_secreto(&t, &vista)) {
                         return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
@@ -670,8 +701,75 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
     Ok(())
 }
 
+/// Las órdenes que puede lanzar el botón «Ejecutar» de la vista: las que la propia vista propone en
+/// Revisar, y ninguna más. Devuelve sus argumentos sin el `omoi` del principio (con comillas `"…"` o
+/// `'…'` para los nombres con espacios, como los escribe la vista), o por qué no se puede. Nada de
+/// marcadores por rellenar (`<carpeta>`) ni de opciones que cambien la base (`--db`, `--dir`).
+pub(crate) fn orden_permitida(orden: &str) -> std::result::Result<Vec<String>, String> {
+    let mut args: Vec<String> = Vec::new();
+    let (mut actual, mut comilla, mut hay) = (String::new(), None::<char>, false);
+    for c in orden.trim().chars() {
+        match comilla {
+            Some(q) if c == q => comilla = None,
+            Some(_) if c == '\\' => {}
+            Some(_) => actual.push(c),
+            None if c == '"' || c == '\'' => {
+                comilla = Some(c);
+                hay = true;
+            }
+            None if c.is_whitespace() => {
+                if hay || !actual.is_empty() {
+                    args.push(std::mem::take(&mut actual));
+                }
+                hay = false;
+            }
+            None => actual.push(c),
+        }
+    }
+    if comilla.is_some() {
+        return Err("unclosed quote".into());
+    }
+    if hay || !actual.is_empty() {
+        args.push(actual);
+    }
+    let no = || Err(format!("not one of the commands the web view can run: {orden}"));
+    if args.first().map(String::as_str) != Some("omoi") {
+        return no();
+    }
+    args.remove(0);
+    let accion: Vec<&str> = args.iter().take(2).map(String::as_str).collect();
+    let permitida = matches!(accion.as_slice(), ["projects", "merge" | "distinct" | "keep"] | ["space", "unassign"])
+        || (accion.as_slice() == ["projects", "move"] && args.iter().any(|a| a == "--space"));
+    let raro = args.iter().skip(2).any(|a| {
+        a.is_empty() || a.contains(['<', '>']) || matches!(a.as_str(), "--db" | "--dir") || a.starts_with("--db=") || a.starts_with("--dir=")
+    });
+    if !permitida || raro || args.len() < 3 {
+        return no();
+    }
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn el_boton_ejecutar_solo_lanza_lo_que_propone_la_vista() {
+        use super::orden_permitida as o;
+        assert_eq!(o("omoi projects merge tokimichi Tokimichi").unwrap(), ["projects", "merge", "tokimichi", "Tokimichi"]);
+        assert_eq!(o(r#"omoi projects distinct "Mi app" 'otra cosa'"#).unwrap(), ["projects", "distinct", "Mi app", "otra cosa"]);
+        assert_eq!(o("omoi projects move kumi --space acme --force").unwrap(), ["projects", "move", "kumi", "--space", "acme", "--force"]);
+        assert!(o("omoi space unassign kumi --force").is_ok());
+        assert!(o("omoi projects keep kumi").is_ok());
+        // Lo que no propone la vista, lo que lleva algo por rellenar o lo que cambia de base: no.
+        assert!(o("omoi forget 01M616P33818").is_err());
+        assert!(o("omoi projects move kumi <nueva-carpeta>").is_err());
+        assert!(o("omoi projects move kumi /otra/carpeta").is_err());
+        assert!(o("omoi projects merge a b --db /tmp/otra.db").is_err());
+        assert!(o("omoi projects merge").is_err());
+        assert!(o("ls; omoi projects merge a b").is_err());
+        assert!(o("omoi recent --project a").is_err());
+        assert!(o(r#"omoi projects merge "a b"#).is_err());
+    }
+
     use super::url_vista;
 
     /// El enlace a una memoria, con y sin el token de `OMOIKANE_HTTP_TOKEN` (que la página quita de la

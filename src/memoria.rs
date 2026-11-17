@@ -2030,7 +2030,7 @@ pub fn con_datos(db: &Connection, ms: Vec<Memoria>) -> Result<Vec<serde_json::Va
 
 /// Todas las memorias del ámbito con esta etiqueta (ya en minúsculas, como se guardan), de la más
 /// nueva a la más vieja.
-fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<Memoria>> {
+pub(crate) fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<Memoria>> {
     // Solo las que tienen la palabra en las etiquetas según el índice de palabras (todas las que llevan
     // la etiqueta, y quizá alguna más, que el resto de la condición quita): sin él, mirar las etiquetas
     // de cada memoria leía la tabla entera, contenido incluido (500 ms con 100.000 memorias).
