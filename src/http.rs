@@ -21,6 +21,9 @@
 //!   vista propone (juntar o separar proyectos, dejar uno en pausa donde está…), de una lista cerrada
 //!   (`orden_permitida`). Corre el mismo binario sobre la misma base, nunca un shell; pide el token de la
 //!   vista, como «Verificar»
+//! - `POST /api/split` con `{id, parts: [{title, content}], reason}` → el botón «Partir» de Revisar:
+//!   la primera parte se queda en la memoria y las demás son memorias nuevas de su mismo proyecto o
+//!   espacio (`memoria::partir`)
 //! - `POST /api/redact` con `{id}` → la memoria sin lo que parece un secreto (`memoria::redactar`), con
 //!   el motivo «redacted» en su historial
 //! - `GET /health` → `{"ok": true, "version": …}`
@@ -522,6 +525,31 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                     match memoria::restaurar(&mut base, &id, None) {
                         Ok(r) => {
                             crate::revisar::al_dia_de(&base, &antes, std::slice::from_ref(&r.id))?;
+                            crate::sync::programar(&ruta_db);
+                            Ok(json(200, serde_json::to_string(&r)?))
+                        }
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
+                (Method::Post, "/api/split") => {
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = match memoria::resolver_id(&base, v["id"].as_str().unwrap_or_default()) {
+                        Ok(id) => id,
+                        Err(e) => return Ok(error(404, &format!("{e:#}"))),
+                    };
+                    if !m.ve(&base, &id)? {
+                        return Ok(fuera());
+                    }
+                    let partes: Vec<(String, String)> = v["parts"]
+                        .as_array()
+                        .map(|a| a.iter().map(|p| (p["title"].as_str().unwrap_or_default().to_string(), p["content"].as_str().unwrap_or_default().to_string())).collect())
+                        .unwrap_or_default();
+                    let antes = crate::revisar::antes(&base)?;
+                    let motivo = v["reason"].as_str().unwrap_or("split in the web view");
+                    match memoria::partir(&mut base, &id, &partes, motivo) {
+                        Ok(r) => {
+                            let ids: Vec<String> = r.iter().map(|x| x.id.clone()).collect();
+                            crate::revisar::al_dia_de(&base, &antes, &ids)?;
                             crate::sync::programar(&ruta_db);
                             Ok(json(200, serde_json::to_string(&r)?))
                         }

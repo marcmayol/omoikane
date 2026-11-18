@@ -18,7 +18,7 @@ Some things don't need anyone to look at them, so since 1.12.0 they fix themselv
 
 The review also stopped flagging three things that weren't wrong: a version inside a dated or changelog-like line («19-oct-2026 (v0.6.1 → 0.6.2): …», «since 0.4.0») is history and is no longer compared as the current version; a Windows path (`D:/…`) seen from macOS or Linux, or a Unix one seen from Windows, belongs to your other computer and is not a broken path; and a review date written in the text as `[review-after] 10-nov-2026` now counts like a `review:` tag.
 
-In the web view, buttons that used to say only "Copy" next to an `omoi` command in Review (merging or separating projects, keeping a paused one) now also have **Run**, which asks for a second click before doing it. It only runs that short list of `omoi` commands, never a shell. A broken `[[link]]` has **Remove the link**, and an open decision has **Keep the assumption**, to close it with what the agent assumed.
+In the web view, buttons that used to say only "Copy" next to an `omoi` command in Review (merging or separating projects, keeping a paused one) now also have **Run**, which asks for a second click before doing it. It only runs that short list of `omoi` commands, never a shell. A broken `[[link]]` has **Remove the link**, and an open decision has **Keep the assumption**, to close it with what the agent assumed. Since 1.12.1 a memory too long for recall (over 6,000 characters) has **Split**: it proposes parts of about 5,000 characters, cut at headings and paragraphs, that you adjust before confirming. The first part stays in the original memory and the others are new ones with the same project, kind, tags and paths.
 
 ## Verdicts
 

@@ -293,3 +293,36 @@ fn duplicadas_de_oficio_con_300_sin_modelo_va_rapido() {
     revisar::pendientes(&db, &Ambito::Todos).unwrap();
     assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
 }
+
+/// 1.12.1: «Partir» una memoria demasiado larga. La primera parte se queda en la original (su id) y
+/// las demás son nuevas, del mismo proyecto, tipo, rutas y etiquetas, menos `status`.
+#[test]
+fn partir_una_demasiado_larga() {
+    let (_dir, mut db) = base("partir");
+    let n = Nueva {
+        project: "/p".into(),
+        kind: Some(Tipo::Gotcha),
+        title: "Lumbre: todo lo de la impresora".into(),
+        content: format!("{}\n\n{}", "a".repeat(5000), "b".repeat(5000)),
+        tags: vec!["impresora".into(), "status".into()],
+        paths: vec!["src/lib.rs".into()],
+        ..Default::default()
+    };
+    let m = memoria::guardar(&mut db, n, None).unwrap();
+    assert!(revisar::avisos(&db, &Ambito::Todos).unwrap().iter().any(|a| a.kind == revisar::LARGA && a.memory_id == m.id));
+    let partes = [("Lumbre: impresora (1/2)".to_string(), "a".repeat(5000)), ("Lumbre: impresora (2/2)".to_string(), "b".repeat(5000))];
+    let r = memoria::partir(&mut db, &m.id, &partes, "split in a test").unwrap();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[0].id, m.id);
+    assert_eq!(r[0].title, "Lumbre: impresora (1/2)");
+    assert_eq!(r[1].project_id, m.project_id);
+    assert_eq!(r[1].kind, Tipo::Gotcha);
+    assert_eq!(r[1].paths, ["src/lib.rs"]);
+    assert_eq!(r[1].tags, ["impresora"], "el estado del proyecto sigue siendo uno");
+    revisar::al_dia(&db).unwrap();
+    assert!(!revisar::avisos(&db, &Ambito::Todos).unwrap().iter().any(|a| a.kind == revisar::LARGA));
+    // Sin dos partes, o con una vacía, no se toca nada.
+    assert!(memoria::partir(&mut db, &m.id, &partes[..1], "x").is_err());
+    assert!(memoria::partir(&mut db, &m.id, &[partes[0].clone(), ("t".into(), " ".into())], "x").is_err());
+    assert_eq!(memoria::obtener(&db, &m.id).unwrap().title, "Lumbre: impresora (1/2)");
+}

@@ -4,6 +4,17 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.12.1 (2026-11-18)
+
+### Split a memory that is too long, from Review
+- Review warned that a memory was too long for recall (it reads the first 6,000 characters) but gave no way to fix it: only "It's fine as it is". Now a too-long memory has **Split**. It proposes parts of about 5,000 characters, cutting at sections (a Markdown heading, or a line that starts in bold, like a dated diary entry) and then at paragraphs, lines or sentences if one piece alone is too big. Each part shows its title and text to adjust before confirming, with a character count that turns red over 6,000.
+- The first part stays in the original memory, with its id, history, links and pin. The others are new memories with the same project or space, kind, tags and paths (`POST /api/split`, `memoria::partir`). A `status` tag stays only on the first part, because a project still has one status. A new part takes its title from its own heading, after the original's subject; without a heading, it gets the original's subject and its number (`2/3`).
+- The new parts are saved before the original changes, so a failure halfway loses no text. On a real database, all 26 memories over 6,000 characters split into parts of 5,000 or less with every character kept.
+- Text written on Windows (`\r\n`) splits the same as the rest.
+
+### Compatibility
+- The database schema stays at 10, and sync lines and `omoi export` don't change. A split is an ordinary `update` plus `remember`, so older versions sync it as usual.
+
 ## 1.12.0 (2026-11-18)
 
 ### What fixes itself

@@ -251,6 +251,9 @@ button.chip:hover { border-color: var(--accent); }
 .grafo .fact { fill: var(--fact); } .grafo .decision { fill: var(--decision); } .grafo .gotcha { fill: var(--gotcha); } .grafo .preference { fill: var(--preference); } .grafo .procedure { fill: var(--procedure); }
 
 /* Revisar */
+.trozo { margin: 12px 0 0; }
+.trozo .titulo-trozo { width: 100%; box-sizing: border-box; margin: 6px 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg2); color: var(--ink); font: 600 13.5px var(--sans); }
+.trozo .cuenta-trozo.mal { color: var(--delink); font-weight: 600; }
 .nav .cuenta.neutra { background: var(--line2); color: var(--ink2); }
 .nav .cuenta { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: 600 11px/18px var(--sans); text-align: center; }
 .rev { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
@@ -370,7 +373,7 @@ const T = ES ? {
   memoriasN: n => `${n} memoria${n === 1 ? '' : 's'}`, conEstado: 'con estado', donde: 'Dónde se quedó', sinEstado: 'Sin memoria de estado todavía.', globalPath: 'vale para todos los proyectos',
   masN: n => `+ ${n} más`, menos: 'Ver menos', cerrar: 'Cerrar', titulo: 'Título',
   revisar: 'Revisar', revTitulo: 'Qué conviene revisar', revSub: 'Lo que Omoikane ha visto en la memoria. El agente también recibe estos avisos cuando le llega una de estas memorias.',
-  nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Ver las dos', bien: 'Está bien así', bienDesfasada: 'No está desfasada', quitarEnlace: n => n > 1 ? 'Quitar los enlaces' : 'Quitar el enlace', quitarEnlaceT: 'Deja el texto y quita los [[ ]]: el enlace no lleva a ninguna memoria', quitarMotivo: 'enlace que no llevaba a nada, quitado desde la vista web', olvidarVieja: 'Olvidar la vieja',
+  nadaRevisar: 'Nada que revisar: la memoria está al día.', ver: 'Ver', ocultar: 'Ocultar', verDos: 'Ver las dos', bien: 'Está bien así', bienDesfasada: 'No está desfasada', partir: 'Partir', partirT: 'Propone trozos por apartados y párrafos; los retocas antes de partirla', partirSub: n => `Se quedará en ${n} memorias. La primera sigue siendo esta (su historial y sus enlaces); las demás son nuevas, del mismo proyecto, tipo, etiquetas y rutas. Retoca los cortes y los títulos antes de confirmar.`, trozoQueda: 'Se queda en esta', trozoNuevo: n => `Nueva (${n})`, caracteres: n => `${n.toLocaleString(loc)} caracteres`, partirEn: n => `Partir en ${n}`, partirMotivo: 'partida desde la vista web', partida: n => `Partida en ${n}`, quitarEnlace: n => n > 1 ? 'Quitar los enlaces' : 'Quitar el enlace', quitarEnlaceT: 'Deja el texto y quita los [[ ]]: el enlace no lleva a ninguna memoria', quitarMotivo: 'enlace que no llevaba a nada, quitado desde la vista web', olvidarVieja: 'Olvidar la vieja',
   vieja: 'La que puede estar desfasada', nuevaEt: 'La más nueva', sustituida: 'La sustituida', sustituta: 'La que la sustituye', unaEt: 'Una', otraEt: 'La otra',
   juntar: 'Juntar', juntarIguales: 'Son lo mismo: juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web', parejaCambiada: 'Alguna de las dos ha cambiado desde que se compararon: se volverán a comparar. No se ha juntado nada.',
   abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', seQueda: 'Se queda lo supuesto', seQuedaT: 'El agente siguió con lo que asumió y te vale: la cierra con eso como respuesta', seQuedaRespuesta: 'Se queda lo que se supuso.', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', fugas: l => `No se ha guardado: es una memoria de oficio (la ven todos los clientes) y nombra lo que parece de un proyecto o de un cliente (${l}). Escríbelo sin eso.`, bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
@@ -416,7 +419,7 @@ const T = ES ? {
   memoriasN: n => `${n} memor${n === 1 ? 'y' : 'ies'}`, conEstado: 'with status', donde: 'Where it was left', sinEstado: 'No status memory yet.', globalPath: 'applies to every project',
   masN: n => `+ ${n} more`, menos: 'Show less', cerrar: 'Close', titulo: 'Title',
   revisar: 'Review', revTitulo: 'What is worth reviewing', revSub: 'What Omoikane has noticed in the memory. The agent gets these warnings too whenever one of these memories reaches it.',
-  nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'See both', bien: "It's fine as it is", bienDesfasada: 'Not outdated', quitarEnlace: n => n > 1 ? 'Remove the links' : 'Remove the link', quitarEnlaceT: 'Keeps the text and removes the [[ ]]: the link leads to no memory', quitarMotivo: 'link that led nowhere, removed in the web view', olvidarVieja: 'Forget the old one',
+  nadaRevisar: 'Nothing to review: the memory is up to date.', ver: 'Open', ocultar: 'Hide', verDos: 'See both', bien: "It's fine as it is", bienDesfasada: 'Not outdated', partir: 'Split', partirT: 'Proposes parts by sections and paragraphs; you adjust them before splitting', partirSub: n => `It will become ${n} memories. The first one is still this one (its history and links); the others are new, with the same project, kind, tags and paths. Adjust the cuts and titles before confirming.`, trozoQueda: 'Stays in this one', trozoNuevo: n => `New (${n})`, caracteres: n => `${n.toLocaleString(loc)} characters`, partirEn: n => `Split into ${n}`, partirMotivo: 'split in the web view', partida: n => `Split into ${n}`, quitarEnlace: n => n > 1 ? 'Remove the links' : 'Remove the link', quitarEnlaceT: 'Keeps the text and removes the [[ ]]: the link leads to no memory', quitarMotivo: 'link that led nowhere, removed in the web view', olvidarVieja: 'Forget the old one',
   vieja: 'The one that may be outdated', nuevaEt: 'The newer one', sustituida: 'The superseded one', sustituta: 'The one that replaces it', unaEt: 'One', otraEt: 'The other',
   juntar: 'Merge', juntarIguales: 'They are the same: merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view', parejaCambiada: 'One of the two has changed since they were compared: they will be compared again. Nothing was merged.',
   abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', seQueda: 'Keep the assumption', seQuedaT: 'The agent went on with what it assumed and that is fine: close it with that as the answer', seQuedaRespuesta: 'What was assumed stays.', decidido: 'Decided', decididoMotivo: 'decided in the web view', fugas: l => `Not saved: it is a trade memory (every client sees it) and it names what looks like a project or a client (${l}). Write it without them.`, bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
@@ -512,7 +515,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
-let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, candidatas = [], papelera = [];
+let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, revPartir = {}, candidatas = [], papelera = [];
 // De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
 let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [], duplicados = [];
 // De /api/overview: la vista de responsable, ya filtrada por el servidor (solo lo que se ve desde donde
@@ -1086,6 +1089,22 @@ function pintarRevisar() {
       const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
       if (!r.ok) throw new Error(await r.text());
     });
+    if (q('partir')) q('partir').onclick = () => { revPartir[el.dataset.k] = proponerTrozos(todas.find(x => x.id === a.memory_id)); pintar(); };
+    if (q('cancelarPartir')) q('cancelarPartir').onclick = () => { delete revPartir[el.dataset.k]; pintar(); };
+    // Lo que se escribe en el editor se guarda en la propuesta (un repintado no lo pierde) y el contador
+    // se pone al día sin repintar.
+    for (const tz of el.querySelectorAll('.trozo')) {
+      const t = revPartir[el.dataset.k][+tz.dataset.i], cuenta = tz.querySelector('.cuenta-trozo');
+      tz.querySelector('.titulo-trozo').oninput = e => { t.title = e.target.value; };
+      tz.querySelector('textarea').oninput = e => { t.content = e.target.value; cuenta.textContent = T.caracteres(t.content.length); cuenta.classList.toggle('mal', t.content.length > LARGO_RECALL); };
+    }
+    if (q('confirmarPartir')) q('confirmarPartir').onclick = () => accion(async () => {
+      const parts = revPartir[el.dataset.k].filter(t => t.content.trim());
+      const r = await fetch('/api/split', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: a.memory_id, parts, reason: T.partirMotivo }) });
+      if (!r.ok) throw new Error(await r.text());
+      delete revPartir[el.dataset.k];
+      aviso(T.partida(parts.length));
+    });
     if (q('quitar')) q('quitar').onclick = () => accion(async () => {
       // Se lee la memoria justo antes: la de la página puede ser vieja y se pisaría lo de después.
       const actual = await herramienta('get', { id: a.memory_id });
@@ -1104,6 +1123,46 @@ function pintarRevisar() {
     };
   }
 }
+// «Partir» (1.12.1): una propuesta de trozos de una memoria demasiado larga, por apartados y párrafos,
+// de unos LARGO_TROZO caracteres (el recall lee 6.000). Un apartado empieza en un título de Markdown o
+// en una línea en negrita (la entrada fechada de un diario: «**19-oct-2026 …**»). Lo que no cabe en un
+// trozo ni siquiera solo (un párrafo enorme) se corta por líneas y, si hace falta, por frases.
+const LARGO_TROZO = 5000, LARGO_RECALL = 6000;
+function proponerTrozos(m) {
+  const piezas = [];
+  // Las escritas en Windows llevan `\r\n`, y `.` no casa con `\r`: sin esto, ningún título encajaba.
+  for (const p of m.content.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
+    if (p.length <= LARGO_TROZO) { piezas.push(p); continue; }
+    let actual = '';
+    for (const l of p.split('\n').flatMap(l => l.length <= LARGO_TROZO ? [l] : l.split(/(?<=[.!?])\s+/))) {
+      if (actual && actual.length + l.length + 1 > LARGO_TROZO) { piezas.push(actual); actual = ''; }
+      actual = actual ? actual + '\n' + l : l;
+    }
+    if (actual) piezas.push(actual);
+  }
+  const apartado = p => /^(#{1,6}\s|\*\*[^*\n]{2,})/.test(p.trimStart());
+  const trozos = [];
+  let actual = '';
+  for (const p of piezas) {
+    const lleno = actual && actual.length + p.length + 2 > LARGO_TROZO;
+    const buenCorte = actual && apartado(p) && actual.length > LARGO_TROZO * 0.6;
+    if (lleno || buenCorte) { trozos.push(actual); actual = ''; }
+    actual = actual ? actual + '\n\n' + p : p;
+  }
+  if (actual) trozos.push(actual);
+  // El tema de la original, sin lo que va detrás de su primer «;», «(», «:» o raya: los trozos nuevos lo
+  // llevan delante de su propio título, que si no quedaba larguísimo.
+  const tema0 = m.title.split(/[;(:—–]/)[0].trim() || m.title;
+  const n = trozos.length, base = tema0.length > 60 ? tema0.slice(0, 59) + '…' : tema0;
+  return trozos.map((content, i) => {
+    if (i === 0) return { title: m.title, content };
+    // Si el trozo empieza por un título, ese dice de qué va; si no, el de la original con su número.
+    const cab = content.trimStart().split('\n')[0].match(/^(?:#{1,6}\s+|\*\*)(.+?)(?:\*\*.*)?$/);
+    const tema = cab ? cab[1].replace(/[*:]+$/, '').trim().slice(0, 80) : '';
+    return { title: tema ? `${base}: ${tema}` : `${base} (${i + 1}/${n})`, content };
+  });
+}
+
 // Los enlaces del aviso (`links to nothing: [[a]], [[b]]`) que siguen escritos en la memoria.
 function enlacesRotos(a, m) {
   return [...new Set([...a.detail.matchAll(/\[\[([^\]]+)\]\]/g)].map(x => x[1]))].filter(l => m && m.content.includes(`[[${l}]]`));
@@ -1123,7 +1182,14 @@ function avisoHTML(a) {
       <div><span class="lb nueva">${esc(a.kind === 'superseded' ? T.sustituta : a.kind === 'contradicts' ? T.otraEt : T.nuevaEt)}</span><span class="t">${esc(o.title)}</span><div class="md">${md(o.content)}</div></div>
     </div>`;
   let cont = '';
-  if (juntando) cont = `${par}
+  const partiendo = a.kind === 'too_long' && revPartir[claveAv(a)];
+  if (partiendo) cont = `<p class="vacio" style="padding:6px 0 0">${esc(T.partirSub(partiendo.length))}</p>
+    ${partiendo.map((t, i) => `<div class="trozo" data-i="${i}">
+      <div class="cab"><span class="lb">${esc(i === 0 ? T.trozoQueda : T.trozoNuevo(i + 1))}</span><span class="what cuenta-trozo${t.content.length > LARGO_RECALL ? ' mal' : ''}">${esc(T.caracteres(t.content.length))}</span></div>
+      <input class="titulo-trozo" value="${esc(t.title)}" spellcheck="false">
+      <textarea class="fusion" rows="10" spellcheck="false">${esc(t.content)}</textarea>
+    </div>`).join('')}`;
+  else if (juntando) cont = `${par}
     <p class="vacio" style="padding:6px 0 0">${esc(T.juntarSub)}</p>
     <textarea class="fusion" rows="12" spellcheck="false">${esc(nueva.content + '\n\n' + vieja.content)}</textarea>`;
   else if (abierto && o) cont = par;
@@ -1136,6 +1202,8 @@ function avisoHTML(a) {
     ${cont}
     <div class="acts">
       <button class="btn" data-r="ver">${abierto ? T.ocultar : (o ? T.verDos : T.ver)}</button>
+      ${a.kind === 'too_long' && !partiendo ? `<button class="btn pri" data-r="partir" title="${esc(T.partirT)}">${esc(T.partir)}</button>` : ''}
+      ${partiendo ? `<button class="btn pri" data-r="confirmarPartir">${esc(T.partirEn(partiendo.length))}</button><button class="btn" data-r="cancelarPartir">${esc(T.no)}</button>` : ''}
       ${rotos.length ? `<button class="btn pri" data-r="quitar" title="${esc(T.quitarEnlaceT)}">${esc(T.quitarEnlace(rotos.length))}</button>` : ''}
       <button class="btn" data-r="bien">${esc(a.kind === 'outdated' ? T.bienDesfasada : T.bien)}</button>
       ${juntable ? `<button class="btn" data-r="juntar">${esc(juntando ? T.no : a.kind === 'outdated' || a.kind === 'contradicts' ? T.juntarIguales : T.juntar)}</button>` : ''}
