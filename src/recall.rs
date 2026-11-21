@@ -599,9 +599,16 @@ fn linea(m: &Memoria, actual: i64, propio: Option<&str>) -> String {
     format!("- [{}{}]{global}{de}{rutas} {}: {fragmento} (id {})", m.kind, marca(m), m.title, m.id.chars().take(12).collect::<String>())
 }
 
-/// La marca de una memoria que verificó una persona (`verificado`), detrás del tipo: `[decision, verified]`.
+/// La marca detrás del tipo: `[decision, verified]` si la verificó una persona (`verificado`), o
+/// `[fact, inferred]` si solo la dedujo un agente (`evidencia`): que se compruebe antes de fiarse.
 fn marca(m: &Memoria) -> &'static str {
-    if m.verified.is_some() { ", verified" } else { "" }
+    if m.verified.is_some() {
+        ", verified"
+    } else if crate::evidencia::solo_deducida(&m.evidence) {
+        ", inferred"
+    } else {
+        ""
+    }
 }
 
 /// La advertencia de `revisar` sobre una memoria, para el final de su línea (o nada).

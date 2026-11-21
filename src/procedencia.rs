@@ -135,11 +135,6 @@ pub(crate) fn recortar_extra(extra: &mut serde_json::Map<String, serde_json::Val
     }
 }
 
-/// Lo que se pone en `memory.extra` al crear una memoria con esta procedencia.
-pub(crate) fn extra(p: &Procedencia) -> String {
-    serde_json::json!({ CLAVE: p }).to_string()
-}
-
 fn variable(k: &str) -> Option<String> {
     std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 200)
 }

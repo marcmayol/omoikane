@@ -155,6 +155,22 @@ Each new memory keeps the agent session and the commit it was written in: `get` 
 
 If the agent runs inside a trace, the memory also keeps it. Whoever launches the agent (a CI job, an agent factory) can pass `TRACEPARENT`, the W3C Trace Context standard that OpenTelemetry uses. Claude Code passes it on to its shell and to its MCP servers, so Omoikane saves its `trace_id` and `span_id`: `get` shows `trace <trace_id>/<span_id>` and the JSON carries both. From a run's trace you get to the memories it left, and from a memory to the exact step that wrote it. They are random ids with nothing of the project in them, so global memories and a space's memories keep them too. A malformed `TRACEPARENT` is ignored.
 
+## What each memory is based on
+
+Provenance says where a memory was written; **evidence** says what it rests on. The agent doesn't score how sure it is (a model that rates its own certainty leans towards whatever seems more useful): it says what it saw, with a closed kind and a detail a person can read.
+
+| Kind | What it is | Detail |
+|---|---|---|
+| `user-said` | You said it | Your words, quoted |
+| `code-read` | Read in the code | The file (and line) |
+| `tested` | Checked by running it | What ran and what came out |
+| `doc` | Read in documentation or on a web page | What it says; the URL in `url` |
+| `inferred` | The agent worked it out | From what |
+
+`remember` and `update` take `evidence: [{kind, detail, url}]`; the CLI takes `--evidence KIND:DETAIL`, repeatable (`--evidence "tested:cargo test, 83 passed"`, `--evidence "doc:https://… what it says"`). `update` adds to what the memory had, without a new version: when the agent checks something it had only worked out, it adds `tested` and the memory stops being just a guess. A detail with nothing in it is refused, a secret in it is redacted like the content, and repeated ones count once (at most 10).
+
+A memory based only on `inferred` ranks a little lower in search (×0.85) and comes back marked `[fact, inferred]` in the recall, so the next agent checks it before relying on it. One a person verified isn't penalised. `get` lists the evidence under `based on`, the JSON carries `evidence` and the tools' answers `based_on` (its kinds); the web view shows it in the memory's panel and a `?` next to the title of what an agent only worked out. Memories without evidence (everything before 1.13, imports) are left as they are. Trade memories don't take it: a file or a quote would be the project's. It travels with sync and in `omoi export` (`omoikane.evidence`, signed).
+
 ## It doesn't keep secrets
 
 If a token, a private key or a password slips into a memory, it becomes `[redacted:<type>]` before it is saved, and the reply tells the agent. What was saved before shows in Review with a button to redact it, history included, and none of it leaves the computer when syncing. `OMOIKANE_REDACT=0` turns redaction off; `omoi doctor` says so while it is off.
@@ -180,3 +196,6 @@ A memory comes back when the recall brings it. A **skill** is loaded by the agen
 You don't need to look up ids. `omoi skill` on its own lists the repository's skills and, below them, the memories that **could be skills**, each with the exact command: the project's procedures and the memories the agent applied in 2 sessions or more, most applied first, leaving out the ones that already are skills or look like they hold a secret (`--suggest` for just those; the agent gets them with `skill` and `suggest: true`). And instead of the id you can give a few words of its title: `omoi skill "publish release"` takes the memory whose title has the most of them, says which one it took, and if two tie it lists them with their ids instead of guessing.
 
 Each file carries the memory's id and a fingerprint of what was generated, so Omoikane knows what happened to it afterwards. `omoi skill` with no id lists the repository's skills: *up to date*, *outdated* (the memory changed since: `omoi skill --refresh` regenerates them), *edited by hand* (left alone; `--force` replaces it) or *orphan* (its memory is gone). A file with that name that isn't from Omoikane is never overwritten: the new skill takes the end of the id in its name. A memory that looks like it holds a secret isn't written, because the file is about to end up in a commit. `--dry-run` says what it would write. Omoikane never commits: you do.
+
+**From the web view.** A project's memory has **Make skill** in its panel: it writes both files in that project's repository and says what it did with each (created, updated, unchanged, or skipped and why). It never commits either. Like Verify, it only runs from the page itself (`POST /api/skill` asks for the view token), because it writes files.
+

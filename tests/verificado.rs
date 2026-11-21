@@ -455,6 +455,19 @@ fn la_web_verifica_solo_desde_el_navegador() {
     let (estado, _) = verificar(&serde_json::json!({ "id": id, "unverify": true }).to_string(), &[("Origin", &origen), ("X-Omoikane-View", &token)]);
     assert_eq!(estado, 200);
     assert!(e.json(&["get", &id]).get("verified").is_none());
+
+    // «Hacer skill» (1.13): escribe en el repositorio, así que pide lo mismo que «Verificar».
+    let skill = |cabeceras: &[(&str, &str)]| pedir("POST", "/api/skill", &serde_json::json!({ "id": id }).to_string(), cabeceras);
+    assert_eq!(skill(&[("Origin", &origen)]).0, 403);
+    let (estado, r) = skill(&[("Origin", &origen), ("X-Omoikane-View", &token)]);
+    assert_eq!(estado, 200, "{r}");
+    let hechas: serde_json::Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(hechas.as_array().map(Vec::len), Some(2), "{hechas}");
+    for h in hechas.as_array().unwrap() {
+        assert_eq!(h["action"], "created", "{h}");
+        let f = e.dir.join("repo").join(h["path"].as_str().unwrap());
+        assert!(std::fs::read_to_string(&f).unwrap().contains("Lo verifica la persona en la vista."), "{}", f.display());
+    }
 }
 
 /// El enlace a una memoria (1.8.6): `omoi serve --memory <id>` acepta su principio, dice el enlace

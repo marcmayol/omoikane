@@ -38,6 +38,7 @@ Decidido que no, con el motivo:
 
 | Versión | Fecha | Qué trajo |
 |---|---|---|
+| 1.13.0 | 2026-11-21 | Cada memoria dice en qué se basa (`evidence`: user-said, code-read, tested, doc, inferred); lo que solo dedujo un agente pesa menos y llega marcado; botón Hacer skill en la vista web |
 | 1.12.1 | 2026-11-18 | Partir desde Revisar una memoria demasiado larga (botón Partir) |
 | 1.12.0 | 2026-11-18 | Lo que se arregla solo: los estados viejos con otro más nuevo van a la papelera, las decisiones se cierran cuando su tarea está resuelta; menos avisos falsos; página Papelera, botones Ejecutar y Quitar el enlace en la vista web |
 | 1.11.0 | 2026-11-17 | Las memorias de un fichero llegan cuando el agente lo abre (`omoi recall --file-open`), no solo cuando el mensaje lo nombra |

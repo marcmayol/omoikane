@@ -35,7 +35,7 @@
 //! que una web cualquiera no llegue a ella cambiando su DNS) y, si escriben, hechas desde la propia
 //! vista (una web ajena no puede mandar un POST que olvide memorias). Con `OMOIKANE_HTTP_TOKEN`, cada
 //! petición (salvo la página, que no lleva datos) tiene que llevar `Authorization: Bearer <token>`.
-//! `POST /api/verify` (el botón «Verificar» de la vista) pide además el token de la vista, uno nuevo en
+//! `POST /api/verify` y `POST /api/skill` (los botones «Verificar» y «Hacer skill» de la vista) piden además el token de la vista, uno nuevo en
 //! cada `omoi serve` que solo va dentro de la página (`X-Omoikane-View`): frena un `curl` con un
 //! `Origin` inventado, no a un agente con shell que se proponga cargar la página para sacarlo.
 //!
@@ -606,6 +606,29 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                     crate::sync::programar(&ruta_db);
                     Ok(json(200, serde_json::json!({ "ok": true, "output": if out.is_empty() { err } else { out } }).to_string()))
                 }
+                // El botón «Hacer skill» de la vista (`skill`): escribe ficheros en el repositorio del
+                // proyecto de la memoria, así que pide lo mismo que «Verificar»: la página de esta vista.
+                (Method::Post, "/api/skill") => {
+                    if cabecera("Origin").is_none() || !cabecera(CABECERA_VISTA).is_some_and(|t| mismo_secreto(&t, &vista)) {
+                        return Ok(error(403, "this runs from the button in the web view only (agents: the `skill` tool)"));
+                    }
+                    let v = cuerpo_json(&mut peticion)?;
+                    let id = match memoria::resolver_id(&base, v["id"].as_str().unwrap_or_default()) {
+                        Ok(id) => id,
+                        Err(e) => return Ok(error(404, &format!("{e:#}"))),
+                    };
+                    if !m.ve(&base, &id)? {
+                        return Ok(fuera());
+                    }
+                    let mem = memoria::obtener(&base, &id)?;
+                    if mem.project.is_empty() || !crate::oficios::de_memoria(&mem).is_empty() {
+                        return Ok(error(400, "a skill belongs to a repository: only a project's memories become skills"));
+                    }
+                    match crate::skill::escribir(&base, &mem.project, &id, crate::skill::Destino::Ambas, v["force"].as_bool().unwrap_or(false), false) {
+                        Ok(r) => Ok(json(200, serde_json::to_string(&r)?)),
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
                 (Method::Post, "/api/verify") => {
                     if cabecera("Origin").is_none() || !cabecera(CABECERA_VISTA).is_some_and(|t| mismo_secreto(&t, &vista)) {
                         return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
@@ -720,7 +743,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, POST /api/verify, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, POST /api/skill, POST /api/verify, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

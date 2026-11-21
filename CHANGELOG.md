@@ -4,6 +4,23 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.13.0 (2026-11-21)
+
+### What each memory is based on
+- Provenance said where a memory was written, not what it rests on. Now `remember` and `update` take `evidence`: what the agent saw, with a closed kind and a detail a person can read (`user-said` with your words, `code-read` with the file, `tested` with what ran and what came out, `doc` with the URL, `inferred` with what it was worked out from). The agent doesn't score its own certainty: it says what it saw. The idea comes from the evidence log of trycompai/crm.
+- A memory based only on `inferred` ranks a little lower in search (×0.85) and comes back marked `[fact, inferred]` in the recall, so the next agent checks it before relying on it. One a person verified isn't penalised.
+- `update` with `evidence` adds to what the memory had, without a new version, so a guess that gets tested stops being a guess. Repeated evidence counts once, at most 10 per memory; a detail with nothing in it is refused and a secret in it is redacted like the content.
+- The CLI takes `--evidence KIND:DETAIL` on `remember` and `update` (`doc:https://… text` puts the URL in `url`). `get` lists it under `based on`; the tools answer with `based_on`, and `remember` reminds the agent when it saved without evidence. The agent's instructions ask for it.
+- In the web view the memory's panel shows it, and what an agent only worked out carries a `?` next to its title.
+- Trade memories don't take evidence: a file or a quote would belong to the project.
+
+### Make skill from the web view
+- A project's memory has **Make skill** in its panel. It writes the skill in that project's repository (`.agents/skills` and `.claude/skills`, as `omoi skill` does) and says what happened to each file. Because it writes files, it only runs from the page itself, with the view token like Verify (`POST /api/skill`). It never commits.
+
+### Compatibility
+- The database schema stays at 10. Evidence lives in `memory.extra` like provenance, so it travels with sync as an extra field that 1.0–1.12 keep without understanding it, and `omoi export` writes it as `omoikane.evidence` (signed only when present, so bundles from earlier versions still verify).
+- Memories saved before 1.13 have no evidence and rank exactly as before.
+
 ## 1.12.1 (2026-11-18)
 
 ### Split a memory that is too long, from Review

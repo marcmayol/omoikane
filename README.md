@@ -18,10 +18,10 @@ Your agent learns things every session: a bug that only shows up on Windows, why
 
 - **It recalls by itself, and almost always stays quiet.** When what you type relates to something saved, a hook hands the agent that memory in about 35 ms (with a large memory, the meaning model checks it on the few prompts where words found something, and the noise drops). If nothing relates, it hands over nothing, as with 93 % of real prompts. When the agent opens a file on its own, the gotchas about that file come with it. It also saves what the agent forgot to, when the session ends.
 - **It understands what you ask, even with other words**, in 101 languages, accents or not. On the [public benchmark](https://github.com/marcmayol/omoikane-bench) (250 questions written blind), the right memory comes first for 89 % of questions and 55 % of paraphrases; engram 3.6, 71 % and 6 %.
-- **Nothing gets lost.** No duplicates, history with reasons, stale memories flagged, secrets redacted, a trash everything comes back from and a copy of the database every day.
+- **Nothing gets lost.** No duplicates, history with reasons, stale memories flagged, secrets redacted, a trash everything comes back from and a copy of the database every day. Each memory says what it is based on (you said it, read in the code, tested, a doc, or only worked out by an agent), and what an agent only worked out comes back marked.
 - **From you alone to a whole company.** The same memory on all your computers and with teammates, through a git repository of yours, encrypted. Spaces keep each client's memories apart, and trades share what one stack teaches (Android, web, WordPress…) with every project of that stack.
 - **15 agents, one memory.** Claude Code, Codex, Gemini CLI, Cursor, Copilot, OpenCode and the rest; `omoi setup <agent>` gets each one ready. Two are tested by hand, the rest going by their documentation.
-- **From memory to team skill.** `omoi skill` turns a memory into a skill in the repository (`.agents/skills` and `.claude/skills`) that every agent loads, and tells when it fell behind the memory.
+- **From memory to team skill.** `omoi skill` turns a memory into a skill in the repository (`.agents/skills` and `.claude/skills`) that every agent loads, and tells when it fell behind the memory. In the web view it is one button, **Make skill**.
 - **One binary, no server.** 10 MCP tools, SQLite built in, no Python, Node or Docker. It works offline, and on Windows just like on Linux and macOS.
 
 ## Install

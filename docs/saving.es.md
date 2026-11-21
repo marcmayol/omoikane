@@ -156,6 +156,22 @@ Cada memoria nueva guarda la sesión del agente y el commit en que se escribió:
 
 Si el agente trabaja dentro de una traza, la memoria la guarda también. Quien lanza al agente (una CI, una fábrica de agentes) puede pasarle `TRACEPARENT`, el estándar W3C Trace Context que usa OpenTelemetry. Claude Code lo pasa a su shell y a sus servidores MCP, así que Omoikane apunta su `trace_id` y su `span_id`: `get` enseña `trace <trace_id>/<span_id>` y el JSON lleva los dos. Desde la traza de una ejecución llegas a las memorias que dejó, y desde una memoria al paso exacto que la escribió. Son ids aleatorios sin nada del proyecto, así que también los guardan las memorias globales y las de un espacio. Un `TRACEPARENT` mal formado se ignora.
 
+## En qué se basa cada memoria
+
+La procedencia dice dónde se escribió una memoria; la **evidencia**, en qué se basa. El agente no puntúa lo seguro que está (un modelo que puntúa su propia certeza se inclina hacia lo que parece más útil): dice qué vio, con un tipo cerrado y un detalle que una persona pueda leer.
+
+| Tipo | Qué es | Detalle |
+|---|---|---|
+| `user-said` | Lo dijiste tú | Tus palabras, citadas |
+| `code-read` | Leído en el código | El fichero (y la línea) |
+| `tested` | Comprobado al ejecutarlo | Qué se ejecutó y qué salió |
+| `doc` | Leído en documentación o en una web | Qué dice; la URL en `url` |
+| `inferred` | Lo dedujo el agente | De qué |
+
+`remember` y `update` aceptan `evidence: [{kind, detail, url}]`; la CLI, `--evidence TIPO:DETALLE`, que se puede repetir (`--evidence "tested:cargo test, 83 passed"`, `--evidence "doc:https://… lo que dice"`). `update` la añade a la que ya tenía, sin versión nueva: cuando el agente comprueba algo que solo había deducido, añade `tested` y la memoria deja de ser una suposición. Un detalle vacío se rechaza, un secreto dentro se tapa como en el contenido, y las repetidas cuentan una vez (10 como mucho).
+
+Una memoria que se basa solo en `inferred` sale un poco por detrás al buscar (×0,85) y llega marcada `[fact, inferred]` en el recall, para que el siguiente agente la compruebe antes de fiarse. Si la verificó una persona, no se penaliza. `get` la enseña en `se basa en`, el JSON lleva `evidence` y las respuestas de las herramientas `based_on` (sus tipos); la vista web la muestra en el panel de la memoria y pone un `?` junto al título de lo que solo dedujo un agente. Las memorias sin evidencia (todo lo de antes de la 1.13, lo importado) se quedan como están. Las de oficio no la llevan: un fichero o una cita serían del proyecto. Viaja con la sincronización y en `omoi export` (`omoikane.evidence`, firmada).
+
 ## No guarda secretos
 
 Si un token, una clave privada o una contraseña se cuela en una memoria, se cambia por `[redacted:<tipo>]` antes de guardarla, y la respuesta se lo dice al agente. Lo que se guardó antes sale en Revisar con un botón para redactarlo, historial incluido, y nada de eso sale del equipo al sincronizar. `OMOIKANE_REDACT=0` apaga la redacción; mientras está apagada, `omoi doctor` lo dice.
@@ -181,3 +197,6 @@ Una memoria vuelve cuando el recall la trae. Una **skill** la carga el propio ag
 No hace falta buscar ids. `omoi skill` a secas lista las skills del repositorio y, debajo, las memorias que **podrían ser skills**, cada una con la orden exacta: las recetas del proyecto y las memorias que el agente aplicó en 2 sesiones o más, primero las más aplicadas, sin las que ya son skill ni las que parecen llevar un secreto (`--suggest` para solo esas; el agente las pide con `skill` y `suggest: true`). Y en vez del id valen unas palabras de su título: `omoi skill "publicar versión"` coge la memoria con más de ellas en el título, dice cuál ha cogido y, si dos empatan, las lista con su id en vez de adivinar.
 
 Cada fichero lleva el id de la memoria y una huella de lo generado, así que Omoikane sabe qué pasó después. `omoi skill` sin id lista las skills del repositorio: *al día*, *desfasada* (la memoria cambió después: `omoi skill --refresh` las regenera), *editada a mano* (no se toca; `--force` la sustituye) o *huérfana* (su memoria ya no existe). Un fichero con ese nombre que no es de Omoikane no se pisa nunca: la skill nueva lleva el final del id en el nombre. Una memoria que parece llevar un secreto no se escribe, porque el fichero va a acabar en un commit. `--dry-run` dice lo que escribiría. Omoikane no hace commit: lo haces tú.
+
+**Desde la vista web.** Una memoria de un proyecto tiene **Hacer skill** en su panel: escribe los dos ficheros en el repositorio de ese proyecto y dice qué hizo con cada uno (creada, puesta al día, igual, o saltada y por qué). Tampoco hace commit. Como Verificar, solo funciona desde la propia página (`POST /api/skill` pide el token de la vista), porque escribe ficheros.
+

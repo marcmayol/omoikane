@@ -438,14 +438,17 @@ fn con_gemma(
     Ok(v)
 }
 
-/// Recencia y fijadas, orden final, límite y, si toca, apuntarlas como recuperadas.
+/// Recencia, fijadas y lo deducido, orden final, límite y, si toca, apuntarlas como recuperadas.
 fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apuntar: bool) -> Result<Vec<Resultado>> {
     let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
     for r in &mut fusion {
         let d: f64 = dias.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
         let recencia = 1.0 / (1.0 + d.max(0.0) / DIAS_RECENCIA);
         let fijada = if r.memoria.pinned { BOOST_FIJADA } else { 1.0 };
-        r.score *= fijada * (1.0 + BOOST_RECENCIA * recencia);
+        // Lo que solo dedujo un agente, sin que nadie lo dijera ni lo probara, un poco por detrás
+        // (`evidencia`); una verificada por una persona no, aunque se dedujera.
+        let deducida = if r.memoria.verified.is_none() && crate::evidencia::solo_deducida(&r.memoria.evidence) { crate::evidencia::FACTOR_DEDUCIDA } else { 1.0 };
+        r.score *= fijada * deducida * (1.0 + BOOST_RECENCIA * recencia);
     }
     drop(dias);
     fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));

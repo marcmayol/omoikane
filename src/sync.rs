@@ -2242,6 +2242,7 @@ impl<'a> Aplicador<'a> {
                         pinned,
                         source: format!("sync:{origen}"),
                         provenance: None,
+                        evidence: Vec::new(),
                     };
                     memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
                     r.nuevas += 1;

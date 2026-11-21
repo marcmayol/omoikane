@@ -79,6 +79,8 @@ main { flex: 1; min-height: 0; position: relative; }
 .kt.fact { color: var(--fact); } .kt.decision { color: var(--decision); } .kt.gotcha { color: var(--gotcha); } .kt.preference { color: var(--preference); } .kt.procedure { color: var(--procedure); }
 .stl { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 .vf { color: var(--accent); font-weight: 700; }
+.ded { color: var(--faint); font-weight: 700; cursor: help; }
+.evid { font-style: normal; font-weight: 400; color: var(--muted); }
 .chip { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; line-height: 20px; }
 button.chip:hover { border-color: var(--accent); }
 .sh { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 10px 8px 6px; }
@@ -363,7 +365,7 @@ const T = ES ? {
   mostrar: 'Mostrar', recordado: 'También lo recordado', hoy: 'Hoy', ayer: 'Ayer', nueva: 'nueva', cambiada: 'cambiada', recordadaEv: 'recordada',
   resultados: (n, q) => `${n} resultado${n === 1 ? '' : 's'} para «${q}»`, nada: 'No hay memorias con estos filtros.', mas: 'Mostrar más',
   creada: 'Creada', cambiadaF: 'Cambiada', recordadaF: 'Recordada', veces: n => `${n} ${n === 1 ? 'vez' : 'veces'}`, origen: 'Origen', autor: 'Autor', rutas: 'Rutas', id: 'Id',
-  verificadaF: 'Verificada', porQuien: (b, f) => `por ${b} · ${f}`, noVerificada: 'No: la escribió un agente', escritaEn: 'Escrita en', verificar: 'Verificar', desverificar: 'Quitar verificación',
+  verificadaF: 'Verificada', porQuien: (b, f) => `por ${b} · ${f}`, noVerificada: 'No: la escribió un agente', escritaEn: 'Escrita en', seBasa: 'Se basa en', evTipos: { 'user-said': 'Lo dijo el usuario', 'code-read': 'Leído en el código', tested: 'Probado', doc: 'Documentación', inferred: 'Lo dedujo un agente' }, deducida: 'Solo la dedujo un agente: nadie lo dijo ni lo probó', hacerSkill: 'Hacer skill', hacerSkillT: 'La escribe como skill en .agents/skills y .claude/skills del repositorio de su proyecto; luego súbela con un commit', skillHecha: r => `Skill: ${r}`, verificar: 'Verificar', desverificar: 'Quitar verificación',
   enlaceNo: id => `No hay ninguna memoria ${id} a la vista: puede que se olvidara (mira la Papelera, arriba), que sea de otro espacio que el de la carpeta en la que arrancó omoi serve, o que el id esté mal copiado.`, enlaceVarias: id => `Hay varias memorias que empiezan por ${id}: el enlace necesita más caracteres del id.`,
   verificarT: 'Respondes de que este texto es correcto. Si alguien lo cambia, deja de estar verificada.',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
@@ -409,7 +411,7 @@ const T = ES ? {
   mostrar: 'Show', recordado: 'Also what was recalled', hoy: 'Today', ayer: 'Yesterday', nueva: 'new', cambiada: 'changed', recordadaEv: 'recalled',
   resultados: (n, q) => `${n} result${n === 1 ? '' : 's'} for “${q}”`, nada: 'No memories match these filters.', mas: 'Show more',
   creada: 'Created', cambiadaF: 'Changed', recordadaF: 'Recalled', veces: n => `${n} time${n === 1 ? '' : 's'}`, origen: 'Source', autor: 'Author', rutas: 'Paths', id: 'Id',
-  verificadaF: 'Verified', porQuien: (b, f) => `by ${b} · ${f}`, noVerificada: 'No: written by an agent', escritaEn: 'Written in', verificar: 'Verify', desverificar: 'Remove verification',
+  verificadaF: 'Verified', porQuien: (b, f) => `by ${b} · ${f}`, noVerificada: 'No: written by an agent', escritaEn: 'Written in', seBasa: 'Based on', evTipos: { 'user-said': 'The user said it', 'code-read': 'Read in the code', tested: 'Tested', doc: 'Documentation', inferred: 'An agent worked it out' }, deducida: 'Only an agent worked it out: nobody said or tested it', hacerSkill: 'Make skill', hacerSkillT: "Writes it as a skill in .agents/skills and .claude/skills of its project's repository; then commit it", skillHecha: r => `Skill: ${r}`, verificar: 'Verify', desverificar: 'Remove verification',
   enlaceNo: id => `There is no memory ${id} in view: it may have been forgotten (see Trash, at the top), belong to another space than the folder omoi serve started in, or the id may be mistyped.`, enlaceVarias: id => `Several memories start with ${id}: the link needs more characters of the id.`,
   verificarT: 'You vouch that this text is right. If anyone changes it, it is no longer verified.',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
@@ -525,9 +527,9 @@ let panorama = null, mesesSinTocar = 6;
 const filtro = { tipo: null, espacio: '*', proyecto: '*', tema: '', recordado: false };
 let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
 
-function aviso(texto) {
+function aviso(texto, ms = 2200) {
   const a = $('aviso'); a.textContent = texto; a.hidden = false;
-  clearTimeout(aviso.t); aviso.t = setTimeout(() => a.hidden = true, 2200);
+  clearTimeout(aviso.t); aviso.t = setTimeout(() => a.hidden = true, ms);
 }
 
 async function herramienta(nombre, args) {
@@ -857,7 +859,7 @@ function filaHTML(e) {
   const m = e.m, k = claveEv(e), open = abierta === k;
   const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
   return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
-    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : ''}</div>
+    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : deducida(m) ? ' <span class="ded" title="' + esc(T.deducida) + '">?</span>' : ''}</div>
     <div class="r">${pastilla(ambito(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
     <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
     ${open ? detalleHTML(m, false) : ''}
@@ -885,6 +887,8 @@ function irA(id) {
   const destino = enlaceProyecto(ambito(x));
   if (location.hash === destino) { elegidaPanel = id; pintar(); } else { irPendiente = id; location.hash = destino; }
 }
+// Se basa solo en lo que dedujo un agente (`evidencia`): nadie lo dijo ni lo probó.
+const deducida = m => !m.verified && (m.evidence || []).length > 0 && m.evidence.every(e => e.kind === 'inferred');
 function detalleHTML(m, vertical) {
   const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
   const a = ambito(m), e = espacioDe(a);
@@ -906,6 +910,7 @@ function detalleHTML(m, vertical) {
         <span>${T.verificadaF}</span><b>${m.verified ? '✓ ' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) : esc(T.noVerificada)}</b>
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
         ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : '', m.provenance.trace_id ? 'trace ' + esc(m.provenance.trace_id) + '/' + esc(m.provenance.span_id || '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
+        ${(m.evidence || []).length ? `<span>${T.seBasa}</span><b>${m.evidence.map(e => `<em class="evid">${esc(T.evTipos[e.kind] || e.kind)}</em> · ${esc(e.detail)}${e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">↗</a>` : ''}`).join('<br>')}</b>` : ''}
         <span>${T.id}</span><b class="mono">${m.id}</b>
         ${enlacesHTML(m)}
       </div>
@@ -914,6 +919,7 @@ function detalleHTML(m, vertical) {
     <div class="acts">
       <button class="btn" data-a="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
       <button class="btn" data-a="verificar" title="${esc(T.verificarT)}">${m.verified ? T.desverificar : T.verificar}</button>
+      ${m.project && !(m.tags || []).some(t => t.startsWith('trade:')) ? `<button class="btn" data-a="skill" title="${esc(T.hacerSkillT)}">${T.hacerSkill}</button>` : ''}
       ${m.versions ? `<button class="btn" data-a="hist">${histAbierta[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
       <select data-a="destino"><option value="">${T.mover}</option>${a ? `<option value="@global">${T.global}</option>` : ''}
         ${espacios.filter(s => PRE_ESP + s.key !== a).map(s => `<option value="${esc(PRE_ESP + s.key)}">◇ ${esc(s.name)}</option>`).join('')}
@@ -938,6 +944,15 @@ async function conectar(el, m) {
     const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
     if (!r.ok) throw new Error(await r.text());
   });
+  if (q('skill')) q('skill').onclick = async () => {
+    try {
+      const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+      const r = await fetch('/api/skill', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ id: m.id }) });
+      if (!r.ok) throw new Error(await r.text());
+      const hechas = await r.json();
+      aviso(T.skillHecha(hechas.map(h => `${h.path} (${h.action}${h.reason ? ': ' + h.reason : ''})`).join(' · ')), 8000);
+    } catch (e) { aviso(T.error + ': ' + e.message); }
+  };
   q('mover').onclick = () => {
     let p = q('destino').value;
     if (!p) return;

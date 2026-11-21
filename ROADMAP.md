@@ -38,6 +38,7 @@ Decided against, with the reason:
 
 | Version | Date | What it brought |
 |---|---|---|
+| 1.13.0 | 2026-11-21 | Each memory says what it is based on (`evidence`: user-said, code-read, tested, doc, inferred); what an agent only worked out ranks lower and comes back marked; Make skill button in the web view |
 | 1.12.1 | 2026-11-18 | Split a memory that is too long from Review (Split button) |
 | 1.12.0 | 2026-11-18 | What fixes itself: old statuses with a newer one go to the trash, decisions close when their task is resolved; fewer false warnings; Trash page, Run buttons and Remove the link in the web view |
 | 1.11.0 | 2026-11-17 | Memories tied to a file arrive when the agent opens that file (`omoi recall --file-open`), not only when the prompt names it |

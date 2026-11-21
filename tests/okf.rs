@@ -1029,3 +1029,29 @@ fn la_procedencia_va_en_sources() {
     let (w, c) = (t2.find("https://wiki.example/pagina").unwrap(), t2.find("omoikane-commit").unwrap());
     assert!(w < c && t2.matches("omoikane-commit").count() == 1, "{t2}");
 }
+
+/// La evidencia (1.13) va en `omoikane.evidence`, está firmada y vuelve tal cual en otra base; una
+/// importación que la trae a una memoria que ya existía se la añade.
+#[test]
+fn la_evidencia_viaja_en_el_bundle() {
+    use omoikane::evidencia::{Clase, Evidencia};
+    let dir = comun::Temporal::nueva("okf-evidencia");
+    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let ev = vec![
+        Evidencia { kind: Clase::Tested, detail: "cargo test: 83 passed".into(), url: None },
+        Evidencia { kind: Clase::Doc, detail: "la guía lo dice".into(), url: Some("https://docs.example/guia".into()) },
+    ];
+    let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Con evidencia".into(), content: "Se probó.".into(), evidence: ev.clone(), ..Default::default() };
+    memoria::guardar(&mut a, n, None).unwrap();
+    let bundle = dir.join("b");
+    okf::exportar(&a, &bundle, Que::Personal).unwrap();
+    let t = leer(&concepto_de(&bundle, "Con evidencia"));
+    assert!(t.contains("evidence") && t.contains("cargo test: 83 passed"), "{t}");
+    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let r = okf::importar_con(&mut z, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true }).unwrap();
+    assert_eq!(r.created, 1);
+    assert_eq!(todas(&z).remove(0).evidence, ev);
+    // Otra vez, ya importada: nada cambia ni se repite.
+    okf::importar(&mut z, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
+    assert_eq!(todas(&z).remove(0).evidence.len(), 2);
+}

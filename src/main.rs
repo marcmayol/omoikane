@@ -171,6 +171,9 @@ struct DatosNuevos {
     /// Structured data for programs, as JSON: kept with the memory, out of search and recall.
     #[arg(long, value_name = "JSON")]
     data: Option<String>,
+    /// What it is based on, KIND:DETAIL (repeatable): user-said, code-read, tested, doc (doc:URL text) or inferred. E.g. --evidence "tested:cargo test, 83 passed".
+    #[arg(long, value_name = "KIND:DETAIL")]
+    evidence: Vec<String>,
 }
 
 #[derive(Args)]
@@ -181,6 +184,9 @@ struct DatosCambio {
     /// Remove its structured data.
     #[arg(long, conflicts_with = "data")]
     no_data: bool,
+    /// More evidence, KIND:DETAIL (repeatable; added to what it had, no new version): user-said, code-read, tested, doc or inferred.
+    #[arg(long, value_name = "KIND:DETAIL")]
+    evidence: Vec<String>,
 }
 
 #[derive(Args)]
@@ -1411,8 +1417,9 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, allow_leaks, key, datos: DatosNuevos { data } } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, allow_leaks, key, datos: DatosNuevos { data, evidence } } => {
             let content = contenido_de(content, &title, data.is_some())?;
+            let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
             let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
             // Memoria de oficio: `--trade`, o una etiqueta `trade:` puesta a mano.
             let (oficios, tags) = oficios_pedidos(&trades, tags)?;
@@ -1497,7 +1504,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 }
                 tags
             };
-            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, ..Default::default() };
+            let evidence = if de_oficio { Vec::new() } else { evidence };
+            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, evidence, ..Default::default() };
             if let Some(k) = key {
                 return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
             }
@@ -1574,7 +1582,8 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, allow_leaks, reason, replace, with, append, datos: DatosCambio { data, no_data } }) => {
+        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, allow_leaks, reason, replace, with, append, datos: DatosCambio { data, no_data, evidence } }) => {
+            let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
             let data = if no_data { Some(None) } else { data.as_deref().map(memoria::datos_de_texto).transpose()?.map(Some) };
             anyhow::ensure!(
                 replace.len() == with.len(),
@@ -1643,14 +1652,17 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 return Ok(());
             }
             // Solo los datos: sin versión nueva (como fijarla), y sin el «nada que cambiar» de `update`.
-            let solo_datos = data.is_some() && sin_cambios(&cambios);
-            let (m, cambiados) = if solo_datos {
+            let solo_datos = (data.is_some() || !evidence.is_empty()) && sin_cambios(&cambios);
+            let (mut m, cambiados) = if solo_datos {
                 (memoria::obtener(&db, &id)?, Vec::new())
             } else {
                 memoria::actualizar_con_cambios(&mut db, &id, cambios, modelo.as_ref())?
             };
             if let Some(d) = data {
                 avisar_datos_tapados(&memoria::poner_datos(&mut db, &m.id, d)?);
+            }
+            if !evidence.is_empty() && omoikane::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(&mut db, &m.id, &evidence)? {
+                m = memoria::obtener(&db, &m.id)?;
             }
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
@@ -3517,6 +3529,10 @@ fn entera(m: &Memoria, aplicada: Option<(i64, Option<String>)>) {
     println!("{}{}", tr!("source     ", "origen     "), m.source);
     if let Some(p) = &m.provenance {
         println!("{}{}", tr!("written in ", "escrita en "), p.texto());
+    }
+    for (i, e) in m.evidence.iter().enumerate() {
+        let etiqueta = if i == 0 { tr!("based on   ", "se basa en ") } else { "           ".to_string() };
+        println!("{etiqueta}{}", e.texto());
     }
     match &m.verified {
         Some(v) => println!("{}", tr!("verified   by {} ({})", "verificada por {} ({})", v.by, v.at)),

@@ -29,6 +29,7 @@
 //! | etiquetas `draft` y `deprecated` | `status: draft` / `status: deprecated` |
 //! | `source` | `generated.by` (`<agente>/omoikane`), con `generated.at` = su último cambio |
 //! | la procedencia (commit, rama, sesión, traza) | `sources` (1.10.1, ids `omoikane-*`, rehechas en cada export) y exacta en `omoikane.provenance` |
+//! | en qué se basa (`evidencia`, 1.13) | `omoikane.evidence` |
 //! | el resto (id, clave, fijada, fechas, autor, datos) | `omoikane:` (una clave más, que OKF manda conservar) |
 //!
 //! Lo que trae un concepto de otro y Omoikane no tiene (`sources`, `resource`, `generated`, los
@@ -622,6 +623,9 @@ fn concepto(m: &Memoria, id_concepto: &str, proyecto: &str, datos: Option<&Value
     if let Some(p) = &m.provenance {
         o.insert(crate::procedencia::CLAVE.into(), json!(p));
     }
+    if !m.evidence.is_empty() {
+        o.insert(crate::evidencia::CLAVE.into(), json!(m.evidence));
+    }
     for (k, v) in [("superseded_by", &rel.sustituida_por), ("supersedes", &rel.sustituye_a), ("contradicts", &rel.contradice)] {
         if !v.is_empty() {
             o.insert(k.into(), json!(v));
@@ -867,6 +871,10 @@ fn texto_firmado(e: &Entrada) -> String {
     // Solo si la hay (1.10.1): lo firmado por una 1.8.5–1.10.0, sin procedencia, sigue valiendo.
     if let Some(p) = &n.provenance {
         v["provenance"] = json!(p);
+    }
+    // Igual con la evidencia (1.13).
+    if !n.evidence.is_empty() {
+        v["evidence"] = json!(n.evidence);
     }
     format!("omoikane-okf-3\n{v}")
 }
@@ -1419,6 +1427,11 @@ fn entrada(c: &Concepto) -> Result<Entrada> {
             pinned: om.get("pinned").and_then(Value::as_bool).unwrap_or(false),
             source: texto("source").unwrap_or_else(|| if nuestra { String::new() } else { "import:okf".into() }),
             provenance: om.get(crate::procedencia::CLAVE).and_then(|p| serde_json::from_value::<crate::procedencia::Procedencia>(p.clone()).ok()).filter(|p| !p.vacia()),
+            evidence: om
+                .get(crate::evidencia::CLAVE)
+                .and_then(|v| serde_json::from_value::<Vec<crate::evidencia::Evidencia>>(v.clone()).ok())
+                .and_then(|v| crate::evidencia::limpiar(v).ok())
+                .unwrap_or_default(),
             ..Default::default()
         },
         datos,
@@ -1959,6 +1972,10 @@ fn importar_uno(db: &mut Connection, modelo: Option<&Modelo>, c: &Concepto, dest
                 )?;
             }
         }
+    }
+    // La evidencia, también en la que ya existía (con su clave o su id): se añade a la que tuviera.
+    if !e.nueva.evidence.is_empty() {
+        memoria::anadir_evidencia(db, &id, &e.nueva.evidence)?;
     }
     // El sello vuelve solo si el texto que se verificó (`verified_sha`) es el que la memoria tiene AHORA,
     // ya escrita (al guardarla se pudo tapar un secreto, o la memoria a la que fue tenía otro texto).

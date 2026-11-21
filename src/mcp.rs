@@ -22,6 +22,7 @@ const INSTRUCCIONES: &str = "Omoikane is this user's long-term memory across ses
 Save a memory with `remember` when you learn something worth knowing next time: a non-obvious bug or trap (kind gotcha, with the file paths it affects), a decision and its reasons (decision), how something in the project works (fact), how the user wants things done (preference), or a procedure that gets repeated, like publishing a release (procedure: numbered steps, plus a line `when: words, that, trigger it`; it comes back whole when the user asks for it).
 When you follow a procedure and a step fails or has changed, `update` the procedure with what you learned (and why), so it is right next time.
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
+Say what each memory is based on with `evidence` (what you saw, not how sure you are): `user-said` with the user's words, `code-read` with the file, `tested` with what you ran and what came out, `doc` with the URL, or `inferred` with what you worked it out from. A memory marked inferred has not been checked: check it before relying on it, and when you do, add the new evidence with `update`.
 Write each memory in the language the user writes to you in (not in English if they write in Spanish): automatic recall matches the user's own words, so a memory in another language won't come back when it should.
 Before working on something, `search` for it. If `remember` answers duplicate_of, update that memory instead (or set force if it really is different).
 When a memory changes what you do, say so in one line with its id (\"Following 01M6DSPWW7NZ: build before the smoke test\"): Omoikane counts it as applied in the session diary, so the user can see which memories the work ran under. Don't cite the ones you just saved.
@@ -91,6 +92,8 @@ pub struct Remember {
     contradicts: Option<Vec<String>>,
     /// Structured data for programs (any JSON, up to 64 KB): kept with the memory and returned by `get` (and, with `key`, by `get` with `key` and `resolve`), never searched or recalled.
     data: Option<serde_json::Value>,
+    /// What this is based on, so the next agent knows how far to trust it: one or more of {kind, detail, url}. kind: "user-said" (quote the user), "code-read" (the file and line), "tested" (what you ran and what came out), "doc" (what the page says; its URL in url) or "inferred" (you worked it out: from what). Say what you saw, not how sure you are. Memories based only on "inferred" rank lower and show up marked.
+    evidence: Option<Vec<crate::evidencia::Evidencia>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -190,6 +193,8 @@ pub struct Update {
     data: Option<Option<serde_json::Value>>,
     /// Bring a forgotten memory back from the trash (with its history, on every synced computer). The other fields are ignored.
     restore: Option<bool>,
+    /// More evidence for it (added to what it had, no new version): {kind, detail, url}, kind one of user-said, code-read, tested, doc, inferred. E.g. after you test what an "inferred" memory says.
+    evidence: Option<Vec<crate::evidencia::Evidencia>>,
     /// Edit part of the content: each `find` is literal and has to appear exactly once in the current content (otherwise nothing changes and you get the count). Applied in order, before `append`.
     replace: Option<Vec<Reemplazo>>,
     /// Text added at the end of the content (a blank line in between), for one more step in a procedure.
@@ -295,6 +300,9 @@ struct Compacta {
     /// «by Marc, 2026-11-08» si la verificó una persona (`verificado`).
     #[serde(skip_serializing_if = "Option::is_none")]
     verified: Option<String>,
+    /// En qué se basa (`evidencia`): sus tipos, «tested, user-said»; «inferred» si solo lo dedujo un agente.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    based_on: Option<String>,
 }
 
 const LARGO_FRAGMENTO: usize = 200;
@@ -323,6 +331,7 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
         similarity: similarity.map(|s| (s * 1000.0).round() / 1000.0),
         note: None,
         verified: m.verified.as_ref().map(|v| format!("by {}, {}", v.by, v.at.get(..10).unwrap_or(&v.at))),
+        based_on: crate::evidencia::tipos(&m.evidence),
     }
 }
 
@@ -598,6 +607,7 @@ impl Servidor {
                 } else {
                     crate::procedencia::actual(db, &project)
                 };
+                let evidencia = if de_oficio { Vec::new() } else { crate::evidencia::limpiar(p.evidence.unwrap_or_default())? };
                 // Una variante de una etiqueta que ya existe donde irá (`ideas` con `idea`), por esa.
                 let (tags, tags_merged) = if de_oficio { (tags, Vec::new()) } else { crate::etiquetas::cerrar(db, &crate::etiquetas::ambito_de(db, &project, space_id)?, tags)? };
                 let nueva = Nueva {
@@ -611,6 +621,8 @@ impl Servidor {
                     pinned: p.pinned.unwrap_or(false),
                     source: origen.clone(),
                     provenance,
+                    // Las de oficio, sin evidencia: su detalle (un fichero, una cita) sería del proyecto.
+                    evidence: evidencia.clone(),
                     ..Default::default()
                 };
                 let datos = p.data.filter(|d| !d.is_null());
@@ -620,7 +632,7 @@ impl Servidor {
                 let antes = crate::revisar::antes(db)?;
                 // Con clave: la de esa clave en este ámbito, creada o actualizada en la misma transacción
                 // (con sus datos, si vienen).
-                let (m, por_clave, tapados) = match &clave {
+                let (mut m, por_clave, tapados) = match &clave {
                     Some(k) => {
                         let r = memoria::guardar_por_clave(db, k, nueva, datos, modelo)?;
                         (r.memoria, Some((r.creada, r.parecidas)), r.tapados)
@@ -635,6 +647,10 @@ impl Servidor {
                     }
                 };
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
+                // Con clave puede haber actualizado una que ya existía: se le añade.
+                if !evidencia.is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                    m = memoria::obtener(db, &m.id)?;
+                }
                 let juzgadas = juzgar(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &origen)?;
                 let donde = if de_oficio {
                     format!("(trade {}{})", oficios.join(", "), para.as_deref().map(|x| format!(", {x} projects only")).unwrap_or_default())
@@ -648,6 +664,13 @@ impl Servidor {
                 let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": donde });
                 if !tags_merged.is_empty() {
                     r["tags_merged"] = serde_json::json!(tags_merged);
+                }
+                match crate::evidencia::tipos(&m.evidence) {
+                    Some(t) => r["based_on"] = serde_json::json!(t),
+                    None if !de_oficio => {
+                        r["evidence_hint"] = serde_json::json!("No evidence: add what it is based on with `update` and `evidence` (user-said, code-read, tested, doc or inferred, with what you saw).")
+                    }
+                    None => {}
                 }
                 if de_oficio && let Some(aqui) = Ambito::de(db, proyecto)?.proyecto() {
                     let propios = crate::oficios::del_proyecto(db, aqui)?;
@@ -842,7 +865,8 @@ impl Servidor {
                     && c.append.is_none()
                     && absorbe.is_none();
                 let datos = p.data;
-                let (m, cambiados, absorbidas) = if solo_juicio {
+                let evidencia = crate::evidencia::limpiar(p.evidence.unwrap_or_default())?;
+                let (mut m, cambiados, absorbidas) = if solo_juicio {
                     (memoria::obtener(db, &id)?, Vec::new(), Vec::new())
                 } else if let Some(ids) = absorbe {
                     memoria::absorber(db, &id, &ids, c, modelo)?
@@ -854,6 +878,9 @@ impl Servidor {
                     Some(d) => memoria::poner_datos(db, &m.id, d)?,
                     None => Vec::new(),
                 };
+                if !evidencia.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                    m = memoria::obtener(db, &m.id)?;
+                }
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
                 let tocadas: Vec<String> = std::iter::once(m.id.clone()).chain(absorbidas.iter().cloned()).collect();
                 crate::revisar::al_dia_de(db, &antes, if solo_juicio { &[] } else { &tocadas })?;

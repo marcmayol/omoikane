@@ -1180,3 +1180,17 @@ fn etiquetas_sin_variantes() {
     assert_eq!(e.json(&["tags"]).as_array().unwrap().len(), 0);
     assert!(!e.omoi(&["tags", "--merge", "opens", "open"]).status.success(), "las del sistema no se unen");
 }
+
+/// `--evidence TIPO:DETALLE` (1.13) al guardar y al cambiar, y `get` dice en qué se basa.
+#[test]
+fn evidencia_por_la_cli() {
+    let e = Entorno::nuevo("evidencia");
+    let m = e.json(&["remember", "-k", "fact", "-t", "Los tests tardan", "--evidence", "tested:cargo test, 255 s", "--evidence", "doc:https://doc.rust-lang.org/cargo dice que paraleliza", "Los tests de integración tardan unos 4 minutos."]);
+    assert_eq!(m["evidence"][0]["kind"], "tested", "{m}");
+    assert_eq!(m["evidence"][1]["url"], "https://doc.rust-lang.org/cargo", "{m}");
+    let id = m["id"].as_str().unwrap();
+    e.ok(&["update", id, "--evidence", "user-said:«van lentos»"]);
+    let g = e.ok(&["get", id]);
+    assert!(g.contains("based on   tested: cargo test, 255 s") && g.contains("user-said: «van lentos»"), "{g}");
+    assert!(!e.omoi(&["remember", "-t", "x", "--evidence", "guess:algo", "texto"]).status.success());
+}

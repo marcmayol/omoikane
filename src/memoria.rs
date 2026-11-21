@@ -104,6 +104,9 @@ pub struct Memoria {
     /// En qué sesión y en qué commit se escribió (`procedencia`, en `memory.extra`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<crate::procedencia::Procedencia>,
+    /// En qué se basa (`evidencia`, en `memory.extra`): qué vio quien la guardó.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<crate::evidencia::Evidencia>,
     /// La verificación que quitó el cambio de texto de esta llamada (`update`). No se guarda ni sale en
     /// el JSON: es para que quien cambia lo diga.
     #[serde(skip)]
@@ -147,6 +150,8 @@ pub struct Nueva {
     pub source: String,
     /// De dónde sale (`procedencia::actual`), para lo que se escribe aquí: va a `memory.extra`.
     pub provenance: Option<crate::procedencia::Procedencia>,
+    /// En qué se basa (`evidencia`), ya limpia: va a `memory.extra`.
+    pub evidence: Vec<crate::evidencia::Evidencia>,
 }
 
 /// Solo cambia lo que viene en `Some`.
@@ -361,9 +366,9 @@ fn filas_fts(db: &Connection) -> Option<i64> {
 /// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`). Las dos últimas,
 /// la verificación (`verificado`) y la procedencia (`procedencia`) de `memory.extra` (o NULL): el
 /// `instr` evita leer el JSON de las que no tienen, que son casi todas.
-pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) AND NOT EXISTS (SELECT 1 FROM meta WHERE k = 'sello_ajeno:' || m.id AND v = json_extract(m.extra, '$.verified.by') || char(10) || json_extract(m.extra, '$.verified.at')) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END";
+pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) AND NOT EXISTS (SELECT 1 FROM meta WHERE k = 'sello_ajeno:' || m.id AND v = json_extract(m.extra, '$.verified.by') || char(10) || json_extract(m.extra, '$.verified.at')) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END, CASE WHEN instr(m.extra, 'evidence') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.evidence') END";
 /// Cuántas columnas son: lo que se pida detrás de `COLUMNAS` empieza en este índice.
-pub(crate) const NCOL: usize = 19;
+pub(crate) const NCOL: usize = 20;
 
 pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
@@ -401,6 +406,7 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         redacted: Vec::new(),
         verified,
         provenance,
+        evidence: crate::evidencia::de_columna(f.get::<_, Option<String>>(19)?.as_deref()),
         unverified: None,
     })
 }
@@ -981,8 +987,14 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
             // La procedencia, solo lo que le toca según dónde cae (ver `procedencia::para_memoria`).
             match (origen, crate::procedencia::para_memoria(nueva.provenance.clone(), project_id, &tags)) {
                 (Some(o), _) => o.extra.to_string(),
-                (None, Some(p)) => crate::procedencia::extra(&p),
-                (None, None) => "{}".to_string(),
+                (None, p) => {
+                    let mut extra = serde_json::Map::new();
+                    if let Some(p) = p {
+                        extra.insert(crate::procedencia::CLAVE.into(), serde_json::to_value(p)?);
+                    }
+                    crate::evidencia::anadir(&mut extra, &nueva.evidence);
+                    serde_json::Value::Object(extra).to_string()
+                }
             },
         ],
     )?;
@@ -1516,6 +1528,7 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         pinned: m.pinned,
         source: m.source.clone(),
         provenance: None,
+        evidence: Vec::new(),
     };
     // Vuelve con su texto de siempre: el sello de contenido, el de cuando se olvidó (los veredictos que
     // tenía siguen valiendo).
@@ -2038,6 +2051,23 @@ fn poner_datos_en(tx: &Transaction, id: &str, datos: Option<serde_json::Value>) 
     };
     let hlc = crate::reloj::sello_tras(tx, &hlc_de(tx, id)?)?;
     tx.execute(&format!("UPDATE memory SET extra = ?2, hlc = ?3, updated_at = {AHORA} WHERE id = ?1"), params![id, serde_json::to_string(&o)?, hlc])?;
+    Ok(true)
+}
+
+/// Añade evidencia (`evidencia`) a la memoria `id`, sin versión nueva ni cambiar `updated_at` (no
+/// cambia lo que dice, sino en qué se basa), pero con sello nuevo para que viaje con la sincronización.
+/// `false` si ya la tenía toda.
+pub fn anadir_evidencia(db: &mut Connection, id: &str, nuevas: &[crate::evidencia::Evidencia]) -> Result<bool> {
+    let id = resolver_id(db, id)?;
+    let tx = escribir_tx(db)?;
+    let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
+    let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
+    if !crate::evidencia::anadir(&mut o, nuevas) {
+        return Ok(false);
+    }
+    let hlc = crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?;
+    tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
+    tx.commit()?;
     Ok(true)
 }
 

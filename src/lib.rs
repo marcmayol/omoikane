@@ -14,6 +14,7 @@ pub mod embeber;
 pub mod entorno;
 pub mod enlaces;
 pub mod etiquetas;
+pub mod evidencia;
 pub mod gemma;
 pub mod http;
 pub mod idioma;
