@@ -33,11 +33,11 @@ Each project has trades (its stack: android, web, wordpress, rust…, detected f
 If the user asks to continue something and it is unclear what, do at most one `search` (or `recent`); if that doesn't settle it, ask the user instead of exploring further.
 When you finish a piece of work or the session winds down, save where it was left (what is done, what is next) with the tag `status`, so the next session can pick it up; keep one per project: if it already has one, `update` it.
 When a product or business decision belongs to the user and you can't ask right now, save it as kind decision with the tag `open` (the question, the options, what you assumed meanwhile) and keep working; when you finish a long piece of work, tell the user which ones you left. Add the tag `blocking` too only when the work can't go on without the answer (no safe assumption, or a wrong guess would be costly to undo): then stop that part and ask; without it the decision is for later. `decisions` lists the open ones, blocking first, and closes one with the user's answer (`resolve` and `answer`).
-If a memory stops holding on a known day (a token that expires, an offer, a plan with a date), add the tag `review:YYYY-MM-DD`: that day the review flags it.
+If a memory stops holding on a known day (a token that expires, an offer, a plan with a date), add the tag `review:YYYY-MM-DD` and say in `review_reason` what to check that day (\"the API token expires\"): that day it shows up at the start of the session with that reason.
 When something you remembered changes, `update` it with a reason; `forget` it only when it is wrong or no longer applies (it goes to the trash for 30 days; `update` with restore=true brings it back).
 To fix one part of a memory use `update` with `replace` ([{find, with}], each `find` literal and found exactly once); to add a step, `append`; to merge several memories into one, `update` the one that stays with the merged text in `content` and the others' ids in `absorb` (they go to the trash, superseded by it, and their tags, paths and history move to it).
 A memory marked ⚠ may be outdated: before relying on it, look at the newer one it names; then `update` the old one (or `forget` it if the new one replaces it), asking the user if it is not clear.
-When one memory replaces another, say so: `supersedes` (in `remember` or `update`) with the old one's id. When two disagree and you can't tell which holds, `contradicts`; when a warning pairs two that both hold, `compatible`. That judgment is kept, travels with sync and shows wherever the memories show up.
+When one memory replaces another, say so: `supersedes` (in `remember` or `update`) with the old one's id. When two disagree and you can't tell which holds, ask the user; if you can't ask now, mark it with `contradicts`: the one it contradicts goes ON HOLD (no automatic recall, lower in search) until the user says which holds. Save their answer with `decisions` (contradiction: both ids, keep: the one that holds or \"both\", answer: their words); the user can also decide in the web view. When a warning pairs two that both hold, `compatible`. That judgment is kept, travels with sync and shows wherever the memories show up.
 A memory marked verified was checked by a person: trust it over an unverified one that disagrees. Only the user verifies (`omoi verify` or the web view); never do it yourself, and if you change its text, tell the user it is no longer verified.
 Call `context` at the start of a session to get the user's preferences and pinned memories for this project.";
 
@@ -88,8 +88,10 @@ pub struct Remember {
     key: Option<String>,
     /// Ids of memories this one replaces: they will show up as superseded by it.
     supersedes: Option<Vec<String>>,
-    /// Ids of memories this one disagrees with, when it's not clear which holds.
+    /// Ids of memories this one disagrees with, when it's not clear which holds and you can't ask the user now: they go on hold until the user says which holds.
     contradicts: Option<Vec<String>>,
+    /// With a `review:YYYY-MM-DD` tag (required then): what to check that day, e.g. "the API token expires". It shows up with the memory at the start of the session when the date arrives.
+    review_reason: Option<String>,
     /// Structured data for programs (any JSON, up to 64 KB): kept with the memory and returned by `get` (and, with `key`, by `get` with `key` and `resolve`), never searched or recalled.
     data: Option<serde_json::Value>,
     /// What this is based on, so the next agent knows how far to trust it: one or more of {kind, detail, url}. kind: "user-said" (quote the user), "code-read" (the file and line), "tested" (what you ran and what came out), "doc" (what the page says; its URL in url) or "inferred" (you worked it out: from what). Say what you saw, not how sure you are. Memories based only on "inferred" rank lower and show up marked.
@@ -183,8 +185,10 @@ pub struct Update {
     reason: Option<String>,
     /// Ids of memories this one replaces: they will show up as superseded by it.
     supersedes: Option<Vec<String>>,
-    /// Ids of memories this one disagrees with, when it's not clear which holds.
+    /// Ids of memories this one disagrees with, when it's not clear which holds and you can't ask the user now: they go on hold until the user says which holds.
     contradicts: Option<Vec<String>>,
+    /// What to check when its review date (`review:YYYY-MM-DD` tag) arrives. Required when `tags` sets a new review date.
+    review_reason: Option<String>,
     /// Ids of memories flagged against this one that both hold: clears the warning.
     compatible: Option<Vec<String>>,
     /// Replace its structured data (any JSON; null removes it). Never searched or recalled.
@@ -257,6 +261,10 @@ pub struct Decisions {
     reason: Option<String>,
     /// With resolve, on a trade decision: save the answer even if trade_leaks flags a false positive (never an absolute path or a repository URL).
     allow_leaks: Option<bool>,
+    /// Instead: settle two memories that contradict each other with the user's answer. Both ids; with `keep` and `answer`.
+    contradiction: Option<Vec<String>>,
+    /// With contradiction: the id of the one that holds (the other becomes superseded by it), or "both" when both hold.
+    keep: Option<String>,
 }
 
 /// `data` en `update`: sin el campo, no se toca; con `null`, se quitan los datos.
@@ -333,6 +341,17 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
         verified: m.verified.as_ref().map(|v| format!("by {}, {}", v.by, v.at.get(..10).unwrap_or(&v.at))),
         based_on: crate::evidencia::tipos(&m.evidence),
     }
+}
+
+/// Lo que hay que mirar cuando llegue la fecha de revisión, limpio. Con fecha (`con_fecha`) es
+/// obligatorio: una fecha sin motivo obliga a releer la memoria entera para saber qué comprobar.
+fn motivo_de_revision(con_fecha: bool, motivo: Option<&str>) -> Result<Option<String>> {
+    let motivo = motivo.and_then(memoria::limpiar_motivo_revision);
+    anyhow::ensure!(
+        !con_fecha || motivo.is_some(),
+        "a review date (tag review:YYYY-MM-DD) needs `review_reason`: what to check that day, e.g. \"the API token expires\""
+    );
+    Ok(if con_fecha { motivo } else { None })
 }
 
 /// Los veredictos que el agente da con `supersedes`, `contradicts` y `compatible` sobre `id`, con su
@@ -530,6 +549,7 @@ impl Servidor {
                     None => crate::oficios::para_de(p.tags.as_deref().unwrap_or_default()),
                 };
                 let (oficios, tags) = oficios_pedidos(p.trade.as_deref(), p.tags.unwrap_or_default())?;
+                let motivo_revision = motivo_de_revision(crate::revisar::fecha_revision(&tags).is_some(), p.review_reason.as_deref())?;
                 let de_oficio = !oficios.is_empty();
                 anyhow::ensure!(de_oficio || para.is_none(), "`for` only applies to a trade memory: give `trade` too");
                 if de_oficio {
@@ -540,7 +560,8 @@ impl Servidor {
                     // Todo lo que llevará: texto, rutas, etiquetas, clave y datos. `force` no lo salta (es
                     // para las duplicadas); `allow_leaks`, solo lo que puede ser un falso positivo.
                     let rutas = p.paths.as_deref().unwrap_or_default().join(" ");
-                    let campos = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &rutas)], &tags, p.key.as_deref(), p.data.as_ref());
+                    let motivo_rev = motivo_revision.as_deref().unwrap_or_default();
+                    let campos = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &rutas), ("review_reason", motivo_rev)], &tags, p.key.as_deref(), p.data.as_ref());
                     let fugas = crate::oficios::bloquean(crate::oficios::fugas_en(db, &campos)?, p.allow_leaks.unwrap_or(false));
                     if !fugas.is_empty() {
                         return Ok(serde_json::json!({ "saved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
@@ -649,6 +670,11 @@ impl Servidor {
                 // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
                 // Con clave puede haber actualizado una que ya existía: se le añade.
                 if !evidencia.is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                    m = memoria::obtener(db, &m.id)?;
+                }
+                if let Some(x) = &motivo_revision
+                    && memoria::poner_motivo_revision(db, &m.id, x)?
+                {
                     m = memoria::obtener(db, &m.id)?;
                 }
                 let juzgadas = juzgar(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &origen)?;
@@ -776,6 +802,21 @@ impl Servidor {
                 // su oficio al llevarla a un proyecto o un espacio. Lo nuevo de una memoria de oficio pasa
                 // por `oficios::fugas`.
                 let actual = memoria::obtener(db, &id)?;
+                // Una fecha de revisión nueva pide qué mirar ese día; un motivo solo, que haya fecha.
+                let fecha_nueva = p.tags.as_deref().and_then(crate::revisar::fecha_revision).is_some_and(|f| crate::revisar::fecha_revision(&actual.tags) != Some(f));
+                let con_fecha = crate::revisar::fecha_revision(p.tags.as_deref().unwrap_or(&actual.tags)).is_some();
+                let pide_motivo = p.review_reason.as_deref().is_some_and(|x| !x.trim().is_empty());
+                anyhow::ensure!(con_fecha || !pide_motivo, "`review_reason` goes with a review date: add the tag review:YYYY-MM-DD too");
+                let motivo_revision = motivo_de_revision(fecha_nueva, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::limpiar_motivo_revision));
+                // En una de oficio (o que lo será), el motivo pasa por las fugas como el texto.
+                if let Some(x) = &motivo_revision
+                    && (!crate::oficios::de_etiquetas(&actual.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
+                {
+                    let fugas = crate::oficios::bloquean(crate::oficios::fugas_en(db, &crate::oficios::campos_para_fugas(&[("review_reason", x)], &[], None, None))?, p.allow_leaks.unwrap_or(false));
+                    if !fugas.is_empty() {
+                        return Ok(serde_json::json!({ "updated": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
+                    }
+                }
                 let mut c = Cambios {
                     space_id,
                     title: p.title,
@@ -879,6 +920,11 @@ impl Servidor {
                     None => Vec::new(),
                 };
                 if !evidencia.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                    m = memoria::obtener(db, &m.id)?;
+                }
+                if let Some(x) = &motivo_revision
+                    && memoria::poner_motivo_revision(db, &m.id, x)?
+                {
                     m = memoria::obtener(db, &m.id)?;
                 }
                 juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
@@ -1113,10 +1159,28 @@ impl Servidor {
         Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
     }
 
-    #[tool(description = "The open decisions waiting for the user (kind decision, tag `open`) in this project, its space's and the global ones (or in `project`, `space` or every project of the space with all_projects): blocking first (priority `blocking`: work can't go on without the answer), then the ones for later (priority `later`), newest first within each. With blocking=true, only the blocking ones.")]
+    #[tool(description = "The open decisions waiting for the user (kind decision, tag `open`) in this project, its space's and the global ones (or in `project`, `space` or every project of the space with all_projects): blocking first (priority `blocking`: work can't go on without the answer), then the ones for later (priority `later`), newest first within each. With blocking=true, only the blocking ones. With `resolve` and `answer`, closes one; with `contradiction` (two ids), `keep` and `answer`, settles two memories that contradict each other with what the user said.")]
     async fn decisions(&self, Parameters(p): Parameters<Decisions>) -> Result<CallToolResult, ErrorData> {
         let r = self
             .con_base(move |db, _, proyecto| {
+                if let Some(ids) = p.contradiction {
+                    let [a, b] = ids.as_slice() else {
+                        anyhow::bail!("`contradiction` takes the two ids that contradict each other")
+                    };
+                    let (a, b) = (id_en_ambito(db, proyecto, a, false)?, id_en_ambito(db, proyecto, b, false)?);
+                    let respuesta = p.answer.unwrap_or_default();
+                    anyhow::ensure!(!respuesta.trim().is_empty(), "`answer`: what the user said (their words); ask them which one holds");
+                    let queda = veredictos::Queda::de(db, p.keep.as_deref().unwrap_or_default())?;
+                    let antes = crate::revisar::antes(db)?;
+                    let sustituida = veredictos::resolver(db, &a, &b, &queda, &respuesta, veredictos::USUARIO)?;
+                    crate::revisar::al_dia_de(db, &antes, &[])?;
+                    return Ok(serde_json::json!({
+                        "resolved": true,
+                        "kept": match &queda { veredictos::Queda::Una(x) => serde_json::json!(x), veredictos::Queda::LasDos => serde_json::json!("both") },
+                        "superseded": sustituida,
+                        "hint": if sustituida.is_some() { "The other one is now superseded by the one that holds: offer the user to `forget` it if nothing in it still holds." } else { "Both hold: the warning is gone." },
+                    }));
+                }
                 if let Some(id) = p.resolve {
                     let id = id_en_ambito(db, proyecto, &id, false)?;
                     let respuesta = p.answer.unwrap_or_default();

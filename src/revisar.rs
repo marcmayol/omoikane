@@ -279,6 +279,26 @@ fn fecha_llegada(m: &Memoria, revisadas: &HashMap<(String, String), String>, hoy
     Some(f.to_string())
 }
 
+/// Las memorias de `ambito` a las que les ha llegado la fecha de revisión, con esa fecha, de la más
+/// vieja a la más nueva: van al empezar la sesión con lo que hay que mirar (`review_reason`), junto a
+/// las decisiones abiertas.
+pub fn fechas_llegadas(db: &Connection, ambito: &Ambito) -> Result<Vec<(Memoria, String)>> {
+    let sql = format!(
+        "SELECT {} FROM memory m WHERE {} AND (instr(m.tags, '{ETIQUETA_FECHA}') > 0 OR instr(m.content, '[review-after]') > 0)",
+        crate::memoria::COLUMNAS,
+        ambito.sql()
+    );
+    let mut q = db.prepare(&sql)?;
+    let ms: Vec<Memoria> = q.query_map([], crate::memoria::de_fila)?.collect::<rusqlite::Result<_>>()?;
+    if ms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, Hoy::de(db)?);
+    let mut r: Vec<(Memoria, String)> = ms.into_iter().filter_map(|m| fecha_llegada(&m, &revisadas, &hoy).map(|f| (m, f))).collect();
+    r.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    Ok(r)
+}
+
 /// El día local y cuántos segundos va la hora local por delante de UTC.
 struct Hoy {
     dia: String,
@@ -1563,7 +1583,13 @@ fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revisi
                         "superseded by a newer memory that is not in this scope".to_string()
                     }
                 }
-                CONTRADICE if se_ve(otra)? => format!("contradicts {}: {}", corto(otra)?, motivo(&v.reason, "check which one holds, asking the user if unsure")),
+                // La contradicha (`other_id`) espera a la persona (`veredictos::en_espera`).
+                CONTRADICE if se_ve(otra)? && esta == &v.other_id => format!(
+                    "ON HOLD: {} contradicts it ({}); ask the user which holds and save the answer with `decisions` (contradiction, keep, answer)",
+                    corto(otra)?,
+                    motivo(&v.reason, "no reason given")
+                ),
+                CONTRADICE if se_ve(otra)? => format!("contradicts {} (on hold until the user says which holds): {}", corto(otra)?, motivo(&v.reason, "ask the user which holds")),
                 _ => continue,
             };
             r.insert(esta.clone(), nota);
@@ -1585,7 +1611,8 @@ fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revisi
             if !r.contains_key(&m.id)
                 && let Some(f) = fecha_llegada(m, &revisadas, &hoy)
             {
-                r.insert(m.id.clone(), format!("review date {f} reached: check it still holds"));
+                let por = m.review_reason.as_deref().map(|x| format!(" (why: {x})")).unwrap_or_default();
+                r.insert(m.id.clone(), format!("review date {f} reached{por}: check it still holds"));
             }
         }
     }

@@ -2243,6 +2243,7 @@ impl<'a> Aplicador<'a> {
                         source: format!("sync:{origen}"),
                         provenance: None,
                         evidence: Vec::new(),
+                        review_reason: None,
                     };
                     memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
                     r.nuevas += 1;

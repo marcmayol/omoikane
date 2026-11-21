@@ -782,6 +782,40 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
             s.push_str(&format!("…and {} more (`search` with the tag `open` for the rest).\n", abiertas.len() - ABIERTAS));
         }
     }
+    // Las contradicciones que esperan a la persona (1.14): la contradicha no llega sola hasta que diga
+    // cuál vale. Opcional como las decisiones.
+    let parejas = contradicciones_en(db, &ambito).unwrap_or_else(|x| {
+        eprintln!("omoikane: contradictions: {x:#}");
+        Vec::new()
+    });
+    if !parejas.is_empty() {
+        s.push_str("Contradictions waiting for the user (two memories disagree and nobody has said which holds; the one ON HOLD doesn't come up in automatic recall until then. Ask the user at a natural moment, or now if your work depends on it, and save their answer with `decisions`: contradiction [both ids], keep (the id that holds, or \"both\") and answer (their words). If you can check it yourself, still ask before deciding):\n");
+        for (a, b, motivo) in parejas.iter().take(ABIERTAS) {
+            let corto = |m: &Memoria| format!("«{}» (id {})", m.title, m.id.chars().take(12).collect::<String>());
+            let por = if motivo.trim().is_empty() { String::new() } else { format!(": {}", crate::veredictos::motivo_corto(motivo)) };
+            s.push_str(&citado(&format!("- {} vs ON HOLD {}{por}\n", corto(a), corto(b))));
+        }
+        if parejas.len() > ABIERTAS {
+            s.push_str(&format!("…and {} more (`context` lists them under review).\n", parejas.len() - ABIERTAS));
+        }
+    }
+    // Las fechas de revisión que han llegado, con lo que hay que mirar (1.14): alguien la puso para
+    // enterarse ese día.
+    let fechas = crate::revisar::fechas_llegadas(db, &ambito).unwrap_or_else(|x| {
+        eprintln!("omoikane: review dates: {x:#}");
+        Vec::new()
+    });
+    if !fechas.is_empty() {
+        s.push_str("Review dates reached (set when saving, to check something that day; tell the user at a natural moment. Once checked, `update` the memory: what changed, a new review:YYYY-MM-DD tag with its review_reason, or the tag removed):\n");
+        for (m, f) in fechas.iter().take(ABIERTAS) {
+            let linea = linea_corta(m, actual, propio.as_deref());
+            let que = m.review_reason.as_deref().unwrap_or("no reason given: check it still holds");
+            s.push_str(&citado(&format!("{linea}: {f}, {que}\n")));
+        }
+        if fechas.len() > ABIERTAS {
+            s.push_str(&format!("…and {} more (`omoi review`).\n", fechas.len() - ABIERTAS));
+        }
+    }
     // Lo último en lo que se trabajó: solo los títulos, para que «sigamos con lo de X» no obligue al
     // agente a explorar. No se apuntan como inyectadas: su contenido aún puede llegar con el recall.
     // Un estado que ya no es el último de su proyecto tampoco sale: llevaría a retomar desde lo viejo.
@@ -830,6 +864,18 @@ pub fn al_empezar(db: &mut Connection, project: &str, e: &Entrada) -> Result<Opt
     let ids: Vec<String> = contexto.iter().map(|m| m.id.clone()).collect();
     apuntar(db, &e.session_id, &ids, ambito.proyecto().unwrap_or(0))?;
     Ok(Some(s))
+}
+
+/// Las contradicciones vigentes en las que se ven las dos memorias desde `ambito`: (la que contradice,
+/// la contradicha, el motivo), de la más nueva a la más vieja.
+fn contradicciones_en(db: &Connection, ambito: &Ambito) -> Result<Vec<(Memoria, Memoria, String)>> {
+    let mut r = Vec::new();
+    for v in crate::veredictos::contradicciones(db)? {
+        if ambito.ve(db, &v.memory_id)? && ambito.ve(db, &v.other_id)? {
+            r.push((memoria::obtener(db, &v.memory_id)?, memoria::obtener(db, &v.other_id)?, v.reason));
+        }
+    }
+    Ok(r)
 }
 
 /// Texto que no escribe Omoikane (un fichero de la documentación, una memoria) dentro del bloque
@@ -1026,10 +1072,13 @@ pub fn al_preguntar_abriendo<'m>(
     let actual = proyecto_actual(db, project);
     let propio = autor_propio(db, actual);
     let vistas = ya_inyectadas(db, &e.session_id)?;
+    // Las contradichas esperan a que la persona diga cuál vale (`veredictos::en_espera`): no llegan
+    // solas; la que las contradice sí, con su nota.
+    let espera = crate::veredictos::en_espera(db)?;
     let mut elegidas: Vec<Memoria> = Vec::new();
-    let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id));
+    let la_receta = receta(db, project, &e.prompt)?.filter(|m| !vistas.contains(&m.id) && !espera.contains(&m.id));
     let elegir = |m: Memoria, elegidas: &mut Vec<Memoria>| {
-        if !vistas.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && la_receta.as_ref().is_none_or(|r| r.id != m.id) && elegidas.len() < maximo() {
+        if !vistas.contains(&m.id) && !espera.contains(&m.id) && !elegidas.iter().any(|x| x.id == m.id) && la_receta.as_ref().is_none_or(|r| r.id != m.id) && elegidas.len() < maximo() {
             elegidas.push(m);
         }
     };

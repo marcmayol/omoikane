@@ -174,6 +174,9 @@ struct DatosNuevos {
     /// What it is based on, KIND:DETAIL (repeatable): user-said, code-read, tested, doc (doc:URL text) or inferred. E.g. --evidence "tested:cargo test, 83 passed".
     #[arg(long, value_name = "KIND:DETAIL")]
     evidence: Vec<String>,
+    /// With a review:YYYY-MM-DD tag: what to check that day ("the API token expires").
+    #[arg(long, value_name = "TEXT")]
+    review_reason: Option<String>,
 }
 
 #[derive(Args)]
@@ -187,6 +190,9 @@ struct DatosCambio {
     /// More evidence, KIND:DETAIL (repeatable; added to what it had, no new version): user-said, code-read, tested, doc or inferred.
     #[arg(long, value_name = "KIND:DETAIL")]
     evidence: Vec<String>,
+    /// What to check when its review date (tag review:YYYY-MM-DD) arrives (no new version).
+    #[arg(long, value_name = "TEXT")]
+    review_reason: Option<String>,
 }
 
 #[derive(Args)]
@@ -1417,7 +1423,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             println!("{}", tr!("reindexed: {n} memories, {v} vectors", "reindexado: {n} memorias, {v} vectores"));
             Ok(())
         }
-        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, allow_leaks, key, datos: DatosNuevos { data, evidence } } => {
+        Orden::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para, source, force, allow_leaks, key, datos: DatosNuevos { data, evidence, review_reason } } => {
             let content = contenido_de(content, &title, data.is_some())?;
             let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
             let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
@@ -1505,7 +1511,11 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 tags
             };
             let evidence = if de_oficio { Vec::new() } else { evidence };
-            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, evidence, ..Default::default() };
+            if review_reason.is_some() && omoikane::revisar::fecha_revision(&tags).is_none() {
+                anyhow::bail!(tr!("--review-reason goes with a review date: add --tag review:YYYY-MM-DD too", "--review-reason va con una fecha de revisión: añade también --tag review:AAAA-MM-DD"));
+            }
+            let review_reason = review_reason.as_deref().and_then(memoria::limpiar_motivo_revision);
+            let nueva = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, evidence, review_reason, ..Default::default() };
             if let Some(k) = key {
                 return recordar_por_clave(c, &mut db, &k, nueva, data, modelo.as_ref(), &antes);
             }
@@ -1582,7 +1592,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             Ok(())
         }
-        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, allow_leaks, reason, replace, with, append, datos: DatosCambio { data, no_data, evidence } }) => {
+        Orden::Update(Cambio { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para, allow_leaks, reason, replace, with, append, datos: DatosCambio { data, no_data, evidence, review_reason } }) => {
             let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
             let data = if no_data { Some(None) } else { data.as_deref().map(memoria::datos_de_texto).transpose()?.map(Some) };
             anyhow::ensure!(
@@ -1652,7 +1662,7 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
                 return Ok(());
             }
             // Solo los datos: sin versión nueva (como fijarla), y sin el «nada que cambiar» de `update`.
-            let solo_datos = (data.is_some() || !evidence.is_empty()) && sin_cambios(&cambios);
+            let solo_datos = (data.is_some() || !evidence.is_empty() || review_reason.is_some()) && sin_cambios(&cambios);
             let (mut m, cambiados) = if solo_datos {
                 (memoria::obtener(&db, &id)?, Vec::new())
             } else {
@@ -1663,6 +1673,15 @@ fn ejecutar(c: &Comun, orden: Orden) -> Result<()> {
             }
             if !evidence.is_empty() && omoikane::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(&mut db, &m.id, &evidence)? {
                 m = memoria::obtener(&db, &m.id)?;
+            }
+            if let Some(r) = &review_reason {
+                anyhow::ensure!(
+                    omoikane::revisar::fecha_revision(&m.tags).is_some(),
+                    tr!("--review-reason goes with a review date: add --tag review:YYYY-MM-DD too", "--review-reason va con una fecha de revisión: añade también --tag review:AAAA-MM-DD")
+                );
+                if memoria::poner_motivo_revision(&mut db, &m.id, r)? {
+                    m = memoria::obtener(&db, &m.id)?;
+                }
             }
             let _ = omoikane::revisar::al_dia_de(&db, &antes, std::slice::from_ref(&m.id));
             avisar_redactados(&m);
@@ -3533,6 +3552,12 @@ fn entera(m: &Memoria, aplicada: Option<(i64, Option<String>)>) {
     for (i, e) in m.evidence.iter().enumerate() {
         let etiqueta = if i == 0 { tr!("based on   ", "se basa en ") } else { "           ".to_string() };
         println!("{etiqueta}{}", e.texto());
+    }
+    if let Some(f) = omoikane::revisar::fecha_revision(&m.tags) {
+        match &m.review_reason {
+            Some(r) => println!("{}", tr!("review     {f}: {r}", "revisar    {f}: {r}")),
+            None => println!("{}", tr!("review     {f}", "revisar    {f}")),
+        }
     }
     match &m.verified {
         Some(v) => println!("{}", tr!("verified   by {} ({})", "verificada por {} ({})", v.by, v.at)),

@@ -26,6 +26,8 @@ Lo que Omoikane no puede saber solo lo dice el agente, sin herramientas nuevas: 
 
 **Por qué y quién.** Cada veredicto guarda el motivo y quién lo dio (la persona de la sincronización, o el agente y su cliente), y los dos salen en el recall, en `search` y en Revisar. Si A está sustituida por B y B por C, la nota de A lleva directamente a C.
 
+**Contradicciones en espera (1.14).** Cuando el agente marca `contradicts`, la memoria contradicha (la que ya estaba) queda en espera hasta que digas cuál vale. Mientras tanto no llega sola en el recall, sale bastante más abajo al buscar (×0,6) y su nota empieza por `ON HOLD`; la que la contradice sale normal, con su nota. Cada sesión empieza con las parejas pendientes, para que el agente te pregunte cuando venga a cuento (o enseguida, si su trabajo depende de ello). Tu respuesta la guarda con `decisions` (`contradiction` con los dos ids, `keep` con la que vale o `both`, y `answer` con tus palabras), y la vista web tiene la sección **Contradicciones**: las dos lado a lado, con **Vale esta** en cada una y **Valen las dos**. «Vale esta» deja la otra sustituida por ella, con tu motivo, y Revisar te ofrece olvidarla; «Valen las dos» las da por compatibles. Es un veredicto más, así que viaja a los demás equipos.
+
 ## Corregir un trozo y juntar
 
 `update` acepta `replace` (cambia un texto que tiene que aparecer exactamente una vez; si no, no toca nada), `append` (añade al final, para el paso nuevo de una receta) y `absorb` (junta varias memorias en una: el agente escribe el texto fundido, y las absorbidas van a la papelera con su historial colgado de la que queda y sus etiquetas y enlaces pasados a ella). La pestaña Revisar tiene un botón **Juntar** para hacerlo a mano.
@@ -41,6 +43,8 @@ Cuenta como repetido el mismo nombre sin mayúsculas, acentos, guiones, guiones 
 Cada tipo tiene la suya: decisiones y recetas a los 120 días sin tocar, hechos y trampas a los 180, y las preferencias nunca, contando desde su último cambio o desde la última vez que el agente la recibió (lo que se usa y nadie corrige, está repasado). Cuando llega, la memoria sale en Revisar y en `search` con «not reviewed in N days»; en el recall no, porque ahí solo va lo que dice que una memoria puede estar mal. «Está bien así» vuelve a poner el reloj a cero.
 
 Hay memorias que dejan de valer un día que ya se sabe: un token que caduca, una oferta, un plan con fecha. Se guardan con la etiqueta `review:AAAA-MM-DD` (`omoi remember … --tag review:2026-11-25`, o en `tags` desde el MCP) y ese día la revisión las marca como *ha llegado su fecha*, en Revisar, en `search` y también en el recall (puede que ya no valgan). El aviso al empezar la sesión sale aunque sea una sola. Tocar la memoria o «está bien así» lo quita; una etiqueta que no es una fecha no se guarda.
+
+Desde la 1.14 la fecha va con su motivo: qué hay que mirar ese día («el plan de prueba caduca: mira si hay que pagarlo»). Por el MCP es obligatorio (`review_reason` en `remember` y en el `update` que pone una fecha nueva); por la CLI, `--review-reason`. Cuando llega la fecha, la memoria sale al empezar la sesión junto a las decisiones abiertas, con su motivo, y el agente te lo dice; también va en la nota del recall, en Revisar y en el panel de la memoria. Cambiar solo el motivo no crea versión nueva. Las memorias con fecha de antes de la 1.14 siguen avisando, sin motivo.
 
 ## El código ha cambiado debajo
 

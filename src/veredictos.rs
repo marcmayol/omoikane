@@ -265,3 +265,77 @@ pub fn motivo_corto(motivo: &str) -> String {
     let plano = motivo.split_whitespace().collect::<Vec<_>>().join(" ");
     if plano.chars().count() > 120 { format!("{}…", plano.chars().take(120).collect::<String>()) } else { plano }
 }
+
+// --- Contradicciones en espera (1.14) ----------------------------------------------------------------
+//
+// Un `contradicts` vigente deja la memoria contradicha (`other_id`: la que ya estaba; quien contradice
+// es `memory_id`, la nueva o la que se cambia) en espera hasta que la persona diga cuál vale: el recall
+// automático no la trae, en `search` sale más abajo ([`FACTOR_EN_ESPERA`]) y su nota dice que espera.
+// La que contradice sale normal, con su nota. Se resuelve con [`resolver`]: una sustituye a la otra
+// (`superseded`) o valen las dos (`compatible`); como el veredicto más nuevo de la pareja manda, el
+// `contradicts` deja de valer sin borrarlo. Lo puede hacer la persona en la vista web o el agente con
+// su respuesta (`decisions` con `contradiction`), y el motivo guarda sus palabras.
+
+/// Lo que pesa al buscar una memoria en espera.
+pub const FACTOR_EN_ESPERA: f64 = 0.6;
+
+/// Las contradicciones vigentes, de la más nueva a la más vieja.
+pub fn contradicciones(db: &Connection) -> Result<Vec<Veredicto>> {
+    let mut v: Vec<Veredicto> = parejas(db)?.into_values().filter(|v| v.relation == CONTRADICE).collect();
+    v.sort_by(|a, b| b.hlc.cmp(&a.hlc).then_with(|| a.memory_id.cmp(&b.memory_id)));
+    Ok(v)
+}
+
+/// Las memorias en espera: las contradichas de las contradicciones vigentes.
+pub fn en_espera(db: &Connection) -> Result<std::collections::HashSet<String>> {
+    // Casi siempre no hay ninguna: sin `contradicts` en la tabla no hace falta mirar las parejas.
+    let hay: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM verdict WHERE relation = ?1)", [CONTRADICE], |f| f.get(0))?;
+    if !hay {
+        return Ok(Default::default());
+    }
+    Ok(contradicciones(db)?.into_iter().map(|v| v.other_id).collect())
+}
+
+/// Cuál vale de una pareja que se contradice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Queda {
+    /// Vale esta (su id): la otra queda sustituida por ella.
+    Una(String),
+    /// Valen las dos: hablan de cosas distintas o se complementan.
+    LasDos,
+}
+
+impl Queda {
+    /// `keep` tal como llega: un id (o su principio), o «both».
+    pub fn de(db: &Connection, t: &str) -> Result<Queda> {
+        match t.trim().to_lowercase().as_str() {
+            "both" | "las dos" | "ambas" => Ok(Queda::LasDos),
+            "" => anyhow::bail!("`keep`: the id of the one that holds, or \"both\""),
+            _ => Ok(Queda::Una(crate::memoria::resolver_id(db, t)?)),
+        }
+    }
+}
+
+/// La decisión de la persona sobre la pareja `a`-`b`: `Una(x)` deja la otra sustituida por `x`;
+/// `LasDos`, compatibles. `motivo`, lo que dijo (o vacío). Devuelve la que queda sustituida, si hay.
+pub fn resolver(db: &Connection, a: &str, b: &str, queda: &Queda, motivo: &str, autor: &str) -> Result<Option<String>> {
+    let (a, b) = (crate::memoria::resolver_id(db, a)?, crate::memoria::resolver_id(db, b)?);
+    anyhow::ensure!(a != b, "a memory can't be judged against itself");
+    match queda {
+        Queda::LasDos => {
+            poner(db, &a, &b, COMPATIBLE, motivo, autor)?;
+            Ok(None)
+        }
+        Queda::Una(x) => {
+            let otra = if *x == a {
+                b
+            } else if *x == b {
+                a
+            } else {
+                anyhow::bail!("`keep` has to be one of the two memories, or \"both\"")
+            };
+            poner(db, &otra, x, SUSTITUIDA, motivo, autor)?;
+            Ok(Some(otra))
+        }
+    }
+}

@@ -80,6 +80,7 @@ main { flex: 1; min-height: 0; position: relative; }
 .stl { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line2); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 .vf { color: var(--accent); font-weight: 700; }
 .ded { color: var(--faint); font-weight: 700; cursor: help; }
+.espera { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); font: 600 10px/16px var(--mono); letter-spacing: .06em; text-transform: uppercase; vertical-align: 1px; cursor: help; }
 .evid { font-style: normal; font-weight: 400; color: var(--muted); }
 .chip { display: inline-flex; align-items: center; font-size: 11.5px; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; line-height: 20px; }
 button.chip:hover { border-color: var(--accent); }
@@ -274,6 +275,9 @@ button.chip:hover { border-color: var(--accent); }
 .par .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 .par .lb.nueva { color: var(--accent); }
 .par .md { max-height: 320px; overflow-y: auto; font-size: 13px; }
+.par .lb.espera-lb { color: var(--delink); }
+.par .elegir { align-self: flex-start; margin-top: 4px; }
+.av .motivo-con { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: 13px var(--sans); }
 .av textarea.fusion { width: 100%; min-height: 220px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 .abiertas { margin-bottom: 22px; }
 .blk { font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--delink); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; line-height: 16px; white-space: nowrap; }
@@ -342,7 +346,7 @@ a.fl:hover, button.fl:hover { background: var(--panel2); }
 <body>
 <header class="bar">
   <a class="brand" href="#/"><img src="/icono.png" alt=""><span class="word"><span class="kj">思兼</span>Omoikane</span></a>
-  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a><a id="nav-pap" href="#/papelera"><span></span><span class="cuenta neutra" hidden></span></a></nav>
+  <nav class="nav"><a id="nav-mem" href="#/"></a><a id="nav-pj" href="#/proyectos"></a><a id="nav-pan" href="#/panorama"></a><a id="nav-rev" href="#/revisar"><span></span><span class="cuenta" hidden></span></a><a id="nav-con" href="#/contradicciones"><span></span><span class="cuenta" hidden></span></a><a id="nav-pap" href="#/papelera"><span></span><span class="cuenta neutra" hidden></span></a></nav>
   <label class="search"><input id="q" type="search" autocomplete="off"><span class="kbd">/</span></label>
   <span class="pill alc" id="alcance" hidden><span class="dot"></span><span></span></span>
   <span class="pill" id="sync" hidden><span class="dot"></span><span></span></span>
@@ -370,6 +374,8 @@ const T = ES ? {
   verificarT: 'Respondes de que este texto es correcto. Si alguien lo cambia, deja de estar verificada.',
   fijar: 'Fijar', desfijar: 'Desfijar', historial: 'Historial completo', ocultarHist: 'Ocultar historial', mover: 'Mover a…', moverBtn: 'Mover', otra: 'Otra carpeta…', carpeta: 'Ruta de la carpeta del proyecto:',
   olvidar: 'Olvidar', seguro: '¿Olvidarla para siempre?', si: 'Sí, olvidar', no: 'Cancelar', ultimoCambio: 'Último cambio', sinHist: 'Sin cambios anteriores.', cargando: 'Cargando…',
+  con: { nav: 'Contradicciones', titulo: 'Contradicciones', sub: 'Dos memorias dicen cosas distintas y el agente no supo cuál vale. Mientras no elijas, la que está en espera no le llega sola al agente y sale más abajo al buscar. Lo que elijas queda guardado y viaja a tus otros equipos.', nada: 'Ninguna contradicción: no hay nada que decidir.', contradice: 'La que la contradice', espera: 'En espera', esperaT: 'Otra memoria la contradice y aún no has dicho cuál vale: el agente no la recibe solo. Decide en Contradicciones.', vale: 'Vale esta', valenDos: 'Valen las dos', porQue: 'Por qué (opcional)', una: 'Hecho: la otra queda sustituida por esta. Si ya no sirve de nada, olvídala desde Revisar.', dos: 'Hecho: valen las dos y ya no se avisa.' },
+  revisarEl: 'Revisar el', sinMotivoRev: 'sin motivo: mira si sigue valiendo',
   hecho: 'Hecho', error: 'Error', sincro: 'sincronizada', sincroNo: 'sin sincronizar', sincroFalla: 'la sincronización falla',
   dondeTitulo: 'Dónde se quedó cada cosa', dondeSub: 'La última memoria <code>status</code> de cada proyecto: la misma que recibe el agente al empezar sesión.',
   memoriasN: n => `${n} memoria${n === 1 ? '' : 's'}`, conEstado: 'con estado', donde: 'Dónde se quedó', sinEstado: 'Sin memoria de estado todavía.', globalPath: 'vale para todos los proyectos',
@@ -416,6 +422,8 @@ const T = ES ? {
   verificarT: 'You vouch that this text is right. If anyone changes it, it is no longer verified.',
   fijar: 'Pin', desfijar: 'Unpin', historial: 'Full history', ocultarHist: 'Hide history', mover: 'Move to…', moverBtn: 'Move', otra: 'Another folder…', carpeta: 'Path of the project folder:',
   olvidar: 'Forget', seguro: 'Forget it for good?', si: 'Yes, forget', no: 'Cancel', ultimoCambio: 'Last change', sinHist: 'No earlier versions.', cargando: 'Loading…',
+  con: { nav: 'Contradictions', titulo: 'Contradictions', sub: 'Two memories say different things and the agent could not tell which holds. Until you choose, the one on hold does not reach the agent by itself and ranks lower in search. What you choose is kept and travels to your other computers.', nada: 'No contradictions: nothing to decide.', contradice: 'The one that contradicts it', espera: 'On hold', esperaT: 'Another memory contradicts it and you have not said which holds: the agent does not get it by itself. Decide in Contradictions.', vale: 'This one holds', valenDos: 'Both hold', porQue: 'Why (optional)', una: 'Done: the other one is now superseded by this one. If nothing in it is useful, forget it from Review.', dos: 'Done: both hold and there is no warning any more.' },
+  revisarEl: 'Review on', sinMotivoRev: 'no reason: check it still holds',
   hecho: 'Done', error: 'Error', sincro: 'synced', sincroNo: 'not synced', sincroFalla: 'sync is failing',
   dondeTitulo: 'Where everything was left', dondeSub: 'The latest <code>status</code> memory of each project: the same one the agent gets when a session starts.',
   memoriasN: n => `${n} memor${n === 1 ? 'y' : 'ies'}`, conEstado: 'with status', donde: 'Where it was left', sinEstado: 'No status memory yet.', globalPath: 'applies to every project',
@@ -517,6 +525,7 @@ function corta(s) {
 }
 
 // Estado de la vista.
+let retenidas = new Set();
 let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, revPartir = {}, candidatas = [], papelera = [];
 // De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
 let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [], duplicados = [];
@@ -683,7 +692,12 @@ async function cargar() {
     await cargarPanorama();
   } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; duplicados = []; panorama = null; }
   if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
-  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length + duplicados.length;
+  // Las contradicciones van en su sección (1.14): la contradicha de cada una, en espera.
+  const contras = avisos.filter(a => a.kind === 'contradicts');
+  retenidas = new Set(contras.map(a => a.other_id));
+  const cc = $('nav-con').querySelector('.cuenta');
+  cc.textContent = contras.length; cc.hidden = !contras.length;
+  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length - contras.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length + duplicados.length;
   c.textContent = n; c.hidden = !n;
   const cp = $('nav-pap').querySelector('.cuenta');
   cp.textContent = papelera.length; cp.hidden = !papelera.length;
@@ -717,12 +731,13 @@ async function sincro() {
   } catch (e) { /* sin servidor: nada que enseñar */ }
 }
 
-/* ---------- Rutas: #/ (memorias), #/proyectos, #/revisar, #/papelera, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
+/* ---------- Rutas: #/ (memorias), #/proyectos, #/revisar, #/contradicciones, #/papelera, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
 function ruta() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   if (h.startsWith('memoria/')) return { vista: 'memoria', id: h.slice('memoria/'.length) };
   if (h === 'proyectos') return { vista: 'proyectos' };
   if (h === 'revisar') return { vista: 'revisar' };
+  if (h === 'contradicciones') return { vista: 'contradicciones' };
   if (h === 'papelera') return { vista: 'papelera' };
   if (h === 'panorama') return { vista: 'panorama' };
   if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
@@ -735,6 +750,7 @@ function pintar() {
   $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
   $('nav-pj').setAttribute('aria-current', r.vista === 'proyectos' || r.vista === 'proyecto' ? 'page' : 'false');
   $('nav-rev').setAttribute('aria-current', r.vista === 'revisar' ? 'page' : 'false');
+  $('nav-con').setAttribute('aria-current', r.vista === 'contradicciones' ? 'page' : 'false');
   $('nav-pap').setAttribute('aria-current', r.vista === 'papelera' ? 'page' : 'false');
   $('nav-pan').setAttribute('aria-current', r.vista === 'panorama' ? 'page' : 'false');
   $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
@@ -748,6 +764,7 @@ function pintar() {
 let vistaPintada = null;
 function pintarVista(r) {
   if (r.vista === 'revisar') pintarRevisar();
+  else if (r.vista === 'contradicciones') pintarContradicciones();
   else if (r.vista === 'papelera') pintarPapelera();
   else if (r.vista === 'panorama') pintarPanorama();
   else if (r.vista === 'proyectos') pintarProyectos();
@@ -859,7 +876,7 @@ function filaHTML(e) {
   const m = e.m, k = claveEv(e), open = abierta === k;
   const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
   return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
-    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : deducida(m) ? ' <span class="ded" title="' + esc(T.deducida) + '">?</span>' : ''}</div>
+    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : deducida(m) ? ' <span class="ded" title="' + esc(T.deducida) + '">?</span>' : ''}${retenidas.has(m.id) ? ' <span class="espera" title="' + esc(T.con.esperaT) + '">' + esc(T.con.espera) + '</span>' : ''}</div>
     <div class="r">${pastilla(ambito(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
     <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
     ${open ? detalleHTML(m, false) : ''}
@@ -911,6 +928,8 @@ function detalleHTML(m, vertical) {
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
         ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : '', m.provenance.trace_id ? 'trace ' + esc(m.provenance.trace_id) + '/' + esc(m.provenance.span_id || '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
         ${(m.evidence || []).length ? `<span>${T.seBasa}</span><b>${m.evidence.map(e => `<em class="evid">${esc(T.evTipos[e.kind] || e.kind)}</em> · ${esc(e.detail)}${e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">↗</a>` : ''}`).join('<br>')}</b>` : ''}
+        ${fechaRev(m) ? `<span>${T.revisarEl}</span><b>${esc(fechaRev(m))} · ${esc(m.review_reason || T.sinMotivoRev)}</b>` : ''}
+        ${retenidas.has(m.id) ? `<span>${T.con.espera}</span><b><a href="#/contradicciones">${esc(T.con.esperaT)}</a></b>` : ''}
         <span>${T.id}</span><b class="mono">${m.id}</b>
         ${enlacesHTML(m)}
       </div>
@@ -984,8 +1003,8 @@ async function accion(f) {
 const claveAv = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
 function pintarRevisar() {
   const grupos = {};
-  for (const a of avisos) (grupos[a.kind] = grupos[a.kind] || []).push(a);
-  const orden = ['secret', 'review_date', 'superseded', 'contradicts', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
+  for (const a of avisos) if (a.kind !== 'contradicts') (grupos[a.kind] = grupos[a.kind] || []).push(a);
+  const orden = ['secret', 'review_date', 'superseded', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
   const sesiones = !candidatas.length ? '' : `
     <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidatas.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.sesionesSub)}</p>
@@ -1042,7 +1061,7 @@ function pintarRevisar() {
       <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code>${botonEjecutar(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
       <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code>${botonEjecutar(x.dismiss)}<button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.length && !candidatas.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
+  const cuerpo = !avisos.some(a => a.kind !== 'contradicts') && !candidatas.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
     <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
     ${grupos[k].map(avisoHTML).join('')}`).join('');
@@ -1213,6 +1232,7 @@ function avisoHTML(a) {
     <div class="cab"><span class="t">${esc(m.title)}</span></div>
     <div class="cab">${fila(m)}</div>
     ${o ? `<div class="det2">→ ${esc(o.title)} · <b>${esc(T.detalle(a))}</b></div>` : `<div class="det2"><b>${esc(T.detalle(a))}</b></div>`}
+    ${a.kind === 'review_date' && m.review_reason ? `<div class="det2 quien">${esc(m.review_reason)}</div>` : ''}
     ${(a.kind === 'superseded' || a.kind === 'contradicts') && (a.author || a.reason) ? `<div class="det2 quien">${esc(T.quienDijo(a))}</div>` : ''}
     ${cont}
     <div class="acts">
@@ -1229,6 +1249,48 @@ function avisoHTML(a) {
 
     </div>
   </div>`;
+}
+
+/* ---------- Contradicciones: #/contradicciones (1.14) ---------- */
+// Cada pareja que se contradice, lado a lado: «Vale esta» deja la otra sustituida por ella y «Valen las
+// dos» las da por compatibles. La de la derecha (`other_id`) es la contradicha, la que está en espera.
+const fechaRev = m => ((m.tags || []).find(t => /^review:\d{4}-\d{2}-\d{2}$/.test(t)) || '').slice(7);
+const motivosCon = {};
+function pintarContradicciones() {
+  const lista = avisos.filter(a => a.kind === 'contradicts');
+  const tarjeta = a => {
+    const m = todas.find(x => x.id === a.memory_id), o = todas.find(x => x.id === a.other_id), k = claveAv(a);
+    if (!m || !o) return '';
+    const lado = (x, lb, clase) => `<div><span class="lb ${clase}">${esc(lb)}</span><span class="t">${esc(x.title)}</span>
+        <div class="cab">${pastilla(ambito(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span></div>
+        <div class="md">${md(x.content)}</div>
+        <button class="btn pri elegir" data-r="vale" data-id="${esc(x.id)}">${esc(T.con.vale)}</button></div>`;
+    return `<div class="av con" data-k="${esc(k)}">
+      ${a.author || a.reason ? `<div class="det2 quien">${esc(T.quienDijo(a))}</div>` : ''}
+      <div class="par">${lado(m, T.con.contradice, 'nueva')}${lado(o, T.con.espera, 'espera-lb')}</div>
+      <input class="motivo-con" placeholder="${esc(T.con.porQue)}" value="${esc(motivosCon[k] || '')}">
+      <div class="acts"><button class="btn" data-r="dos">${esc(T.con.valenDos)}</button></div>
+    </div>`;
+  };
+  $('vista').innerHTML = `<div class="rev">
+    <div class="hero"><div><h1>${esc(T.con.titulo)}</h1><p>${esc(T.con.sub)}</p></div></div>
+    ${lista.length ? lista.map(tarjeta).join('') : `<p class="vacio">${esc(T.con.nada)}</p>`}
+  </div>`;
+  for (const el of $('vista').querySelectorAll('.av.con')) {
+    const a = lista.find(x => claveAv(x) === el.dataset.k), entrada = el.querySelector('.motivo-con');
+    entrada.oninput = e => { motivosCon[el.dataset.k] = e.target.value; };
+    const decidir = keep => async () => {
+      try {
+        const r = await fetch('/api/contradiction', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ a: a.memory_id, b: a.other_id, keep, reason: entrada.value.trim() }) });
+        if (!r.ok) throw new Error(await r.text());
+        delete motivosCon[el.dataset.k];
+        aviso(keep === 'both' ? T.con.dos : T.con.una, 6000);
+        await cargar();
+      } catch (e) { aviso(T.error + ': ' + e.message); }
+    };
+    for (const b of el.querySelectorAll('[data-r="vale"]')) b.onclick = decidir(b.dataset.id);
+    el.querySelector('[data-r="dos"]').onclick = decidir('both');
+  }
 }
 
 /* ---------- Papelera: #/papelera ---------- */
@@ -1573,6 +1635,7 @@ $('nav-mem').textContent = T.memorias;
 $('nav-pj').textContent = T.proyectos;
 $('nav-pan').textContent = T.pan.nav;
 $('nav-rev').firstElementChild.textContent = T.revisar;
+$('nav-con').firstElementChild.textContent = T.con.nav;
 $('nav-pap').firstElementChild.textContent = T.papelera;
 cargar();
 </script>

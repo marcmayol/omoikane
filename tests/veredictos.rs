@@ -248,7 +248,7 @@ fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
     let largo = "x".repeat(200);
     veredictos::poner(&db, &vieja, &nueva, veredictos::CONTRADICE, &largo, "Marc").unwrap();
     let n = notas(&db, &vieja, false).unwrap();
-    let cabeza = format!("contradicts {} «La autenticación va con JWT»: ", &nueva[..12]);
+    let cabeza = format!("contradicts {} «La autenticación va con JWT» (on hold until the user says which holds): ", &nueva[..12]);
     assert_eq!(n, format!("{cabeza}{}…", "x".repeat(120)), "{n}");
     let a = revisar::avisos(&db, &Ambito::Todos).unwrap().remove(0);
     assert!(a.detail.ends_with("… · by Marc"), "{}", a.detail);

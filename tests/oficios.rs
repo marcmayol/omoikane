@@ -379,7 +379,7 @@ fn las_fugas_miran_etiquetas_clave_y_datos() {
         assert!(campos.contains(&campo), "{extra}: se esperaba el campo {campo}: {r}");
     }
     // Las reservadas no cuentan.
-    let r = base(json!({ "tags": ["review:2026-12-01", "status", "blocking", "open"] }));
+    let r = base(json!({ "tags": ["review:2026-12-01", "status", "blocking", "open"], "review_reason": "si el SDK sigue en beta" }));
     assert_eq!(r["saved"], true, "{r}");
     let id = r["id"].as_str().unwrap().to_string();
     // `update` de una de oficio que solo toca las etiquetas o los datos.

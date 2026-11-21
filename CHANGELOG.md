@@ -4,6 +4,23 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.14.0 (2026-11-21)
+
+### Contradictions wait for you
+- `contradicts` used to be just a warning: both memories kept coming up with the same weight and the agent that got them had to choose. Now the contradicted memory (the one that was there) goes on hold until you say which one holds. It doesn't come by itself in the recall, ranks well below in search (×0.6) and its note starts with `ON HOLD`. The one that contradicts it comes up as usual, with a note saying the other is on hold.
+- Every session starts with the pairs waiting for you, next to the open decisions, so the agent asks you at a natural moment (or right away if its work depends on it). The `decisions` tool saves your answer: `contradiction` with both ids, `keep` with the one that holds or `both`, and `answer` with your words, which are required. The agent's instructions now say to ask you first and to use `contradicts` only when it can't.
+- The web view has a **Contradictions** section, with its count in the menu: each pair side by side, the one on hold marked, **This one holds** under each and **Both hold**, with an optional reason. "This one holds" leaves the other superseded by it (Review then offers to forget it); "Both hold" marks them compatible. A memory on hold carries an `on hold` mark in the lists and a line in its panel. Contradictions left Review, which no longer counts them (`POST /api/contradiction`).
+- Your decision is a verdict signed `user` with your words as its reason, so it travels with sync and shows wherever the memories show.
+
+### A review date says what to check
+- A `review:YYYY-MM-DD` tag only said when to look at a memory, not what for. Now it comes with `review_reason` ("the trial plan expires: see whether it has to be paid"): required through the MCP in `remember` and in an `update` that sets a new date; `--review-reason` in the CLI. A reason without a date is refused. Changing only the reason makes no new version.
+- When the date arrives, the memory shows up at the start of the session next to the open decisions, with the date and the reason, and the agent tells you. The reason also goes in the recall note, in Review, in the memory's panel in the web view and in `get`.
+- On a trade memory the reason goes through the same leak check as the text.
+
+### Compatibility
+- The database schema stays at 10. The reason lives in `memory.extra` (`review_reason`), so it travels with sync as an extra field that 1.0–1.13 keep without understanding it, and `omoi export` writes it as `omoikane.review_reason` (not signed, like a note). Holding a contradiction uses the verdicts that were already there: 1.0–1.13 see the same pair and the same decision, without the hold.
+- Review dates saved before 1.14 keep flagging, with no reason. An agent that saves a review date without a reason now gets an error telling it what to add.
+
 ## 1.13.0 (2026-11-21)
 
 ### What each memory is based on

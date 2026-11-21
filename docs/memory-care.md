@@ -26,6 +26,8 @@ What Omoikane can't know by itself, the agent says, with no new tools: when savi
 
 **Why and who.** Each verdict keeps its reason and who gave it (the sync person, or the agent and its client), and both show in the recall, in `search` and in Review. If A is superseded by B and B by C, A's note leads straight to C.
 
+**Contradictions on hold (1.14).** When the agent marks `contradicts`, the contradicted memory (the one that was there) goes on hold until you say which holds. Meanwhile it doesn't come by itself in the recall, ranks well below in search (×0.6) and its note starts with `ON HOLD`; the one that contradicts it shows as usual, with its note. Every session starts with the pending pairs, so the agent asks you at a natural moment (or right away, if its work depends on it). It saves your answer with `decisions` (`contradiction` with both ids, `keep` with the one that holds or `both`, and `answer` with your words), and the web view has a **Contradictions** section: both side by side, with **This one holds** on each and **Both hold**. "This one holds" leaves the other superseded by it, with your reason, and Review offers to forget it; "Both hold" marks them compatible. It is one more verdict, so it travels to your other computers.
+
 ## Fixing a piece and merging
 
 `update` takes `replace` (changes a text that must appear exactly once; otherwise nothing changes), `append` (adds at the end, for a procedure's new step) and `absorb` (merges several memories into one: the agent writes the merged text, and the absorbed ones go to the trash with their history hung on the one that stays and their tags and links moved to it). The Review tab has a **Merge** button to do it by hand.
@@ -41,6 +43,8 @@ It counts as a duplicate when the name is the same ignoring case, accents, hyphe
 Each kind has its own: decisions and procedures after 120 days untouched, facts and gotchas after 180, preferences never, counting from its last change or the last time the agent got it (what gets used and nobody corrects is reviewed). When it comes, the memory shows in Review and in `search` with "not reviewed in N days"; not in the recall, which only carries what says a memory may be wrong. "It's fine as it is" restarts the clock.
 
 Some memories stop holding on a known day: a token that expires, an offer, a plan with a date. Save them with the tag `review:YYYY-MM-DD` (`omoi remember … --tag review:2026-11-25`, or in `tags` from the MCP) and that day the review flags them as *review date reached*, in Review, in `search` and also in the recall (it may no longer hold). The notice at the start of the session comes even with a single one. Touching the memory or "it's fine as it is" clears it; a tag that isn't a date is refused when saving.
+
+Since 1.14 the date comes with its reason: what to check that day ("the trial plan expires: see whether it has to be paid"). Through the MCP it is required (`review_reason` in `remember` and in an `update` that sets a new date); from the CLI, `--review-reason`. When the date arrives, the memory shows up at the start of the session next to the open decisions, with its reason, and the agent tells you; it also goes in the recall note, in Review and in the memory's panel. Changing only the reason makes no new version. Memories with a date from before 1.14 still flag, with no reason.
 
 ## Code that changed under it
 

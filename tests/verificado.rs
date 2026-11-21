@@ -468,6 +468,19 @@ fn la_web_verifica_solo_desde_el_navegador() {
         let f = e.dir.join("repo").join(h["path"].as_str().unwrap());
         assert!(std::fs::read_to_string(&f).unwrap().contains("Lo verifica la persona en la vista."), "{}", f.display());
     }
+
+    // Contradicciones (1.14): «Vale esta» deja la otra sustituida; un `keep` que no es de la pareja, no.
+    let a = e.guardar("fact", "El servidor de pruebas está en Frankfurt", "El servidor de pruebas está en Frankfurt.");
+    let b = e.guardar("fact", "El servidor de pruebas está en Madrid", "El servidor de pruebas está en Madrid desde octubre.");
+    e.herramienta("update", serde_json::json!({ "id": b, "contradicts": [a] }));
+    let decidir = |keep: &str| pedir("POST", "/api/contradiction", &serde_json::json!({ "a": b, "b": a, "keep": keep, "reason": "se mudó en octubre" }).to_string(), &[("Origin", &origen)]);
+    assert_eq!(decidir(&id).0, 400);
+    let (estado, r) = decidir(&b);
+    assert_eq!(estado, 200, "{r}");
+    let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(v["superseded"], a.as_str(), "{v}");
+    let (_, rev) = pedir("GET", "/api/review", "", &[]);
+    assert!(!rev.contains("\"contradicts\"") && rev.contains("se mudó en octubre"), "{rev}");
 }
 
 /// El enlace a una memoria (1.8.6): `omoi serve --memory <id>` acepta su principio, dice el enlace

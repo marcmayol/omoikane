@@ -13,6 +13,8 @@
 //!   se ve desde el proyecto de la petición (su espacio); desde la carpeta del usuario, todo
 //! - `GET /api/review` → lo que conviene revisar (`revisar::avisos`), y `POST /api/review/dismiss` con
 //!   `{memory_id, kind, other_id}` para «está bien así»
+//! - `POST /api/contradiction` con `{a, b, keep, reason}` → cuál vale de dos que se contradicen (1.14):
+//!   `keep` es el id de la que vale (la otra queda sustituida) o `both`
 //! - `GET /api/candidates` → lo apartado de las conversaciones (`candidatas::todas`), y
 //!   `POST /api/candidates/dismiss` con `{id}` para dejarlo
 //! - `GET /api/trash` → la papelera (`memoria::papelera`), y `POST /api/restore` con `{id}` para
@@ -498,6 +500,32 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
+                (Method::Post, "/api/contradiction") => {
+                    // Cuál vale de dos memorias que se contradicen (1.14): «Vale esta» (`keep`, su id) o
+                    // «Valen las dos» (`keep: "both"`), con lo que la persona quiera decir en `reason`.
+                    let v = cuerpo_json(&mut peticion)?;
+                    let campo = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                    let (a, b) = match (memoria::resolver_id(&base, &campo("a")), memoria::resolver_id(&base, &campo("b"))) {
+                        (Ok(a), Ok(b)) => (a, b),
+                        (Err(e), _) | (_, Err(e)) => return Ok(error(404, &format!("{e:#}"))),
+                    };
+                    if !m.ve(&base, &a)? || !m.ve(&base, &b)? {
+                        return Ok(fuera());
+                    }
+                    let queda = match crate::veredictos::Queda::de(&base, &campo("keep")) {
+                        Ok(q) => q,
+                        Err(e) => return Ok(error(400, &format!("{e:#}"))),
+                    };
+                    let antes = crate::revisar::antes(&base)?;
+                    match crate::veredictos::resolver(&base, &a, &b, &queda, &campo("reason"), crate::veredictos::USUARIO) {
+                        Ok(sustituida) => {
+                            crate::revisar::al_dia_de(&base, &antes, &[])?;
+                            crate::sync::programar(&ruta_db);
+                            Ok(json(200, serde_json::json!({ "resolved": true, "superseded": sustituida }).to_string()))
+                        }
+                        Err(e) => Ok(error(400, &format!("{e:#}"))),
+                    }
+                }
                 (Method::Get, "/api/trash") => {
                     let mut v = Vec::new();
                     for o in memoria::papelera(&base)? {
@@ -743,7 +771,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, puerto: u16, abrir: bool, memor
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, GET /api/trash, POST /api/restore, POST /api/redact, POST /api/skill, POST /api/verify, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
+                _ => Ok(error(404, "not found: GET /, GET /api/memories, GET /api/projects, GET /api/overview, GET /api/review, POST /api/review/dismiss, POST /api/contradiction, GET /api/trash, POST /api/restore, POST /api/redact, POST /api/skill, POST /api/verify, GET /api/candidates, POST /api/candidates/dismiss, GET /api/sync, GET /health, GET /tools, GET /search?q=, POST /tools/<name>")),
             }
         })()
         .unwrap_or_else(|e| error(500, &format!("{e:#}")));

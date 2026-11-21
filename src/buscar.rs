@@ -440,6 +440,8 @@ fn con_gemma(
 
 /// Recencia, fijadas y lo deducido, orden final, límite y, si toca, apuntarlas como recuperadas.
 fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apuntar: bool) -> Result<Vec<Resultado>> {
+    // Las contradichas que esperan a la persona (`veredictos::en_espera`), bastante más abajo.
+    let espera = crate::veredictos::en_espera(db)?;
     let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
     for r in &mut fusion {
         let d: f64 = dias.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
@@ -448,7 +450,8 @@ fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apunta
         // Lo que solo dedujo un agente, sin que nadie lo dijera ni lo probara, un poco por detrás
         // (`evidencia`); una verificada por una persona no, aunque se dedujera.
         let deducida = if r.memoria.verified.is_none() && crate::evidencia::solo_deducida(&r.memoria.evidence) { crate::evidencia::FACTOR_DEDUCIDA } else { 1.0 };
-        r.score *= fijada * deducida * (1.0 + BOOST_RECENCIA * recencia);
+        let en_espera = if espera.contains(&r.memoria.id) { crate::veredictos::FACTOR_EN_ESPERA } else { 1.0 };
+        r.score *= fijada * deducida * en_espera * (1.0 + BOOST_RECENCIA * recencia);
     }
     drop(dias);
     fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));

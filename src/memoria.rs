@@ -107,6 +107,9 @@ pub struct Memoria {
     /// En qué se basa (`evidencia`, en `memory.extra`): qué vio quien la guardó.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<crate::evidencia::Evidencia>,
+    /// Qué hay que mirar cuando llegue su fecha de revisión (`review:AAAA-MM-DD`), en `memory.extra`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_reason: Option<String>,
     /// La verificación que quitó el cambio de texto de esta llamada (`update`). No se guarda ni sale en
     /// el JSON: es para que quien cambia lo diga.
     #[serde(skip)]
@@ -152,6 +155,8 @@ pub struct Nueva {
     pub provenance: Option<crate::procedencia::Procedencia>,
     /// En qué se basa (`evidencia`), ya limpia: va a `memory.extra`.
     pub evidence: Vec<crate::evidencia::Evidencia>,
+    /// Qué mirar cuando llegue su fecha de revisión: va a `memory.extra`.
+    pub review_reason: Option<String>,
 }
 
 /// Solo cambia lo que viene en `Some`.
@@ -366,9 +371,9 @@ fn filas_fts(db: &Connection) -> Option<i64> {
 /// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`). Las dos últimas,
 /// la verificación (`verificado`) y la procedencia (`procedencia`) de `memory.extra` (o NULL): el
 /// `instr` evita leer el JSON de las que no tienen, que son casi todas.
-pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) AND NOT EXISTS (SELECT 1 FROM meta WHERE k = 'sello_ajeno:' || m.id AND v = json_extract(m.extra, '$.verified.by') || char(10) || json_extract(m.extra, '$.verified.at')) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END, CASE WHEN instr(m.extra, 'evidence') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.evidence') END";
+pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) AND NOT EXISTS (SELECT 1 FROM meta WHERE k = 'sello_ajeno:' || m.id AND v = json_extract(m.extra, '$.verified.by') || char(10) || json_extract(m.extra, '$.verified.at')) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END, CASE WHEN instr(m.extra, 'evidence') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.evidence') END, CASE WHEN instr(m.extra, 'review_reason') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.review_reason') END";
 /// Cuántas columnas son: lo que se pida detrás de `COLUMNAS` empieza en este índice.
-pub(crate) const NCOL: usize = 20;
+pub(crate) const NCOL: usize = 21;
 
 pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
     let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
@@ -407,6 +412,7 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         verified,
         provenance,
         evidence: crate::evidencia::de_columna(f.get::<_, Option<String>>(19)?.as_deref()),
+        review_reason: f.get::<_, Option<String>>(20)?.filter(|r| !r.trim().is_empty()),
         unverified: None,
     })
 }
@@ -993,6 +999,9 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
                         extra.insert(crate::procedencia::CLAVE.into(), serde_json::to_value(p)?);
                     }
                     crate::evidencia::anadir(&mut extra, &nueva.evidence);
+                    if let Some(r) = nueva.review_reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                        extra.insert(CLAVE_MOTIVO_REVISION.into(), r.into());
+                    }
                     serde_json::Value::Object(extra).to_string()
                 }
             },
@@ -1529,6 +1538,7 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         source: m.source.clone(),
         provenance: None,
         evidence: Vec::new(),
+        review_reason: None,
     };
     // Vuelve con su texto de siempre: el sello de contenido, el de cuando se olvidó (los veredictos que
     // tenía siguen valiendo).
@@ -2051,6 +2061,44 @@ fn poner_datos_en(tx: &Transaction, id: &str, datos: Option<serde_json::Value>) 
     };
     let hlc = crate::reloj::sello_tras(tx, &hlc_de(tx, id)?)?;
     tx.execute(&format!("UPDATE memory SET extra = ?2, hlc = ?3, updated_at = {AHORA} WHERE id = ?1"), params![id, serde_json::to_string(&o)?, hlc])?;
+    Ok(true)
+}
+
+/// La clave en `memory.extra` de lo que hay que mirar cuando llegue la fecha de revisión.
+pub const CLAVE_MOTIVO_REVISION: &str = "review_reason";
+/// El largo máximo de ese motivo, en caracteres.
+pub const MAX_MOTIVO_REVISION: usize = 300;
+
+/// El motivo de una fecha de revisión, limpio: una línea, sin secretos, recortado. `None` si viene vacío.
+pub fn limpiar_motivo_revision(t: &str) -> Option<String> {
+    let mut t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return None;
+    }
+    if crate::secretos::activo() {
+        t = crate::secretos::redactar(&t).0;
+    }
+    if t.chars().count() > MAX_MOTIVO_REVISION {
+        t = t.chars().take(MAX_MOTIVO_REVISION - 1).collect::<String>() + "…";
+    }
+    Some(t)
+}
+
+/// Pone (o cambia) lo que hay que mirar cuando llegue la fecha de revisión de `id`, como la evidencia:
+/// sin versión nueva ni tocar `updated_at`, con sello nuevo para que viaje. `false` si ya lo tenía.
+pub fn poner_motivo_revision(db: &mut Connection, id: &str, motivo: &str) -> Result<bool> {
+    let id = resolver_id(db, id)?;
+    let Some(motivo) = limpiar_motivo_revision(motivo) else { return Ok(false) };
+    let tx = escribir_tx(db)?;
+    let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
+    let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
+    if o.get(CLAVE_MOTIVO_REVISION).and_then(|v| v.as_str()) == Some(motivo.as_str()) {
+        return Ok(false);
+    }
+    o.insert(CLAVE_MOTIVO_REVISION.into(), motivo.into());
+    let hlc = crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?;
+    tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
+    tx.commit()?;
     Ok(true)
 }
 
