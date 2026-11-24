@@ -1,24 +1,24 @@
-//! Muchos agentes contra la misma base: procesos `omoi` de verdad, a la vez, sobre un solo fichero
-//! (lo que pasa en una software factory con subagentes, varias sesiones y la CI).
+//! Many agents against the same database: real `omoi` processes, at the same time, on a single file
+//! (what happens in a software factory with subagents, several sessions and CI).
 //!
-//! Cada agente es un hilo que lanza un `omoi` tras otro, como lo harían los hooks y el plugin de un
-//! agente: arranque de sesión (`recall --session-start`), el recall de cada mensaje, `remember`,
-//! `omoi tool remember`, `update`, `search`, `omoi tool search` y el cierre (`recall --session-end`,
-//! con su conversación). Uno de ellos, si se pide, hace además `omoi sync` contra un repositorio
-//! `--bare` local. Al final se comprueba que no se ha perdido nada de lo que `omoi` dio por guardado y
-//! que `memory`, `memory_fts`, `memory_path` y `memory_vec` cuadran.
+//! Each agent is a thread that launches one `omoi` after another, as an agent's hooks and plugin
+//! would: session start (`recall --session-start`), the recall for each message, `remember`,
+//! `omoi tool remember`, `update`, `search`, `omoi tool search` and the close (`recall --session-end`,
+//! with its transcript). One of them, if asked, also runs `omoi sync` against a local `--bare`
+//! repository. At the end it checks that nothing `omoi` reported as saved was lost and
+//! that `memory`, `memory_fts`, `memory_path` and `memory_vec` add up.
 //!
-//! - `concurrencia_corta` (CI): 6 agentes durante 5 s con el binario de la compilación de los tests.
-//! - `concurrencia_medida` (a mano, ignorado): la medida de verdad, con el binario release.
+//! - `concurrency_short` (CI): 6 agents for 5 s with the binary from the test build.
+//! - `concurrency_measured` (by hand, ignored): the real measurement, with the release binary.
 //!   `cargo test --release --test concurrencia -- --ignored --nocapture`
 //!   Variables: `OMOI_CONC_AGENTES` (20), `OMOI_CONC_SEGUNDOS` (30), `OMOI_CONC_SYNC` (1),
-//!   `OMOI_CONC_MEMORIAS` (3000 de partida),
-//!   `OMOI_CONC_BIN` (otro `omoi`, por ejemplo el de otra versión para comparar) y `OMOI_MODELO_INT8`
-//!   (la carpeta del modelo int8; sin él se busca en `~/.omoikane/models`, solo para copiarlo).
+//!   `OMOI_CONC_MEMORIAS` (3000 to start with),
+//!   `OMOI_CONC_BIN` (another `omoi`, for example another version's to compare) and `OMOI_MODELO_INT8`
+//!   (the int8 model folder; without it, `~/.omoikane/models` is searched, only to copy it).
 //!
-//! Nada toca la base de verdad: cada proceso lleva `OMOIKANE_DB`, `OMOIKANE_HOME`, `OMOIKANE_MODELS`
-//! y la carpeta personal (`USERPROFILE`/`HOME`) en una carpeta temporal, y se comprueba antes de
-//! lanzar nada.
+//! Nothing touches the real database: each process gets `OMOIKANE_DB`, `OMOIKANE_HOME`, `OMOIKANE_MODELS`
+//! and the home folder (`USERPROFILE`/`HOME`) in a temporary folder, and that is checked before
+//! launching anything.
 
 mod comun;
 
@@ -29,96 +29,96 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Lo más que puede tardar un `omoi`; más es un cuelgue y se corta (por su PID, que es nuestro).
-const LIMITE: Duration = Duration::from_secs(60);
+/// The longest an `omoi` may take; longer is a hang and it is killed (by its PID, which is ours).
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 struct Conf {
-    agentes: usize,
-    segundos: u64,
+    agents: usize,
+    seconds: u64,
     bin: PathBuf,
     sync: bool,
-    modelo: Option<PathBuf>,
-    /// Memorias de partida, repartidas entre los tres proyectos (con 2.000 o más, la revisión tras
-    /// cada escritura va por partes, `revisar::al_dia_de`; con menos, se rehace entera).
-    memorias: usize,
+    model: Option<PathBuf>,
+    /// Starting memories, spread across the three projects (with 2,000 or more, the review after
+    /// each write goes in parts, `revisar::al_dia_de`; with fewer, it is redone whole).
+    memories: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-enum Tipo {
-    Empezar,
+enum OpKind {
+    Start,
     Recall,
     Remember,
     ToolRemember,
     Update,
     Search,
     ToolSearch,
-    Cerrar,
+    End,
     Sync,
-    /// `omoi --version`: lo que cuesta lanzar un proceso con la máquina así de cargada, sin base.
+    /// `omoi --version`: what it costs to launch a process with the machine this loaded, without a database.
     Version,
-    /// `remember` de todos a la vez en una base que aún no existe.
-    Frio,
+    /// `remember` from everyone at once on a database that doesn't exist yet.
+    Cold,
 }
 
-impl Tipo {
-    fn nombre(self) -> &'static str {
+impl OpKind {
+    fn name(self) -> &'static str {
         match self {
-            Tipo::Empezar => "recall --session-start",
-            Tipo::Recall => "recall (mensaje)",
-            Tipo::Remember => "remember",
-            Tipo::ToolRemember => "tool remember",
-            Tipo::Update => "update",
-            Tipo::Search => "search",
-            Tipo::ToolSearch => "tool search",
-            Tipo::Cerrar => "recall --session-end",
-            Tipo::Sync => "sync",
-            Tipo::Version => "--version (sin base)",
-            Tipo::Frio => "remember en frío (base nueva)",
+            OpKind::Start => "recall --session-start",
+            OpKind::Recall => "recall (mensaje)",
+            OpKind::Remember => "remember",
+            OpKind::ToolRemember => "tool remember",
+            OpKind::Update => "update",
+            OpKind::Search => "search",
+            OpKind::ToolSearch => "tool search",
+            OpKind::End => "recall --session-end",
+            OpKind::Sync => "sync",
+            OpKind::Version => "--version (sin base)",
+            OpKind::Cold => "remember en frío (base nueva)",
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-enum Fallo {
-    /// `database is locked`, SQLITE_BUSY o BUSY_SNAPSHOT.
-    Bloqueada,
-    Otro,
-    Tiempo,
+enum Failure {
+    /// `database is locked`, SQLITE_BUSY or BUSY_SNAPSHOT.
+    Locked,
+    Other,
+    Timeout,
 }
 
 struct Op {
-    tipo: Tipo,
+    kind: OpKind,
     ms: f64,
-    /// Lo que el proceso esperó a otra conexión (`TRAZA espera_base`; los `omoi` de antes de la 1.7
-    /// no lo dicen).
-    espera: Option<f64>,
-    /// Veces que tuvo que volver a abrir la base (`TRAZA abrir_reintento`).
-    reintentos: usize,
-    fallo: Option<(Fallo, String)>,
+    /// What the process waited for another connection (`TRAZA espera_base`; `omoi` from before 1.7
+    /// doesn't report it).
+    wait: Option<f64>,
+    /// Times it had to reopen the database (`TRAZA abrir_reintento`).
+    retries: usize,
+    failure: Option<(Failure, String)>,
 }
 
-/// Lo que `omoi` dio por guardado: la memoria y su último contenido.
+/// What `omoi` reported as saved: the memory and its latest content.
 #[derive(Clone)]
-struct Escrita {
+struct Written {
     id: String,
-    titulo: String,
-    contenido: String,
+    title: String,
+    content: String,
 }
 
-struct Salida {
+struct RunOutput {
     ok: bool,
     stdout: String,
     stderr: String,
     ms: f64,
-    tiempo: bool,
+    timed_out: bool,
 }
 
-struct Entorno {
+struct Env {
     dir: PathBuf,
     bin: PathBuf,
 }
 
-impl Entorno {
+impl Env {
     fn db(&self) -> PathBuf {
         self.dir.join("o.db")
     }
@@ -127,9 +127,9 @@ impl Entorno {
         self.dir.join(format!("repo{i}"))
     }
 
-    /// Un `omoi` con todo apuntando a la carpeta temporal.
-    fn omoi(&self, args: &[&str], cwd: &Path, entrada: Option<&str>) -> Salida {
-        let casa = self.dir.join("casa");
+    /// An `omoi` with everything pointing at the temporary folder.
+    fn omoi(&self, args: &[&str], cwd: &Path, input: Option<&str>) -> RunOutput {
+        let home = self.dir.join("casa");
         let mut c = Command::new(&self.bin);
         c.args(args)
             .current_dir(cwd)
@@ -138,24 +138,24 @@ impl Entorno {
             .env("OMOIKANE_HOME", self.dir.join("home-omoikane"))
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_SEMANTIC", "0")
-            // La sincronización solo a mano (la hace un agente): nada de procesos sueltos de fondo.
+            // Sync only by hand (one agent does it): no stray background processes.
             .env("OMOIKANE_SYNC_AUTO", "0")
             .env("OMOIKANE_LANG", "en")
             .env("OMOIKANE_TRAZA", "1")
-            .env("USERPROFILE", &casa)
-            .env("HOME", &casa)
-            .env("GIT_CONFIG_GLOBAL", casa.join(".gitconfig"))
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
+            .env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(if entrada.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let t = Instant::now();
-        let mut hijo = c.spawn().expect("no se puede lanzar omoi");
-        if let Some(e) = entrada {
-            let mut s = hijo.stdin.take().unwrap();
+        let mut child = c.spawn().expect("no se puede lanzar omoi");
+        if let Some(e) = input {
+            let mut s = child.stdin.take().unwrap();
             let _ = s.write_all(e.as_bytes());
         }
-        let leer = |mut r: Box<dyn Read + Send>| {
+        let read_pipe = |mut r: Box<dyn Read + Send>| {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
                 let mut s = String::new();
@@ -164,26 +164,26 @@ impl Entorno {
             });
             rx
         };
-        let out = leer(Box::new(hijo.stdout.take().unwrap()));
-        let err = leer(Box::new(hijo.stderr.take().unwrap()));
-        // Cuando se cierra su salida, el proceso ha terminado (o la ha cerrado, y `wait` no tarda).
-        let stdout = out.recv_timeout(LIMITE);
+        let out = read_pipe(Box::new(child.stdout.take().unwrap()));
+        let err = read_pipe(Box::new(child.stderr.take().unwrap()));
+        // When its output closes, the process has finished (or closed it, and `wait` won't take long).
+        let stdout = out.recv_timeout(TIMEOUT);
         let Ok(stdout) = stdout else {
-            let _ = hijo.kill();
-            let _ = hijo.wait();
-            return Salida { ok: false, stdout: String::new(), stderr: String::new(), ms: t.elapsed().as_secs_f64() * 1000.0, tiempo: true };
+            let _ = child.kill();
+            let _ = child.wait();
+            return RunOutput { ok: false, stdout: String::new(), stderr: String::new(), ms: t.elapsed().as_secs_f64() * 1000.0, timed_out: true };
         };
-        let estado = hijo.wait().expect("wait");
+        let status = child.wait().expect("wait");
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         let stderr = err.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-        Salida { ok: estado.success(), stdout, stderr, ms, tiempo: false }
+        RunOutput { ok: status.success(), stdout, stderr, ms, timed_out: false }
     }
 }
 
-/// xorshift: el mismo reparto en cada ejecución.
-struct Azar(u64);
+/// xorshift: the same distribution on every run.
+struct Rng(u64);
 
-impl Azar {
+impl Rng {
     fn n(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -192,150 +192,150 @@ impl Azar {
     }
 }
 
-const PALABRAS: [&str; 24] = [
+const WORDS: [&str; 24] = [
     "caché", "puerto", "token", "migración", "índice", "despliegue", "cola", "reintento", "pasarela", "factura", "usuario", "sesión",
     "registro", "plantilla", "consulta", "permiso", "certificado", "contenedor", "tarea", "alerta", "copia", "esquema", "servidor", "cliente",
 ];
 
-fn frase(a: &mut Azar, n: usize) -> String {
-    (0..n).map(|_| PALABRAS[a.n(PALABRAS.len() as u64) as usize]).collect::<Vec<_>>().join(" ")
+fn phrase(a: &mut Rng, n: usize) -> String {
+    (0..n).map(|_| WORDS[a.n(WORDS.len() as u64) as usize]).collect::<Vec<_>>().join(" ")
 }
 
-/// El id de una memoria guardada en la salida de `remember` o de `omoi tool remember`.
-fn id_de(texto: &str) -> Option<String> {
-    texto
+/// The id of a saved memory in the output of `remember` or `omoi tool remember`.
+fn id_of(text: &str) -> Option<String> {
+    text
         .split(|c: char| !c.is_ascii_alphanumeric())
         .find(|p| p.len() == 26 && p.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase()))
         .map(str::to_string)
 }
 
-fn espera_de(s: &Salida) -> Option<f64> {
+fn wait_of(s: &RunOutput) -> Option<f64> {
     let l = s.stderr.lines().find_map(|l| l.strip_prefix("TRAZA espera_base "))?;
     serde_json::from_str::<serde_json::Value>(l).ok()?["ms"].as_f64()
 }
 
-fn reintentos_de(s: &Salida) -> usize {
+fn retries_of(s: &RunOutput) -> usize {
     s.stderr.lines().filter(|l| l.starts_with("TRAZA abrir_reintento ")).count()
 }
 
-fn clasificar(s: &Salida, tipo: Tipo) -> Option<(Fallo, String)> {
-    if s.tiempo {
-        return Some((Fallo::Tiempo, "más de 60 s".into()));
+fn classify(s: &RunOutput, kind: OpKind) -> Option<(Failure, String)> {
+    if s.timed_out {
+        return Some((Failure::Timeout, "más de 60 s".into()));
     }
     let err = s.stderr.to_lowercase();
-    // El recall nunca falla hacia fuera (un hook no debe molestar): sus errores van a stderr.
-    let fallo = !s.ok || (matches!(tipo, Tipo::Empezar | Tipo::Recall | Tipo::Cerrar) && err.contains("omoikane:"));
-    if !fallo {
+    // Recall never fails outwards (a hook must not get in the way): its errors go to stderr.
+    let failure = !s.ok || (matches!(kind, OpKind::Start | OpKind::Recall | OpKind::End) && err.contains("omoikane:"));
+    if !failure {
         return None;
     }
-    let linea = s.stderr.lines().filter(|l| !l.starts_with("TRAZA ")).chain(s.stdout.lines()).find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect();
+    let line = s.stderr.lines().filter(|l| !l.starts_with("TRAZA ")).chain(s.stdout.lines()).find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect();
     if err.contains("locked") || err.contains("busy") || s.stdout.to_lowercase().contains("database is locked") {
-        Some((Fallo::Bloqueada, linea))
+        Some((Failure::Locked, line))
     } else {
-        Some((Fallo::Otro, linea))
+        Some((Failure::Other, line))
     }
 }
 
-fn hook(sesion: &str, cwd: &Path, evento: &str, extra: serde_json::Value) -> String {
-    let mut v = serde_json::json!({ "session_id": sesion, "cwd": cwd.to_string_lossy(), "hook_event_name": evento });
+fn hook(session: &str, cwd: &Path, event: &str, extra: serde_json::Value) -> String {
+    let mut v = serde_json::json!({ "session_id": session, "cwd": cwd.to_string_lossy(), "hook_event_name": event });
     if let (Some(o), serde_json::Value::Object(e)) = (v.as_object_mut(), extra) {
         o.extend(e);
     }
     v.to_string()
 }
 
-/// Un agente: arranca sesión, trabaja hasta `fin` y cierra. Devuelve lo que hizo y lo que guardó.
-fn agente(e: &Entorno, k: usize, fin: Instant, sync: bool) -> (Vec<Op>, Vec<Escrita>) {
-    let mut a = Azar(0x9E37_79B9_7F4A_7C15 ^ ((k as u64 + 1) * 0x2545_F491));
+/// An agent: starts a session, works until `end` and closes. Returns what it did and what it saved.
+fn agent(e: &Env, k: usize, end: Instant, sync: bool) -> (Vec<Op>, Vec<Written>) {
+    let mut a = Rng(0x9E37_79B9_7F4A_7C15 ^ ((k as u64 + 1) * 0x2545_F491));
     let repo = e.repo(k % 3);
     let cwd = repo.join("src");
-    let sesion = format!("conc-{k:02}");
+    let session = format!("conc-{k:02}");
     let mut ops = Vec::new();
-    let mut escritas: Vec<Escrita> = Vec::new();
-    let nota = |ops: &mut Vec<Op>, tipo: Tipo, s: &Salida| {
-        let fallo = clasificar(s, tipo);
-        ops.push(Op { tipo, ms: s.ms, espera: espera_de(s), reintentos: reintentos_de(s), fallo: fallo.clone() });
-        fallo.is_none()
+    let mut written: Vec<Written> = Vec::new();
+    let record = |ops: &mut Vec<Op>, kind: OpKind, s: &RunOutput| {
+        let failure = classify(s, kind);
+        ops.push(Op { kind, ms: s.ms, wait: wait_of(s), retries: retries_of(s), failure: failure.clone() });
+        failure.is_none()
     };
-    let s = e.omoi(&["recall", "--session-start"], &cwd, Some(&hook(&sesion, &cwd, "SessionStart", serde_json::json!({ "source": "startup" }))));
-    nota(&mut ops, Tipo::Empezar, &s);
+    let s = e.omoi(&["recall", "--session-start"], &cwd, Some(&hook(&session, &cwd, "SessionStart", serde_json::json!({ "source": "startup" }))));
+    record(&mut ops, OpKind::Start, &s);
     let mut i = 0usize;
-    let mut proxima_sync = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < fin {
+    let mut next_sync = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < end {
         i += 1;
-        if sync && Instant::now() >= proxima_sync {
+        if sync && Instant::now() >= next_sync {
             let s = e.omoi(&["sync"], &cwd, None);
-            nota(&mut ops, Tipo::Sync, &s);
-            proxima_sync = Instant::now() + Duration::from_secs(3);
+            record(&mut ops, OpKind::Sync, &s);
+            next_sync = Instant::now() + Duration::from_secs(3);
             continue;
         }
-        let marca = format!("conc{k:02}x{i:04}");
+        let mark = format!("conc{k:02}x{i:04}");
         match a.n(100) {
             0..5 => {
                 let s = e.omoi(&["--version"], &cwd, None);
-                nota(&mut ops, Tipo::Version, &s);
+                record(&mut ops, OpKind::Version, &s);
             }
             5..40 => {
-                let prompt = format!("¿qué sabemos de {}?", frase(&mut a, 3));
-                let s = e.omoi(&["recall"], &cwd, Some(&hook(&sesion, &cwd, "UserPromptSubmit", serde_json::json!({ "prompt": prompt }))));
-                nota(&mut ops, Tipo::Recall, &s);
+                let prompt = format!("¿qué sabemos de {}?", phrase(&mut a, 3));
+                let s = e.omoi(&["recall"], &cwd, Some(&hook(&session, &cwd, "UserPromptSubmit", serde_json::json!({ "prompt": prompt }))));
+                record(&mut ops, OpKind::Recall, &s);
             }
             40..55 => {
-                let titulo = format!("{marca} {}", frase(&mut a, 3));
-                let contenido = format!("{marca}: {}", frase(&mut a, 12));
-                let s = e.omoi(&["remember", "-k", "fact", "-t", &titulo, "-f", "--json", "--path", "src/main.rs", &contenido], &cwd, None);
-                if nota(&mut ops, Tipo::Remember, &s) {
-                    escritas.push(Escrita { id: id_de(&s.stdout).unwrap_or_default(), titulo, contenido });
+                let title = format!("{mark} {}", phrase(&mut a, 3));
+                let content = format!("{mark}: {}", phrase(&mut a, 12));
+                let s = e.omoi(&["remember", "-k", "fact", "-t", &title, "-f", "--json", "--path", "src/main.rs", &content], &cwd, None);
+                if record(&mut ops, OpKind::Remember, &s) {
+                    written.push(Written { id: id_of(&s.stdout).unwrap_or_default(), title, content });
                 }
             }
             55..70 => {
-                let titulo = format!("{marca} {}", frase(&mut a, 3));
-                let contenido = format!("{marca}: {}", frase(&mut a, 12));
-                let args = serde_json::json!({ "kind": "gotcha", "title": titulo, "content": contenido, "force": true, "paths": ["src/lib.rs"], "tags": ["conc"] });
+                let title = format!("{mark} {}", phrase(&mut a, 3));
+                let content = format!("{mark}: {}", phrase(&mut a, 12));
+                let args = serde_json::json!({ "kind": "gotcha", "title": title, "content": content, "force": true, "paths": ["src/lib.rs"], "tags": ["conc"] });
                 let s = e.omoi(&["tool", "remember"], &cwd, Some(&args.to_string()));
-                if nota(&mut ops, Tipo::ToolRemember, &s) {
-                    escritas.push(Escrita { id: id_de(&s.stdout).unwrap_or_default(), titulo, contenido });
+                if record(&mut ops, OpKind::ToolRemember, &s) {
+                    written.push(Written { id: id_of(&s.stdout).unwrap_or_default(), title, content });
                 }
             }
-            70..80 if !escritas.is_empty() => {
-                let j = a.n(escritas.len() as u64) as usize;
-                let contenido = format!("{marca} cambiado: {}", frase(&mut a, 10));
-                let id = escritas[j].id.clone();
-                let s = e.omoi(&["update", &id, "-c", &contenido], &cwd, None);
-                if nota(&mut ops, Tipo::Update, &s) {
-                    escritas[j].contenido = contenido;
+            70..80 if !written.is_empty() => {
+                let j = a.n(written.len() as u64) as usize;
+                let content = format!("{mark} cambiado: {}", phrase(&mut a, 10));
+                let id = written[j].id.clone();
+                let s = e.omoi(&["update", &id, "-c", &content], &cwd, None);
+                if record(&mut ops, OpKind::Update, &s) {
+                    written[j].content = content;
                 }
             }
             80..92 => {
-                let q = frase(&mut a, 2);
+                let q = phrase(&mut a, 2);
                 let s = e.omoi(&["search", &q], &cwd, None);
-                nota(&mut ops, Tipo::Search, &s);
+                record(&mut ops, OpKind::Search, &s);
             }
             _ => {
-                let args = serde_json::json!({ "query": frase(&mut a, 2) });
+                let args = serde_json::json!({ "query": phrase(&mut a, 2) });
                 let s = e.omoi(&["tool", "search"], &cwd, Some(&args.to_string()));
-                nota(&mut ops, Tipo::ToolSearch, &s);
+                record(&mut ops, OpKind::ToolSearch, &s);
             }
         }
     }
-    // El cierre, con una conversación corta en el formato de Claude Code.
-    let conversacion = e.dir.join(format!("conversacion-{k:02}.jsonl"));
-    let turnos = [
-        serde_json::json!({ "type": "user", "sessionId": sesion, "message": { "role": "user", "content": "arregla el reintento de la cola" } }),
-        serde_json::json!({ "type": "assistant", "sessionId": sesion, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Hecho: el reintento ahora espera 2 s." }] } }),
+    // The close, with a short transcript in Claude Code's format.
+    let transcript = e.dir.join(format!("conversacion-{k:02}.jsonl"));
+    let turns = [
+        serde_json::json!({ "type": "user", "sessionId": session, "message": { "role": "user", "content": "arregla el reintento de la cola" } }),
+        serde_json::json!({ "type": "assistant", "sessionId": session, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Hecho: el reintento ahora espera 2 s." }] } }),
     ];
-    let texto: String = turnos.iter().map(|t| format!("{t}\n")).collect();
-    std::fs::write(&conversacion, texto).unwrap();
+    let text: String = turns.iter().map(|t| format!("{t}\n")).collect();
+    std::fs::write(&transcript, text).unwrap();
     let s = e.omoi(
         &["recall", "--session-end"],
         &cwd,
-        Some(&hook(&sesion, &cwd, "SessionEnd", serde_json::json!({ "transcript_path": conversacion.to_string_lossy(), "reason": "exit" }))),
+        Some(&hook(&session, &cwd, "SessionEnd", serde_json::json!({ "transcript_path": transcript.to_string_lossy(), "reason": "exit" }))),
     );
-    nota(&mut ops, Tipo::Cerrar, &s);
-    (ops, escritas)
+    record(&mut ops, OpKind::End, &s);
+    (ops, written)
 }
 
-fn percentil(v: &[f64], p: f64) -> f64 {
+fn percentile(v: &[f64], p: f64) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
@@ -343,235 +343,235 @@ fn percentil(v: &[f64], p: f64) -> f64 {
     v[i.min(v.len() - 1)]
 }
 
-/// Lo que sale de una ejecución, para comprobarlo o enseñarlo.
-struct Informe {
+/// What a run produces, to check it or show it.
+struct Report {
     ops: Vec<Op>,
-    escritas: usize,
-    perdidas: Vec<String>,
-    incoherencias: Vec<String>,
+    written: usize,
+    lost: Vec<String>,
+    mismatches: Vec<String>,
     wal_kb: u64,
-    texto: String,
+    text: String,
 }
 
-fn ruta_real() -> PathBuf {
+fn real_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_default().join(".omoikane")
 }
 
-fn modelo_int8() -> Option<PathBuf> {
-    let dir = std::env::var_os("OMOI_MODELO_INT8").map(PathBuf::from).or_else(|| Some(ruta_real().join("models").join("potion-multilingual-128M-int8")))?;
+fn int8_model() -> Option<PathBuf> {
+    let dir = std::env::var_os("OMOI_MODELO_INT8").map(PathBuf::from).or_else(|| Some(real_dir().join("models").join("potion-multilingual-128M-int8")))?;
     dir.join("model.safetensors").exists().then_some(dir)
 }
 
-fn ejecutar(nombre: &str, c: &Conf) -> Informe {
-    let dir = comun::Temporal::nueva(&format!("conc-{nombre}"));
+fn run(name: &str, c: &Conf) -> Report {
+    let dir = comun::Temporal::nueva(&format!("conc-{name}"));
     for i in 0..3 {
         std::fs::create_dir_all(dir.join(format!("repo{i}")).join(".git")).unwrap();
         std::fs::create_dir_all(dir.join(format!("repo{i}")).join("src")).unwrap();
     }
     std::fs::create_dir_all(dir.join("casa")).unwrap();
-    let e = Entorno { dir: dir.clone(), bin: c.bin.clone() };
-    // Antes de lanzar nada: la base es la temporal, y no la de verdad.
-    let real = ruta_real();
+    let e = Env { dir: dir.clone(), bin: c.bin.clone() };
+    // Before launching anything: the database is the temporary one, not the real one.
+    let real = real_dir();
     assert!(e.db().starts_with(std::env::temp_dir()) && !e.db().starts_with(&real), "la base de la prueba no es temporal: {}", e.db().display());
     assert!(!dir.join("home-omoikane").starts_with(&real) && !dir.join("models").starts_with(&real));
 
-    // Arranque en frío: todos los agentes guardan a la vez en una base que aún no existe (la CI que
-    // empieza con una base nueva). Tiene que salir una sola base, con una sola persona.
+    // Cold start: every agent saves at once on a database that doesn't exist yet (CI that
+    // starts with a new database). A single database must come out, with a single person.
     let cwd0 = e.repo(0).join("src");
     let mut ops = Vec::new();
-    let mut escritas = Vec::new();
-    let frio: Vec<(Salida, String, String)> = std::thread::scope(|s| {
-        let hilos: Vec<_> = (0..c.agentes)
+    let mut written = Vec::new();
+    let cold: Vec<(RunOutput, String, String)> = std::thread::scope(|s| {
+        let threads: Vec<_> = (0..c.agents)
             .map(|k| {
                 let e = &e;
                 s.spawn(move || {
-                    let (titulo, contenido) = (format!("frio{k:02} {}", PALABRAS[k % PALABRAS.len()]), format!("frio{k:02}: base nueva"));
-                    let s = e.omoi(&["remember", "-k", "fact", "-t", &titulo, "-f", "--json", &contenido], &e.repo(k % 3).join("src"), None);
-                    (s, titulo, contenido)
+                    let (title, content) = (format!("frio{k:02} {}", WORDS[k % WORDS.len()]), format!("frio{k:02}: base nueva"));
+                    let s = e.omoi(&["remember", "-k", "fact", "-t", &title, "-f", "--json", &content], &e.repo(k % 3).join("src"), None);
+                    (s, title, content)
                 })
             })
             .collect();
-        hilos.into_iter().map(|h| h.join().unwrap()).collect()
+        threads.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    for (s, titulo, contenido) in frio {
-        let fallo = clasificar(&s, Tipo::Frio);
-        if fallo.is_none() {
-            escritas.push(Escrita { id: id_de(&s.stdout).unwrap_or_default(), titulo, contenido });
+    for (s, title, content) in cold {
+        let failure = classify(&s, OpKind::Cold);
+        if failure.is_none() {
+            written.push(Written { id: id_of(&s.stdout).unwrap_or_default(), title, content });
         }
-        ops.push(Op { tipo: Tipo::Frio, ms: s.ms, espera: espera_de(&s), reintentos: reintentos_de(&s), fallo });
+        ops.push(Op { kind: OpKind::Cold, ms: s.ms, wait: wait_of(&s), retries: retries_of(&s), failure });
     }
-    // Las demás memorias de partida, por la biblioteca (es mucho más rápido) y repartidas por proyecto.
-    if c.memorias > 0 {
+    // The remaining starting memories, through the library (much faster) and spread by project.
+    if c.memories > 0 {
         let mut db = omoikane::db::abrir(&e.db()).unwrap();
-        let proyectos: Vec<String> = (0..3).map(|i| omoikane::proyecto::de(&e.repo(i)).unwrap()).collect();
-        for j in 0..c.memorias {
-            let mut a = Azar(1 + j as u64);
+        let projects: Vec<String> = (0..3).map(|i| omoikane::proyecto::de(&e.repo(i)).unwrap()).collect();
+        for j in 0..c.memories {
+            let mut a = Rng(1 + j as u64);
             let n = omoikane::memoria::Nueva {
-                project: proyectos[j % 3].clone(),
+                project: projects[j % 3].clone(),
                 kind: Some(omoikane::memoria::Tipo::Decision),
-                title: format!("semilla{j} {}", frase(&mut a, 3)),
-                content: frase(&mut a, 15),
+                title: format!("semilla{j} {}", phrase(&mut a, 3)),
+                content: phrase(&mut a, 15),
                 source: "semilla".into(),
                 ..Default::default()
             };
             omoikane::memoria::guardar(&mut db, n, None).unwrap();
         }
     }
-    if let Some(m) = &c.modelo {
+    if let Some(m) = &c.model {
         let s = e.omoi(&["model", "install", "--from", &m.to_string_lossy()], &cwd0, None);
         assert!(s.ok, "model install: {}", s.stderr);
     }
     if c.sync {
-        let remoto = dir.join("remoto.git");
-        let g = Command::new("git").args(["init", "--bare", "-q"]).arg(&remoto).output().unwrap();
+        let remote = dir.join("remoto.git");
+        let g = Command::new("git").args(["init", "--bare", "-q"]).arg(&remote).output().unwrap();
         assert!(g.status.success());
-        let s = e.omoi(&["sync", "init", &remoto.to_string_lossy(), "--yes"], &cwd0, None);
+        let s = e.omoi(&["sync", "init", &remote.to_string_lossy(), "--yes"], &cwd0, None);
         assert!(s.ok, "sync init: {}{}", s.stdout, s.stderr);
     }
-    // Una sesión antes de medir: la revisión queda al día con las memorias de partida.
+    // A session before measuring: the review is up to date with the starting memories.
     let s = e.omoi(&["recall", "--session-start"], &cwd0, Some(&hook("calentar", &cwd0, "SessionStart", serde_json::json!({}))));
     assert!(s.ok, "calentar: {}", s.stderr);
 
-    let fin = Instant::now() + Duration::from_secs(c.segundos);
+    let end = Instant::now() + Duration::from_secs(c.seconds);
     let t0 = Instant::now();
-    let resultados: Vec<(Vec<Op>, Vec<Escrita>)> = std::thread::scope(|s| {
-        let hilos: Vec<_> = (0..c.agentes).map(|k| {
+    let results: Vec<(Vec<Op>, Vec<Written>)> = std::thread::scope(|s| {
+        let threads: Vec<_> = (0..c.agents).map(|k| {
             let e = &e;
-            s.spawn(move || agente(e, k, fin, c.sync && k == 0))
+            s.spawn(move || agent(e, k, end, c.sync && k == 0))
         }).collect();
-        hilos.into_iter().map(|h| h.join().unwrap()).collect()
+        threads.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let total = t0.elapsed().as_secs_f64();
 
-    for (o, w) in resultados {
+    for (o, w) in results {
         ops.extend(o);
-        escritas.extend(w);
+        written.extend(w);
     }
 
-    // Lo que hay al final, leído por la biblioteca (la misma apertura que `omoi`).
+    // What is there at the end, read through the library (the same open as `omoi`).
     let wal_kb = std::fs::metadata(dir.join("o.db-wal")).map(|m| m.len() / 1024).unwrap_or(0);
     let db = omoikane::db::abrir(&e.db()).unwrap();
-    let cuenta = |sql: &str| -> i64 { db.query_row(sql, [], |f| f.get(0)).unwrap() };
-    let mut perdidas = Vec::new();
-    for w in &escritas {
-        let fila: Option<(String, String)> = db
+    let count = |sql: &str| -> i64 { db.query_row(sql, [], |f| f.get(0)).unwrap() };
+    let mut lost = Vec::new();
+    for w in &written {
+        let row: Option<(String, String)> = db
             .query_row("SELECT title, content FROM memory WHERE id = ?1", [&w.id], |f| Ok((f.get(0)?, f.get(1)?)))
             .ok();
-        match fila {
-            None => perdidas.push(format!("falta {} ({})", w.id, w.titulo)),
-            Some((t, cont)) if t != w.titulo || cont != w.contenido => perdidas.push(format!("{} no tiene lo último: {cont}", w.id)),
+        match row {
+            None => lost.push(format!("falta {} ({})", w.id, w.title)),
+            Some((t, cont)) if t != w.title || cont != w.content => lost.push(format!("{} no tiene lo último: {cont}", w.id)),
             _ => {}
         }
     }
-    let mut incoherencias = Vec::new();
-    let n = cuenta("SELECT count(*) FROM memory");
-    let mut igual = |que: &str, a: i64, b: i64| {
+    let mut mismatches = Vec::new();
+    let n = count("SELECT count(*) FROM memory");
+    let mut check_eq = |what: &str, a: i64, b: i64| {
         if a != b {
-            incoherencias.push(format!("{que}: {a} frente a {b}"));
+            mismatches.push(format!("{what}: {a} frente a {b}"));
         }
     };
-    igual("memory_fts", cuenta("SELECT count(*) FROM memory_fts_docsize"), n);
-    igual("memory_fts sin memoria", cuenta("SELECT count(*) FROM memory_fts_docsize WHERE id NOT IN (SELECT n FROM memory)"), 0);
-    igual("memory_path", cuenta("SELECT count(*) FROM memory_path"), cuenta("SELECT COALESCE(sum(json_array_length(paths)), 0) FROM memory"));
-    igual("memory_version huérfanas", cuenta("SELECT count(*) FROM memory_version WHERE memory_id NOT IN (SELECT id FROM memory)"), 0);
-    igual("proyectos", cuenta("SELECT count(DISTINCT project_id) FROM memory"), 3);
-    if c.modelo.is_some() {
-        igual("memory_vec", cuenta("SELECT count(*) FROM memory_vec"), n);
+    check_eq("memory_fts", count("SELECT count(*) FROM memory_fts_docsize"), n);
+    check_eq("memory_fts sin memoria", count("SELECT count(*) FROM memory_fts_docsize WHERE id NOT IN (SELECT n FROM memory)"), 0);
+    check_eq("memory_path", count("SELECT count(*) FROM memory_path"), count("SELECT COALESCE(sum(json_array_length(paths)), 0) FROM memory"));
+    check_eq("memory_version huérfanas", count("SELECT count(*) FROM memory_version WHERE memory_id NOT IN (SELECT id FROM memory)"), 0);
+    check_eq("proyectos", count("SELECT count(DISTINCT project_id) FROM memory"), 3);
+    if c.model.is_some() {
+        check_eq("memory_vec", count("SELECT count(*) FROM memory_vec"), n);
     }
-    let integridad: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
-    if integridad != "ok" {
-        incoherencias.push(format!("integrity_check: {integridad}"));
+    let integrity: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
+    if integrity != "ok" {
+        mismatches.push(format!("integrity_check: {integrity}"));
     }
     drop(db);
     let doctor = e.omoi(&["doctor"], &cwd0, None);
     if !doctor.ok {
-        incoherencias.push(format!("doctor: {}", doctor.stderr.trim()));
+        mismatches.push(format!("doctor: {}", doctor.stderr.trim()));
     }
 
-    // La tabla.
-    let mut texto = format!(
+    // The table.
+    let mut text = format!(
         "{} agentes, {:.1} s, {} procesos omoi ({:.0}/s), {} memorias al final, {} guardadas por los agentes, WAL {} KB{}{}\n",
-        c.agentes,
+        c.agents,
         total,
         ops.len(),
         ops.len() as f64 / total,
         n,
-        escritas.len(),
+        written.len(),
         wal_kb,
-        if c.modelo.is_some() { ", con modelo" } else { ", sin modelo" },
+        if c.model.is_some() { ", con modelo" } else { ", sin modelo" },
         if c.sync { ", con sync" } else { "" },
     );
-    texto.push_str("| operación | n | bloqueada | otro error | tiempo | P50 ms | P95 ms | P99 ms | máx ms | espera media ms |\n|---|---|---|---|---|---|---|---|---|---|\n");
-    let mut por: HashMap<Tipo, Vec<&Op>> = HashMap::new();
+    text.push_str("| operación | n | bloqueada | otro error | tiempo | P50 ms | P95 ms | P99 ms | máx ms | espera media ms |\n|---|---|---|---|---|---|---|---|---|---|\n");
+    let mut by_kind: HashMap<OpKind, Vec<&Op>> = HashMap::new();
     for o in &ops {
-        por.entry(o.tipo).or_default().push(o);
+        by_kind.entry(o.kind).or_default().push(o);
     }
-    let mut tipos: Vec<_> = por.keys().copied().collect();
-    tipos.sort();
-    for t in tipos {
-        let v = &por[&t];
+    let mut kinds: Vec<_> = by_kind.keys().copied().collect();
+    kinds.sort();
+    for t in kinds {
+        let v = &by_kind[&t];
         let mut ms: Vec<f64> = v.iter().map(|o| o.ms).collect();
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let cuantas = |f: Fallo| v.iter().filter(|o| o.fallo.as_ref().is_some_and(|(x, _)| *x == f)).count();
-        let esperas: Vec<f64> = v.iter().filter_map(|o| o.espera).collect();
-        let espera = if esperas.is_empty() { "-".to_string() } else { format!("{:.1}", esperas.iter().sum::<f64>() / esperas.len() as f64) };
-        texto.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {espera} |\n",
-            t.nombre(),
+        let count_of = |f: Failure| v.iter().filter(|o| o.failure.as_ref().is_some_and(|(x, _)| *x == f)).count();
+        let waits: Vec<f64> = v.iter().filter_map(|o| o.wait).collect();
+        let wait = if waits.is_empty() { "-".to_string() } else { format!("{:.1}", waits.iter().sum::<f64>() / waits.len() as f64) };
+        text.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {wait} |\n",
+            t.name(),
             v.len(),
-            cuantas(Fallo::Bloqueada),
-            cuantas(Fallo::Otro),
-            cuantas(Fallo::Tiempo),
-            percentil(&ms, 0.5),
-            percentil(&ms, 0.95),
-            percentil(&ms, 0.99),
+            count_of(Failure::Locked),
+            count_of(Failure::Other),
+            count_of(Failure::Timeout),
+            percentile(&ms, 0.5),
+            percentile(&ms, 0.95),
+            percentile(&ms, 0.99),
             ms.last().copied().unwrap_or(0.0)
         ));
     }
-    let mut ejemplos: Vec<String> = ops.iter().filter_map(|o| o.fallo.as_ref().map(|(f, l)| format!("{} {f:?}: {l}", o.tipo.nombre()))).collect();
-    ejemplos.sort();
-    ejemplos.dedup();
-    for l in ejemplos.iter().take(12) {
-        texto.push_str(&format!("  fallo: {l}\n"));
+    let mut examples: Vec<String> = ops.iter().filter_map(|o| o.failure.as_ref().map(|(f, l)| format!("{} {f:?}: {l}", o.kind.name()))).collect();
+    examples.sort();
+    examples.dedup();
+    for l in examples.iter().take(12) {
+        text.push_str(&format!("  fallo: {l}\n"));
     }
-    texto.push_str(&format!(
+    text.push_str(&format!(
         "aperturas repetidas por SQLITE_BUSY: {}; escrituras perdidas: {}; incoherencias: {}\n",
-        ops.iter().map(|o| o.reintentos).sum::<usize>(),
-        perdidas.len(),
-        incoherencias.len()
+        ops.iter().map(|o| o.retries).sum::<usize>(),
+        lost.len(),
+        mismatches.len()
     ));
-    for l in perdidas.iter().take(5).chain(incoherencias.iter()) {
-        texto.push_str(&format!("  {l}\n"));
+    for l in lost.iter().take(5).chain(mismatches.iter()) {
+        text.push_str(&format!("  {l}\n"));
     }
-    Informe { ops, escritas: escritas.len(), perdidas, incoherencias, wal_kb, texto }
+    Report { ops, written: written.len(), lost, mismatches, wal_kb, text }
 }
 
-/// Para CI: corto y sin cifras que dependan de la máquina. Ningún error, nada perdido, todo cuadra.
+/// For CI: short and without machine-dependent numbers. No error, nothing lost, everything adds up.
 #[test]
-fn concurrencia_corta() {
-    let c = Conf { agentes: 6, segundos: 5, bin: PathBuf::from(env!("CARGO_BIN_EXE_omoi")), sync: false, modelo: None, memorias: 0 };
-    let r = ejecutar("corta", &c);
-    eprintln!("{}", r.texto);
-    let fallos: Vec<_> = r.ops.iter().filter(|o| o.fallo.is_some()).collect();
-    assert!(fallos.is_empty(), "{} operaciones fallaron\n{}", fallos.len(), r.texto);
-    assert!(r.escritas > 0, "{}", r.texto);
-    assert!(r.perdidas.is_empty() && r.incoherencias.is_empty(), "{}", r.texto);
+fn concurrency_short() {
+    let c = Conf { agents: 6, seconds: 5, bin: PathBuf::from(env!("CARGO_BIN_EXE_omoi")), sync: false, model: None, memories: 0 };
+    let r = run("corta", &c);
+    eprintln!("{}", r.text);
+    let failures: Vec<_> = r.ops.iter().filter(|o| o.failure.is_some()).collect();
+    assert!(failures.is_empty(), "{} operaciones fallaron\n{}", failures.len(), r.text);
+    assert!(r.written > 0, "{}", r.text);
+    assert!(r.lost.is_empty() && r.mismatches.is_empty(), "{}", r.text);
     let _ = r.wal_kb;
 }
 
-/// La medida: 20 agentes durante 30 s con el binario release (ver la cabecera).
+/// The measurement: 20 agents for 30 s with the release binary (see the header).
 #[test]
 #[ignore]
-fn concurrencia_medida() {
+fn concurrency_measured() {
     let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(d);
     let c = Conf {
-        agentes: num("OMOI_CONC_AGENTES", 20) as usize,
-        segundos: num("OMOI_CONC_SEGUNDOS", 30),
+        agents: num("OMOI_CONC_AGENTES", 20) as usize,
+        seconds: num("OMOI_CONC_SEGUNDOS", 30),
         bin: std::env::var_os("OMOI_CONC_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_omoi"))),
         sync: num("OMOI_CONC_SYNC", 1) == 1,
-        modelo: modelo_int8(),
-        memorias: num("OMOI_CONC_MEMORIAS", 3000) as usize,
+        model: int8_model(),
+        memories: num("OMOI_CONC_MEMORIAS", 3000) as usize,
     };
-    let r = ejecutar("medida", &c);
-    println!("{}", r.texto);
+    let r = run("medida", &c);
+    println!("{}", r.text);
 }

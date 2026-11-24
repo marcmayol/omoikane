@@ -1,4 +1,4 @@
-//! Búsqueda: palabras (FTS5 con BM25) y, como rescate, significado (vectores centrados).
+//! Search: words (FTS5 with BM25) and, as a fallback, meaning (centered vectors).
 
 use crate::embeber::Modelo;
 use crate::memoria::{AHORA, Ambito, COLUMNAS, Memoria, Tipo, de_fila, por_ambito, ve_todas};
@@ -7,21 +7,21 @@ use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Serialize;
 
-/// Candidatos que se piden a cada lista antes de filtrar por etiquetas y fusionar.
-const CANDIDATOS: usize = 40;
-/// La k de Reciprocal Rank Fusion (la del artículo original).
+/// Candidates requested from each list before filtering by tags and fusing.
+const CANDIDATES: usize = 40;
+/// The k of Reciprocal Rank Fusion (the one from the original paper).
 const RRF_K: f64 = 60.0;
-/// Pesos de BM25 por columna: título, contenido, etiquetas, rutas.
-const PESOS: &str = "3.0, 1.0, 2.0, 1.5";
-const BOOST_FIJADA: f64 = 1.5;
-const BOOST_RECENCIA: f64 = 0.3;
-const DIAS_RECENCIA: f64 = 90.0;
+/// BM25 weights per column: title, content, tags, paths.
+const BM25_WEIGHTS: &str = "3.0, 1.0, 2.0, 1.5";
+const PINNED_BOOST: f64 = 1.5;
+const RECENCY_BOOST: f64 = 0.3;
+const RECENCY_DAYS: f64 = 90.0;
 
 #[derive(Clone, Debug)]
 pub struct Opciones {
     pub ambito: Ambito,
     pub kind: Option<Tipo>,
-    /// Si hay, la memoria tiene que llevarlas todas.
+    /// If any, the memory has to carry all of them.
     pub tags: Vec<String>,
     pub limite: usize,
 }
@@ -31,16 +31,16 @@ pub struct Resultado {
     #[serde(flatten)]
     pub memoria: Memoria,
     pub score: f64,
-    /// Coseno con la consulta, si salió por significado.
+    /// Cosine with the query, if it came up by meaning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub similarity: Option<f32>,
-    /// Cuántas palabras distintas de la consulta tiene la memoria (0 si solo salió por significado).
+    /// How many distinct query words the memory has (0 if it only came up by meaning).
     pub matched_words: usize,
 }
 
-/// Palabras que casi todo texto contiene y no ayudan a encontrar nada (castellano, inglés, catalán).
-/// Ya sin tildes, como las compara el índice.
-const VACIAS: &[&str] = &[
+/// Words almost every text contains that don't help find anything (Spanish, English, Catalan).
+/// Already without accents, as the index compares them.
+const STOPWORDS: &[&str] = &[
     "a", "al", "algo", "como", "con", "de", "del", "el", "ella", "en", "es", "esa", "ese", "eso", "esta", "este", "esto",
     "la", "las", "le", "les", "lo", "los", "mas", "me", "mi", "muy", "no", "o", "para", "pero", "por", "que", "se",
     "si", "sin", "su", "sus", "te", "tu", "un", "una", "uno", "y", "ya", "an", "and", "are", "as", "at", "be", "but",
@@ -61,14 +61,14 @@ pub(crate) fn sin_tildes(s: &str) -> String {
         .collect()
 }
 
-/// Convierte lo que escribe una persona en una consulta FTS5 segura: cada palabra entre comillas
-/// (nada de sintaxis FTS5 que pueda romper la consulta), unidas con OR para que BM25 ordene por
-/// cuántas coinciden. A partir de 3 letras va dos veces, exacta y como prefijo: «memoria» encuentra
-/// «memorias», pero la memoria que dice «memoria» suma las dos y queda delante (si no, buscar
-/// «v20» podría sacar antes «v200»). `None` si no queda ninguna palabra.
-pub fn consulta_fts(texto: &str) -> Option<String> {
-    let terminos = terminos(texto);
-    let mut q: Vec<String> = terminos
+/// Turns what a person types into a safe FTS5 query: each word in quotes
+/// (no FTS5 syntax that could break the query), joined with OR so BM25 ranks by
+/// how many match. From 3 letters on it goes twice, exact and as a prefix: «memoria» finds
+/// «memorias», but the memory that says «memoria» adds both and comes first (otherwise, searching
+/// «v20» could bring «v200» first). `None` if no word is left.
+pub fn consulta_fts(text: &str) -> Option<String> {
+    let terms = terminos(text);
+    let mut q: Vec<String> = terms
         .iter()
         .map(|p| match raiz(p) {
             Some(r) => format!("\"{p}\" OR \"{r}\"*"),
@@ -80,66 +80,66 @@ pub fn consulta_fts(texto: &str) -> Option<String> {
     (!q.is_empty()).then(|| q.join(" OR "))
 }
 
-/// Raíz para buscar también otras formas de la palabra («reinicia» → «reinici»: «reinicios»,
-/// «reiniciar»): sin las dos últimas letras, en palabras de al menos `LARGO_RAIZ`. El español flexiona
-/// casi siempre al final, y el prefijo solo no cubre «reinicia» ↔ «reinicios».
+/// Stem to also search other forms of the word («reinicia» → «reinici»: «reinicios»,
+/// «reiniciar»): without the last two letters, in words of at least `STEM_MIN_LEN`. Spanish inflects
+/// almost always at the end, and the prefix alone doesn't cover «reinicia» ↔ «reinicios».
 pub(crate) fn raiz(p: &str) -> Option<String> {
-    let minimo: usize = std::env::var("OMOIKANE_CALIBRAR_RAIZ").ok().and_then(|v| v.parse().ok()).unwrap_or(LARGO_RAIZ);
+    let min_len: usize = std::env::var("OMOIKANE_CALIBRAR_RAIZ").ok().and_then(|v| v.parse().ok()).unwrap_or(STEM_MIN_LEN);
     let n = p.chars().count();
-    (minimo > 0 && n >= minimo && p.chars().all(char::is_alphabetic)).then(|| p.chars().take(n - 2).collect())
+    (min_len > 0 && n >= min_len && p.chars().all(char::is_alphabetic)).then(|| p.chars().take(n - 2).collect())
 }
 
-/// Las palabras de la consulta que cuentan, en minúsculas.
-pub fn terminos(texto: &str) -> Vec<String> {
-    let palabras: Vec<String> =
-        texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).map(|p| p.to_lowercase()).collect();
-    let utiles: Vec<&String> = palabras.iter().filter(|p| !VACIAS.contains(&sin_tildes(p).as_str())).collect();
-    // Si todo eran palabras vacías («para qué es esto»), mejor buscarlas que no buscar nada.
-    let elegidas: Vec<&String> = if utiles.is_empty() { palabras.iter().collect() } else { utiles };
-    elegidas.into_iter().cloned().collect()
+/// The query words that count, lowercase.
+pub fn terminos(text: &str) -> Vec<String> {
+    let words: Vec<String> =
+        text.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).map(|p| p.to_lowercase()).collect();
+    let useful: Vec<&String> = words.iter().filter(|p| !STOPWORDS.contains(&sin_tildes(p).as_str())).collect();
+    // If they were all stopwords («para qué es esto»), better search for them than search nothing.
+    let chosen: Vec<&String> = if useful.is_empty() { words.iter().collect() } else { useful };
+    chosen.into_iter().cloned().collect()
 }
 
-/// Cuántos de los términos aparecen en la memoria, con la misma regla que el índice: sin tildes y
-/// por prefijo a partir de 3 letras.
-fn coincidencias(terminos: &[String], m: &Memoria) -> usize {
-    let texto = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
-    let palabras: Vec<&str> = texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
-    let esta = |t: &String| {
+/// How many of the terms appear in the memory, with the same rule as the index: without accents and
+/// by prefix from 3 letters on.
+fn match_count(terms: &[String], m: &Memoria) -> usize {
+    let text = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
+    let is_in = |t: &String| {
         let t = sin_tildes(t);
         let t = raiz(&t).unwrap_or(t);
-        if t.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(&t)) } else { palabras.contains(&t.as_str()) }
+        if t.chars().count() >= 3 { words.iter().any(|p| p.starts_with(&t)) } else { words.contains(&t.as_str()) }
     };
-    let mut vistos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
-    vistos.sort();
-    vistos.dedup();
-    vistos.iter().filter(|t| esta(t)).count()
+    let mut seen: Vec<String> = terms.iter().map(|t| sin_tildes(t)).collect();
+    seen.sort();
+    seen.dedup();
+    seen.iter().filter(|t| is_in(t)).count()
 }
 
-/// Como `cobertura`, pero cada término pesa su IDF en el ámbito (Lucene, como el recall): una palabra
-/// genérica («golpe», «largo») no hace subir a la nota larga que lo contiene todo.
-fn cobertura_idf(terminos: &[String], m: &Memoria, idf: &std::collections::HashMap<String, f64>) -> f64 {
-    let texto = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
-    let palabras: Vec<&str> = texto.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
-    let mut vistos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
-    vistos.sort();
-    vistos.dedup();
-    let total: f64 = vistos.iter().map(|t| idf.get(t).copied().unwrap_or(0.0)).sum();
+/// Like `coverage`, but each term weighs its IDF in the scope (Lucene, like the recall): a generic
+/// word («golpe», «largo») doesn't lift the long note that contains everything.
+fn idf_coverage(terms: &[String], m: &Memoria, idf: &std::collections::HashMap<String, f64>) -> f64 {
+    let text = sin_tildes(&format!("{} {} {}", m.title, m.content, m.tags.join(" ")).to_lowercase());
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
+    let mut seen: Vec<String> = terms.iter().map(|t| sin_tildes(t)).collect();
+    seen.sort();
+    seen.dedup();
+    let total: f64 = seen.iter().map(|t| idf.get(t).copied().unwrap_or(0.0)).sum();
     if total <= 0.0 {
         return 0.0;
     }
-    let dentro: f64 = vistos
+    let inside: f64 = seen
         .iter()
         .filter(|t| {
             let r = raiz(t).unwrap_or_else(|| t.to_string());
-            if r.chars().count() >= 3 { palabras.iter().any(|p| p.starts_with(r.as_str())) } else { palabras.contains(&r.as_str()) }
+            if r.chars().count() >= 3 { words.iter().any(|p| p.starts_with(r.as_str())) } else { words.contains(&r.as_str()) }
         })
         .map(|t| idf.get(t).copied().unwrap_or(0.0))
         .sum();
-    dentro / total
+    inside / total
 }
 
-/// IDF de Lucene de cada término (sin tildes) en el ámbito, contando por el índice como la búsqueda.
-fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<std::collections::HashMap<String, f64>> {
+/// Lucene IDF of each term (without accents) in the scope, counting through the index like the search.
+fn term_idf(db: &Connection, terms: &[String], o: &Opciones) -> Result<std::collections::HashMap<String, f64>> {
     let n: f64 = crate::memoria::cuantas(db, &o.ambito)? as f64;
     let mut q = if ve_todas(db, &o.ambito) {
         db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
@@ -152,235 +152,235 @@ fn idf_terminos(db: &Connection, terminos: &[String], o: &Opciones) -> Result<st
         ))?
     };
     let mut v = std::collections::HashMap::new();
-    for t in terminos {
+    for t in terms {
         let t = sin_tildes(t);
         if v.contains_key(&t) {
             continue;
         }
-        let consulta = match raiz(&t) {
+        let query = match raiz(&t) {
             Some(r) => format!("\"{r}\"*"),
             None if t.chars().count() >= 3 => format!("\"{t}\"*"),
             None => format!("\"{t}\""),
         };
-        let df = q.query_row(params![consulta], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
+        let df = q.query_row(params![query], |f| f.get::<_, i64>(0)).unwrap_or(0) as f64;
         let d = df.max(1.0);
         v.insert(t, (1.0 + (n - d + 0.5) / (d + 0.5)).ln());
     }
     Ok(v)
 }
 
-/// Qué parte de los términos aparece en la memoria (0 a 1). Desempata cuando BM25 no distingue, que
-/// es lo normal con pocas memorias (si una palabra está en la mitad de ellas, su IDF es cero).
-fn cobertura(terminos: &[String], m: &Memoria) -> f64 {
-    let mut distintos: Vec<String> = terminos.iter().map(|t| sin_tildes(t)).collect();
-    distintos.sort();
-    distintos.dedup();
-    if distintos.is_empty() {
+/// What fraction of the terms appears in the memory (0 to 1). Breaks ties when BM25 can't tell, which
+/// is normal with few memories (if a word is in half of them, its IDF is zero).
+fn coverage(terms: &[String], m: &Memoria) -> f64 {
+    let mut distinct: Vec<String> = terms.iter().map(|t| sin_tildes(t)).collect();
+    distinct.sort();
+    distinct.dedup();
+    if distinct.is_empty() {
         return 0.0;
     }
-    coincidencias(terminos, m) as f64 / distintos.len() as f64
+    match_count(terms, m) as f64 / distinct.len() as f64
 }
 
-/// Búsqueda: manda el orden por palabras (BM25); el vector añade detrás lo que se parece mucho y
-/// las palabras no encontraron. Después pesan la fijada y la recencia. Sin modelo, solo palabras.
-pub fn buscar(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, true, true)
+/// Search: the order by words (BM25) rules; the vector adds behind what is very similar and
+/// the words didn't find. Then pinned and recency weigh in. Without a model, only words.
+pub fn buscar(db: &mut Connection, text: &str, o: &Opciones, model: Option<&Modelo>) -> Result<Vec<Resultado>> {
+    search_base(db, text, o, model, vectores::SIMILITUD_BUSQUEDA, FUSION, true, true)
 }
 
-/// Cómo se juntan la lista por palabras y la lista por significado.
+/// How the list by words and the list by meaning are combined.
 #[derive(Clone, Copy, Debug)]
 pub enum Fusion {
-    /// RRF: cada lista aporta `peso / (k + puesto)`; el vector con el peso dado (las palabras, 1).
+    /// RRF: each list contributes `weight / (k + rank)`; the vector with the given weight (the words, 1).
     Rrf { peso_vector: f64 },
-    /// El orden por palabras manda; el vector solo añade, detrás, lo que las palabras no encontraron.
+    /// The order by words rules; the vector only adds, behind, what the words didn't find.
     Rescate,
-    /// Como el rescate, pero los últimos `huecos` puestos se reservan para lo que solo encuentra el
-    /// vector con al menos `desde` de parecido: con el rescate a secas, las palabras casi siempre
-    /// llenan el límite y una paráfrasis que solo ve el vector no entraba nunca. No cambia los
-    /// primeros puestos.
+    /// Like the fallback, but the last `huecos` places are reserved for what only the
+    /// vector finds with at least `desde` similarity: with the plain fallback, words almost always
+    /// fill the limit and a paraphrase that only the vector sees never got in. It doesn't change the
+    /// first places.
     Reserva { huecos: usize, desde: f32 },
-    /// Puntuación por palabras (BM25 + cobertura, dividida por la de la mejor) más `peso` por cada
-    /// punto de similitud por encima de `desde`: el vector reordena, pero solo cuando se parece de
-    /// verdad. Lo que solo trae el vector entra si pasa la similitud mínima, como en el rescate.
+    /// Score by words (BM25 + coverage, divided by the best's) plus `peso` per
+    /// similarity point above `desde`: the vector reorders, but only when it is really
+    /// similar. What only the vector brings gets in if it passes the minimum similarity, as in the fallback.
     Mezcla { peso: f64, desde: f32 },
 }
 
-/// Rescate y no RRF: con 127 notas reales, RRF bajaba el primer acierto del 98 % (solo palabras)
-/// al 84 % (peso 1) o al 90 % (peso 0,5); el rescate lo deja en el 98 %. Con un hueco reservado al
-/// final para lo que el vector ve muy parecido (desde 0,4), una paráfrasis más de 70 entra en los 5
-/// primeros, sin cambiar nada más en 310 preguntas a ciegas.
+/// Fallback and not RRF: with 127 real notes, RRF dropped the first hit from 98 % (words only)
+/// to 84 % (weight 1) or 90 % (weight 0.5); the fallback keeps it at 98 %. With one slot reserved at the
+/// end for what the vector sees as very similar (from 0.4), one more paraphrase out of 70 gets into the top 5,
+/// without changing anything else in 310 blind questions.
 const FUSION: Fusion = Fusion::Reserva { huecos: 1, desde: 0.4 };
 
-/// Desde cuántas letras se busca también por la raíz (ver `raiz`); 0, nunca.
-const LARGO_RAIZ: usize = 6;
+/// From how many letters the stem is also searched (see `raiz`); 0, never.
+const STEM_MIN_LEN: usize = 6;
 
-/// Solo por palabras y sin contar los resultados como recuperados: para quien filtra después (el
-/// recall), que apunta solo lo que de verdad usa.
-pub fn buscar_sin_apuntar(db: &mut Connection, texto: &str, o: &Opciones) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false, false)
+/// Only by words and without counting the results as recalled: for whoever filters afterwards (the
+/// recall), which records only what it really uses.
+pub fn buscar_sin_apuntar(db: &mut Connection, text: &str, o: &Opciones) -> Result<Vec<Resultado>> {
+    search_base(db, text, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false, false)
 }
 
-/// `buscar` con otra similitud mínima y otra fusión (para calibrarlas).
-/// Como `buscar`, sin contar los resultados como recuperados: para mirar (el visor).
-pub fn buscar_sin_apuntar_con(db: &mut Connection, texto: &str, o: &Opciones, modelo: Option<&Modelo>) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, modelo, vectores::SIMILITUD_BUSQUEDA, FUSION, false, true)
+/// `buscar` with another minimum similarity and another fusion (to calibrate them).
+/// Like `buscar`, without counting the results as recalled: for looking (the viewer).
+pub fn buscar_sin_apuntar_con(db: &mut Connection, text: &str, o: &Opciones, model: Option<&Modelo>) -> Result<Vec<Resultado>> {
+    search_base(db, text, o, model, vectores::SIMILITUD_BUSQUEDA, FUSION, false, true)
 }
 
 pub fn buscar_con(
     db: &mut Connection,
-    texto: &str,
+    text: &str,
     o: &Opciones,
-    modelo: Option<&Modelo>,
-    similitud_minima: f32,
-    fusion_elegida: Fusion,
+    model: Option<&Modelo>,
+    min_similarity: f32,
+    chosen_fusion: Fusion,
 ) -> Result<Vec<Resultado>> {
-    buscar_base(db, texto, o, modelo, similitud_minima, fusion_elegida, true, false)
+    search_base(db, text, o, model, min_similarity, chosen_fusion, true, false)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn buscar_base(
+fn search_base(
     db: &mut Connection,
-    texto: &str,
+    text: &str,
     o: &Opciones,
-    modelo: Option<&Modelo>,
-    similitud_minima: f32,
-    fusion_elegida: Fusion,
-    apuntar: bool,
-    con_significado: bool,
+    model: Option<&Modelo>,
+    min_similarity: f32,
+    chosen_fusion: Fusion,
+    record: bool,
+    with_meaning: bool,
 ) -> Result<Vec<Resultado>> {
     let tags: Vec<String> = o.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
-    let con_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
+    let has_tags = |m: &Memoria| tags.iter().all(|t| m.tags.contains(t));
 
-    let por_palabras: Vec<(Memoria, usize, f64)> = palabras(db, texto, o)?.into_iter().filter(|(m, _, _)| con_tags(m)).collect();
-    let ids: Vec<String> = por_palabras.iter().map(|x| x.0.id.clone()).collect();
-    if con_significado && let Some(cosenos) = cosenos_de(db, texto, o, &ids) {
-        let v = con_gemma(db, texto, por_palabras, cosenos, &con_tags)?;
-        return ordenar(db, v, o, apuntar);
+    let word_hits: Vec<(Memoria, usize, f64)> = by_words(db, text, o)?.into_iter().filter(|(m, _, _)| has_tags(m)).collect();
+    let ids: Vec<String> = word_hits.iter().map(|x| x.0.id.clone()).collect();
+    if with_meaning && let Some(cosines) = cosines_for(db, text, o, &ids) {
+        let v = with_gemma(db, text, word_hits, cosines, &has_tags)?;
+        return rank(db, v, o, record);
     }
-    let por_significado: Vec<(Memoria, f32)> = match modelo {
-        Some(modelo) if !texto.trim().is_empty() => vectores::parecidas_en(
+    let meaning_hits: Vec<(Memoria, f32)> = match model {
+        Some(model) if !text.trim().is_empty() => vectores::parecidas_en(
             db,
-            modelo,
-            texto,
+            model,
+            text,
             &o.ambito,
             o.kind,
-            // Se piden todas: el umbral solo se aplica a lo que no sale también por palabras.
+            // Ask for all of them: the threshold only applies to what doesn't also come up by words.
             -1.0,
-            CANDIDATOS.max(o.limite),
+            CANDIDATES.max(o.limite),
         )?
         .into_iter()
-        .filter(|(m, _)| con_tags(m))
+        .filter(|(m, _)| has_tags(m))
         .collect(),
         _ => Vec::new(),
     };
 
-    // RRF: cada lista aporta 1 / (k + puesto). Lo que sale en las dos, suma las dos.
-    let mut fusion: Vec<Resultado> = Vec::new();
-    let mut sumar = |m: &Memoria, puesto: usize, sim: Option<f32>, peso: f64, n: usize| {
-        let aporte = peso / (RRF_K + puesto as f64 + 1.0);
-        match fusion.iter_mut().find(|r| r.memoria.id == m.id) {
+    // RRF: each list contributes 1 / (k + rank). What shows up in both adds both.
+    let mut fused: Vec<Resultado> = Vec::new();
+    let mut add = |m: &Memoria, pos: usize, sim: Option<f32>, weight: f64, n: usize| {
+        let contribution = weight / (RRF_K + pos as f64 + 1.0);
+        match fused.iter_mut().find(|r| r.memoria.id == m.id) {
             Some(r) => {
-                r.score += aporte;
+                r.score += contribution;
                 r.similarity = r.similarity.or(sim);
             }
-            None => fusion.push(Resultado { memoria: m.clone(), score: aporte, similarity: sim, matched_words: n }),
+            None => fused.push(Resultado { memoria: m.clone(), score: contribution, similarity: sim, matched_words: n }),
         }
     };
-    if let Fusion::Mezcla { peso, desde } = fusion_elegida {
-        let mejor = por_palabras.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
-        let mut v: Vec<Resultado> = por_palabras
+    if let Fusion::Mezcla { peso: weight, desde: min_sim } = chosen_fusion {
+        let best = word_hits.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
+        let mut v: Vec<Resultado> = word_hits
             .iter()
-            .map(|(m, n, r)| Resultado { memoria: m.clone(), score: r / mejor, similarity: None, matched_words: *n })
+            .map(|(m, n, r)| Resultado { memoria: m.clone(), score: r / best, similarity: None, matched_words: *n })
             .collect();
-        for (m, s) in &por_significado {
-            let extra = peso * f64::from((*s - desde).max(0.0));
+        for (m, s) in &meaning_hits {
+            let extra = weight * f64::from((*s - min_sim).max(0.0));
             match v.iter_mut().find(|r| r.memoria.id == m.id) {
                 Some(r) => {
                     r.score += extra;
                     r.similarity = Some(*s);
                 }
-                None if *s >= similitud_minima => {
+                None if *s >= min_similarity => {
                     v.push(Resultado { memoria: m.clone(), score: extra, similarity: Some(*s), matched_words: 0 })
                 }
                 None => {}
             }
         }
-        return ordenar(db, v, o, apuntar);
+        return rank(db, v, o, record);
     }
-    for (i, (m, n, _)) in por_palabras.iter().enumerate() {
-        sumar(m, i, None, 1.0, *n);
+    for (i, (m, n, _)) in word_hits.iter().enumerate() {
+        add(m, i, None, 1.0, *n);
     }
-    // Lo que sale por palabras y por significado suma las dos posiciones. Lo que solo trae el vector
-    // entra únicamente si se parece de verdad: con un modelo estático, cualquier texto se parece
-    // algo a cualquier otro (sobre todo en el mismo idioma) y sin este filtro todo devuelve ruido.
-    let n_palabras = por_palabras.len();
-    for (i, (m, s)) in por_significado.iter().enumerate() {
-        let tambien_por_palabras = por_palabras.iter().any(|(p, _, _)| p.id == m.id);
-        match fusion_elegida {
-            Fusion::Rrf { peso_vector } => {
-                if *s >= similitud_minima || tambien_por_palabras {
-                    sumar(m, i, Some(*s), peso_vector, 0);
+    // What comes up by words and by meaning adds both positions. What only the vector brings
+    // gets in only if it is really similar: with a static model, any text is somewhat similar
+    // to any other (above all in the same language) and without this filter everything returns noise.
+    let n_words = word_hits.len();
+    for (i, (m, s)) in meaning_hits.iter().enumerate() {
+        let also_by_words = word_hits.iter().any(|(p, _, _)| p.id == m.id);
+        match chosen_fusion {
+            Fusion::Rrf { peso_vector: vector_weight } => {
+                if *s >= min_similarity || also_by_words {
+                    add(m, i, Some(*s), vector_weight, 0);
                 }
             }
             Fusion::Mezcla { .. } => unreachable!(),
             Fusion::Rescate | Fusion::Reserva { .. } => {
-                if tambien_por_palabras {
-                    sumar(m, 0, Some(*s), 0.0, 0); // solo apunta la similitud, sin mover el orden
-                } else if *s >= similitud_minima {
-                    sumar(m, n_palabras + i, Some(*s), 1.0, 0);
+                if also_by_words {
+                    add(m, 0, Some(*s), 0.0, 0); // only records the similarity, without moving the order
+                } else if *s >= min_similarity {
+                    add(m, n_words + i, Some(*s), 1.0, 0);
                 }
             }
         }
     }
-    if let Fusion::Reserva { huecos, desde } = fusion_elegida {
-        // Lo que el vector ve muy parecido (haya salido por palabras más abajo o no), si pasa `desde`.
-        let solo_vector: Vec<Resultado> = fusion.iter().filter(|r| r.similarity.is_some_and(|s| s >= desde)).cloned().collect();
-        if !solo_vector.is_empty() {
-            let mut v = ordenar(db, fusion, &Opciones { limite: usize::MAX, ..o.clone() }, false)?;
-            let corte = o.limite.saturating_sub(huecos.min(solo_vector.len()));
-            let mut arriba: Vec<Resultado> = v.drain(..corte.min(v.len())).collect();
-            let mut extra: Vec<Resultado> = solo_vector.into_iter().filter(|r| !arriba.iter().any(|a| a.memoria.id == r.memoria.id)).collect();
+    if let Fusion::Reserva { huecos: slots, desde: min_sim } = chosen_fusion {
+        // What the vector sees as very similar (whether it came up lower by words or not), if it passes `desde`.
+        let vector_close: Vec<Resultado> = fused.iter().filter(|r| r.similarity.is_some_and(|s| s >= min_sim)).cloned().collect();
+        if !vector_close.is_empty() {
+            let mut v = rank(db, fused, &Opciones { limite: usize::MAX, ..o.clone() }, false)?;
+            let cut = o.limite.saturating_sub(slots.min(vector_close.len()));
+            let mut top: Vec<Resultado> = v.drain(..cut.min(v.len())).collect();
+            let mut extra: Vec<Resultado> = vector_close.into_iter().filter(|r| !top.iter().any(|a| a.memoria.id == r.memoria.id)).collect();
             extra.sort_by(|a, b| b.similarity.unwrap_or(0.0).total_cmp(&a.similarity.unwrap_or(0.0)));
-            arriba.extend(extra.into_iter().take(o.limite - arriba.len()));
+            top.extend(extra.into_iter().take(o.limite - top.len()));
             for r in v {
-                if arriba.len() >= o.limite {
+                if top.len() >= o.limite {
                     break;
                 }
-                if !arriba.iter().any(|a| a.memoria.id == r.memoria.id) {
-                    arriba.push(r);
+                if !top.iter().any(|a| a.memoria.id == r.memoria.id) {
+                    top.push(r);
                 }
             }
-            if apuntar {
-                apuntar_recuperadas(db, arriba.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
+            if record {
+                apuntar_recuperadas(db, top.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
             }
-            return Ok(arriba);
+            return Ok(top);
         }
     }
-    ordenar(db, fusion, o, apuntar)
+    rank(db, fused, o, record)
 }
 
-/// Cuánto pesan las palabras junto al significado: el coseno de EmbeddingGemma más este peso por la
-/// puntuación por palabras (dividida por la de la mejor) a la cuarta, para que solo cuente cerca de
-/// la mejor. Las consultas cortas (`CORTA` palabras o menos) son palabras clave, como en un buscador:
-/// ahí las palabras pesan más. Elegido con las 250 preguntas a ciegas de `omoikane-bench`, ajustando
-/// con la mitad y comprobando con la otra: con 3.000 notas, el primer acierto pasa de 0,94 / 0,85 /
-/// 0,09 (palabras clave / preguntas / paráfrasis, solo palabras) a 0,92 / 0,89 / 0,55.
-const PESO_PALABRAS: f64 = 0.05;
-const PESO_PALABRAS_CORTA: f64 = 0.3;
+/// How much words weigh next to meaning: EmbeddingGemma's cosine plus this weight times the
+/// score by words (divided by the best's) to the fourth power, so it only counts close to
+/// the best. Short queries (`CORTA` words or fewer) are keywords, as in a search engine:
+/// there words weigh more. Chosen with the 250 blind questions of `omoikane-bench`, tuning
+/// with half and checking with the other: with 3,000 notes, the first hit goes from 0.94 / 0.85 /
+/// 0.09 (keywords / questions / paraphrases, words only) to 0.92 / 0.89 / 0.55.
+const WORDS_WEIGHT: f64 = 0.05;
+const SHORT_WORDS_WEIGHT: f64 = 0.3;
 pub const CORTA: usize = 5;
-/// Cuánto se espera al servicio de significado en una búsqueda antes de seguir solo con palabras.
-const PRESUPUESTO_SIGNIFICADO: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How long a search waits for the meaning service before going on with words only.
+const MEANING_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// Los cosenos de EmbeddingGemma de la consulta con las memorias del ámbito, si el modelo está
-/// encendido e instalado, la base tiene vectores para casi todo y el servicio responde a tiempo.
-/// Los compara el servicio, que tiene el modelo y los vectores en memoria: las `CANDIDATOS` más
-/// parecidas y el coseno de las que trajeron las palabras (`ids`).
-fn cosenos_de(db: &Connection, texto: &str, o: &Opciones, ids: &[String]) -> Option<Vec<(String, f32)>> {
-    if texto.trim().is_empty() || !crate::significado::en_uso(db) {
+/// EmbeddingGemma's cosines of the query with the memories in scope, if the model is
+/// on and installed, the database has vectors for almost everything and the service answers in time.
+/// The service compares them, as it has the model and the vectors in memory: the `CANDIDATES` most
+/// similar and the cosine of those the words brought (`ids`).
+fn cosines_for(db: &Connection, text: &str, o: &Opciones, ids: &[String]) -> Option<Vec<(String, f32)>> {
+    if text.trim().is_empty() || !crate::significado::en_uso(db) {
         return None;
     }
-    let ruta = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from)?;
-    let p = crate::significado::parecidas(&ruta, texto, &o.ambito, o.kind, CANDIDATOS.max(o.limite), ids, PRESUPUESTO_SIGNIFICADO)?;
+    let path = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from)?;
+    let p = crate::significado::parecidas(&path, text, &o.ambito, o.kind, CANDIDATES.max(o.limite), ids, MEANING_BUDGET)?;
     let mut v = p.top;
     for x in p.pedidas {
         if !v.iter().any(|y| y.0 == x.0) {
@@ -390,156 +390,156 @@ fn cosenos_de(db: &Connection, texto: &str, o: &Opciones, ids: &[String]) -> Opt
     Some(v)
 }
 
-/// Lo que solo trae el significado (sin ninguna palabra de la consulta) entra si su coseno llega a
-/// esto. Sin él la búsqueda con modelo nunca volvía vacía y, con 3.000 notas ajenas en el ámbito,
-/// ponía primera una sin relación en 84 de 1.161 mensajes reales frente a 39 sin el modelo
-/// (`4-valor.md`). Calibrado el 1-nov-2026 con los 1.161 mensajes reales sobre su base más 3.000 notas
-/// inglesas (`omoi-revision-12/fix-politica.md`), ajustando con los pares y comprobando con los
-/// impares: con 0,35, la primera sin ninguna palabra pasa del 21 % al 6 % de los mensajes (casi todo
-/// charla que no pide nada: «me encanta» → una nota de impresión 3D) y la búsqueda vuelve vacía en el
-/// 4 %; en las 250 preguntas del benchmark y los 540 casos en inglés, español, catalán y con erratas
-/// no cambia ningún primer acierto (la buena sin palabras ronda 0,6; su percentil 5, 0,50). Con 0,4
-/// se iban ya memorias propias que sí venían a cuento (0,38: «¿ya se me puede considerar micro
-/// influencer?» → los 10.000 seguidores).
+/// What only meaning brings (without any query word) gets in if its cosine reaches
+/// this. Without it the search with a model never came back empty and, with 3,000 unrelated notes in scope,
+/// put an unrelated one first in 84 of 1,161 real messages versus 39 without the model
+/// (`4-valor.md`). Calibrated on 1-nov-2026 with the 1,161 real messages over their database plus 3,000 English
+/// notes (`omoi-revision-12/fix-politica.md`), tuning with the even ones and checking with the
+/// odd ones: with 0.35, a first result with no word goes from 21 % to 6 % of messages (almost all
+/// chit-chat that asks for nothing: «me encanta» → a 3D printing note) and the search comes back empty in
+/// 4 %; in the benchmark's 250 questions and the 540 cases in English, Spanish, Catalan and with typos
+/// no first hit changes (the right one with no words is around 0.6; its 5th percentile, 0.50). With 0.4
+/// own memories that were relevant were already dropped (0.38: «¿ya se me puede considerar micro
+/// influencer?» → the 10,000 followers).
 pub const SUELO_GEMMA: f32 = 0.35;
 
-/// La fusión con EmbeddingGemma: candidatas por palabras y las más parecidas por significado, cada
-/// una con su coseno más el peso de sus palabras (ver `PESO_PALABRAS`).
-fn con_gemma(
+/// The fusion with EmbeddingGemma: candidates by words and the most similar by meaning, each
+/// with its cosine plus the weight of its words (see `WORDS_WEIGHT`).
+fn with_gemma(
     db: &Connection,
-    texto: &str,
-    por_palabras: Vec<(Memoria, usize, f64)>,
-    cosenos: Vec<(String, f32)>,
-    con_tags: &dyn Fn(&Memoria) -> bool,
+    text: &str,
+    word_hits: Vec<(Memoria, usize, f64)>,
+    cosines: Vec<(String, f32)>,
+    has_tags: &dyn Fn(&Memoria) -> bool,
 ) -> Result<Vec<Resultado>> {
-    let palabras_consulta = texto.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count();
-    let peso = if palabras_consulta <= CORTA { PESO_PALABRAS_CORTA } else { PESO_PALABRAS };
-    let coseno: std::collections::HashMap<&str, f32> = cosenos.iter().map(|(id, c)| (id.as_str(), *c)).collect();
-    let mejor = por_palabras.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
-    let mut v: Vec<Resultado> = por_palabras
+    let query_words = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count();
+    let weight = if query_words <= CORTA { SHORT_WORDS_WEIGHT } else { WORDS_WEIGHT };
+    let cosine: std::collections::HashMap<&str, f32> = cosines.iter().map(|(id, c)| (id.as_str(), *c)).collect();
+    let best = word_hits.iter().map(|x| x.2).fold(f64::MIN, f64::max).max(1e-9);
+    let mut v: Vec<Resultado> = word_hits
         .into_iter()
         .map(|(m, n, r)| {
-            let c = coseno.get(m.id.as_str()).copied();
-            let score = f64::from(c.unwrap_or(0.0)) + peso * (r / mejor).max(0.0).powi(4);
+            let c = cosine.get(m.id.as_str()).copied();
+            let score = f64::from(c.unwrap_or(0.0)) + weight * (r / best).max(0.0).powi(4);
             Resultado { memoria: m, score, similarity: c, matched_words: n }
         })
         .collect();
     let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.id = ?1"))?;
-    let suelo = std::env::var("OMOIKANE_CALIBRAR_SUELO").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(SUELO_GEMMA);
-    for (id, c) in cosenos.iter().take(CANDIDATOS) {
-        if *c < suelo || v.iter().any(|r| r.memoria.id == *id) {
+    let floor = std::env::var("OMOIKANE_CALIBRAR_SUELO").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(SUELO_GEMMA);
+    for (id, c) in cosines.iter().take(CANDIDATES) {
+        if *c < floor || v.iter().any(|r| r.memoria.id == *id) {
             continue;
         }
         let m = q.query_row([id], de_fila)?;
-        if con_tags(&m) {
+        if has_tags(&m) {
             v.push(Resultado { memoria: m, score: f64::from(*c), similarity: Some(*c), matched_words: 0 });
         }
     }
     Ok(v)
 }
 
-/// Recencia, fijadas y lo deducido, orden final, límite y, si toca, apuntarlas como recuperadas.
-fn ordenar(db: &mut Connection, mut fusion: Vec<Resultado>, o: &Opciones, apuntar: bool) -> Result<Vec<Resultado>> {
-    // Las contradichas que esperan a la persona (`veredictos::en_espera`), bastante más abajo.
-    let espera = crate::veredictos::en_espera(db)?;
-    let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
-    for r in &mut fusion {
-        let d: f64 = dias.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
-        let recencia = 1.0 / (1.0 + d.max(0.0) / DIAS_RECENCIA);
-        let fijada = if r.memoria.pinned { BOOST_FIJADA } else { 1.0 };
-        // Lo que solo dedujo un agente, sin que nadie lo dijera ni lo probara, un poco por detrás
-        // (`evidencia`); una verificada por una persona no, aunque se dedujera.
-        let deducida = if r.memoria.verified.is_none() && crate::evidencia::solo_deducida(&r.memoria.evidence) { crate::evidencia::FACTOR_DEDUCIDA } else { 1.0 };
-        let en_espera = if espera.contains(&r.memoria.id) { crate::veredictos::FACTOR_EN_ESPERA } else { 1.0 };
-        r.score *= fijada * deducida * en_espera * (1.0 + BOOST_RECENCIA * recencia);
+/// Recency, pinned and inferred, final order, limit and, if due, record them as recalled.
+fn rank(db: &mut Connection, mut results: Vec<Resultado>, o: &Opciones, record: bool) -> Result<Vec<Resultado>> {
+    // The contradicted ones waiting for the person (`veredictos::en_espera`), quite a bit lower.
+    let waiting = crate::veredictos::en_espera(db)?;
+    let mut days = db.prepare("SELECT julianday('now') - julianday(?1)")?;
+    for r in &mut results {
+        let d: f64 = days.query_row([&r.memoria.updated_at], |f| f.get(0)).unwrap_or(0.0);
+        let recency = 1.0 / (1.0 + d.max(0.0) / RECENCY_DAYS);
+        let pinned = if r.memoria.pinned { PINNED_BOOST } else { 1.0 };
+        // What an agent only inferred, without anyone saying or proving it, a bit behind
+        // (`evidencia`); one verified by a person not, even if it was inferred.
+        let inferred = if r.memoria.verified.is_none() && crate::evidencia::solo_deducida(&r.memoria.evidence) { crate::evidencia::FACTOR_DEDUCIDA } else { 1.0 };
+        let on_hold = if waiting.contains(&r.memoria.id) { crate::veredictos::FACTOR_EN_ESPERA } else { 1.0 };
+        r.score *= pinned * inferred * on_hold * (1.0 + RECENCY_BOOST * recency);
     }
-    drop(dias);
-    fusion.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
-    fusion.truncate(o.limite);
-    if apuntar {
-        apuntar_recuperadas(db, fusion.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
+    drop(days);
+    results.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| b.memoria.id.cmp(&a.memoria.id)));
+    results.truncate(o.limite);
+    if record {
+        apuntar_recuperadas(db, results.iter().map(|r| r.memoria.id.as_str()), o.ambito.proyecto())?;
     }
-    Ok(fusion)
+    Ok(results)
 }
 
-/// Candidatos por palabras, del mejor al peor (BM25 más la cobertura, que desempata cuando BM25 no
-/// distingue, como pasa con pocas memorias), con cuántas palabras de la consulta tiene cada uno.
-fn palabras(db: &Connection, texto: &str, o: &Opciones) -> Result<Vec<(Memoria, usize, f64)>> {
-    let Some(consulta) = consulta_fts(texto) else { return Ok(Vec::new()) };
-    let terminos = terminos(texto);
-    // Primero solo el `n` y la puntuación, y luego las filas de las que quedan: con las columnas en la
-    // misma consulta, SQLite leía entera (con su contenido) cada memoria que tuviera alguna palabra
-    // antes de ordenar. El orden y el corte son los mismos: la misma consulta, con menos columnas. Si
-    // se ven todas (`ve_todas`) y no se pide tipo, ni siquiera hace falta juntarla con `memory`.
-    let juntar = format!(
-        "SELECT m.n, -bm25(memory_fts, {PESOS}) AS relevancia
+/// Candidates by words, from best to worst (BM25 plus coverage, which breaks ties when BM25 can't
+/// tell, as happens with few memories), with how many query words each one has.
+fn by_words(db: &Connection, text: &str, o: &Opciones) -> Result<Vec<(Memoria, usize, f64)>> {
+    let Some(query) = consulta_fts(text) else { return Ok(Vec::new()) };
+    let terms = terminos(text);
+    // First only the `n` and the score, and then the rows of those that remain: with the columns in the
+    // same query, SQLite read in full (with its content) every memory that had any word
+    // before sorting. The order and the cut are the same: the same query, with fewer columns. If
+    // everything is visible (`ve_todas`) and no kind is asked for, it doesn't even need to be joined with `memory`.
+    let joined = format!(
+        "SELECT m.n, -bm25(memory_fts, {BM25_WEIGHTS}) AS relevancia
          FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1
            AND {}
            AND (?2 IS NULL OR m.kind = ?2)
-         ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?3",
+         ORDER BY bm25(memory_fts, {BM25_WEIGHTS}) LIMIT ?3",
         por_ambito(db),
         o.ambito.sql()
     );
-    let sola = format!(
-        "SELECT rowid, -bm25(memory_fts, {PESOS}) AS relevancia
+    let alone = format!(
+        "SELECT rowid, -bm25(memory_fts, {BM25_WEIGHTS}) AS relevancia
          FROM memory_fts
          WHERE memory_fts MATCH ?1 AND ?2 IS NULL
-         ORDER BY bm25(memory_fts, {PESOS}) LIMIT ?3"
+         ORDER BY bm25(memory_fts, {BM25_WEIGHTS}) LIMIT ?3"
     );
-    let mut q = db.prepare(if o.kind.is_none() && ve_todas(db, &o.ambito) { &sola } else { &juntar })?;
-    let puestos: Vec<(i64, f64)> = q
-        .query_map(params![consulta, o.kind.map(Tipo::as_str), CANDIDATOS.max(o.limite) as i64], |f| Ok((f.get(0)?, f.get(1)?)))?
+    let mut q = db.prepare(if o.kind.is_none() && ve_todas(db, &o.ambito) { &alone } else { &joined })?;
+    let ranked: Vec<(i64, f64)> = q
+        .query_map(params![query, o.kind.map(Tipo::as_str), CANDIDATES.max(o.limite) as i64], |f| Ok((f.get(0)?, f.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut fila = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
+    let mut row = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
     let mut v: Vec<(Memoria, f64)> =
-        puestos.into_iter().map(|(n, r)| Ok((fila.query_row([n], de_fila)?, r))).collect::<rusqlite::Result<_>>()?;
-    // Con IDF, una paráfrasis más de 70 en primer puesto y mejor MRR, sin perder nada en 310
-    // preguntas a ciegas; `OMOIKANE_CALIBRAR_COB_IDF=0` vuelve a la cobertura sin pesos.
+        ranked.into_iter().map(|(n, r)| Ok((row.query_row([n], de_fila)?, r))).collect::<rusqlite::Result<_>>()?;
+    // With IDF, one more paraphrase out of 70 in first place and better MRR, without losing anything in 310
+    // blind questions; `OMOIKANE_CALIBRAR_COB_IDF=0` goes back to unweighted coverage.
     if !std::env::var("OMOIKANE_CALIBRAR_COB_IDF").is_ok_and(|x| x == "0") {
-        let idf = idf_terminos(db, &terminos, o)?;
+        let idf = term_idf(db, &terms, o)?;
         for (m, r) in &mut v {
-            *r += cobertura_idf(&terminos, m, &idf);
+            *r += idf_coverage(&terms, m, &idf);
         }
     } else {
         for (m, r) in &mut v {
-            *r += cobertura(&terminos, m);
+            *r += coverage(&terms, m);
         }
     }
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
-    Ok(v.into_iter().map(|(m, r)| { let n = coincidencias(&terminos, &m); (m, n, r) }).collect())
+    Ok(v.into_iter().map(|(m, r)| { let n = match_count(&terms, &m); (m, n, r) }).collect())
 }
 
-/// Lo que devuelven la búsqueda y el recall cuenta como recuperado: sirve para ordenar y, más
-/// adelante, para proponer borrar lo que nunca sale. Con `proyecto` (una búsqueda hecha desde un
-/// proyecto), se suma también a `memory_use`: desde qué proyectos se usa cada memoria (el recall lo
-/// suma al caducar su registro, ver `recall::al_empezar`).
-pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'a str>, proyecto: Option<i64>) -> Result<()> {
+/// What the search and the recall return counts as recalled: it is used for ranking and, later
+/// on, to propose deleting what never comes up. With `project` (a search made from a
+/// project), it is also added to `memory_use`: from which projects each memory is used (the recall
+/// adds it when its record expires, see `recall::al_empezar`).
+pub fn apuntar_recuperadas<'a>(db: &mut Connection, ids: impl Iterator<Item = &'a str>, project: Option<i64>) -> Result<()> {
     let ids: Vec<&str> = ids.collect();
     if ids.is_empty() {
         return Ok(());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    apuntar_recuperadas_en(&tx, &ids, proyecto)?;
+    apuntar_recuperadas_en(&tx, &ids, project)?;
     tx.commit()?;
     Ok(())
 }
 
-/// Lo de `apuntar_recuperadas`, dentro de una transacción que ya está abierta (el recall lo junta con
-/// su registro: un turno de escritura por mensaje en vez de dos).
-pub fn apuntar_recuperadas_en(tx: &Connection, ids: &[&str], proyecto: Option<i64>) -> Result<()> {
+/// What `apuntar_recuperadas` does, inside a transaction that is already open (the recall joins it with
+/// its record: one write turn per message instead of two).
+pub fn apuntar_recuperadas_en(tx: &Connection, ids: &[&str], project: Option<i64>) -> Result<()> {
     {
         let mut u = tx.prepare(&format!(
             "UPDATE memory SET recalled_at = {AHORA}, recall_count = recall_count + 1 WHERE id = ?1"
         ))?;
-        let mut uso = tx.prepare(&format!(
+        let mut usage = tx.prepare(&format!(
             "INSERT INTO memory_use(memory_id, project_id, veces, ultima) VALUES (?1, ?2, 1, {AHORA})
              ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + 1, ultima = excluded.ultima"
         ))?;
         for id in ids {
             u.execute([id])?;
-            if let Some(p) = proyecto {
-                uso.execute(params![id, p])?;
+            if let Some(p) = project {
+                usage.execute(params![id, p])?;
             }
         }
     }
@@ -551,14 +551,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn consulta_segura() {
+    fn safe_query() {
         assert_eq!(
             consulta_fts("fallo de autenticación").unwrap(),
-            // Desde 6 letras, también la raíz: «autenticaci*» encuentra «autenticaciones».
+            // From 6 letters on, also the stem: «autenticaci*» finds «autenticaciones».
             r#""fallo" OR "fallo"* OR "autenticación" OR "autenticaci"*"#
         );
-        // La sintaxis de FTS5 no pasa: comillas, NEAR, paréntesis, dos puntos…
-        // «or» e «y» son palabras vacías: se quitan.
+        // FTS5 syntax doesn't get through: quotes, NEAR, parentheses, colons…
+        // «or» and «y» are stopwords: they are removed.
         assert_eq!(
             consulta_fts(r#"title:"x" OR (NEAR y) z"#).unwrap(),
             r#""title" OR "title"* OR "x" OR "near" OR "near"* OR "z""#
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn cobertura_sin_tildes_y_por_prefijo() {
+    fn coverage_without_accents_and_by_prefix() {
         let m = Memoria {
             id: "X".into(),
             kind: Tipo::Gotcha,
@@ -580,8 +580,8 @@ mod tests {
             tags: vec!["login".into()],
             ..Memoria::default()
         };
-        assert_eq!(cobertura(&terminos("fallo autenticacion"), &m), 1.0);
-        assert_eq!(cobertura(&terminos("token caducado"), &m), 0.5);
-        assert_eq!(cobertura(&terminos("receta"), &m), 0.0);
+        assert_eq!(coverage(&terminos("fallo autenticacion"), &m), 1.0);
+        assert_eq!(coverage(&terminos("token caducado"), &m), 0.5);
+        assert_eq!(coverage(&terminos("receta"), &m), 0.0);
     }
 }

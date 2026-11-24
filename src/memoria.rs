@@ -1,7 +1,7 @@
-//! Memorias: guardar, leer, cambiar (guardando la versión anterior), olvidar y listar.
+//! Memories: save, read, change (keeping the previous version), forget and list.
 //!
-//! Toda escritura toca `memory`, `memory_fts` y `memory_path` en una sola transacción `IMMEDIATE`:
-//! nunca queda una memoria sin indexar ni un índice que apunte a una memoria borrada.
+//! Every write touches `memory`, `memory_fts` and `memory_path` in a single `IMMEDIATE` transaction:
+//! there is never an unindexed memory nor an index pointing to a deleted memory.
 
 use crate::embeber::Modelo;
 use crate::{tr, vectores};
@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use std::str::FromStr;
 
-/// Cada tipo cambia cómo se recupera la memoria. Un tipo que esta versión no conoce
-/// (de una versión futura, por la sincronización) se guarda tal cual en la base y se trata como `fact`
-/// (ver `Memoria::kind_text`).
+/// Each kind changes how the memory is recalled. A kind this version doesn't know
+/// (from a future version, via sync) is stored as is in the database and treated as `fact`
+/// (see `Memoria::kind_text`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tipo {
@@ -22,8 +22,8 @@ pub enum Tipo {
     Decision,
     Gotcha,
     Preference,
-    /// Una receta: pasos que se siguen (publicar una versión, desplegar…), con una línea `when:` de
-    /// las palabras que la traen entera (Fase 7.3).
+    /// A recipe: steps to follow (publish a version, deploy…), with a `when:` line of
+    /// the words that bring it in whole (Phase 7.3).
     Procedure,
 }
 
@@ -60,20 +60,20 @@ impl std::fmt::Display for Tipo {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Memoria {
     pub id: String,
-    /// Carpeta principal de su proyecto (`project.path`); vacío = global o de espacio.
+    /// Main folder of its project (`project.path`); empty = global or space memory.
     pub project: String,
-    /// Su proyecto en esta base (0 = ninguno). No sale en el JSON: entre equipos vale la clave.
+    /// Its project in this database (0 = none). Not in the JSON: between computers the key is what counts.
     #[serde(skip)]
     pub project_id: i64,
-    /// La clave de sincronización de su proyecto (vacía si no tiene).
+    /// The sync key of its project (empty if it has none).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_key: String,
-    /// El espacio (su clave): el de la memoria si es de espacio (sin proyecto), o el de su proyecto.
+    /// The space (its key): the memory's if it is a space memory (no project), or its project's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub space: String,
     pub kind: Tipo,
-    /// El tipo tal como está guardado, cuando esta versión no lo conoce (y `kind` dice `fact`): así no
-    /// se pierde al reexportarlo.
+    /// The kind as stored, when this version doesn't know it (and `kind` says `fact`): so it isn't
+    /// lost when re-exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind_text: Option<String>,
     pub title: String,
@@ -82,68 +82,68 @@ pub struct Memoria {
     pub tags: Vec<String>,
     pub pinned: bool,
     pub source: String,
-    /// El sello de su último cambio de texto: solo en la copia que va a la papelera (para que sus
-    /// veredictos sigan valiendo si vuelve). Al leerla de la base va vacío.
+    /// The stamp of its last text change: only in the copy that goes to the trash (so its
+    /// verdicts still hold if it comes back). Empty when read from the database.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content_hlc: String,
     pub created_at: String,
     pub updated_at: String,
     pub recalled_at: Option<String>,
     pub recall_count: i64,
-    /// Quién la escribió (el nombre de git), si la sincronización lo apunta.
+    /// Who wrote it (the git name), if sync records it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author: String,
-    /// Lo que `secretos` quitó al guardarla o cambiarla en esta llamada, un tipo por hallazgo (vacío si
-    /// nada). No se guarda ni sale en el JSON: es para que quien guarda lo diga.
+    /// What `secretos` removed when saving or changing it in this call, one kind per finding (empty if
+    /// nothing). Not stored nor in the JSON: it is so the caller can say so.
     #[serde(skip)]
     pub redacted: Vec<&'static str>,
-    /// Quién la verificó y cuándo, si una persona la verificó y el texto no ha cambiado desde entonces
-    /// (`verificado`, en `memory.extra`).
+    /// Who verified it and when, if a person verified it and the text hasn't changed since
+    /// (`verificado`, in `memory.extra`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified: Option<crate::verificado::Verificada>,
-    /// En qué sesión y en qué commit se escribió (`procedencia`, en `memory.extra`).
+    /// In which session and at which commit it was written (`procedencia`, in `memory.extra`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<crate::procedencia::Procedencia>,
-    /// En qué se basa (`evidencia`, en `memory.extra`): qué vio quien la guardó.
+    /// What it is based on (`evidencia`, in `memory.extra`): what the one who saved it saw.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<crate::evidencia::Evidencia>,
-    /// Qué hay que mirar cuando llegue su fecha de revisión (`review:AAAA-MM-DD`), en `memory.extra`.
+    /// What to check when its review date arrives (`review:YYYY-MM-DD`), in `memory.extra`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_reason: Option<String>,
-    /// La verificación que quitó el cambio de texto de esta llamada (`update`). No se guarda ni sale en
-    /// el JSON: es para que quien cambia lo diga.
+    /// The verification removed by this call's text change (`update`). Not stored nor in
+    /// the JSON: it is so the caller can say so.
     #[serde(skip)]
     pub unverified: Option<crate::verificado::Verificada>,
 }
 
 impl Memoria {
-    /// De un espacio, sin proyecto.
+    /// Of a space, with no project.
     pub fn de_espacio(&self) -> bool {
         self.project_id == 0 && !self.space.is_empty()
     }
 
-    /// Global: ni de un proyecto ni de un espacio.
+    /// Global: neither a project's nor a space's.
     pub fn global(&self) -> bool {
         self.project_id == 0 && self.space.is_empty()
     }
 
-    /// El tipo tal como se guarda y viaja (el desconocido, tal cual).
+    /// The kind as stored and sent (an unknown one, as is).
     pub fn tipo_texto(&self) -> &str {
         self.kind_text.as_deref().unwrap_or(self.kind.as_str())
     }
 }
 
-/// Lo que decide quien guarda. Lo demás (id, fechas, estadísticas) lo pone Omoikane.
+/// What the caller decides. The rest (id, dates, stats) is set by Omoikane.
 #[derive(Clone, Debug, Default)]
 pub struct Nueva {
-    /// La carpeta del proyecto (vacía = global). Se ignora si viene `project_id` o `space_id`.
+    /// The project folder (empty = global). Ignored if `project_id` or `space_id` is given.
     pub project: String,
-    /// El proyecto ya resuelto (lo que llega por la sincronización).
+    /// The already-resolved project (what comes in through sync).
     pub project_id: Option<i64>,
-    /// Memoria de este espacio, sin proyecto.
+    /// Memory of this space, with no project.
     pub space_id: Option<i64>,
     pub kind: Option<Tipo>,
-    /// El tipo tal cual, si esta versión no lo conoce (lo que llega por la sincronización).
+    /// The kind as is, if this version doesn't know it (what comes in through sync).
     pub kind_text: Option<String>,
     pub title: String,
     pub content: String,
@@ -151,15 +151,15 @@ pub struct Nueva {
     pub tags: Vec<String>,
     pub pinned: bool,
     pub source: String,
-    /// De dónde sale (`procedencia::actual`), para lo que se escribe aquí: va a `memory.extra`.
+    /// Where it comes from (`procedencia::actual`), for what is written here: goes to `memory.extra`.
     pub provenance: Option<crate::procedencia::Procedencia>,
-    /// En qué se basa (`evidencia`), ya limpia: va a `memory.extra`.
+    /// What it is based on (`evidencia`), already cleaned: goes to `memory.extra`.
     pub evidence: Vec<crate::evidencia::Evidencia>,
-    /// Qué mirar cuando llegue su fecha de revisión: va a `memory.extra`.
+    /// What to check when its review date arrives: goes to `memory.extra`.
     pub review_reason: Option<String>,
 }
 
-/// Solo cambia lo que viene en `Some`.
+/// Only what comes in `Some` changes.
 #[derive(Clone, Debug, Default)]
 pub struct Cambios {
     pub title: Option<String>,
@@ -168,29 +168,29 @@ pub struct Cambios {
     pub paths: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
     pub pinned: Option<bool>,
-    /// Llevarla a otro proyecto (`""` = global). Como fijar, no crea versión.
+    /// Move it to another project (`""` = global). Like pinning, it doesn't create a version.
     pub project: Option<String>,
-    /// Llevarla a un proyecto ya resuelto (la sincronización). Manda sobre `project`.
+    /// Move it to an already-resolved project (sync). Overrides `project`.
     pub project_id: Option<i64>,
-    /// Llevarla a un espacio, sin proyecto. Manda sobre los dos anteriores.
+    /// Move it to a space, with no project. Overrides the two above.
     pub space_id: Option<i64>,
-    /// El tipo tal cual, si esta versión no lo conoce (la sincronización).
+    /// The kind as is, if this version doesn't know it (sync).
     pub kind_text: Option<String>,
-    /// Por qué cambia: se guarda con la versión anterior.
+    /// Why it changes: stored with the previous version.
     pub reason: Option<String>,
-    /// Edición parcial (0.19.0): `(buscar, poner)` literales, en orden. Cada trozo buscado tiene que
-    /// aparecer exactamente una vez en el contenido tal como está al aplicarlo; si no, nada cambia.
+    /// Partial edit (0.19.0): literal `(find, replace)` pairs, in order. Each searched piece has to
+    /// appear exactly once in the content as it is when applied; otherwise nothing changes.
     pub replace: Vec<(String, String)>,
-    /// Texto que se añade al final del contenido (un paso más en una receta), con una línea en
-    /// blanco entre medias.
+    /// Text appended at the end of the content (one more step in a recipe), with a blank
+    /// line in between.
     pub append: Option<String>,
 }
 
-/// Un trozo que `replace` o `append` cambió, con [`CONTEXTO`] caracteres a cada lado: lo que la
-/// respuesta de `update` enseña para que el agente no tenga que pedir `get`.
+/// A piece that `replace` or `append` changed, with [`CONTEXTO`] characters on each side: what the
+/// `update` response shows so the agent doesn't have to ask for `get`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cambiado {
-    /// El trozo que se buscó (`replace`); nada si fue `append`.
+    /// The piece that was searched for (`replace`); nothing if it was `append`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -198,10 +198,10 @@ pub struct Cambiado {
     pub context: String,
 }
 
-/// Caracteres de contexto a cada lado de lo cambiado.
+/// Context characters on each side of what changed.
 pub const CONTEXTO: usize = 80;
 
-/// Una versión anterior de una memoria.
+/// A previous version of a memory.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Version {
     pub version: i64,
@@ -210,30 +210,30 @@ pub struct Version {
     pub content: String,
     pub paths: Vec<String>,
     pub tags: Vec<String>,
-    /// Cuándo dejó de ser la versión viva.
+    /// When it stopped being the live version.
     pub changed_at: String,
     pub reason: Option<String>,
-    /// Los campos de una versión que esta no conoce (de un omoi más nuevo): se guardan con ella
-    /// (`memory_version.extra`) y se vuelven a escribir igual, en la sincronización, en `omoi export` y
-    /// en la papelera (1.9.0). Antes se perdían.
+    /// The fields of a version this one doesn't know (from a newer omoi): stored with it
+    /// (`memory_version.extra`) and written back the same, in sync, in `omoi export` and
+    /// in the trash (1.9.0). They used to be lost.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Qué memorias se ven. Desde un proyecto, las suyas, las de su espacio y las globales; nunca las de
-/// otro espacio. Desde una carpeta general (la del usuario, ver `proyecto::es_general`), todas.
+/// Which memories are visible. From a project, its own, its space's and the global ones; never those of
+/// another space. From a general folder (the user's, see `proyecto::es_general`), all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ambito {
-    /// Un proyecto (`id`; -1 si aún no tiene nada) y su espacio.
+    /// A project (`id`; -1 if it has nothing yet) and its space.
     Proyecto { id: i64, space: Option<i64> },
-    /// Todos los proyectos de un espacio, lo del espacio y lo global; con `None`, todos los proyectos
-    /// sin espacio y lo global (lo que ve «todos los proyectos» desde un proyecto sin espacio).
+    /// All the projects of a space, the space's own and the global ones; with `None`, all the projects
+    /// with no space and the global ones (what "all projects" sees from a project with no space).
     Espacio(Option<i64>),
     Todos,
 }
 
 impl Ambito {
-    /// Lo que se ve desde la carpeta de un proyecto (sin escribir nada en la base).
+    /// What is visible from a project's folder (without writing anything to the database).
     pub fn de(db: &Connection, project: &str) -> Result<Ambito> {
         if crate::proyecto::es_general(project) {
             return Ok(Ambito::Todos);
@@ -242,16 +242,16 @@ impl Ambito {
         Ok(Ambito::Proyecto { id, space })
     }
 
-    /// «Todos los proyectos» vistos desde aquí: desde un proyecto, los de su espacio (o los que no
-    /// tienen espacio); desde una carpeta general, todos.
+    /// "All projects" as seen from here: from a project, those of its space (or those with no
+    /// space); from a general folder, all.
     pub fn amplio(self) -> Ambito {
         match self {
             Ambito::Proyecto { space, .. } => Ambito::Espacio(space),
-            otro => otro,
+            other => other,
         }
     }
 
-    /// El espacio desde el que se mira (`None` si no hay, o desde una carpeta general).
+    /// The space it is viewed from (`None` if there is none, or from a general folder).
     pub fn espacio(&self) -> Option<i64> {
         match self {
             Ambito::Proyecto { space, .. } => *space,
@@ -260,12 +260,12 @@ impl Ambito {
         }
     }
 
-    /// Si una memoria (por su id) se ve desde aquí: la misma condición que `sql`.
+    /// Whether a memory (by its id) is visible from here: the same condition as `sql`.
     pub fn ve(&self, db: &Connection, id: &str) -> Result<bool> {
         Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory m WHERE m.id = ?1 AND {})", self.sql()), [id], |f| f.get(0))?)
     }
 
-    /// El proyecto desde el que se mira, si es uno.
+    /// The project it is viewed from, if it is one.
     pub fn proyecto(&self) -> Option<i64> {
         match self {
             Ambito::Proyecto { id, .. } if *id > 0 => Some(*id),
@@ -273,47 +273,47 @@ impl Ambito {
         }
     }
 
-    /// Si desde aquí se puede mirar `otro`: desde una carpeta general, todo; desde un proyecto o un
-    /// espacio, solo lo de su mismo espacio (o, sin espacio, lo que no tiene).
-    pub fn permite(&self, otro: &Ambito) -> bool {
-        matches!(self, Ambito::Todos) || self.espacio() == otro.espacio()
+    /// Whether `other` can be viewed from here: from a general folder, everything; from a project or a
+    /// space, only what is in its same space (or, with no space, what has none).
+    pub fn permite(&self, other: &Ambito) -> bool {
+        matches!(self, Ambito::Todos) || self.espacio() == other.espacio()
     }
 
-    /// Si una memoria de este proyecto (`project_id`; 0 si no tiene) y, sin proyecto, de este espacio
-    /// (`space_id`) se ve desde aquí: la misma condición que `sql`, para lo que no está en la tabla
-    /// `memory` (lo de la papelera).
+    /// Whether a memory of this project (`project_id`; 0 if none) and, with no project, of this space
+    /// (`space_id`) is visible from here: the same condition as `sql`, for what isn't in the
+    /// `memory` table (the trash).
     pub fn incluye(&self, db: &Connection, project_id: i64, space_id: Option<i64>) -> Result<bool> {
-        let su_espacio = |s: Option<i64>| project_id != 0 || space_id.is_none() || space_id == s;
+        let in_space = |s: Option<i64>| project_id != 0 || space_id.is_none() || space_id == s;
         Ok(match self {
             Ambito::Todos => true,
-            Ambito::Proyecto { id, space } => (project_id == *id || project_id == 0) && su_espacio(*space),
-            Ambito::Espacio(s) => (project_id == 0 || crate::proyecto::espacio_de(db, project_id)? == *s) && su_espacio(*s),
+            Ambito::Proyecto { id, space } => (project_id == *id || project_id == 0) && in_space(*space),
+            Ambito::Espacio(s) => (project_id == 0 || crate::proyecto::espacio_de(db, project_id)? == *s) && in_space(*s),
         })
     }
 
-    /// La condición SQL sobre la memoria `m` (con `m.project_id IN (…)`, que va por el índice
-    /// `memory_scope`). Los ids son enteros de la base: van en el texto, no hace falta parámetro.
-    /// Sin las memorias de oficio de los oficios que no tiene ningún proyecto del ámbito (ver
-    /// `oficios::ocultas`): una global con `trade:android` no llega a un proyecto web.
+    /// The SQL condition on memory `m` (with `m.project_id IN (…)`, which goes through the
+    /// `memory_scope` index). The ids are database integers: they go in the text, no parameter needed.
+    /// Without the trade memories of the trades no project in the scope has (see
+    /// `oficios::ocultas`): a global one with `trade:android` doesn't reach a web project.
     pub(crate) fn sql(&self) -> String {
-        let base = self.sql_sin_oficios();
+        let base = self.sql_without_trades();
         match crate::oficios::ocultas(self) {
             Some(o) => format!("({base} AND (m.project_id <> 0 OR m.space_id IS NOT NULL OR m.n NOT IN ({o})))"),
             None => base,
         }
     }
 
-    /// `sql` contando las memorias de oficio como globales: para `memory_cuenta` (que no tiene las
-    /// etiquetas); quien la usa resta `oficios::cuantas_ocultas`.
-    fn sql_sin_oficios(&self) -> String {
-        let espacio = |s: Option<i64>| match s {
+    /// `sql` counting trade memories as global: for `memory_cuenta` (which doesn't have the
+    /// tags); the caller subtracts `oficios::cuantas_ocultas`.
+    fn sql_without_trades(&self) -> String {
+        let space_cond = |s: Option<i64>| match s {
             Some(s) => format!("(m.project_id <> 0 OR m.space_id IS NULL OR m.space_id = {s})"),
             None => "(m.project_id <> 0 OR m.space_id IS NULL)".to_string(),
         };
         match self {
-            Ambito::Proyecto { id, space } => format!("(m.project_id IN ({id}, 0) AND {})", espacio(*space)),
-            Ambito::Espacio(Some(s)) => format!("(m.project_id IN (SELECT 0 UNION ALL SELECT id FROM project WHERE space_id = {s}) AND {})", espacio(Some(*s))),
-            Ambito::Espacio(None) => format!("(m.project_id IN (SELECT id FROM project WHERE space_id IS NULL) AND {})", espacio(None)),
+            Ambito::Proyecto { id, space } => format!("(m.project_id IN ({id}, 0) AND {})", space_cond(*space)),
+            Ambito::Espacio(Some(s)) => format!("(m.project_id IN (SELECT 0 UNION ALL SELECT id FROM project WHERE space_id = {s}) AND {})", space_cond(Some(*s))),
+            Ambito::Espacio(None) => format!("(m.project_id IN (SELECT id FROM project WHERE space_id IS NULL) AND {})", space_cond(None)),
             Ambito::Todos => "1".to_string(),
         }
     }
@@ -321,39 +321,39 @@ impl Ambito {
 
 pub(crate) const AHORA: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
-/// `INDEXED BY memory_ambito` para juntar `memory m` por `n` con otra tabla (`memory_fts`,
-/// `memory_vec`) y filtrar por ámbito sin leer la fila entera de cada memoria; nada si la conexión no
-/// tiene el índice (ver `db::LOCALES`). Solo cambia por dónde lee SQLite, no lo que sale.
+/// `INDEXED BY memory_ambito` to join `memory m` by `n` with another table (`memory_fts`,
+/// `memory_vec`) and filter by scope without reading each memory's whole row; nothing if the connection
+/// doesn't have the index (see `db::LOCALES`). It only changes where SQLite reads from, not the output.
 pub(crate) fn por_ambito(db: &Connection) -> &'static str {
-    let hay = db
+    let has_index = db
         .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_ambito')", [], |f| f.get::<_, bool>(0))
         .unwrap_or(false);
-    if hay { "INDEXED BY memory_ambito" } else { "" }
+    if has_index { "INDEXED BY memory_ambito" } else { "" }
 }
 
-/// Si desde `ambito` se ven todas las memorias y el índice de palabras tiene una fila por memoria (las
-/// dos cuentas cuadran). Entonces contar o puntuar en `memory_fts` sin juntarlo con `memory` da lo
-/// mismo que filtrando por el ámbito, y cuesta mucho menos: con 100.000 memorias, contar en cuántas
-/// sale una palabra pasa de 3 a 0,3 ms. Es lo normal desde la carpeta del usuario (se ven todas) o con
-/// un solo proyecto. Ante la duda (sin las cuentas, o no cuadran), `false`: se junta, como siempre.
-pub(crate) fn ve_todas(db: &Connection, ambito: &Ambito) -> bool {
-    let cuentas = || -> Option<bool> {
-        let todas: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |f| f.get(0)).ok()?;
-        let aqui: i64 = match ambito {
-            Ambito::Todos => todas,
+/// Whether all memories are visible from `scope` and the word index has one row per memory (the
+/// two counts match). Then counting or scoring in `memory_fts` without joining `memory` gives the
+/// same as filtering by scope, and costs much less: with 100,000 memories, counting how many memories
+/// a word appears in goes from 3 to 0.3 ms. That is the usual case from the user's folder (all are visible) or with
+/// a single project. When in doubt (no counts, or they don't match), `false`: it joins, as always.
+pub(crate) fn ve_todas(db: &Connection, scope: &Ambito) -> bool {
+    let counts = || -> Option<bool> {
+        let all: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |f| f.get(0)).ok()?;
+        let here: i64 = match scope {
+            Ambito::Todos => all,
             a => {
-                let n: i64 = db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql_sin_oficios()), [], |f| f.get(0)).ok()?;
+                let n: i64 = db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql_without_trades()), [], |f| f.get(0)).ok()?;
                 n - crate::oficios::cuantas_ocultas(db, a).ok()?
             }
         };
-        Some(aqui == todas && filas_fts(db)? == todas)
+        Some(here == all && fts_row_count(db)? == all)
     };
-    cuentas().unwrap_or(false)
+    counts().unwrap_or(false)
 }
 
-/// Cuántas filas tiene `memory_fts`: el primer número del registro de medias de FTS5 (`id = 1` de
-/// `memory_fts_data`, un varint como los de SQLite), el que usa para BM25. Sin leer el índice.
-fn filas_fts(db: &Connection) -> Option<i64> {
+/// How many rows `memory_fts` has: the first number of the FTS5 averages record (`id = 1` of
+/// `memory_fts_data`, a varint like SQLite's), the one it uses for BM25. Without reading the index.
+fn fts_row_count(db: &Connection) -> Option<i64> {
     let b: Vec<u8> = db.query_row("SELECT block FROM memory_fts_data WHERE id = 1", [], |f| f.get(0)).ok()?;
     let mut v: u64 = 0;
     for (i, x) in b.iter().enumerate().take(9) {
@@ -367,26 +367,26 @@ fn filas_fts(db: &Connection) -> Option<i64> {
     }
     None
 }
-/// Las columnas de una memoria, sobre `memory m`. Lo del proyecto y el espacio, con subconsultas por
-/// clave primaria: solo se evalúan para las filas que se devuelven (tras el `LIMIT`). Las dos últimas,
-/// la verificación (`verificado`) y la procedencia (`procedencia`) de `memory.extra` (o NULL): el
-/// `instr` evita leer el JSON de las que no tienen, que son casi todas.
+/// The columns of a memory, over `memory m`. The project and space ones, with subqueries by
+/// primary key: only evaluated for the rows returned (after the `LIMIT`). The last ones,
+/// the verification (`verificado`) and the provenance (`procedencia`) from `memory.extra` (or NULL): the
+/// `instr` avoids reading the JSON of those without it, which is almost all of them.
 pub(crate) const COLUMNAS: &str = "m.id, COALESCE((SELECT path FROM project WHERE id = m.project_id), ''), m.kind, m.title, m.content, m.paths, m.tags, m.pinned, m.source, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.author, m.project_id, COALESCE((SELECT key FROM project WHERE id = m.project_id), ''), COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), ''), CASE WHEN instr(m.extra, 'verified') > 0 AND json_valid(m.extra) AND NOT EXISTS (SELECT 1 FROM meta WHERE k = 'sello_ajeno:' || m.id AND v = json_extract(m.extra, '$.verified.by') || char(10) || json_extract(m.extra, '$.verified.at')) THEN json_extract(m.extra, '$.verified') END, CASE WHEN instr(m.extra, 'provenance') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.provenance') END, CASE WHEN instr(m.extra, 'evidence') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.evidence') END, CASE WHEN instr(m.extra, 'review_reason') > 0 AND json_valid(m.extra) THEN json_extract(m.extra, '$.review_reason') END";
-/// Cuántas columnas son: lo que se pida detrás de `COLUMNAS` empieza en este índice.
+/// How many columns there are: whatever is requested after `COLUMNAS` starts at this index.
 pub(crate) const NCOL: usize = 21;
 
 pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
-    let lista = |i: usize| -> rusqlite::Result<Vec<String>> {
+    let list = |i: usize| -> rusqlite::Result<Vec<String>> {
         let s: String = f.get(i)?;
         Ok(serde_json::from_str(&s).unwrap_or_default())
     };
     let kind: String = f.get(2)?;
-    let tipo = kind.parse::<Tipo>().ok();
+    let parsed = kind.parse::<Tipo>().ok();
     let (title, content): (String, String) = (f.get(3)?, f.get(4)?);
     let verified = crate::verificado::de_columna(f.get::<_, Option<String>>(17)?.as_deref(), &kind, &title, &content);
-    let tags = lista(6)?;
+    let tags = list(6)?;
     let project_id: i64 = f.get(14)?;
-    // Lo que puede llevar según dónde está ahora (una global no enseña la rama de un cliente).
+    // What it may carry depending on where it is now (a global one doesn't show a client's branch).
     let provenance = crate::procedencia::para_memoria(crate::procedencia::de_columna(f.get::<_, Option<String>>(18)?.as_deref()), project_id, &tags);
     Ok(Memoria {
         id: f.get(0)?,
@@ -394,11 +394,11 @@ pub(crate) fn de_fila(f: &Row) -> rusqlite::Result<Memoria> {
         project_id,
         project_key: f.get(15)?,
         space: f.get(16)?,
-        kind: tipo.unwrap_or(Tipo::Fact),
-        kind_text: if tipo.is_none() { Some(kind) } else { None },
+        kind: parsed.unwrap_or(Tipo::Fact),
+        kind_text: if parsed.is_none() { Some(kind) } else { None },
         title,
         content,
-        paths: lista(5)?,
+        paths: list(5)?,
         tags,
         pinned: f.get(7)?,
         source: f.get(8)?,
@@ -421,44 +421,44 @@ pub(crate) fn escribir_tx(db: &mut Connection) -> Result<Transaction<'_>> {
     Ok(db.transaction_with_behavior(TransactionBehavior::Immediate)?)
 }
 
-// --- Normalizar lo que llega -----------------------------------------------------------------------
+// --- Normalizing what comes in ---------------------------------------------------------------------
 
-fn titulo(t: &str) -> Result<String> {
-    // Una línea: los saltos se vuelven espacios.
+fn clean_title(t: &str) -> Result<String> {
+    // One line: line breaks become spaces.
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     ensure!(!t.is_empty(), tr!("the title can't be empty", "el título no puede estar vacío"));
     ensure!(t.chars().count() <= 200, tr!("the title is over 200 characters: put the details in the content", "el título pasa de 200 caracteres: lo largo va en el contenido"));
     Ok(t)
 }
 
-/// Lo que se escribe aquí (no lo que llega de la sincronización ni lo que vuelve de la papelera) pasa
-/// por `secretos::redactar`, salvo con `OMOIKANE_REDACT=0`. Apunta en `hallados` el tipo de cada uno.
-fn sin_secretos(texto: &str, hallados: &mut Vec<&'static str>) -> String {
+/// What is written here (not what comes from sync nor what comes back from the trash) goes
+/// through `secretos::redactar`, unless `OMOIKANE_REDACT=0`. Records the kind of each one in `found`.
+fn strip_secrets(text: &str, found: &mut Vec<&'static str>) -> String {
     if !crate::secretos::activo() {
-        return texto.to_string();
+        return text.to_string();
     }
-    let (s, hs) = crate::secretos::redactar(texto);
-    hallados.extend(hs.iter().map(|h| h.tipo));
+    let (s, hs) = crate::secretos::redactar(text);
+    found.extend(hs.iter().map(|h| h.tipo));
     s
 }
 
-fn contenido(c: &str) -> Result<String> {
+fn clean_content(c: &str) -> Result<String> {
     let c = c.trim().to_string();
     ensure!(!c.is_empty(), tr!("the content can't be empty", "el contenido no puede estar vacío"));
     Ok(c)
 }
 
-/// Cómo quedarían título, contenido, rutas y etiquetas al cambiarlos aquí (con la redacción de
-/// secretos), sin escribir nada: para saber si un cambio que llega ya está aplicado (la vuelta desde
-/// Obsidian, `obsidian::importar`). Lo que se tapa, a `tapados`.
-pub(crate) fn como_se_guarda(title: &str, content: &str, paths: &[String], tags: &[String], tapados: &mut Vec<&'static str>) -> Result<(String, String, Vec<String>, Vec<String>)> {
-    let t = titulo(&sin_secretos(title, tapados))?;
-    let c = contenido(&sin_secretos(&contenido(content)?, tapados))?;
-    Ok((t, c, rutas(paths), etiquetas(tags)))
+/// How title, content, paths and tags would end up when changed here (with secret
+/// redaction), without writing anything: to know whether an incoming change is already applied (the round trip from
+/// Obsidian, `obsidian::importar`). What gets masked goes to `redacted_kinds`.
+pub(crate) fn como_se_guarda(title: &str, content: &str, paths: &[String], tags: &[String], redacted_kinds: &mut Vec<&'static str>) -> Result<(String, String, Vec<String>, Vec<String>)> {
+    let t = clean_title(&strip_secrets(title, redacted_kinds))?;
+    let c = clean_content(&strip_secrets(&clean_content(content)?, redacted_kinds))?;
+    Ok((t, c, norm_paths(paths), norm_tags(tags)))
 }
 
-/// Rutas relativas a la raíz del proyecto, con `/` y sin `./` delante.
-fn rutas(ps: &[String]) -> Vec<String> {
+/// Paths relative to the project root, with `/` and no leading `./`.
+fn norm_paths(ps: &[String]) -> Vec<String> {
     let mut v: Vec<String> = ps
         .iter()
         .map(|p| p.trim().replace('\\', "/"))
@@ -470,7 +470,7 @@ fn rutas(ps: &[String]) -> Vec<String> {
     v
 }
 
-fn etiquetas(ts: &[String]) -> Vec<String> {
+fn norm_tags(ts: &[String]) -> Vec<String> {
     let mut v: Vec<String> = ts
         .iter()
         .map(|t| t.trim().trim_start_matches('#').to_lowercase())
@@ -481,64 +481,64 @@ fn etiquetas(ts: &[String]) -> Vec<String> {
     v
 }
 
-/// Lo que va de `inicio` a `fin` del texto con [`CONTEXTO`] caracteres a cada lado, y «…» donde
-/// se corta.
-fn alrededor(texto: &str, inicio: usize, fin: usize) -> String {
-    let desde = texto[..inicio].char_indices().rev().nth(CONTEXTO - 1).map(|(i, _)| i).unwrap_or(0);
-    let hasta = texto[fin..].char_indices().nth(CONTEXTO).map(|(i, _)| fin + i).unwrap_or(texto.len());
-    let (antes, despues) = (if desde > 0 { "…" } else { "" }, if hasta < texto.len() { "…" } else { "" });
-    format!("{antes}{}{despues}", &texto[desde..hasta])
+/// What goes from `from` to `to` in `text` with [`CONTEXTO`] characters on each side, and «…» where
+/// it is cut.
+fn around(text: &str, from: usize, to: usize) -> String {
+    let start = text[..from].char_indices().rev().nth(CONTEXTO - 1).map(|(i, _)| i).unwrap_or(0);
+    let end = text[to..].char_indices().nth(CONTEXTO).map(|(i, _)| to + i).unwrap_or(text.len());
+    let (before, after) = (if start > 0 { "…" } else { "" }, if end < text.len() { "…" } else { "" });
+    format!("{before}{}{after}", &text[start..end])
 }
 
-/// Aplica a `contenido` los `replace` (cada uno exactamente una vez, en orden) y el `append` de
-/// unos `Cambios`. Devuelve los trozos cambiados con su contexto; con un `find` que aparece 0 o
-/// varias veces, error con el recuento y el contenido no se toca.
-fn aplicar_edicion(contenido: &mut String, c: &Cambios) -> Result<Vec<Cambiado>> {
-    let mut nuevo = contenido.clone();
-    let mut cambiados = Vec::new();
+/// Applies to `content` the `replace`s (each one exactly once, in order) and the `append` of
+/// some `Cambios`. Returns the changed pieces with their context; with a `find` that appears 0 or
+/// several times, an error with the count, and the content is left untouched.
+fn apply_edit(content: &mut String, c: &Cambios) -> Result<Vec<Cambiado>> {
+    let mut new_text = content.clone();
+    let mut changed = Vec::new();
     for (find, with) in &c.replace {
         ensure!(!find.is_empty(), tr!("replace: `find` can't be empty", "replace: `find` no puede estar vacío"));
-        let veces = nuevo.matches(find.as_str()).count();
+        let count = new_text.matches(find.as_str()).count();
         ensure!(
-            veces == 1,
+            count == 1,
             tr!(
-                "replace: «{find}» appears {veces} times in the content (it has to appear exactly once); nothing changed",
-                "replace: «{find}» aparece {veces} veces en el contenido (tiene que aparecer exactamente una); no se ha cambiado nada"
+                "replace: «{find}» appears {count} times in the content (it has to appear exactly once); nothing changed",
+                "replace: «{find}» aparece {count} veces en el contenido (tiene que aparecer exactamente una); no se ha cambiado nada"
             )
         );
-        let inicio = nuevo.find(find.as_str()).unwrap_or(0);
-        nuevo.replace_range(inicio..inicio + find.len(), with);
-        cambiados.push(Cambiado { find: Some(find.clone()), appended: false, context: alrededor(&nuevo, inicio, inicio + with.len()) });
+        let from = new_text.find(find.as_str()).unwrap_or(0);
+        new_text.replace_range(from..from + find.len(), with);
+        changed.push(Cambiado { find: Some(find.clone()), appended: false, context: around(&new_text, from, from + with.len()) });
     }
     if let Some(a) = c.append.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
-        let base = nuevo.trim_end().to_string();
-        let inicio = base.len() + 2;
-        nuevo = format!("{base}\n\n{a}");
-        cambiados.push(Cambiado { find: None, appended: true, context: alrededor(&nuevo, inicio, nuevo.len()) });
+        let base = new_text.trim_end().to_string();
+        let from = base.len() + 2;
+        new_text = format!("{base}\n\n{a}");
+        changed.push(Cambiado { find: None, appended: true, context: around(&new_text, from, new_text.len()) });
     }
-    *contenido = nuevo;
-    Ok(cambiados)
+    *content = new_text;
+    Ok(changed)
 }
 
-/// El título y el contenido que tendría `m` con estos cambios (`title`, `content`, `replace`, `append`),
-/// sin escribir nada: para mirar el texto final antes de guardarlo (`oficios::al_cambiar`) o para
-/// guardarlo en otra memoria (`oficios::crear_de_oficio`).
+/// The title and content `m` would have with these changes (`title`, `content`, `replace`, `append`),
+/// without writing anything: to look at the final text before saving it (`oficios::al_cambiar`) or to
+/// save it in another memory (`oficios::crear_de_oficio`).
 pub fn texto_tras(m: &Memoria, c: &Cambios) -> Result<(String, String)> {
-    let titulo_nuevo = match &c.title {
-        Some(t) => titulo(t)?,
+    let new_title = match &c.title {
+        Some(t) => clean_title(t)?,
         None => m.title.clone(),
     };
     let mut content = match &c.content {
-        Some(t) => contenido(t)?,
+        Some(t) => clean_content(t)?,
         None => m.content.clone(),
     };
-    aplicar_edicion(&mut content, c)?;
-    Ok((titulo_nuevo, contenido(&content)?))
+    apply_edit(&mut content, c)?;
+    Ok((new_title, clean_content(&content)?))
 }
 
-// --- Índices ---------------------------------------------------------------------------------------
+// --- Indexes ---------------------------------------------------------------------------------------
 
-fn indexar(tx: &Transaction, n: i64, m: &Memoria) -> Result<()> {
+fn index_memory(tx: &Transaction, n: i64, m: &Memoria) -> Result<()> {
     tx.execute(
         "INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![n, m.title, m.content, m.tags.join(" "), m.paths.join(" ")],
@@ -550,177 +550,177 @@ fn indexar(tx: &Transaction, n: i64, m: &Memoria) -> Result<()> {
     Ok(())
 }
 
-fn desindexar(tx: &Transaction, n: i64) -> Result<()> {
+fn unindex_memory(tx: &Transaction, n: i64) -> Result<()> {
     tx.execute("DELETE FROM memory_fts WHERE rowid = ?1", [n])?;
     Ok(())
 }
 
-// --- Operaciones -----------------------------------------------------------------------------------
+// --- Operations ------------------------------------------------------------------------------------
 
-/// Guarda sin mirar si ya existe una parecida: eso es `vectores::duplicada`, antes, para que quien
-/// llama decida. Con `modelo`, el vector va en la misma transacción.
-pub fn guardar(db: &mut Connection, nueva: Nueva, modelo: Option<&Modelo>) -> Result<Memoria> {
-    insertar(db, &ulid::Ulid::generate().to_string(), nueva, None, modelo)
+/// Saves without checking whether a similar one already exists: that is `vectores::duplicada`, beforehand, so the
+/// caller decides. With `model`, the vector goes in the same transaction.
+pub fn guardar(db: &mut Connection, new: Nueva, model: Option<&Modelo>) -> Result<Memoria> {
+    insert(db, &ulid::Ulid::generate().to_string(), new, None, model)
 }
 
-/// Como [`guardar`], pero con el id que trae (una memoria que vuelve de un bundle OKF exportado de
-/// Omoikane, `okf::importar`): pasa por la redacción de secretos y lleva el sello de aquí.
-pub(crate) fn guardar_con_su_id(db: &mut Connection, id: &str, nueva: Nueva, modelo: Option<&Modelo>) -> Result<Memoria> {
+/// Like [`guardar`], but with the id it brings (a memory coming back from an OKF bundle exported from
+/// Omoikane, `okf::importar`): goes through secret redaction and gets a stamp from here.
+pub(crate) fn guardar_con_su_id(db: &mut Connection, id: &str, new: Nueva, model: Option<&Modelo>) -> Result<Memoria> {
     let id = ulid::Ulid::from_string(id).map_err(|e| anyhow!("{id}: {e}"))?.to_string();
-    insertar(db, &id, nueva, None, modelo)
+    insert(db, &id, new, None, model)
 }
 
-/// La etiqueta de la clave de tema: `topic:<clave>`. Una memoria por clave y por ámbito (proyecto,
-/// espacio o global): `remember` con clave actualiza la que ya la lleva en vez de crear otra.
+/// The topic key tag: `topic:<key>`. One memory per key and per scope (project,
+/// space or global): `remember` with a key updates the one that already has it instead of creating another.
 pub const ETIQUETA_TEMA: &str = "topic:";
 
-/// Lo que hizo [`guardar_por_clave`].
+/// What [`guardar_por_clave`] did.
 #[derive(Clone, Debug)]
 pub struct PorClave {
     pub memoria: Memoria,
-    /// `true` si no había ninguna con esa clave en el ámbito y se creó.
+    /// `true` if there was none with that key in the scope and it was created.
     pub creada: bool,
-    /// Al crearla: otras claves del ámbito que se parecen a la nueva (quizá se quería una de ellas).
+    /// When created: other keys in the scope that look like the new one (maybe one of them was meant).
     pub parecidas: Vec<String>,
-    /// Lo que se tapó en los datos por parecer un secreto (sus tipos).
+    /// What was masked in the data for looking like a secret (their kinds).
     pub tapados: Vec<&'static str>,
 }
 
-/// La clave tal como se guarda: minúsculas, sin espacios alrededor, y solo letras, cifras y `-_.:/`
-/// (cabe en una etiqueta y se escribe igual en la CLI y en el MCP).
-pub fn clave_tema(clave: &str) -> Result<String> {
-    let c = clave.trim().to_lowercase();
+/// The key as stored: lowercase, no surrounding spaces, and only letters, digits and `-_.:/`
+/// (fits in a tag and is written the same in the CLI and in the MCP).
+pub fn clave_tema(key: &str) -> Result<String> {
+    let c = key.trim().to_lowercase();
     ensure!(
         !c.is_empty() && c.chars().count() <= 80 && c.chars().all(|x| x.is_alphanumeric() || "-_.:/".contains(x)),
         tr!(
-            "key «{clave}»: use letters, digits and - _ . : / (up to 80), e.g. kumi-profile",
-            "clave «{clave}»: usa letras, cifras y - _ . : / (hasta 80), p. ej. kumi-perfil"
+            "key «{key}»: use letters, digits and - _ . : / (up to 80), e.g. kumi-profile",
+            "clave «{key}»: usa letras, cifras y - _ . : / (hasta 80), p. ej. kumi-perfil"
         )
     );
     Ok(c)
 }
 
-/// La clave de tema de una memoria, si lleva una.
+/// The topic key of a memory, if it has one.
 pub fn clave_de(m: &Memoria) -> Option<&str> {
     m.tags.iter().find_map(|t| t.strip_prefix(ETIQUETA_TEMA))
 }
 
-/// Guarda por clave: si en el mismo ámbito (el proyecto, el espacio o global, exactamente el que toca)
-/// ya hay una memoria con `topic:<clave>`, la actualiza (título, contenido, tipo; junta etiquetas y
-/// rutas); si no, la crea. Todo en una transacción `BEGIN IMMEDIATE` que busca dentro: dos procesos
-/// a la vez con la misma clave dejan una sola memoria (el segundo espera y la encuentra). Sin mirar
-/// duplicadas: la clave ya dice cuál es. Los `datos`, si vienen, van a `memory.extra` como los de
-/// [`poner_datos`] y en la misma transacción (sin ellos, los que tuviera se quedan); como allí, cambiar
-/// solo los datos no crea versión, y lo mismo de nuevo (texto y datos) no cambia nada.
-pub fn guardar_por_clave(db: &mut Connection, clave: &str, mut nueva: Nueva, datos: Option<serde_json::Value>, modelo: Option<&Modelo>) -> Result<PorClave> {
-    let clave = clave_tema(clave)?;
-    let mut tapados = Vec::new();
-    let datos = datos_listos(datos, &mut tapados)?;
-    let etiqueta = format!("{ETIQUETA_TEMA}{clave}");
-    nueva.tags.retain(|t| !t.trim().to_lowercase().starts_with(ETIQUETA_TEMA));
-    nueva.tags.push(etiqueta.clone());
+/// Saves by key: if in the same scope (the project, the space or global, exactly the right one)
+/// there is already a memory with `topic:<key>`, updates it (title, content, kind; merges tags and
+/// paths); otherwise creates it. All in one `BEGIN IMMEDIATE` transaction that searches inside: two processes
+/// at once with the same key leave a single memory (the second one waits and finds it). Without checking
+/// duplicates: the key already says which one it is. The `data`, if given, go to `memory.extra` like those of
+/// [`poner_datos`] and in the same transaction (without them, whatever it had stays); as there, changing
+/// only the data doesn't create a version, and the same thing again (text and data) changes nothing.
+pub fn guardar_por_clave(db: &mut Connection, key: &str, mut new: Nueva, data: Option<serde_json::Value>, model: Option<&Modelo>) -> Result<PorClave> {
+    let key = clave_tema(key)?;
+    let mut redacted_kinds = Vec::new();
+    let data = ready_data(data, &mut redacted_kinds)?;
+    let tag = format!("{ETIQUETA_TEMA}{key}");
+    new.tags.retain(|t| !t.trim().to_lowercase().starts_with(ETIQUETA_TEMA));
+    new.tags.push(tag.clone());
     let tx = escribir_tx(db)?;
-    let (project_id, space_id) = alcance(&tx, &nueva.project, nueva.project_id, nueva.space_id)?;
-    // Una global con `trade:<oficio>` es del ámbito de ese oficio (la ruta por defecto de la factoría
-    // web); sin oficio, de la persona. Cada combinación de oficios (y de para quién, `trade-for:`) es su
-    // propio ámbito.
-    let oficios = serde_json::to_string(&ambito_de_oficio(&etiquetas(&nueva.tags)))?;
-    let existente: Option<String> = tx
+    let (project_id, space_id) = placement(&tx, &new.project, new.project_id, new.space_id)?;
+    // A global one with `trade:<trade>` belongs to that trade's scope (the default path of the web
+    // factory); with no trade, to the person. Each combination of trades (and of who for, `trade-for:`) is its
+    // own scope.
+    let trades = serde_json::to_string(&trade_scope(&norm_tags(&new.tags)))?;
+    let existing: Option<String> = tx
         .query_row(
             "SELECT id FROM memory WHERE project_id = ?1 AND space_id IS ?2 AND tags LIKE ?3
                AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?4)
                AND (SELECT COALESCE(json_group_array(value), '[]') FROM (SELECT value FROM json_each(memory.tags)
                     WHERE value LIKE 'trade:%' OR value LIKE 'trade-for:%' ORDER BY value)) = ?5
              ORDER BY updated_at DESC, id DESC LIMIT 1",
-            params![project_id, space_id, format!("%\"{etiqueta}\"%"), etiqueta, oficios],
+            params![project_id, space_id, format!("%\"{tag}\"%"), tag, trades],
             |f| f.get(0),
         )
         .optional()?;
-    let r = match existente {
+    let r = match existing {
         Some(id) => {
-            let antes = leer(&tx, &id)?;
-            let mut tags = antes.tags.clone();
-            tags.extend(nueva.tags.iter().cloned());
-            let mut paths = antes.paths.clone();
-            paths.extend(nueva.paths.iter().cloned());
+            let before = leer(&tx, &id)?;
+            let mut tags = before.tags.clone();
+            tags.extend(new.tags.iter().cloned());
+            let mut paths = before.paths.clone();
+            paths.extend(new.paths.iter().cloned());
             let c = Cambios {
-                title: Some(nueva.title),
-                content: Some(nueva.content),
-                kind: nueva.kind,
+                title: Some(new.title),
+                content: Some(new.content),
+                kind: new.kind,
                 paths: Some(paths),
                 tags: Some(tags),
-                pinned: nueva.pinned.then_some(true),
-                reason: Some(format!("key {clave}")),
+                pinned: new.pinned.then_some(true),
+                reason: Some(format!("key {key}")),
                 ..Default::default()
             };
-            let (m, _) = actualizar_en(&tx, &id, c, None, modelo)?;
+            let (m, _) = update_in(&tx, &id, c, None, model)?;
             PorClave { memoria: m, creada: false, parecidas: Vec::new(), tapados: Vec::new() }
         }
         None => {
-            nueva.project_id = Some(project_id);
-            nueva.space_id = space_id;
-            let m = insertar_en(&tx, &ulid::Ulid::generate().to_string(), nueva, None, modelo)?;
-            let parecidas = claves_parecidas(&tx, project_id, space_id, &clave)?;
-            PorClave { memoria: m, creada: true, parecidas, tapados: Vec::new() }
+            new.project_id = Some(project_id);
+            new.space_id = space_id;
+            let m = insert_in(&tx, &ulid::Ulid::generate().to_string(), new, None, model)?;
+            let similar = similar_keys(&tx, project_id, space_id, &key)?;
+            PorClave { memoria: m, creada: true, parecidas: similar, tapados: Vec::new() }
         }
     };
-    let cambian = match datos {
-        Some(d) => poner_datos_en(&tx, &r.memoria.id, Some(d))?,
+    let data_changed = match data {
+        Some(d) => set_data_in(&tx, &r.memoria.id, Some(d))?,
         None => false,
     };
-    let r = if cambian { PorClave { memoria: leer(&tx, &r.memoria.id)?, tapados, ..r } } else { PorClave { tapados, ..r } };
+    let r = if data_changed { PorClave { memoria: leer(&tx, &r.memoria.id)?, tapados: redacted_kinds, ..r } } else { PorClave { tapados: redacted_kinds, ..r } };
     tx.commit()?;
     Ok(r)
 }
 
-/// Las claves del mismo ámbito que se parecen a `clave` sin ser ella: iguales sin `-_.` ni
-/// mayúsculas, o a una o dos letras (cambiada, de más o de menos) con 6 letras o más.
-fn claves_parecidas(db: &Connection, project_id: i64, space_id: Option<i64>, clave: &str) -> Result<Vec<String>> {
+/// The keys in the same scope that look like `key` without being it: equal ignoring `-_.` and
+/// case, or one or two letters away (changed, extra or missing) with 6 letters or more.
+fn similar_keys(db: &Connection, project_id: i64, space_id: Option<i64>, key: &str) -> Result<Vec<String>> {
     let mut q = db.prepare(
         "SELECT DISTINCT substr(t.value, ?3) FROM memory m, json_each(m.tags) t
          WHERE m.project_id = ?1 AND m.space_id IS ?2 AND m.tags LIKE '%\"topic:%' AND t.value LIKE 'topic:%'",
     )?;
-    let claves: Vec<String> = q.query_map(params![project_id, space_id, ETIQUETA_TEMA.len() as i64 + 1], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-    let plano = |s: &str| s.chars().filter(|c| !"-_.".contains(*c)).collect::<String>();
-    let (pc, n) = (plano(clave), clave.chars().count());
-    Ok(claves
+    let keys: Vec<String> = q.query_map(params![project_id, space_id, ETIQUETA_TEMA.len() as i64 + 1], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let flat = |s: &str| s.chars().filter(|c| !"-_.".contains(*c)).collect::<String>();
+    let (pc, n) = (flat(key), key.chars().count());
+    Ok(keys
         .into_iter()
-        .filter(|k| k != clave && (plano(k) == pc || (n >= 6 && distancia(k, clave) <= if n >= 12 { 2 } else { 1 })))
+        .filter(|k| k != key && (flat(k) == pc || (n >= 6 && edit_distance(k, key) <= if n >= 12 { 2 } else { 1 })))
         .collect())
 }
 
-/// Distancia de edición (Levenshtein) por caracteres.
-fn distancia(a: &str, b: &str) -> usize {
+/// Edit distance (Levenshtein) by characters.
+fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
-    let mut fila: Vec<usize> = (0..=b.len()).collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
-        let mut previo = fila[0];
-        fila[0] = i + 1;
+        let mut prev = row[0];
+        row[0] = i + 1;
         for (j, cb) in b.iter().enumerate() {
-            let actual = fila[j + 1];
-            fila[j + 1] = if ca == *cb { previo } else { 1 + previo.min(fila[j]).min(fila[j + 1]) };
-            previo = actual;
+            let cur = row[j + 1];
+            row[j + 1] = if ca == *cb { prev } else { 1 + prev.min(row[j]).min(row[j + 1]) };
+            prev = cur;
         }
     }
-    fila[b.len()]
+    row[b.len()]
 }
 
-/// Las etiquetas que dicen el ámbito de oficio de una memoria con clave, ordenadas: sus oficios
-/// (`trade:web`, …) y para quién (`trade-for:client`).
-fn ambito_de_oficio(tags: &[String]) -> Vec<String> {
+/// The tags that give the trade scope of a keyed memory, sorted: its trades
+/// (`trade:web`, …) and who for (`trade-for:client`).
+fn trade_scope(tags: &[String]) -> Vec<String> {
     let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIJO) || t.starts_with(crate::oficios::PARA)).cloned().collect();
     v.sort();
     v
 }
 
-/// Las etiquetas de oficio de una lista de etiquetas, ordenadas (`trade:web`, …).
-fn oficios_de(tags: &[String]) -> Vec<String> {
+/// The trade tags of a list of tags, sorted (`trade:web`, …).
+fn trade_tags(tags: &[String]) -> Vec<String> {
     let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIJO)).cloned().collect();
     v.sort();
     v
 }
 
-/// De qué nivel es una memoria con clave, del más concreto al más general.
+/// Which level a keyed memory belongs to, from most specific to most general.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Nivel {
@@ -730,7 +730,7 @@ pub enum Nivel {
     Global,
 }
 
-/// El nivel de una memoria: de un proyecto, de un espacio, de un oficio (global con `trade:`) o global.
+/// The level of a memory: a project's, a space's, a trade's (global with `trade:`) or global.
 pub fn nivel_de(m: &Memoria) -> Nivel {
     if m.project_id != 0 {
         Nivel::Project
@@ -743,75 +743,75 @@ pub fn nivel_de(m: &Memoria) -> Nivel {
     }
 }
 
-/// Todas las memorias con esta clave que ve el ámbito, de la más concreta a la más general: la del
-/// proyecto, la de su espacio, las de sus oficios y la global. Determinista, sin búsqueda: quien llama
-/// las combina (por ejemplo, la ruta de un proyecto por la megafactoría de Kumi). Lo que el ámbito no
-/// ve (otro cliente, otro proyecto) no sale.
-pub fn resolver_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Vec<(Nivel, Memoria)>> {
-    let clave = clave_tema(clave)?;
-    let mut v: Vec<(Nivel, Memoria)> = con_etiqueta(db, ambito, &format!("{ETIQUETA_TEMA}{clave}"))?.into_iter().map(|m| (nivel_de(&m), m)).collect();
-    // Dos equipos que crearon la misma clave sin verse dejan, al sincronizar, dos memorias en el mismo
-    // ámbito: manda una, la misma en todos los equipos ([`gana_la_clave`]), y la otra no sale.
-    v.sort_by(|a, b| gana_la_clave(&b.1, &a.1));
-    let mut vistos = std::collections::HashSet::new();
-    v.retain(|(_, m)| vistos.insert((m.project_id, m.space.clone(), ambito_de_oficio(&m.tags))));
-    v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| ambito_de_oficio(&a.1.tags).cmp(&ambito_de_oficio(&b.1.tags))).then_with(|| a.1.created_at.cmp(&b.1.created_at)));
+/// All the memories with this key the scope sees, from most specific to most general: the
+/// project's, its space's, its trades' and the global one. Deterministic, no search: the caller
+/// combines them (for example, a project's path through Kumi's megafactory). What the scope doesn't
+/// see (another client, another project) doesn't come out.
+pub fn resolver_clave(db: &Connection, scope: &Ambito, key: &str) -> Result<Vec<(Nivel, Memoria)>> {
+    let key = clave_tema(key)?;
+    let mut v: Vec<(Nivel, Memoria)> = con_etiqueta(db, scope, &format!("{ETIQUETA_TEMA}{key}"))?.into_iter().map(|m| (nivel_de(&m), m)).collect();
+    // Two computers that created the same key without seeing each other leave, after syncing, two memories in the same
+    // scope: one wins, the same one on every computer ([`key_winner`]), and the other doesn't come out.
+    v.sort_by(|a, b| key_winner(&b.1, &a.1));
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|(_, m)| seen.insert((m.project_id, m.space.clone(), trade_scope(&m.tags))));
+    v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| trade_scope(&a.1.tags).cmp(&trade_scope(&b.1.tags))).then_with(|| a.1.created_at.cmp(&b.1.created_at)));
     Ok(v)
 }
 
-/// Entre dos memorias con la misma clave en el mismo ámbito, cuál manda: la cambiada más tarde y, si
-/// coinciden, la de id mayor (`Greater`: `a`). Igual que el `ORDER BY` de [`guardar_por_clave`], así que
-/// `remember --key` cambia la misma que devuelve `get --key`.
-fn gana_la_clave(a: &Memoria, b: &Memoria) -> std::cmp::Ordering {
+/// Between two memories with the same key in the same scope, which one wins: the one changed later and, if
+/// equal, the one with the larger id (`Greater`: `a`). Same as the `ORDER BY` of [`guardar_por_clave`], so
+/// `remember --key` changes the same one `get --key` returns.
+fn key_winner(a: &Memoria, b: &Memoria) -> std::cmp::Ordering {
     a.updated_at.cmp(&b.updated_at).then_with(|| a.id.cmp(&b.id))
 }
 
-/// El principio del motivo del veredicto que pone [`resolver_claves_repetidas`].
-const MOTIVO_CLAVE_REPETIDA: &str = "same key ";
+/// The start of the reason of the verdict that [`resolver_claves_repetidas`] sets.
+const REPEATED_KEY_REASON: &str = "same key ";
 
-/// Tras sincronizar o importar: las claves repetidas en un mismo ámbito (dos equipos que hicieron
-/// `remember --key` con la misma clave sin verse; en cada uno, la clave es atómica). Manda la que
-/// [`gana_la_clave`] y las demás quedan sustituidas por ella (`superseded`, un veredicto que viaja y que
-/// todos los equipos ponen igual), para que Revisar proponga olvidarlas. No se borra ni se cambia nada:
-/// `get --key` ya solo devuelve la que manda. Devuelve cuántas quedaron sustituidas ahora.
+/// After syncing or importing: the keys repeated in the same scope (two computers that did
+/// `remember --key` with the same key without seeing each other; on each one, the key is atomic). The one
+/// [`key_winner`] picks wins and the others are superseded by it (`superseded`, a verdict that travels and that
+/// every computer sets the same way), so that Review proposes forgetting them. Nothing is deleted or changed:
+/// `get --key` already returns only the winner. Returns how many were superseded now.
 pub fn resolver_claves_repetidas(db: &Connection) -> Result<usize> {
     let mut q = db.prepare("SELECT id, project_id, space_id, tags, updated_at FROM memory WHERE tags LIKE '%\"topic:%'")?;
-    let filas: Vec<(String, i64, Option<i64>, String, String)> =
+    let rows: Vec<(String, i64, Option<i64>, String, String)> =
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
-    type Grupo = (i64, Option<i64>, String, Vec<String>);
-    let mut grupos: std::collections::BTreeMap<Grupo, Vec<Memoria>> = std::collections::BTreeMap::new();
-    for (id, project_id, space_id, tags, updated_at) in filas {
+    type Group = (i64, Option<i64>, String, Vec<String>);
+    let mut groups: std::collections::BTreeMap<Group, Vec<Memoria>> = std::collections::BTreeMap::new();
+    for (id, project_id, space_id, tags, updated_at) in rows {
         let tags: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
         let m = Memoria { id, project_id, tags, updated_at, ..Default::default() };
-        if let Some(clave) = clave_de(&m).map(str::to_string) {
-            grupos.entry((project_id, space_id, clave, ambito_de_oficio(&m.tags))).or_default().push(m);
+        if let Some(key) = clave_de(&m).map(str::to_string) {
+            groups.entry((project_id, space_id, key, trade_scope(&m.tags))).or_default().push(m);
         }
     }
-    let vigentes = crate::veredictos::parejas(db)?;
+    let active = crate::veredictos::parejas(db)?;
     let mut n = 0;
-    for ((_, _, clave, _), mut v) in grupos.into_iter().filter(|(_, v)| v.len() > 1) {
-        v.sort_by(|a, b| gana_la_clave(b, a));
-        let gana = &v[0];
-        for otra in &v[1..] {
-            // Con cualquier veredicto vigente la pareja ya está juzgada, como en `revisar::duplicadas_de_oficio`:
-            // tras «está bien así» (`compatible`) el siguiente sync o import volvía a ponerla sustituida.
-            // Solo se le da la vuelta a la que puso esto mismo al revés (la que perdía se cambió después
-            // y ahora es la que manda).
-            let al_reves = |x: &crate::veredictos::Veredicto| x.relation == crate::veredictos::SUSTITUIDA && x.memory_id == gana.id && x.reason.starts_with(MOTIVO_CLAVE_REPETIDA);
-            if vigentes.get(&crate::veredictos::pareja(&otra.id, &gana.id)).is_some_and(|x| !al_reves(x)) {
+    for ((_, _, key, _), mut v) in groups.into_iter().filter(|(_, v)| v.len() > 1) {
+        v.sort_by(|a, b| key_winner(b, a));
+        let winner = &v[0];
+        for other in &v[1..] {
+            // With any active verdict the pair is already judged, as in `revisar::duplicadas_de_oficio`:
+            // after "it's fine as is" (`compatible`) the next sync or import set it as superseded again.
+            // Only the one that this same code set the other way round is flipped (the losing one was changed later
+            // and now it is the winner).
+            let reversed = |x: &crate::veredictos::Veredicto| x.relation == crate::veredictos::SUSTITUIDA && x.memory_id == winner.id && x.reason.starts_with(REPEATED_KEY_REASON);
+            if active.get(&crate::veredictos::pareja(&other.id, &winner.id)).is_some_and(|x| !reversed(x)) {
                 continue;
             }
-            let autor = crate::veredictos::autor(db, "sync", &otra.id);
-            crate::veredictos::poner(db, &otra.id, &gana.id, crate::veredictos::SUSTITUIDA, &format!("{MOTIVO_CLAVE_REPETIDA}{clave} written on two computers"), &autor)?;
+            let author = crate::veredictos::autor(db, "sync", &other.id);
+            crate::veredictos::poner(db, &other.id, &winner.id, crate::veredictos::SUSTITUIDA, &format!("{REPEATED_KEY_REASON}{key} written on two computers"), &author)?;
             n += 1;
         }
     }
     Ok(n)
 }
 
-/// Una capa de [`resolver_clave`] tal como sale en `get --key … --resolve --json`: su ámbito
-/// (`project`, `space`, `trade:<oficio>` o `global`), la memoria, su texto y sus datos (los de
-/// `memory.extra`, [`poner_datos`]), sin fusionar nada con las demás capas.
+/// A layer of [`resolver_clave`] as it comes out in `get --key … --resolve --json`: its scope
+/// (`project`, `space`, `trade:<trade>` or `global`), the memory, its text and its data (those of
+/// `memory.extra`, [`poner_datos`]), without merging anything with the other layers.
 #[derive(Clone, Debug, Serialize)]
 pub struct Capa {
     pub scope: String,
@@ -826,58 +826,58 @@ pub struct Capa {
     pub updated_at: String,
 }
 
-/// Las capas de una clave para el ámbito, de la más concreta a la más general.
-pub fn capas_de_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Vec<Capa>> {
-    let capas = resolver_clave(db, ambito, clave)?;
-    let mut datos = datos_de(db, &capas.iter().map(|(_, m)| m.id.as_str()).collect::<Vec<_>>())?;
-    Ok(capas
+/// The layers of a key for the scope, from most specific to most general.
+pub fn capas_de_clave(db: &Connection, scope: &Ambito, key: &str) -> Result<Vec<Capa>> {
+    let layers = resolver_clave(db, scope, key)?;
+    let mut data = datos_de(db, &layers.iter().map(|(_, m)| m.id.as_str()).collect::<Vec<_>>())?;
+    Ok(layers
         .into_iter()
-        .map(|(nivel, m)| {
-            let scope = match nivel {
+        .map(|(level, m)| {
+            let scope = match level {
                 Nivel::Project => "project".to_string(),
                 Nivel::Space => "space".to_string(),
                 Nivel::Global => "global".to_string(),
                 Nivel::Trade => format!(
                     "trade:{}",
-                    crate::oficios::de_etiquetas(&oficios_de(&m.tags)).join(",")
+                    crate::oficios::de_etiquetas(&trade_tags(&m.tags)).join(",")
                 ),
             };
             Capa {
                 scope,
-                data: datos.remove(&m.id),
+                data: data.remove(&m.id),
                 id: m.id,
                 title: m.title,
                 text: m.content,
-                project: if nivel == Nivel::Project { m.project } else { String::new() },
-                space: if nivel == Nivel::Space { m.space } else { String::new() },
+                project: if level == Nivel::Project { m.project } else { String::new() },
+                space: if level == Nivel::Space { m.space } else { String::new() },
                 updated_at: m.updated_at,
             }
         })
         .collect())
 }
 
-/// La memoria con esta clave que manda en el ámbito: la más concreta de [`resolver_clave`].
-pub fn por_clave(db: &Connection, ambito: &Ambito, clave: &str) -> Result<Option<Memoria>> {
-    Ok(resolver_clave(db, ambito, clave)?.into_iter().next().map(|(_, m)| m))
+/// The memory with this key that wins in the scope: the most specific one from [`resolver_clave`].
+pub fn por_clave(db: &Connection, scope: &Ambito, key: &str) -> Result<Option<Memoria>> {
+    Ok(resolver_clave(db, scope, key)?.into_iter().next().map(|(_, m)| m))
 }
 
-/// De dónde viene una memoria que llega por la sincronización: su id, fechas, sellos y autor de origen.
+/// Where a memory coming in through sync comes from: its id, dates, stamps and author of origin.
 pub(crate) struct Origen<'a> {
     pub created_at: &'a str,
     pub updated_at: &'a str,
     pub hlc: &'a str,
-    /// El sello de su último cambio de texto en el equipo de origen (vacío: el de `hlc`, si el texto
-    /// cambia; lo mandan las versiones de antes del esquema 10 y las líneas en que coinciden).
+    /// The stamp of its last text change on the origin computer (empty: the `hlc` one, if the text
+    /// changes; sent by versions before schema 10 and by lines where they match).
     pub content_hlc: &'a str,
     pub author: &'a str,
-    /// Los campos de la línea que esta versión no conoce, en JSON (`memory.extra`): la memoria los
-    /// guarda y la sincronización y `omoi export` los vuelven a escribir.
+    /// The fields of the line this version doesn't know, in JSON (`memory.extra`): the memory
+    /// stores them and sync and `omoi export` write them back.
     pub extra: &'a str,
 }
 
-/// Dónde va una memoria: (proyecto, espacio). Un espacio va sin proyecto; una carpeta se apunta como
-/// proyecto si aún no lo es.
-fn alcance(tx: &Connection, project: &str, project_id: Option<i64>, space_id: Option<i64>) -> Result<(i64, Option<i64>)> {
+/// Where a memory goes: (project, space). A space goes with no project; a folder is registered as a
+/// project if it isn't one yet.
+fn placement(tx: &Connection, project: &str, project_id: Option<i64>, space_id: Option<i64>) -> Result<(i64, Option<i64>)> {
     Ok(match (space_id, project_id) {
         (Some(s), _) => (0, Some(s)),
         (None, Some(p)) => (p, None),
@@ -885,87 +885,87 @@ fn alcance(tx: &Connection, project: &str, project_id: Option<i64>, space_id: Op
     })
 }
 
-/// Para la sincronización: la misma memoria, con el mismo id, fechas, sello y autor que en su equipo.
-pub(crate) fn guardar_con_id(db: &mut Connection, id: &str, nueva: Nueva, o: &Origen, modelo: Option<&Modelo>) -> Result<Memoria> {
-    insertar(db, id, nueva, Some(o), modelo)
+/// For sync: the same memory, with the same id, dates, stamp and author as on its computer.
+pub(crate) fn guardar_con_id(db: &mut Connection, id: &str, new: Nueva, o: &Origen, model: Option<&Modelo>) -> Result<Memoria> {
+    insert(db, id, new, Some(o), model)
 }
 
-/// El sello de una memoria (vacío si no existe).
+/// The stamp of a memory (empty if it doesn't exist).
 pub(crate) fn hlc_de(db: &Connection, id: &str) -> Result<String> {
     Ok(db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
-/// Apunta una marca de olvido, salvo que ya haya una posterior, con el espacio (su clave; vacía: de
-/// ninguno) de lo olvidado: el olvido va solo al repositorio de ese espacio.
-pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str, espacio: &str) -> Result<()> {
-    let actual: Option<String> = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?;
-    if actual.is_none_or(|a| crate::reloj::mayor(hlc, &a)) {
+/// Records a forget mark, unless there is already a later one, with the space (its key; empty: of
+/// none) of what was forgotten: the forget goes only to that space's repository.
+pub(crate) fn marcar_olvido(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str, space_key: &str) -> Result<()> {
+    let cur: Option<String> = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+    if cur.is_none_or(|a| crate::reloj::mayor(hlc, &a)) {
         db.execute(
             &format!("INSERT OR REPLACE INTO tombstone(id, deleted_at, hlc, space_key) VALUES (?1, COALESCE(?2, {AHORA}), ?3, ?4)"),
-            params![id, deleted_at, hlc, espacio],
+            params![id, deleted_at, hlc, space_key],
         )?;
     }
     Ok(())
 }
 
-/// El autor que se apunta en lo que se guarda aquí en el espacio `espacio` (su clave; vacía: en
-/// ninguno): `OMOIKANE_AUTHOR` (un agente sin persona delante dice quién es); si no, el del repositorio
-/// de ese espacio si este equipo lo tiene (`meta` `autor:<espacio>`, vacío si se unió sin autor), y si
-/// no, el del repositorio general (`meta` `autor`). Así el nombre con el que alguien se unió a un
-/// cliente nunca firma lo de otro cliente ni lo suyo; vacío = ninguno.
-pub(crate) fn autor_en(db: &Connection, espacio: &str) -> Result<String> {
+/// The author recorded on what is saved here in the space `space_key` (its key; empty: in
+/// none): `OMOIKANE_AUTHOR` (an agent with no person in front says who it is); otherwise, the one of the repository
+/// of that space if this computer has it (`meta` `autor:<space>`, empty if it joined without an author), and if
+/// not, the one of the general repository (`meta` `autor`). So the name someone joined a
+/// client with never signs another client's things nor their own; empty = none.
+pub(crate) fn autor_en(db: &Connection, space_key: &str) -> Result<String> {
     if let Some(a) = crate::entorno::autor() {
         return Ok(a);
     }
-    if !espacio.is_empty()
-        && let Some(a) = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("autor:{espacio}")], |f| f.get(0)).optional()?
+    if !space_key.is_empty()
+        && let Some(a) = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("autor:{space_key}")], |f| f.get(0)).optional()?
     {
         return Ok(a);
     }
     Ok(db.query_row("SELECT v FROM meta WHERE k = 'autor'", [], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
-/// El autor de lo que se guarda en este proyecto o espacio (`autor_en` con el espacio que le toca).
+/// The author of what is saved in this project or space (`autor_en` with the space it belongs to).
 pub(crate) fn autor_de(db: &Connection, project_id: i64, space_id: Option<i64>) -> Result<String> {
     if crate::entorno::autor().is_some() {
         return autor_en(db, "");
     }
-    let espacio = match space_id {
+    let space = match space_id {
         Some(s) => Some(s),
         None => crate::proyecto::espacio_de(db, project_id)?,
     };
-    autor_en(db, &crate::proyecto::clave_espacio(db, espacio)?)
+    autor_en(db, &crate::proyecto::clave_espacio(db, space)?)
 }
 
-fn insertar(db: &mut Connection, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
+fn insert(db: &mut Connection, id: &str, new: Nueva, origin: Option<&Origen>, model: Option<&Modelo>) -> Result<Memoria> {
     let tx = escribir_tx(db)?;
-    let m = insertar_en(&tx, id, nueva, origen, modelo)?;
+    let m = insert_in(&tx, id, new, origin, model)?;
     tx.commit()?;
     Ok(m)
 }
 
-/// `insertar` dentro de una transacción que ya está abierta (quien llama hace el commit).
-fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<Memoria> {
-    let kind = nueva.kind.with_context(|| tr!("missing kind: fact, decision, gotcha, preference or procedure", "falta el tipo: fact, decision, gotcha, preference o procedure"))?;
-    // Se redacta antes de validar: lo que cuenta para los 200 caracteres del título es lo que se guarda.
+/// `insert` inside an already open transaction (the caller commits).
+fn insert_in(tx: &Transaction, id: &str, new: Nueva, origin: Option<&Origen>, model: Option<&Modelo>) -> Result<Memoria> {
+    let kind = new.kind.with_context(|| tr!("missing kind: fact, decision, gotcha, preference or procedure", "falta el tipo: fact, decision, gotcha, preference o procedure"))?;
+    // Redacted before validating: what counts for the title's 200 characters is what is stored.
     let mut redacted = Vec::new();
-    let (title, content) = match origen {
-        None => (titulo(&sin_secretos(&nueva.title, &mut redacted))?, contenido(&sin_secretos(&nueva.content, &mut redacted))?),
-        Some(_) => (titulo(&nueva.title)?, contenido(&nueva.content)?),
+    let (title, content) = match origin {
+        None => (clean_title(&strip_secrets(&new.title, &mut redacted))?, clean_content(&strip_secrets(&new.content, &mut redacted))?),
+        Some(_) => (clean_title(&new.title)?, clean_content(&new.content)?),
     };
-    let (paths, tags) = (rutas(&nueva.paths), etiquetas(&nueva.tags));
-    if origen.is_none() {
+    let (paths, tags) = (norm_paths(&new.paths), norm_tags(&new.tags));
+    if origin.is_none() {
         crate::revisar::comprobar_fecha(&tags)?;
     }
-    let (project_id, space_id) = alcance(tx, &nueva.project, nueva.project_id, nueva.space_id)?;
-    let (hlc, author) = match origen {
+    let (project_id, space_id) = placement(tx, &new.project, new.project_id, new.space_id)?;
+    let (hlc, author) = match origin {
         Some(o) => {
             crate::reloj::recibir(tx, o.hlc)?;
             (o.hlc.to_string(), o.author.to_string())
         }
         None => (crate::reloj::sello(tx)?, autor_de(tx, project_id, space_id)?),
     };
-    let content_hlc = match origen {
+    let content_hlc = match origin {
         Some(o) if !o.content_hlc.is_empty() => o.content_hlc.to_string(),
         _ => hlc.clone(),
     };
@@ -977,29 +977,29 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
         params![
             id,
             project_id,
-            nueva.kind_text.as_deref().unwrap_or(kind.as_str()),
+            new.kind_text.as_deref().unwrap_or(kind.as_str()),
             title,
             content,
             serde_json::to_string(&paths)?,
             serde_json::to_string(&tags)?,
-            nueva.pinned,
-            nueva.source,
-            origen.map(|o| o.created_at),
-            origen.map(|o| o.updated_at),
+            new.pinned,
+            new.source,
+            origin.map(|o| o.created_at),
+            origin.map(|o| o.updated_at),
             hlc,
             author,
             space_id,
             content_hlc,
-            // La procedencia, solo lo que le toca según dónde cae (ver `procedencia::para_memoria`).
-            match (origen, crate::procedencia::para_memoria(nueva.provenance.clone(), project_id, &tags)) {
+            // The provenance, only what applies depending on where it lands (see `procedencia::para_memoria`).
+            match (origin, crate::procedencia::para_memoria(new.provenance.clone(), project_id, &tags)) {
                 (Some(o), _) => o.extra.to_string(),
                 (None, p) => {
                     let mut extra = serde_json::Map::new();
                     if let Some(p) = p {
                         extra.insert(crate::procedencia::CLAVE.into(), serde_json::to_value(p)?);
                     }
-                    crate::evidencia::anadir(&mut extra, &nueva.evidence);
-                    if let Some(r) = nueva.review_reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                    crate::evidencia::anadir(&mut extra, &new.evidence);
+                    if let Some(r) = new.review_reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
                         extra.insert(CLAVE_MOTIVO_REVISION.into(), r.into());
                     }
                     serde_json::Value::Object(extra).to_string()
@@ -1009,9 +1009,9 @@ fn insertar_en(tx: &Transaction, id: &str, nueva: Nueva, origen: Option<&Origen>
     )?;
     let n = tx.last_insert_rowid();
     let m = leer(tx, id)?;
-    indexar(tx, n, &m)?;
-    if let Some(modelo) = modelo {
-        vectores::guardar(tx, n, modelo, &m.title, &m.content)?;
+    index_memory(tx, n, &m)?;
+    if let Some(model) = model {
+        vectores::guardar(tx, n, model, &m.title, &m.content)?;
     }
     Ok(Memoria { redacted, ..m })
 }
@@ -1022,10 +1022,10 @@ pub(crate) fn leer(db: &Connection, id: &str) -> Result<Memoria> {
         .ok_or_else(|| anyhow!(tr!("no memory with id {id}", "no existe la memoria {id}")))
 }
 
-/// Dónde está una memoria de aquí, viva o en la papelera: si es global (ni proyecto ni espacio) y la
-/// clave de su espacio (el suyo o el de su proyecto; vacía si no tiene). `None` si aquí no está.
+/// Where a memory from here is, live or in the trash: whether it is global (neither project nor space) and the
+/// key of its space (its own or its project's; empty if none). `None` if it isn't here.
 pub(crate) fn alcance_de_memoria(db: &Connection, id: &str) -> Result<Option<(bool, String)>> {
-    let viva: Option<(bool, String)> = db
+    let live: Option<(bool, String)> = db
         .query_row(
             "SELECT m.project_id = 0 AND m.space_id IS NULL,
                     COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '')
@@ -1034,15 +1034,15 @@ pub(crate) fn alcance_de_memoria(db: &Connection, id: &str) -> Result<Option<(bo
             |f| Ok((f.get(0)?, f.get(1)?)),
         )
         .optional()?;
-    if viva.is_some() {
-        return Ok(viva);
+    if live.is_some() {
+        return Ok(live);
     }
-    let Some(texto) = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else { return Ok(None) };
-    let global = crate::sync::de_papelera(&texto).is_some_and(|(m, _, _)| m.project_key.is_empty() && m.project.is_empty() && m.space.is_empty());
-    Ok(Some((global, crate::sync::espacio_de_papelera(db, &texto)?)))
+    let Some(text) = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else { return Ok(None) };
+    let global = crate::sync::de_papelera(&text).is_some_and(|(m, _, _)| m.project_key.is_empty() && m.project.is_empty() && m.space.is_empty());
+    Ok(Some((global, crate::sync::espacio_de_papelera(db, &text)?)))
 }
 
-/// Id completo a partir del id o de su principio (lo que enseña la CLI basta).
+/// Full id from the id or its start (what the CLI shows is enough).
 pub fn resolver_id(db: &Connection, id: &str) -> Result<String> {
     let id = id.trim().to_uppercase();
     ensure!(id.len() >= 4, tr!("id too short: «{id}»", "id demasiado corto: «{id}»"));
@@ -1050,7 +1050,7 @@ pub fn resolver_id(db: &Connection, id: &str) -> Result<String> {
     let mut q = db.prepare("SELECT id FROM memory WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
     let ids: Vec<String> = q.query_map([&id], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
     match ids.as_slice() {
-        [uno] => Ok(uno.clone()),
+        [one] => Ok(one.clone()),
         [] => bail!(tr!("no memory with id {id}", "no existe ninguna memoria con id {id}")),
         _ => bail!(tr!("several memories start with {id}: type more characters", "hay varias memorias que empiezan por {id}: escribe más caracteres")),
     }
@@ -1060,10 +1060,10 @@ pub fn obtener(db: &Connection, id: &str) -> Result<Memoria> {
     leer(db, &resolver_id(db, id)?)
 }
 
-/// Error si la memoria `id` (el id entero, viva) no se ve desde `base`: desde un proyecto, solo las de
-/// su espacio (o, sin espacio, las que no tienen), las globales y las de oficio de un oficio que tenga
-/// algún proyecto de ese espacio; desde una carpeta general, todas. Para lo que se pide por id (`get`,
-/// `history`, `update`, `forget`): que nadie saque lo de otro cliente aunque tenga su id.
+/// Error if memory `id` (the full id, live) isn't visible from `base`: from a project, only those of
+/// its space (or, with no space, those without one), the global ones and the trade ones of a trade that
+/// some project of that space has; from a general folder, all. For what is requested by id (`get`,
+/// `history`, `update`, `forget`): so nobody pulls out another client's things even with their id.
 pub fn en_ambito(db: &Connection, base: &Ambito, id: &str) -> Result<()> {
     if matches!(base, Ambito::Todos) {
         return Ok(());
@@ -1074,9 +1074,9 @@ pub fn en_ambito(db: &Connection, base: &Ambito, id: &str) -> Result<()> {
             "esa memoria es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
         ));
     }
-    let propio = crate::proyecto::clave_espacio(db, base.espacio())?;
+    let own = crate::proyecto::clave_espacio(db, base.espacio())?;
     match alcance_de_memoria(db, id)? {
-        Some((global, espacio)) if !global && espacio != propio => bail!(tr!(
+        Some((global, space_key)) if !global && space_key != own => bail!(tr!(
             "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder",
             "esa memoria no es de este ámbito: es de otro espacio, y desde este proyecto solo se llega a su espacio y a las globales; abre la sesión en ese proyecto, o en tu carpeta de usuario"
         )),
@@ -1084,10 +1084,10 @@ pub fn en_ambito(db: &Connection, base: &Ambito, id: &str) -> Result<()> {
     }
 }
 
-/// El historial de una memoria visto desde `base`: error si la memoria no se ve desde ahí
-/// ([`en_ambito`]); vacío si es una de las que una versión previa de la 1.8.0 promovió de un cliente
-/// con el mismo id (su historial era texto del cliente, `oficios::historiales_solo_aqui`) y no se
-/// mira desde una carpeta general.
+/// The history of a memory seen from `base`: error if the memory isn't visible from there
+/// ([`en_ambito`]); empty if it is one of those that a pre-1.8.0 version promoted from a client
+/// with the same id (its history was client text, `oficios::historiales_solo_aqui`) and it isn't
+/// viewed from a general folder.
 pub fn historial_en(db: &Connection, base: &Ambito, id: &str) -> Result<Vec<Version>> {
     let id = resolver_id(db, id)?;
     en_ambito(db, base, &id)?;
@@ -1097,124 +1097,124 @@ pub fn historial_en(db: &Connection, base: &Ambito, id: &str) -> Result<Vec<Vers
     historial(db, &id)
 }
 
-pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<Memoria> {
-    Ok(actualizar_con_cambios(db, id, c, modelo)?.0)
+pub fn actualizar(db: &mut Connection, id: &str, c: Cambios, model: Option<&Modelo>) -> Result<Memoria> {
+    Ok(actualizar_con_cambios(db, id, c, model)?.0)
 }
 
-/// Como `actualizar`, y además devuelve lo que `replace` y `append` cambiaron, con su contexto.
-pub fn actualizar_con_cambios(db: &mut Connection, id: &str, c: Cambios, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
-    actualizar_desde(db, id, c, None, modelo)
+/// Like `actualizar`, and also returns what `replace` and `append` changed, with their context.
+pub fn actualizar_con_cambios(db: &mut Connection, id: &str, c: Cambios, model: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
+    update_from(db, id, c, None, model)
 }
 
-/// Para la sincronización: el cambio que llega de otro equipo, con sus fechas, sello y autor, todo en
-/// la misma transacción (la versión de aquí queda en el historial).
-pub(crate) fn actualizar_con_origen(db: &mut Connection, id: &str, c: Cambios, o: &Origen, modelo: Option<&Modelo>) -> Result<Memoria> {
-    Ok(actualizar_desde(db, id, c, Some(o), modelo)?.0)
+/// For sync: the change coming from another computer, with its dates, stamp and author, all in
+/// the same transaction (the local version stays in the history).
+pub(crate) fn actualizar_con_origen(db: &mut Connection, id: &str, c: Cambios, o: &Origen, model: Option<&Modelo>) -> Result<Memoria> {
+    Ok(update_from(db, id, c, Some(o), model)?.0)
 }
 
-fn actualizar_desde(db: &mut Connection, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
+fn update_from(db: &mut Connection, id: &str, c: Cambios, origin: Option<&Origen>, model: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
-    let r = actualizar_en(&tx, &id, c, origen, modelo)?;
+    let r = update_in(&tx, &id, c, origin, model)?;
     tx.commit()?;
     Ok(r)
 }
 
-/// `actualizar` dentro de una transacción que ya está abierta (quien llama hace el commit), con el
-/// id ya resuelto.
-fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
-    let antes = leer(tx, id)?;
-    let hlc_antes = hlc_de(tx, id)?;
-    // El sello del cambio: el de origen, o uno de aquí posterior al de la versión que se cambia.
-    let hlc = match origen {
+/// `actualizar` inside an already open transaction (the caller commits), with the
+/// id already resolved.
+fn update_in(tx: &Transaction, id: &str, c: Cambios, origin: Option<&Origen>, model: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>)> {
+    let before = leer(tx, id)?;
+    let before_hlc = hlc_de(tx, id)?;
+    // The change's stamp: the origin's, or a local one later than that of the version being changed.
+    let hlc = match origin {
         Some(o) => {
             crate::reloj::recibir(tx, o.hlc)?;
             o.hlc.to_string()
         }
-        None => crate::reloj::sello_tras(tx, &hlc_antes)?,
+        None => crate::reloj::sello_tras(tx, &before_hlc)?,
     };
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
-    // Lo que llega de otro equipo trae la memoria entera, también los campos que esta versión no
-    // conoce; un cambio de aquí los deja como estaban.
-    if let Some(o) = origen {
+    // What comes from another computer brings the whole memory, including the fields this version doesn't
+    // know; a local change leaves them as they were.
+    if let Some(o) = origin {
         tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, o.extra])?;
     }
-    // Solo lo que trae el cambio, y solo si se escribe aquí: lo que ya había lo avisa Revisar.
+    // Only what the change brings, and only if it is written here: what was already there is flagged by Review.
     let mut redacted = Vec::new();
-    let mut limpio = |t: &str| if origen.is_none() { sin_secretos(t, &mut redacted) } else { t.to_string() };
-    // El contenido nuevo, y encima la edición parcial (`replace`, `append`).
+    let mut clean = |t: &str| if origin.is_none() { strip_secrets(t, &mut redacted) } else { t.to_string() };
+    // The new content, and on top of it the partial edit (`replace`, `append`).
     let mut content = match &c.content {
-        Some(t) => contenido(t)?,
-        None => antes.content.clone(),
+        Some(t) => clean_content(t)?,
+        None => before.content.clone(),
     };
-    let cambiados = aplicar_edicion(&mut content, &c)?;
-    // Lo nuevo (el contenido entero, o lo que trajo la edición) pasa por la redacción.
-    if c.content.is_some() || !cambiados.is_empty() {
-        content = limpio(&content);
+    let changed = apply_edit(&mut content, &c)?;
+    // What is new (the whole content, or what the edit brought) goes through redaction.
+    if c.content.is_some() || !changed.is_empty() {
+        content = clean(&content);
     }
-    let despues = Memoria {
+    let after = Memoria {
         title: match &c.title {
-            Some(t) => titulo(&limpio(t))?,
-            None => antes.title.clone(),
+            Some(t) => clean_title(&clean(t))?,
+            None => before.title.clone(),
         },
-        content: contenido(&content)?,
-        kind: c.kind.unwrap_or(antes.kind),
-        // Un tipo nuevo conocido borra el desconocido; uno desconocido que llega lo trae.
+        content: clean_content(&content)?,
+        kind: c.kind.unwrap_or(before.kind),
+        // A new known kind clears the unknown one; an incoming unknown one brings it.
         kind_text: match (&c.kind_text, c.kind) {
             (Some(t), _) => Some(t.clone()),
             (None, Some(_)) => None,
-            (None, None) => antes.kind_text.clone(),
+            (None, None) => before.kind_text.clone(),
         },
-        paths: c.paths.as_deref().map(rutas).unwrap_or_else(|| antes.paths.clone()),
-        tags: c.tags.as_deref().map(etiquetas).unwrap_or_else(|| antes.tags.clone()),
-        pinned: c.pinned.unwrap_or(antes.pinned),
-        ..antes.clone()
+        paths: c.paths.as_deref().map(norm_paths).unwrap_or_else(|| before.paths.clone()),
+        tags: c.tags.as_deref().map(norm_tags).unwrap_or_else(|| before.tags.clone()),
+        pinned: c.pinned.unwrap_or(before.pinned),
+        ..before.clone()
     };
-    // Solo las etiquetas `review:` nuevas: una mal escrita que llegó por la sincronización (de otra
-    // versión) no debe impedir cambiar la memoria.
-    if origen.is_none() && c.tags.is_some() {
-        let nuevas: Vec<String> = despues.tags.iter().filter(|t| !antes.tags.contains(t)).cloned().collect();
-        crate::revisar::comprobar_fecha(&nuevas)?;
+    // Only the new `review:` tags: a misspelled one that came through sync (from another
+    // version) must not prevent changing the memory.
+    if origin.is_none() && c.tags.is_some() {
+        let new_ones: Vec<String> = after.tags.iter().filter(|t| !before.tags.contains(t)).cloned().collect();
+        crate::revisar::comprobar_fecha(&new_ones)?;
     }
-    // Dónde queda: lo que diga el cambio (un espacio, un proyecto ya resuelto, una carpeta o global) o
-    // donde estaba.
-    let antes_espacio: Option<i64> = tx.query_row("SELECT space_id FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    // Where it ends up: what the change says (a space, an already-resolved project, a folder or global) or
+    // where it was.
+    let before_space: Option<i64> = tx.query_row("SELECT space_id FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
     let (project_id, space_id): (i64, Option<i64>) = if c.space_id.is_some() || c.project_id.is_some() || c.project.is_some() {
-        alcance(tx, c.project.as_deref().unwrap_or(""), c.project_id, c.space_id)?
+        placement(tx, c.project.as_deref().unwrap_or(""), c.project_id, c.space_id)?
     } else {
-        (antes.project_id, antes_espacio)
+        (before.project_id, before_space)
     };
-    let se_mueve = project_id != antes.project_id || space_id != antes_espacio;
-    // Lo que caduca los veredictos: título, contenido o tipo (fijar, etiquetar o mover, no).
-    let cambia_juzgado = despues.title != antes.title || despues.content != antes.content || despues.tipo_texto() != antes.tipo_texto();
-    let cambia_texto = cambia_juzgado || despues.paths != antes.paths || despues.tags != antes.tags;
-    let content_hlc: Option<String> = match origen {
-        Some(o) if cambia_juzgado => Some(if o.content_hlc.is_empty() { o.hlc.to_string() } else { o.content_hlc.to_string() }),
-        None if cambia_juzgado => Some(hlc.clone()),
+    let moved = project_id != before.project_id || space_id != before_space;
+    // What expires verdicts: title, content or kind (pinning, tagging or moving don't).
+    let judged_changed = after.title != before.title || after.content != before.content || after.tipo_texto() != before.tipo_texto();
+    let text_changed = judged_changed || after.paths != before.paths || after.tags != before.tags;
+    let content_hlc: Option<String> = match origin {
+        Some(o) if judged_changed => Some(if o.content_hlc.is_empty() { o.hlc.to_string() } else { o.content_hlc.to_string() }),
+        None if judged_changed => Some(hlc.clone()),
         _ => None,
     };
-    if !cambia_texto {
-        // Fijar o desfijar no es un cambio de contenido: sin versión nueva y sin tocar updated_at
-        // (que da la recencia en la búsqueda).
-        if despues.pinned != antes.pinned || se_mueve || origen.is_some() {
+    if !text_changed {
+        // Pinning or unpinning is not a content change: no new version and updated_at untouched
+        // (it gives the recency in search).
+        if after.pinned != before.pinned || moved || origin.is_some() {
             tx.execute(
                 "UPDATE memory SET pinned = ?2, project_id = ?3, space_id = ?4, hlc = ?5 WHERE id = ?1",
-                params![id, despues.pinned, project_id, space_id, hlc],
+                params![id, after.pinned, project_id, space_id, hlc],
             )?;
-            if let Some(o) = origen {
+            if let Some(o) = origin {
                 tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
             }
         }
-        if origen.is_none() && se_mueve {
-            recortar_procedencia(tx, id)?;
+        if origin.is_none() && moved {
+            trim_provenance(tx, id)?;
         }
-        return Ok((Memoria { redacted, ..leer(tx, id)? }, cambiados));
+        return Ok((Memoria { redacted, ..leer(tx, id)? }, changed));
     }
-    // La foto anterior va al historial.
-    guardar_version(tx, id, &antes, None, c.reason.as_deref())?;
-    // La persona verificó el texto de antes, no este: cambiarlo desde aquí le quita la verificación
-    // (ver `verificado`). Lo que llega de otro equipo trae la suya en `extra`.
-    let unverified = if origen.is_none() && cambia_juzgado { crate::verificado::quitar_al_cambiar(tx, id, &antes)? } else { None };
+    // The previous snapshot goes to the history.
+    save_version(tx, id, &before, None, c.reason.as_deref())?;
+    // The person verified the previous text, not this one: changing it from here removes the verification
+    // (see `verificado`). What comes from another computer brings its own in `extra`.
+    let unverified = if origin.is_none() && judged_changed { crate::verificado::quitar_al_cambiar(tx, id, &before)? } else { None };
     tx.execute(
         &format!(
             "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project_id = ?8, space_id = ?11,
@@ -1223,12 +1223,12 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
         ),
         params![
             id,
-            despues.title,
-            despues.content,
-            despues.tipo_texto(),
-            serde_json::to_string(&despues.paths)?,
-            serde_json::to_string(&despues.tags)?,
-            despues.pinned,
+            after.title,
+            after.content,
+            after.tipo_texto(),
+            serde_json::to_string(&after.paths)?,
+            serde_json::to_string(&after.tags)?,
+            after.pinned,
             project_id,
             hlc,
             autor_de(tx, project_id, space_id)?,
@@ -1236,31 +1236,31 @@ fn actualizar_en(tx: &Transaction, id: &str, c: Cambios, origen: Option<&Origen>
             content_hlc,
         ],
     )?;
-    if let Some(o) = origen {
+    if let Some(o) = origin {
         tx.execute("UPDATE memory SET updated_at = ?2, author = ?3 WHERE id = ?1", params![id, o.updated_at, o.author])?;
     }
-    if origen.is_none() && (se_mueve || despues.tags != antes.tags) {
-        recortar_procedencia(tx, id)?;
+    if origin.is_none() && (moved || after.tags != before.tags) {
+        trim_provenance(tx, id)?;
     }
-    desindexar(tx, n)?;
+    unindex_memory(tx, n)?;
     let m = leer(tx, id)?;
-    indexar(tx, n, &m)?;
-    if despues.title != antes.title || despues.content != antes.content {
-        match modelo {
-            Some(modelo) => vectores::guardar(tx, n, modelo, &m.title, &m.content)?,
-            // Sin modelo, el vector viejo ya no vale: se borra y `sincronizar` lo rehará.
+    index_memory(tx, n, &m)?;
+    if after.title != before.title || after.content != before.content {
+        match model {
+            Some(model) => vectores::guardar(tx, n, model, &m.title, &m.content)?,
+            // Without a model, the old vector is no longer valid: it is deleted and `sincronizar` will redo it.
             None => {
                 tx.execute("DELETE FROM memory_vec WHERE n = ?1", [n])?;
             }
         }
     }
-    Ok((Memoria { redacted, unverified, ..m }, cambiados))
+    Ok((Memoria { redacted, unverified, ..m }, changed))
 }
 
-/// Tras moverla o cambiar sus etiquetas desde aquí: quita de `memory.extra` la procedencia que ya no le
-/// toca (`procedencia::para_memoria`): promovida a un oficio, ninguna; global o de un espacio, solo la
-/// sesión. Va en la misma transacción que el cambio, que ya le ha puesto un sello nuevo.
-fn recortar_procedencia(tx: &Transaction, id: &str) -> Result<()> {
+/// After moving it or changing its tags from here: removes from `memory.extra` the provenance that no longer
+/// applies (`procedencia::para_memoria`): promoted to a trade, none; global or of a space, only the
+/// session. Goes in the same transaction as the change, which has already given it a new stamp.
+fn trim_provenance(tx: &Transaction, id: &str) -> Result<()> {
     let (extra, project_id, tags): (String, i64, String) = tx.query_row("SELECT extra, project_id, tags FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
     if !extra.contains(crate::procedencia::CLAVE) {
         return Ok(());
@@ -1273,9 +1273,9 @@ fn recortar_procedencia(tx: &Transaction, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Cuelga una foto de `m` del historial de `id`, con el número siguiente al último que tiene.
-/// `changed_at` es cuándo dejó de ser la versión viva (ahora, si no se dice).
-fn guardar_version(tx: &Transaction, id: &str, m: &Memoria, changed_at: Option<&str>, reason: Option<&str>) -> Result<()> {
+/// Hangs a snapshot of `m` on the history of `id`, with the number after its last one.
+/// `changed_at` is when it stopped being the live version (now, if not given).
+fn save_version(tx: &Transaction, id: &str, m: &Memoria, changed_at: Option<&str>, reason: Option<&str>) -> Result<()> {
     let version: i64 =
         tx.query_row("SELECT COALESCE(MAX(version), 0) + 1 FROM memory_version WHERE memory_id = ?1", [id], |f| f.get(0))?;
     tx.execute(
@@ -1298,13 +1298,13 @@ fn guardar_version(tx: &Transaction, id: &str, m: &Memoria, changed_at: Option<&
     Ok(())
 }
 
-/// Junta N memorias en una (0.19.0): `id` se queda con el contenido fundido que trae `c` (lo escribe
-/// el agente o la persona; Omoikane no redacta) y las `ids` van a la papelera con un veredicto
-/// `superseded` hacia ella. Sus etiquetas y rutas se suman a la que queda (así los `[[enlaces]]`
-/// que llegaban a ellas por etiqueta pasan a resolver a esta) y su historial se cuelga del de la
-/// que queda, con el motivo «absorbed from <id>». Todo en una transacción. Devuelve la que queda,
-/// lo que `replace`/`append` cambiaron y los ids absorbidos.
-pub fn absorber(db: &mut Connection, id: &str, ids: &[String], mut c: Cambios, modelo: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>, Vec<String>)> {
+/// Merges N memories into one (0.19.0): `id` keeps the merged content that `c` brings (written by
+/// the agent or the person; Omoikane doesn't write it) and the `ids` go to the trash with a
+/// `superseded` verdict towards it. Their tags and paths are added to the one that stays (so the `[[links]]`
+/// that reached them by tag now resolve to this one) and their history hangs from that of the
+/// one that stays, with the reason «absorbed from <id>». All in one transaction. Returns the one that stays,
+/// what `replace`/`append` changed and the absorbed ids.
+pub fn absorber(db: &mut Connection, id: &str, ids: &[String], mut c: Cambios, model: Option<&Modelo>) -> Result<(Memoria, Vec<Cambiado>, Vec<String>)> {
     ensure!(
         c.content.is_some(),
         tr!(
@@ -1314,52 +1314,52 @@ pub fn absorber(db: &mut Connection, id: &str, ids: &[String], mut c: Cambios, m
     );
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
-    let viva = leer(&tx, &id)?;
-    let mut absorbidas: Vec<Memoria> = Vec::new();
-    for otra in ids {
-        let otra = resolver_id(&tx, otra)?;
-        ensure!(otra != id, tr!("a memory can't absorb itself", "una memoria no puede absorberse a sí misma"));
-        if !absorbidas.iter().any(|a| a.id == otra) {
-            absorbidas.push(leer(&tx, &otra)?);
+    let live = leer(&tx, &id)?;
+    let mut absorbed: Vec<Memoria> = Vec::new();
+    for other in ids {
+        let other = resolver_id(&tx, other)?;
+        ensure!(other != id, tr!("a memory can't absorb itself", "una memoria no puede absorberse a sí misma"));
+        if !absorbed.iter().any(|a| a.id == other) {
+            absorbed.push(leer(&tx, &other)?);
         }
     }
-    ensure!(!absorbidas.is_empty(), tr!("absorb: no memory to absorb", "absorb: ninguna memoria que absorber"));
-    // Etiquetas y rutas: las que vengan en los cambios (o las de la viva) más las de las absorbidas.
-    let mut tags = c.tags.take().unwrap_or_else(|| viva.tags.clone());
-    let mut paths = c.paths.take().unwrap_or_else(|| viva.paths.clone());
-    for a in &absorbidas {
+    ensure!(!absorbed.is_empty(), tr!("absorb: no memory to absorb", "absorb: ninguna memoria que absorber"));
+    // Tags and paths: those in the changes (or the live one's) plus those of the absorbed ones.
+    let mut tags = c.tags.take().unwrap_or_else(|| live.tags.clone());
+    let mut paths = c.paths.take().unwrap_or_else(|| live.paths.clone());
+    for a in &absorbed {
         tags.extend(a.tags.iter().cloned());
         paths.extend(a.paths.iter().cloned());
     }
     c.tags = Some(tags);
     c.paths = Some(paths);
-    let lista = absorbidas.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
+    let list = absorbed.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
     if c.reason.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        c.reason = Some(format!("absorbed {lista}"));
+        c.reason = Some(format!("absorbed {list}"));
     }
-    let (m, cambiados) = actualizar_en(&tx, &id, c, None, modelo)?;
-    for a in &absorbidas {
-        // El veredicto antes de borrarla: se resuelve contra las memorias vivas, y vuelve a valer si
-        // alguien la restaura de la papelera.
+    let (m, changed) = update_in(&tx, &id, c, None, model)?;
+    for a in &absorbed {
+        // The verdict before deleting it: it is resolved against the live memories, and holds again if
+        // someone restores it from the trash.
         crate::veredictos::poner(&tx, &a.id, &id, crate::veredictos::SUSTITUIDA, &format!("absorbed into {id}"), "omoikane")?;
-        // Su historial, de la más vieja a la última viva, a continuación del de la que queda.
-        let motivo = format!("absorbed from {}", a.id);
+        // Its history, from the oldest to the last live one, after that of the one that stays.
+        let reason = format!("absorbed from {}", a.id);
         for v in historial(&tx, &a.id)?.into_iter().rev() {
-            let foto = Memoria { title: v.title, content: v.content, kind: v.kind.parse().unwrap_or(a.kind), paths: v.paths, tags: v.tags, ..a.clone() };
-            guardar_version(&tx, &id, &foto, Some(&v.changed_at), Some(&motivo))?;
+            let snapshot = Memoria { title: v.title, content: v.content, kind: v.kind.parse().unwrap_or(a.kind), paths: v.paths, tags: v.tags, ..a.clone() };
+            save_version(&tx, &id, &snapshot, Some(&v.changed_at), Some(&reason))?;
         }
-        guardar_version(&tx, &id, a, None, Some(&motivo))?;
-        borrar_en(&tx, &a.id, None)?;
+        save_version(&tx, &id, a, None, Some(&reason))?;
+        delete_in(&tx, &a.id, None)?;
     }
     tx.commit()?;
-    Ok((m, cambiados, absorbidas.into_iter().map(|a| a.id).collect()))
+    Ok((m, changed, absorbed.into_iter().map(|a| a.id).collect()))
 }
 
-/// Redacta una memoria que ya está guardada (el botón «Redactar» de Revisar): título y contenido sin
-/// sus secretos, con el motivo «redacted» en la versión anterior, y su historial también (si no, el
-/// secreto seguiría en la versión de antes). Lo pide la persona, así que se hace aunque
-/// `OMOIKANE_REDACT=0`. Sin nada que quitar, la deja como está (`redacted` vacío).
-pub fn redactar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
+/// Redacts a memory that is already stored (the «Redactar» / Redact button in Review): title and content without
+/// their secrets, with the reason «redacted» on the previous version, and its history too (otherwise the
+/// secret would remain in the earlier version). The person asks for it, so it is done even with
+/// `OMOIKANE_REDACT=0`. With nothing to remove, it leaves it as it is (`redacted` empty).
+pub fn redactar(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<Memoria> {
     let m = obtener(db, id)?;
     let (title, ht) = crate::secretos::redactar(&m.title);
     let (content, hc) = crate::secretos::redactar(&m.content);
@@ -1372,15 +1372,15 @@ pub fn redactar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resul
         reason: Some("redacted".into()),
         ..Cambios::default()
     };
-    let (r, _) = actualizar_desde(db, &m.id, c, None, modelo)?;
+    let (r, _) = update_from(db, &m.id, c, None, model)?;
     let tx = escribir_tx(db)?;
-    let versiones: Vec<(i64, String, String)> = {
+    let versions: Vec<(i64, String, String)> = {
         let mut q = tx.prepare("SELECT version, title, content FROM memory_version WHERE memory_id = ?1")?;
         q.query_map([&m.id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    for (version, titulo, contenido) in versiones {
-        let (t, c) = (crate::secretos::redactar(&titulo).0, crate::secretos::redactar(&contenido).0);
-        if t != titulo || c != contenido {
+    for (version, v_title, v_content) in versions {
+        let (t, c) = (crate::secretos::redactar(&v_title).0, crate::secretos::redactar(&v_content).0);
+        if t != v_title || c != v_content {
             tx.execute("UPDATE memory_version SET title = ?3, content = ?4 WHERE memory_id = ?1 AND version = ?2", params![m.id, version, t, c])?;
         }
     }
@@ -1388,7 +1388,7 @@ pub fn redactar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resul
     Ok(Memoria { redacted: ht.iter().chain(&hc).map(|h| h.tipo).collect(), ..r })
 }
 
-/// Rehace el índice de palabras desde la tabla. Devuelve cuántas memorias indexó.
+/// Rebuilds the word index from the table. Returns how many memories it indexed.
 pub fn reindexar_palabras(db: &mut Connection) -> Result<usize> {
     let tx = escribir_tx(db)?;
     tx.execute("DELETE FROM memory_fts", [])?;
@@ -1396,56 +1396,56 @@ pub fn reindexar_palabras(db: &mut Connection) -> Result<usize> {
         let mut q = tx.prepare("SELECT n, id FROM memory")?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let todas: Vec<(i64, Memoria)> = ids.into_iter().map(|(n, id)| Ok((n, leer(&tx, &id)?))).collect::<Result<_>>()?;
-    for (n, m) in &todas {
+    let all: Vec<(i64, Memoria)> = ids.into_iter().map(|(n, id)| Ok((n, leer(&tx, &id)?))).collect::<Result<_>>()?;
+    for (n, m) in &all {
         tx.execute(
             "INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![n, m.title, m.content, m.tags.join(" "), m.paths.join(" ")],
         )?;
     }
     tx.commit()?;
-    Ok(todas.len())
+    Ok(all.len())
 }
 
-/// Olvida la memoria: sale de la base y de los índices, deja una marca para que la sincronización no
-/// la devuelva desde otro equipo, y queda en la papelera (`forgotten`) con su historial, de donde
-/// `restaurar` la devuelve. Devuelve lo que se olvidó.
+/// Forgets the memory: it leaves the database and the indexes, leaves a mark so sync doesn't
+/// bring it back from another computer, and stays in the trash (`forgotten`) with its history, from where
+/// `restaurar` brings it back. Returns what was forgotten.
 pub fn olvidar(db: &mut Connection, id: &str) -> Result<Memoria> {
-    borrar(db, id, None)
+    delete(db, id, None)
 }
 
-/// Olvida y, además, la saca de la papelera: no hay vuelta atrás.
+/// Forgets and also removes it from the trash: there is no going back.
 pub fn olvidar_del_todo(db: &mut Connection, id: &str) -> Result<Memoria> {
-    let m = borrar(db, id, None)?;
+    let m = delete(db, id, None)?;
     db.execute("DELETE FROM forgotten WHERE id = ?1", [&m.id])?;
     Ok(m)
 }
 
-/// Días que una memoria olvidada espera en la papelera antes de borrarse del todo
-/// (`OMOIKANE_TRASH_DAYS`; 0 = nunca).
+/// Days a forgotten memory waits in the trash before being deleted for good
+/// (`OMOIKANE_TRASH_DAYS`; 0 = never).
 pub fn dias_papelera() -> f64 {
     std::env::var("OMOIKANE_TRASH_DAYS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(30.0)
 }
 
-/// Borra de la papelera lo olvidado hace más de `dias` (0 = nada). Devuelve cuántas.
-pub fn purgar(db: &Connection, dias: f64) -> Result<usize> {
-    if dias <= 0.0 {
+/// Deletes from the trash what was forgotten more than `days` ago (0 = nothing). Returns how many.
+pub fn purgar(db: &Connection, days: f64) -> Result<usize> {
+    if days <= 0.0 {
         return Ok(0);
     }
     let n = db.execute(
         "DELETE FROM forgotten WHERE deleted_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
-        [format!("-{} seconds", (dias * 86400.0) as i64)],
+        [format!("-{} seconds", (days * 86400.0) as i64)],
     )?;
     Ok(n)
 }
 
-/// Vacía la papelera entera. Devuelve cuántas.
+/// Empties the whole trash. Returns how many.
 pub fn vaciar_papelera(db: &Connection) -> Result<usize> {
     Ok(db.execute("DELETE FROM forgotten", [])?)
 }
 
-/// Borra del todo estas memorias de la papelera (ids enteros), y solo esas: lo que vacía la TUI desde un
-/// proyecto, que no ve la papelera de otro espacio. Devuelve cuántas había.
+/// Deletes these memories (full ids) from the trash for good, and only those: what the TUI empties from a
+/// project, which doesn't see another space's trash. Returns how many there were.
 pub fn vaciar_papelera_de(db: &mut Connection, ids: &[String]) -> Result<usize> {
     let tx = escribir_tx(db)?;
     let mut n = 0;
@@ -1456,28 +1456,28 @@ pub fn vaciar_papelera_de(db: &mut Connection, ids: &[String]) -> Result<usize> 
     Ok(n)
 }
 
-/// Para la sincronización: olvidar con la marca (sello y fecha) que llega de otro equipo. La memoria se
-/// guarda aparte por si hay que devolverla (`restaurar`).
-pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str, equipo: &str) -> Result<Memoria> {
-    borrar(db, id, Some((hlc, deleted_at, equipo)))
+/// For sync: forget with the mark (stamp and date) coming from another computer. The memory is
+/// kept aside in case it has to be brought back (`restaurar`).
+pub(crate) fn olvidar_con(db: &mut Connection, id: &str, hlc: &str, deleted_at: &str, machine: &str) -> Result<Memoria> {
+    delete(db, id, Some((hlc, deleted_at, machine)))
 }
 
-/// Una memoria en la papelera.
+/// A memory in the trash.
 #[derive(Clone, Debug, Serialize)]
 pub struct Olvidada {
     pub id: String,
     pub title: String,
     pub kind: Tipo,
     pub project: String,
-    /// Su espacio (la clave): el suyo si era de espacio, o el de su proyecto.
+    /// Its space (the key): its own if it was a space memory, or its project's.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub space: String,
-    /// Quién la olvidó: el nombre del equipo (y `[by …]` ya dice la persona, si la sincronización lo apunta).
+    /// Who forgot it: the computer's name (and `[by …]` already says the person, if sync records it).
     pub by: String,
     pub deleted_at: String,
 }
 
-/// La papelera: lo olvidado aquí o en otro equipo, de lo más reciente a lo más antiguo.
+/// The trash: what was forgotten here or on another computer, from most recent to oldest.
 pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
     let mut q = db.prepare("SELECT id, memory, by, deleted_at FROM forgotten ORDER BY deleted_at DESC")?;
     let v = q
@@ -1490,28 +1490,28 @@ pub fn papelera(db: &Connection) -> Result<Vec<Olvidada>> {
     Ok(v)
 }
 
-/// Devuelve una memoria de la papelera (olvidada aquí o en otro equipo), con un sello posterior al
-/// olvido: así vuelve también a los demás equipos en la próxima sincronización. Su historial anterior
-/// se conserva.
-pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<Memoria> {
-    // El id como en las demás órdenes: en mayúsculas, y un principio que valga para varias es un error.
+/// Brings a memory back from the trash (forgotten here or on another computer), with a stamp later than the
+/// forget: so it also comes back to the other computers on the next sync. Its previous history
+/// is kept.
+pub fn restaurar(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<Memoria> {
+    // The id as in the other commands: uppercase, and a prefix that matches several is an error.
     let id = id.trim().to_uppercase();
-    // Al menos 4 caracteres, como `get` y `forget` (`resolver_id`): con uno solo se podía ir sacando de
-    // la papelera, a ciegas, lo que la lista no enseña desde esta carpeta.
+    // At least 4 characters, like `get` and `forget` (`resolver_id`): with just one you could pull out of
+    // the trash, blindly, what the list doesn't show from this folder.
     ensure!(id.len() >= 4, tr!("id too short: «{id}»", "id demasiado corto: «{id}»"));
     ensure!(id.chars().all(|c| c.is_ascii_alphanumeric()), tr!("invalid id: «{id}»", "id no válido: «{id}»"));
     let tx = escribir_tx(db)?;
-    let filas: Vec<(String, String, String, String)> = {
+    let rows: Vec<(String, String, String, String)> = {
         let mut q = tx.prepare("SELECT id, memory, versions, hlc FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
         q.query_map([&id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let (id, m, versiones, hlc_olvidada) = match <[_; 1]>::try_from(filas) {
-        Ok([una]) => una,
+    let (id, m, versions, forgotten_hlc) = match <[_; 1]>::try_from(rows) {
+        Ok([one]) => one,
         Err(v) if v.is_empty() => bail!(tr!("nothing in the trash with id {id}", "no hay nada en la papelera con id {id}")),
         Err(_) => bail!(tr!("several memories in the trash start with {id}: type more characters", "hay varias memorias en la papelera que empiezan por {id}: escribe más caracteres")),
     };
-    // Ya está viva (otro equipo la restauró y llegó por la sincronización, de una base de antes de la
-    // 0.19.1): solo sobraba en la papelera.
+    // Already live (another computer restored it and it came through sync, from a database before
+    // 0.19.1): it was just left over in the trash.
     if tx.query_row("SELECT count(*) FROM memory WHERE id = ?1", [&id], |f| f.get::<_, i64>(0))? > 0 {
         tx.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
         tx.commit()?;
@@ -1519,12 +1519,12 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
     }
     let (m, extra, _) = crate::sync::de_papelera(&m).ok_or_else(|| anyhow!(tr!("{id} can't be read from the trash", "{id} no se entiende en la papelera")))?;
     let extra = crate::sync::extra_a_texto(&extra);
-    let hlc_olvidada = if m.content_hlc.is_empty() { hlc_olvidada } else { m.content_hlc.clone() };
-    let versiones: Vec<Version> = serde_json::from_str(&versiones).unwrap_or_default();
-    let marca: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
-    let hlc = crate::reloj::sello_tras(&tx, &marca)?;
+    let forgotten_hlc = if m.content_hlc.is_empty() { forgotten_hlc } else { m.content_hlc.clone() };
+    let versions: Vec<Version> = serde_json::from_str(&versions).unwrap_or_default();
+    let mark: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
+    let hlc = crate::reloj::sello_tras(&tx, &mark)?;
     let (project_id, space_id) = alcance_guardado(&tx, &m)?;
-    let nueva = Nueva {
+    let new = Nueva {
         project: m.project.clone(),
         project_id: Some(project_id),
         space_id,
@@ -1540,13 +1540,13 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
         evidence: Vec::new(),
         review_reason: None,
     };
-    // Vuelve con su texto de siempre: el sello de contenido, el de cuando se olvidó (los veredictos que
-    // tenía siguen valiendo).
-    let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, content_hlc: &hlc_olvidada, author: &m.author, extra: &extra };
+    // It comes back with its usual text: the content stamp is the one from when it was forgotten (the verdicts it
+    // had still hold).
+    let o = Origen { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, content_hlc: &forgotten_hlc, author: &m.author, extra: &extra };
     tx.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
     crate::sync::guardar_extra_olvido(&tx, &id, &Default::default())?;
-    let r = insertar_en(&tx, &id, nueva, Some(&o), modelo)?;
-    for v in &versiones {
+    let r = insert_in(&tx, &id, new, Some(&o), model)?;
+    for v in &versions {
         poner_version(&tx, &id, v)?;
     }
     tx.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
@@ -1554,8 +1554,8 @@ pub fn restaurar(db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Resu
     Ok(r)
 }
 
-/// Dónde vuelve una memoria guardada fuera de la base (papelera, copia): su proyecto por la clave (o,
-/// en las copias de antes del esquema 10, por la ruta), su espacio, o global.
+/// Where a memory stored outside the database (trash, backup) comes back to: its project by key (or,
+/// in backups from before schema 10, by path), its space, or global.
 pub(crate) fn alcance_guardado(tx: &Connection, m: &Memoria) -> Result<(i64, Option<i64>)> {
     if !m.project.is_empty() || !m.project_key.is_empty() {
         let id = match crate::proyecto::resolver(tx, &m.project)? {
@@ -1563,8 +1563,8 @@ pub(crate) fn alcance_guardado(tx: &Connection, m: &Memoria) -> Result<(i64, Opt
             _ if !m.project_key.is_empty() => crate::proyecto::de_clave(tx, &m.project_key, &m.project, &crate::db::persona_de(tx), true)?,
             _ => crate::proyecto::registrar(tx, &m.project)?,
         };
-        // Como al recibirla por la sincronización: un proyecto sin espacio aquí toma el que trae; uno
-        // con espacio se queda el suyo.
+        // As when receiving it through sync: a project with no space here takes the one it brings; one
+        // with a space keeps its own.
         if !m.space.is_empty() && crate::proyecto::espacio_de(tx, id)?.is_none() {
             let s = crate::proyecto::espacio_de_clave(tx, &m.space)?;
             tx.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![id, s])?;
@@ -1574,18 +1574,18 @@ pub(crate) fn alcance_guardado(tx: &Connection, m: &Memoria) -> Result<(i64, Opt
     Ok((0, crate::proyecto::espacio_de_clave(tx, &m.space)?))
 }
 
-fn borrar(db: &mut Connection, id: &str, marca: Option<(&str, &str, &str)>) -> Result<Memoria> {
+fn delete(db: &mut Connection, id: &str, mark: Option<(&str, &str, &str)>) -> Result<Memoria> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
-    let m = borrar_en(&tx, &id, marca)?;
+    let m = delete_in(&tx, &id, mark)?;
     tx.commit()?;
     Ok(m)
 }
 
-/// `borrar` dentro de una transacción que ya está abierta (quien llama hace el commit), con el id
-/// ya resuelto.
-fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> Result<Memoria> {
-    let (hlc, deleted_at): (String, Option<&str>) = match marca {
+/// `delete` inside an already open transaction (the caller commits), with the id
+/// already resolved.
+fn delete_in(tx: &Transaction, id: &str, mark: Option<(&str, &str, &str)>) -> Result<Memoria> {
+    let (hlc, deleted_at): (String, Option<&str>) = match mark {
         Some((h, d, _)) => {
             crate::reloj::recibir(tx, h)?;
             (h.to_string(), Some(d))
@@ -1594,32 +1594,32 @@ fn borrar_en(tx: &Transaction, id: &str, marca: Option<(&str, &str, &str)>) -> R
     };
     let m = leer(tx, id)?;
     marcar_olvido(tx, id, deleted_at, &hlc, &m.space)?;
-    // A la papelera, con su historial: `restaurar` la devuelve desde cualquier equipo. `by` es el
-    // equipo que la olvidó: otro (quizá otra persona) o este.
-    let quien = match marca {
-        Some((_, _, equipo)) => equipo.to_string(),
+    // To the trash, with its history: `restaurar` brings it back from any computer. `by` is the
+    // computer that forgot it: another one (maybe another person) or this one.
+    let who = match mark {
+        Some((_, _, machine)) => machine.to_string(),
         None => crate::reloj::equipo(tx)?,
     };
-    let versiones = historial(tx, id)?;
-    let hlc_m = hlc_de(tx, id)?;
+    let versions = historial(tx, id)?;
+    let mem_hlc = hlc_de(tx, id)?;
     let (content_hlc, extra): (String, String) = tx.query_row("SELECT content_hlc, extra FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?)))?;
     let m = Memoria { content_hlc, ..m };
-    // En la papelera va con sus campos desconocidos: si vuelve (aquí o en otro equipo), vuelven con ella.
-    let texto = crate::sync::a_papelera(&m, &crate::sync::extra_de(&extra), &Default::default())?;
+    // It goes to the trash with its unknown fields: if it comes back (here or on another computer), they come back with it.
+    let text = crate::sync::a_papelera(&m, &crate::sync::extra_de(&extra), &Default::default())?;
     tx.execute(
         &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {AHORA}), ?6)"),
-        params![id, texto, serde_json::to_string(&versiones)?, hlc_m, deleted_at, quien],
+        params![id, text, serde_json::to_string(&versions)?, mem_hlc, deleted_at, who],
     )?;
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
-    desindexar(tx, n)?;
-    // memory_version y memory_path caen con ON DELETE CASCADE.
+    unindex_memory(tx, n)?;
+    // memory_version and memory_path go away with ON DELETE CASCADE.
     tx.execute("DELETE FROM memory WHERE id = ?1", [id])?;
     Ok(m)
 }
 
-/// Apunta una versión que viene de fuera (otro equipo, una copia, la papelera). La que ya hay con ese
-/// número se queda; si no tenía campos desconocidos y esta los trae (la vio antes una versión de omoi
-/// que no los conservaba), los toma.
+/// Records a version that comes from outside (another computer, a backup, the trash). The one already there with that
+/// number stays; if it had no unknown fields and this one brings them (an omoi version that didn't
+/// keep them saw it first), it takes them.
 pub(crate) fn poner_version(db: &Connection, id: &str, v: &Version) -> Result<()> {
     let extra = if v.extra.is_empty() { "{}".to_string() } else { serde_json::to_string(&v.extra)? };
     db.execute(
@@ -1630,199 +1630,199 @@ pub(crate) fn poner_version(db: &Connection, id: &str, v: &Version) -> Result<()
     Ok(())
 }
 
-/// Una versión de `memory_version` desde las columnas `version, kind, title, content, paths, tags,
-/// changed_at, reason, extra` (a partir de la columna `desde`).
-fn version_de_fila(f: &Row, desde: usize) -> rusqlite::Result<Version> {
-    let lista = |i: usize| -> rusqlite::Result<Vec<String>> { Ok(serde_json::from_str(&f.get::<_, String>(desde + i)?).unwrap_or_default()) };
+/// A `memory_version` version from the columns `version, kind, title, content, paths, tags,
+/// changed_at, reason, extra` (starting at column `start`).
+fn version_from_row(f: &Row, start: usize) -> rusqlite::Result<Version> {
+    let list = |i: usize| -> rusqlite::Result<Vec<String>> { Ok(serde_json::from_str(&f.get::<_, String>(start + i)?).unwrap_or_default()) };
     Ok(Version {
-        version: f.get(desde)?,
-        kind: f.get(desde + 1)?,
-        title: f.get(desde + 2)?,
-        content: f.get(desde + 3)?,
-        paths: lista(4)?,
-        tags: lista(5)?,
-        changed_at: f.get(desde + 6)?,
-        reason: f.get(desde + 7)?,
-        extra: serde_json::from_str(&f.get::<_, String>(desde + 8)?).unwrap_or_default(),
+        version: f.get(start)?,
+        kind: f.get(start + 1)?,
+        title: f.get(start + 2)?,
+        content: f.get(start + 3)?,
+        paths: list(4)?,
+        tags: list(5)?,
+        changed_at: f.get(start + 6)?,
+        reason: f.get(start + 7)?,
+        extra: serde_json::from_str(&f.get::<_, String>(start + 8)?).unwrap_or_default(),
     })
 }
 
-/// Versiones anteriores, de la más reciente a la más antigua.
+/// Previous versions, from most recent to oldest.
 pub fn historial(db: &Connection, id: &str) -> Result<Vec<Version>> {
     let id = resolver_id(db, id)?;
     let mut q = db.prepare(
         "SELECT version, kind, title, content, paths, tags, changed_at, reason, extra
          FROM memory_version WHERE memory_id = ?1 ORDER BY version DESC",
     )?;
-    let v = q.query_map([&id], |f| version_de_fila(f, 0))?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([&id], |f| version_from_row(f, 0))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// El historial de todas las memorias que lo tienen, en una sola pasada (para la sincronización: una
-/// consulta por memoria era lo más lento de `omoi sync` con una base grande).
+/// The history of every memory that has one, in a single pass (for sync: one
+/// query per memory was the slowest part of `omoi sync` with a large database).
 pub(crate) fn historiales(db: &Connection) -> Result<std::collections::HashMap<String, Vec<Version>>> {
     let mut q = db.prepare(
         "SELECT memory_id, version, kind, title, content, paths, tags, changed_at, reason, extra
          FROM memory_version ORDER BY memory_id, version DESC",
     )?;
     let mut v: std::collections::HashMap<String, Vec<Version>> = std::collections::HashMap::new();
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        v.entry(f.get(0)?).or_default().push(version_de_fila(f, 1)?);
+    let mut rows = q.query([])?;
+    while let Some(f) = rows.next()? {
+        v.entry(f.get(0)?).or_default().push(version_from_row(f, 1)?);
     }
     Ok(v)
 }
 
-/// Un `limite` de [`recientes`] desde el que se piden todas (quien las quiere todas pasa `usize::MAX >> 1`).
-const TODAS: usize = 1 << 20;
-/// Desde cuántas filas (de `n` más bajo a más alto) se leen en paralelo (ver [`en_paralelo`]).
-const PARALELO_DESDE: i64 = 10_000;
-/// Conexiones a la vez, como mucho.
-const PARALELO_HILOS: usize = 8;
+/// A `limit` for [`recientes`] from which all are requested (whoever wants them all passes `usize::MAX >> 1`).
+const ALL: usize = 1 << 20;
+/// From how many rows (from lowest to highest `n`) they are read in parallel (see [`in_parallel`]).
+const PARALLEL_FROM: i64 = 10_000;
+/// Connections at once, at most.
+const PARALLEL_THREADS: usize = 8;
 
-/// Las filas de `sql` (`SELECT {COLUMNAS} FROM memory m WHERE …`, con el tipo en `?1`) leídas por trozos
-/// de `n` a la vez, cada trozo con su conexión de solo lectura: con 50.000 memorias, leerlas de una en
-/// una conexión es medio segundo, casi todo SQLite y `de_fila`. `None` (y quien llama las lee como
-/// siempre) si no merece la pena o no se puede asegurar que es lo mismo: una base sin fichero, pocas
-/// filas, una transacción abierta en `db` (las otras conexiones no verían lo que lleva escrito) o
-/// cualquier error. Las conexiones nuevas ven lo último confirmado, como `db` fuera de una transacción;
-/// si otro proceso confirma algo mientras tanto (cambia `data_version`), los trozos podrían venir de
-/// dos momentos distintos y tampoco vale.
-fn en_paralelo(db: &Connection, sql: &str, kind: Option<Tipo>) -> Option<Vec<Memoria>> {
-    let ruta = db.path().filter(|r| !r.is_empty())?.to_string();
+/// The rows of `sql` (`SELECT {COLUMNAS} FROM memory m WHERE …`, with the kind in `?1`) read in chunks
+/// of `n` at a time, each chunk with its own read-only connection: with 50,000 memories, reading them on a single
+/// connection takes half a second, almost all of it SQLite and `de_fila`. `None` (and the caller reads them as
+/// usual) if it isn't worth it or it can't be guaranteed to give the same: a database with no file, few
+/// rows, a transaction open in `db` (the other connections wouldn't see what it has written) or
+/// any error. The new connections see the last committed state, like `db` outside a transaction;
+/// if another process commits something meanwhile (`data_version` changes), the chunks could come from
+/// two different moments and that isn't valid either.
+fn in_parallel(db: &Connection, sql: &str, kind: Option<Tipo>) -> Option<Vec<Memoria>> {
+    let path = db.path().filter(|r| !r.is_empty())?.to_string();
     if !db.is_autocommit() {
         return None;
     }
-    let hilos = std::thread::available_parallelism().map_or(1, |n| n.get()).min(PARALELO_HILOS) as i64;
-    let (desde, hasta): (i64, i64) = db.query_row("SELECT COALESCE(min(n), 0), COALESCE(max(n), -1) FROM memory", [], |f| Ok((f.get(0)?, f.get(1)?))).ok()?;
-    if hilos < 2 || hasta - desde + 1 < PARALELO_DESDE {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(PARALLEL_THREADS) as i64;
+    let (start, end): (i64, i64) = db.query_row("SELECT COALESCE(min(n), 0), COALESCE(max(n), -1) FROM memory", [], |f| Ok((f.get(0)?, f.get(1)?))).ok()?;
+    if threads < 2 || end - start + 1 < PARALLEL_FROM {
         return None;
     }
     let version = || db.query_row("PRAGMA data_version", [], |f| f.get::<_, i64>(0)).ok();
-    let antes = version()?;
-    let paso = (hasta - desde + hilos) / hilos;
+    let before = version()?;
+    let step = (end - start + threads) / threads;
     let sql = format!("{sql} AND m.n BETWEEN ?2 AND ?3");
-    let trozos: Vec<Option<Vec<Memoria>>> = std::thread::scope(|s| {
-        let hechos: Vec<_> = (0..hilos)
+    let chunks: Vec<Option<Vec<Memoria>>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
             .map(|i| {
-                let (sql, ruta) = (&sql, &ruta);
-                let (a, b) = (desde + i * paso, (desde + (i + 1) * paso - 1).min(hasta));
+                let (sql, path) = (&sql, &path);
+                let (a, b) = (start + i * step, (start + (i + 1) * step - 1).min(end));
                 s.spawn(move || -> Option<Vec<Memoria>> {
                     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-                    let c = Connection::open_with_flags(ruta, flags).ok()?;
+                    let c = Connection::open_with_flags(path, flags).ok()?;
                     let mut q = c.prepare(sql).ok()?;
                     q.query_map(params![kind.map(Tipo::as_str), a, b], de_fila).ok()?.collect::<rusqlite::Result<_>>().ok()
                 })
             })
             .collect();
-        hechos.into_iter().map(|h| h.join().ok().flatten()).collect()
+        handles.into_iter().map(|h| h.join().ok().flatten()).collect()
     });
-    if version()? != antes {
+    if version()? != before {
         return None;
     }
-    trozos.into_iter().try_fold(Vec::new(), |mut v, t| {
+    chunks.into_iter().try_fold(Vec::new(), |mut v, t| {
         v.extend(t?);
         Some(v)
     })
 }
 
-/// Las últimas guardadas o cambiadas.
-pub fn recientes(db: &Connection, ambito: &Ambito, kind: Option<Tipo>, limite: usize) -> Result<Vec<Memoria>> {
-    // Con tipo, `m.kind = ?1` a secas: con el `IS NULL OR` SQLite no usa el tipo del índice
-    // `memory_scope` y lee todas las del ámbito (las recetas del recall, en cada mensaje).
-    let tipo = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
-    // Todas las del ámbito (la revisión, la deriva, los enlaces, las exportaciones a Obsidian y OKF): de una pasada por la
-    // tabla, en el orden en que están en el disco, y ordenadas aquí. Por el índice, cada fila se leía
-    // con su consulta y saltando por el fichero; con `ORDER BY`, SQLite ordenaba las filas enteras en
-    // un fichero temporal. Con 50.000 memorias: 0,85 s por el índice, 3,5 s con `ORDER BY`, 0,5 s de
-    // una pasada y 0,2 s por trozos en paralelo. El orden es el mismo: `updated_at` y `id` se comparan
-    // byte a byte, como los compara SQLite (`BINARY`), y el `id` es único.
-    if limite >= TODAS {
-        let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {tipo}", ambito.sql());
-        let mut v = match en_paralelo(db, &sql, kind) {
+/// The latest saved or changed ones.
+pub fn recientes(db: &Connection, scope: &Ambito, kind: Option<Tipo>, limit: usize) -> Result<Vec<Memoria>> {
+    // With a kind, plain `m.kind = ?1`: with the `IS NULL OR`, SQLite doesn't use the kind of the
+    // `memory_scope` index and reads all of the scope's memories (the recall's recipes, on every message).
+    let kind_filter = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
+    // All of the scope's (review, drift, links, exports to Obsidian and OKF): in one pass over the
+    // table, in the order they are on disk, and sorted here. Through the index, each row was read
+    // with its own query and jumping around the file; with `ORDER BY`, SQLite sorted the whole rows in
+    // a temporary file. With 50,000 memories: 0.85 s through the index, 3.5 s with `ORDER BY`, 0.5 s in
+    // one pass and 0.2 s in parallel chunks. The order is the same: `updated_at` and `id` are compared
+    // byte by byte, as SQLite compares them (`BINARY`), and the `id` is unique.
+    if limit >= ALL {
+        let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {kind_filter}", scope.sql());
+        let mut v = match in_parallel(db, &sql, kind) {
             Some(v) => v,
             None => db.prepare(&sql)?.query_map([kind.map(Tipo::as_str)], de_fila)?.collect::<rusqlite::Result<_>>()?,
         };
         v.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.id.cmp(&a.id)));
-        v.truncate(limite);
+        v.truncate(limit);
         return Ok(v);
     }
-    // Sin tipo, por `memory_reciente` (ver `db::LOCALES`), que va ya en el orden pedido: se para en
-    // las `limite` primeras del ámbito y solo esas se leen enteras.
-    let hay_indice = db
+    // Without a kind, through `memory_reciente` (see `db::LOCALES`), which is already in the requested order: it stops at
+    // the first `limit` of the scope and only those are read whole.
+    let has_index = db
         .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_reciente')", [], |f| f.get::<_, bool>(0))
         .unwrap_or(false);
-    if kind.is_none() && hay_indice {
+    if kind.is_none() && has_index {
         let mut q = db.prepare(&format!(
             "SELECT m.n FROM memory m INDEXED BY memory_reciente WHERE {} ORDER BY m.updated_at DESC, m.id DESC LIMIT ?1",
-            ambito.sql()
+            scope.sql()
         ))?;
-        let ns: Vec<i64> = q.query_map([limite as i64], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let mut fila = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
-        return Ok(ns.into_iter().map(|n| fila.query_row([n], de_fila)).collect::<rusqlite::Result<_>>()?);
+        let ns: Vec<i64> = q.query_map([limit as i64], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let mut row = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
+        return Ok(ns.into_iter().map(|n| row.query_row([n], de_fila)).collect::<rusqlite::Result<_>>()?);
     }
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM memory m
-         WHERE {} AND {tipo}
+         WHERE {} AND {kind_filter}
          ORDER BY m.updated_at DESC, m.id DESC LIMIT ?2",
-        ambito.sql()
+        scope.sql()
     ))?;
-    let v = q.query_map(params![kind.map(Tipo::as_str), limite as i64], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map(params![kind.map(Tipo::as_str), limit as i64], de_fila)?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// La etiqueta de las memorias que dicen en qué punto se quedó el trabajo de un proyecto.
+/// The tag of the memories that say where a project's work was left.
 pub const ESTADO: &str = "status";
 
-/// En qué punto se quedó cada proyecto: la memoria más reciente con la etiqueta [`ESTADO`] de cada
-/// uno (las globales cuentan como un proyecto más), de la más nueva a la más vieja.
-pub fn estados(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
+/// Where each project was left: the most recent memory with the [`ESTADO`] tag of each
+/// one (the global ones count as one more project), from newest to oldest.
+pub fn estados(db: &Connection, scope: &Ambito, limit: usize) -> Result<Vec<Memoria>> {
     let mut v: Vec<Memoria> = Vec::new();
-    for m in con_etiqueta(db, ambito, ESTADO)? {
-        // Una por proyecto; las de espacio, una por espacio, y las globales, una.
-        if v.len() < limite && !v.iter().any(|x| x.project_id == m.project_id && (m.project_id != 0 || x.space == m.space)) {
+    for m in con_etiqueta(db, scope, ESTADO)? {
+        // One per project; space ones, one per space, and global ones, one.
+        if v.len() < limit && !v.iter().any(|x| x.project_id == m.project_id && (m.project_id != 0 || x.space == m.space)) {
             v.push(m);
         }
     }
     Ok(v)
 }
 
-/// La etiqueta de las decisiones que le tocan a la persona y siguen sin respuesta: el agente dejó la
-/// pregunta, las opciones y lo que asumió mientras tanto, y siguió trabajando.
+/// The tag of the decisions that are up to the person and still unanswered: the agent left the
+/// question, the options and what it assumed in the meantime, and kept working.
 pub const ABIERTA: &str = "open";
 
-/// La etiqueta que, junto a [`ABIERTA`], dice que la decisión es bloqueante: sin la respuesta no se
-/// puede seguir con lo que depende de ella. Sin ella, la decisión es «para revisar después» (el agente
-/// siguió con lo que asumió). Una etiqueta y no un campo: no cambia el esquema ni la sync.
+/// The tag that, together with [`ABIERTA`], says the decision is blocking: without the answer, what
+/// depends on it can't go on. Without it, the decision is "to review later" (the agent
+/// went on with what it assumed). A tag and not a field: it doesn't change the schema or the sync.
 pub const BLOQUEANTE: &str = "blocking";
 
 impl Memoria {
-    /// Si es una decisión abierta bloqueante (con la etiqueta [`BLOQUEANTE`]).
+    /// Whether it is a blocking open decision (with the [`BLOQUEANTE`] tag).
     pub fn bloqueante(&self) -> bool {
         self.tags.iter().any(|t| t == BLOQUEANTE)
     }
 }
 
-/// Las decisiones abiertas del ámbito (de tipo decisión y con la etiqueta [`ABIERTA`]): primero las
-/// bloqueantes y, dentro de cada grupo, de la más nueva a la más vieja; como mucho `limite`.
-pub fn abiertas(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
-    let mut v: Vec<Memoria> = con_etiqueta(db, ambito, ABIERTA)?.into_iter().filter(|m| m.kind == Tipo::Decision).collect();
-    // Estable: conserva el orden por fecha dentro de cada grupo.
+/// The open decisions of the scope (of kind decision and with the [`ABIERTA`] tag): blocking ones first
+/// and, within each group, from newest to oldest; at most `limit`.
+pub fn abiertas(db: &Connection, scope: &Ambito, limit: usize) -> Result<Vec<Memoria>> {
+    let mut v: Vec<Memoria> = con_etiqueta(db, scope, ABIERTA)?.into_iter().filter(|m| m.kind == Tipo::Decision).collect();
+    // Stable: keeps the date order within each group.
     v.sort_by_key(|m| !m.bloqueante());
-    v.truncate(limite);
+    v.truncate(limit);
     Ok(v)
 }
 
-/// Una decisión abierta para otros programas (`omoi decisions --json`, la herramienta `decisions`, la
-/// central de Kumi): entera, con su prioridad y de dónde es.
+/// An open decision for other programs (`omoi decisions --json`, the `decisions` tool, Kumi's
+/// hub): whole, with its priority and where it belongs.
 #[derive(Debug, Serialize)]
 pub struct Decision {
     pub id: String,
     pub title: String,
     pub content: String,
-    /// `blocking` (no se puede seguir sin la respuesta) o `later` (para revisar después).
+    /// `blocking` (can't go on without the answer) or `later` (to review later).
     pub priority: &'static str,
-    /// Carpeta de su proyecto; vacía si es de espacio o global.
+    /// Its project's folder; empty if it is a space or global one.
     pub project: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub project_key: String,
@@ -1836,7 +1836,7 @@ pub struct Decision {
     pub source: String,
     pub created_at: String,
     pub updated_at: String,
-    /// Sus datos estructurados, si tiene ([`poner_datos`]).
+    /// Its structured data, if it has any ([`poner_datos`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
@@ -1863,41 +1863,41 @@ impl From<Memoria> for Decision {
     }
 }
 
-/// Las decisiones abiertas del ámbito para otros programas; con `solo_bloqueantes`, solo esas, y con
-/// `etiquetas`, solo las que las lleven todas (`tarea:123`).
-pub fn decisiones(db: &Connection, ambito: &Ambito, solo_bloqueantes: bool, etiquetas_pedidas: &[String], limite: usize) -> Result<Vec<Decision>> {
-    let pedidas = etiquetas(etiquetas_pedidas);
-    let v: Vec<Memoria> = abiertas(db, ambito, usize::MAX)?
+/// The open decisions of the scope for other programs; with `blocking_only`, only those, and with
+/// `wanted_tags`, only those that carry all of them (`tarea:123`).
+pub fn decisiones(db: &Connection, scope: &Ambito, blocking_only: bool, wanted_tags: &[String], limit: usize) -> Result<Vec<Decision>> {
+    let wanted = norm_tags(wanted_tags);
+    let v: Vec<Memoria> = abiertas(db, scope, usize::MAX)?
         .into_iter()
-        .filter(|m| (!solo_bloqueantes || m.bloqueante()) && pedidas.iter().all(|t| m.tags.contains(t)))
-        .take(limite)
+        .filter(|m| (!blocking_only || m.bloqueante()) && wanted.iter().all(|t| m.tags.contains(t)))
+        .take(limit)
         .collect();
-    let mut datos = datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    let mut data = datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
     Ok(v.into_iter()
         .map(|m| {
-            let data = datos.remove(&m.id);
+            let data = data.remove(&m.id);
             Decision { data, ..Decision::from(m) }
         })
         .collect())
 }
 
-/// La etiqueta que deja una decisión resuelta con [`resolver_decision`] (o desde la vista web).
+/// The tag left on a decision resolved with [`resolver_decision`] (or from the web view).
 pub const RESUELTA: &str = "resolved";
 
-/// Resuelve una decisión abierta: añade la respuesta al final del contenido («Answer (fecha): …»),
-/// le quita [`ABIERTA`] y [`BLOQUEANTE`] y le pone [`RESUELTA`]. Con versión y motivo, como `update`.
-/// Una ya resuelta no se resuelve otra vez (error). En una decisión de oficio la respuesta pasa por
-/// `oficios::fugas` como cualquier texto nuevo (salvo lo que deje pasar `permitir_fugas`): si nombra
-/// algo de un proyecto o de un cliente no se guarda y vuelven las fugas (`Ok(Err(…))`).
-/// Parte una memoria demasiado larga en varias (el botón «Partir» de Revisar, 1.12.1): la primera parte
-/// se queda en la memoria de siempre (su id, historial, enlaces y fijación), y cada una de las demás es
-/// una memoria nueva del mismo proyecto o espacio, tipo, rutas y etiquetas (menos `status`: el estado
-/// del proyecto sigue siendo uno). Las nuevas se guardan antes de cambiar la original, así que si algo
-/// falla a medias no se pierde texto. Devuelve la original cambiada y las nuevas, en orden.
-pub fn partir(db: &mut Connection, id: &str, partes: &[(String, String)], motivo: &str) -> Result<Vec<Memoria>> {
-    ensure!(partes.len() >= 2, tr!("splitting needs at least two parts", "para partirla hacen falta al menos dos partes"));
+/// Resolves an open decision: appends the answer at the end of the content («Answer (date): …»),
+/// removes [`ABIERTA`] and [`BLOQUEANTE`] and adds [`RESUELTA`]. With a version and reason, like `update`.
+/// One already resolved isn't resolved again (error). In a trade decision the answer goes through
+/// `oficios::fugas` like any new text (except what `allow_leaks` lets through): if it names
+/// something of a project or a client it isn't saved and the leaks come back (`Ok(Err(…))`).
+/// Splits a memory that is too long into several (the «Partir» / Split button in Review, 1.12.1): the first part
+/// stays in the original memory (its id, history, links and pinning), and each of the others is
+/// a new memory of the same project or space, kind, paths and tags (minus `status`: the project's
+/// status is still a single one). The new ones are saved before changing the original, so if something
+/// fails halfway no text is lost. Returns the changed original and the new ones, in order.
+pub fn partir(db: &mut Connection, id: &str, parts: &[(String, String)], reason: &str) -> Result<Vec<Memoria>> {
+    ensure!(parts.len() >= 2, tr!("splitting needs at least two parts", "para partirla hacen falta al menos dos partes"));
     ensure!(
-        partes.iter().all(|(t, c)| !t.trim().is_empty() && !c.trim().is_empty()),
+        parts.iter().all(|(t, c)| !t.trim().is_empty() && !c.trim().is_empty()),
         tr!("every part needs a title and some text", "cada parte necesita un título y algo de texto")
     );
     let m = obtener(db, id)?;
@@ -1907,33 +1907,33 @@ pub fn partir(db: &mut Connection, id: &str, partes: &[(String, String)], motivo
         None
     };
     let tags: Vec<String> = m.tags.iter().filter(|t| *t != ESTADO).cloned().collect();
-    let mut nuevas = Vec::new();
-    for (titulo, contenido) in &partes[1..] {
+    let mut new_ones = Vec::new();
+    for (title, content) in &parts[1..] {
         let n = Nueva {
             project_id: (m.project_id != 0).then_some(m.project_id),
             space_id,
             kind: Some(m.kind),
-            title: titulo.trim().to_string(),
-            content: contenido.trim().to_string(),
+            title: title.trim().to_string(),
+            content: content.trim().to_string(),
             paths: m.paths.clone(),
             tags: tags.clone(),
             source: "web".into(),
             ..Default::default()
         };
-        nuevas.push(guardar(db, n, None)?);
+        new_ones.push(guardar(db, n, None)?);
     }
-    let (titulo, contenido) = &partes[0];
-    let c = Cambios { title: Some(titulo.trim().to_string()), content: Some(contenido.trim().to_string()), reason: Some(motivo.to_string()), ..Default::default() };
-    let primera = actualizar(db, &m.id, c, None)?;
-    Ok(std::iter::once(primera).chain(nuevas).collect())
+    let (title, content) = &parts[0];
+    let c = Cambios { title: Some(title.trim().to_string()), content: Some(content.trim().to_string()), reason: Some(reason.to_string()), ..Default::default() };
+    let first = actualizar(db, &m.id, c, None)?;
+    Ok(std::iter::once(first).chain(new_ones).collect())
 }
 
 pub fn resolver_decision(
     db: &mut Connection,
     id: &str,
-    respuesta: &str,
-    motivo: Option<String>,
-    permitir_fugas: bool,
+    answer: &str,
+    reason: Option<String>,
+    allow_leaks: bool,
 ) -> Result<std::result::Result<Memoria, Vec<crate::oficios::Fuga>>> {
     let m = obtener(db, id)?;
     ensure!(m.kind == Tipo::Decision, tr!("{} is not a decision", "{} no es una decisión", m.id));
@@ -1945,58 +1945,58 @@ pub fn resolver_decision(
             m.id
         )
     );
-    let respuesta = respuesta.trim();
-    ensure!(!respuesta.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
+    let answer = answer.trim();
+    ensure!(!answer.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
     if !crate::oficios::de_memoria(&m).is_empty() {
-        let f = crate::oficios::bloquean(crate::oficios::fugas_en(db, &[("answer", respuesta.to_string())])?, permitir_fugas);
+        let f = crate::oficios::bloquean(crate::oficios::fugas_en(db, &[("answer", answer.to_string())])?, allow_leaks);
         if !f.is_empty() {
             return Ok(Err(f));
         }
     }
-    let dia: String = db.query_row(&format!("SELECT substr({AHORA}, 1, 10)"), [], |f| f.get(0))?;
+    let day: String = db.query_row(&format!("SELECT substr({AHORA}, 1, 10)"), [], |f| f.get(0))?;
     let mut tags: Vec<String> = m.tags.iter().filter(|t| *t != ABIERTA && *t != BLOQUEANTE).cloned().collect();
     if !tags.iter().any(|t| t == RESUELTA) {
         tags.push(RESUELTA.into());
     }
     let c = Cambios {
-        append: Some(format!("Answer ({dia}): {respuesta}")),
+        append: Some(format!("Answer ({day}): {answer}")),
         tags: Some(tags),
-        reason: Some(motivo.unwrap_or_else(|| "decision resolved".into())),
+        reason: Some(reason.unwrap_or_else(|| "decision resolved".into())),
         ..Default::default()
     };
     Ok(Ok(actualizar(db, &m.id, c, None)?))
 }
 
-/// Las memorias del ámbito que llevan todas estas etiquetas (y, si se pide, de este tipo), de la más
-/// nueva a la más vieja, sin ranking ni umbral: para programas que guardan algo con una etiqueta y lo
-/// tienen que volver a encontrar siempre (`omoi list`). Como mucho `limite`.
-pub fn con_etiquetas(db: &Connection, ambito: &Ambito, etiquetas_pedidas: &[String], kind: Option<Tipo>, limite: usize) -> Result<Vec<Memoria>> {
-    let pedidas = etiquetas(etiquetas_pedidas);
-    let Some((primera, resto)) = pedidas.split_first() else {
+/// The memories of the scope that carry all these tags (and, if asked, of this kind), from newest
+/// to oldest, with no ranking or threshold: for programs that save something with a tag and
+/// always have to find it again (`omoi list`). At most `limit`.
+pub fn con_etiquetas(db: &Connection, scope: &Ambito, wanted_tags: &[String], kind: Option<Tipo>, limit: usize) -> Result<Vec<Memoria>> {
+    let wanted = norm_tags(wanted_tags);
+    let Some((first, rest)) = wanted.split_first() else {
         bail!(tr!("which tag? Pass at least one with --tag", "¿qué etiqueta? Pasa al menos una con --tag"));
     };
-    Ok(con_etiqueta(db, ambito, primera)?
+    Ok(con_etiqueta(db, scope, first)?
         .into_iter()
-        .filter(|m| kind.is_none_or(|k| m.kind == k) && resto.iter().all(|t| m.tags.contains(t)))
-        .take(limite)
+        .filter(|m| kind.is_none_or(|k| m.kind == k) && rest.iter().all(|t| m.tags.contains(t)))
+        .take(limit)
         .collect())
 }
 
-// --- Datos estructurados ----------------------------------------------------------------------------
+// --- Structured data --------------------------------------------------------------------------------
 //
-// Un JSON propio de la memoria para programas (el perfil de un proyecto en Kumi, por ejemplo), aparte
-// del texto: no entra en el índice de búsqueda ni en el recall, que solo leen título, contenido,
-// etiquetas y rutas. Vive en `memory.extra` con la clave [`DATOS`], que es donde la sincronización y
-// `omoi export` guardan los campos de la línea que no conocen: así viaja como un campo `data` de la
-// línea, y una versión anterior (desde la 1.0) lo guarda y lo reenvía tal cual sin entenderlo. Sin
-// cambiar el esquema.
+// A JSON of the memory's own for programs (a project's profile in Kumi, for example), apart
+// from the text: it doesn't go into the search index nor into recall, which only read title, content,
+// tags and paths. It lives in `memory.extra` under the key [`DATOS`], which is where sync and
+// `omoi export` keep the fields of the line they don't know: so it travels as a `data` field of the
+// line, and an older version (since 1.0) stores it and resends it as is without understanding it. Without
+// changing the schema.
 
-/// La clave de los datos en `memory.extra` (y el campo `data` de la línea que viaja).
+/// The key of the data in `memory.extra` (and the `data` field of the line that travels).
 pub const DATOS: &str = "data";
-/// Tamaño máximo de los datos, en JSON.
+/// Maximum size of the data, in JSON.
 pub const DATOS_MAX: usize = 64 * 1024;
 
-/// Los datos de unas memorias (las que tienen).
+/// The data of some memories (those that have any).
 pub fn datos_de(db: &Connection, ids: &[&str]) -> Result<std::collections::HashMap<String, serde_json::Value>> {
     let mut r = std::collections::HashMap::new();
     let mut q = db.prepare("SELECT extra FROM memory WHERE id = ?1")?;
@@ -2011,51 +2011,51 @@ pub fn datos_de(db: &Connection, ids: &[&str]) -> Result<std::collections::HashM
     Ok(r)
 }
 
-/// Lee los datos que llegan como texto (`--data '{…}'`): JSON válido y como mucho [`DATOS_MAX`].
+/// Reads data that comes as text (`--data '{…}'`): valid JSON and at most [`DATOS_MAX`].
 pub fn datos_de_texto(t: &str) -> Result<serde_json::Value> {
     ensure!(t.len() <= DATOS_MAX, tr!("data over {DATOS_MAX} bytes", "datos de más de {DATOS_MAX} bytes"));
     serde_json::from_str(t).map_err(|e| anyhow!(tr!("data is not valid JSON: {e}", "los datos no son JSON válido: {e}")))
 }
 
-/// Pone (o quita, con `None` o `null`) los datos de una memoria. Cambia su sello y su fecha, para que
-/// la sincronización lo lleve, y no crea versión (como fijarla). Lo que parezca un secreto en los
-/// textos se tapa, como en el contenido; devuelve los tipos tapados.
-pub fn poner_datos(db: &mut Connection, id: &str, datos: Option<serde_json::Value>) -> Result<Vec<&'static str>> {
-    let mut tapados = Vec::new();
-    let datos = datos_listos(datos, &mut tapados)?;
+/// Sets (or removes, with `None` or `null`) a memory's data. Changes its stamp and its date, so
+/// sync carries it, and doesn't create a version (like pinning). Whatever looks like a secret in the
+/// texts is masked, as in the content; returns the masked kinds.
+pub fn poner_datos(db: &mut Connection, id: &str, data: Option<serde_json::Value>) -> Result<Vec<&'static str>> {
+    let mut redacted_kinds = Vec::new();
+    let data = ready_data(data, &mut redacted_kinds)?;
     let tx = escribir_tx(db)?;
     let id = resolver_id(&tx, id)?;
-    if poner_datos_en(&tx, &id, datos)? {
+    if set_data_in(&tx, &id, data)? {
         tx.commit()?;
     }
-    Ok(tapados)
+    Ok(redacted_kinds)
 }
 
-/// Los datos tal como se guardan: sin `null`, con lo que parezca un secreto tapado (apunta los tipos
-/// en `tapados`) y como mucho [`DATOS_MAX`].
-fn datos_listos(datos: Option<serde_json::Value>, tapados: &mut Vec<&'static str>) -> Result<Option<serde_json::Value>> {
-    let datos = datos.filter(|d| !d.is_null()).map(|d| tapar_en(d, tapados));
-    if let Some(d) = &datos {
+/// The data as stored: without `null`, with whatever looks like a secret masked (records the kinds
+/// in `redacted_kinds`) and at most [`DATOS_MAX`].
+fn ready_data(data: Option<serde_json::Value>, redacted_kinds: &mut Vec<&'static str>) -> Result<Option<serde_json::Value>> {
+    let data = data.filter(|d| !d.is_null()).map(|d| redact_json(d, redacted_kinds));
+    if let Some(d) = &data {
         ensure!(serde_json::to_string(d)?.len() <= DATOS_MAX, tr!("data over {DATOS_MAX} bytes", "datos de más de {DATOS_MAX} bytes"));
     }
-    Ok(datos)
+    Ok(data)
 }
 
-/// Si [`poner_datos`] aceptaría estos datos (después de tapar lo que parezca un secreto), sin escribir:
-/// para comprobarlo antes de crear la memoria a la que van.
-pub(crate) fn comprobar_datos(datos: &serde_json::Value) -> Result<()> {
-    datos_listos(Some(datos.clone()), &mut Vec::new()).map(|_| ())
+/// Whether [`poner_datos`] would accept this data (after masking whatever looks like a secret), without writing:
+/// to check it before creating the memory it goes to.
+pub(crate) fn comprobar_datos(data: &serde_json::Value) -> Result<()> {
+    ready_data(Some(data.clone()), &mut Vec::new()).map(|_| ())
 }
 
-/// [`poner_datos`] dentro de una transacción, con los datos ya listos y el id entero. `false` si ya
-/// tenía esos mismos datos (y entonces no toca nada).
-fn poner_datos_en(tx: &Transaction, id: &str, datos: Option<serde_json::Value>) -> Result<bool> {
+/// [`poner_datos`] inside a transaction, with the data already prepared and the full id. `false` if it already
+/// had that same data (and then it touches nothing).
+fn set_data_in(tx: &Transaction, id: &str, data: Option<serde_json::Value>) -> Result<bool> {
     let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
-    if o.get(DATOS) == datos.as_ref() {
+    if o.get(DATOS) == data.as_ref() {
         return Ok(false);
     }
-    match datos {
+    match data {
         Some(d) => o.insert(DATOS.into(), d),
         None => o.remove(DATOS),
     };
@@ -2064,12 +2064,12 @@ fn poner_datos_en(tx: &Transaction, id: &str, datos: Option<serde_json::Value>) 
     Ok(true)
 }
 
-/// La clave en `memory.extra` de lo que hay que mirar cuando llegue la fecha de revisión.
+/// The key in `memory.extra` of what to check when the review date arrives.
 pub const CLAVE_MOTIVO_REVISION: &str = "review_reason";
-/// El largo máximo de ese motivo, en caracteres.
+/// The maximum length of that reason, in characters.
 pub const MAX_MOTIVO_REVISION: usize = 300;
 
-/// El motivo de una fecha de revisión, limpio: una línea, sin secretos, recortado. `None` si viene vacío.
+/// The reason for a review date, cleaned: one line, no secrets, truncated. `None` if it is empty.
 pub fn limpiar_motivo_revision(t: &str) -> Option<String> {
     let mut t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.is_empty() {
@@ -2084,33 +2084,33 @@ pub fn limpiar_motivo_revision(t: &str) -> Option<String> {
     Some(t)
 }
 
-/// Pone (o cambia) lo que hay que mirar cuando llegue la fecha de revisión de `id`, como la evidencia:
-/// sin versión nueva ni tocar `updated_at`, con sello nuevo para que viaje. `false` si ya lo tenía.
-pub fn poner_motivo_revision(db: &mut Connection, id: &str, motivo: &str) -> Result<bool> {
+/// Sets (or changes) what to check when the review date of `id` arrives, like evidence:
+/// no new version and `updated_at` untouched, with a new stamp so it travels. `false` if it already had it.
+pub fn poner_motivo_revision(db: &mut Connection, id: &str, reason: &str) -> Result<bool> {
     let id = resolver_id(db, id)?;
-    let Some(motivo) = limpiar_motivo_revision(motivo) else { return Ok(false) };
+    let Some(reason) = limpiar_motivo_revision(reason) else { return Ok(false) };
     let tx = escribir_tx(db)?;
     let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
-    if o.get(CLAVE_MOTIVO_REVISION).and_then(|v| v.as_str()) == Some(motivo.as_str()) {
+    if o.get(CLAVE_MOTIVO_REVISION).and_then(|v| v.as_str()) == Some(reason.as_str()) {
         return Ok(false);
     }
-    o.insert(CLAVE_MOTIVO_REVISION.into(), motivo.into());
+    o.insert(CLAVE_MOTIVO_REVISION.into(), reason.into());
     let hlc = crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?;
     tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
     tx.commit()?;
     Ok(true)
 }
 
-/// Añade evidencia (`evidencia`) a la memoria `id`, sin versión nueva ni cambiar `updated_at` (no
-/// cambia lo que dice, sino en qué se basa), pero con sello nuevo para que viaje con la sincronización.
-/// `false` si ya la tenía toda.
-pub fn anadir_evidencia(db: &mut Connection, id: &str, nuevas: &[crate::evidencia::Evidencia]) -> Result<bool> {
+/// Adds evidence (`evidencia`) to memory `id`, with no new version and without changing `updated_at` (it doesn't
+/// change what it says, but what it is based on), but with a new stamp so it travels with sync.
+/// `false` if it already had all of it.
+pub fn anadir_evidencia(db: &mut Connection, id: &str, new_ones: &[crate::evidencia::Evidencia]) -> Result<bool> {
     let id = resolver_id(db, id)?;
     let tx = escribir_tx(db)?;
     let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0))?;
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
-    if !crate::evidencia::anadir(&mut o, nuevas) {
+    if !crate::evidencia::anadir(&mut o, new_ones) {
         return Ok(false);
     }
     let hlc = crate::reloj::sello_tras(&tx, &hlc_de(&tx, &id)?)?;
@@ -2119,23 +2119,23 @@ pub fn anadir_evidencia(db: &mut Connection, id: &str, nuevas: &[crate::evidenci
     Ok(true)
 }
 
-/// Los textos de un JSON sin lo que parezca un secreto.
-fn tapar_en(v: serde_json::Value, tapados: &mut Vec<&'static str>) -> serde_json::Value {
+/// The texts of a JSON without whatever looks like a secret.
+fn redact_json(v: serde_json::Value, redacted_kinds: &mut Vec<&'static str>) -> serde_json::Value {
     use serde_json::Value;
     match v {
-        Value::String(s) => Value::String(sin_secretos(&s, tapados)),
-        Value::Array(a) => Value::Array(a.into_iter().map(|x| tapar_en(x, tapados)).collect()),
-        Value::Object(o) => Value::Object(o.into_iter().map(|(k, x)| (k, tapar_en(x, tapados))).collect()),
-        otro => otro,
+        Value::String(s) => Value::String(strip_secrets(&s, redacted_kinds)),
+        Value::Array(a) => Value::Array(a.into_iter().map(|x| redact_json(x, redacted_kinds)).collect()),
+        Value::Object(o) => Value::Object(o.into_iter().map(|(k, x)| (k, redact_json(x, redacted_kinds))).collect()),
+        other => other,
     }
 }
 
-/// Una memoria en JSON para programas, con sus datos (`data`) si tiene.
+/// A memory in JSON for programs, with its data (`data`) if it has any.
 pub fn con_datos(db: &Connection, ms: Vec<Memoria>) -> Result<Vec<serde_json::Value>> {
-    let datos = datos_de(db, &ms.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    let data = datos_de(db, &ms.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
     ms.into_iter()
         .map(|m| {
-            let d = datos.get(&m.id).cloned();
+            let d = data.get(&m.id).cloned();
             let mut v = serde_json::to_value(m)?;
             if let Some(d) = d {
                 v[DATOS] = d;
@@ -2145,50 +2145,50 @@ pub fn con_datos(db: &Connection, ms: Vec<Memoria>) -> Result<Vec<serde_json::Va
         .collect()
 }
 
-/// Todas las memorias del ámbito con esta etiqueta (ya en minúsculas, como se guardan), de la más
-/// nueva a la más vieja.
-pub(crate) fn con_etiqueta(db: &Connection, ambito: &Ambito, etiqueta: &str) -> Result<Vec<Memoria>> {
-    // Solo las que tienen la palabra en las etiquetas según el índice de palabras (todas las que llevan
-    // la etiqueta, y quizá alguna más, que el resto de la condición quita): sin él, mirar las etiquetas
-    // de cada memoria leía la tabla entera, contenido incluido (500 ms con 100.000 memorias).
+/// All the memories of the scope with this tag (already lowercase, as stored), from newest
+/// to oldest.
+pub(crate) fn con_etiqueta(db: &Connection, scope: &Ambito, tag: &str) -> Result<Vec<Memoria>> {
+    // Only those that have the word in their tags according to the word index (all those that carry
+    // the tag, and maybe a few more, which the rest of the condition removes): without it, checking the tags
+    // of each memory read the whole table, content included (500 ms with 100,000 memories).
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM (SELECT rowid AS n FROM memory_fts WHERE memory_fts MATCH ?3) e CROSS JOIN memory m ON m.n = e.n
          WHERE {} AND m.tags LIKE ?2 AND EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?1)
          ORDER BY m.updated_at DESC, m.id DESC",
-        ambito.sql()
+        scope.sql()
     ))?;
-    // El `LIKE` descarta sin leer el JSON lo que no lleva la etiqueta.
+    // The `LIKE` discards, without reading the JSON, what doesn't carry the tag.
     let v = q
-        .query_map(params![etiqueta, format!("%\"{etiqueta}\"%"), format!("tags : \"{}\"", etiqueta.replace('"', "\"\""))], de_fila)?
+        .query_map(params![tag, format!("%\"{tag}\"%"), format!("tags : \"{}\"", tag.replace('"', "\"\""))], de_fila)?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Lo que el agente debería saber siempre al empezar en un proyecto: las preferencias y las fijadas,
-/// del proyecto, de su espacio y globales (desde una carpeta general, solo las globales). Primero las
-/// fijadas, luego las más recientes.
-pub fn contexto(db: &Connection, ambito: &Ambito, limite: usize) -> Result<Vec<Memoria>> {
-    let donde = match ambito {
-        // Las de oficio no: son de los proyectos de ese oficio, no de la persona.
+/// What the agent should always know when starting in a project: the preferences and the pinned ones,
+/// of the project, of its space and global (from a general folder, only the global ones). Pinned ones
+/// first, then the most recent.
+pub fn contexto(db: &Connection, scope: &Ambito, limit: usize) -> Result<Vec<Memoria>> {
+    let cond = match scope {
+        // Not the trade ones: they belong to the projects of that trade, not to the person.
         Ambito::Todos => "(m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') = 0)".to_string(),
         a => a.sql(),
     };
-    // La condición, igual que la del índice parcial `memory_always`, para que lo use.
+    // The condition, the same as that of the partial index `memory_always`, so it uses it.
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM memory m
-         WHERE {donde} AND (m.pinned = 1 OR m.kind = 'preference')
+         WHERE {cond} AND (m.pinned = 1 OR m.kind = 'preference')
          ORDER BY m.pinned DESC, m.updated_at DESC, m.id DESC LIMIT ?1"
     ))?;
-    let v = q.query_map(params![limite as i64], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map(params![limit as i64], de_fila)?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Cuántas memorias se ven desde un ámbito. Con la cuenta por proyecto y espacio que llevan los
-/// disparadores (`db::LOCALES`), sin recorrer la tabla; contando, en una conexión sin ella.
-pub fn cuantas(db: &Connection, ambito: &Ambito) -> Result<i64> {
-    match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", ambito.sql_sin_oficios()), [], |f| f.get::<_, i64>(0)) {
-        Ok(n) => Ok(n - crate::oficios::cuantas_ocultas(db, ambito)?),
-        Err(_) => Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", ambito.sql()), [], |f| f.get(0))?),
+/// How many memories are visible from a scope. With the per-project-and-space count kept by the
+/// triggers (`db::LOCALES`), without scanning the table; by counting, on a connection without it.
+pub fn cuantas(db: &Connection, scope: &Ambito) -> Result<i64> {
+    match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", scope.sql_without_trades()), [], |f| f.get::<_, i64>(0)) {
+        Ok(n) => Ok(n - crate::oficios::cuantas_ocultas(db, scope)?),
+        Err(_) => Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", scope.sql()), [], |f| f.get(0))?),
     }
 }
 
@@ -2196,62 +2196,62 @@ pub fn cuantas(db: &Connection, ambito: &Ambito) -> Result<i64> {
 mod tests {
     use super::*;
 
-    /// Leer todas de una pasada, por trozos en paralelo o dentro de una transacción da lo mismo, y en
-    /// el mismo orden, que leerlas por el índice de una en una.
+    /// Reading them all in one pass, in parallel chunks or inside a transaction gives the same result, in
+    /// the same order, as reading them one by one through the index.
     #[test]
-    fn todas_igual_que_por_el_indice() {
+    fn all_same_as_through_the_index() {
         let dir = crate::comun::Temporal::nueva("todas-paralelo");
         let mut db = crate::db::abrir(&dir.join("o.db")).unwrap();
         db.execute_batch("PRAGMA synchronous = OFF").unwrap();
         let p = dir.join("p");
         std::fs::create_dir_all(&p).unwrap();
-        let clave = crate::proyecto::de(&p).unwrap();
+        let key = crate::proyecto::de(&p).unwrap();
         for i in 0..300 {
-            let project = if i % 3 == 0 { String::new() } else { clave.clone() };
+            let project = if i % 3 == 0 { String::new() } else { key.clone() };
             let kind = Some(if i % 4 == 0 { Tipo::Decision } else { Tipo::Fact });
             guardar(&mut db, Nueva { project, kind, title: format!("memoria {i}"), content: format!("lo que dice la {i}"), ..Default::default() }, None).unwrap();
         }
-        // Empates de fecha (decide el id) y un `n` lejos de los demás, para que se lea por trozos.
+        // Date ties (the id decides) and an `n` far from the others, so it is read in chunks.
         db.execute_batch(
             "UPDATE memory SET updated_at = '2026-01-01T00:00:00.000Z' WHERE n % 7 = 0;
              UPDATE memory SET n = n + 50000 WHERE n = (SELECT max(n) FROM memory);",
         )
         .unwrap();
         let json = |v: Vec<Memoria>| v.iter().map(|m| serde_json::to_string(m).unwrap()).collect::<Vec<_>>();
-        for ambito in [Ambito::Todos, Ambito::de(&db, &clave).unwrap()] {
+        for scope in [Ambito::Todos, Ambito::de(&db, &key).unwrap()] {
             for kind in [None, Some(Tipo::Decision)] {
-                let tipo = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
-                let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {tipo}", ambito.sql());
-                assert!(en_paralelo(&db, &sql, kind).is_some(), "por trozos");
-                let por_indice = json(recientes(&db, &ambito, kind, 1_000).unwrap());
-                assert!(por_indice.len() > 50);
-                assert_eq!(json(recientes(&db, &ambito, kind, usize::MAX >> 1).unwrap()), por_indice);
+                let kind_filter = if kind.is_some() { "m.kind = ?1" } else { "?1 IS NULL" };
+                let sql = format!("SELECT {COLUMNAS} FROM memory m WHERE {} AND {kind_filter}", scope.sql());
+                assert!(in_parallel(&db, &sql, kind).is_some(), "por trozos");
+                let by_index = json(recientes(&db, &scope, kind, 1_000).unwrap());
+                assert!(by_index.len() > 50);
+                assert_eq!(json(recientes(&db, &scope, kind, usize::MAX >> 1).unwrap()), by_index);
                 db.execute_batch("BEGIN").unwrap();
-                assert!(en_paralelo(&db, &sql, kind).is_none(), "en una transacción, no");
-                assert_eq!(json(recientes(&db, &ambito, kind, usize::MAX >> 1).unwrap()), por_indice);
+                assert!(in_parallel(&db, &sql, kind).is_none(), "en una transacción, no");
+                assert_eq!(json(recientes(&db, &scope, kind, usize::MAX >> 1).unwrap()), by_index);
                 db.execute_batch("ROLLBACK").unwrap();
             }
         }
     }
 
     #[test]
-    fn normaliza_rutas_y_etiquetas() {
-        assert_eq!(rutas(&["./src\\auth.rs".into(), "src/auth.rs".into(), " docs/ ".into(), "".into()]), [
+    fn normalizes_paths_and_tags() {
+        assert_eq!(norm_paths(&["./src\\auth.rs".into(), "src/auth.rs".into(), " docs/ ".into(), "".into()]), [
             "docs",
             "src/auth.rs"
         ]);
-        assert_eq!(etiquetas(&["#Auth".into(), "auth".into(), " Login ".into()]), ["auth", "login"]);
+        assert_eq!(norm_tags(&["#Auth".into(), "auth".into(), " Login ".into()]), ["auth", "login"]);
     }
 
     #[test]
-    fn titulo_en_una_linea() {
-        assert_eq!(titulo("  dos\nlíneas  ").unwrap(), "dos líneas");
-        assert!(titulo("   ").is_err());
-        assert!(titulo(&"x".repeat(201)).is_err());
+    fn title_on_one_line() {
+        assert_eq!(clean_title("  dos\nlíneas  ").unwrap(), "dos líneas");
+        assert!(clean_title("   ").is_err());
+        assert!(clean_title(&"x".repeat(201)).is_err());
     }
 
     #[test]
-    fn tipos() {
+    fn kinds() {
         assert_eq!("Gotcha".parse::<Tipo>().unwrap(), Tipo::Gotcha);
         assert!("bugfix".parse::<Tipo>().is_err());
     }

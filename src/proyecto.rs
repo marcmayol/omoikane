@@ -1,6 +1,6 @@
-//! A qué proyecto pertenece una carpeta: la raíz del repositorio git que la contiene, o la propia
-//! carpeta si no hay ninguno. Siempre en forma canónica, para que `C:\Repo`, `c:\repo\.` y un
-//! enlace simbólico a la misma carpeta sean el mismo proyecto.
+//! Which project a folder belongs to: the root of the git repository that contains it, or the folder
+//! itself if there is none. Always in canonical form, so that `C:\Repo`, `c:\repo\.` and a
+//! symbolic link to the same folder are the same project.
 
 use crate::tr;
 use anyhow::{Context, Result};
@@ -8,95 +8,96 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Si un texto de ruta es de red o de dispositivo: empieza por dos barras (`\\servidor\recurso`,
-/// `//cdn.example.com/x.js`, `\\?\…`, `\\.\…`, mezcladas o no). Lo que dice una memoria (sus `paths`, las
-/// rutas que nombra) lo escribe un agente o llega de otro: en Windows, solo con mirar si existe una ruta
-/// así se abre una conexión SMB (que puede tardar en fallar y entrega el hash NTLM de la persona al
-/// servidor que diga). Esas no se miran nunca.
-pub fn ruta_de_red(ruta: &str) -> bool {
-    let b = ruta.trim_start().as_bytes();
-    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/') && !de_wsl(ruta.trim_start())
+/// Whether a path text is a network or device path: it starts with two slashes (`\\server\share`,
+/// `//cdn.example.com/x.js`, `\\?\…`, `\\.\…`, mixed or not). What a memory says (its `paths`, the
+/// paths it names) is written by an agent or comes from someone else: on Windows, just checking whether
+/// such a path exists opens an SMB connection (which can take a while to fail and hands the person's
+/// NTLM hash to whatever server it names). Those are never looked at.
+pub fn ruta_de_red(path: &str) -> bool {
+    let b = path.trim_start().as_bytes();
+    b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/') && !is_wsl(path.trim_start())
 }
 
 // --- WSL ----------------------------------------------------------------------------------------------
 //
-// `\\wsl$\<distro>\…` y `\\wsl.localhost\<distro>\…` parecen rutas de red, pero no son SMB a otra
-// máquina: las sirve P9NP, el proveedor de red de WSL, que habla con la máquina virtual de WSL de este
-// equipo por un socket de Hyper-V (9P), sin NTLM y sin salir a la red. Por eso cuentan como locales
-// también cuando llegan de fuera (una ruta en una memoria, `project` por MCP, `?dir=`).
+// `\\wsl$\<distro>\…` and `\\wsl.localhost\<distro>\…` look like network paths, but they are not SMB to
+// another machine: they are served by P9NP, the WSL network provider, which talks to this computer's
+// WSL virtual machine over a Hyper-V socket (9P), with no NTLM and without going out to the network.
+// That is why they count as local even when they come from outside (a path in a memory, `project` over
+// MCP, `?dir=`).
 //
-// Solo si P9NP está instalado y va antes que el cliente SMB (`LanmanWorkstation`) en el orden de
-// proveedores (`HKLM\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`), que es como queda al
-// instalar WSL: Windows le pregunta a cada proveedor por orden y se queda con el primero que reconoce
-// la ruta. Sin WSL (o con SMB delante), `wsl$` y `wsl.localhost` serían nombres de máquina como
-// cualquier otro y el cliente SMB los buscaría en la red (LLMNR, NetBIOS, DNS): alguien de la red podría
-// contestar y recibir el hash NTLM. Entonces son de red, como las demás. Medido en un equipo con WSL:
-// una distribución que no existe falla en 3-80 ms y no deja ninguna consulta DNS de `wsl.localhost`.
-// Lo que cuesta: mirar una ruta de una distribución parada puede arrancar WSL (unos segundos).
+// Only if P9NP is installed and comes before the SMB client (`LanmanWorkstation`) in the provider
+// order (`HKLM\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`), which is how it is left after
+// installing WSL: Windows asks each provider in order and keeps the first one that recognises the
+// path. Without WSL (or with SMB in front), `wsl$` and `wsl.localhost` would be machine names like any
+// other and the SMB client would look them up on the network (LLMNR, NetBIOS, DNS): someone on the
+// network could answer and receive the NTLM hash. Then they are network paths, like the rest. Measured
+// on a computer with WSL: a distribution that doesn't exist fails in 3-80 ms and leaves no DNS query for
+// `wsl.localhost`. The cost: looking at a path of a stopped distribution can start WSL (a few seconds).
 
-/// Si un texto de ruta es de WSL (`\\wsl$\<distro>\…`, `\\wsl.localhost\<distro>\…`, también con
-/// `\\?\UNC\` delante o con `/`) y WSL atiende esas rutas en este equipo (ver arriba).
-fn de_wsl(ruta: &str) -> bool {
-    forma_wsl(ruta) && wsl_atiende()
+/// Whether a path text is a WSL one (`\\wsl$\<distro>\…`, `\\wsl.localhost\<distro>\…`, also with
+/// `\\?\UNC\` in front or with `/`) and WSL serves those paths on this computer (see above).
+fn is_wsl(path: &str) -> bool {
+    wsl_shape(path) && wsl_serves()
 }
 
-/// Solo la forma: dos barras, `wsl$` o `wsl.localhost` y un nombre de distribución de verdad (ni vacío
-/// ni `.` ni `..`, que podrían salirse de ella al normalizar la ruta).
-fn forma_wsl(ruta: &str) -> bool {
-    let barra = |c: char| c == '\\' || c == '/';
-    let Some(resto) = ruta.strip_prefix(['\\', '/']).and_then(|r| r.strip_prefix(['\\', '/'])) else { return false };
-    let resto = match resto.get(..6) {
-        Some(p) if p.eq_ignore_ascii_case("?\\UNC\\") || p.eq_ignore_ascii_case("?/UNC/") => &resto[6..],
-        _ => resto,
+/// Only the shape: two slashes, `wsl$` or `wsl.localhost` and a real distribution name (not empty
+/// nor `.` nor `..`, which could escape it when the path is normalized).
+fn wsl_shape(path: &str) -> bool {
+    let slash = |c: char| c == '\\' || c == '/';
+    let Some(rest) = path.strip_prefix(['\\', '/']).and_then(|r| r.strip_prefix(['\\', '/'])) else { return false };
+    let rest = match rest.get(..6) {
+        Some(p) if p.eq_ignore_ascii_case("?\\UNC\\") || p.eq_ignore_ascii_case("?/UNC/") => &rest[6..],
+        _ => rest,
     };
-    let mut partes = resto.split(barra);
-    let servidor = partes.next().unwrap_or_default();
-    let distro = partes.next().unwrap_or_default();
-    (servidor.eq_ignore_ascii_case("wsl$") || servidor.eq_ignore_ascii_case("wsl.localhost")) && !matches!(distro, "" | "." | "..")
+    let mut parts = rest.split(slash);
+    let server = parts.next().unwrap_or_default();
+    let distro = parts.next().unwrap_or_default();
+    (server.eq_ignore_ascii_case("wsl$") || server.eq_ignore_ascii_case("wsl.localhost")) && !matches!(distro, "" | "." | "..")
 }
 
-/// Si WSL atiende las rutas `\\wsl$` en este equipo: P9NP en el orden de proveedores de red antes que
-/// `LanmanWorkstation`. Se pregunta una vez por proceso.
+/// Whether WSL serves `\\wsl$` paths on this computer: P9NP in the network provider order before
+/// `LanmanWorkstation`. Asked once per process.
 #[cfg(windows)]
-fn wsl_atiende() -> bool {
-    static ATIENDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ATIENDE.get_or_init(|| orden_de_proveedores().as_deref().is_some_and(p9np_antes_que_smb))
+fn wsl_serves() -> bool {
+    static SERVES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SERVES.get_or_init(|| provider_order().as_deref().is_some_and(p9np_before_smb))
 }
 
 #[cfg(not(windows))]
-fn wsl_atiende() -> bool {
+fn wsl_serves() -> bool {
     false
 }
 
-/// `ProviderOrder` del registro (`P9NP,RDPNP,LanmanWorkstation,webclient`), leído con `RegGetValueW`.
+/// `ProviderOrder` from the registry (`P9NP,RDPNP,LanmanWorkstation,webclient`), read with `RegGetValueW`.
 #[cfg(windows)]
-fn orden_de_proveedores() -> Option<String> {
+fn provider_order() -> Option<String> {
     #[link(name = "advapi32")]
     unsafe extern "system" {
-        fn RegGetValueW(clave: isize, subclave: *const u16, valor: *const u16, flags: u32, tipo: *mut u32, datos: *mut u8, tam: *mut u32) -> i32;
+        fn RegGetValueW(key: isize, subkey: *const u16, value: *const u16, flags: u32, kind: *mut u32, data: *mut u8, size: *mut u32) -> i32;
     }
-    // `HKEY_LOCAL_MACHINE` es `(HKEY)(ULONG_PTR)(LONG)0x80000002`: con el signo extendido.
+    // `HKEY_LOCAL_MACHINE` is `(HKEY)(ULONG_PTR)(LONG)0x80000002`: sign-extended.
     const HKLM: isize = 0x8000_0002_u32 as i32 as isize;
     const RRF_RT_REG_SZ: u32 = 0x2;
-    let ancho = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let subclave = ancho(r"SYSTEM\CurrentControlSet\Control\NetworkProvider\Order");
-    let valor = ancho("ProviderOrder");
-    let mut datos = vec![0u16; 2048];
-    let mut tam = (datos.len() * 2) as u32;
-    // SAFETY: cadenas terminadas en 0 que viven hasta el final de la llamada, y un búfer de `tam` bytes.
-    let r = unsafe { RegGetValueW(HKLM, subclave.as_ptr(), valor.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), datos.as_mut_ptr().cast(), &mut tam) };
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let subkey = wide(r"SYSTEM\CurrentControlSet\Control\NetworkProvider\Order");
+    let value = wide("ProviderOrder");
+    let mut data = vec![0u16; 2048];
+    let mut size = (data.len() * 2) as u32;
+    // SAFETY: 0-terminated strings that live until the end of the call, and a buffer of `size` bytes.
+    let r = unsafe { RegGetValueW(HKLM, subkey.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), data.as_mut_ptr().cast(), &mut size) };
     if r != 0 {
         return None;
     }
-    let n = (tam as usize / 2).min(datos.len());
-    Some(String::from_utf16_lossy(&datos[..n]).trim_end_matches('\0').to_string())
+    let n = (size as usize / 2).min(data.len());
+    Some(String::from_utf16_lossy(&data[..n]).trim_end_matches('\0').to_string())
 }
 
-/// Si en un orden de proveedores P9NP va antes que el cliente SMB (o no hay cliente SMB). Solo existe
-/// en Windows (y en los tests, que lo prueban en todos los sistemas).
+/// Whether in a provider order P9NP comes before the SMB client (or there is no SMB client). Only
+/// exists on Windows (and in the tests, which check it on every system).
 #[cfg(any(windows, test))]
-fn p9np_antes_que_smb(orden: &str) -> bool {
-    let v: Vec<String> = orden.split(',').map(|x| x.trim().to_ascii_lowercase()).collect();
+fn p9np_before_smb(order: &str) -> bool {
+    let v: Vec<String> = order.split(',').map(|x| x.trim().to_ascii_lowercase()).collect();
     match (v.iter().position(|x| x == "p9np"), v.iter().position(|x| x == "lanmanworkstation")) {
         (Some(p9), Some(smb)) => p9 < smb,
         (Some(_), None) => true,
@@ -104,27 +105,28 @@ fn p9np_antes_que_smb(orden: &str) -> bool {
     }
 }
 
-/// Si una ruta es de este equipo y se puede mirar en el disco sin salir a la red: ni [`ruta_de_red`]
-/// ni, en Windows, con otro prefijo que el de una unidad (`C:`): UNC, `\\?\` y `\\.\` fuera. Una unidad
-/// de red con letra (`Z:`) no se distingue sin preguntar al sistema y sí se mira. Las de WSL (`\\wsl$\…`,
-/// `\\wsl.localhost\…`) son de este equipo si WSL las atiende (ver [`de_wsl`]).
+/// Whether a path is on this computer and can be looked at on disk without going out to the network:
+/// not [`ruta_de_red`] and, on Windows, no prefix other than a drive one (`C:`): UNC, `\\?\` and `\\.\`
+/// are out. A network drive with a letter (`Z:`) can't be told apart without asking the system and is
+/// looked at. WSL ones (`\\wsl$\…`, `\\wsl.localhost\…`) are on this computer if WSL serves them (see
+/// [`is_wsl`]).
 ///
-/// Es el filtro de todo lo que llega de fuera. La carpeta en la que la persona trabaja puede estar en
-/// una carpeta de red y se lee igual: ver [`legible`].
+/// It is the filter for everything that comes from outside. The folder the person works in can be in
+/// a network folder and is read all the same: see [`legible`].
 pub fn ruta_local(p: &Path) -> bool {
     let s = p.to_string_lossy();
-    if de_wsl(s.trim_start()) {
+    if is_wsl(s.trim_start()) {
         return true;
     }
     #[cfg(windows)]
-    if disco_extendido(&s) {
+    if extended_disk(&s) {
         return true;
     }
     if ruta_de_red(&s) {
         return false;
     }
-    // `\??\…` (el prefijo de las rutas de NT): Windows lo pasa tal cual, así que `\??\UNC\host\x` es
-    // un recurso de red aunque empiece por una sola barra (para `Path`, la raíz de la unidad actual).
+    // `\??\…` (the NT path prefix): Windows passes it through as is, so `\??\UNC\host\x` is a network
+    // share even though it starts with a single slash (for `Path`, the root of the current drive).
     let b = s.trim_start().as_bytes();
     let nt = b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[1] == b'?' && b[2] == b'?' && matches!(b[3], b'\\' | b'/');
     #[cfg(windows)]
@@ -137,44 +139,44 @@ pub fn ruta_local(p: &Path) -> bool {
     !nt
 }
 
-/// Si un texto de ruta es el de una unidad con el prefijo de ruta extendida de Windows (`\\?\C:\…`, la
-/// forma que da `canonicalize` y que ponen algunos programas para pasar de 260 caracteres): es de este
-/// equipo como `C:\…` (y como `Z:`, una unidad de red con letra no se distingue sin preguntar al
-/// sistema; ver [`ruta_local`]). Solo con barras invertidas, que es como lo reconoce Windows
-/// (`//?/C:/` no es esto), una letra, `:` y nada o una barra detrás, y sin `..`: con el prefijo, Windows
-/// no normaliza la ruta y la pasa tal cual. `\\?\UNC\…` (de red), `\\?\Volume{…}`, `\\?\GLOBALROOT\…`,
-/// `\\.\…` y `\??\…` no lo son.
+/// Whether a path text is a drive with the Windows extended-path prefix (`\\?\C:\…`, the form
+/// `canonicalize` gives and that some programs use to go past 260 characters): it is on this computer
+/// like `C:\…` (and like `Z:`, a network drive with a letter can't be told apart without asking the
+/// system; see [`ruta_local`]). Only with backslashes, which is how Windows recognises it (`//?/C:/` is
+/// not this), one letter, `:` and nothing or a slash after it, and no `..`: with the prefix, Windows
+/// doesn't normalize the path and passes it as is. `\\?\UNC\…` (network), `\\?\Volume{…}`,
+/// `\\?\GLOBALROOT\…`, `\\.\…` and `\??\…` are not.
 #[cfg(any(windows, test))]
-fn disco_extendido(s: &str) -> bool {
-    let Some(resto) = s.strip_prefix(r"\\?\") else { return false };
-    let b = resto.as_bytes();
-    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\') && !resto.split(['\\', '/']).any(|c| c == "..")
+fn extended_disk(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix(r"\\?\") else { return false };
+    let b = rest.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\') && !rest.split(['\\', '/']).any(|c| c == "..")
 }
 
-/// La ruta si es local ([`ruta_local`]); `None` si no. Para las carpetas que salen de una variable de
-/// entorno (`HOME`, `USERPROFILE`, `OMOIKANE_HOME`, `COPILOT_HOME`…) antes de mirar nada dentro.
+/// The path if it is local ([`ruta_local`]); `None` if not. For folders that come from an environment
+/// variable (`HOME`, `USERPROFILE`, `OMOIKANE_HOME`, `COPILOT_HOME`…) before looking at anything inside.
 pub fn local(p: PathBuf) -> Option<PathBuf> {
     ruta_local(&p).then_some(p)
 }
 
-/// La carpeta del usuario si es local (ver [`local`]).
+/// The user's folder if it is local (see [`local`]).
 pub fn casa_local() -> Option<PathBuf> {
     std::env::home_dir().filter(|h| h.is_absolute()).and_then(local)
 }
 
-/// `is_dir` de una ruta que puede venir de fuera (de una línea de la sincronización, de un fichero, de
-/// un agente): solo si es local ([`ruta_local`]); una de red ni se mira.
+/// `is_dir` of a path that may come from outside (from a sync line, from a file, from an agent): only
+/// if it is local ([`ruta_local`]); a network one isn't even looked at.
 pub fn es_carpeta(p: &Path) -> bool {
     ruta_local(p) && p.is_dir()
 }
 
-/// `exists`, con la misma condición que [`es_carpeta`].
+/// `exists`, with the same condition as [`es_carpeta`].
 pub fn existe(p: &Path) -> bool {
     ruta_local(p) && p.exists()
 }
 
-/// El error de una ruta que no es de este equipo.
-fn no_local(p: &Path) -> anyhow::Error {
+/// The error for a path that is not on this computer.
+fn not_local(p: &Path) -> anyhow::Error {
     anyhow::anyhow!(tr!(
         "{} is not a folder on this computer: Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…, \\??\\…); map it to a drive letter if you need it",
         "{} no es una carpeta de este equipo: Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…, \\??\\…); si la necesitas, asígnale una letra de unidad",
@@ -182,90 +184,92 @@ fn no_local(p: &Path) -> anyhow::Error {
     ))
 }
 
-/// Error si la ruta no es local ([`ruta_local`]), antes de tocar el disco.
+/// Error if the path is not local ([`ruta_local`]), before touching the disk.
 pub fn exigir_local(p: &Path) -> Result<()> {
-    if ruta_local(p) { Ok(()) } else { Err(no_local(p)) }
+    if ruta_local(p) { Ok(()) } else { Err(not_local(p)) }
 }
 
-// --- La carpeta en la que se trabaja -----------------------------------------------------------------
+// --- The folder being worked in -------------------------------------------------------------------
 //
-// Hay dos clases de rutas. Las que llegan de FUERA (el texto y los `paths` de una memoria, `project` o
-// `dir` por MCP, `?dir=` de la web, `--dir`, lo que trae la sincronización, un bundle, una variable de
-// entorno) las puede escribir un agente, otra persona o cualquier web: pasan por [`ruta_local`] y una
-// de red no se abre nunca (en Windows, solo con mirarla se abre una conexión SMB con el servidor que
-// diga, que entrega el hash NTLM de la persona y puede tardar ~21 s en fallar).
+// There are two kinds of paths. Those that come from OUTSIDE (the text and the `paths` of a memory,
+// `project` or `dir` over MCP, `?dir=` from the web, `--dir`, what the sync brings, a bundle, an
+// environment variable) can be written by an agent, another person or any website: they go through
+// [`ruta_local`] and a network one is never opened (on Windows, just looking at it opens an SMB
+// connection to whatever server it names, which hands over the person's NTLM hash and can take ~21 s
+// to fail).
 //
-// La carpeta en la que la persona TRABAJA no llega de fuera: es la del proceso (`omoi` lanzado ahí, el
-// servidor MCP del agente) o el `cwd` que manda el hook del propio agente, que es la carpeta de su
-// sesión. Esa puede estar en una carpeta de red (`\\servidor\recurso`, una unidad compartida, WSL) y ahí
-// se lee el repositorio como en la 1.8.0: su `origin` (la clave `git:` del proyecto), `.git/HEAD` (el
-// commit de la procedencia), su carpeta git común (worktrees) y si existe (`last_seen`). Si no, un
-// proyecto nuevo ahí recibía `dir:persona/nombre`, no se veía nunca y el hook fallaba.
+// The folder the person WORKS in doesn't come from outside: it is the process's (`omoi` launched
+// there, the agent's MCP server) or the `cwd` sent by the agent's own hook, which is the folder of its
+// session. That one can be in a network folder (`\\server\share`, a shared drive, WSL) and there the
+// repository is read as in 1.8.0: its `origin` (the project's `git:` key), `.git/HEAD` (the provenance
+// commit), its common git folder (worktrees) and whether it exists (`last_seen`). Otherwise, a new
+// project there got `dir:person/name`, was never seen and the hook failed.
 //
-// Lo que se confía es el recurso entero (`\\servidor\recurso`) de esa carpeta, no solo la carpeta: el
-// repositorio puede empezar más arriba (`\\srv\equipo\repo` trabajando en `\\srv\equipo\repo\src`) y la
-// carpeta git de un worktree puede estar al lado. Leer otra carpeta del mismo recurso no abre ninguna
-// conexión nueva ni habla con otra máquina: el sistema ya está conectado ahí porque la persona trabaja
-// ahí. Un recurso distinto, aunque sea del mismo servidor, sigue siendo de fuera. Y esto solo vale para
-// las lecturas del repositorio de la lista de arriba ([`legible`]): `de`, `canonica` y lo demás que
-// recibe rutas de fuera siguen con [`ruta_local`].
+// What is trusted is that folder's whole share (`\\server\share`), not just the folder: the
+// repository can start higher up (`\\srv\team\repo` while working in `\\srv\team\repo\src`) and a
+// worktree's git folder can be next to it. Reading another folder of the same share opens no new
+// connection and talks to no other machine: the system is already connected there because the person
+// works there. A different share, even on the same server, is still outside. And this only applies to
+// the repository reads in the list above ([`legible`]): `de`, `canonica` and everything else that
+// receives paths from outside still go through [`ruta_local`].
 
-/// Los recursos de red (`servidor\recurso`, en minúsculas) de las carpetas de trabajo que este proceso
-/// recibió de un hook ([`de_confianza`]). La del proceso se mira aparte, cada vez ([`de_trabajo`]).
-static RECURSOS_DE_TRABAJO: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// The network shares (`server\share`, lowercase) of the work folders this process received from a
+/// hook ([`de_confianza`]). The process's own one is checked separately, each time ([`is_work_share`]).
+static WORK_SHARES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// El recurso de red de una ruta UNC (`\\servidor\recurso\…` o `\\?\UNC\servidor\recurso\…`) en
-/// minúsculas; `None` si no es UNC (una unidad, una relativa, `\\.\…`, `\??\…`, o fuera de Windows).
-fn recurso_de_red(p: &Path) -> Option<String> {
+/// The network share of a UNC path (`\\server\share\…` or `\\?\UNC\server\share\…`) in lowercase;
+/// `None` if it is not UNC (a drive, a relative path, `\\.\…`, `\??\…`, or outside Windows).
+fn network_share(p: &Path) -> Option<String> {
     #[cfg(windows)]
     {
         use std::path::{Component, Prefix};
         if let Some(Component::Prefix(x)) = p.components().next()
-            && let Prefix::UNC(servidor, recurso) | Prefix::VerbatimUNC(servidor, recurso) = x.kind()
+            && let Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) = x.kind()
         {
-            return Some(format!("{}\\{}", servidor.to_string_lossy(), recurso.to_string_lossy()).to_lowercase());
+            return Some(format!("{}\\{}", server.to_string_lossy(), share.to_string_lossy()).to_lowercase());
         }
     }
     let _ = p;
     None
 }
 
-/// Si `recurso` es el de una carpeta de trabajo: la del proceso o una recibida de un hook.
-fn de_trabajo(recurso: &str) -> bool {
-    std::env::current_dir().ok().and_then(|d| recurso_de_red(&d)).as_deref() == Some(recurso)
-        || RECURSOS_DE_TRABAJO.lock().is_ok_and(|v| v.iter().any(|r| r == recurso))
+/// Whether `share` is that of a work folder: the process's or one received from a hook.
+fn is_work_share(share: &str) -> bool {
+    std::env::current_dir().ok().and_then(|d| network_share(&d)).as_deref() == Some(share)
+        || WORK_SHARES.lock().is_ok_and(|v| v.iter().any(|r| r == share))
 }
 
-/// Si se puede leer el repositorio de una ruta: es local ([`ruta_local`]) o está en el mismo recurso de
-/// red que la carpeta en la que se trabaja (ver arriba). Solo para leer el repositorio de un proyecto
-/// (`origin`, `HEAD`, la carpeta git común, si existe); nunca para decidir si se acepta una ruta de fuera.
+/// Whether the repository of a path can be read: it is local ([`ruta_local`]) or it is on the same
+/// network share as the folder being worked in (see above). Only for reading a project's repository
+/// (`origin`, `HEAD`, the common git folder, whether it exists); never to decide whether a path from
+/// outside is accepted.
 pub fn legible(p: &Path) -> bool {
-    ruta_local(p) || recurso_de_red(p).is_some_and(|r| de_trabajo(&r))
+    ruta_local(p) || network_share(p).is_some_and(|r| is_work_share(&r))
 }
 
-/// La ruta si es [`legible`]; `None` si no.
+/// The path if it is [`legible`]; `None` if not.
 pub fn si_legible(p: PathBuf) -> Option<PathBuf> {
     legible(&p).then_some(p)
 }
 
-/// Proyecto de la carpeta en la que trabaja la persona, que puede ser de red: la del proceso
-/// ([`actual`]) o el `cwd` que manda el hook del agente (la carpeta de su sesión). Desde aquí, su
-/// recurso de red cuenta como de trabajo para [`legible`]. Nunca para una ruta que llegue de fuera (un
-/// argumento, `project`, `?dir=`): esas van por [`de`].
+/// Project of the folder the person works in, which may be on the network: the process's
+/// ([`actual`]) or the `cwd` sent by the agent's hook (the folder of its session). From here on, its
+/// network share counts as a work one for [`legible`]. Never for a path that comes from outside (an
+/// argument, `project`, `?dir=`): those go through [`de`].
 pub fn de_confianza(dir: &Path) -> Result<String> {
-    apuntar_de_trabajo(dir);
-    de_sin_mirar(dir)
+    note_work_folder(dir);
+    of_unchecked(dir)
 }
 
-/// Apunta el recurso de red de una carpeta de trabajo (si es de red), sin mirar nada en el disco.
-fn apuntar_de_trabajo(dir: &Path) {
-    if let Some(r) = recurso_de_red(dir) {
-        if let Ok(mut v) = RECURSOS_DE_TRABAJO.lock()
+/// Notes the network share of a work folder (if it is on the network), without looking at the disk.
+fn note_work_folder(dir: &Path) {
+    if let Some(r) = network_share(dir) {
+        if let Ok(mut v) = WORK_SHARES.lock()
             && !v.contains(&r)
         {
             v.push(r);
         }
-        if let Ok(mut v) = CARPETAS_DE_TRABAJO.lock()
+        if let Ok(mut v) = WORK_FOLDERS.lock()
             && !v.iter().any(|c| c == dir)
         {
             v.push(dir.to_path_buf());
@@ -273,256 +277,259 @@ fn apuntar_de_trabajo(dir: &Path) {
     }
 }
 
-/// Las carpetas de trabajo de red que recibió este proceso ([`de_confianza`]), enteras: para aceptar
-/// esa misma carpeta cuando llega como `project` ([`de_pedida`]).
-static CARPETAS_DE_TRABAJO: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// The network work folders this process received ([`de_confianza`]), whole: to accept that same
+/// folder when it comes as `project` ([`de_pedida`]).
+static WORK_FOLDERS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
-/// Proyecto de una carpeta que llega de fuera (`project` por MCP o por `omoi serve`): como [`de`], y
-/// además la propia carpeta de trabajo de red de la sesión (la del proceso o la del hook, ver
-/// [`de_confianza`]) o la raíz de su repositorio, escritas como sea (`\\?\UNC\…`, `/`, mayúsculas, una
-/// barra al final). Esa ya se lee: el agente que trabaja en `\\servidor\equipo\repo` y la pasa como
-/// `project` no pide nada nuevo. Cualquier otra ruta de red, también del mismo recurso o una carpeta
-/// dentro de la de trabajo, sigue siendo un error sin tocar el disco.
+/// Project of a folder that comes from outside (`project` over MCP or via `omoi serve`): like [`de`],
+/// plus the session's own network work folder (the process's or the hook's, see [`de_confianza`]) or
+/// the root of its repository, written any way (`\\?\UNC\…`, `/`, uppercase, a trailing slash). That
+/// one is already read: the agent working in `\\server\team\repo` that passes it as `project` asks for
+/// nothing new. Any other network path, even on the same share or a folder inside the work one, is
+/// still an error without touching the disk.
 pub fn de_pedida(dir: &Path) -> Result<String> {
     if ruta_local(dir) {
         return de(dir);
     }
-    let pedida = forma_de_comparar(dir).ok_or_else(|| no_local(dir))?;
-    let mut trabajo: Vec<PathBuf> = std::env::current_dir().into_iter().filter(|d| recurso_de_red(d).is_some()).collect();
-    if let Ok(v) = CARPETAS_DE_TRABAJO.lock() {
-        trabajo.extend(v.iter().cloned());
+    let requested = comparison_form(dir).ok_or_else(|| not_local(dir))?;
+    let mut work: Vec<PathBuf> = std::env::current_dir().into_iter().filter(|d| network_share(d).is_some()).collect();
+    if let Ok(v) = WORK_FOLDERS.lock() {
+        work.extend(v.iter().cloned());
     }
-    for t in trabajo {
-        let Some(forma) = forma_de_comparar(&t) else { continue };
-        if forma == pedida {
+    for t in work {
+        let Some(form) = comparison_form(&t) else { continue };
+        if form == requested {
             return de_confianza(&t);
         }
-        // La raíz de su repositorio (el proyecto de la sesión, el que enseñan `context` y las memorias),
-        // que está por encima de la carpeta de trabajo: se calcula desde ella, que ya es de confianza.
-        // Si la pedida no está por encima, ni se mira.
-        if forma.starts_with(&format!(r"{pedida}\"))
-            && let Ok(raiz) = de_confianza(&t)
-            && forma_de_comparar(Path::new(&raiz)).as_ref() == Some(&pedida)
+        // The root of its repository (the session's project, the one `context` and the memories
+        // show), which is above the work folder: it is computed from that folder, which is already
+        // trusted. If the requested one is not above it, it isn't even looked at.
+        if form.starts_with(&format!(r"{requested}\"))
+            && let Ok(root) = de_confianza(&t)
+            && comparison_form(Path::new(&root)).as_ref() == Some(&requested)
         {
-            return Ok(raiz);
+            return Ok(root);
         }
     }
-    Err(no_local(dir))
+    Err(not_local(dir))
 }
 
-/// Una ruta UNC escrita de una sola forma para compararla sin tocar el disco: `\\servidor\…` con barras
-/// invertidas, sin `\\?\UNC\`, sin barras de más ni al final y, en Windows y macOS, en minúsculas
-/// ([`comparable`]). `None` si no es UNC o lleva `.` o `..` (llevarían a otra carpeta).
-fn forma_de_comparar(p: &Path) -> Option<String> {
-    recurso_de_red(p)?;
+/// A UNC path written in a single form to compare it without touching the disk: `\\server\…` with
+/// backslashes, without `\\?\UNC\`, without extra or trailing slashes and, on Windows and macOS, in
+/// lowercase ([`comparable`]). `None` if it is not UNC or contains `.` or `..` (they would lead to
+/// another folder).
+fn comparison_form(p: &Path) -> Option<String> {
+    network_share(p)?;
     let s = p.to_string_lossy().replace('/', r"\");
-    let resto = match s.get(..8) {
+    let rest = match s.get(..8) {
         Some(x) if x.eq_ignore_ascii_case(r"\\?\UNC\") => &s[8..],
         _ => s.strip_prefix(r"\\")?,
     };
-    let partes: Vec<&str> = resto.split('\\').filter(|c| !c.is_empty()).collect();
-    if partes.len() < 2 || partes.iter().any(|c| *c == "." || *c == "..") {
+    let parts: Vec<&str> = rest.split('\\').filter(|c| !c.is_empty()).collect();
+    if parts.len() < 2 || parts.iter().any(|c| *c == "." || *c == "..") {
         return None;
     }
-    Some(comparable(&format!(r"\\{}", partes.join(r"\"))))
+    Some(comparable(&format!(r"\\{}", parts.join(r"\"))))
 }
 
-/// Proyecto de la carpeta actual, que puede estar en un recurso de red (ver [`de_confianza`]).
+/// Project of the current folder, which may be on a network share (see [`de_confianza`]).
 pub fn actual() -> Result<String> {
     de_confianza(&std::env::current_dir().with_context(|| tr!("can't read the current folder", "no se puede leer la carpeta actual"))?)
 }
 
-/// Proyecto de una carpeta. Una ruta que no es local ([`ruta_local`]) da error sin tocar el disco: en
-/// Windows, solo con mirarla se abre una conexión SMB (que tarda en fallar y entrega el hash NTLM de la
-/// persona al servidor que diga), y la ruta puede venir de un agente (`project`) o de una web (`?dir=`).
+/// Project of a folder. A path that is not local ([`ruta_local`]) gives an error without touching the
+/// disk: on Windows, just looking at it opens an SMB connection (which takes a while to fail and hands
+/// the person's NTLM hash to whatever server it names), and the path can come from an agent
+/// (`project`) or from a website (`?dir=`).
 pub fn de(dir: &Path) -> Result<String> {
     exigir_local(dir)?;
-    de_sin_mirar(dir)
+    of_unchecked(dir)
 }
 
-fn de_sin_mirar(dir: &Path) -> Result<String> {
-    let dir = canonica_sin_mirar(dir)?;
-    let raiz = dir.ancestors().find(|d| d.join(".git").exists()).unwrap_or(&dir);
-    Ok(texto(raiz))
+fn of_unchecked(dir: &Path) -> Result<String> {
+    let dir = canonical_unchecked(dir)?;
+    let root = dir.ancestors().find(|d| d.join(".git").exists()).unwrap_or(&dir);
+    Ok(texto(root))
 }
 
-/// Si el proyecto es una carpeta general y no un proyecto: la carpeta del usuario, una por encima de
-/// ella o la raíz de una unidad, sin repositorio git. Quien abre las sesiones ahí trabaja en muchos
-/// proyectos a la vez, así que desde ahí se ven las memorias de todos.
+/// Whether the project is a general folder and not a project: the user's folder, one above it or the
+/// root of a drive, without a git repository. Whoever opens sessions there works on many projects at
+/// once, so from there the memories of all of them are visible.
 pub fn es_general(project: &str) -> bool {
-    match carpeta_personal() {
-        Some(home) => general_en(project, Path::new(home)),
+    match home_project() {
+        Some(home) => general_in(project, Path::new(home)),
         None => false,
     }
 }
 
-/// La carpeta del usuario como proyecto (`de`), calculada una vez por proceso: en Windows, resolverla
-/// cuesta un par de milisegundos, y el recall de cada mensaje pregunta varias veces por el ámbito.
-fn carpeta_personal() -> Option<&'static str> {
+/// The user's folder as a project (`de`), computed once per process: on Windows, resolving it costs
+/// a couple of milliseconds, and the recall of every message asks about the scope several times.
+fn home_project() -> Option<&'static str> {
     static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     HOME.get_or_init(|| casa_local().and_then(|h| de(&h).ok())).as_deref()
 }
 
-fn general_en(project: &str, home: &Path) -> bool {
+fn general_in(project: &str, home: &Path) -> bool {
     let p = Path::new(project);
     !project.is_empty() && ruta_local(p) && !p.join(".git").exists() && (home.starts_with(p) || p.parent().is_none())
 }
 
-/// Proyecto de una carpeta que alguien da a propósito (`--project`, `project`): una carpeta general
-/// no es un proyecto, así que da global.
+/// Project of a folder someone gives on purpose (`--project`, `project`): a general folder is not a
+/// project, so it gives global.
 pub fn de_carpeta(dir: &Path) -> Result<String> {
     let p = de_pedida(dir)?;
     Ok(if es_general(&p) { String::new() } else { p })
 }
 
-/// Dónde guardar una memoria que no dice su proyecto: el actual si es un proyecto de verdad; si es
-/// una carpeta general, el repositorio al que apunten sus rutas absolutas (las de `paths` y las que
-/// cite el texto) cuando es uno solo, y si no, ninguno: global. Devuelve también las rutas: si el
-/// proyecto salió de ellas, las que caen dentro de ese repositorio pasan a relativas a su raíz.
-pub fn para_guardar(actual: &str, paths: &[String], texto: &str) -> (String, Vec<String>) {
-    if !es_general(actual) {
-        return (actual.to_string(), paths.to_vec());
+/// Where to save a memory that doesn't say its project: the current one if it is a real project; if
+/// it is a general folder, the repository its absolute paths point to (those in `paths` and those the
+/// text cites) when there is only one, and otherwise none: global. Also returns the paths: if the
+/// project came from them, those that fall inside that repository become relative to its root.
+pub fn para_guardar(current: &str, paths: &[String], text: &str) -> (String, Vec<String>) {
+    if !es_general(current) {
+        return (current.to_string(), paths.to_vec());
     }
-    let home = carpeta_personal().unwrap_or_default();
+    let home = home_project().unwrap_or_default();
     let home = Path::new(home);
     let mut repos: Vec<String> = paths
         .iter()
         .cloned()
-        .chain(rutas_en(texto, home))
-        .filter_map(|r| repo_de_ruta(&r, home))
+        .chain(paths_in(text, home))
+        .filter_map(|r| repo_of_path(&r, home))
         .collect();
     repos.sort();
     repos.dedup();
     match repos.as_slice() {
-        [uno] => (uno.clone(), paths.iter().map(|r| relativa_a(r, uno, home)).collect()),
+        [one] => (one.clone(), paths.iter().map(|r| relative_to(r, one, home)).collect()),
         _ => (String::new(), paths.to_vec()),
     }
 }
 
-/// Palabras con pinta de ruta absoluta que cita un texto. Una ruta con espacios
-/// (`C:\Users\marcm\the codex\app\x.kt`) llega partida en palabras: se va alargando con las
-/// siguientes (como mucho `PALABRAS_MAX`) y se queda la que llega más hondo en el disco.
-fn rutas_en(texto: &str, home: &Path) -> Vec<String> {
-    const PALABRAS_MAX: usize = 6;
+/// Words that look like an absolute path cited in a text. A path with spaces
+/// (`C:\Users\marcm\the codex\app\x.kt`) arrives split into words: it is extended with the following
+/// ones (at most `MAX_WORDS`) and the one that goes deepest on disk is kept.
+fn paths_in(text: &str, home: &Path) -> Vec<String> {
+    const MAX_WORDS: usize = 6;
     let mut v = Vec::new();
-    for trozo in texto.split(|c: char| c == '\n' || "`\"'«»()[]<>,;*".contains(c)) {
-        let palabras: Vec<&str> = trozo.split(' ').filter(|p| !p.is_empty()).collect();
-        for (i, p) in palabras.iter().enumerate() {
-            if expandir(p, home).is_none() {
+    for chunk in text.split(|c: char| c == '\n' || "`\"'«»()[]<>,;*".contains(c)) {
+        let words: Vec<&str> = chunk.split(' ').filter(|p| !p.is_empty()).collect();
+        for (i, p) in words.iter().enumerate() {
+            if expand(p, home).is_none() {
                 continue;
             }
-            let mut mejor = (*p).to_string();
-            let mut hondo = profundidad(&mejor, home);
-            let mut candidata = mejor.clone();
-            for siguiente in palabras.iter().skip(i + 1).take(PALABRAS_MAX) {
-                candidata = format!("{candidata} {siguiente}");
-                let h = profundidad(&candidata, home);
-                if h > hondo {
-                    (mejor, hondo) = (candidata.clone(), h);
+            let mut best = (*p).to_string();
+            let mut deepest = depth(&best, home);
+            let mut candidate = best.clone();
+            for next in words.iter().skip(i + 1).take(MAX_WORDS) {
+                candidate = format!("{candidate} {next}");
+                let h = depth(&candidate, home);
+                if h > deepest {
+                    (best, deepest) = (candidate.clone(), h);
                 }
             }
-            v.push(mejor.trim_end_matches(['.', ':', '?', '!']).to_string());
+            v.push(best.trim_end_matches(['.', ':', '?', '!']).to_string());
         }
     }
     v
 }
 
-/// Cuántos componentes de la ruta existen en el disco (la del antepasado existente más hondo). Solo
-/// de una ruta absoluta y local (ver [`expandir`]): otra ni se mira.
-fn profundidad(ruta: &str, home: &Path) -> usize {
-    let Some(r) = expandir(ruta, home) else { return 0 };
+/// How many components of the path exist on disk (those of the deepest existing ancestor). Only for an
+/// absolute, local path (see [`expand`]): any other isn't even looked at.
+fn depth(path: &str, home: &Path) -> usize {
+    let Some(r) = expand(path, home) else { return 0 };
     r.ancestors().find(|a| a.exists()).map_or(0, |a| a.components().count())
 }
 
-/// Una ruta absoluta (o con `~`) y local ([`ruta_local`]), sin la puntuación del final; `None` si no lo
-/// es. Lo que sigue a `~/` puede ser otra ruta entera (`~/\\host\share`, `~\//host/x`, `~/C:\x`): al
-/// juntarla con la carpeta personal, `join` se queda con ella. Por eso se mira la ruta ya montada.
-fn expandir(ruta: &str, home: &Path) -> Option<PathBuf> {
-    let ruta = ruta.trim_end_matches(['.', ':', '?', '!']);
-    if ruta_de_red(ruta) {
+/// An absolute (or `~`) and local ([`ruta_local`]) path, without trailing punctuation; `None` if it
+/// isn't. What follows `~/` can be another whole path (`~/\\host\share`, `~\//host/x`, `~/C:\x`): when
+/// joined with the home folder, `join` keeps that one. That's why the already assembled path is checked.
+fn expand(path: &str, home: &Path) -> Option<PathBuf> {
+    let path = path.trim_end_matches(['.', ':', '?', '!']);
+    if ruta_de_red(path) {
         return None;
     }
-    let b = ruta.as_bytes();
-    let absoluta = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
-        || (cfg!(unix) && ruta.len() > 1 && ruta.starts_with('/'));
-    let p = if let Some(resto) = ruta.strip_prefix("~/").or_else(|| ruta.strip_prefix("~\\")) {
-        // Sin carpeta personal (o con una que no es local), `~` no es nada.
+    let b = path.as_bytes();
+    let absolute = (b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        || (cfg!(unix) && path.len() > 1 && path.starts_with('/'));
+    let p = if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        // Without a home folder (or with one that isn't local), `~` is nothing.
         if home.as_os_str().is_empty() || !home.is_absolute() {
             return None;
         }
-        home.join(resto)
-    } else if absoluta {
-        PathBuf::from(ruta)
+        home.join(rest)
+    } else if absolute {
+        PathBuf::from(path)
     } else {
         return None;
     };
     (p.is_absolute() && ruta_local(&p)).then_some(p)
 }
 
-/// La ruta en forma canónica aunque el final aún no exista: el antepasado existente más hondo,
-/// canónico, más el resto tal cual. `None` con una ruta que no es local (ni se mira).
-fn canonica_parcial(ruta: &Path) -> Option<PathBuf> {
-    if !ruta_local(ruta) {
+/// The path in canonical form even if its end doesn't exist yet: the deepest existing ancestor,
+/// canonical, plus the rest as is. `None` for a path that is not local (it isn't even looked at).
+fn partial_canonical(path: &Path) -> Option<PathBuf> {
+    if !ruta_local(path) {
         return None;
     }
-    let existe = ruta.ancestors().find(|a| a.exists())?;
-    let resto = ruta.strip_prefix(existe).ok()?;
-    Some(PathBuf::from(texto(&canonica(existe).ok()?)).join(resto))
+    let existing = path.ancestors().find(|a| a.exists())?;
+    let rest = path.strip_prefix(existing).ok()?;
+    Some(PathBuf::from(texto(&canonica(existing).ok()?)).join(rest))
 }
 
-/// `ruta` relativa a `repo` si cae dentro; si no (o no es absoluta), tal cual.
-fn relativa_a(ruta: &str, repo: &str, home: &Path) -> String {
-    let Some(abs) = expandir(ruta, home).and_then(|p| canonica_parcial(&p)) else { return ruta.to_string() };
+/// `path` relative to `repo` if it falls inside; if not (or it isn't absolute), as is.
+fn relative_to(path: &str, repo: &str, home: &Path) -> String {
+    let Some(abs) = expand(path, home).and_then(|p| partial_canonical(&p)) else { return path.to_string() };
     match abs.strip_prefix(repo) {
         Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),
-        _ => ruta.to_string(),
+        _ => path.to_string(),
     }
 }
 
-/// El repositorio git que contiene una ruta absoluta (aunque el fichero ya no exista), si lo hay y no
-/// es la carpeta del usuario.
-fn repo_de_ruta(ruta: &str, home: &Path) -> Option<String> {
-    let ruta = expandir(ruta, home)?;
-    if !ruta_local(&ruta) {
+/// The git repository that contains an absolute path (even if the file no longer exists), if there is
+/// one and it isn't the user's folder.
+fn repo_of_path(path: &str, home: &Path) -> Option<String> {
+    let path = expand(path, home)?;
+    if !ruta_local(&path) {
         return None;
     }
-    let existe = ruta.ancestors().find(|a| a.exists())?;
-    let raiz = existe.ancestors().find(|d| d.join(".git").exists())?;
-    let raiz = de(raiz).ok()?;
-    // Los clones de herramientas (`~/.claude/plugins/…`, `~/.cargo/git/…`, `AppData`) no son proyectos.
-    let oculto = Path::new(&raiz).strip_prefix(home).is_ok_and(|r| {
+    let existing = path.ancestors().find(|a| a.exists())?;
+    let root = existing.ancestors().find(|d| d.join(".git").exists())?;
+    let root = de(root).ok()?;
+    // Tool clones (`~/.claude/plugins/…`, `~/.cargo/git/…`, `AppData`) are not projects.
+    let hidden = Path::new(&root).strip_prefix(home).is_ok_and(|r| {
         r.components().any(|c| {
             let c = c.as_os_str().to_string_lossy();
             c.starts_with('.') || c.eq_ignore_ascii_case("AppData")
         })
     });
-    (Path::new(&raiz) != home && !oculto).then_some(raiz)
+    (Path::new(&root) != home && !hidden).then_some(root)
 }
 
-/// La forma canónica de una ruta local; una que no lo es ([`ruta_local`]) da error sin tocar el disco.
+/// The canonical form of a local path; one that isn't ([`ruta_local`]) gives an error without touching
+/// the disk.
 pub(crate) fn canonica(p: &Path) -> Result<PathBuf> {
     exigir_local(p)?;
-    canonica_sin_mirar(p)
+    canonical_unchecked(p)
 }
 
-fn canonica_sin_mirar(p: &Path) -> Result<PathBuf> {
+fn canonical_unchecked(p: &Path) -> Result<PathBuf> {
     let c = std::fs::canonicalize(p).with_context(|| tr!("{} doesn't exist", "no existe {}", p.display()))?;
-    // En Windows, canonicalize devuelve `\\?\C:\…`: se quita el prefijo para guardar la ruta normal.
+    // On Windows, canonicalize returns `\\?\C:\…`: the prefix is removed to store the normal path.
     #[cfg(windows)]
     {
         let s = c.to_string_lossy();
-        if let Some(resto) = s.strip_prefix(r"\\?\UNC\") {
-            return Ok(PathBuf::from(format!(r"\\{resto}")));
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return Ok(PathBuf::from(format!(r"\\{rest}")));
         }
-        if let Some(resto) = s.strip_prefix(r"\\?\") {
-            return Ok(PathBuf::from(resto));
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(rest));
         }
     }
     Ok(c)
 }
 
-/// La ruta como texto, con la letra de unidad en mayúscula en Windows: así coinciden las rutas que
-/// llegan de sitios distintos.
+/// The path as text, with the drive letter in uppercase on Windows: that way paths coming from
+/// different places match.
 #[cfg(windows)]
 pub(crate) fn texto(p: &Path) -> String {
     let mut b = p.to_string_lossy().into_owned().into_bytes();
@@ -537,264 +544,263 @@ pub(crate) fn texto(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-// --- Proyectos y espacios en la base (esquema 10) -------------------------------------------------
+// --- Projects and spaces in the database (schema 10) ----------------------------------------------
 //
-// Un proyecto es una fila de `project` con su clave de sincronización (calculada una vez, al crearlo)
-// y todas las carpetas donde vive en `project_path`: un clon, un worktree, la carpeta a la que se
-// movió o la ruta que trajo otro equipo (`is_foreign`). Un espacio (`space`) agrupa proyectos de un
-// mismo cliente: desde un proyecto se ven las memorias suyas, las de su espacio y las globales, nunca
-// las de otro espacio.
+// A project is a row of `project` with its sync key (computed once, when it is created) and all the
+// folders where it lives in `project_path`: a clone, a worktree, the folder it was moved to or the path
+// another computer brought (`is_foreign`). A space (`space`) groups projects of the same client: from a
+// project you see its own memories, those of its space and the global ones, never those of another
+// space.
 
-/// Cómo se comparan dos rutas: en Windows y macOS (sistemas de ficheros que no distinguen mayúsculas),
-/// en minúsculas.
-pub fn comparable(ruta: &str) -> String {
-    if cfg!(any(windows, target_os = "macos")) { ruta.to_lowercase() } else { ruta.to_string() }
+/// How two paths are compared: on Windows and macOS (case-insensitive file systems), in lowercase.
+pub fn comparable(path: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) { path.to_lowercase() } else { path.to_string() }
 }
 
-/// El nombre corto de un proyecto: el de su carpeta (o, sin ruta, el final de la clave).
-pub fn nombre_de(ruta: &str, clave: &str) -> String {
-    // `[<clave>]` es la ruta de un proyecto que llegó por la sincronización sin carpeta aquí (`de_clave`).
-    let ruta = if ruta.starts_with('[') && ruta.ends_with(']') { "" } else { ruta };
-    let desde_ruta = ruta.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
-    if !desde_ruta.is_empty() {
-        return desde_ruta;
+/// The short name of a project: that of its folder (or, without a path, the end of the key).
+pub fn nombre_de(path: &str, key: &str) -> String {
+    // `[<key>]` is the path of a project that came through the sync without a folder here (`de_clave`).
+    let path = if path.starts_with('[') && path.ends_with(']') { "" } else { path };
+    let from_path = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").to_string();
+    if !from_path.is_empty() {
+        return from_path;
     }
-    clave.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or(clave).to_string()
+    key.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or(key).to_string()
 }
 
-/// El `origin` de git de una carpeta, normalizado como en las claves (vacío si no tiene).
-pub fn origen(ruta: &str) -> String {
-    if ruta.is_empty() {
+/// The git `origin` of a folder, normalized as in the keys (empty if it has none).
+pub fn origen(path: &str) -> String {
+    if path.is_empty() {
         return String::new();
     }
-    crate::sync::origen_git(Path::new(ruta)).map(|u| crate::sync::normalizar_remoto(&u)).unwrap_or_default()
+    crate::sync::origen_git(Path::new(path)).map(|u| crate::sync::normalizar_remoto(&u)).unwrap_or_default()
 }
 
-fn ahora(db: &Connection) -> Result<String> {
+fn now(db: &Connection) -> Result<String> {
     Ok(db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |f| f.get(0))?)
 }
 
-/// El proyecto (y su espacio) de una carpeta que ya está apuntada.
-fn por_ruta(db: &Connection, ruta: &str) -> Result<Option<(i64, Option<i64>)>> {
+/// The project (and its space) of a folder that is already registered.
+fn by_path(db: &Connection, path: &str) -> Result<Option<(i64, Option<i64>)>> {
     Ok(db
         .query_row(
             "SELECT pp.project_id, p.space_id FROM project_path pp JOIN project p ON p.id = pp.project_id WHERE pp.path_cmp = ?1",
-            [comparable(ruta)],
+            [comparable(path)],
             |f| Ok((f.get(0)?, f.get(1)?)),
         )
         .optional()?)
 }
 
-/// Qué es una carpeta que aún no está apuntada.
+/// What a folder that is not registered yet is.
 enum Decision {
-    /// Otra carpeta del proyecto que ya tiene esa clave (un clon, un worktree, la carpeta movida de un
-    /// repositorio con `origin`, o la carpeta local de un proyecto que llegó de otro equipo).
-    Unir(i64, Option<i64>),
-    /// Un proyecto nuevo, con esta clave.
-    Nuevo(String),
+    /// Another folder of the project that already has that key (a clone, a worktree, the moved folder
+    /// of a repository with `origin`, or the local folder of a project that came from another computer).
+    Join(i64, Option<i64>),
+    /// A new project, with this key.
+    New(String),
 }
 
-fn decidir(db: &Connection, ruta: &str, persona: &str) -> Result<Decision> {
-    let clave = crate::sync::clave(ruta, persona);
-    // Sin `origin`, los worktrees de un mismo repositorio se reconocen por su carpeta git común: el
-    // worktree de un repositorio cuya carpeta principal ya está apuntada es ese proyecto, se llame
-    // como se llame su carpeta.
-    let comun = if clave.starts_with("dir:") { git_comun(Path::new(ruta)) } else { None };
-    // (La principal no es la propia carpeta, tampoco escrita de otra forma: `CLAUDE~1` y su nombre largo.)
-    if let Some(principal) = comun.as_deref().and_then(principal_de)
-        && principal != ruta
-        && canonica_legible(Path::new(ruta)).map(|p| texto(&p)).as_deref() != Some(principal.as_str())
-        && let Some((id, espacio)) = por_ruta(db, &principal)?
+fn decide(db: &Connection, path: &str, person: &str) -> Result<Decision> {
+    let key = crate::sync::clave(path, person);
+    // Without `origin`, the worktrees of the same repository are recognised by their common git folder:
+    // the worktree of a repository whose main folder is already registered is that project, whatever
+    // its folder is called.
+    let common = if key.starts_with("dir:") { git_comun(Path::new(path)) } else { None };
+    // (The main one is not the folder itself, not even written another way: `CLAUDE~1` and its long name.)
+    if let Some(main) = common.as_deref().and_then(main_of)
+        && main != path
+        && legible_canonical(Path::new(path)).map(|p| texto(&p)).as_deref() != Some(main.as_str())
+        && let Some((id, space)) = by_path(db, &main)?
     {
-        return Ok(Decision::Unir(id, espacio));
+        return Ok(Decision::Join(id, space));
     }
-    let mismo_repo = |id: i64| -> Result<bool> {
-        let Some(c) = &comun else { return Ok(false) };
+    let same_repo = |id: i64| -> Result<bool> {
+        let Some(c) = &common else { return Ok(false) };
         let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1 AND is_foreign = 0")?;
-        let rutas: Vec<String> = q.query_map([id], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-        Ok(rutas.iter().any(|r| git_comun(Path::new(r)).as_ref() == Some(c)))
+        let paths: Vec<String> = q.query_map([id], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(paths.iter().any(|r| git_comun(Path::new(r)).as_ref() == Some(c)))
     };
-    let existente: Option<(i64, Option<i64>)> =
-        db.query_row("SELECT id, space_id FROM project WHERE key = ?1", [&clave], |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
-    let Some((id, espacio)) = existente else { return Ok(Decision::Nuevo(clave)) };
-    // Con `origin`, la misma clave es el mismo repositorio. Sin él (`dir:`), dos carpetas con el mismo
-    // nombre pueden ser cosas distintas: solo se junta con un proyecto que aquí no tiene ninguna
-    // carpeta propia (el de otro equipo de la misma persona), o con uno de cuyo repositorio git es
-    // worktree. Una carpeta movida sin `origin` se arregla con `omoi projects move` (Revisar la
-    // enseña como «ya no está»).
-    if clave.starts_with("git:") || carpetas_propias(db, id)? == 0 || mismo_repo(id)? {
-        return Ok(Decision::Unir(id, espacio));
+    let existing: Option<(i64, Option<i64>)> =
+        db.query_row("SELECT id, space_id FROM project WHERE key = ?1", [&key], |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
+    let Some((id, space)) = existing else { return Ok(Decision::New(key)) };
+    // With `origin`, the same key is the same repository. Without it (`dir:`), two folders with the same
+    // name can be different things: it only joins a project that has no folder of its own here (the
+    // one from another computer of the same person), or one whose git repository it is a worktree of.
+    // A folder moved without `origin` is fixed with `omoi projects move` (Review shows it as
+    // «ya no está»).
+    if key.starts_with("git:") || carpetas_propias(db, id)? == 0 || same_repo(id)? {
+        return Ok(Decision::Join(id, space));
     }
     let mut n = 2;
     loop {
-        let k = format!("{clave}~{n}");
-        let ya: Option<(i64, Option<i64>, i64)> = db
+        let k = format!("{key}~{n}");
+        let found: Option<(i64, Option<i64>, i64)> = db
             .query_row(
                 "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0) FROM project p WHERE p.key = ?1",
                 [&k],
                 |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)),
             )
             .optional()?;
-        match ya {
-            None => return Ok(Decision::Nuevo(k)),
-            Some((id, espacio, 0)) => return Ok(Decision::Unir(id, espacio)),
-            Some((id, espacio, _)) if mismo_repo(id)? => return Ok(Decision::Unir(id, espacio)),
+        match found {
+            None => return Ok(Decision::New(k)),
+            Some((id, space, 0)) => return Ok(Decision::Join(id, space)),
+            Some((id, space, _)) if same_repo(id)? => return Ok(Decision::Join(id, space)),
             Some(_) => n += 1,
         }
     }
 }
 
-/// La carpeta git común de la raíz de un repositorio, canónica: su `.git`, o en un worktree (`.git` es
-/// un fichero `gitdir: …` y esa carpeta tiene `commondir`) la del repositorio principal. `None` si no
-/// hay repositorio, o si `.git` es un fichero que no es de un worktree (un submódulo).
-pub(crate) fn git_comun(raiz: &Path) -> Option<PathBuf> {
-    // Local, o en el recurso de red de la carpeta en la que se trabaja (ver `legible`).
-    if !legible(raiz) {
+/// The common git folder of a repository root, canonical: its `.git`, or in a worktree (`.git` is a
+/// `gitdir: …` file and that folder has `commondir`) the main repository's. `None` if there is no
+/// repository, or if `.git` is a file that doesn't belong to a worktree (a submodule).
+pub(crate) fn git_comun(root: &Path) -> Option<PathBuf> {
+    // Local, or on the network share of the folder being worked in (see `legible`).
+    if !legible(root) {
         return None;
     }
-    let punto = raiz.join(".git");
-    let dir = if punto.is_dir() {
-        punto
+    let dot = root.join(".git");
+    let dir = if dot.is_dir() {
+        dot
     } else {
-        let t = std::fs::read_to_string(&punto).ok()?;
-        // Lo que dice el fichero `.git` (y su `commondir`) también puede ser una ruta de red: de otro
-        // recurso, no se mira.
-        let gitdir = si_legible(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
-        let comun = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
-        gitdir.join(comun.trim())
+        let t = std::fs::read_to_string(&dot).ok()?;
+        // What the `.git` file (and its `commondir`) says can also be a network path: from another
+        // share, it isn't looked at.
+        let gitdir = si_legible(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        gitdir.join(common.trim())
     };
-    canonica_legible(&dir)
+    legible_canonical(&dir)
 }
 
-/// La forma canónica de una ruta [`legible`]; `None` si no lo es (sin tocar el disco) o no existe.
-fn canonica_legible(p: &Path) -> Option<PathBuf> {
-    if legible(p) { canonica_sin_mirar(p).ok() } else { None }
+/// The canonical form of a [`legible`] path; `None` if it isn't (without touching the disk) or doesn't
+/// exist.
+fn legible_canonical(p: &Path) -> Option<PathBuf> {
+    if legible(p) { canonical_unchecked(p).ok() } else { None }
 }
 
-/// La carpeta de trabajo principal de una carpeta git común (`<principal>/.git`); `None` en un
-/// repositorio desnudo.
-fn principal_de(comun: &Path) -> Option<String> {
-    (comun.file_name()? == ".git").then(|| comun.parent().map(texto)).flatten()
+/// The main work folder of a common git folder (`<main>/.git`); `None` in a bare repository.
+fn main_of(common: &Path) -> Option<String> {
+    (common.file_name()? == ".git").then(|| common.parent().map(texto)).flatten()
 }
 
-/// El nombre del repositorio de un worktree sin `origin`: el de la carpeta principal (o el del
-/// repositorio desnudo sin `.git`), en minúsculas. `None` si la carpeta no es un worktree.
-pub(crate) fn nombre_de_worktree(raiz: &Path) -> Option<String> {
-    if !legible(raiz) || raiz.join(".git").is_dir() {
+/// The repository name of a worktree without `origin`: that of the main folder (or that of the bare
+/// repository without `.git`), in lowercase. `None` if the folder is not a worktree.
+pub(crate) fn nombre_de_worktree(root: &Path) -> Option<String> {
+    if !legible(root) || root.join(".git").is_dir() {
         return None;
     }
-    let comun = git_comun(raiz)?;
-    let nombre = match principal_de(&comun) {
+    let common = git_comun(root)?;
+    let name = match main_of(&common) {
         Some(p) => Path::new(&p).file_name()?.to_string_lossy().into_owned(),
         None => {
-            let n = comun.file_name()?.to_string_lossy().into_owned();
+            let n = common.file_name()?.to_string_lossy().into_owned();
             n.strip_suffix(".git").map(str::to_string).unwrap_or(n)
         }
     };
-    (!nombre.is_empty()).then(|| nombre.to_lowercase())
+    (!name.is_empty()).then(|| name.to_lowercase())
 }
 
-/// Cuántas carpetas propias (de este equipo, no las que trajo otro) tiene un proyecto.
-pub fn carpetas_propias(db: &Connection, proyecto: i64) -> Result<i64> {
-    Ok(db.query_row("SELECT count(*) FROM project_path WHERE project_id = ?1 AND is_foreign = 0", [proyecto], |f| f.get(0))?)
+/// How many folders of its own (from this computer, not those another one brought) a project has.
+pub fn carpetas_propias(db: &Connection, project: i64) -> Result<i64> {
+    Ok(db.query_row("SELECT count(*) FROM project_path WHERE project_id = ?1 AND is_foreign = 0", [project], |f| f.get(0))?)
 }
 
-/// Si una carpeta ya está apuntada como carpeta de un proyecto.
-pub fn apuntada(db: &Connection, ruta: &str) -> Result<bool> {
-    Ok(por_ruta(db, ruta)?.is_some())
+/// Whether a folder is already registered as a folder of a project.
+pub fn apuntada(db: &Connection, path: &str) -> Result<bool> {
+    Ok(by_path(db, path)?.is_some())
 }
 
-/// El proyecto de una carpeta, sin escribir nada: el apuntado o, si no lo está, el que tiene su clave
-/// (si la carpeta se juntaría con él). `None`: un proyecto que aún no tiene nada. La carpeta vacía es
-/// lo global (0).
-pub fn resolver(db: &Connection, ruta: &str) -> Result<Option<(i64, Option<i64>)>> {
-    if ruta.is_empty() {
+/// The project of a folder, without writing anything: the registered one or, if it isn't, the one
+/// that has its key (if the folder would join it). `None`: a project that has nothing yet. The empty
+/// folder is global (0).
+pub fn resolver(db: &Connection, path: &str) -> Result<Option<(i64, Option<i64>)>> {
+    if path.is_empty() {
         return Ok(Some((0, None)));
     }
-    if let Some(r) = por_ruta(db, ruta)? {
+    if let Some(r) = by_path(db, path)? {
         return Ok(Some(r));
     }
-    Ok(match decidir(db, ruta, &crate::db::persona_de(db))? {
-        Decision::Unir(id, espacio) => Some((id, espacio)),
-        Decision::Nuevo(_) => None,
+    Ok(match decide(db, path, &crate::db::persona_de(db))? {
+        Decision::Join(id, space) => Some((id, space)),
+        Decision::New(_) => None,
     })
 }
 
-/// El id del proyecto de una carpeta, apuntándola si hace falta (y creando el proyecto si es nuevo).
-/// De paso apunta cuándo se vio y su `origin`: si cambió, la clave no cambia (las memorias de los
-/// demás equipos la siguen usando) y Revisar lo avisa.
-pub fn registrar(db: &Connection, ruta: &str) -> Result<i64> {
-    Ok(registrar_avisando(db, ruta)?.0)
+/// The id of a folder's project, registering it if needed (and creating the project if it is new).
+/// Along the way it records when it was seen and its `origin`: if that changed, the key doesn't change
+/// (the memories of the other computers still use it) and Review warns about it.
+pub fn registrar(db: &Connection, path: &str) -> Result<i64> {
+    Ok(registrar_avisando(db, path)?.0)
 }
 
-/// Como `registrar`, y además la carpeta donde estaba el proyecto si esta es la que la sustituye
-/// (aquella ya no existe: la carpeta se movió y el `origin` lo dice). Pasa una sola vez: después, la
-/// principal ya es esta.
-pub fn registrar_avisando(db: &Connection, ruta: &str) -> Result<(i64, Option<String>)> {
-    if ruta.is_empty() {
+/// Like `registrar`, plus the folder where the project was if this one replaces it (that one no
+/// longer exists: the folder was moved and the `origin` says so). It happens only once: afterwards,
+/// the main one is this one.
+pub fn registrar_avisando(db: &Connection, path: &str) -> Result<(i64, Option<String>)> {
+    if path.is_empty() {
         return Ok((0, None));
     }
-    let ahora = ahora(db)?;
-    // La carpeta de un proyecto puede estar en el recurso de red en el que se trabaja (ver `legible`).
-    let existe = legible(Path::new(ruta)) && Path::new(ruta).is_dir();
-    if let Some((id, espacio)) = por_ruta(db, ruta)? {
-        if existe {
-            // La ruta que trajo otro equipo existe ahora aquí: es la primera carpeta de este equipo, y
-            // como al unirse por la clave, entrar así en un espacio pide confirmarlo.
-            let reclamado = espacio.is_some() && carpetas_propias(db, id)? == 0;
+    let now = now(db)?;
+    // A project's folder can be on the network share being worked in (see `legible`).
+    let exists = legible(Path::new(path)) && Path::new(path).is_dir();
+    if let Some((id, space)) = by_path(db, path)? {
+        if exists {
+            // The path another computer brought now exists here: it is this computer's first folder,
+            // and as when joining by key, entering a space this way needs confirming.
+            let claimed = space.is_some() && carpetas_propias(db, id)? == 0;
             db.execute(
                 "UPDATE project_path SET is_foreign = 0, origin = ?2, last_seen = ?3
                  WHERE path_cmp = ?1 AND (is_foreign = 1 OR origin != ?2 OR last_seen IS NULL OR last_seen < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'))",
-                params![comparable(ruta), origen(ruta), ahora],
+                params![comparable(path), origen(path), now],
             )?;
-            if reclamado && !adopta_sin_pausa(db, id)? {
+            if claimed && !adopta_sin_pausa(db, id)? {
                 pausar_por_reclamo(db, id)?;
             }
-            return Ok((id, principal_si_hace_falta(db, id, ruta)?));
+            return Ok((id, main_if_needed(db, id, path)?));
         }
         return Ok((id, None));
     }
-    let (id, reclamado) = match decidir(db, ruta, &crate::db::persona_de(db))? {
-        // Un proyecto que está en un espacio sin tener aquí ninguna carpeta propia está en él porque lo
-        // dice el repositorio de ese espacio (una línea `project`, o una memoria con su clave): esta
-        // carpeta no entra en él sin que la persona lo confirme.
-        Decision::Unir(id, espacio) => (id, espacio.is_some() && carpetas_propias(db, id)? == 0),
-        Decision::Nuevo(clave) => {
+    let (id, claimed) = match decide(db, path, &crate::db::persona_de(db))? {
+        // A project that is in a space without having any folder of its own here is in it because that
+        // space's repository says so (a `project` line, or a memory with its key): this folder doesn't
+        // enter it without the person confirming.
+        Decision::Join(id, space) => (id, space.is_some() && carpetas_propias(db, id)? == 0),
+        Decision::New(key) => {
             db.execute(
                 "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![clave, nombre_de(ruta, &clave), ruta, ahora],
+                params![key, nombre_de(path, &key), path, now],
             )?;
             (db.last_insert_rowid(), false)
         }
     };
     db.execute(
         "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-        params![ruta, comparable(ruta), id, origen(ruta), existe.then_some(&ahora)],
+        params![path, comparable(path), id, origen(path), exists.then_some(&now)],
     )?;
-    if reclamado && !adopta_sin_pausa(db, id)? {
+    if claimed && !adopta_sin_pausa(db, id)? {
         pausar_por_reclamo(db, id)?;
     }
-    Ok((id, principal_si_hace_falta(db, id, ruta)?))
+    Ok((id, main_if_needed(db, id, path)?))
 }
 
-/// La ruta principal de un proyecto (la que enseñan las memorias) pasa a `ruta` si la de ahora es de
-/// otro equipo o ya no existe aquí (la carpeta se movió). Devuelve la de antes si era de aquí y se
-/// movió (para avisar).
-fn principal_si_hace_falta(db: &Connection, id: i64, ruta: &str) -> Result<Option<String>> {
-    let (actual, ajena): (String, bool) = db.query_row(
+/// A project's main path (the one the memories show) becomes `path` if the current one is from another
+/// computer or no longer exists here (the folder was moved). Returns the previous one if it was from
+/// here and was moved (to warn).
+fn main_if_needed(db: &Connection, id: i64, path: &str) -> Result<Option<String>> {
+    let (current, foreign): (String, bool) = db.query_row(
         "SELECT p.path, COALESCE((SELECT is_foreign FROM project_path WHERE path = p.path), 1) FROM project p WHERE p.id = ?1",
         [id],
         |f| Ok((f.get(0)?, f.get(1)?)),
     )?;
-    if actual != ruta && es_carpeta(Path::new(ruta)) && (ajena || actual.is_empty() || !es_carpeta(Path::new(&actual))) {
-        db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![id, ruta, nombre_de(ruta, "")])?;
-        return Ok((!ajena && !actual.is_empty()).then_some(actual));
+    if current != path && es_carpeta(Path::new(path)) && (foreign || current.is_empty() || !es_carpeta(Path::new(&current))) {
+        db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![id, path, nombre_de(path, "")])?;
+        return Ok((!foreign && !current.is_empty()).then_some(current));
     }
     Ok(None)
 }
 
-/// `omoi projects prune`: los proyectos sin memorias (y sus carpetas apuntadas) se borran. El de una
-/// carpeta en la que se vuelva a trabajar se crea otra vez solo. Devuelve cuántos.
+/// `omoi projects prune`: projects without memories (and their registered folders) are deleted. The
+/// one for a folder that is worked in again is created again by itself. Returns how many.
 pub fn podar(db: &Connection) -> Result<usize> {
     crate::diario::antes_de_podar(db)?;
     db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
@@ -803,83 +809,83 @@ pub fn podar(db: &Connection) -> Result<usize> {
     Ok(n)
 }
 
-/// El proyecto de una clave que llega de otro equipo (o de un fichero de `omoi export`), creándolo con
-/// la ruta de origen si aquí no hay ninguno. Si esa ruta existe aquí con la misma clave, es la carpeta
-/// local del proyecto; si existe con otra clave o ya es de otro proyecto, la ruta ajena lleva la
-/// clave detrás (`/workspace [git:…]`) para no confundirse con él.
+/// The project of a key that comes from another computer (or from an `omoi export` file), creating it
+/// with the origin path if there is none here. If that path exists here with the same key, it is the
+/// project's local folder; if it exists with another key or already belongs to another project, the
+/// foreign path carries the key after it (`/workspace [git:…]`) so it isn't confused with it.
 ///
-/// Con `de_copia` (un `omoi import` o una restauración de la papelera, no la sincronización), una
-/// carpeta sin apuntar que existe aquí en la ruta de origen y que tendría esa misma clave con la
-/// persona de la clave (`dir:<persona>/<carpeta>`) es esa carpeta: la copia es de esta misma carpeta,
-/// quizá de otra base con otra persona local. Por la sincronización no: dos personas pueden tener la
-/// misma ruta en sus equipos.
-pub fn de_clave(db: &Connection, clave: &str, ruta_origen: &str, persona: &str, de_copia: bool) -> Result<i64> {
-    if clave.is_empty() {
+/// With `from_copy` (an `omoi import` or a restore from the trash, not the sync), an unregistered
+/// folder that exists here at the origin path and that would have that same key with the key's person
+/// (`dir:<person>/<folder>`) is that folder: the copy is of this same folder, maybe from another
+/// database with another local person. Not through the sync: two people can have the same path on
+/// their computers.
+pub fn de_clave(db: &Connection, key: &str, origin_path: &str, person: &str, from_copy: bool) -> Result<i64> {
+    if key.is_empty() {
         return Ok(0);
     }
-    if let Some(id) = db.query_row("SELECT id FROM project WHERE key = ?1", [clave], |f| f.get(0)).optional()? {
+    if let Some(id) = db.query_row("SELECT id FROM project WHERE key = ?1", [key], |f| f.get(0)).optional()? {
         return Ok(id);
     }
-    let existe = !ruta_origen.is_empty() && es_carpeta(Path::new(ruta_origen));
-    // En una copia (no por la sincronización), la clave de la 1.9.0 de una carpeta que aquí ya está
-    // apuntada con la de siempre (`dir:<persona>/x` y la copia dice `dir:<persona>/acme/x`), sin espacio
-    // o en ese mismo: es esta carpeta, que en la base de la copia entró en acme. Toma esa clave, como
-    // la habría tomado al meterla aquí en el espacio (si la de siempre no ha salido de este equipo).
-    if de_copia
-        && existe
-        && let Some(e) = espacio_en_clave_dir(clave)
-        && let Some((id, espacio)) = por_ruta(db, ruta_origen)?
-        && let vieja = clave_de(db, id)?
-        && clave_dir_en_espacio(&vieja, e).as_deref() == Some(clave)
-        && (espacio.is_none() || clave_espacio(db, espacio)? == e)
-        && !crate::sync::en_el_general(db, &vieja)
+    let exists = !origin_path.is_empty() && es_carpeta(Path::new(origin_path));
+    // In a copy (not through the sync), the 1.9.0 key of a folder that is already registered here with
+    // the usual one (`dir:<person>/x` and the copy says `dir:<person>/acme/x`), with no space or in that
+    // same one: it is this folder, which in the copy's database entered acme. It takes that key, as it
+    // would have taken it when put here into the space (if the usual one hasn't left this computer).
+    if from_copy
+        && exists
+        && let Some(e) = espacio_en_clave_dir(key)
+        && let Some((id, space)) = by_path(db, origin_path)?
+        && let old = clave_de(db, id)?
+        && clave_dir_en_espacio(&old, e).as_deref() == Some(key)
+        && (space.is_none() || clave_espacio(db, space)? == e)
+        && !crate::sync::en_el_general(db, &old)
     {
-        cambiar_clave(db, id, &vieja, clave)?;
+        change_key(db, id, &old, key)?;
         return Ok(id);
     }
-    if existe && por_ruta(db, ruta_origen)?.is_none() {
-        if crate::sync::clave(ruta_origen, persona) == clave {
-            return registrar(db, ruta_origen);
+    if exists && by_path(db, origin_path)?.is_none() {
+        if crate::sync::clave(origin_path, person) == key {
+            return registrar(db, origin_path);
         }
-        let suya = clave.strip_prefix("dir:").and_then(|r| r.split_once('/')).map(|(p, _)| p);
-        // (Con la clave de la 1.9.0, la de esa carpeta en el espacio que dice la clave.)
-        let es_esta = |p: &str| {
-            let k = crate::sync::clave(ruta_origen, p);
-            k == clave || espacio_en_clave_dir(clave).and_then(|e| clave_dir_en_espacio(&k, e)).as_deref() == Some(clave)
+        let theirs = key.strip_prefix("dir:").and_then(|r| r.split_once('/')).map(|(p, _)| p);
+        // (With the 1.9.0 key, that of this folder in the space the key says.)
+        let is_this = |p: &str| {
+            let k = crate::sync::clave(origin_path, p);
+            k == key || espacio_en_clave_dir(key).and_then(|e| clave_dir_en_espacio(&k, e)).as_deref() == Some(key)
         };
-        if de_copia && suya.is_some_and(es_esta) {
-            let ahora = ahora(db)?;
-            db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![clave, nombre_de(ruta_origen, clave), ruta_origen, ahora])?;
+        if from_copy && theirs.is_some_and(is_this) {
+            let now = now(db)?;
+            db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![key, nombre_de(origin_path, key), origin_path, now])?;
             let id = db.last_insert_rowid();
             db.execute(
                 "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, '', 0, ?4)",
-                params![ruta_origen, comparable(ruta_origen), id, ahora],
+                params![origin_path, comparable(origin_path), id, now],
             )?;
             return Ok(id);
         }
     }
-    let libre = |r: &str| -> Result<bool> { Ok(por_ruta(db, r)?.is_none() && !crate::proyecto::existe(Path::new(r))) };
-    let mut ruta = if ruta_origen.is_empty() { format!("[{clave}]") } else { ruta_origen.to_string() };
-    if !libre(&ruta)? {
-        ruta = format!("{ruta_origen} [{clave}]");
+    let free = |r: &str| -> Result<bool> { Ok(by_path(db, r)?.is_none() && !crate::proyecto::existe(Path::new(r))) };
+    let mut path = if origin_path.is_empty() { format!("[{key}]") } else { origin_path.to_string() };
+    if !free(&path)? {
+        path = format!("{origin_path} [{key}]");
     }
-    let base = ruta.clone();
+    let base = path.clone();
     let mut n = 2;
-    while !libre(&ruta)? {
-        ruta = format!("{base} ({n})");
+    while !free(&path)? {
+        path = format!("{base} ({n})");
         n += 1;
     }
-    let ahora = ahora(db)?;
-    db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![clave, nombre_de(ruta_origen, clave), ruta, ahora])?;
+    let now = now(db)?;
+    db.execute("INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)", params![key, nombre_de(origin_path, key), path, now])?;
     let id = db.last_insert_rowid();
     db.execute(
         "INSERT INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, '', 1, NULL)",
-        params![ruta, comparable(&ruta), id],
+        params![path, comparable(&path), id],
     )?;
     Ok(id)
 }
 
-/// Un proyecto, como lo enseñan `context`, `omoi projects` y Revisar.
+/// A project, as shown by `context`, `omoi projects` and Review.
 #[derive(Clone, Debug, Serialize)]
 pub struct Proyecto {
     #[serde(skip)]
@@ -892,26 +898,26 @@ pub struct Proyecto {
     pub memories: i64,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub last_update: String,
-    /// La memoria `status` más reciente, en una línea.
+    /// The most recent `status` memory, in one line.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub status: String,
-    /// Su carpeta ya no existe en este equipo (y no es de otro equipo).
+    /// Its folder no longer exists on this computer (and it isn't from another computer).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub gone: bool,
-    /// El `origin` de git de alguna de sus carpetas ya no es el de su clave.
+    /// The git `origin` of one of its folders is no longer that of its key.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub origin_changed: String,
-    /// Sus oficios (android, web…: `oficios`), los detectados y los puestos a mano.
+    /// Its trades (android, web…: `oficios`), the detected ones and those set by hand.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trades: Vec<String>,
 }
 
-/// Los proyectos con memorias (o el que se pida, aunque no tenga), del más al menos activo. Sin lo
-/// global. Con `espacio`, solo los de ese espacio (`Some(None)`: los que no tienen).
-pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, limite: usize) -> Result<Vec<Proyecto>> {
-    // Cuántas y la última, de todos los proyectos en una pasada por el índice `memory_scope` (con
-    // 50.000 memorias, una subconsulta por proyecto recorría la tabla entera una vez por cada uno).
-    let por_proyecto: std::collections::HashMap<i64, (i64, String)> = {
+/// The projects with memories (or the one asked for, even if it has none), from most to least active.
+/// Without global. With `space`, only those of that space (`Some(None)`: those that have none).
+pub fn lista(db: &Connection, only: Option<i64>, space: Option<Option<i64>>, limit: usize) -> Result<Vec<Proyecto>> {
+    // How many and the latest, for all projects in one pass over the `memory_scope` index (with 50,000
+    // memories, one subquery per project scanned the whole table once for each).
+    let per_project: std::collections::HashMap<i64, (i64, String)> = {
         let mut q = db.prepare("SELECT project_id, count(*), max(updated_at) FROM memory WHERE project_id != 0 GROUP BY project_id")?;
         q.query_map([], |f| Ok((f.get(0)?, (f.get(1)?, f.get(2)?))))?.collect::<rusqlite::Result<_>>()?
     };
@@ -924,11 +930,11 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
          FROM project p LEFT JOIN space s ON s.id = p.space_id
          WHERE p.id != 0 AND (?1 IS NULL OR p.id = ?1)",
     )?;
-    // (proyecto, su ruta principal es de otro equipo, su espacio)
+    // (project, its main path is from another computer, its space)
     let mut v: Vec<(Proyecto, bool, Option<i64>)> = q
-        .query_map(params![solo], |f| {
+        .query_map(params![only], |f| {
             let id: i64 = f.get(0)?;
-            let (memories, last_update) = por_proyecto.get(&id).cloned().unwrap_or_default();
+            let (memories, last_update) = per_project.get(&id).cloned().unwrap_or_default();
             Ok((
                 Proyecto {
                     id,
@@ -948,48 +954,48 @@ pub fn lista(db: &Connection, solo: Option<i64>, espacio: Option<Option<i64>>, l
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    v.retain(|(p, _, e)| (p.memories > 0 || solo.is_some()) && espacio.is_none_or(|x| x == *e));
+    v.retain(|(p, _, e)| (p.memories > 0 || only.is_some()) && space.is_none_or(|x| x == *e));
     v.sort_by(|a, b| b.0.last_update.cmp(&a.0.last_update).then(a.0.name.cmp(&b.0.name)));
-    v.truncate(limite);
-    // El `status` más reciente de cada proyecto, en una pasada por la tabla: el `LIKE` descarta sin leer
-    // el JSON lo que no lleva la etiqueta, y con `max`, SQLite da el título de esa misma fila. `NOT
-    // INDEXED`: por el índice de proyecto, SQLite iba fila a fila a la tabla (210 ms con 50.000
-    // memorias, frente a 30 recorriéndola de seguido).
-    let estados: std::collections::HashMap<i64, String> = {
+    v.truncate(limit);
+    // The most recent `status` of each project, in one pass over the table: the `LIKE` discards without
+    // reading the JSON whatever doesn't carry the tag, and with `max`, SQLite gives the title of that same
+    // row. `NOT INDEXED`: through the project index, SQLite went row by row to the table (210 ms with
+    // 50,000 memories, versus 30 scanning it straight through).
+    let statuses: std::collections::HashMap<i64, String> = {
         let mut q = db.prepare(
             "SELECT project_id, title, max(updated_at) FROM memory NOT INDEXED
              WHERE project_id != 0 AND tags LIKE ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
              GROUP BY project_id",
         )?;
-        let etiqueta = crate::memoria::ESTADO;
-        q.query_map(params![format!("%\"{etiqueta}\"%"), etiqueta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        let tag = crate::memoria::ESTADO;
+        q.query_map(params![format!("%\"{tag}\"%"), tag], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let mut oficios = crate::oficios::de_proyectos(db)?;
+    let mut trades = crate::oficios::de_proyectos(db)?;
     Ok(v.into_iter()
-        .map(|(mut p, ajena, _)| {
-            p.gone = !ajena && !p.path.is_empty() && legible(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
-            p.status = estados.get(&p.id).cloned().unwrap_or_default();
-            p.trades = oficios.remove(&p.id).unwrap_or_default();
+        .map(|(mut p, foreign, _)| {
+            p.gone = !foreign && !p.path.is_empty() && legible(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
+            p.status = statuses.get(&p.id).cloned().unwrap_or_default();
+            p.trades = trades.remove(&p.id).unwrap_or_default();
             p
         })
         .collect())
 }
 
-/// El proyecto que dice una persona o un agente: una carpeta, o un nombre o trozo de nombre de los
-/// proyectos conocidos («balua»). Error si no encaja con ninguno o encaja con varios (con la lista).
-pub fn buscar(db: &Connection, texto: &str) -> Result<i64> {
-    buscar_en(db, texto, &crate::memoria::Ambito::Todos)
+/// The project a person or an agent names: a folder, or a name or part of a name of the known
+/// projects («balua»). Error if it matches none or matches several (with the list).
+pub fn buscar(db: &Connection, text: &str) -> Result<i64> {
+    buscar_en(db, text, &crate::memoria::Ambito::Todos)
 }
 
-/// [`buscar`] entre los proyectos que se ven desde `ambito`: desde un proyecto o un espacio, los de su
-/// espacio (o, sin espacio, los que no tienen); desde una carpeta general, todos. Un nombre se busca
-/// solo entre ellos (el de otro cliente no encaja ni sale en el error), y una carpeta de otro espacio
-/// es un error.
-pub fn buscar_en(db: &Connection, texto: &str, ambito: &crate::memoria::Ambito) -> Result<i64> {
-    let todo = matches!(ambito, crate::memoria::Ambito::Todos);
-    let id = buscar_entre(db, texto, if todo { None } else { Some(ambito.espacio()) })?;
+/// [`buscar`] among the projects visible from `scope`: from a project or a space, those of its space
+/// (or, without a space, those that have none); from a general folder, all of them. A name is only
+/// searched among them (one from another client doesn't match nor appears in the error), and a folder
+/// from another space is an error.
+pub fn buscar_en(db: &Connection, text: &str, scope: &crate::memoria::Ambito) -> Result<i64> {
+    let all = matches!(scope, crate::memoria::Ambito::Todos);
+    let id = search_among(db, text, if all { None } else { Some(scope.espacio()) })?;
     anyhow::ensure!(
-        todo || espacio_de(db, id)? == ambito.espacio(),
+        all || espacio_de(db, id)? == scope.espacio(),
         tr!(
             "that project is in another space: from here you only reach the projects of this one",
             "ese proyecto es de otro espacio: desde aquí solo se llega a los proyectos de este"
@@ -998,76 +1004,76 @@ pub fn buscar_en(db: &Connection, texto: &str, ambito: &crate::memoria::Ambito) 
     Ok(id)
 }
 
-/// `buscar`, con los nombres solo de los proyectos de este espacio (`Some(None)`: los que no tienen;
-/// `None`: todos).
-fn buscar_entre(db: &Connection, texto: &str, espacio: Option<Option<i64>>) -> Result<i64> {
-    let t = texto.trim();
+/// `buscar`, with names only from the projects of this space (`Some(None)`: those that have none;
+/// `None`: all).
+fn search_among(db: &Connection, text: &str, space: Option<Option<i64>>) -> Result<i64> {
+    let t = text.trim();
     anyhow::ensure!(!t.is_empty(), tr!("which project? give its folder or its name", "¿qué proyecto? di su carpeta o su nombre"));
-    let parece_ruta = t.contains(['/', '\\']) || t == "." || t == "..";
-    if (parece_ruta || es_carpeta(Path::new(t)))
-        && let Ok(ruta) = de_pedida(Path::new(t))
+    let looks_like_path = t.contains(['/', '\\']) || t == "." || t == "..";
+    if (looks_like_path || es_carpeta(Path::new(t)))
+        && let Ok(path) = de_pedida(Path::new(t))
     {
-        if let Some((id, _)) = resolver(db, &ruta)? {
+        if let Some((id, _)) = resolver(db, &path)? {
             return Ok(id);
         }
-        anyhow::ensure!(!parece_ruta, tr!("no memories in the project of {ruta}", "el proyecto de {ruta} no tiene memorias"));
+        anyhow::ensure!(!looks_like_path, tr!("no memories in the project of {path}", "el proyecto de {path} no tiene memorias"));
     }
-    if parece_ruta && let Some((id, _)) = por_ruta(db, t)? {
+    if looks_like_path && let Some((id, _)) = by_path(db, t)? {
         return Ok(id);
     }
-    let todos: Vec<(i64, String, String)> = {
-        let filtro = match espacio {
+    let all: Vec<(i64, String, String)> = {
+        let filter = match space {
             None => String::new(),
             Some(Some(s)) => format!(" AND space_id = {s}"),
             Some(None) => " AND space_id IS NULL".to_string(),
         };
-        let mut q = db.prepare(&format!("SELECT id, name, path FROM project WHERE id != 0{filtro} ORDER BY name"))?;
+        let mut q = db.prepare(&format!("SELECT id, name, path FROM project WHERE id != 0{filter} ORDER BY name"))?;
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    // De más a menos seguro (`nombres`): el mismo nombre sin mayúsculas, acentos ni separadores
-    // («Crónicas» = «cronicas», «social_publish» = «Social Publish»); un trozo del nombre; y, si
-    // nada encaja, a una letra («Omoikae»).
+    // From most to least certain (`nombres`): the same name ignoring case, accents and separators
+    // («Crónicas» = «cronicas», «social_publish» = «Social Publish»); a part of the name; and, if
+    // nothing matches, one letter off («Omoikae»).
     let n = crate::nombres::normal(t);
-    let exactos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| crate::nombres::normal(nombre) == n).collect();
-    let trozos: Vec<&(i64, String, String)> = todos.iter().filter(|(_, nombre, _)| !n.is_empty() && crate::nombres::normal(nombre).contains(&n)).collect();
-    // Dos proyectos que solo se distinguen por las mayúsculas («Omoikane» y «omoikane»): si uno se
-    // escribe tal cual, es ese.
-    let identicos: Vec<&(i64, String, String)> = exactos.iter().copied().filter(|(_, nombre, _)| nombre == t).collect();
-    let elegidos = if identicos.len() == 1 {
-        identicos
-    } else if !exactos.is_empty() {
-        exactos
-    } else if !trozos.is_empty() {
-        trozos
+    let exact: Vec<&(i64, String, String)> = all.iter().filter(|(_, name, _)| crate::nombres::normal(name) == n).collect();
+    let partial: Vec<&(i64, String, String)> = all.iter().filter(|(_, name, _)| !n.is_empty() && crate::nombres::normal(name).contains(&n)).collect();
+    // Two projects that only differ in case («Omoikane» and «omoikane»): if one is written exactly,
+    // it is that one.
+    let identical: Vec<&(i64, String, String)> = exact.iter().copied().filter(|(_, name, _)| name == t).collect();
+    let chosen = if identical.len() == 1 {
+        identical
+    } else if !exact.is_empty() {
+        exact
+    } else if !partial.is_empty() {
+        partial
     } else {
-        todos.iter().filter(|(_, nombre, _)| crate::nombres::parecido(nombre, t) == Some(crate::nombres::Parecido::UnaLetra)).collect()
+        all.iter().filter(|(_, name, _)| crate::nombres::parecido(name, t) == Some(crate::nombres::Parecido::UnaLetra)).collect()
     };
-    match elegidos.as_slice() {
-        [uno] => Ok(uno.0),
+    match chosen.as_slice() {
+        [one] => Ok(one.0),
         [] => anyhow::bail!(tr!(
             "no project matches «{t}» (known: {})",
             "ningún proyecto encaja con «{t}» (hay: {})",
-            todos.iter().map(|x| x.1.as_str()).collect::<Vec<_>>().join(", ")
+            all.iter().map(|x| x.1.as_str()).collect::<Vec<_>>().join(", ")
         )),
-        varios => anyhow::bail!(tr!(
+        several => anyhow::bail!(tr!(
             "«{t}» matches several projects, say which: {}",
             "«{t}» encaja con varios proyectos, di cuál: {}",
-            varios.iter().map(|x| format!("{} ({})", x.1, x.2)).collect::<Vec<_>>().join(", ")
+            several.iter().map(|x| format!("{} ({})", x.1, x.2)).collect::<Vec<_>>().join(", ")
         )),
     }
 }
 
-/// La clave de un proyecto por su id (vacía si no existe o es lo global).
-pub fn clave_de(db: &Connection, proyecto: i64) -> Result<String> {
-    Ok(db.query_row("SELECT key FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?.unwrap_or_default())
+/// The key of a project by its id (empty if it doesn't exist or is global).
+pub fn clave_de(db: &Connection, project: i64) -> Result<String> {
+    Ok(db.query_row("SELECT key FROM project WHERE id = ?1", [project], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
-/// El espacio de un proyecto (`None` si no tiene, o si el proyecto no existe).
-pub fn espacio_de(db: &Connection, proyecto: i64) -> Result<Option<i64>> {
-    Ok(db.query_row("SELECT space_id FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?.flatten())
+/// The space of a project (`None` if it has none, or if the project doesn't exist).
+pub fn espacio_de(db: &Connection, project: i64) -> Result<Option<i64>> {
+    Ok(db.query_row("SELECT space_id FROM project WHERE id = ?1", [project], |f| f.get(0)).optional()?.flatten())
 }
 
-/// Un espacio, como lo enseña `omoi space list`.
+/// A space, as shown by `omoi space list`.
 #[derive(Clone, Debug, Serialize)]
 pub struct Espacio {
     #[serde(skip)]
@@ -1078,37 +1084,37 @@ pub struct Espacio {
     pub memories: i64,
 }
 
-/// La clave de un espacio a partir de su nombre: minúsculas, letras, números y guiones.
-pub fn clave_de_espacio(nombre: &str) -> String {
-    let k: String = nombre.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+/// The key of a space from its name: lowercase, letters, numbers and hyphens.
+pub fn clave_de_espacio(name: &str) -> String {
+    let k: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     k.split('-').filter(|x| !x.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// Crea un espacio. Error si ya hay uno con la misma clave.
-pub fn crear_espacio(db: &Connection, nombre: &str) -> Result<i64> {
-    let clave = clave_de_espacio(nombre);
-    anyhow::ensure!(!clave.is_empty(), tr!("the space needs a name", "el espacio necesita un nombre"));
-    let ya: Option<i64> = db.query_row("SELECT id FROM space WHERE key = ?1", [&clave], |f| f.get(0)).optional()?;
-    anyhow::ensure!(ya.is_none(), tr!("the space «{clave}» already exists", "el espacio «{clave}» ya existe"));
-    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?2, ?3)", params![clave, nombre.trim(), ahora(db)?])?;
+/// Creates a space. Error if there is already one with the same key.
+pub fn crear_espacio(db: &Connection, name: &str) -> Result<i64> {
+    let key = clave_de_espacio(name);
+    anyhow::ensure!(!key.is_empty(), tr!("the space needs a name", "el espacio necesita un nombre"));
+    let found: Option<i64> = db.query_row("SELECT id FROM space WHERE key = ?1", [&key], |f| f.get(0)).optional()?;
+    anyhow::ensure!(found.is_none(), tr!("the space «{key}» already exists", "el espacio «{key}» ya existe"));
+    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?2, ?3)", params![key, name.trim(), now(db)?])?;
     Ok(db.last_insert_rowid())
 }
 
-/// El espacio de una clave que llega de otro equipo, creándolo si aquí no está.
-pub fn espacio_de_clave(db: &Connection, clave: &str) -> Result<Option<i64>> {
-    if clave.is_empty() {
+/// The space of a key that comes from another computer, creating it if it isn't here.
+pub fn espacio_de_clave(db: &Connection, key: &str) -> Result<Option<i64>> {
+    if key.is_empty() {
         return Ok(None);
     }
-    if let Some(id) = db.query_row("SELECT id FROM space WHERE key = ?1", [clave], |f| f.get(0)).optional()? {
+    if let Some(id) = db.query_row("SELECT id FROM space WHERE key = ?1", [key], |f| f.get(0)).optional()? {
         return Ok(Some(id));
     }
-    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?1, ?2)", params![clave, ahora(db)?])?;
+    db.execute("INSERT INTO space(key, name, created_at) VALUES (?1, ?1, ?2)", params![key, now(db)?])?;
     Ok(Some(db.last_insert_rowid()))
 }
 
-/// El espacio que dice una persona o un agente, por su clave o su nombre. Error (con la lista) si no hay.
-pub fn buscar_espacio(db: &Connection, texto: &str) -> Result<i64> {
-    let t = texto.trim();
+/// The space a person or an agent names, by its key or its name. Error (with the list) if there is none.
+pub fn buscar_espacio(db: &Connection, text: &str) -> Result<i64> {
+    let t = text.trim();
     let id: Option<i64> = db
         .query_row(
             "SELECT id FROM space WHERE key = ?1 OR lower(name) = lower(?2) ORDER BY key = ?1 DESC LIMIT 1",
@@ -1117,25 +1123,25 @@ pub fn buscar_espacio(db: &Connection, texto: &str) -> Result<i64> {
         )
         .optional()?;
     id.ok_or_else(|| {
-        let hay: Vec<String> = db
+        let known: Vec<String> = db
             .prepare("SELECT key FROM space ORDER BY key")
             .and_then(|mut q| q.query_map([], |f| f.get(0))?.collect())
             .unwrap_or_default();
         anyhow::anyhow!(tr!(
             "no space «{t}» (there are: {}); create it with `omoi space add {t}`",
             "no hay ningún espacio «{t}» (hay: {}); créalo con `omoi space add {t}`",
-            if hay.is_empty() { "-".to_string() } else { hay.join(", ") }
+            if known.is_empty() { "-".to_string() } else { known.join(", ") }
         ))
     })
 }
 
-/// La clave de un espacio por su id (vacía si no hay).
+/// The key of a space by its id (empty if there is none).
 pub fn clave_espacio(db: &Connection, id: Option<i64>) -> Result<String> {
     let Some(id) = id else { return Ok(String::new()) };
     Ok(db.query_row("SELECT key FROM space WHERE id = ?1", [id], |f| f.get(0)).optional()?.unwrap_or_default())
 }
 
-/// Los espacios, con sus proyectos y cuántas memorias tienen (las de sus proyectos y las suyas).
+/// The spaces, with their projects and how many memories they have (those of their projects and their own).
 pub fn espacios(db: &Connection) -> Result<Vec<Espacio>> {
     let mut q = db.prepare(
         "SELECT s.id, s.key, s.name,
@@ -1154,117 +1160,117 @@ pub fn espacios(db: &Connection) -> Result<Vec<Espacio>> {
         .collect()
 }
 
-/// Mete un proyecto en un espacio (o lo saca, con `None`). El proyecto se lleva un sello nuevo
-/// (`project.hlc`), con el que la sincronización lleva su espacio a los demás equipos en una línea
-/// `project`; sus memorias no cambian de sello (si cambiaran, una versión vieja de aquí ganaría a
-/// una más nueva de otro equipo solo por haberse movido). Si estaba en pausa (`Pausa`), es la decisión
-/// de la persona: sale de ella, con un sello posterior al de la línea que lo pausó (así esa línea ya
-/// no vuelve a pausarlo). Devuelve cuántas memorias tiene.
-pub fn asignar_espacio(db: &Connection, proyecto: i64, espacio: Option<i64>) -> Result<usize> {
-    anyhow::ensure!(proyecto != 0, tr!("global memories have no project to put in a space", "las memorias globales no tienen proyecto que meter en un espacio"));
-    let (antes, previo, pausa): (Option<i64>, String, String) =
-        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
-    let pausada = !pausa.is_empty();
-    // La primera vez que una carpeta sin remoto entra en un espacio sin que su clave haya salido de
-    // este equipo, la clave pasa a llevar el espacio (`clave_con_espacio`).
-    let previo = match (antes, espacio, previo.is_empty() && !pausada) {
-        (None, Some(e), true) => en_una_transaccion(db, || clave_con_espacio(db, proyecto, e))?.unwrap_or(previo),
-        _ => previo,
+/// Puts a project into a space (or takes it out, with `None`). The project gets a new stamp
+/// (`project.hlc`), with which the sync carries its space to the other computers in a `project` line;
+/// its memories don't change stamp (if they did, an old version from here would beat a newer one from
+/// another computer just for having been moved). If it was paused (`Pausa`), this is the person's
+/// decision: it leaves the pause, with a stamp later than that of the line that paused it (so that line
+/// doesn't pause it again). Returns how many memories it has.
+pub fn asignar_espacio(db: &Connection, project: i64, space: Option<i64>) -> Result<usize> {
+    anyhow::ensure!(project != 0, tr!("global memories have no project to put in a space", "las memorias globales no tienen proyecto que meter en un espacio"));
+    let (before, previous, pause): (Option<i64>, String, String) =
+        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [project], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
+    let paused = !pause.is_empty();
+    // The first time a folder without a remote enters a space without its key having left this
+    // computer, the key starts carrying the space (`key_with_space`).
+    let previous = match (before, space, previous.is_empty() && !paused) {
+        (None, Some(e), true) => in_a_transaction(db, || key_with_space(db, project, e))?.unwrap_or(previous),
+        _ => previous,
     };
-    if antes != espacio || previo.is_empty() || pausada {
-        let previo = match Pausa::de(&pausa) {
-            Some(p) if crate::reloj::mayor(&p.hlc, &previo) => p.hlc,
-            _ => previo,
+    if before != space || previous.is_empty() || paused {
+        let previous = match Pausa::de(&pause) {
+            Some(p) if crate::reloj::mayor(&p.hlc, &previous) => p.hlc,
+            _ => previous,
         };
-        let hlc = crate::reloj::sello_tras(db, &previo)?;
-        db.execute("UPDATE project SET space_id = ?2, hlc = ?3, paused = '' WHERE id = ?1", params![proyecto, espacio, hlc])?;
+        let hlc = crate::reloj::sello_tras(db, &previous)?;
+        db.execute("UPDATE project SET space_id = ?2, hlc = ?3, paused = '' WHERE id = ?1", params![project, space, hlc])?;
     }
-    Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [proyecto], |f| f.get::<_, i64>(0))? as usize)
+    Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [project], |f| f.get::<_, i64>(0))? as usize)
 }
 
-/// `f` en una transacción: la de quien llama si ya hay una (con un `SAVEPOINT`), o una `IMMEDIATE`
-/// (una diferida que lee y después escribe puede dar `BUSY_SNAPSHOT` sin esperar: ver `db`).
-fn en_una_transaccion<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let (abrir, cerrar, deshacer) = if db.is_autocommit() {
+/// `f` in a transaction: the caller's if there already is one (with a `SAVEPOINT`), or an `IMMEDIATE`
+/// one (a deferred one that reads and then writes can give `BUSY_SNAPSHOT` without waiting: see `db`).
+fn in_a_transaction<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let (begin, commit, rollback) = if db.is_autocommit() {
         ("BEGIN IMMEDIATE", "COMMIT", "ROLLBACK")
     } else {
         ("SAVEPOINT clave_con_espacio", "RELEASE clave_con_espacio", "ROLLBACK TO clave_con_espacio; RELEASE clave_con_espacio")
     };
-    db.execute_batch(abrir)?;
+    db.execute_batch(begin)?;
     match f() {
         Ok(v) => {
-            db.execute_batch(cerrar)?;
+            db.execute_batch(commit)?;
             Ok(v)
         }
         Err(e) => {
-            let _ = db.execute_batch(deshacer);
+            let _ = db.execute_batch(rollback);
             Err(e)
         }
     }
 }
 
-/// La clave `dir:` de una carpeta sin remoto que entra en el espacio `espacio` (su clave):
-/// `dir:<persona>/<espacio>/<carpeta>` (1.9.0). `None` si no es una clave `dir:` de las de siempre
-/// (`dir:<persona>/<carpeta>`, con o sin `~2`): una `git:`, o una que ya lleva espacio.
-pub fn clave_dir_en_espacio(clave: &str, espacio: &str) -> Option<String> {
-    let (persona, nombre) = clave.strip_prefix("dir:")?.split_once('/')?;
-    if nombre.is_empty() || nombre.contains('/') || espacio.is_empty() || espacio.contains('/') {
+/// The `dir:` key of a folder without a remote that enters the space `space` (its key):
+/// `dir:<person>/<space>/<folder>` (1.9.0). `None` if it isn't one of the usual `dir:` keys
+/// (`dir:<person>/<folder>`, with or without `~2`): a `git:` one, or one that already carries a space.
+pub fn clave_dir_en_espacio(key: &str, space: &str) -> Option<String> {
+    let (person, name) = key.strip_prefix("dir:")?.split_once('/')?;
+    if name.is_empty() || name.contains('/') || space.is_empty() || space.contains('/') {
         return None;
     }
-    // El `~2` de la segunda carpeta con ese nombre en este equipo: con el espacio delante ya no hace
-    // falta (si aún choca, `clave_con_espacio` pone otro).
-    let nombre = match nombre.rsplit_once('~') {
+    // The `~2` of the second folder with that name on this computer: with the space in front it is no
+    // longer needed (if it still clashes, `key_with_space` adds another).
+    let name = match name.rsplit_once('~') {
         Some((n, d)) if !n.is_empty() && !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) => n,
-        _ => nombre,
+        _ => name,
     };
-    Some(format!("dir:{persona}/{espacio}/{nombre}"))
+    Some(format!("dir:{person}/{space}/{name}"))
 }
 
-/// El espacio de una clave `dir:<persona>/<espacio>/<carpeta>` (las de la 1.9.0); `None` en las demás.
-pub fn espacio_en_clave_dir(clave: &str) -> Option<&str> {
-    let (_, resto) = clave.strip_prefix("dir:")?.split_once('/')?;
-    let (espacio, nombre) = resto.split_once('/')?;
-    (!espacio.is_empty() && !nombre.is_empty() && !nombre.contains('/')).then_some(espacio)
+/// The space of a `dir:<person>/<space>/<folder>` key (the 1.9.0 ones); `None` for the rest.
+pub fn espacio_en_clave_dir(key: &str) -> Option<&str> {
+    let (_, rest) = key.strip_prefix("dir:")?.split_once('/')?;
+    let (space, name) = rest.split_once('/')?;
+    (!space.is_empty() && !name.is_empty() && !name.contains('/')).then_some(space)
 }
 
-/// Dos carpetas sin remoto con el mismo nombre, de la misma persona, en dos clientes (la `web` de acme
-/// en un equipo y la de beta en otro) tenían la misma clave `dir:<persona>/web` y cada una pausaba a
-/// la otra. Desde la 1.9.0, cuando una carpeta sin remoto entra por primera vez en un espacio (aquí
-/// no estaba en ninguno ni lo estuvo nunca: `project.hlc` vacío), y su clave aún no ha salido de este
-/// equipo, la clave pasa a ser `dir:<persona>/<espacio>/<carpeta>`: la de acme y la de beta ya no
-/// coinciden. Que no haya salido: sin espacio, solo la lleva el repositorio general, así que basta con
-/// que no esté en su clon (`sync::en_el_general`); si ya está, otros equipos la conocen con esa clave
-/// y se queda como estaba (lo de siempre, y el aviso de la pausa).
+/// Two folders without a remote with the same name, from the same person, in two clients (acme's `web`
+/// on one computer and beta's on another) had the same key `dir:<person>/web` and each paused the
+/// other. Since 1.9.0, when a folder without a remote enters a space for the first time (here it wasn't
+/// in any and never was: empty `project.hlc`), and its key hasn't left this computer yet, the key
+/// becomes `dir:<person>/<space>/<folder>`: acme's and beta's no longer match. Hasn't left: without a
+/// space, only the general repository carries it, so it is enough that it isn't in its clone
+/// (`sync::en_el_general`); if it already is, other computers know it by that key and it stays as it
+/// was (the usual, and the pause warning).
 ///
-/// Las claves de antes no cambian nunca por esto, y lo que llega de fuera no cambia ninguna: solo
-/// ocurre al decidirlo aquí la persona (`space assign`, `projects move --space`, `merge`). Si la clave
-/// nueva ya es la de un proyecto que aquí no tiene ninguna carpeta propia y está en ese mismo espacio
-/// (llegó del repositorio de ese espacio: es esta misma carpeta en otro equipo de la persona), se juntan
-/// (lo suyo pasa a este, sin cambiar de espacio); si no, la nueva lleva sufijo (`~2`). Devuelve el sello
-/// de espacio del que se juntó, para que el nuevo vaya detrás.
-fn clave_con_espacio(db: &Connection, proyecto: i64, espacio: i64) -> Result<Option<String>> {
-    let clave = clave_de(db, proyecto)?;
-    let e = clave_espacio(db, Some(espacio))?;
-    let Some(base) = clave_dir_en_espacio(&clave, &e) else { return Ok(None) };
-    if carpetas_propias(db, proyecto)? == 0 || crate::sync::en_el_general(db, &clave) {
+/// Earlier keys never change because of this, and what comes from outside changes none: it only
+/// happens when the person decides it here (`space assign`, `projects move --space`, `merge`). If the
+/// new key is already that of a project that has no folder of its own here and is in that same space
+/// (it came from that space's repository: it is this same folder on another computer of the person),
+/// they are joined (its content moves to this one, without changing space); otherwise, the new one
+/// gets a suffix (`~2`). Returns the space stamp of the one that was joined, so the new one goes after it.
+fn key_with_space(db: &Connection, project: i64, space: i64) -> Result<Option<String>> {
+    let key = clave_de(db, project)?;
+    let e = clave_espacio(db, Some(space))?;
+    let Some(base) = clave_dir_en_espacio(&key, &e) else { return Ok(None) };
+    if carpetas_propias(db, project)? == 0 || crate::sync::en_el_general(db, &key) {
         return Ok(None);
     }
     let mut k = base.clone();
     let mut n = 2;
-    let mut sello = None;
+    let mut stamp = None;
     loop {
-        let otro: Option<(i64, Option<i64>, i64, String, String)> = db
+        let other: Option<(i64, Option<i64>, i64, String, String)> = db
             .query_row(
                 "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0), p.hlc, p.paused FROM project p WHERE p.key = ?1",
                 [&k],
                 |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)),
             )
             .optional()?;
-        match otro {
+        match other {
             None => break,
-            Some((o, Some(s), 0, hlc, pausa)) if s == espacio && pausa.is_empty() => {
-                juntar(db, o, proyecto)?;
-                sello = Some(hlc);
+            Some((o, Some(s), 0, hlc, pause)) if s == space && pause.is_empty() => {
+                join(db, o, project)?;
+                stamp = Some(hlc);
                 break;
             }
             Some(_) => {
@@ -1273,202 +1279,203 @@ fn clave_con_espacio(db: &Connection, proyecto: i64, espacio: i64) -> Result<Opt
             }
         }
     }
-    cambiar_clave(db, proyecto, &clave, &k)?;
-    Ok(Some(sello.unwrap_or_default()))
+    change_key(db, project, &key, &k)?;
+    Ok(Some(stamp.unwrap_or_default()))
 }
 
-/// La clave del proyecto `proyecto` pasa de `vieja` a `nueva` (`clave_con_espacio`, o la de una copia en
-/// `de_clave`): con ella, lo de su papelera (va por la clave: si no, volvería a un proyecto fantasma) y
-/// la lista `projects` de los repositorios que lo eligieron (si no, dejaría de sincronizarse).
-fn cambiar_clave(db: &Connection, proyecto: i64, vieja: &str, nueva: &str) -> Result<()> {
-    db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![proyecto, nueva])?;
+/// The key of project `project` changes from `old` to `new` (`key_with_space`, or a copy's in
+/// `de_clave`): along with it, what is in its trash (it goes by key: otherwise it would return to a
+/// ghost project) and the `projects` list of the repositories that chose it (otherwise it would stop
+/// syncing).
+fn change_key(db: &Connection, project: i64, old: &str, new: &str) -> Result<()> {
+    db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![project, new])?;
     db.execute(
         "UPDATE forgotten SET memory = json_set(memory, '$.project_key', ?2) WHERE json_valid(memory) AND json_extract(memory, '$.project_key') = ?1",
-        params![vieja, nueva],
+        params![old, new],
     )?;
-    if let Some(ruta) = db.path().filter(|p| !p.is_empty()) {
-        crate::sync::cambiar_clave_en_configs(Path::new(ruta), vieja, nueva)?;
+    if let Some(path) = db.path().filter(|p| !p.is_empty()) {
+        crate::sync::cambiar_clave_en_configs(Path::new(path), old, new)?;
     }
     Ok(())
 }
 
-/// Un proyecto en pausa: una línea `project` (de otro equipo, o escrita a mano por quien tenga la clave
-/// de un repositorio) dice que está en otro espacio. Esa línea no cambia nada: hasta que la persona
-/// decida aquí (`omoi projects move` o `omoi projects keep`), sus memorias no se suben a ningún
-/// repositorio ni se aceptan las que lleguen de él. Es local (`project.paused`, en JSON): no viaja.
+/// A paused project: a `project` line (from another computer, or written by hand by whoever has a
+/// repository's key) says it is in another space. That line changes nothing: until the person decides
+/// here (`omoi projects move` or `omoi projects keep`), its memories are not pushed to any repository
+/// nor are those that come from it accepted. It is local (`project.paused`, in JSON): it doesn't travel.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pausa {
-    /// El espacio que dice la línea (su clave; vacío: ninguno).
+    /// The space the line says (its key; empty: none).
     #[serde(default)]
     pub space: String,
-    /// La línea solo dice que otro equipo lo pasó a un espacio, sin decir a cuál (la que va por el
-    /// repositorio general, que no nombra clientes).
+    /// The line only says another computer moved it to a space, without saying which (the one that goes
+    /// through the general repository, which doesn't name clients).
     #[serde(default)]
     pub unknown: bool,
-    /// No la puso una línea `project`: una carpeta de aquí se unió a un proyecto que estaba en un
-    /// espacio (`space`) solo porque lo dice el repositorio de ese espacio (aquí no tenía ninguna carpeta
-    /// propia). Sale de ella confirmándolo (`omoi projects keep`) o sacándolo del espacio.
+    /// Not set by a `project` line: a folder from here joined a project that was in a space (`space`)
+    /// only because that space's repository says so (here it had no folder of its own). It leaves the
+    /// pause by confirming (`omoi projects keep`) or by taking it out of the space.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub claimed: bool,
-    /// El sello de esa línea.
+    /// That line's stamp.
     #[serde(default)]
     pub hlc: String,
-    /// El equipo de su sello (el que lo movió).
+    /// The computer of its stamp (the one that moved it).
     #[serde(default)]
     pub machine: String,
-    /// Cuándo se pausó aquí.
+    /// When it was paused here.
     #[serde(default)]
     pub at: String,
 }
 
 impl Pausa {
-    /// La pausa guardada en `project.paused` (`None` si no hay, o no se entiende).
-    pub fn de(texto: &str) -> Option<Pausa> {
-        if texto.is_empty() { None } else { serde_json::from_str(texto).ok() }
+    /// The pause stored in `project.paused` (`None` if there is none, or it can't be parsed).
+    pub fn de(text: &str) -> Option<Pausa> {
+        if text.is_empty() { None } else { serde_json::from_str(text).ok() }
     }
 }
 
-/// Deja el proyecto en pausa (sin tocar su espacio ni su sello).
-pub fn pausar(db: &Connection, proyecto: i64, pausa: &Pausa) -> Result<()> {
-    let p = Pausa { at: ahora(db)?, ..pausa.clone() };
-    db.execute("UPDATE project SET paused = ?2 WHERE id = ?1", params![proyecto, serde_json::to_string(&p)?])?;
+/// Pauses the project (without touching its space or its stamp).
+pub fn pausar(db: &Connection, project: i64, pause: &Pausa) -> Result<()> {
+    let p = Pausa { at: now(db)?, ..pause.clone() };
+    db.execute("UPDATE project SET paused = ?2 WHERE id = ?1", params![project, serde_json::to_string(&p)?])?;
     Ok(())
 }
 
-/// Deja en pausa (`Pausa::claimed`) un proyecto de un espacio al que acaba de unirse una carpeta de
-/// aquí sin que este equipo tuviera ninguna: el repositorio de ese espacio dice que es suyo, pero
-/// puede no serlo (una librería personal que un compañero usa en el cliente, o una línea escrita a
-/// propósito para quedarse con lo que se guarde en esa carpeta). Si ya estaba en pausa, se queda la que
-/// tenía.
-pub fn pausar_por_reclamo(db: &Connection, proyecto: i64) -> Result<()> {
-    let (espacio, hlc, pausa): (Option<i64>, String, String) =
-        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
-    if espacio.is_none() || !pausa.is_empty() {
+/// Pauses (`Pausa::claimed`) a project of a space that a folder from here has just joined without this
+/// computer having any: that space's repository says it is theirs, but it may not be (a personal
+/// library a colleague uses at the client, or a line written on purpose to grab whatever is saved in
+/// that folder). If it was already paused, it keeps the pause it had.
+pub fn pausar_por_reclamo(db: &Connection, project: i64) -> Result<()> {
+    let (space, hlc, pause): (Option<i64>, String, String) =
+        db.query_row("SELECT space_id, hlc, paused FROM project WHERE id = ?1", [project], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
+    if space.is_none() || !pause.is_empty() {
         return Ok(());
     }
     let machine = crate::reloj::partes(&hlc).2.to_string();
-    pausar(db, proyecto, &Pausa { space: clave_espacio(db, espacio)?, claimed: true, hlc, machine, ..Default::default() })
+    pausar(db, project, &Pausa { space: clave_espacio(db, space)?, claimed: true, hlc, machine, ..Default::default() })
 }
 
-/// Sin nadie delante (`OMOIKANE_NONINTERACTIVE=1`), si un proyecto que el repositorio de su espacio
-/// dice suyo entra en él sin pausa al aparecer aquí una carpeta suya: solo si este equipo se unió a
-/// ese repositorio por `OMOIKANE_SYNC_CODE` (la variable ya es la decisión: una CI parte cada vez de
-/// una base nueva y no hay nadie que diga `omoi projects keep`) y si el `origin` de una carpeta de
-/// aquí es exactamente el de su clave `git:` (ver `sync::adopta_por_entorno`). Con una persona
-/// delante, o sin esa variable, se pausa como siempre.
-pub fn adopta_sin_pausa(db: &Connection, proyecto: i64) -> Result<bool> {
-    let espacio = clave_espacio(db, espacio_de(db, proyecto)?)?;
-    adopta_en(db, proyecto, &espacio)
+/// With nobody in front (`OMOIKANE_NONINTERACTIVE=1`), whether a project that its space's repository
+/// claims enters it without a pause when a folder of it appears here: only if this computer joined that
+/// repository via `OMOIKANE_SYNC_CODE` (the variable is already the decision: a CI starts each time from
+/// a new database and there is nobody to say `omoi projects keep`) and if the `origin` of a folder here
+/// is exactly that of its `git:` key (see `sync::adopta_por_entorno`). With a person in front, or
+/// without that variable, it is paused as always.
+pub fn adopta_sin_pausa(db: &Connection, project: i64) -> Result<bool> {
+    let space = clave_espacio(db, espacio_de(db, project)?)?;
+    adopta_en(db, project, &space)
 }
 
-/// Como `adopta_sin_pausa`, para entrar en el espacio `espacio` (su clave) un proyecto que aquí aún
-/// no está en ninguno.
-pub fn adopta_en(db: &Connection, proyecto: i64, espacio: &str) -> Result<bool> {
-    let clave = clave_de(db, proyecto)?;
-    if !crate::sync::adopta_por_entorno(db, &clave, espacio) {
+/// Like `adopta_sin_pausa`, for entering the space `space` (its key) a project that isn't in any here
+/// yet.
+pub fn adopta_en(db: &Connection, project: i64, space: &str) -> Result<bool> {
+    let key = clave_de(db, project)?;
+    if !crate::sync::adopta_por_entorno(db, &key, space) {
         return Ok(false);
     }
     let mut q = db.prepare("SELECT origin FROM project_path WHERE project_id = ?1 AND is_foreign = 0")?;
-    let origenes: Vec<String> = q.query_map([proyecto], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-    Ok(origenes.iter().any(|o| !o.is_empty() && format!("git:{o}") == clave))
+    let origins: Vec<String> = q.query_map([project], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(origins.iter().any(|o| !o.is_empty() && format!("git:{o}") == key))
 }
 
-/// Un proyecto en pausa, como lo enseñan `omoi sync`, `doctor`, `review` y Revisar.
+/// A paused project, as shown by `omoi sync`, `doctor`, `review` and Review.
 #[derive(Clone, Debug, Serialize)]
 pub struct EnPausa {
     pub key: String,
     pub name: String,
-    /// Su espacio aquí (su clave; vacío: ninguno).
+    /// Its space here (its key; empty: none).
     pub here: String,
     #[serde(flatten)]
     pub pausa: Pausa,
 }
 
-/// Los proyectos en pausa, por nombre.
+/// The paused projects, by name.
 pub fn en_pausa(db: &Connection) -> Result<Vec<EnPausa>> {
     let mut q = db.prepare(
         "SELECT p.key, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.paused FROM project p WHERE p.paused != '' ORDER BY p.name, p.key",
     )?;
-    let filas: Vec<(String, String, String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
-    Ok(filas
+    let rows: Vec<(String, String, String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows
         .into_iter()
         .map(|(key, name, here, t)| EnPausa { key, name, here, pausa: Pausa::de(&t).unwrap_or_default() })
         .collect())
 }
 
-/// Si el proyecto de esta clave está en pausa.
-pub fn pausado(db: &Connection, clave: &str) -> Result<bool> {
-    Ok(db.query_row("SELECT paused != '' FROM project WHERE key = ?1", [clave], |f| f.get(0)).optional()?.unwrap_or(false))
+/// Whether the project with this key is paused.
+pub fn pausado(db: &Connection, key: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT paused != '' FROM project WHERE key = ?1", [key], |f| f.get(0)).optional()?.unwrap_or(false))
 }
 
-/// `omoi projects keep`: el proyecto se queda en su espacio y sale de la pausa; su sello pasa por
-/// delante del de la línea que lo pausó, para que no vuelva a pausarlo (y los demás equipos sepan que
-/// aquí se quedó donde estaba). `None` si no estaba en pausa; si no, su espacio (su clave).
-pub fn quedarse(db: &Connection, proyecto: i64) -> Result<Option<String>> {
-    let pausa: Option<String> = db.query_row("SELECT paused FROM project WHERE id = ?1", [proyecto], |f| f.get(0)).optional()?;
-    if pausa.as_deref().is_none_or(str::is_empty) {
+/// `omoi projects keep`: the project stays in its space and leaves the pause; its stamp moves ahead
+/// of that of the line that paused it, so it doesn't pause it again (and the other computers know it
+/// stayed where it was here). `None` if it wasn't paused; otherwise, its space (its key).
+pub fn quedarse(db: &Connection, project: i64) -> Result<Option<String>> {
+    let pause: Option<String> = db.query_row("SELECT paused FROM project WHERE id = ?1", [project], |f| f.get(0)).optional()?;
+    if pause.as_deref().is_none_or(str::is_empty) {
         return Ok(None);
     }
-    let espacio = espacio_de(db, proyecto)?;
-    asignar_espacio(db, proyecto, espacio)?;
-    Ok(Some(clave_espacio(db, espacio)?))
+    let space = espacio_de(db, project)?;
+    asignar_espacio(db, project, space)?;
+    Ok(Some(clave_espacio(db, space)?))
 }
 
-/// Un sello nuevo para cada memoria del proyecto (sin tocar su contenido ni `content_hlc`): así viaja
-/// lo que cambió de su clave (al cambiar de persona). El espacio no: viaja en la línea `project`.
-fn resellar(db: &Connection, proyecto: i64) -> Result<usize> {
+/// A new stamp for each memory of the project (without touching its content or `content_hlc`): that
+/// way what changed in its key (when changing person) travels. Not the space: it travels in the
+/// `project` line.
+fn restamp(db: &Connection, project: i64) -> Result<usize> {
     let ids: Vec<String> = {
         let mut q = db.prepare("SELECT id FROM memory WHERE project_id = ?1")?;
-        q.query_map([proyecto], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([project], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    resellar_estas(db, &ids)?;
+    restamp_these(db, &ids)?;
     Ok(ids.len())
 }
 
-/// Un sello nuevo para cada una de estas memorias.
-fn resellar_estas(db: &Connection, ids: &[String]) -> Result<()> {
+/// A new stamp for each of these memories.
+fn restamp_these(db: &Connection, ids: &[String]) -> Result<()> {
     for id in ids {
         let hlc: String = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
-        let nuevo = crate::reloj::sello_tras(db, &hlc)?;
-        db.execute("UPDATE memory SET hlc = ?2 WHERE id = ?1", params![id, nuevo])?;
+        let new = crate::reloj::sello_tras(db, &hlc)?;
+        db.execute("UPDATE memory SET hlc = ?2 WHERE id = ?1", params![id, new])?;
     }
     Ok(())
 }
 
-/// Las claves `dir:` de los proyectos de aquí (los que tienen alguna carpeta propia) pasan de la
-/// persona `vieja` a la `nueva` (`dir:<vieja>/x` → `dir:<nueva>/x`; con `vieja` vacía, las `dir:/x`
-/// que se quedaron sin persona), y sus memorias cambian de sello para que viajen con la clave buena.
-/// Si la clave nueva ya es de un proyecto que aquí solo existe por otro equipo y está en el mismo
-/// espacio, es el mismo proyecto y se juntan; si no, la nueva lleva sufijo (`~2`). Devuelve cuántos
-/// proyectos cambiaron.
-pub fn cambiar_persona(db: &Connection, vieja: &str, nueva: &str) -> Result<usize> {
-    if vieja == nueva {
+/// The `dir:` keys of the projects from here (those with some folder of their own) change from person
+/// `old` to `new` (`dir:<old>/x` → `dir:<new>/x`; with an empty `old`, the `dir:/x` ones that were left
+/// without a person), and their memories change stamp so they travel with the right key. If the new key
+/// already belongs to a project that only exists here through another computer and is in the same
+/// space, it is the same project and they are joined; otherwise, the new one gets a suffix (`~2`).
+/// Returns how many projects changed.
+pub fn cambiar_persona(db: &Connection, old: &str, new: &str) -> Result<usize> {
+    if old == new {
         return Ok(0);
     }
-    let prefijo = format!("dir:{vieja}/");
-    let proyectos: Vec<(i64, String, Option<i64>)> = {
+    let prefix = format!("dir:{old}/");
+    let projects: Vec<(i64, String, Option<i64>)> = {
         let mut q = db.prepare(
             "SELECT p.id, p.key, p.space_id FROM project p
              WHERE substr(p.key, 1, length(?1)) = ?1 AND EXISTS (SELECT 1 FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0)",
         )?;
-        q.query_map([&prefijo], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([&prefix], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    for (id, clave, espacio) in &proyectos {
-        let base = format!("dir:{nueva}/{}", &clave[prefijo.len()..]);
+    for (id, key, space) in &projects {
+        let base = format!("dir:{new}/{}", &key[prefix.len()..]);
         let mut k = base.clone();
         let mut n = 2;
         loop {
-            let otro: Option<(i64, Option<i64>, i64)> = db
+            let other: Option<(i64, Option<i64>, i64)> = db
                 .query_row(
                     "SELECT p.id, p.space_id, (SELECT count(*) FROM project_path pp WHERE pp.project_id = p.id AND pp.is_foreign = 0) FROM project p WHERE p.key = ?1",
                     [&k],
                     |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)),
                 )
                 .optional()?;
-            match otro {
+            match other {
                 None => break,
-                Some((o, e, 0)) if e == *espacio => {
-                    juntar(db, o, *id)?;
+                Some((o, e, 0)) if e == *space => {
+                    join(db, o, *id)?;
                     break;
                 }
                 Some(_) => {
@@ -1478,41 +1485,42 @@ pub fn cambiar_persona(db: &Connection, vieja: &str, nueva: &str) -> Result<usiz
             }
         }
         db.execute("UPDATE project SET key = ?2 WHERE id = ?1", params![id, k])?;
-        resellar(db, *id)?;
+        restamp(db, *id)?;
     }
-    Ok(proyectos.len())
+    Ok(projects.len())
 }
 
-/// Las memorias, carpetas y usos del proyecto `de` pasan a `en`, y `de` desaparece (sin tocar el
-/// espacio de `en` ni los sellos: eso lo decide quien llama).
-fn juntar(db: &Connection, de: i64, en: i64) -> Result<usize> {
-    let n = db.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    db.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    db.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![de, en])?;
-    crate::diario::mover(db, de, en)?;
+/// The memories, folders and uses of project `from` move to `to`, and `from` disappears (without
+/// touching the space of `to` or the stamps: the caller decides that).
+fn join(db: &Connection, from: i64, to: i64) -> Result<usize> {
+    let n = db.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
+    db.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
+    db.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
+    crate::diario::mover(db, from, to)?;
     db.execute(
         "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
          ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",
-        params![de, en],
+        params![from, to],
     )?;
-    db.execute("DELETE FROM memory_use WHERE project_id = ?1", [de])?;
-    db.execute("DELETE FROM project WHERE id = ?1", [de])?;
+    db.execute("DELETE FROM memory_use WHERE project_id = ?1", [from])?;
+    db.execute("DELETE FROM project WHERE id = ?1", [from])?;
     Ok(n)
 }
 
-/// Error si juntar `de` en `en` cambiaría de espacio memorias de alguno de los dos: las de `de` (si
-/// tiene) acabarían en el espacio de `en`, y las de `en`, si no tiene espacio, en el de `de`. Así lo de
-/// un cliente no pasa al repositorio de otro (ni al personal) por un `merge` o un `move`.
-fn mismos_espacios(db: &Connection, de: i64, en: i64) -> Result<()> {
-    let (ed, ee) = (espacio_de(db, de)?, espacio_de(db, en)?);
-    if ed == ee {
+/// Error if joining `from` into `to` would move memories of either one to another space: those of
+/// `from` (if it has any) would end up in the space of `to`, and those of `to`, if it has no space, in
+/// that of `from`. That way one client's content doesn't go to another's repository (nor to the
+/// personal one) through a `merge` or a `move`.
+fn same_spaces(db: &Connection, from: i64, to: i64) -> Result<()> {
+    let (sf, st) = (espacio_de(db, from)?, espacio_de(db, to)?);
+    if sf == st {
         return Ok(());
     }
-    let cuantas = |p: i64| -> Result<i64> { Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [p], |f| f.get(0))?) };
-    if cuantas(de)? == 0 && (ee.is_some() || cuantas(en)? == 0) {
+    let count = |p: i64| -> Result<i64> { Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [p], |f| f.get(0))?) };
+    if count(from)? == 0 && (st.is_some() || count(to)? == 0) {
         return Ok(());
     }
-    let nombre = |e: Option<i64>| -> Result<String> {
+    let name = |e: Option<i64>| -> Result<String> {
         Ok(match e {
             Some(_) => format!("«{}»", clave_espacio(db, e)?),
             None => tr!("no space", "ninguno"),
@@ -1521,23 +1529,23 @@ fn mismos_espacios(db: &Connection, de: i64, en: i64) -> Result<()> {
     anyhow::bail!(tr!(
         "the projects are in different spaces ({} → {}): their memories would go to another space's sync repository. Add --force if that is what you want",
         "los proyectos están en espacios distintos ({} → {}): sus memorias irían al repositorio de otro espacio. Añade --force si es lo que quieres",
-        nombre(ed)?,
-        nombre(ee)?
+        name(sf)?,
+        name(st)?
     ))
 }
 
-/// Junta el proyecto `de` en `en`: sus memorias (con su id, historial y veredictos) y sus carpetas pasan
-/// a `en`, y `de` desaparece. Si los dos tenían memoria `status`, la más nueva se queda y la otra queda
-/// sustituida por ella. Entre proyectos de espacios distintos, solo con `forzar`. Devuelve cuántas
-/// memorias se movieron.
-pub fn fundir(db: &mut Connection, de: i64, en: i64, forzar: bool) -> Result<usize> {
-    anyhow::ensure!(de != 0 && en != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
-    anyhow::ensure!(de != en, tr!("it's the same project", "es el mismo proyecto"));
-    if !forzar {
-        mismos_espacios(db, de, en)?;
+/// Merges project `from` into `to`: its memories (with their id, history and verdicts) and its folders
+/// move to `to`, and `from` disappears. If both had a `status` memory, the newest stays and the other
+/// is superseded by it. Between projects of different spaces, only with `force`. Returns how many
+/// memories were moved.
+pub fn fundir(db: &mut Connection, from: i64, to: i64, force: bool) -> Result<usize> {
+    anyhow::ensure!(from != 0 && to != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
+    anyhow::ensure!(from != to, tr!("it's the same project", "es el mismo proyecto"));
+    if !force {
+        same_spaces(db, from, to)?;
     }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let estado = |p: i64| -> Result<Option<String>> {
+    let status = |p: i64| -> Result<Option<String>> {
         Ok(tx
             .query_row(
                 "SELECT id FROM memory WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2) ORDER BY updated_at DESC LIMIT 1",
@@ -1546,47 +1554,47 @@ pub fn fundir(db: &mut Connection, de: i64, en: i64, forzar: bool) -> Result<usi
             )
             .optional()?)
     };
-    let (viejo, nuevo) = (estado(de)?, estado(en)?);
-    // `en` toma el espacio de `de` si no tenía (con sello nuevo: viaja en su línea `project`).
-    if espacio_de(&tx, en)?.is_none()
-        && let Some(e) = espacio_de(&tx, de)?
+    let (old_status, new_status) = (status(from)?, status(to)?);
+    // `to` takes the space of `from` if it had none (with a new stamp: it travels in its `project` line).
+    if espacio_de(&tx, to)?.is_none()
+        && let Some(e) = espacio_de(&tx, from)?
     {
-        asignar_espacio(&tx, en, Some(e))?;
+        asignar_espacio(&tx, to, Some(e))?;
     }
-    // Las memorias de `de` viajan ahora con la clave de `en`: sello nuevo (las de `en` no cambian).
-    let movidas: Vec<String> = {
+    // The memories of `from` now travel with the key of `to`: new stamp (those of `to` don't change).
+    let moved: Vec<String> = {
         let mut q = tx.prepare("SELECT id FROM memory WHERE project_id = ?1")?;
-        q.query_map([de], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([from], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    let n = juntar(&tx, de, en)?;
-    resellar_estas(&tx, &movidas)?;
-    if let (Some(a), Some(b)) = (viejo, nuevo) {
-        let (vieja, nueva): (String, String) = tx.query_row(
+    let n = join(&tx, from, to)?;
+    restamp_these(&tx, &moved)?;
+    if let (Some(a), Some(b)) = (old_status, new_status) {
+        let (older, newer): (String, String) = tx.query_row(
             "SELECT CASE WHEN a.updated_at <= b.updated_at THEN a.id ELSE b.id END, CASE WHEN a.updated_at <= b.updated_at THEN b.id ELSE a.id END
              FROM memory a, memory b WHERE a.id = ?1 AND b.id = ?2",
             params![a, b],
             |f| Ok((f.get(0)?, f.get(1)?)),
         )?;
-        crate::veredictos::poner(&tx, &vieja, &nueva, crate::veredictos::SUSTITUIDA, "projects merged: the newer status stays", "omoikane")?;
+        crate::veredictos::poner(&tx, &older, &newer, crate::veredictos::SUSTITUIDA, "projects merged: the newer status stays", "omoikane")?;
     }
     tx.commit()?;
     Ok(n)
 }
 
-/// `omoi projects move`: el proyecto vive ahora en `carpeta`. Se queda con su clave (los demás equipos
-/// la conocen) y suma la carpeta; si la carpeta ya era otro proyecto, ese se funde en este (si es de
-/// otro espacio, solo con `forzar`).
-pub fn mover(db: &mut Connection, proyecto: i64, carpeta: &str, forzar: bool) -> Result<usize> {
-    anyhow::ensure!(proyecto != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
-    let n = match por_ruta(db, carpeta)? {
-        Some((otro, _)) if otro != proyecto => fundir(db, otro, proyecto, forzar)?,
+/// `omoi projects move`: the project now lives in `folder`. It keeps its key (the other computers know
+/// it) and adds the folder; if the folder was already another project, that one is merged into this
+/// one (if it is from another space, only with `force`).
+pub fn mover(db: &mut Connection, project: i64, folder: &str, force: bool) -> Result<usize> {
+    anyhow::ensure!(project != 0, tr!("global memories are not a project", "las memorias globales no son un proyecto"));
+    let n = match by_path(db, folder)? {
+        Some((other, _)) if other != project => fundir(db, other, project, force)?,
         _ => 0,
     };
     db.execute(
         "INSERT OR REPLACE INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-        params![carpeta, comparable(carpeta), proyecto, origen(carpeta), ahora(db)?],
+        params![folder, comparable(folder), project, origen(folder), now(db)?],
     )?;
-    db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![proyecto, carpeta, nombre_de(carpeta, "")])?;
+    db.execute("UPDATE project SET path = ?2, name = ?3 WHERE id = ?1", params![project, folder, nombre_de(folder, "")])?;
     Ok(n)
 }
 
@@ -1595,23 +1603,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raiz_git_desde_una_subcarpeta() {
+    fn git_root_from_a_subfolder() {
         let base = crate::comun::Temporal::nueva("proyecto");
         let sub = base.join("repo").join("src").join("dentro");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(base.join("repo").join(".git")).unwrap();
-        let desde_sub = de(&sub).unwrap();
-        let desde_raiz = de(&base.join("repo")).unwrap();
-        assert_eq!(desde_sub, desde_raiz);
-        assert!(desde_raiz.ends_with("repo"));
-        // Sin git, la propia carpeta.
-        let suelta = base.join("suelta");
-        std::fs::create_dir_all(&suelta).unwrap();
-        assert!(de(&suelta).unwrap().ends_with("suelta"));
+        let from_sub = de(&sub).unwrap();
+        let from_root = de(&base.join("repo")).unwrap();
+        assert_eq!(from_sub, from_root);
+        assert!(from_root.ends_with("repo"));
+        // Without git, the folder itself.
+        let loose = base.join("suelta");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert!(de(&loose).unwrap().ends_with("suelta"));
     }
 
     #[test]
-    fn clave_dir_con_espacio() {
+    fn dir_key_with_space() {
         assert_eq!(clave_dir_en_espacio("dir:ana/web", "acme").as_deref(), Some("dir:ana/acme/web"));
         assert_eq!(clave_dir_en_espacio("dir:ana/web~2", "acme").as_deref(), Some("dir:ana/acme/web"));
         assert_eq!(clave_dir_en_espacio("dir:ana/v~1.2", "acme").as_deref(), Some("dir:ana/acme/v~1.2"));
@@ -1625,117 +1633,118 @@ mod tests {
     }
 
     #[test]
-    fn carpeta_general() {
+    fn general_folder() {
         let base = crate::comun::Temporal::nueva("general");
         let home = base.join("usuario");
         std::fs::create_dir_all(home.join("repo").join(".git")).unwrap();
         std::fs::create_dir_all(home.join("suelta")).unwrap();
         let t = |p: &Path| de(p).unwrap();
         let home_c = PathBuf::from(t(&home));
-        assert!(general_en(&t(&home), &home_c));
-        assert!(general_en(&t(&base), &home_c), "una carpeta por encima del usuario también");
-        assert!(!general_en(&t(&home.join("repo")), &home_c));
-        assert!(!general_en(&t(&home.join("suelta")), &home_c), "una carpeta suelta sigue siendo su proyecto");
-        assert!(!general_en("", &home_c));
+        assert!(general_in(&t(&home), &home_c));
+        assert!(general_in(&t(&base), &home_c), "una carpeta por encima del usuario también");
+        assert!(!general_in(&t(&home.join("repo")), &home_c));
+        assert!(!general_in(&t(&home.join("suelta")), &home_c), "una carpeta suelta sigue siendo su proyecto");
+        assert!(!general_in("", &home_c));
     }
 
     #[test]
-    fn repo_de_una_ruta() {
+    fn repo_of_a_path() {
         let base = crate::comun::Temporal::nueva("rutas");
         let repo = base.join("web");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();
         let home = PathBuf::from(de(&base).unwrap());
-        let esperado = de(&repo).unwrap();
-        let r = |s: &str| repo_de_ruta(s, &home);
-        let dentro = repo.join("src").join("no-existe-aun.rs");
-        assert_eq!(r(&format!("{}.", dentro.display())), Some(esperado.clone()));
-        assert_eq!(r(&repo.display().to_string()), Some(esperado.clone()));
-        assert_eq!(r("~/web/src"), Some(esperado));
+        let expected = de(&repo).unwrap();
+        let r = |s: &str| repo_of_path(s, &home);
+        let inside = repo.join("src").join("no-existe-aun.rs");
+        assert_eq!(r(&format!("{}.", inside.display())), Some(expected.clone()));
+        assert_eq!(r(&repo.display().to_string()), Some(expected.clone()));
+        assert_eq!(r("~/web/src"), Some(expected));
         assert_eq!(r(&base.display().to_string()), None, "fuera de un repositorio");
         assert_eq!(r("src/main.rs"), None, "las relativas no dicen el proyecto");
         assert_eq!(r(&format!("{}?", repo.display())), Some(de(&repo).unwrap()));
-        let clon = base.join(".claude").join("plugins").join("x");
-        std::fs::create_dir_all(clon.join(".git")).unwrap();
-        assert_eq!(r(&clon.display().to_string()), None, "un clon en una carpeta oculta no es un proyecto");
+        let clone = base.join(".claude").join("plugins").join("x");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+        assert_eq!(r(&clone.display().to_string()), None, "un clon en una carpeta oculta no es un proyecto");
     }
 
     #[test]
-    fn rutas_con_espacios() {
+    fn paths_with_spaces() {
         let base = crate::comun::Temporal::nueva("espacios");
         let repo = base.join("the codex");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("app")).unwrap();
-        let fichero = repo.join("app").join("x.kt");
-        let texto = format!("El fallo está en `{}` y en {}. Lo vi ayer.", fichero.display(), repo.join("app").display());
+        let file = repo.join("app").join("x.kt");
+        let text = format!("El fallo está en `{}` y en {}. Lo vi ayer.", file.display(), repo.join("app").display());
         let home = PathBuf::from(de(&base).unwrap());
-        let v = rutas_en(&texto, &home);
-        assert!(v.contains(&fichero.display().to_string()), "{v:?}");
+        let v = paths_in(&text, &home);
+        assert!(v.contains(&file.display().to_string()), "{v:?}");
         assert!(v.contains(&repo.join("app").display().to_string()), "{v:?}");
-        let esperado = de(&repo).unwrap();
-        assert!(v.iter().all(|r| repo_de_ruta(r, &home) == Some(esperado.clone())), "{v:?}");
-        // Sin el repositorio, la palabra suelta no basta.
-        assert_eq!(repo_de_ruta(&base.join("the").display().to_string(), &home), None);
+        let expected = de(&repo).unwrap();
+        assert!(v.iter().all(|r| repo_of_path(r, &home) == Some(expected.clone())), "{v:?}");
+        // Without the repository, the loose word is not enough.
+        assert_eq!(repo_of_path(&base.join("the").display().to_string(), &home), None);
     }
 
     #[test]
-    fn rutas_relativas_al_repo() {
+    fn paths_relative_to_the_repo() {
         let base = crate::comun::Temporal::nueva("relativas");
         let repo = base.join("web");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();
         std::fs::create_dir_all(base.join("fuera")).unwrap();
         let home = PathBuf::from(de(&base).unwrap());
-        let raiz = de(&repo).unwrap();
-        let r = |s: &Path| relativa_a(&s.display().to_string(), &raiz, &home);
+        let root = de(&repo).unwrap();
+        let r = |s: &Path| relative_to(&s.display().to_string(), &root, &home);
         assert_eq!(r(&repo.join("src").join("pages").join("index.astro")), "src/pages/index.astro", "aunque aún no exista");
         assert_eq!(r(&repo.join("src")), "src");
-        let fuera = base.join("fuera").join("a.txt").display().to_string();
-        assert_eq!(relativa_a(&fuera, &raiz, &home), fuera, "fuera del repo, tal cual");
-        assert_eq!(relativa_a("src/main.rs", &raiz, &home), "src/main.rs");
-        assert_eq!(relativa_a("~/web/src/a.rs", &raiz, &home), "src/a.rs");
+        let outside = base.join("fuera").join("a.txt").display().to_string();
+        assert_eq!(relative_to(&outside, &root, &home), outside, "fuera del repo, tal cual");
+        assert_eq!(relative_to("src/main.rs", &root, &home), "src/main.rs");
+        assert_eq!(relative_to("~/web/src/a.rs", &root, &home), "src/a.rs");
     }
 
     #[test]
-    fn worktree_con_fichero_git() {
-        // En un worktree, `.git` es un fichero, no una carpeta.
+    fn worktree_with_git_file() {
+        // In a worktree, `.git` is a file, not a folder.
         let base = crate::comun::Temporal::nueva("worktree");
         std::fs::create_dir_all(base.join("a")).unwrap();
         std::fs::write(base.join(".git"), "gitdir: /otro/sitio").unwrap();
         assert_eq!(de(&base.join("a")).unwrap(), de(&base).unwrap());
     }
 
-    /// Una ruta de red (la `project` de un agente, el `?dir=` de una web) no se mira: `de`, `canonica`
-    /// y `buscar` la rechazan sin tocar el disco. Con 10.255.255.1 (sin nadie detrás), mirarla tardaba
-    /// unos 21 s en fallar y por el camino entregaba el hash NTLM de la persona.
+    /// A network path (an agent's `project`, a website's `?dir=`) is not looked at: `de`, `canonica`
+    /// and `buscar` reject it without touching the disk. With 10.255.255.1 (nobody behind it), looking
+    /// at it took about 21 s to fail and along the way handed over the person's NTLM hash.
     #[test]
-    fn una_ruta_de_red_no_se_mira() {
+    fn a_network_path_is_not_looked_at() {
         let t = crate::comun::Temporal::nueva("red");
         let db = crate::db::abrir(&t.join("o.db")).unwrap();
         for r in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\/10.255.255.1\x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", "/??/UNC/10.255.255.1/x", r"\\.\pipe\x"] {
-            let inicio = std::time::Instant::now();
+            let start = std::time::Instant::now();
             assert!(!ruta_local(Path::new(r)), "{r}");
             assert!(format!("{}", de(Path::new(r)).unwrap_err()).contains("network"), "{r}");
             assert!(de_carpeta(Path::new(r)).is_err() && canonica(Path::new(r)).is_err(), "{r}");
             assert!(buscar(&db, r).is_err(), "{r}");
             assert!(!es_carpeta(Path::new(r)) && !existe(Path::new(r)), "{r}");
-            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
+            assert!(start.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", start.elapsed());
         }
         assert!(ruta_local(Path::new(r"C:\x\??\y")) && ruta_local(Path::new("src/a.rs")));
     }
 
-    /// `project` (MCP) con la carpeta de red de la propia sesión, o la raíz de su repositorio, se acepta
-    /// escrita como sea; otra carpeta del mismo recurso, una de dentro, con `..` o de otro servidor, no,
-    /// y sin tocar el disco (nadie contesta en 10.255.255.1). Solo en Windows: fuera no hay rutas UNC.
+    /// `project` (MCP) with the session's own network folder, or the root of its repository, is accepted
+    /// written any way; another folder of the same share, one inside it, with `..` or from another
+    /// server, is not, and without touching the disk (nobody answers at 10.255.255.1). Only on Windows:
+    /// elsewhere there are no UNC paths.
     #[cfg(windows)]
     #[test]
-    fn project_de_la_carpeta_de_red_de_la_sesion() {
-        let inicio = std::time::Instant::now();
-        apuntar_de_trabajo(Path::new(r"\\10.255.255.1\sesion-prueba\repo\src"));
-        assert_eq!(forma_de_comparar(Path::new(r"\\?\UNC\10.255.255.1\Sesion-Prueba\repo\src\")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
-        assert_eq!(forma_de_comparar(Path::new("//10.255.255.1/sesion-prueba//repo/src")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
+    fn project_from_the_sessions_network_folder() {
+        let start = std::time::Instant::now();
+        note_work_folder(Path::new(r"\\10.255.255.1\sesion-prueba\repo\src"));
+        assert_eq!(comparison_form(Path::new(r"\\?\UNC\10.255.255.1\Sesion-Prueba\repo\src\")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
+        assert_eq!(comparison_form(Path::new("//10.255.255.1/sesion-prueba//repo/src")).as_deref(), Some(r"\\10.255.255.1\sesion-prueba\repo\src"));
         for r in [r"\\10.255.255.1\sesion-prueba\repo\src\..", r"\\10.255.255.1\sesion-prueba\.\repo", r"\\10.255.255.1", r"C:\x", r"\\.\pipe\x"] {
-            assert_eq!(forma_de_comparar(Path::new(r)), None, "{r}");
+            assert_eq!(comparison_form(Path::new(r)), None, "{r}");
         }
         for r in [
             r"\\10.255.255.1\sesion-prueba\otro",
@@ -1748,31 +1757,31 @@ mod tests {
             assert!(de_pedida(Path::new(r)).is_err(), "{r}");
             assert!(de_carpeta(Path::new(r)).is_err(), "{r}");
         }
-        assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
-        // Con una carpeta de red de verdad (el recurso administrativo de la unidad, si este equipo lo
-        // tiene): la de trabajo y la raíz de su repositorio, escritas de otra forma, dan su proyecto.
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+        // With a real network folder (the drive's administrative share, if this computer has it): the
+        // work one and the root of its repository, written another way, give its project.
         let t = crate::comun::Temporal::nueva("project-red");
         std::fs::create_dir_all(t.join("repo").join(".git")).unwrap();
         std::fs::create_dir_all(t.join("repo").join("src")).unwrap();
         let local = de(&t.join("repo").join("src")).unwrap();
-        let (unidad, resto) = local.split_at(2);
-        let red = PathBuf::from(format!(r"\\localhost\{}$\{}", &unidad[..1], resto.trim_start_matches('\\')));
-        if red.is_dir() {
-            let sesion = de_confianza(&red.join("src")).unwrap();
-            let raiz_red = format!(r"\\?\UNC\LOCALHOST\{}$\{}/", unidad[..1].to_lowercase(), resto.trim_start_matches('\\').replace('\\', "/"));
-            assert_eq!(de_pedida(Path::new(&raiz_red)).unwrap(), sesion, "{raiz_red}");
-            assert_eq!(de_pedida(&red.join("src")).unwrap(), sesion);
-            assert!(de_pedida(&red.join("src").join("otra")).is_err());
+        let (drive, rest) = local.split_at(2);
+        let net = PathBuf::from(format!(r"\\localhost\{}$\{}", &drive[..1], rest.trim_start_matches('\\')));
+        if net.is_dir() {
+            let session = de_confianza(&net.join("src")).unwrap();
+            let net_root = format!(r"\\?\UNC\LOCALHOST\{}$\{}/", drive[..1].to_lowercase(), rest.trim_start_matches('\\').replace('\\', "/"));
+            assert_eq!(de_pedida(Path::new(&net_root)).unwrap(), session, "{net_root}");
+            assert_eq!(de_pedida(&net.join("src")).unwrap(), session);
+            assert!(de_pedida(&net.join("src").join("otra")).is_err());
         }
     }
 
-    /// `\\?\C:\…` (ruta extendida de una unidad) es local; el resto de prefijos de dispositivo, no. La
-    /// forma se prueba en todos los sistemas; `ruta_local`, solo en Windows (fuera, la barra invertida es
-    /// una letra más y `\\?\C:` sería un nombre raro de este equipo, que se sigue rechazando).
+    /// `\\?\C:\…` (extended path of a drive) is local; the other device prefixes are not. The shape is
+    /// tested on every system; `ruta_local`, only on Windows (elsewhere, the backslash is just another
+    /// character and `\\?\C:` would be an odd name on this computer, which is still rejected).
     #[test]
-    fn la_ruta_extendida_de_una_unidad() {
+    fn the_extended_path_of_a_drive() {
         for r in [r"\\?\C:\Users\a\.omoikane", r"\\?\d:\x", r"\\?\C:", r"\\?\C:\", r"\\?\C:\a..b\c"] {
-            assert!(disco_extendido(r), "{r}");
+            assert!(extended_disk(r), "{r}");
         }
         for r in [
             r"\\?\UNC\10.255.255.1\x",
@@ -1790,7 +1799,7 @@ mod tests {
             r"\\?\\C:\x",
             r"C:\x",
         ] {
-            assert!(!disco_extendido(r), "{r}");
+            assert!(!extended_disk(r), "{r}");
         }
         #[cfg(windows)]
         {
@@ -1798,7 +1807,7 @@ mod tests {
             for r in [r"\\?\UNC\10.255.255.1\x", r"\\?\C:\..\..\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"\\.\pipe\x", r"\\?\GLOBALROOT\Device\Mup\10.255.255.1\x"] {
                 assert!(!ruta_local(Path::new(r)), "{r}");
             }
-            // Una carpeta de verdad, como la da `canonicalize`: `de` la lee.
+            // A real folder, as `canonicalize` gives it: `de` reads it.
             let t = crate::comun::Temporal::nueva("extendida");
             let c = std::fs::canonicalize(&*t).unwrap();
             assert!(c.to_string_lossy().starts_with(r"\\?\"));
@@ -1806,64 +1815,64 @@ mod tests {
         }
     }
 
-    /// La carpeta en la que se trabaja puede ser de red: su recurso (`\\servidor\recurso`) es legible
-    /// para leer el repositorio, el de al lado no, y lo que llega de fuera sigue sin mirarse aunque sea
-    /// de ese mismo recurso. Sin tocar el disco (nadie contesta en 10.255.255.1).
+    /// The folder being worked in can be on the network: its share (`\\server\share`) is legible for
+    /// reading the repository, the one next to it isn't, and what comes from outside is still not looked
+    /// at even if it is from that same share. Without touching the disk (nobody answers at 10.255.255.1).
     #[test]
-    fn el_recurso_de_trabajo_es_de_confianza() {
-        let inicio = std::time::Instant::now();
+    fn the_work_share_is_trusted() {
+        let start = std::time::Instant::now();
         let repo = Path::new(r"\\10.255.255.1\equipo-prueba\repo");
         assert!(!legible(repo), "aún no es de trabajo");
-        apuntar_de_trabajo(&repo.join("src"));
+        note_work_folder(&repo.join("src"));
         if cfg!(windows) {
             for r in [r"\\10.255.255.1\equipo-prueba\repo", r"\\10.255.255.1\EQUIPO-PRUEBA\repo\.git\HEAD", r"\\?\UNC\10.255.255.1\equipo-prueba\otro\.git"] {
                 assert!(legible(Path::new(r)), "{r}");
                 assert!(si_legible(PathBuf::from(r)).is_some(), "{r}");
             }
         }
-        // Otro recurso del mismo servidor, otro servidor, `\??\UNC\…` y `\\.\…`: no.
+        // Another share on the same server, another server, `\??\UNC\…` and `\\.\…`: no.
         for r in [r"\\10.255.255.1\otro\repo", r"\\10.255.255.2\equipo-prueba\repo", r"\??\UNC\10.255.255.1\equipo-prueba\repo", r"\\.\pipe\equipo-prueba"] {
             assert!(!legible(Path::new(r)), "{r}");
         }
-        // Lo de fuera sigue igual: `de`, `canonica`, `es_carpeta`.
+        // What comes from outside stays the same: `de`, `canonica`, `es_carpeta`.
         assert!(!ruta_local(repo) && de(repo).is_err() && canonica(repo).is_err() && !es_carpeta(repo));
-        assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
     }
 
-    /// WSL (`\\wsl$\<distro>`, `\\wsl.localhost\<distro>`) es de este equipo solo si su proveedor atiende
-    /// esas rutas antes que SMB; la forma tiene que ser exacta.
+    /// WSL (`\\wsl$\<distro>`, `\\wsl.localhost\<distro>`) is on this computer only if its provider
+    /// serves those paths before SMB; the shape has to be exact.
     #[test]
-    fn wsl_solo_con_su_proveedor_delante() {
+    fn wsl_only_with_its_provider_in_front() {
         for r in [r"\\wsl$\Ubuntu\home\a.rs", r"\\WSL.localhost\Ubuntu", "//wsl$/Ubuntu/x", r"\\?\UNC\wsl.localhost\Debian\x"] {
-            assert!(forma_wsl(r), "{r}");
+            assert!(wsl_shape(r), "{r}");
         }
         for r in [r"\\wsl$", r"\\wsl$\", r"\\wsl$\..\x", r"\\wsl$\.\x", r"\\wsl.localhost.evil.com\x\y", r"\\wsl\x", r"\\10.0.0.1\wsl$\x", r"\??\UNC\wsl$\x\y", r"C:\wsl$\x"] {
-            assert!(!forma_wsl(r), "{r}");
+            assert!(!wsl_shape(r), "{r}");
         }
-        assert!(p9np_antes_que_smb("RDPNP,P9NP,LanmanWorkstation,webclient"));
-        assert!(p9np_antes_que_smb("P9NP"));
-        assert!(!p9np_antes_que_smb("RDPNP,LanmanWorkstation,P9NP"));
-        assert!(!p9np_antes_que_smb("RDPNP,LanmanWorkstation,webclient"));
-        assert!(!p9np_antes_que_smb(""));
-        // Con o sin WSL aquí, una ruta de WSL es local exactamente cuando WSL la atiende.
+        assert!(p9np_before_smb("RDPNP,P9NP,LanmanWorkstation,webclient"));
+        assert!(p9np_before_smb("P9NP"));
+        assert!(!p9np_before_smb("RDPNP,LanmanWorkstation,P9NP"));
+        assert!(!p9np_before_smb("RDPNP,LanmanWorkstation,webclient"));
+        assert!(!p9np_before_smb(""));
+        // With or without WSL here, a WSL path is local exactly when WSL serves it.
         let w = Path::new(r"\\wsl$\Ubuntu\home");
-        assert_eq!(ruta_local(w), wsl_atiende(), "{}", w.display());
-        assert_eq!(ruta_de_red(r"\\wsl$\Ubuntu\home"), !wsl_atiende());
+        assert_eq!(ruta_local(w), wsl_serves(), "{}", w.display());
+        assert_eq!(ruta_de_red(r"\\wsl$\Ubuntu\home"), !wsl_serves());
         assert!(!ruta_local(Path::new(r"\\wsl$\..\x")));
     }
 
-    /// `~/` seguido de una ruta de red (`~/\\host\x`, `~\//host/x`, `~/\\?\UNC\…`): al juntarla con la
-    /// carpeta personal, `join` se queda con la de red. `remember` desde la carpeta personal busca el
-    /// repositorio de las rutas de la memoria (`para_guardar`) y las miraba en el disco: una conexión SMB
-    /// a lo que dijera la memoria. Ni se miran ni dan proyecto, también citadas en el texto.
+    /// `~/` followed by a network path (`~/\\host\x`, `~\//host/x`, `~/\\?\UNC\…`): when joined with the
+    /// home folder, `join` keeps the network one. `remember` from the home folder looks for the
+    /// repository of the memory's paths (`para_guardar`) and looked at them on disk: an SMB connection to
+    /// whatever the memory said. They are neither looked at nor give a project, also when cited in the text.
     #[test]
-    // Solo en Windows: en Linux y macOS la barra invertida es una letra más del nombre y `//servidor`
-    // es una carpeta local, así que esas rutas no abren ninguna conexión.
+    // Only on Windows: on Linux and macOS the backslash is just another character of the name and
+    // `//server` is a local folder, so those paths open no connection.
     #[cfg(windows)]
-    fn tilde_seguida_de_una_ruta_de_red_no_se_mira() {
+    fn tilde_followed_by_a_network_path_is_not_looked_at() {
         let base = crate::comun::Temporal::nueva("tilde-red");
         let home = PathBuf::from(de(&base).unwrap());
-        let malas = [
+        let bad = [
             r"~/\\10.255.255.1\x\a.rs",
             r"~\\\10.255.255.1\x\a.rs",
             "~///10.255.255.1/x/a.rs",
@@ -1873,33 +1882,33 @@ mod tests {
             r"~\\\.\pipe\x",
             r"~/\\10.255.255.1\x.",
         ];
-        for r in malas {
-            let inicio = std::time::Instant::now();
-            // `None`, o una ruta de la unidad de la carpeta personal (`~/\??\UNC\…` en Windows se queda
-            // en `C:\??\UNC\…`, una carpeta local que no puede existir): nunca una de red.
-            let e = expandir(r, &home);
+        for r in bad {
+            let start = std::time::Instant::now();
+            // `None`, or a path on the home folder's drive (`~/\??\UNC\…` on Windows becomes
+            // `C:\??\UNC\…`, a local folder that can't exist): never a network one.
+            let e = expand(r, &home);
             assert!(e.as_ref().is_none_or(|p| ruta_local(p)), "{r}");
-            assert_eq!(repo_de_ruta(r, &home), None, "{r}");
-            assert_eq!(relativa_a(r, &home.to_string_lossy(), &home), r, "{r}");
+            assert_eq!(repo_of_path(r, &home), None, "{r}");
+            assert_eq!(relative_to(r, &home.to_string_lossy(), &home), r, "{r}");
             if e.is_none() {
-                assert_eq!(profundidad(r, &home), 0, "{r}");
-                assert!(rutas_en(&format!("mira {r} y ya"), &home).is_empty(), "{r}");
+                assert_eq!(depth(r, &home), 0, "{r}");
+                assert!(paths_in(&format!("mira {r} y ya"), &home).is_empty(), "{r}");
             }
-            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", inicio.elapsed());
+            assert!(start.elapsed() < std::time::Duration::from_secs(2), "{r}: {:?}", start.elapsed());
         }
         for r in [r"\\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x"] {
-            assert_eq!(canonica_parcial(Path::new(r)), None, "{r}");
+            assert_eq!(partial_canonical(Path::new(r)), None, "{r}");
         }
-        // Sin carpeta personal, `~` no es nada (antes era relativa a la carpeta actual).
-        assert_eq!(expandir("~/web/a.rs", Path::new("")), None);
-        // Desde la carpeta personal de verdad, `remember` con esas rutas y ese texto: global, enseguida.
-        if let Some(h) = carpeta_personal() {
-            let inicio = std::time::Instant::now();
-            let paths: Vec<String> = malas.iter().map(|s| s.to_string()).collect();
-            let (p, rutas) = para_guardar(h, &paths, &malas.join(" "));
+        // Without a home folder, `~` is nothing (it used to be relative to the current folder).
+        assert_eq!(expand("~/web/a.rs", Path::new("")), None);
+        // From the real home folder, `remember` with those paths and that text: global, right away.
+        if let Some(h) = home_project() {
+            let start = std::time::Instant::now();
+            let paths: Vec<String> = bad.iter().map(|s| s.to_string()).collect();
+            let (p, out_paths) = para_guardar(h, &paths, &bad.join(" "));
             assert_eq!(p, "");
-            assert_eq!(rutas, paths);
-            assert!(inicio.elapsed() < std::time::Duration::from_secs(2), "{:?}", inicio.elapsed());
+            assert_eq!(out_paths, paths);
+            assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
         }
     }
 }

@@ -1,28 +1,28 @@
-//! Veredictos (0.17.0): lo que el agente o el usuario dicen de una memoria o de una pareja, y que
-//! Omoikane no puede saber solo.
+//! Verdicts (0.17.0): what the agent or the user says about a memory or a pair, and that
+//! Omoikane can't know on its own.
 //!
-//! - `superseded`: `memory_id` queda sustituida por `other_id` (`remember`/`update` con `supersedes`).
-//! - `contradicts`: las dos dicen cosas distintas y ninguna gana todavía (`contradicts`).
-//! - `compatible`: las dos valen; quita los avisos de esa pareja (`compatible`, o «está bien así»
-//!   en una pareja de Revisar).
-//! - `ok:<aviso>`: «está bien así» en un aviso de una sola memoria (`unused`, `due`…).
+//! - `superseded`: `memory_id` is replaced by `other_id` (`remember`/`update` with `supersedes`).
+//! - `contradicts`: the two say different things and neither wins yet (`contradicts`).
+//! - `compatible`: both hold; removes the warnings for that pair (`compatible`, or "it's fine like this"
+//!   on a pair in Review).
+//! - `ok:<warning>`: "it's fine like this" on a single-memory warning (`unused`, `due`…).
 //!
-//! Un veredicto vale mientras no cambie lo que juzgó: `superseded`, `compatible` y `ok:*`, mientras
-//! la memoria juzgada no cambie (un «está bien así» frente a una memoria de estado, que cambia a
-//! diario, no debe caducar cada día); `contradicts`, mientras no cambie ninguna de las dos. «Cambiar»
-//! es cambiar su título, contenido o tipo, y se compara por reloj lógico (esquema 10): el sello de ese
-//! cambio (`memory.content_hlc`) no es posterior al del veredicto (`verdict.hlc`). Antes se comparaban
-//! `updated_at` y `at`, relojes de pared de equipos distintos: un equipo con la hora adelantada dejaba
-//! sin valor los veredictos de los demás. Los sellos tienen ancho fijo, así que se comparan como texto.
-//! De una
-//! pareja manda el veredicto más nuevo (por su sello), así que uno nuevo no necesita borrar el
-//! anterior, y dos equipos que juzgan la misma pareja acaban de acuerdo al sincronizar.
+//! A verdict holds as long as what it judged doesn't change: `superseded`, `compatible` and `ok:*`, as long as
+//! the judged memory doesn't change (an "it's fine like this" on a status memory, which changes
+//! daily, must not expire every day); `contradicts`, as long as neither of the two changes. "Changing"
+//! means changing its title, content or kind, and it is compared by logical clock (schema 10): the stamp of that
+//! change (`memory.content_hlc`) is not later than the verdict's (`verdict.hlc`). Before, `updated_at`
+//! and `at` were compared, wall clocks of different machines: a machine with its clock ahead left
+//! the other machines' verdicts worthless. Stamps have a fixed width, so they are compared as text.
+//! For a
+//! pair the newest verdict (by its stamp) wins, so a new one doesn't need to delete the
+//! previous one, and two machines judging the same pair end up agreeing when they sync.
 //!
-//! Desde el esquema 9 (0.19.0) cada veredicto lleva su **motivo** (`reason`: el `reason` del
-//! `update`, o el título de la memoria nueva en `remember`) y su **autor** (`author`: la persona de
-//! la sincronización, `agent:<cliente>` si no hay, `user` desde la vista o la CLI). Salen donde sale
-//! el veredicto: en la nota del recall y de `search`, en Revisar y en `omoi review`. Y las
-//! sustituciones se encadenan: si A está sustituida por B y B por C, la nota de A lleva a C
+//! Since schema 9 (0.19.0) each verdict carries its **reason** (`reason`: the `reason` of the
+//! `update`, or the title of the new memory in `remember`) and its **author** (`author`: the sync
+//! person, `agent:<client>` if there is none, `user` from the view or the CLI). They show wherever
+//! the verdict shows: in the recall and `search` note, in Review and in `omoi review`. And
+//! supersessions chain: if A is superseded by B and B by C, A's note points to C
 //! (`ultima_de_cadena`).
 
 use crate::memoria::AHORA;
@@ -33,13 +33,13 @@ use std::collections::HashMap;
 pub const SUSTITUIDA: &str = "superseded";
 pub const CONTRADICE: &str = "contradicts";
 pub const COMPATIBLE: &str = "compatible";
-const DE_PAREJA: [&str; 3] = [SUSTITUIDA, CONTRADICE, COMPATIBLE];
+const PAIR_RELATIONS: [&str; 3] = [SUSTITUIDA, CONTRADICE, COMPATIBLE];
 
-/// Quien lo dice desde la vista web o la CLI («está bien así»).
+/// Who says it from the web view or the CLI ("it's fine like this").
 pub const USUARIO: &str = "user";
 
-/// Hasta dónde llega una cadena de sustituciones (un ciclo se corta antes por el camino).
-const TOPE_SALTOS: usize = 20;
+/// How far a supersession chain goes (a cycle is cut earlier by the path taken).
+const MAX_HOPS: usize = 20;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Veredicto {
@@ -48,46 +48,46 @@ pub struct Veredicto {
     pub relation: String,
     pub at: String,
     pub hlc: String,
-    /// Por qué (vacío en los de antes del esquema 9).
+    /// Why (empty in those from before schema 9).
     pub reason: String,
-    /// Quién: la persona de la sync, `agent:<cliente>`, `cli` o `user`.
+    /// Who: the sync person, `agent:<client>`, `cli` or `user`.
     pub author: String,
-    /// Los campos que esta versión no conoce de la línea que lo trajo (`verdict.extra`, en JSON): se
-    /// vuelven a escribir al reexportarlo. Solo lo leen `todos` y `recibir`; en lo demás va `{}`.
+    /// The fields this version doesn't know from the line that brought it (`verdict.extra`, as JSON): they
+    /// are written again when re-exporting it. Only `todos` and `recibir` read it; everywhere else it's `{}`.
     pub extra: String,
 }
 
-/// La clave de una pareja, sin orden: (a, b) y (b, a) son la misma.
+/// The key of a pair, unordered: (a, b) and (b, a) are the same.
 pub fn pareja(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.into(), b.into()) } else { (b.into(), a.into()) }
 }
 
-/// Quién firma un veredicto dado aquí sobre la memoria `memoria`: el autor que firmaría lo que se
-/// guarda donde está ella (`memoria::autor_de`: el del repositorio de su espacio, o el general) si lo
-/// hay y, si no, quien llama: `mcp:claude-code` → `agent:claude-code`, `mcp` a secas → `agent`, y lo
-/// demás (`cli`, `http`) tal cual.
-pub fn autor(db: &Connection, origen: &str, memoria: &str) -> String {
-    let donde: Option<(i64, Option<i64>)> = crate::memoria::resolver_id(db, memoria)
+/// Who signs a verdict given here about the memory `memory`: the author that would sign what is
+/// saved where it lives (`memoria::autor_de`: the one of its space's repository, or the general one) if there
+/// is one and, if not, the caller: `mcp:claude-code` → `agent:claude-code`, plain `mcp` → `agent`, and
+/// the rest (`cli`, `http`) as is.
+pub fn autor(db: &Connection, origin: &str, memory: &str) -> String {
+    let location: Option<(i64, Option<i64>)> = crate::memoria::resolver_id(db, memory)
         .ok()
-        .and_then(|id| db.query_row("SELECT project_id, space_id FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?))).optional().ok().flatten());
-    let persona = match donde {
+        .and_then(|id| db.query_row("SELECT project_id, space_id FROM memory WHERE id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).optional().ok().flatten());
+    let person = match location {
         Some((p, s)) => crate::memoria::autor_de(db, p, s),
         None => crate::memoria::autor_en(db, ""),
     }
     .unwrap_or_default();
-    if !persona.is_empty() {
-        return persona;
+    if !person.is_empty() {
+        return person;
     }
-    match origen.trim() {
+    match origin.trim() {
         "" | "mcp" => "agent".into(),
         o => match o.strip_prefix("mcp:") {
-            Some(cliente) => format!("agent:{cliente}"),
+            Some(client) => format!("agent:{client}"),
             None => o.to_string(),
         },
     }
 }
 
-/// El error de un veredicto entre memorias de espacios distintos, sin decir cuáles ni de quién.
+/// The error for a verdict between memories of different spaces, without saying which or whose.
 pub fn distintos_espacios() -> String {
     crate::tr!(
         "these memories are in different spaces: a verdict can't join them",
@@ -95,75 +95,75 @@ pub fn distintos_espacios() -> String {
     )
 }
 
-/// Si un veredicto puede juntar la memoria `otra` (el id entero, viva) con una que es global (`global`)
-/// o de `espacio` (su clave; vacía, de ninguno): para comprobarlo antes de guardar la memoria nueva.
-pub fn comprobar_espacios(db: &Connection, otra: &str, global: bool, espacio: &str) -> Result<()> {
+/// Whether a verdict can join the memory `other` (the full id, alive) with one that is global (`global`)
+/// or from `space` (its key; empty, from none): to check it before saving the new memory.
+pub fn comprobar_espacios(db: &Connection, other: &str, global: bool, space: &str) -> Result<()> {
     if global {
         return Ok(());
     }
-    if let Some((g, e)) = crate::memoria::alcance_de_memoria(db, otra)?
+    if let Some((g, e)) = crate::memoria::alcance_de_memoria(db, other)?
         && !g
-        && e != espacio
+        && e != space
     {
         anyhow::bail!(distintos_espacios());
     }
     Ok(())
 }
 
-/// Apunta un veredicto de este equipo. `other_id` vacío solo con `ok:<aviso>`. `motivo` y `autor`
-/// pueden ir vacíos (un «está bien así» no necesita motivo).
-pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, motivo: &str, autor: &str) -> Result<()> {
-    let de_pareja = DE_PAREJA.contains(&relation);
-    anyhow::ensure!(de_pareja || relation.starts_with("ok:"), "unknown verdict «{relation}»");
+/// Records a verdict from this machine. Empty `other_id` only with `ok:<warning>`. `reason` and `author`
+/// may be empty (an "it's fine like this" needs no reason).
+pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, reason: &str, author: &str) -> Result<()> {
+    let is_pair = PAIR_RELATIONS.contains(&relation);
+    anyhow::ensure!(is_pair || relation.starts_with("ok:"), "unknown verdict «{relation}»");
     let id = crate::memoria::resolver_id(db, memory_id)?;
-    let otra = if other_id.is_empty() { String::new() } else { crate::memoria::resolver_id(db, other_id)? };
-    anyhow::ensure!(de_pareja != otra.is_empty(), "«{relation}» needs {}", if de_pareja { "another memory" } else { "no other memory" });
-    anyhow::ensure!(id != otra, "a memory can't be judged against itself");
-    // Nunca entre memorias de espacios distintos (una global vale con cualquiera): la nota «sustituida
-    // por …» llevaría el título de lo de un cliente a las sesiones de otro.
-    if !otra.is_empty()
-        && let (Some((ga, ea)), Some((gb, eb))) = (crate::memoria::alcance_de_memoria(db, &id)?, crate::memoria::alcance_de_memoria(db, &otra)?)
+    let other = if other_id.is_empty() { String::new() } else { crate::memoria::resolver_id(db, other_id)? };
+    anyhow::ensure!(is_pair != other.is_empty(), "«{relation}» needs {}", if is_pair { "another memory" } else { "no other memory" });
+    anyhow::ensure!(id != other, "a memory can't be judged against itself");
+    // Never between memories of different spaces (a global one goes with any): the "superseded
+    // by …" note would carry the title of one client's stuff into another client's sessions.
+    if !other.is_empty()
+        && let (Some((ga, ea)), Some((gb, eb))) = (crate::memoria::alcance_de_memoria(db, &id)?, crate::memoria::alcance_de_memoria(db, &other)?)
         && !ga
         && !gb
         && ea != eb
     {
-        // Sin ids ni nombres de espacio: el de la otra puede ser de otro cliente.
+        // No ids or space names: the other one's may belong to another client.
         anyhow::bail!(distintos_espacios());
     }
-    // Posterior al último cambio de texto de las dos: aunque ese cambio venga de un equipo con la hora
-    // muy adelantada (que no adelanta el reloj de aquí), el veredicto que se da ahora vale.
-    let ultimo: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, otra], |f| f.get(0))?;
-    let hlc = crate::reloj::sello_tras(db, &ultimo)?;
+    // Later than the last text change of both: even if that change comes from a machine with its clock
+    // far ahead (which doesn't push this clock forward), the verdict given now holds.
+    let last: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, other], |row| row.get(0))?;
+    let hlc = crate::reloj::sello_tras(db, &last)?;
     db.execute(
         &format!("INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, {AHORA}, ?4, ?5, ?6)"),
-        params![id, otra, relation, hlc, motivo.trim(), autor.trim()],
+        params![id, other, relation, hlc, reason.trim(), author.trim()],
     )?;
     Ok(())
 }
 
-fn de_fila(f: &rusqlite::Row) -> rusqlite::Result<Veredicto> {
-    Ok(Veredicto { memory_id: f.get(0)?, other_id: f.get(1)?, relation: f.get(2)?, at: f.get(3)?, hlc: f.get(4)?, reason: f.get(5)?, author: f.get(6)?, extra: "{}".into() })
+fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Veredicto> {
+    Ok(Veredicto { memory_id: row.get(0)?, other_id: row.get(1)?, relation: row.get(2)?, at: row.get(3)?, hlc: row.get(4)?, reason: row.get(5)?, author: row.get(6)?, extra: "{}".into() })
 }
 
-/// Todos, con sus campos desconocidos: también los de memorias que están en la papelera (`omoi export`
-/// los lleva todos, para que lo que se restaure vuelva con su `superseded`; la sincronización solo
-/// manda los de memorias que viajan).
+/// All of them, with their unknown fields: also those of memories in the trash (`omoi export`
+/// carries them all, so that what gets restored comes back with its `superseded`; sync only
+/// sends those of memories that travel).
 pub fn todos(db: &Connection) -> Result<Vec<Veredicto>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, v.extra FROM verdict v
          ORDER BY v.memory_id, v.other_id, v.relation",
     )?;
-    let v = q.query_map([], |f| Ok(Veredicto { extra: f.get(7)?, ..de_fila(f)? }))?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([], |row| Ok(Veredicto { extra: row.get(7)?, ..from_row(row)? }))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Un veredicto que llega de otro equipo: se queda si es más nuevo que el que hay. Devuelve si entró.
+/// A verdict arriving from another machine: it stays if it's newer than the existing one. Returns whether it went in.
 pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
     let local: Option<String> = db
         .query_row(
             "SELECT hlc FROM verdict WHERE memory_id = ?1 AND other_id = ?2 AND relation = ?3",
             params![v.memory_id, v.other_id, v.relation],
-            |f| f.get(0),
+            |row| row.get(0),
         )
         .optional()?;
     if local.as_deref().is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
@@ -177,25 +177,25 @@ pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
     Ok(true)
 }
 
-/// Lo que vale de cada pareja: el veredicto más nuevo, si lo que juzgó no ha cambiado desde entonces.
+/// What holds for each pair: the newest verdict, if what it judged hasn't changed since.
 pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, a.content_hlc, b.content_hlc FROM verdict v
          JOIN memory a ON a.id = v.memory_id JOIN memory b ON b.id = v.other_id
          WHERE v.other_id != ''",
     )?;
-    let filas: Vec<(Veredicto, String, String)> = q.query_map([], |f| Ok((de_fila(f)?, f.get(7)?, f.get(8)?)))?.collect::<rusqlite::Result<_>>()?;
+    let rows: Vec<(Veredicto, String, String)> = q.query_map([], |row| Ok((from_row(row)?, row.get(7)?, row.get(8)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut r: HashMap<(String, String), Veredicto> = HashMap::new();
-    let mut ultimo: HashMap<(String, String), String> = HashMap::new();
-    for (v, cambio_a, cambio_b) in filas {
+    let mut latest: HashMap<(String, String), String> = HashMap::new();
+    for (v, change_a, change_b) in rows {
         let k = pareja(&v.memory_id, &v.other_id);
-        // El más nuevo manda aunque ya no valga: un veredicto viejo no vuelve porque caduque el nuevo.
-        if ultimo.get(&k).is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
+        // The newest wins even if it no longer holds: an old verdict doesn't come back because the new one expires.
+        if latest.get(&k).is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
             continue;
         }
-        ultimo.insert(k.clone(), v.hlc.clone());
-        let vale = cambio_a <= v.hlc && (v.relation != CONTRADICE || cambio_b <= v.hlc);
-        if vale {
+        latest.insert(k.clone(), v.hlc.clone());
+        let holds = change_a <= v.hlc && (v.relation != CONTRADICE || change_b <= v.hlc);
+        if holds {
             r.insert(k, v);
         } else {
             r.remove(&k);
@@ -204,7 +204,7 @@ pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> 
     Ok(r)
 }
 
-/// El final de una cadena de sustituciones: (id, saltos, motivo, autor) del último eslabón.
+/// The end of a supersession chain: (id, hops, reason, author) of the last link.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Final {
     pub id: String,
@@ -213,11 +213,11 @@ pub struct Final {
     pub author: String,
 }
 
-/// Si `id` está sustituida por B y B por C, la última es C (con cuántos saltos y el motivo del último
-/// eslabón). Solo cuenta un `superseded` vigente, con la misma regla que `parejas`: la juzgada no ha
-/// cambiado después y no hay un veredicto más nuevo sobre la misma pareja (los sellos comparan bien
-/// como texto: milisegundos y contador van a ancho fijo). Un ciclo se corta por el camino recorrido y
-/// nada pasa de `TOPE_SALTOS`. `None` si no está sustituida.
+/// If `id` is superseded by B and B by C, the last one is C (with how many hops and the reason of the last
+/// link). Only a current `superseded` counts, with the same rule as `parejas`: the judged one hasn't
+/// changed since and there is no newer verdict on the same pair (stamps compare fine
+/// as text: milliseconds and counter are fixed width). A cycle is cut by the path taken and
+/// nothing goes past `MAX_HOPS`. `None` if it isn't superseded.
 pub fn cadena(db: &Connection, id: &str) -> Result<Option<Final>> {
     let r = db
         .query_row(
@@ -237,76 +237,76 @@ pub fn cadena(db: &Connection, id: &str) -> Result<Option<Final>> {
                WHERE p.saltos < ?3 AND instr(p.camino, ',' || g.other_id || ',') = 0
              )
              SELECT id, saltos, reason, author FROM paso WHERE saltos > 0 ORDER BY saltos DESC, id LIMIT 1",
-            params![id, SUSTITUIDA, TOPE_SALTOS as i64],
-            |f| Ok(Final { id: f.get(0)?, saltos: f.get::<_, i64>(1)? as usize, reason: f.get(2)?, author: f.get(3)? }),
+            params![id, SUSTITUIDA, MAX_HOPS as i64],
+            |row| Ok(Final { id: row.get(0)?, saltos: row.get::<_, i64>(1)? as usize, reason: row.get(2)?, author: row.get(3)? }),
         )
         .optional()?;
     Ok(r)
 }
 
-/// La última memoria de la cadena de sustituciones de `id` y cuántos saltos hay hasta ella.
+/// The last memory in `id`'s supersession chain and how many hops it takes to reach it.
 pub fn ultima_de_cadena(db: &Connection, id: &str) -> Result<Option<(String, usize)>> {
     Ok(cadena(db, id)?.map(|f| (f.id, f.saltos)))
 }
 
-/// Los `ok:<aviso>` de una sola memoria: (memoria, aviso) → cuándo. Con `vigentes`, solo los que
-/// siguen valiendo (la memoria no ha cambiado después).
-pub fn oks(db: &Connection, vigentes: bool) -> Result<HashMap<(String, String), String>> {
+/// The single-memory `ok:<warning>`s: (memory, warning) → when. With `current_only`, only those that
+/// still hold (the memory hasn't changed since).
+pub fn oks(db: &Connection, current_only: bool) -> Result<HashMap<(String, String), String>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, substr(v.relation, 4), v.at FROM verdict v JOIN memory m ON m.id = v.memory_id
          WHERE v.other_id = '' AND v.relation LIKE 'ok:%' AND (?1 = 0 OR m.content_hlc <= v.hlc)",
     )?;
-    let filas: Vec<(String, String, String)> = q.query_map([vigentes], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-    Ok(filas.into_iter().map(|(id, aviso, at)| ((id, aviso), at)).collect())
+    let rows: Vec<(String, String, String)> = q.query_map([current_only], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows.into_iter().map(|(id, warning, at)| ((id, warning), at)).collect())
 }
 
-/// El motivo como va en una nota: una línea, cortado a 120 caracteres.
-pub fn motivo_corto(motivo: &str) -> String {
-    let plano = motivo.split_whitespace().collect::<Vec<_>>().join(" ");
-    if plano.chars().count() > 120 { format!("{}…", plano.chars().take(120).collect::<String>()) } else { plano }
+/// The reason as it goes in a note: one line, cut at 120 characters.
+pub fn motivo_corto(reason: &str) -> String {
+    let flat = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 120 { format!("{}…", flat.chars().take(120).collect::<String>()) } else { flat }
 }
 
-// --- Contradicciones en espera (1.14) ----------------------------------------------------------------
+// --- Contradictions on hold (1.14) ----------------------------------------------------------------
 //
-// Un `contradicts` vigente deja la memoria contradicha (`other_id`: la que ya estaba; quien contradice
-// es `memory_id`, la nueva o la que se cambia) en espera hasta que la persona diga cuál vale: el recall
-// automático no la trae, en `search` sale más abajo ([`FACTOR_EN_ESPERA`]) y su nota dice que espera.
-// La que contradice sale normal, con su nota. Se resuelve con [`resolver`]: una sustituye a la otra
-// (`superseded`) o valen las dos (`compatible`); como el veredicto más nuevo de la pareja manda, el
-// `contradicts` deja de valer sin borrarlo. Lo puede hacer la persona en la vista web o el agente con
-// su respuesta (`decisions` con `contradiction`), y el motivo guarda sus palabras.
+// A current `contradicts` leaves the contradicted memory (`other_id`: the one that was already there; the one
+// contradicting is `memory_id`, the new one or the one being changed) on hold until the person says which holds: the
+// automatic recall doesn't bring it, in `search` it ranks lower ([`FACTOR_EN_ESPERA`]) and its note says it's waiting.
+// The contradicting one shows normally, with its note. It is resolved with [`resolver`]: one supersedes the other
+// (`superseded`) or both hold (`compatible`); since the pair's newest verdict wins, the
+// `contradicts` stops holding without deleting it. The person can do it from the web view or the agent with
+// their answer (`decisions` with `contradiction`), and the reason keeps their words.
 
-/// Lo que pesa al buscar una memoria en espera.
+/// The weight of a memory on hold when searching.
 pub const FACTOR_EN_ESPERA: f64 = 0.6;
 
-/// Las contradicciones vigentes, de la más nueva a la más vieja.
+/// The current contradictions, newest first.
 pub fn contradicciones(db: &Connection) -> Result<Vec<Veredicto>> {
     let mut v: Vec<Veredicto> = parejas(db)?.into_values().filter(|v| v.relation == CONTRADICE).collect();
     v.sort_by(|a, b| b.hlc.cmp(&a.hlc).then_with(|| a.memory_id.cmp(&b.memory_id)));
     Ok(v)
 }
 
-/// Las memorias en espera: las contradichas de las contradicciones vigentes.
+/// The memories on hold: the contradicted ones of the current contradictions.
 pub fn en_espera(db: &Connection) -> Result<std::collections::HashSet<String>> {
-    // Casi siempre no hay ninguna: sin `contradicts` en la tabla no hace falta mirar las parejas.
-    let hay: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM verdict WHERE relation = ?1)", [CONTRADICE], |f| f.get(0))?;
-    if !hay {
+    // Almost always there are none: without `contradicts` in the table there's no need to look at the pairs.
+    let any: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM verdict WHERE relation = ?1)", [CONTRADICE], |row| row.get(0))?;
+    if !any {
         return Ok(Default::default());
     }
     Ok(contradicciones(db)?.into_iter().map(|v| v.other_id).collect())
 }
 
-/// Cuál vale de una pareja que se contradice.
+/// Which one holds in a contradicting pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Queda {
-    /// Vale esta (su id): la otra queda sustituida por ella.
+    /// This one holds (its id): the other is superseded by it.
     Una(String),
-    /// Valen las dos: hablan de cosas distintas o se complementan.
+    /// Both hold: they talk about different things or complement each other.
     LasDos,
 }
 
 impl Queda {
-    /// `keep` tal como llega: un id (o su principio), o «both».
+    /// `keep` as it arrives: an id (or its prefix), or "both".
     pub fn de(db: &Connection, t: &str) -> Result<Queda> {
         match t.trim().to_lowercase().as_str() {
             "both" | "las dos" | "ambas" => Ok(Queda::LasDos),
@@ -316,26 +316,26 @@ impl Queda {
     }
 }
 
-/// La decisión de la persona sobre la pareja `a`-`b`: `Una(x)` deja la otra sustituida por `x`;
-/// `LasDos`, compatibles. `motivo`, lo que dijo (o vacío). Devuelve la que queda sustituida, si hay.
-pub fn resolver(db: &Connection, a: &str, b: &str, queda: &Queda, motivo: &str, autor: &str) -> Result<Option<String>> {
+/// The person's decision on the pair `a`-`b`: `Una(x)` leaves the other superseded by `x`;
+/// `LasDos`, compatible. `reason`, what they said (or empty). Returns the one left superseded, if any.
+pub fn resolver(db: &Connection, a: &str, b: &str, keep: &Queda, reason: &str, author: &str) -> Result<Option<String>> {
     let (a, b) = (crate::memoria::resolver_id(db, a)?, crate::memoria::resolver_id(db, b)?);
     anyhow::ensure!(a != b, "a memory can't be judged against itself");
-    match queda {
+    match keep {
         Queda::LasDos => {
-            poner(db, &a, &b, COMPATIBLE, motivo, autor)?;
+            poner(db, &a, &b, COMPATIBLE, reason, author)?;
             Ok(None)
         }
         Queda::Una(x) => {
-            let otra = if *x == a {
+            let other = if *x == a {
                 b
             } else if *x == b {
                 a
             } else {
                 anyhow::bail!("`keep` has to be one of the two memories, or \"both\"")
             };
-            poner(db, &otra, x, SUSTITUIDA, motivo, autor)?;
-            Ok(Some(otra))
+            poner(db, &other, x, SUSTITUIDA, reason, author)?;
+            Ok(Some(other))
         }
     }
 }

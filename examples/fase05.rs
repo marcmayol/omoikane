@@ -1,15 +1,15 @@
-//! Fase 0.5: cargar el modelo en milisegundos sin cambiar ni un vector.
+//! Phase 0.5: load the model in milliseconds without changing a single vector.
 //!
-//!   cargo run --release --example fase05 -- compilar        int8 → formato mapeable
-//!   cargo run --release --example fase05 -- abrir           abrir + primer vector (medir en frío)
-//!   cargo run --release --example fase05 -- equivalencia D… ids y vectores frente a tokenizers y model2vec-rs
+//!   cargo run --release --example fase05 -- compilar        int8 → mappable format
+//!   cargo run --release --example fase05 -- abrir           open + first vector (measure cold)
+//!   cargo run --release --example fase05 -- equivalencia D… ids and vectors against tokenizers and model2vec-rs
 
 use anyhow::{Result, anyhow};
 use omoikane::embeber::{Modelo, compilar};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-fn modelos() -> PathBuf {
+fn models_dir() -> PathBuf {
     std::env::home_dir().unwrap().join(".omoikane/models")
 }
 
@@ -19,65 +19,65 @@ fn ms(t: Instant) -> f64 {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let int8 = modelos().join("potion-multilingual-128M-int8");
-    let rapido = modelos().join("potion-multilingual-128M-omoi");
+    let int8 = models_dir().join("potion-multilingual-128M-int8");
+    let fast = models_dir().join("potion-multilingual-128M-omoi");
     match args.first().map(String::as_str) {
         Some("compilar") => {
             let t = Instant::now();
-            compilar(&int8, &rapido)?;
-            println!("compilado en {:.0} ms → {}", ms(t), rapido.display());
-            for f in std::fs::read_dir(&rapido)? {
+            compilar(&int8, &fast)?;
+            println!("compilado en {:.0} ms → {}", ms(t), fast.display());
+            for f in std::fs::read_dir(&fast)? {
                 let f = f?;
                 println!("  {:<20} {:>8.1} MB", f.file_name().to_string_lossy(), f.metadata()?.len() as f64 / 1e6);
             }
             Ok(())
         }
         Some("abrir") => {
-            let dir = args.get(1).map_or(rapido, PathBuf::from);
+            let dir = args.get(1).map_or(fast, PathBuf::from);
             let t = Instant::now();
             let m = Modelo::abrir(&dir)?;
-            let abrir = ms(t);
+            let open_ms = ms(t);
             let t = Instant::now();
             let v = m.vector("el middleware de autenticación no se ejecuta en /health")?;
-            let primero = ms(t);
-            // Diez frases distintas más: con la caché fría, cada una puede tocar páginas nuevas del trie.
+            let first_ms = ms(t);
+            // Ten more different sentences: with a cold cache, each one may touch new pages of the trie.
             let t = Instant::now();
-            for f in DIFICILES.iter().take(10) {
+            for f in HARD.iter().take(10) {
                 std::hint::black_box(m.vector(f)?);
             }
-            println!("abrir {abrir:.1} ms · primer vector {primero:.2} ms · 10 más {:.2} ms · dim {}", ms(t), v.len());
+            println!("abrir {open_ms:.1} ms · primer vector {first_ms:.2} ms · 10 más {:.2} ms · dim {}", ms(t), v.len());
             Ok(())
         }
         Some("residente") => {
-            // Abre, codifica un corpus y se queda vivo para medir su memoria desde fuera.
-            let m = Modelo::abrir(&rapido)?;
-            let frases = corpus(&args[2..]);
+            // Opens, encodes a corpus and stays alive so its memory can be measured from outside.
+            let m = Modelo::abrir(&fast)?;
+            let sentences = corpus(&args[2..]);
             let t = Instant::now();
-            for f in &frases {
+            for f in &sentences {
                 std::hint::black_box(m.vector(f)?);
             }
-            println!("{} frases en {:.0} ms; esperando", frases.len(), ms(t));
+            println!("{} frases en {:.0} ms; esperando", sentences.len(), ms(t));
             std::thread::sleep(std::time::Duration::from_secs(args.get(1).map_or(Ok(20), |s| s.parse())?));
             Ok(())
         }
         Some("residente-m2v") => {
-            // Lo mismo con model2vec-rs, para comparar.
+            // The same with model2vec-rs, to compare.
             let m = model2vec_rs::model::StaticModel::from_pretrained(&int8, None, None, None)?;
-            let frases = corpus(&args[2..]);
-            for lote in frases.chunks(512) {
-                std::hint::black_box(m.encode_with_args(lote, None, 512));
+            let sentences = corpus(&args[2..]);
+            for batch in sentences.chunks(512) {
+                std::hint::black_box(m.encode_with_args(batch, None, 512));
             }
-            println!("{} frases; esperando", frases.len());
+            println!("{} frases; esperando", sentences.len());
             std::thread::sleep(std::time::Duration::from_secs(args.get(1).map_or(Ok(20), |s| s.parse())?));
             Ok(())
         }
-        Some("equivalencia") => equivalencia(&int8, &rapido, &args[1..]),
+        Some("equivalencia") => equivalence(&int8, &fast, &args[1..]),
         _ => Err(anyhow!("uso: fase05 compilar | abrir [DIR] | residente[-m2v] SEG DIR… | equivalencia DIR…")),
     }
 }
 
-/// Frases de varios alfabetos y casos raros que no salen en textos normales.
-const DIFICILES: &[&str] = &[
+/// Sentences in several scripts and odd cases that don't show up in normal text.
+const HARD: &[&str] = &[
     "Les élèves ont étudié l’histoire de la Révolution française.",
     "Größere Äpfel schmecken süßer als kleinere, sagt Jürgen.",
     "Москва — столица России, крупнейший город Европы.",
@@ -100,18 +100,18 @@ const DIFICILES: &[&str] = &[
     "ꙮ 𓀀 𝔘𝔫𝔦𝔠𝔬𝔡𝔢 ﷽",
 ];
 
-/// Líneas de los ficheros de texto bajo las carpetas dadas.
+/// Lines of the text files under the given folders.
 fn corpus(dirs: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = DIFICILES.iter().map(|s| s.to_string()).collect();
-    let mut pila: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
-    while let Some(p) = pila.pop() {
-        let Ok(es) = std::fs::read_dir(&p) else { continue };
-        for e in es.flatten() {
+    let mut v: Vec<String> = HARD.iter().map(|s| s.to_string()).collect();
+    let mut stack: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+    while let Some(p) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&p) else { continue };
+        for e in entries.flatten() {
             let p = e.path();
-            let nombre = p.file_name().unwrap_or_default().to_string_lossy();
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
             if p.is_dir() {
-                if !nombre.starts_with('.') && nombre != "target" && nombre != "node_modules" {
-                    pila.push(p);
+                if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    stack.push(p);
                 }
             } else if matches!(p.extension().and_then(|e| e.to_str()), Some("md" | "rs" | "go" | "txt" | "py" | "json"))
                 && let Ok(t) = std::fs::read_to_string(&p)
@@ -125,54 +125,54 @@ fn corpus(dirs: &[String]) -> Vec<String> {
     v
 }
 
-fn equivalencia(int8: &Path, rapido: &Path, dirs: &[String]) -> Result<()> {
-    let frases = corpus(dirs);
-    println!("{} frases", frases.len());
+fn equivalence(int8: &Path, fast: &Path, dirs: &[String]) -> Result<()> {
+    let sentences = corpus(dirs);
+    println!("{} frases", sentences.len());
 
-    let referencia = tokenizers::Tokenizer::from_file(int8.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
+    let reference = tokenizers::Tokenizer::from_file(int8.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
     let original = model2vec_rs::model::StaticModel::from_pretrained(int8, None, None, None)?;
-    let nuevo = Modelo::abrir(rapido)?;
+    let new_model = Modelo::abrir(fast)?;
 
-    let mut ids_distintos = 0;
-    let mut peor = 1.0f32;
-    let mut peor_frase = String::new();
+    let mut differing_ids = 0;
+    let mut worst = 1.0f32;
+    let mut worst_sentence = String::new();
     let mut tokens = 0usize;
-    for f in &frases {
-        let a = referencia.encode(f.as_str(), false).map_err(|e| anyhow!("{e}"))?.get_ids().to_vec();
-        let b = nuevo.ids(f)?;
+    for f in &sentences {
+        let a = reference.encode(f.as_str(), false).map_err(|e| anyhow!("{e}"))?.get_ids().to_vec();
+        let b = new_model.ids(f)?;
         tokens += a.len();
         if a != b {
-            ids_distintos += 1;
-            if ids_distintos <= 5 {
+            differing_ids += 1;
+            if differing_ids <= 5 {
                 println!("ids distintos: {f:?}\n  tokenizers {a:?}\n  omoi       {b:?}");
             }
         }
     }
-    // Vectores por lotes, sin truncar, para comparar lo mismo.
-    for lote in frases.chunks(512) {
-        let a = original.encode_with_args(lote, None, 512);
-        for (f, va) in lote.iter().zip(a) {
-            let vb = nuevo.vector(f)?;
+    // Vectors in batches, without truncating, to compare the same thing.
+    for batch in sentences.chunks(512) {
+        let a = original.encode_with_args(batch, None, 512);
+        for (f, va) in batch.iter().zip(a) {
+            let vb = new_model.vector(f)?;
             let c: f32 = va.iter().zip(&vb).map(|(x, y)| x * y).sum();
-            // Una frase sin tokens útiles da el vector cero en los dos: cuenta como igual.
+            // A sentence with no useful tokens gives the zero vector in both: counts as equal.
             let c = if va.iter().all(|x| *x == 0.0) && vb.iter().all(|x| *x == 0.0) { 1.0 } else { c };
-            if c < peor {
-                peor = c;
-                peor_frase = f.clone();
+            if c < worst {
+                worst = c;
+                worst_sentence = f.clone();
             }
         }
     }
     println!("tokens comparados      {tokens}");
-    println!("frases con ids distintos  {ids_distintos} de {}", frases.len());
-    println!("coseno mínimo con model2vec-rs  {peor:.6}  ({peor_frase:.80?})");
+    println!("frases con ids distintos  {differing_ids} de {}", sentences.len());
+    println!("coseno mínimo con model2vec-rs  {worst:.6}  ({worst_sentence:.80?})");
 
-    let muestra: Vec<&String> = frases.iter().take(2000).collect();
+    let sample: Vec<&String> = sentences.iter().take(2000).collect();
     let t = Instant::now();
-    for f in &muestra {
-        std::hint::black_box(nuevo.vector(f)?);
+    for f in &sample {
+        std::hint::black_box(new_model.vector(f)?);
     }
-    println!("vector medio            {:.3} ms", ms(t) / muestra.len() as f64);
-    anyhow::ensure!(ids_distintos == 0 && peor >= 0.9999, "NO equivalente");
+    println!("vector medio            {:.3} ms", ms(t) / sample.len() as f64);
+    anyhow::ensure!(differing_ids == 0 && worst >= 0.9999, "NO equivalente");
     println!("EQUIVALENTE");
     Ok(())
 }

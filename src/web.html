@@ -7,14 +7,14 @@
 <title>Omoikane</title>
 <link rel="icon" href="/icono.png">
 <style>
-/* Fuentes dentro del binario (OFL, assets/fuentes): la vista funciona sin internet. */
+/* Fonts inside the binary (OFL, assets/fuentes): the view works without internet. */
 @font-face { font-family: "IBM Plex Sans"; font-weight: 100 700; font-display: swap; src: url(/fuentes/plex-sans.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(/fuentes/plex-mono-400.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url(/fuentes/plex-mono-600.woff2) format("woff2"); }
 @font-face { font-family: "Shippori Mincho"; font-weight: 600; font-display: swap; src: url(/fuentes/shippori-600.woff2) format("woff2"); }
 @font-face { font-family: "Shippori Mincho"; font-weight: 600; font-display: swap; src: url(/fuentes/shippori-600-omoikane.woff2) format("woff2"); unicode-range: U+517C, U+601D; }
 
-/* Paleta del banner: negro cálido, cobre y ámbar, crema. En claro, papel cálido y cobre oscuro. */
+/* Banner palette: warm black, copper and amber, cream. In light mode, warm paper and dark copper. */
 :root {
   --bg: #0d0a08; --bg2: #120e0b; --panel: #18120e; --panel2: #201812; --line: #2f241b; --line2: #3d2f23;
   --ink: #f2e3cc; --ink2: #d9c6aa; --muted: #a8937b; --faint: #93806a;
@@ -48,7 +48,7 @@ code, .mono { font-family: var(--mono); }
 .serif { font-family: var(--serif); font-weight: 600; }
 [hidden] { display: none !important; }
 
-/* Cabecera */
+/* Header */
 .bar { display: flex; align-items: center; gap: 14px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--bg2); flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
 .brand img { width: 30px; height: 30px; border-radius: 50%; box-shadow: 0 0 0 1px var(--line2), 0 0 18px var(--halo); }
@@ -67,11 +67,11 @@ code, .mono { font-family: var(--mono); }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--preference); }
 .pill.mal { color: var(--delink); } .pill.mal .dot { background: var(--delink); }
-/* Desde dónde se mira: el espacio que enseña el servidor (o todos). */
+/* Where it is viewed from: the space the server shows (or all). */
 .pill.alc { color: var(--ink2); border-color: var(--line2); } .pill.alc .dot { background: var(--accent); border-radius: 2px; transform: rotate(45deg); }
 main { flex: 1; min-height: 0; position: relative; }
 
-/* Tipos */
+/* Kinds */
 .k { width: 8px; height: 8px; border-radius: 2px; flex: none; transform: rotate(45deg); display: inline-block; background: var(--faint); }
 .k.fact { background: var(--fact); } .k.decision { background: var(--decision); } .k.gotcha { background: var(--gotcha); } .k.preference { background: var(--preference); } .k.procedure { background: var(--procedure); }
 .k.pin { background: var(--glow); border-radius: 50%; transform: none; }
@@ -88,7 +88,7 @@ button.chip:hover { border-color: var(--accent); }
 .vacio { color: var(--faint); padding: 24px 0; }
 .enlace-mal { max-width: 640px; margin: 48px auto; padding: 0 20px; color: var(--ink2); line-height: 1.55; overflow-wrap: anywhere; }
 
-/* Memorias: cronología */
+/* Memories: timeline */
 .mem { display: grid; grid-template-columns: 230px minmax(0,1fr); height: 100%; }
 .rail { border-right: 1px solid var(--line); background: var(--bg2); padding: 8px 10px 20px; overflow-y: auto; }
 .ro { display: flex; width: 100%; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; color: var(--ink2); font-size: 13px; background: none; border: 0; text-align: left; }
@@ -126,7 +126,7 @@ button.chip:hover { border-color: var(--accent); }
 .row.open .det { grid-column: 1 / span 2; }
 .mas { margin: 12px 0 0 110px; }
 
-/* Detalle (en la cronología y en el panel del proyecto) */
+/* Detail (in the timeline and in the project panel) */
 .det { margin-top: 8px; display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 16px; }
 .det.vertical { grid-template-columns: minmax(0,1fr); }
 .facts { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 3px 12px; font-size: 12.5px; color: var(--muted); align-content: start; }
@@ -173,7 +173,7 @@ button.chip:hover { border-color: var(--accent); }
 .dl.del { background: var(--del); color: var(--ink2); } .dl.del .s { color: var(--delink); }
 .dl.salto { color: var(--faint); }
 
-/* Proyectos */
+/* Projects */
 .pjs { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
 .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; margin-bottom: 18px; }
 .hero h1 { margin: 0; font: 600 30px/1.15 var(--serif); }
@@ -199,7 +199,7 @@ button.chip:hover { border-color: var(--accent); }
 .leyenda { display: flex; gap: 14px; color: var(--faint); font-size: 11.5px; flex-wrap: wrap; margin-top: 16px; }
 .leyenda span { display: inline-flex; align-items: center; gap: 6px; }
 
-/* Proyectos agrupados por espacio */
+/* Projects grouped by space */
 .gsp { display: flex; align-items: baseline; gap: 12px; margin: 26px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .gsp:first-of-type { margin-top: 6px; }
 .gsp h2 { margin: 0; font: 600 21px/1.2 var(--serif); }
@@ -211,7 +211,7 @@ button.chip:hover { border-color: var(--accent); }
 @media (max-width: 600px) { .pjs { padding: 18px 14px 30px; } .grid { grid-template-columns: minmax(0,1fr); } }
 .cmd code { font-size: 12.5px; background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; color: var(--glow); overflow-wrap: anywhere; }
 
-/* Página de un proyecto */
+/* A project's page */
 .pp { display: grid; grid-template-columns: minmax(0,1fr); height: 100%; }
 .pp.con-panel { grid-template-columns: minmax(0,1fr) minmax(360px, 34%); }
 .work { overflow-y: auto; padding: 18px 24px 40px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -242,7 +242,7 @@ button.chip:hover { border-color: var(--accent); }
 .panel .cerrar { margin-left: auto; background: none; border: 0; color: var(--faint); font-size: 13px; }
 .panel .cerrar:hover { color: var(--ink); }
 
-/* Conexiones (7.4) */
+/* Connections (7.4) */
 .grafo { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
 .grafo .lb { font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 .grafo svg { display: block; width: 100%; height: auto; max-height: 380px; }
@@ -253,7 +253,7 @@ button.chip:hover { border-color: var(--accent); }
 .grafo text { font: 10.5px var(--sans); fill: var(--muted); pointer-events: none; }
 .grafo .fact { fill: var(--fact); } .grafo .decision { fill: var(--decision); } .grafo .gotcha { fill: var(--gotcha); } .grafo .preference { fill: var(--preference); } .grafo .procedure { fill: var(--procedure); }
 
-/* Revisar */
+/* Review */
 .trozo { margin: 12px 0 0; }
 .trozo .titulo-trozo { width: 100%; box-sizing: border-box; margin: 6px 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg2); color: var(--ink); font: 600 13.5px var(--sans); }
 .trozo .cuenta-trozo.mal { color: var(--delink); font-weight: 600; }
@@ -287,7 +287,7 @@ button.chip:hover { border-color: var(--accent); }
 .abiertas .av textarea { width: 100%; min-height: 64px; resize: vertical; background: var(--bg); color: var(--ink); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 10px; font-size: 13px; line-height: 1.45; }
 @media (max-width: 900px) { .par { grid-template-columns: 1fr; } .rev { padding: 18px 14px 30px; } }
 
-/* Panorama: la vista de responsable, por espacio */
+/* Overview: the manager view, by space */
 .pan { height: 100%; overflow-y: auto; padding: 26px 32px 40px; }
 .pan .ctl { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
 .pan .ctl select { background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; padding: 4px 8px; font-size: 13px; }
@@ -386,7 +386,7 @@ const T = ES ? {
   juntar: 'Juntar', juntarIguales: 'Son lo mismo: juntar', juntarBtn: 'Juntar en una', juntarSub: 'Edita el texto que se quedará en la más nueva. La vieja va a la papelera como sustituida por ella; sus etiquetas, rutas e historial pasan a la que queda, y los [[enlaces]] que llegaban a ella siguen funcionando.', juntarMotivo: 'juntadas a mano desde la vista web', parejaCambiada: 'Alguna de las dos ha cambiado desde que se compararon: se volverán a comparar. No se ha juntado nada.',
   abiertasTitulo: 'Decisiones que te esperan', abiertasSub: 'El agente no pudo preguntarte y siguió con lo que asumió (memorias <code>decision</code> con la etiqueta <code>open</code>). Le salen al empezar cada sesión hasta que decidas.', respuesta: 'Tu respuesta…', decidir: 'Decidir', seQueda: 'Se queda lo supuesto', seQuedaT: 'El agente siguió con lo que asumió y te vale: la cierra con eso como respuesta', seQuedaRespuesta: 'Se queda lo que se supuso.', decidido: 'Decidido', decididoMotivo: 'decidida desde la vista web', fugas: l => `No se ha guardado: es una memoria de oficio (la ven todos los clientes) y nombra lo que parece de un proyecto o de un cliente (${l}). Escríbelo sin eso.`, bloqueante: 'bloqueante', paraDespues: 'para después', bloqueanteT: 'Sin tu respuesta, el trabajo que depende de ella no sigue (etiqueta blocking)',
   sesiones: 'De tus últimas sesiones', sesionesSub: 'Omoikane las apartó al cerrar cada sesión, sin entenderlas: lo que dijiste al responder una pregunta, preferencias, hitos y lo que informaron los subagentes. El agente de la sesión siguiente las recibe una vez; aquí puedes guardarlas tú o dejarlas.',
-  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', papeleraVacia: 'La papelera está vacía.', redactar: 'Redactar', olvidadaPor: (by, cuando) => `olvidada en ${by} · ${cuando}`,
+  papelera: 'Papelera', papeleraSub: 'Memorias olvidadas aquí o en otro equipo. Se pueden devolver, con su historial, y vuelven también a los demás equipos; a los 30 días se borran del todo.', restaurar: 'Restaurar', papeleraVacia: 'La papelera está vacía.', redactar: 'Redactar', olvidadaPor: (by, when) => `olvidada en ${by} · ${when}`,
   pan: {
     nav: 'Panorama', titulo: 'Panorama por cliente', sub: 'Para quien lleva un cliente o la factory entera: en cada espacio, qué hay, quién lo escribió y qué está desfasado o en pausa.',
     todo: 'Ves todos los espacios: el servidor arrancó en tu carpeta de usuario.', solo: n => `Solo ves el espacio ${n}: el servidor arrancó en uno de sus proyectos. Desde tu carpeta de usuario se ven todos.`, soloNinguno: 'Solo ves los proyectos sin espacio: el servidor arrancó en uno de ellos. Desde tu carpeta de usuario se ven todos.',
@@ -402,7 +402,7 @@ const T = ES ? {
   guardarComo: 'Guardar como memoria', dejar: 'Descartar', enlaza: 'Enlaza con', laEnlazan: 'La enlazan', conexiones: 'Conexiones', kindCand: { decision: 'decisión', preference: 'preferencia', milestone: 'hito', subagent: 'subagente', recipe: 'receta' },
   quienDijo: a => { const q = a.author === 'user' ? 'tú' : a.author.startsWith('agent:') ? `el agente (${a.author.slice(6)})` : a.author === 'agent' ? 'el agente' : a.author; const via = a.via > 1 ? ` · pasando por ${a.via - 1} memoria${a.via > 2 ? 's' : ''} más` : ''; return (q ? `Lo dijo ${q}` : 'Sin autor') + (a.reason ? `: «${a.reason}»` : '') + via; },
   tipos: { secret: ['Secretos', 'Llevan algo que parece una clave, un token o una contraseña (se guardaron antes de la 0.19.0 o con OMOIKANE_REDACT=0). «Redactar» lo cambia por [redacted:<tipo>], también en su historial.'], review_date: ['Ha llegado su fecha', 'Al guardarlas se les puso una fecha de revisión (etiqueta review:AAAA-MM-DD): un token que caduca, una oferta, un plan con día. Mira si siguen valiendo; «Está bien así» la da por revisada.'], superseded: ['Sustituidas', 'El agente dijo que otra memoria las sustituye: si es así, olvida la vieja.'], contradicts: ['Se contradicen', 'El agente vio que dicen cosas distintas y no supo cuál vale.'], due: ['Toca revisarlas', 'Hace tiempo que no se tocan: decisiones y recetas a los 120 días, hechos y trampas a los 180. «Está bien así» vuelve a poner el reloj a cero.'], outdated: ['Pueden estar desfasadas', 'Otra memoria más nueva del mismo tema dice algo distinto.'], trade_duplicate: ['Memorias de oficio repetidas', 'Dos memorias del mismo oficio dicen lo mismo (lo mismo promovido desde dos clientes, por ejemplo). Júntalas con «Juntar», u olvida una; «Está bien así» las da por distintas.'], broken_link: ['Enlaces rotos', 'Tienen un [[enlace]] que no lleva a ninguna memoria.'], stale_status: ['Estados que se han quedado atrás', 'El proyecto ha cambiado después y hace días que no se tocan.'], code_drift: ['El código ha cambiado debajo', 'Los ficheros de los que hablan (sus rutas y los que nombran) han cambiado mucho desde que se escribieron o se revisaron: al menos la mitad de sus líneas según git, o en 5 sesiones fuera de git. Mira si siguen siendo verdad; «Está bien así» la da por revisada hasta que vuelvan a cambiar.'], broken_path: ['Rutas que ya no existen', 'La memoria apunta a ficheros que ya no están en este equipo.'], unused: ['Nunca se usan', 'Hace más de un mes que existen y el agente no las ha recibido ni buscado nunca.'], too_long: ['Demasiado largas', 'El recall solo lee los primeros 6.000 caracteres: conviene partirlas en varias.'] },
-  detalle: a => a.kind === 'secret' ? a.detail.replace(/^looks like a secret: (.*); redact it$/, 'parece un secreto: $1') : a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'review_date' ? a.detail.replace(/review date (\S+) reached: is it still true\?/, 'ha llegado su fecha ($1): ¿sigue siendo verdad?'): a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'trade_duplicate' ? a.detail.replace(/^says the same as the other one \((.*), similarity ([\d.]+)\): merge them$/, 'dice lo mismo que la otra ($1, similitud $2): júntalas') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'code_drift' ? a.detail.replace(/ changed a lot since (\S+) \((.*)\): is it still true\?$/, (_, f, x) => ` han cambiado mucho desde el ${f} (${x.replace(' lines changed, ', ' líneas cambiadas, ').replace(' of their size', ' de lo que miden').replace(/edited in (\d+) sessions/, 'editados en $1 sesiones')}): ¿sigue siendo verdad?`).replace(/ and (\d+) more/, ' y $1 más').replace('` and `', '` y `') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
+  detalle: a => a.kind === 'secret' ? a.detail.replace(/^looks like a secret: (.*); redact it$/, 'parece un secreto: $1') : a.kind === 'too_long' ? `${(memories.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} caracteres` : a.kind === 'superseded' ? 'la sustituye la otra' : a.kind === 'contradicts' ? 'no se sabe cuál vale' : a.kind === 'review_date' ? a.detail.replace(/review date (\S+) reached: is it still true\?/, 'ha llegado su fecha ($1): ¿sigue siendo verdad?'): a.kind === 'due' ? a.detail.replace(/untouched for (\d+) days: is it still true\?/, '$1 días sin tocar: ¿sigue siendo verdad?') : a.kind === 'outdated' ? a.detail.replace('pending → done', 'pendiente → hecho').replace(/^version /, 'versión ') : a.kind === 'trade_duplicate' ? a.detail.replace(/^says the same as the other one \((.*), similarity ([\d.]+)\): merge them$/, 'dice lo mismo que la otra ($1, similitud $2): júntalas') : a.kind === 'broken_link' ? a.detail.replace('links to nothing:', 'no lleva a nada:') : a.kind === 'broken_path' ? a.detail.replace('no longer exists:', 'ya no existe:') : a.kind === 'code_drift' ? a.detail.replace(/ changed a lot since (\S+) \((.*)\): is it still true\?$/, (_, f, x) => ` han cambiado mucho desde el ${f} (${x.replace(' lines changed, ', ' líneas cambiadas, ').replace(' of their size', ' de lo que miden').replace(/edited in (\d+) sessions/, 'editados en $1 sesiones')}): ¿sigue siendo verdad?`).replace(/ and (\d+) more/, ' y $1 más').replace('` and `', '` y `') : a.kind === 'unused' ? a.detail.replace(/never recalled in (\d+) days/, 'sin recordarse en $1 días') : a.detail.replace(/(\d+) memories of this project changed after it; untouched for (\d+) days/, '$1 memorias del proyecto han cambiado después; $2 días sin tocar')
 } : {
   memorias: 'Memories', proyectos: 'Projects', buscar: 'Search the way the agent does…', buscarEn: p => `Search in ${p}…`,
   tipo: 'Kind', todo: 'All', fijadas: 'Pinned', proyecto: 'Project', todos: 'All', global: 'Global', oficio: o => `Trade ${o}`, oficioPath: o => `every ${o} project, of any client`, etiqueta: 'Tag', todasEt: 'All',
@@ -434,7 +434,7 @@ const T = ES ? {
   juntar: 'Merge', juntarIguales: 'They are the same: merge', juntarBtn: 'Merge into one', juntarSub: 'Edit the text the newer one will keep. The old one goes to the trash as superseded by it; its tags, paths and history move to the one that stays, and the [[links]] that led to it keep working.', juntarMotivo: 'merged by hand in the web view', parejaCambiada: 'One of the two has changed since they were compared: they will be compared again. Nothing was merged.',
   abiertasTitulo: 'Decisions waiting for you', abiertasSub: 'The agent could not ask you and went on with what it assumed (<code>decision</code> memories tagged <code>open</code>). It sees them at the start of every session until you decide.', respuesta: 'Your answer…', decidir: 'Decide', seQueda: 'Keep the assumption', seQuedaT: 'The agent went on with what it assumed and that is fine: close it with that as the answer', seQuedaRespuesta: 'What was assumed stays.', decidido: 'Decided', decididoMotivo: 'decided in the web view', fugas: l => `Not saved: it is a trade memory (every client sees it) and it names what looks like a project or a client (${l}). Write it without them.`, bloqueante: 'blocking', paraDespues: 'for later', bloqueanteT: 'Work that depends on it waits for your answer (tag blocking)',
   sesiones: 'From your recent sessions', sesionesSub: 'Omoikane set these aside when each session ended, without understanding them: what you said answering a question, preferences, milestones and what subagents reported. The agent of the next session gets them once; here you can save them yourself or drop them.',
-  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', papeleraVacia: 'The trash is empty.', redactar: 'Redact', olvidadaPor: (by, cuando) => `forgotten on ${by} · ${cuando}`,
+  papelera: 'Trash', papeleraSub: 'Memories forgotten here or on another computer. They can be brought back, with their history, and they come back on the other computers too; after 30 days they are deleted for good.', restaurar: 'Restore', papeleraVacia: 'The trash is empty.', redactar: 'Redact', olvidadaPor: (by, when) => `forgotten on ${by} · ${when}`,
   pan: {
     nav: 'Overview', titulo: 'Overview by client', sub: 'For whoever runs a client or the whole factory: in each space, what there is, who wrote it and what is outdated or paused.',
     todo: 'You see every space: the server started in your home folder.', solo: n => `You only see the space ${n}: the server started in one of its projects. From your home folder you see them all.`, soloNinguno: 'You only see the projects in no space: the server started in one of them. From your home folder you see them all.',
@@ -450,123 +450,123 @@ const T = ES ? {
   guardarComo: 'Save as a memory', dejar: 'Drop', enlaza: 'Links to', laEnlazan: 'Linked from', conexiones: 'Connections', kindCand: { decision: 'decision', preference: 'preference', milestone: 'milestone', subagent: 'subagent', recipe: 'recipe' },
   quienDijo: a => { const q = a.author === 'user' ? 'you' : a.author.startsWith('agent:') ? `the agent (${a.author.slice(6)})` : a.author === 'agent' ? 'the agent' : a.author; const via = a.via > 1 ? ` · through ${a.via - 1} more memor${a.via > 2 ? 'ies' : 'y'}` : ''; return (q ? `Said by ${q}` : 'No author') + (a.reason ? `: “${a.reason}”` : '') + via; },
   tipos: { secret: ['Secrets', 'They hold something that looks like a key, a token or a password (saved before 0.19.0 or with OMOIKANE_REDACT=0). "Redact" replaces it with [redacted:<type>], in their history too.'], review_date: ['Review date reached', 'They were saved with a review date (tag review:YYYY-MM-DD): a token that expires, an offer, a plan with a day. Check they still hold; "It\'s fine as it is" marks them reviewed.'], superseded: ['Superseded', 'The agent said another memory replaces them: if so, forget the old one.'], contradicts: ['They disagree', 'The agent saw they say different things and could not tell which holds.'], due: ['Due for review', 'Untouched for a while: decisions and procedures after 120 days, facts and gotchas after 180. "It\'s fine as it is" restarts the clock.'], outdated: ['May be outdated', 'A newer memory on the same subject says something different.'], trade_duplicate: ['Duplicated trade memories', 'Two memories of the same trade say the same thing (the same promoted from two clients, for instance). Merge them with "Merge", or forget one; "It\'s fine as it is" marks them as different.'], broken_link: ['Broken links', 'They have a [[link]] that leads to no memory.'], stale_status: ['Status left behind', 'The project changed afterwards and they have not been touched in days.'], code_drift: ['Code changed under them', 'The files they talk about (their paths and the ones they name) changed a lot since they were written or checked: at least half their lines according to git, or in 5 sessions outside git. Check they still hold; "It\'s fine as it is" marks them checked until the files change again.'], broken_path: ['Paths that no longer exist', 'The memory points at files that are no longer on this computer.'], unused: ['Never used', 'Over a month old and the agent has never received or searched them.'], too_long: ['Too long', 'Recall only reads the first 6,000 characters: consider splitting them.'] },
-  detalle: a => a.kind === 'too_long' ? `${(todas.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.kind === 'superseded' ? 'replaced by the other one' : a.kind === 'contradicts' ? 'they disagree and neither has won yet' : a.detail
+  detalle: a => a.kind === 'too_long' ? `${(memories.find(m => m.id === a.memory_id)?.content.length || 0).toLocaleString(loc)} characters` : a.kind === 'superseded' ? 'replaced by the other one' : a.kind === 'contradicts' ? 'they disagree and neither has won yet' : a.detail
 };
-const TIPOS = ['fact', 'decision', 'gotcha', 'preference', 'procedure'];
-// En la página de un proyecto, las recetas solo tienen columna si hay alguna.
-const tiposDe = ms => TIPOS.filter(t => t !== 'procedure' || ms.some(m => m.kind === t));
-const ESTADO = 'status';
-const POR_PAGINA = 150, POR_COLUMNA = 12;
+const KINDS = ['fact', 'decision', 'gotcha', 'preference', 'procedure'];
+// On a project's page, recipes only get a column if there are any.
+const kindsOf = ms => KINDS.filter(t => t !== 'procedure' || ms.some(m => m.kind === t));
+const STATUS_TAG = 'status';
+const PER_PAGE = 150, PER_COLUMN = 12;
 
-// El token llega una vez en el hash (#token=…) y se guarda para esta pestaña.
-// Con `omoi serve --open --memory <id>` llega también adónde ir (`&to=/memoria/<id>`).
-const enHash = new URLSearchParams(location.hash.slice(1)), token = enHash.get('token');
+// The token arrives once in the hash (#token=…) and is kept for this tab.
+// With `omoi serve --open --memory <id>` it also says where to go (`&to=/memoria/<id>`).
+const hashParams = new URLSearchParams(location.hash.slice(1)), token = hashParams.get('token');
 if (token) {
   try { sessionStorage.setItem('omoi-token', token); } catch (e) {}
-  const a = enHash.get('to') || '';
+  const a = hashParams.get('to') || '';
   history.replaceState(null, '', location.pathname + '#' + (/^\/memoria\/[0-9A-Za-z]+$/.test(a) ? a : '/'));
 }
-const clave = token || (() => { try { return sessionStorage.getItem('omoi-token'); } catch (e) { return null; } })();
-const cab = clave ? { Authorization: 'Bearer ' + clave } : {};
+const authToken = token || (() => { try { return sessionStorage.getItem('omoi-token'); } catch (e) { return null; } })();
+const authHeaders = authToken ? { Authorization: 'Bearer ' + authToken } : {};
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-// El ámbito de una memoria: la carpeta de su proyecto, su espacio (`@espacio:<clave>`) o global ('').
-const PRE_ESP = '@espacio:';
-const esEspacio = a => typeof a === 'string' && a.startsWith(PRE_ESP);
-const ambito = m => m.project || (m.space ? PRE_ESP + m.space : '');
-const nombreEspacio = k => (espacios.find(s => s.key === k) || {}).name || k;
-// El nombre del proyecto es el de la tabla (no cambia aunque se mueva la carpeta); sin ficha, el de la carpeta.
-const nombre = p => !p ? T.global : esEspacio(p) ? nombreEspacio(p.slice(PRE_ESP.length)) : (fichas.find(x => x.path === p) || {}).name || p.split(/[\\/]/).filter(Boolean).pop();
-// La clave del espacio de un ámbito ('' si no tiene; null si es global).
-function espacioDe(a) {
+// A memory's scope: its project's folder, its space (`@espacio:<key>`) or global ('').
+const SPACE_PREFIX = '@espacio:';
+const isSpace = a => typeof a === 'string' && a.startsWith(SPACE_PREFIX);
+const scopeOf = m => m.project || (m.space ? SPACE_PREFIX + m.space : '');
+const spaceName = k => (spaces.find(s => s.key === k) || {}).name || k;
+// The project's name is the one in the table (it doesn't change if the folder moves); without an entry, the folder's.
+const displayName = p => !p ? T.global : isSpace(p) ? spaceName(p.slice(SPACE_PREFIX.length)) : (projectEntries.find(x => x.path === p) || {}).name || p.split(/[\\/]/).filter(Boolean).pop();
+// The space key of a scope ('' if it has none; null if it is global).
+function spaceOf(a) {
   if (!a) return null;
-  if (esEspacio(a)) return a.slice(PRE_ESP.length);
-  const f = fichas.find(x => x.path === a);
+  if (isSpace(a)) return a.slice(SPACE_PREFIX.length);
+  const f = projectEntries.find(x => x.path === a);
   if (f) return f.space || '';
-  const m = todas.find(x => x.project === a);
+  const m = memories.find(x => x.project === a);
   return m ? m.space || '' : '';
 }
-// La pastilla del ámbito: el proyecto (con su espacio detrás), el espacio o global.
-function pastilla(a) {
-  const e = esEspacio(a) || !a ? '' : espacioDe(a);
-  const cls = esEspacio(a) ? 'proj esp' : a ? 'proj' : 'proj glob';
-  const titulo = esEspacio(a) ? `${T.espacioDe(nombre(a))}: ${T.espacioPath(nombre(a))}` : a ? a + (e ? ` · ${T.espacioDe(nombreEspacio(e))}` : '') : T.globalPath;
-  return `<a class="${cls}" href="${enlaceProyecto(a)}" title="${esc(titulo)}">${esc(nombre(a))}${e ? `<span class="pe"> · ${esc(nombreEspacio(e))}</span>` : ''}</a>`;
+// The scope pill: the project (with its space after it), the space or global.
+function scopePill(a) {
+  const e = isSpace(a) || !a ? '' : spaceOf(a);
+  const cls = isSpace(a) ? 'proj esp' : a ? 'proj' : 'proj glob';
+  const title = isSpace(a) ? `${T.espacioDe(displayName(a))}: ${T.espacioPath(displayName(a))}` : a ? a + (e ? ` · ${T.espacioDe(spaceName(e))}` : '') : T.globalPath;
+  return `<a class="${cls}" href="${projectLink(a)}" title="${esc(title)}">${esc(displayName(a))}${e ? `<span class="pe"> · ${esc(spaceName(e))}</span>` : ''}</a>`;
 }
-// Un argumento para la línea de órdenes, entre comillas si lleva espacios o comillas.
+// An argument for the command line, quoted if it has spaces or quotes.
 const arg = s => /[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
-// «Ejecutar»: solo las órdenes que el servidor acepta (`orden_permitida` en http.rs), y nunca las que
-// llevan algo por rellenar (<carpeta>). Las demás se quedan con «Copiar».
-const ejecutable = c => /^omoi (projects (merge|distinct|keep) |projects move .*--space |space unassign )/.test(c) && !/[<>]/.test(c);
-const botonEjecutar = c => ejecutable(c) ? `<button class="btn pri" data-ejecuta="${esc(c)}">${esc(T.ejecutar)}</button>` : '';
-function conectarEjecutar(v) {
+// «Run»: only the commands the server accepts (`orden_permitida` in http.rs), and never those that
+// have something to fill in (<carpeta>). The rest keep «Copy».
+const isRunnable = c => /^omoi (projects (merge|distinct|keep) |projects move .*--space |space unassign )/.test(c) && !/[<>]/.test(c);
+const runButton = c => isRunnable(c) ? `<button class="btn pri" data-ejecuta="${esc(c)}">${esc(T.ejecutar)}</button>` : '';
+function wireRunButtons(v) {
   for (const b of v.querySelectorAll('[data-ejecuta]')) b.onclick = () => {
-    // Juntar proyectos no se deshace con un clic: se pide confirmar en el propio botón.
+    // Merging projects can't be undone with a click: confirmation is asked on the button itself.
     if (!b.dataset.seguro) { b.dataset.seguro = '1'; b.textContent = T.ejecutarSeguro; return; }
     b.disabled = true;
-    accion(async () => {
-      const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
-      const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ command: b.dataset.ejecuta }) });
+    action(async () => {
+      const viewToken = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+      const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': viewToken, ...authHeaders }, body: JSON.stringify({ command: b.dataset.ejecuta }) });
       if (!r.ok) throw new Error(await r.text());
-      aviso(T.ejecutado);
+      toast(T.ejecutado);
     });
   };
 }
 const loc = ES ? 'es-ES' : undefined;
-const fecha = s => s ? new Date(s).toLocaleString(loc, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-const hora = s => new Date(s).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
-const diaClave = s => { const d = new Date(s); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
-function corta(s) {
-  const d = new Date(s), hoy = new Date(), ayer = new Date(Date.now() - 864e5);
-  if (diaClave(d) === diaClave(hoy)) return `${T.hoy.toLowerCase()} ${hora(s)}`;
-  if (diaClave(d) === diaClave(ayer)) return `${T.ayer.toLowerCase()} ${hora(s)}`;
-  return d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== hoy.getFullYear() ? { year: 'numeric' } : {}) });
+const fullDate = s => s ? new Date(s).toLocaleString(loc, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const timeOf = s => new Date(s).toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' });
+const dayKey = s => { const d = new Date(s); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+function shortWhen(s) {
+  const d = new Date(s), today = new Date(), yesterday = new Date(Date.now() - 864e5);
+  if (dayKey(d) === dayKey(today)) return `${T.hoy.toLowerCase()} ${timeOf(s)}`;
+  if (dayKey(d) === dayKey(yesterday)) return `${T.ayer.toLowerCase()} ${timeOf(s)}`;
+  return d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
 }
 
-// Estado de la vista.
-let retenidas = new Set();
-let todas = [], encontrados = null, consulta = '', avisos = [], revAbiertos = {}, revJuntar = {}, revPartir = {}, candidatas = [], papelera = [];
-// De /api/projects: los proyectos (con su espacio y si su carpeta ya no está) y los espacios.
-let fichas = [], espacios = [], fueraDeEspacio = [], enPausa = [], duplicados = [];
-// De /api/overview: la vista de responsable, ya filtrada por el servidor (solo lo que se ve desde donde
-// arrancó), y desde cuántos meses sin tocar cuenta una memoria como olvidada.
-let panorama = null, mesesSinTocar = 6;
-// `espacio`: '*' todos, '' los que no son de ningún espacio, o la clave de uno.
-const filtro = { tipo: null, espacio: '*', proyecto: '*', tema: '', recordado: false };
-let abierta = null, pagina = 1, historias = {}, histAbierta = {}, columnasAbiertas = {};
+// View state.
+let onHold = new Set();
+let memories = [], found = null, query = '', warnings = [], reviewOpen = {}, reviewMerge = {}, reviewSplit = {}, candidates = [], trash = [];
+// From /api/projects: the projects (with their space and whether their folder is gone) and the spaces.
+let projectEntries = [], spaces = [], spaceConflicts = [], paused = [], duplicates = [];
+// From /api/overview: the manager view, already filtered by the server (only what is seen from where it
+// started), and after how many months untouched a memory counts as forgotten.
+let overview = null, monthsUntouched = 6;
+// `espacio`: '*' all, '' those in no space, or a space's key.
+const filters = { tipo: null, espacio: '*', proyecto: '*', tema: '', recordado: false };
+let openKey = null, page = 1, histories = {}, historyOpen = {}, openColumns = {};
 
-function aviso(texto, ms = 2200) {
-  const a = $('aviso'); a.textContent = texto; a.hidden = false;
-  clearTimeout(aviso.t); aviso.t = setTimeout(() => a.hidden = true, ms);
+function toast(text, ms = 2200) {
+  const a = $('aviso'); a.textContent = text; a.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => a.hidden = true, ms);
 }
 
-async function herramienta(nombre, args) {
-  const r = await fetch('/tools/' + nombre, { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify(args) });
+async function tool(name, args) {
+  const r = await fetch('/tools/' + name, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify(args) });
   const t = await r.text();
   let v; try { v = JSON.parse(t); } catch (e) { v = t; }
   if (!r.ok) throw new Error(typeof v === 'string' ? v : (v.error || t));
-  // Rechazado por fugas (una memoria de oficio que nombra un proyecto o un cliente): no se guardó.
+  // Rejected for leaks (a trade memory that names a project or a client): it wasn't saved.
   if (v && typeof v === 'object' && Array.isArray(v.trade_leaks) && v.trade_leaks.length)
     throw new Error(T.fugas(v.trade_leaks.map(f => `${f.type}: ${f.text}`).join(', ')));
   return v;
 }
 
-/* ---------- Markdown: se escapa todo y luego se da formato; los enlaces solo http(s). ---------- */
-function enLinea(s) {
-  const codigos = [];
-  s = s.replace(/`([^`]+)`/g, (_, c) => { codigos.push(c); return `\u0000${codigos.length - 1}\u0000`; });
+/* ---------- Markdown: everything is escaped and then formatted; links only http(s). ---------- */
+function inlineMd(s) {
+  const codeSpans = [];
+  s = s.replace(/`([^`]+)`/g, (_, c) => { codeSpans.push(c); return `\u0000${codeSpans.length - 1}\u0000`; });
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
        .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
        .replace(/\[\[([^\]]+)\]\]/g, '<span class="wl">$1</span>')
        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
        .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, '$1<em>$2</em>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codigos[i]}</code>`);
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codeSpans[i]}</code>`);
 }
-function md(texto) {
-  const l = esc(texto).replace(/\r/g, '').split('\n'), out = [];
+function md(text) {
+  const l = esc(text).replace(/\r/g, '').split('\n'), out = [];
   let i = 0;
-  const celdas = f => f.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  const cells = f => f.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
   while (i < l.length) {
     const x = l[i];
     if (/^\s*```/.test(x)) {
@@ -576,12 +576,12 @@ function md(texto) {
     }
     if (!x.trim()) { i++; continue; }
     let h = x.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { const n = Math.min(h[1].length, 4); out.push(`<h${n}>${enLinea(h[2])}</h${n}>`); i++; continue; }
+    if (h) { const n = Math.min(h[1].length, 4); out.push(`<h${n}>${inlineMd(h[2])}</h${n}>`); i++; continue; }
     if (/^\s*(-{3,}|\*{3,})\s*$/.test(x)) { out.push('<hr>'); i++; continue; }
     if (/^\s*\|/.test(x) && i + 1 < l.length && /^\s*\|?\s*:?-{2,}/.test(l[i + 1])) {
-      const cab = celdas(x); i += 2; const filas = [];
-      while (i < l.length && /^\s*\|/.test(l[i])) filas.push(celdas(l[i++]));
-      out.push(`<div class="tabla"><table><thead><tr>${cab.map(c => `<th>${enLinea(c)}</th>`).join('')}</tr></thead><tbody>${filas.map(f => `<tr>${f.map(c => `<td>${enLinea(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      const header = cells(x); i += 2; const rows = [];
+      while (i < l.length && /^\s*\|/.test(l[i])) rows.push(cells(l[i++]));
+      out.push(`<div class="tabla"><table><thead><tr>${header.map(c => `<th>${inlineMd(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(f => `<tr>${f.map(c => `<td>${inlineMd(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
       continue;
     }
     if (/^&gt;\s?/.test(x)) {
@@ -589,25 +589,25 @@ function md(texto) {
       while (i < l.length && /^&gt;\s?/.test(l[i])) b.push(l[i++].replace(/^&gt;\s?/, ''));
       out.push(`<blockquote>${md(b.join('\n').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'))}</blockquote>`); continue;
     }
-    const lista = x.match(/^\s*([-*+]|\d+[.)])\s+/);
-    if (lista) {
-      const ord = /\d/.test(lista[1]), items = [];
+    const list = x.match(/^\s*([-*+]|\d+[.)])\s+/);
+    if (list) {
+      const ord = /\d/.test(list[1]), items = [];
       while (i < l.length && /^\s*([-*+]|\d+[.)])\s+/.test(l[i])) {
         let it = l[i++].replace(/^\s*([-*+]|\d+[.)])\s+/, '');
         while (i < l.length && /^\s{2,}\S/.test(l[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(l[i])) it += ' ' + l[i++].trim();
-        items.push(`<li>${enLinea(it)}</li>`);
+        items.push(`<li>${inlineMd(it)}</li>`);
       }
       out.push(ord ? `<ol>${items.join('')}</ol>` : `<ul>${items.join('')}</ul>`); continue;
     }
     const p = [];
-    while (i < l.length && l[i].trim() && !/^\s*(```|#{1,6}\s|\||&gt;|([-*+]|\d+[.)])\s+)/.test(l[i])) p.push(enLinea(l[i++]));
-    if (p.length) out.push(`<p>${p.join('<br>')}</p>`); else out.push(`<p>${enLinea(l[i++])}</p>`);
+    while (i < l.length && l[i].trim() && !/^\s*(```|#{1,6}\s|\||&gt;|([-*+]|\d+[.)])\s+)/.test(l[i])) p.push(inlineMd(l[i++]));
+    if (p.length) out.push(`<p>${p.join('<br>')}</p>`); else out.push(`<p>${inlineMd(l[i++])}</p>`);
   }
   return out.join('');
 }
-const extracto = s => String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/[#>*`|_\[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, 220);
+const excerpt = s => String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/[#>*`|_\[\]]/g, '').replace(/\s+/g, ' ').trim().slice(0, 220);
 
-/* ---------- Diff por líneas (LCS), con una línea de contexto. ---------- */
+/* ---------- Line diff (LCS), with one line of context. ---------- */
 function diff(a, b) {
   const x = a.split('\n'), y = b.split('\n'), n = x.length, m = y.length;
   if (n * m > 4e6) return [...x.map(t => ['del', t]), ...y.map(t => ['add', t])];
@@ -621,118 +621,118 @@ function diff(a, b) {
   }
   while (i < n) ops.push(['del', x[i++]]);
   while (j < m) ops.push(['add', y[j++]]);
-  // Se quedan los cambios y una línea a cada lado; cada tramo igual que sobra se resume en «⋯».
-  const cerca = k => [k - 1, k, k + 1].some(q => ops[q] && ops[q][0]);
+  // The changes and one line on each side are kept; each leftover equal stretch is summarized as «⋯».
+  const near = k => [k - 1, k, k + 1].some(q => ops[q] && ops[q][0]);
   const r = [];
   ops.forEach((o, k) => {
-    if (cerca(k)) r.push(o);
+    if (near(k)) r.push(o);
     else if (!r.length || r[r.length - 1][0] !== 'salto') r.push(['salto', '']);
   });
   return r;
 }
-function diffHTML(antes, despues) {
+function diffHTML(before, after) {
   const ops = [];
-  if (antes.title !== despues.title) ops.push(['del', `# ${antes.title}`], ['add', `# ${despues.title}`], ['salto', '']);
-  for (const o of diff(antes.content || '', despues.content || '')) if (o[0] !== 'salto' || !ops.length || ops[ops.length - 1][0] !== 'salto') ops.push(o);
+  if (before.title !== after.title) ops.push(['del', `# ${before.title}`], ['add', `# ${after.title}`], ['salto', '']);
+  for (const o of diff(before.content || '', after.content || '')) if (o[0] !== 'salto' || !ops.length || ops[ops.length - 1][0] !== 'salto') ops.push(o);
   const s = { add: '+', del: '−', salto: '⋯', '': ' ' };
   return `<div class="diff">${ops.map(([c, t]) => `<div class="dl ${c}"><span class="s">${s[c]}</span><span>${c === 'salto' ? '' : esc(t) || ' '}</span></div>`).join('')}</div>`;
 }
-// Los cambios de una memoria, del más reciente al más antiguo: [{antes, despues, cuando, motivo, de, a}].
-function cambios(m, versiones) {
-  const v = [...versiones].sort((p, q) => p.version - q.version), r = [];
+// A memory's changes, from most recent to oldest: [{antes, despues, cuando, motivo, de, a}].
+function changes(m, versions) {
+  const v = [...versions].sort((p, q) => p.version - q.version), r = [];
   for (let k = 0; k < v.length; k++) {
-    const despues = k + 1 < v.length ? v[k + 1] : m;
-    r.push({ antes: v[k], despues, cuando: v[k].changed_at, motivo: v[k].reason, de: v[k].version, a: v[k].version + 1 });
+    const after = k + 1 < v.length ? v[k + 1] : m;
+    r.push({ antes: v[k], despues: after, cuando: v[k].changed_at, motivo: v[k].reason, de: v[k].version, a: v[k].version + 1 });
   }
   return r.reverse();
 }
-async function historia(id) {
-  if (!historias[id]) {
-    const v = await herramienta('history', { id });
-    historias[id] = Array.isArray(v) ? v : (v.versions || []);
+async function fetchHistory(id) {
+  if (!histories[id]) {
+    const v = await tool('history', { id });
+    histories[id] = Array.isArray(v) ? v : (v.versions || []);
   }
-  return historias[id];
+  return histories[id];
 }
 
-/* ---------- Datos ---------- */
-const delProyecto = p => todas.filter(m => ambito(m) === p);
-// La memoria `status` más reciente de cada ámbito (la lista viene de la más nueva a la más vieja).
-function estados() {
+/* ---------- Data ---------- */
+const ofProject = p => memories.filter(m => scopeOf(m) === p);
+// The most recent `status` memory of each scope (the list comes from newest to oldest).
+function latestStatuses() {
   const r = {};
-  for (const m of todas) { const a = ambito(m); if (m.tags.includes(ESTADO) && !(a in r)) r[a] = m; }
+  for (const m of memories) { const a = scopeOf(m); if (m.tags.includes(STATUS_TAG) && !(a in r)) r[a] = m; }
   return r;
 }
-// Los ámbitos con memorias (proyectos, espacios y global), de más a menos memorias; global al final.
-function proyectos() {
+// The scopes with memories (projects, spaces and global), from most to fewest memories; global last.
+function projects() {
   const n = {};
-  for (const m of todas) { const a = ambito(m); n[a] = (n[a] || 0) + 1; }
-  return Object.keys(n).sort((a, b) => (a === '') - (b === '') || n[b] - n[a] || nombre(a).localeCompare(nombre(b))).map(p => ({ p, n: n[p] }));
+  for (const m of memories) { const a = scopeOf(m); n[a] = (n[a] || 0) + 1; }
+  return Object.keys(n).sort((a, b) => (a === '') - (b === '') || n[b] - n[a] || displayName(a).localeCompare(displayName(b))).map(p => ({ p, n: n[p] }));
 }
-const enEspacio = m => filtro.espacio === '*' || (m.space || '') === filtro.espacio;
-const pasa = m => enEspacio(m) && (filtro.proyecto === '*' || ambito(m) === filtro.proyecto) && (!filtro.tema || m.tags.includes(filtro.tema))
-  && (!filtro.tipo || (filtro.tipo === 'pinned' ? m.pinned : m.kind === filtro.tipo));
+const inSpace = m => filters.espacio === '*' || (m.space || '') === filters.espacio;
+const passes = m => inSpace(m) && (filters.proyecto === '*' || scopeOf(m) === filters.proyecto) && (!filters.tema || m.tags.includes(filters.tema))
+  && (!filters.tipo || (filters.tipo === 'pinned' ? m.pinned : m.kind === filters.tipo));
 
-async function cargar() {
-  sincro();
-  const r = await fetch('/api/memories', { headers: cab });
+async function load() {
+  loadSync();
+  const r = await fetch('/api/memories', { headers: authHeaders });
   if (!r.ok) { $('vista').innerHTML = `<p class="vacio" style="padding:24px">${esc(T.error)}: ${r.status}</p>`; return; }
-  todas = await r.json();
-  historias = {};
+  memories = await r.json();
+  histories = {};
   try {
-    const rv = await fetch('/api/review', { headers: cab });
-    avisos = rv.ok ? await rv.json() : [];
-    const rc = await fetch('/api/candidates', { headers: cab });
-    candidatas = rc.ok ? await rc.json() : [];
-    const rt = await fetch('/api/trash', { headers: cab });
-    papelera = rt.ok ? await rt.json() : [];
-    const rp = await fetch('/api/projects', { headers: cab });
-    const pj = rp.ok ? await rp.json() : {};
-    fichas = pj.projects || []; espacios = pj.spaces || []; fueraDeEspacio = pj.space_conflicts || []; enPausa = pj.paused || []; duplicados = pj.duplicates || [];
-    pintarAlcance(pj.scope);
-    await cargarPanorama();
-  } catch (e) { avisos = []; candidatas = []; papelera = []; fichas = []; espacios = []; fueraDeEspacio = []; enPausa = []; duplicados = []; panorama = null; }
-  if (filtro.espacio !== '*' && filtro.espacio !== '' && !espacios.some(s => s.key === filtro.espacio)) filtro.espacio = '*';
-  // Las contradicciones van en su sección (1.14): la contradicha de cada una, en espera.
-  const contras = avisos.filter(a => a.kind === 'contradicts');
-  retenidas = new Set(contras.map(a => a.other_id));
+    const rv = await fetch('/api/review', { headers: authHeaders });
+    warnings = rv.ok ? await rv.json() : [];
+    const rc = await fetch('/api/candidates', { headers: authHeaders });
+    candidates = rc.ok ? await rc.json() : [];
+    const rt = await fetch('/api/trash', { headers: authHeaders });
+    trash = rt.ok ? await rt.json() : [];
+    const rp = await fetch('/api/projects', { headers: authHeaders });
+    const projData = rp.ok ? await rp.json() : {};
+    projectEntries = projData.projects || []; spaces = projData.spaces || []; spaceConflicts = projData.space_conflicts || []; paused = projData.paused || []; duplicates = projData.duplicates || [];
+    renderScope(projData.scope);
+    await loadOverview();
+  } catch (e) { warnings = []; candidates = []; trash = []; projectEntries = []; spaces = []; spaceConflicts = []; paused = []; duplicates = []; overview = null; }
+  if (filters.espacio !== '*' && filters.espacio !== '' && !spaces.some(s => s.key === filters.espacio)) filters.espacio = '*';
+  // Contradictions go in their own section (1.14): the contradicted one of each, on hold.
+  const contradictions = warnings.filter(a => a.kind === 'contradicts');
+  onHold = new Set(contradictions.map(a => a.other_id));
   const cc = $('nav-con').querySelector('.cuenta');
-  cc.textContent = contras.length; cc.hidden = !contras.length;
-  const c = $('nav-rev').querySelector('.cuenta'), n = avisos.length - contras.length + candidatas.length + fichas.filter(x => x.gone).length + fueraDeEspacio.length + enPausa.length + duplicados.length;
+  cc.textContent = contradictions.length; cc.hidden = !contradictions.length;
+  const c = $('nav-rev').querySelector('.cuenta'), n = warnings.length - contradictions.length + candidates.length + projectEntries.filter(x => x.gone).length + spaceConflicts.length + paused.length + duplicates.length;
   c.textContent = n; c.hidden = !n;
   const cp = $('nav-pap').querySelector('.cuenta');
-  cp.textContent = papelera.length; cp.hidden = !papelera.length;
-  pintar();
+  cp.textContent = trash.length; cp.hidden = !trash.length;
+  render();
 }
 
-// En la cabecera, desde dónde se mira: lo decide la carpeta en la que arrancó el servidor, y vale para
-// todas las vistas (quien comparte pantalla con un cliente ve que solo sale ese cliente).
-function pintarAlcance(a) {
+// In the header, where it is viewed from: decided by the folder the server started in, and it applies to
+// every view (whoever shares their screen with a client sees that only that client shows).
+function renderScope(a) {
   const el = $('alcance');
   if (!a) { el.hidden = true; return; }
-  const P = T.pan, todo = a.scope === 'all', n = a.name || a.space;
+  const P = T.pan, allSpaces = a.scope === 'all', n = a.name || a.space;
   el.hidden = false;
-  el.lastElementChild.textContent = todo ? T.alcTodo : a.space ? T.alcSolo('◇ ' + n) : T.alcNinguno;
-  el.title = todo ? P.todo : a.space ? P.solo(n) : P.soloNinguno;
+  el.lastElementChild.textContent = allSpaces ? T.alcTodo : a.space ? T.alcSolo('◇ ' + n) : T.alcNinguno;
+  el.title = allSpaces ? P.todo : a.space ? P.solo(n) : P.soloNinguno;
 }
 
-async function cargarPanorama() {
-  const r = await fetch('/api/overview?months=' + mesesSinTocar, { headers: cab });
-  panorama = r.ok ? await r.json() : null;
+async function loadOverview() {
+  const r = await fetch('/api/overview?months=' + monthsUntouched, { headers: authHeaders });
+  overview = r.ok ? await r.json() : null;
 }
 
-async function sincro() {
+async function loadSync() {
   try {
-    const r = await fetch('/api/sync', { headers: cab });
+    const r = await fetch('/api/sync', { headers: authHeaders });
     if (!r.ok) return;
     const s = await r.json(), el = $('sync'), txt = el.lastElementChild;
     if (!s.configured) { el.hidden = true; return; }
     el.hidden = false; el.classList.toggle('mal', !!s.last_error); el.title = s.last_error || s.url || '';
     txt.textContent = s.last_error ? T.sincroFalla : s.last_ok ? `${T.sincro} ${new Date(+s.last_ok * 1000).toLocaleTimeString(loc, { timeStyle: 'short' })}` : T.sincroNo;
-  } catch (e) { /* sin servidor: nada que enseñar */ }
+  } catch (e) { /* no server: nothing to show */ }
 }
 
-/* ---------- Rutas: #/ (memorias), #/proyectos, #/revisar, #/contradicciones, #/papelera, #/proyecto/<carpeta>, #/memoria/<id> ---------- */
-function ruta() {
+/* ---------- Routes: #/ (memories), #/proyectos, #/revisar, #/contradicciones, #/papelera, #/proyecto/<folder>, #/memoria/<id> ---------- */
+function route() {
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
   if (h.startsWith('memoria/')) return { vista: 'memoria', id: h.slice('memoria/'.length) };
   if (h === 'proyectos') return { vista: 'proyectos' };
@@ -743,195 +743,195 @@ function ruta() {
   if (h.startsWith('proyecto/')) return { vista: 'proyecto', p: h.slice('proyecto/'.length) === '@global' ? '' : h.slice('proyecto/'.length) };
   return { vista: 'memorias' };
 }
-const enlaceProyecto = p => '#/proyecto/' + encodeURIComponent(p || '@global');
+const projectLink = p => '#/proyecto/' + encodeURIComponent(p || '@global');
 
-function pintar() {
-  const r = ruta();
+function render() {
+  const r = route();
   $('nav-mem').setAttribute('aria-current', r.vista === 'memorias' ? 'page' : 'false');
   $('nav-pj').setAttribute('aria-current', r.vista === 'proyectos' || r.vista === 'proyecto' ? 'page' : 'false');
   $('nav-rev').setAttribute('aria-current', r.vista === 'revisar' ? 'page' : 'false');
   $('nav-con').setAttribute('aria-current', r.vista === 'contradicciones' ? 'page' : 'false');
   $('nav-pap').setAttribute('aria-current', r.vista === 'papelera' ? 'page' : 'false');
   $('nav-pan').setAttribute('aria-current', r.vista === 'panorama' ? 'page' : 'false');
-  $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(nombre(r.p)) : T.buscar;
-  // Revisar y Papelera se repintan enteras tras cada botón: sin esto, la lista volvía arriba del todo y
-  // lo que se acababa de abrir («Ver») quedaba fuera de la pantalla, como si el botón no hiciera nada.
-  const lista = document.querySelector('#vista > .rev'), seguir = lista && vistaPintada === r.vista ? lista.scrollTop : null;
-  vistaPintada = r.vista;
-  pintarVista(r);
-  if (seguir !== null) { const nueva = document.querySelector('#vista > .rev'); if (nueva) nueva.scrollTop = seguir; }
+  $('q').placeholder = r.vista === 'proyecto' ? T.buscarEn(displayName(r.p)) : T.buscar;
+  // Review and Trash are fully repainted after each button: without this, the list went back to the top and
+  // what had just been opened («Open») was left off screen, as if the button did nothing.
+  const list = document.querySelector('#vista > .rev'), keepScroll = list && renderedView === r.vista ? list.scrollTop : null;
+  renderedView = r.vista;
+  renderView(r);
+  if (keepScroll !== null) { const newer = document.querySelector('#vista > .rev'); if (newer) newer.scrollTop = keepScroll; }
 }
-let vistaPintada = null;
-function pintarVista(r) {
-  if (r.vista === 'revisar') pintarRevisar();
-  else if (r.vista === 'contradicciones') pintarContradicciones();
-  else if (r.vista === 'papelera') pintarPapelera();
-  else if (r.vista === 'panorama') pintarPanorama();
-  else if (r.vista === 'proyectos') pintarProyectos();
-  else if (r.vista === 'proyecto') pintarProyecto(r.p);
-  else if (r.vista === 'memoria') pintarMemoria(r.id);
-  else pintarMemorias();
+let renderedView = null;
+function renderView(r) {
+  if (r.vista === 'revisar') renderReview();
+  else if (r.vista === 'contradicciones') renderContradictions();
+  else if (r.vista === 'papelera') renderTrash();
+  else if (r.vista === 'panorama') renderOverview();
+  else if (r.vista === 'proyectos') renderProjects();
+  else if (r.vista === 'proyecto') renderProject(r.p);
+  else if (r.vista === 'memoria') renderMemory(r.id);
+  else renderMemories();
 }
 
-/* ---------- Enlace a una memoria: #/memoria/<id> ---------- */
-// El enlace que manda un aviso (Kumi) para que la persona la mire y la verifique: abre su proyecto con
-// ella en el panel, donde está el botón Verificar. Vale el id entero o su principio (como en la CLI).
-// La dirección pasa a ser la del proyecto: así Esc y «atrás» funcionan como siempre.
-function pintarMemoria(id) {
+/* ---------- Link to a memory: #/memoria/<id> ---------- */
+// The link a notice sends (Kumi) so the person looks at it and verifies it: opens its project with
+// it in the panel, where the Verify button is. The full id or its prefix works (as in the CLI).
+// The address becomes the project's: that way Esc and «back» work as always.
+function renderMemory(id) {
   const q = String(id || '').trim().toUpperCase();
-  const c = /^[0-9A-Z]{4,}$/.test(q) ? todas.filter(m => m.id.startsWith(q)) : [];
+  const c = /^[0-9A-Z]{4,}$/.test(q) ? memories.filter(m => m.id.startsWith(q)) : [];
   if (c.length === 1) {
-    elegidaPanel = c[0].id;
-    history.replaceState(null, '', location.pathname + enlaceProyecto(ambito(c[0])));
-    pintar();
-    // En una ventana estrecha el panel va debajo del proyecto: se baja hasta él.
+    panelMemory = c[0].id;
+    history.replaceState(null, '', location.pathname + projectLink(scopeOf(c[0])));
+    render();
+    // In a narrow window the panel goes below the project: scroll down to it.
     if (matchMedia('(max-width: 900px)').matches) $('panel')?.scrollIntoView({ block: 'start' });
     return;
   }
   $('vista').innerHTML = `<div class="enlace-mal"><p>${esc(c.length ? T.enlaceVarias(q) : T.enlaceNo(q))}</p><p><a class="btn" href="#/">${esc(T.memorias)}</a></p></div>`;
 }
 
-/* ---------- Memorias: cronología por días ---------- */
-function eventos() {
-  if (encontrados) return encontrados.map(id => todas.find(m => m.id === id)).filter(m => m && pasa(m))
-    .map(m => ({ m, at: m.updated_at, que: queFue(m) }));
+/* ---------- Memories: timeline by day ---------- */
+function events() {
+  if (found) return found.map(id => memories.find(m => m.id === id)).filter(m => m && passes(m))
+    .map(m => ({ m, at: m.updated_at, que: whatHappened(m) }));
   const ev = [];
-  for (const m of todas) {
-    if (!pasa(m)) continue;
-    ev.push({ m, at: m.updated_at, que: queFue(m) });
-    if (filtro.recordado && m.recalled_at) ev.push({ m, at: m.recalled_at, que: { txt: T.recordadaEv, cls: '' }, rec: true });
+  for (const m of memories) {
+    if (!passes(m)) continue;
+    ev.push({ m, at: m.updated_at, que: whatHappened(m) });
+    if (filters.recordado && m.recalled_at) ev.push({ m, at: m.recalled_at, que: { txt: T.recordadaEv, cls: '' }, rec: true });
   }
   return ev.sort((a, b) => b.at.localeCompare(a.at));
 }
-function queFue(m) {
+function whatHappened(m) {
   if (!m.versions && m.created_at === m.updated_at) return { txt: T.nueva, cls: '' };
   return { txt: `${T.cambiada}${m.versions ? ' · v' + (m.versions + 1) : ''}`, cls: 'cambio' };
 }
-const claveEv = e => e.m.id + (e.rec ? ':r' : '');
+const eventKey = e => e.m.id + (e.rec ? ':r' : '');
 
-function pintarMemorias() {
-  const enAmbito = m => enEspacio(m) && (filtro.proyecto === '*' || ambito(m) === filtro.proyecto);
-  const n = t => todas.filter(m => enAmbito(m) && (t === 'pinned' ? m.pinned : !t || m.kind === t)).length;
-  // Los proyectos del espacio elegido (y lo del propio espacio); con «sin espacio», también lo global.
-  const pjs = proyectos().filter(x => filtro.espacio === '*' || (espacioDe(x.p) ?? '') === filtro.espacio);
-  const porEspacio = k => todas.filter(m => (m.space || '') === k).length;
-  const temas = {};
-  for (const m of todas) if (enAmbito(m)) for (const t of m.tags) temas[t] = (temas[t] || 0) + 1;
-  const boton = (attr, v, actual, html, cuenta) => `<button class="ro" data-${attr}="${esc(v ?? '')}" aria-pressed="${v === actual}">${html}<span class="n">${cuenta}</span></button>`;
-  const ev = eventos(), visibles = ev.slice(0, pagina * POR_PAGINA);
+function renderMemories() {
+  const inScope = m => inSpace(m) && (filters.proyecto === '*' || scopeOf(m) === filters.proyecto);
+  const n = t => memories.filter(m => inScope(m) && (t === 'pinned' ? m.pinned : !t || m.kind === t)).length;
+  // The projects of the chosen space (and the space's own); with «no space», also global.
+  const projs = projects().filter(x => filters.espacio === '*' || (spaceOf(x.p) ?? '') === filters.espacio);
+  const countInSpace = k => memories.filter(m => (m.space || '') === k).length;
+  const topics = {};
+  for (const m of memories) if (inScope(m)) for (const t of m.tags) topics[t] = (topics[t] || 0) + 1;
+  const button = (attr, v, current, html, count) => `<button class="ro" data-${attr}="${esc(v ?? '')}" aria-pressed="${v === current}">${html}<span class="n">${count}</span></button>`;
+  const ev = events(), visible = ev.slice(0, page * PER_PAGE);
   let feed;
   if (!ev.length) feed = `<p class="vacio">${esc(T.nada)}</p>`;
-  else if (encontrados) feed = `<p class="fhd" style="margin-left:0">${esc(T.resultados(ev.length, consulta))}</p><div class="plano"><div class="ev">${visibles.map(filaHTML).join('')}</div></div>`;
+  else if (found) feed = `<p class="fhd" style="margin-left:0">${esc(T.resultados(ev.length, query))}</p><div class="plano"><div class="ev">${visible.map(rowHTML).join('')}</div></div>`;
   else {
-    const dias = [];
-    for (const e of visibles) { const k = diaClave(e.at); if (!dias.length || dias[dias.length - 1].k !== k) dias.push({ k, at: e.at, ev: [] }); dias[dias.length - 1].ev.push(e); }
-    feed = dias.map(d => `<div class="day"><div class="dl2">${etiquetaDia(d.at)}</div><div class="ev">${d.ev.map(filaHTML).join('')}</div></div>`).join('');
+    const days = [];
+    for (const e of visible) { const k = dayKey(e.at); if (!days.length || days[days.length - 1].k !== k) days.push({ k, at: e.at, ev: [] }); days[days.length - 1].ev.push(e); }
+    feed = days.map(d => `<div class="day"><div class="dl2">${dayLabel(d.at)}</div><div class="ev">${d.ev.map(rowHTML).join('')}</div></div>`).join('');
   }
-  if (ev.length > visibles.length) feed += `<div class="mas"><button class="btn" id="mas">${esc(T.mas)} (${ev.length - visibles.length})</button></div>`;
+  if (ev.length > visible.length) feed += `<div class="mas"><button class="btn" id="mas">${esc(T.mas)} (${ev.length - visible.length})</button></div>`;
   $('vista').innerHTML = `<div class="mem">
     <aside class="rail">
       <div class="sh">${T.tipo}</div>
-      ${boton('tipo', null, filtro.tipo, esc(T.todo), n(null))}
-      ${TIPOS.map(t => boton('tipo', t, filtro.tipo, `<i class="k ${t}"></i>${t}`, n(t))).join('')}
-      ${boton('tipo', 'pinned', filtro.tipo, `<i class="k pin"></i>${esc(T.fijadas)}`, n('pinned'))}
-      ${espacios.length ? `<div class="sh">${T.espacio}</div>
-      ${boton('espacio', '*', filtro.espacio, esc(T.todos), todas.length)}
-      ${espacios.map(s => boton('espacio', s.key, filtro.espacio, `<span class="nm">◇ ${esc(s.name)}</span>`, porEspacio(s.key))).join('')}
-      ${boton('espacio', '', filtro.espacio, esc(T.sinEspacio), porEspacio(''))}` : ''}
+      ${button('tipo', null, filters.tipo, esc(T.todo), n(null))}
+      ${KINDS.map(t => button('tipo', t, filters.tipo, `<i class="k ${t}"></i>${t}`, n(t))).join('')}
+      ${button('tipo', 'pinned', filters.tipo, `<i class="k pin"></i>${esc(T.fijadas)}`, n('pinned'))}
+      ${spaces.length ? `<div class="sh">${T.espacio}</div>
+      ${button('espacio', '*', filters.espacio, esc(T.todos), memories.length)}
+      ${spaces.map(s => button('espacio', s.key, filters.espacio, `<span class="nm">◇ ${esc(s.name)}</span>`, countInSpace(s.key))).join('')}
+      ${button('espacio', '', filters.espacio, esc(T.sinEspacio), countInSpace(''))}` : ''}
       <div class="sh">${T.proyecto}</div>
-      ${boton('proyecto', '*', filtro.proyecto, esc(T.todos), todas.filter(enEspacio).length)}
-      ${pjs.map(x => boton('proyecto', x.p, filtro.proyecto, `<span class="nm" title="${esc(esEspacio(x.p) ? T.espacioDe(nombre(x.p)) : x.p || T.globalPath)}">${esEspacio(x.p) ? '◇ ' : ''}${esc(nombre(x.p))}</span>`, x.n)).join('')}
+      ${button('proyecto', '*', filters.proyecto, esc(T.todos), memories.filter(inSpace).length)}
+      ${projs.map(x => button('proyecto', x.p, filters.proyecto, `<span class="nm" title="${esc(isSpace(x.p) ? T.espacioDe(displayName(x.p)) : x.p || T.globalPath)}">${isSpace(x.p) ? '◇ ' : ''}${esc(displayName(x.p))}</span>`, x.n)).join('')}
       <div class="sh">${T.etiqueta}</div>
-      <select id="tema"><option value="">${esc(T.todasEt)}</option>${Object.keys(temas).sort((a, b) => temas[b] - temas[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}"${t === filtro.tema ? ' selected' : ''}>#${esc(t)} (${temas[t]})</option>`).join('')}</select>
+      <select id="tema"><option value="">${esc(T.todasEt)}</option>${Object.keys(topics).sort((a, b) => topics[b] - topics[a] || a.localeCompare(b)).map(t => `<option value="${esc(t)}"${t === filters.tema ? ' selected' : ''}>#${esc(t)} (${topics[t]})</option>`).join('')}</select>
       <div class="sh">${T.mostrar}</div>
-      <button class="ro" id="recordado" aria-pressed="${filtro.recordado}">${esc(T.recordado)}</button>
+      <button class="ro" id="recordado" aria-pressed="${filters.recordado}">${esc(T.recordado)}</button>
     </aside>
     <section class="feed" id="feed">${feed}</section>
   </div>`;
   const v = $('vista');
-  for (const b of v.querySelectorAll('[data-tipo]')) b.onclick = () => { filtro.tipo = b.dataset.tipo || null; pagina = 1; pintar(); };
+  for (const b of v.querySelectorAll('[data-tipo]')) b.onclick = () => { filters.tipo = b.dataset.tipo || null; page = 1; render(); };
   for (const b of v.querySelectorAll('[data-espacio]')) b.onclick = () => {
-    filtro.espacio = b.dataset.espacio; filtro.proyecto = '*'; filtro.tema = ''; pagina = 1;
-    if (consulta) buscar(); else pintar();
+    filters.espacio = b.dataset.espacio; filters.proyecto = '*'; filters.tema = ''; page = 1;
+    if (query) search(); else render();
   };
-  for (const b of v.querySelectorAll('[data-proyecto]')) b.onclick = () => { filtro.proyecto = b.dataset.proyecto; filtro.tema = ''; pagina = 1; pintar(); };
-  $('tema').onchange = e => { filtro.tema = e.target.value; pagina = 1; pintar(); };
-  $('recordado').onclick = () => { filtro.recordado = !filtro.recordado; pagina = 1; pintar(); };
-  if ($('mas')) $('mas').onclick = () => { pagina++; pintar(); };
+  for (const b of v.querySelectorAll('[data-proyecto]')) b.onclick = () => { filters.proyecto = b.dataset.proyecto; filters.tema = ''; page = 1; render(); };
+  $('tema').onchange = e => { filters.tema = e.target.value; page = 1; render(); };
+  $('recordado').onclick = () => { filters.recordado = !filters.recordado; page = 1; render(); };
+  if ($('mas')) $('mas').onclick = () => { page++; render(); };
   for (const f of v.querySelectorAll('.row')) f.onclick = e => {
     if (f.classList.contains('open') || e.target.closest('a,button,select')) return;
-    abrir(f.dataset.ev);
+    toggleRow(f.dataset.ev);
   };
-  const ab = v.querySelector('.row.open');
-  if (ab) conectar(ab, todas.find(m => m.id === ab.dataset.id));
+  const openRowEl = v.querySelector('.row.open');
+  if (openRowEl) wireDetail(openRowEl, memories.find(m => m.id === openRowEl.dataset.id));
 }
-function etiquetaDia(s) {
-  const d = new Date(s), hoy = new Date(), ayer = new Date(Date.now() - 864e5);
-  const fechaCorta = d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== hoy.getFullYear() ? { year: 'numeric' } : {}) });
-  if (diaClave(d) === diaClave(hoy)) return `<b>${T.hoy}</b><span>${fechaCorta}</span>`;
-  if (diaClave(d) === diaClave(ayer)) return `<b>${T.ayer}</b><span>${fechaCorta}</span>`;
-  return `<b>${esc(fechaCorta)}</b><span>${esc(d.toLocaleDateString(loc, { weekday: 'long' }))}</span>`;
+function dayLabel(s) {
+  const d = new Date(s), today = new Date(), yesterday = new Date(Date.now() - 864e5);
+  const shortDate = d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
+  if (dayKey(d) === dayKey(today)) return `<b>${T.hoy}</b><span>${shortDate}</span>`;
+  if (dayKey(d) === dayKey(yesterday)) return `<b>${T.ayer}</b><span>${shortDate}</span>`;
+  return `<b>${esc(shortDate)}</b><span>${esc(d.toLocaleDateString(loc, { weekday: 'long' }))}</span>`;
 }
-function filaHTML(e) {
-  const m = e.m, k = claveEv(e), open = abierta === k;
-  const st = m.tags.includes(ESTADO) ? ` <span class="stl">status</span>` : '';
+function rowHTML(e) {
+  const m = e.m, k = eventKey(e), open = openKey === k;
+  const st = m.tags.includes(STATUS_TAG) ? ` <span class="stl">status</span>` : '';
   return `<div class="row ${m.kind}${open ? ' open' : ''}" data-ev="${esc(k)}" data-id="${m.id}">
-    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) + '">✓</span>' : deducida(m) ? ' <span class="ded" title="' + esc(T.deducida) + '">?</span>' : ''}${retenidas.has(m.id) ? ' <span class="espera" title="' + esc(T.con.esperaT) + '">' + esc(T.con.espera) + '</span>' : ''}</div>
-    <div class="r">${pastilla(ambito(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(corta(e.at))}</span></div>
-    <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== ESTADO).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(extracto(m.content)) + st}</div>
-    ${open ? detalleHTML(m, false) : ''}
+    <div class="t">${m.pinned ? '◆ ' : ''}${esc(m.title)}${m.verified ? ' <span class="vf" title="' + esc(T.porQuien(m.verified.by, shortWhen(m.verified.at))) + '">✓</span>' : isInferred(m) ? ' <span class="ded" title="' + esc(T.deducida) + '">?</span>' : ''}${onHold.has(m.id) ? ' <span class="espera" title="' + esc(T.con.esperaT) + '">' + esc(T.con.espera) + '</span>' : ''}</div>
+    <div class="r">${scopePill(scopeOf(m))}<span class="what ${e.que.cls}">${esc(e.que.txt)} · ${esc(shortWhen(e.at))}</span></div>
+    <div class="x">${open ? `<span class="kt ${m.kind}">${m.kind}</span>${st} · ${esc(T.recordadaF.toLowerCase())} ${esc(T.veces(m.recall_count))}${m.tags.filter(t => t !== STATUS_TAG).map(t => ` <button class="chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}` : esc(excerpt(m.content)) + st}</div>
+    ${open ? detailHTML(m, false) : ''}
   </div>`;
 }
-function abrir(k) {
-  abierta = abierta === k ? null : k;
-  pintar();
+function toggleRow(k) {
+  openKey = openKey === k ? null : k;
+  render();
   const f = document.querySelector(`.row[data-ev="${CSS.escape(k)}"]`);
   if (f) { const c = $('feed'), r = f.getBoundingClientRect(), cr = c.getBoundingClientRect(); if (r.top < cr.top || r.bottom > cr.bottom) c.scrollTop += r.top - cr.top - 60; }
 }
 
-/* ---------- Detalle compartido (fila abierta y panel del proyecto) ---------- */
-const enlazan = m => todas.filter(x => (x.links || []).includes(m.id));
-function enlacesHTML(m) {
-  const boton = x => `<button class="chip" data-ir="${x.id}" title="${esc(nombre(ambito(x)))}">${esc(x.title.slice(0, 60))}</button>`;
-  const salen = (m.links || []).map(id => todas.find(x => x.id === id)).filter(Boolean), entran = enlazan(m);
-  return (salen.length ? `<span>${T.enlaza}</span><b>${salen.map(boton).join(' ')}</b>` : '') + (entran.length ? `<span>${T.laEnlazan}</span><b>${entran.map(boton).join(' ')}</b>` : '');
+/* ---------- Shared detail (open row and project panel) ---------- */
+const linkedFrom = m => memories.filter(x => (x.links || []).includes(m.id));
+function linksHTML(m) {
+  const button = x => `<button class="chip" data-ir="${x.id}" title="${esc(displayName(scopeOf(x)))}">${esc(x.title.slice(0, 60))}</button>`;
+  const outgoing = (m.links || []).map(id => memories.find(x => x.id === id)).filter(Boolean), incoming = linkedFrom(m);
+  return (outgoing.length ? `<span>${T.enlaza}</span><b>${outgoing.map(button).join(' ')}</b>` : '') + (incoming.length ? `<span>${T.laEnlazan}</span><b>${incoming.map(button).join(' ')}</b>` : '');
 }
-// Ir a una memoria: su proyecto, con ella abierta en el panel.
-let irPendiente = null;
-function irA(id) {
-  const x = todas.find(m => m.id === id);
+// Go to a memory: its project, with it open in the panel.
+let pendingGoTo = null;
+function goTo(id) {
+  const x = memories.find(m => m.id === id);
   if (!x) return;
-  const destino = enlaceProyecto(ambito(x));
-  if (location.hash === destino) { elegidaPanel = id; pintar(); } else { irPendiente = id; location.hash = destino; }
+  const target = projectLink(scopeOf(x));
+  if (location.hash === target) { panelMemory = id; render(); } else { pendingGoTo = id; location.hash = target; }
 }
-// Se basa solo en lo que dedujo un agente (`evidencia`): nadie lo dijo ni lo probó.
-const deducida = m => !m.verified && (m.evidence || []).length > 0 && m.evidence.every(e => e.kind === 'inferred');
-function detalleHTML(m, vertical) {
-  const pjs = [...new Set(todas.map(x => x.project).filter(Boolean))].sort((a, b) => nombre(a).localeCompare(nombre(b)));
-  const a = ambito(m), e = espacioDe(a);
-  // Una memoria de oficio (global con `trade:`): la ven los proyectos de ese oficio.
-  const oficios = a ? [] : (m.tags || []).filter(t => t.startsWith('trade:')).map(t => t.slice(6));
-  const donde = oficios.length ? `${esc(T.oficio(oficios.join(', ')))} <span class="pe">· ${esc(T.oficioPath(oficios.join(', ')))}</span>`
-    : esEspacio(a) ? `${esc(T.espacioDe(nombre(a)))} <span class="pe">· ${esc(T.espacioPath(nombre(a)))}</span>`
-    : a ? `${esc(a)}${e ? ` <span class="pe">· ${esc(T.espacioDe(nombreEspacio(e)))}</span>` : ''}` : `${esc(T.global)} <span class="pe">· ${esc(T.globalPath)}</span>`;
+// Based only on what an agent inferred (`evidencia`): nobody said or tested it.
+const isInferred = m => !m.verified && (m.evidence || []).length > 0 && m.evidence.every(e => e.kind === 'inferred');
+function detailHTML(m, vertical) {
+  const projs = [...new Set(memories.map(x => x.project).filter(Boolean))].sort((a, b) => displayName(a).localeCompare(displayName(b)));
+  const a = scopeOf(m), e = spaceOf(a);
+  // A trade memory (global with `trade:`): seen by that trade's projects.
+  const trades = a ? [] : (m.tags || []).filter(t => t.startsWith('trade:')).map(t => t.slice(6));
+  const where = trades.length ? `${esc(T.oficio(trades.join(', ')))} <span class="pe">· ${esc(T.oficioPath(trades.join(', ')))}</span>`
+    : isSpace(a) ? `${esc(T.espacioDe(displayName(a)))} <span class="pe">· ${esc(T.espacioPath(displayName(a)))}</span>`
+    : a ? `${esc(a)}${e ? ` <span class="pe">· ${esc(T.espacioDe(spaceName(e)))}</span>` : ''}` : `${esc(T.global)} <span class="pe">· ${esc(T.globalPath)}</span>`;
   return `<div class="det${vertical ? ' vertical' : ''}">
     <div class="md">${md(m.content)}</div>
     <div class="lado">
       <div class="facts">
-        <span>${T.ambito}</span><b>${donde}</b>
+        <span>${T.ambito}</span><b>${where}</b>
         ${m.paths.length ? `<span>${T.rutas}</span><b class="mono">${m.paths.map(esc).join('<br>')}</b>` : ''}
-        <span>${T.creada}</span><b>${esc(fecha(m.created_at))}</b>
-        <span>${T.cambiadaF}</span><b>${esc(fecha(m.updated_at))}</b>
-        <span>${T.recordadaF}</span><b>${esc(T.veces(m.recall_count))}${m.recalled_at ? ' · ' + esc(corta(m.recalled_at)) : ''}</b>
+        <span>${T.creada}</span><b>${esc(fullDate(m.created_at))}</b>
+        <span>${T.cambiadaF}</span><b>${esc(fullDate(m.updated_at))}</b>
+        <span>${T.recordadaF}</span><b>${esc(T.veces(m.recall_count))}${m.recalled_at ? ' · ' + esc(shortWhen(m.recalled_at)) : ''}</b>
         ${m.author ? `<span>${T.autor}</span><b>${esc(m.author)}</b>` : ''}
-        <span>${T.verificadaF}</span><b>${m.verified ? '✓ ' + esc(T.porQuien(m.verified.by, corta(m.verified.at))) : esc(T.noVerificada)}</b>
+        <span>${T.verificadaF}</span><b>${m.verified ? '✓ ' + esc(T.porQuien(m.verified.by, shortWhen(m.verified.at))) : esc(T.noVerificada)}</b>
         <span>${T.origen}</span><b class="mono">${esc(m.source)}</b>
         ${m.provenance ? `<span>${T.escritaEn}</span><b class="mono">${[m.provenance.session ? 'session ' + esc(m.provenance.session) : '', m.provenance.commit ? 'commit ' + esc(m.provenance.commit.slice(0, 12)) + (m.provenance.branch ? ' (' + esc(m.provenance.branch) + ')' : '') : '', m.provenance.trace_id ? 'trace ' + esc(m.provenance.trace_id) + '/' + esc(m.provenance.span_id || '') : ''].filter(Boolean).join('<br>')}</b>` : ''}
         ${(m.evidence || []).length ? `<span>${T.seBasa}</span><b>${m.evidence.map(e => `<em class="evid">${esc(T.evTipos[e.kind] || e.kind)}</em> · ${esc(e.detail)}${e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">↗</a>` : ''}`).join('<br>')}</b>` : ''}
-        ${fechaRev(m) ? `<span>${T.revisarEl}</span><b>${esc(fechaRev(m))} · ${esc(m.review_reason || T.sinMotivoRev)}</b>` : ''}
-        ${retenidas.has(m.id) ? `<span>${T.con.espera}</span><b><a href="#/contradicciones">${esc(T.con.esperaT)}</a></b>` : ''}
+        ${reviewDate(m) ? `<span>${T.revisarEl}</span><b>${esc(reviewDate(m))} · ${esc(m.review_reason || T.sinMotivoRev)}</b>` : ''}
+        ${onHold.has(m.id) ? `<span>${T.con.espera}</span><b><a href="#/contradicciones">${esc(T.con.esperaT)}</a></b>` : ''}
         <span>${T.id}</span><b class="mono">${m.id}</b>
-        ${enlacesHTML(m)}
+        ${linksHTML(m)}
       </div>
     </div>
     <div class="ultimo">${m.versions ? `<p class="vacio" style="padding:0">${T.cargando}</p>` : ''}</div>
@@ -939,10 +939,10 @@ function detalleHTML(m, vertical) {
       <button class="btn" data-a="fijar">${m.pinned ? T.desfijar : T.fijar}</button>
       <button class="btn" data-a="verificar" title="${esc(T.verificarT)}">${m.verified ? T.desverificar : T.verificar}</button>
       ${m.project && !(m.tags || []).some(t => t.startsWith('trade:')) ? `<button class="btn" data-a="skill" title="${esc(T.hacerSkillT)}">${T.hacerSkill}</button>` : ''}
-      ${m.versions ? `<button class="btn" data-a="hist">${histAbierta[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
+      ${m.versions ? `<button class="btn" data-a="hist">${historyOpen[m.id] ? T.ocultarHist : T.historial}</button>` : ''}
       <select data-a="destino"><option value="">${T.mover}</option>${a ? `<option value="@global">${T.global}</option>` : ''}
-        ${espacios.filter(s => PRE_ESP + s.key !== a).map(s => `<option value="${esc(PRE_ESP + s.key)}">◇ ${esc(s.name)}</option>`).join('')}
-        ${pjs.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(nombre(p))}</option>`).join('')}<option value="@otra">${T.otra}</option></select>
+        ${spaces.filter(s => SPACE_PREFIX + s.key !== a).map(s => `<option value="${esc(SPACE_PREFIX + s.key)}">◇ ${esc(s.name)}</option>`).join('')}
+        ${projs.filter(p => p !== m.project).map(p => `<option value="${esc(p)}">${esc(displayName(p))}</option>`).join('')}<option value="@otra">${T.otra}</option></select>
       <button class="btn" data-a="mover">${T.moverBtn}</button>
       <span class="sp"></span>
       <span data-a="olvido"><button class="btn danger" data-a="olvidar">${T.olvidar}</button></span>
@@ -950,299 +950,299 @@ function detalleHTML(m, vertical) {
     <div class="versiones"></div>
   </div>`;
 }
-async function conectar(el, m) {
+async function wireDetail(el, m) {
   if (!m) return;
   const q = a => el.querySelector(`[data-a="${a}"]`);
-  for (const b of el.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
-  for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filtro.tema = b.dataset.tag; filtro.proyecto = '*'; pagina = 1; location.hash = '#/'; pintar(); };
-  q('fijar').onclick = () => accion(() => herramienta('update', { id: m.id, pinned: !m.pinned }));
-  // Verificar no es una herramienta del agente: va por su propia ruta (ver `verificado`).
-  q('verificar').onclick = () => accion(async () => {
-    // Con el token que `omoi serve` mete en esta página al servirla: un POST que no la ha cargado no lo tiene.
-    const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
-    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
+  for (const b of el.querySelectorAll('[data-ir]')) b.onclick = () => goTo(b.dataset.ir);
+  for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filters.tema = b.dataset.tag; filters.proyecto = '*'; page = 1; location.hash = '#/'; render(); };
+  q('fijar').onclick = () => action(() => tool('update', { id: m.id, pinned: !m.pinned }));
+  // Verifying isn't an agent tool: it goes through its own route (see `verificado`).
+  q('verificar').onclick = () => action(async () => {
+    // With the token `omoi serve` puts in this page when serving it: a POST that hasn't loaded it doesn't have it.
+    const viewToken = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': viewToken, ...authHeaders }, body: JSON.stringify({ id: m.id, unverify: !!m.verified }) });
     if (!r.ok) throw new Error(await r.text());
   });
   if (q('skill')) q('skill').onclick = async () => {
     try {
-      const vista = document.querySelector('meta[name="omoikane-view"]')?.content || '';
-      const r = await fetch('/api/skill', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': vista, ...cab }, body: JSON.stringify({ id: m.id }) });
+      const viewToken = document.querySelector('meta[name="omoikane-view"]')?.content || '';
+      const r = await fetch('/api/skill', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Omoikane-View': viewToken, ...authHeaders }, body: JSON.stringify({ id: m.id }) });
       if (!r.ok) throw new Error(await r.text());
-      const hechas = await r.json();
-      aviso(T.skillHecha(hechas.map(h => `${h.path} (${h.action}${h.reason ? ': ' + h.reason : ''})`).join(' · ')), 8000);
-    } catch (e) { aviso(T.error + ': ' + e.message); }
+      const made = await r.json();
+      toast(T.skillHecha(made.map(h => `${h.path} (${h.action}${h.reason ? ': ' + h.reason : ''})`).join(' · ')), 8000);
+    } catch (e) { toast(T.error + ': ' + e.message); }
   };
   q('mover').onclick = () => {
     let p = q('destino').value;
     if (!p) return;
     if (p === '@otra') { p = prompt(T.carpeta); if (!p) return; }
-    const args = esEspacio(p) ? { space: p.slice(PRE_ESP.length) } : { project: p === '@global' ? '' : p };
-    accion(() => herramienta('update', { id: m.id, ...args, reason: 'moved from the web view' }));
+    const args = isSpace(p) ? { space: p.slice(SPACE_PREFIX.length) } : { project: p === '@global' ? '' : p };
+    action(() => tool('update', { id: m.id, ...args, reason: 'moved from the web view' }));
   };
   q('olvidar').onclick = () => {
     q('olvido').innerHTML = `${esc(T.seguro)} <button class="btn pri" data-a="si">${T.si}</button> <button class="btn" data-a="no">${T.no}</button>`;
-    q('no').onclick = () => pintar();
-    q('si').onclick = () => accion(async () => { await herramienta('forget', { id: m.id }); abierta = null; elegidaPanel = null; });
+    q('no').onclick = () => render();
+    q('si').onclick = () => action(async () => { await tool('forget', { id: m.id }); openKey = null; panelMemory = null; });
   };
   if (!m.versions) return;
-  if (q('hist')) q('hist').onclick = () => { histAbierta[m.id] = !histAbierta[m.id]; pintar(); };
+  if (q('hist')) q('hist').onclick = () => { historyOpen[m.id] = !historyOpen[m.id]; render(); };
   try {
-    const cs = cambios(m, await historia(m.id));
-    const ver = c => `<div><div class="ver"><b>v${c.de} → v${c.a}</b><span>${esc(corta(c.cuando))}</span>${c.motivo ? `<span>· ${esc(c.motivo)}</span>` : ''}</div>${diffHTML(c.antes, c.despues)}</div>`;
+    const cs = changes(m, await fetchHistory(m.id));
+    const versionHTML = c => `<div><div class="ver"><b>v${c.de} → v${c.a}</b><span>${esc(shortWhen(c.cuando))}</span>${c.motivo ? `<span>· ${esc(c.motivo)}</span>` : ''}</div>${diffHTML(c.antes, c.despues)}</div>`;
     const u = el.querySelector('.ultimo');
-    if (u) u.innerHTML = cs.length ? `<div><div class="sh" style="padding:0 0 6px">${T.ultimoCambio}</div>${ver(cs[0])}</div>` : '';
-    if (histAbierta[m.id]) el.querySelector('.versiones').innerHTML = cs.slice(1).map(ver).join('') || `<p class="vacio">${T.sinHist}</p>`;
-  } catch (e) { aviso(T.error + ': ' + e.message); }
+    if (u) u.innerHTML = cs.length ? `<div><div class="sh" style="padding:0 0 6px">${T.ultimoCambio}</div>${versionHTML(cs[0])}</div>` : '';
+    if (historyOpen[m.id]) el.querySelector('.versiones').innerHTML = cs.slice(1).map(versionHTML).join('') || `<p class="vacio">${T.sinHist}</p>`;
+  } catch (e) { toast(T.error + ': ' + e.message); }
 }
-async function accion(f) {
-  try { await f(); aviso(T.hecho); await cargar(); }
-  catch (e) { aviso(T.error + ': ' + e.message); }
+async function action(f) {
+  try { await f(); toast(T.hecho); await load(); }
+  catch (e) { toast(T.error + ': ' + e.message); }
 }
 
-/* ---------- Revisar ---------- */
-const claveAv = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
-function pintarRevisar() {
-  const grupos = {};
-  for (const a of avisos) if (a.kind !== 'contradicts') (grupos[a.kind] = grupos[a.kind] || []).push(a);
-  const orden = ['secret', 'review_date', 'superseded', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
-  const sesiones = !candidatas.length ? '' : `
-    <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidatas.length}</span></div>
+/* ---------- Review ---------- */
+const warningKey = a => `${a.memory_id}|${a.kind}|${a.other_id}`;
+function renderReview() {
+  const groups = {};
+  for (const a of warnings) if (a.kind !== 'contradicts') (groups[a.kind] = groups[a.kind] || []).push(a);
+  const order = ['secret', 'review_date', 'superseded', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
+  const sessionsHTML = !candidates.length ? '' : `
+    <div class="grupo"><h2>${esc(T.sesiones)}</h2><span class="n">${candidates.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.sesionesSub)}</p>
-    ${candidatas.map(c => `<div class="av cand" data-c="${c.id}">
-      <div class="cab"><span class="kt ${c.kind === 'preference' ? 'preference' : c.kind === 'decision' ? 'decision' : 'fact'}">${esc(T.kindCand[c.kind] || c.kind)}</span><a class="proj" href="${enlaceProyecto(c.project)}">${esc(nombre(c.project))}</a><span class="what">${esc(corta(c.created_at))}</span></div>
+    ${candidates.map(c => `<div class="av cand" data-c="${c.id}">
+      <div class="cab"><span class="kt ${c.kind === 'preference' ? 'preference' : c.kind === 'decision' ? 'decision' : 'fact'}">${esc(T.kindCand[c.kind] || c.kind)}</span><a class="proj" href="${projectLink(c.project)}">${esc(displayName(c.project))}</a><span class="what">${esc(shortWhen(c.created_at))}</span></div>
       <div class="t">${esc(c.text)}</div>
       <div class="acts"><button class="btn" data-r="guardar">${esc(T.guardarComo)}</button><button class="btn" data-r="dejar">${esc(T.dejar)}</button></div>
     </div>`).join('')}`;
-  // Proyectos cuya carpeta ya no existe (lo que dicen `omoi review` y `omoi doctor`), con el comando
-  // que lo arregla.
-  const idos = fichas.filter(x => x.gone), otros = fichas.filter(x => !x.gone);
-  const perdidos = !idos.length ? '' : `
-    <div class="grupo"><h2>${esc(T.idos[0])}</h2><span class="n">${idos.length}</span></div>
+  // Projects whose folder no longer exists (what `omoi review` and `omoi doctor` say), with the command
+  // that fixes it.
+  const gone = projectEntries.filter(x => x.gone), others = projectEntries.filter(x => !x.gone);
+  const goneHTML = !gone.length ? '' : `
+    <div class="grupo"><h2>${esc(T.idos[0])}</h2><span class="n">${gone.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.idos[1])}</p>
-    ${idos.map(x => {
-      const juntar = otros.find(o => o.key === x.key || (o.name === x.name && o.space === x.space));
-      const mover = `omoi projects move ${arg(x.name)} ${T.carpetaNueva}`, fundir = `omoi projects merge ${arg(x.name)} ${juntar ? arg(juntar.name) : T.otroProyecto}`;
+    ${gone.map(x => {
+      const mergeTarget = others.find(o => o.key === x.key || (o.name === x.name && o.space === x.space));
+      const moveCmd = `omoi projects move ${arg(x.name)} ${T.carpetaNueva}`, mergeCmd = `omoi projects merge ${arg(x.name)} ${mergeTarget ? arg(mergeTarget.name) : T.otroProyecto}`;
       return `<div class="av ido">
-      <div class="cab"><span class="t">${esc(x.name)}</span>${x.space ? pastilla(PRE_ESP + x.space) : ''}<span class="what">${esc(T.memoriasN(x.memories))}${x.last_update ? ' · ' + esc(corta(x.last_update)) : ''}</span></div>
+      <div class="cab"><span class="t">${esc(x.name)}</span>${x.space ? scopePill(SPACE_PREFIX + x.space) : ''}<span class="what">${esc(T.memoriasN(x.memories))}${x.last_update ? ' · ' + esc(shortWhen(x.last_update)) : ''}</span></div>
       <div class="det2 mono">${esc(x.path)}</div>
-      <div class="cmd"><span class="det2">${esc(T.mueveLa)}</span><code>${esc(mover)}</code>${botonEjecutar(mover)}<button class="btn" data-copia="${esc(mover)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><span class="det2">${esc(T.juntalo)}</span><code>${esc(fundir)}</code>${botonEjecutar(fundir)}<button class="btn" data-copia="${esc(fundir)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(T.mueveLa)}</span><code>${esc(moveCmd)}</code>${runButton(moveCmd)}<button class="btn" data-copia="${esc(moveCmd)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(T.juntalo)}</span><code>${esc(mergeCmd)}</code>${runButton(mergeCmd)}<button class="btn" data-copia="${esc(mergeCmd)}">${esc(T.copiar)}</button></div>
     </div>`;
     }).join('')}`;
-  // Proyectos que otro equipo tiene en otro espacio (lo que dicen `omoi sync status` y `omoi review`).
-  const fuera = !fueraDeEspacio.length ? '' : `
-    <div class="grupo"><h2>${esc(T.fuera[0])}</h2><span class="n">${fueraDeEspacio.length}</span></div>
+  // Projects another machine has in another space (what `omoi sync status` and `omoi review` say).
+  const outside = !spaceConflicts.length ? '' : `
+    <div class="grupo"><h2>${esc(T.fuera[0])}</h2><span class="n">${spaceConflicts.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.fuera[1])}</p>
-    ${fueraDeEspacio.map(x => `<div class="av ido">
-      <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.there ? ' → ' + esc(x.there) : ''}</span></div>
+    ${spaceConflicts.map(x => `<div class="av ido">
+      <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? scopePill(SPACE_PREFIX + x.here) : ''}<span class="what">${esc(x.machine)}${x.there ? ' → ' + esc(x.there) : ''}</span></div>
       ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
-      <div class="cmd"><code>${esc(x.command)}</code>${botonEjecutar(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.command)}</code>${runButton(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  // Proyectos en pausa: otro equipo dice que están en otro espacio (o el repositorio de un espacio dice
-  // que una carpeta de aquí es suya); las dos órdenes que lo deciden, primero la que lo deja como está.
-  const pausa = !enPausa.length ? '' : `
-    <div class="grupo"><h2>${esc(T.pausa[0])}</h2><span class="n">${enPausa.length}</span></div>
+  // Paused projects: another machine says they are in another space (or a space's repository says
+  // a folder here is its own); the two commands that decide it, first the one that leaves it as it is.
+  const pausedHTML = !paused.length ? '' : `
+    <div class="grupo"><h2>${esc(T.pausa[0])}</h2><span class="n">${paused.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.pausa[1])}</p>
-    ${enPausa.map(x => `<div class="av ido">
-      <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? pastilla(PRE_ESP + x.here) : ''}<span class="what">${esc(x.machine)}${x.space ? ' → ' + esc(x.space) : ''}</span></div>
+    ${paused.map(x => `<div class="av ido">
+      <div class="cab"><span class="t">${esc(x.name)}</span>${x.here ? scopePill(SPACE_PREFIX + x.here) : ''}<span class="what">${esc(x.machine)}${x.space ? ' → ' + esc(x.space) : ''}</span></div>
       ${ES ? '' : `<div class="det2">${esc(x.text)}</div>`}
-      <div class="cmd"><code>${esc(x.keep)}</code>${botonEjecutar(x.keep)}<button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><code>${esc(x.accept)}</code>${botonEjecutar(x.accept)}<button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.keep)}</code>${runButton(x.keep)}<button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(x.accept)}</code>${runButton(x.accept)}<button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  // Proyectos repetidos o en carpetas temporales (`nombres::propuestas`): la orden que los junta y la
-  // que dice que no son el mismo.
-  const dups = !duplicados.length ? '' : `
-    <div class="grupo"><h2>${esc(T.dups[0])}</h2><span class="n">${duplicados.length}</span></div>
+  // Duplicated projects or in temporary folders (`nombres::propuestas`): the command that merges them and the
+  // one that says they aren't the same.
+  const dups = !duplicates.length ? '' : `
+    <div class="grupo"><h2>${esc(T.dups[0])}</h2><span class="n">${duplicates.length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.dups[1])}</p>
-    ${duplicados.map(x => `<div class="av ido">
+    ${duplicates.map(x => `<div class="av ido">
       <div class="cab"><span class="t">${esc(x.project)}${x.other ? ' → ' + esc(x.other) : ''}</span><span class="what">${esc(T.memoriasN(x.memories))}</span></div>
       <div class="det2 mono">${esc(x.path)}${x.other_path ? ' → ' + esc(x.other_path) : ''}</div>
       <div class="det2">${esc(T.dupTipos[x.kind] || x.detail)}</div>
-      <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code>${botonEjecutar(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code>${botonEjecutar(x.dismiss)}<button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupSi : T.dupVer)}</span><code>${esc(x.command)}</code>${runButton(x.command)}<button class="btn" data-copia="${esc(x.command)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><span class="det2">${esc(x.other ? T.dupNo : T.dupReal)}</span><code>${esc(x.dismiss)}</code>${runButton(x.dismiss)}<button class="btn" data-copia="${esc(x.dismiss)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  const cuerpo = !avisos.some(a => a.kind !== 'contradicts') && !candidatas.length && !idos.length && !fueraDeEspacio.length && !enPausa.length && !duplicados.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sesiones + pausa + fuera + dups + perdidos + orden.filter(k => grupos[k]).map(k => `
-    <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${grupos[k].length}</span></div>
+  const body = !warnings.some(a => a.kind !== 'contradicts') && !candidates.length && !gone.length && !spaceConflicts.length && !paused.length && !duplicates.length ? `<p class="vacio">${esc(T.nadaRevisar)}</p>` : sessionsHTML + pausedHTML + outside + dups + goneHTML + order.filter(k => groups[k]).map(k => `
+    <div class="grupo"><h2>${esc(T.tipos[k][0])}</h2><span class="n">${groups[k].length}</span></div>
     <p class="vacio" style="padding:0 0 10px">${esc(T.tipos[k][1])}</p>
-    ${grupos[k].map(avisoHTML).join('')}`).join('');
+    ${groups[k].map(warningHTML).join('')}`).join('');
   $('vista').innerHTML = `<div class="rev">
     <div class="hero"><div><h1>${esc(T.revTitulo)}</h1><p>${esc(T.revSub)}</p></div></div>
-    ${cuerpo}
+    ${body}
   </div>`;
   const v = $('vista');
   for (const el of v.querySelectorAll('.av.cand')) {
-    const c = candidatas.find(x => String(x.id) === el.dataset.c);
-    const dejar = async () => {
-      const r = await fetch('/api/candidates/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: c.id }) });
+    const c = candidates.find(x => String(x.id) === el.dataset.c);
+    const dismiss = async () => {
+      const r = await fetch('/api/candidates/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ id: c.id }) });
       if (!r.ok) throw new Error(await r.text());
     };
-    el.querySelector('[data-r="dejar"]').onclick = () => accion(dejar);
-    el.querySelector('[data-r="guardar"]').onclick = () => accion(async () => {
+    el.querySelector('[data-r="dejar"]').onclick = () => action(dismiss);
+    el.querySelector('[data-r="guardar"]').onclick = () => action(async () => {
       let args;
       if (c.kind === 'recipe') {
-        // Una receta de verdad: los pasos numerados, para editarla luego con lo que falte (el texto de
-        // la candidata es una instrucción para el agente). Sin línea `when:`: con los pasos como
-        // disparadores saltaría en cualquier mensaje que diga `git push`; la escribe el usuario.
-        const pasos = (c.text.match(/`[^`]+`/g) || []).map(s => s.slice(1, -1)).filter(s => !s.startsWith('when'));
-        args = { title: pasos.join(' → ').slice(0, 90), content: pasos.map((p, i) => `${i + 1}. ${p}`).join('\n'), kind: 'procedure', force: true };
+        // A real recipe: the numbered steps, to edit it later with what's missing (the
+        // candidate's text is an instruction for the agent). No `when:` line: with the steps as
+        // triggers it would fire on any message that says `git push`; the user writes it.
+        const steps = (c.text.match(/`[^`]+`/g) || []).map(s => s.slice(1, -1)).filter(s => !s.startsWith('when'));
+        args = { title: steps.join(' → ').slice(0, 90), content: steps.map((p, i) => `${i + 1}. ${p}`).join('\n'), kind: 'procedure', force: true };
       } else {
-        const respuesta = c.kind === 'subagent' ? c.text.split(' → ').slice(1).join(' → ') || c.text : c.text.split(' → ').pop();
-        args = { title: respuesta.slice(0, 90), content: c.text, kind: c.kind === 'milestone' || c.kind === 'subagent' ? 'fact' : c.kind, force: true };
+        const answer = c.kind === 'subagent' ? c.text.split(' → ').slice(1).join(' → ') || c.text : c.text.split(' → ').pop();
+        args = { title: answer.slice(0, 90), content: c.text, kind: c.kind === 'milestone' || c.kind === 'subagent' ? 'fact' : c.kind, force: true };
       }
       if (c.project) args.project = c.project; else args.global = true;
-      await herramienta('remember', args);
-      await dejar();
+      await tool('remember', args);
+      await dismiss();
     });
   }
-  conectarEjecutar(v);
+  wireRunButtons(v);
   for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
-    try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
+    try { await navigator.clipboard.writeText(b.dataset.copia); toast(T.copiado); } catch (e) { toast(b.dataset.copia); }
   };
   for (const el of v.querySelectorAll('.av:not(.cand):not(.trash):not(.ido)')) {
-    const a = avisos.find(x => claveAv(x) === el.dataset.k);
+    const a = warnings.find(x => warningKey(x) === el.dataset.k);
     const q = n => el.querySelector(`[data-r="${n}"]`);
-    q('ver').onclick = () => { revAbiertos[el.dataset.k] = !revAbiertos[el.dataset.k]; pintar(); };
-    if (q('juntar')) q('juntar').onclick = () => { revJuntar[el.dataset.k] = !revJuntar[el.dataset.k]; pintar(); };
-    if (q('confirmar')) q('confirmar').onclick = () => accion(async () => {
+    q('ver').onclick = () => { reviewOpen[el.dataset.k] = !reviewOpen[el.dataset.k]; render(); };
+    if (q('juntar')) q('juntar').onclick = () => { reviewMerge[el.dataset.k] = !reviewMerge[el.dataset.k]; render(); };
+    if (q('confirmar')) q('confirmar').onclick = () => action(async () => {
       const content = el.querySelector('textarea.fusion').value;
-      // Las duplicadas de oficio salen de un cálculo de fondo: antes de juntar, que la pareja siga
-      // valiendo (las dos vivas y sin cambios desde que se compararon).
+      // Trade duplicates come from a background computation: before merging, check the pair still
+      // holds (both alive and unchanged since they were compared).
       if (a.kind === 'trade_duplicate') {
-        const rv = await fetch('/api/review', { headers: cab });
+        const rv = await fetch('/api/review', { headers: authHeaders });
         if (!rv.ok) throw new Error(await rv.text());
-        if (!(await rv.json()).some(x => claveAv(x) === el.dataset.k)) {
-          delete revJuntar[el.dataset.k];
-          await cargar();
+        if (!(await rv.json()).some(x => warningKey(x) === el.dataset.k)) {
+          delete reviewMerge[el.dataset.k];
+          await load();
           throw new Error(T.parejaCambiada);
         }
       }
-      await herramienta('update', { id: el.dataset.nueva, content, absorb: [el.dataset.vieja], reason: T.juntarMotivo });
-      delete revJuntar[el.dataset.k];
+      await tool('update', { id: el.dataset.nueva, content, absorb: [el.dataset.vieja], reason: T.juntarMotivo });
+      delete reviewMerge[el.dataset.k];
     });
-    q('bien').onclick = () => accion(async () => {
-      const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
+    q('bien').onclick = () => action(async () => {
+      const r = await fetch('/api/review/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ memory_id: a.memory_id, kind: a.kind, other_id: a.other_id }) });
       if (!r.ok) throw new Error(await r.text());
     });
-    if (q('partir')) q('partir').onclick = () => { revPartir[el.dataset.k] = proponerTrozos(todas.find(x => x.id === a.memory_id)); pintar(); };
-    if (q('cancelarPartir')) q('cancelarPartir').onclick = () => { delete revPartir[el.dataset.k]; pintar(); };
-    // Lo que se escribe en el editor se guarda en la propuesta (un repintado no lo pierde) y el contador
-    // se pone al día sin repintar.
+    if (q('partir')) q('partir').onclick = () => { reviewSplit[el.dataset.k] = proposeChunks(memories.find(x => x.id === a.memory_id)); render(); };
+    if (q('cancelarPartir')) q('cancelarPartir').onclick = () => { delete reviewSplit[el.dataset.k]; render(); };
+    // What is typed in the editor is kept in the proposal (a repaint doesn't lose it) and the counter
+    // updates without repainting.
     for (const tz of el.querySelectorAll('.trozo')) {
-      const t = revPartir[el.dataset.k][+tz.dataset.i], cuenta = tz.querySelector('.cuenta-trozo');
+      const t = reviewSplit[el.dataset.k][+tz.dataset.i], count = tz.querySelector('.cuenta-trozo');
       tz.querySelector('.titulo-trozo').oninput = e => { t.title = e.target.value; };
-      tz.querySelector('textarea').oninput = e => { t.content = e.target.value; cuenta.textContent = T.caracteres(t.content.length); cuenta.classList.toggle('mal', t.content.length > LARGO_RECALL); };
+      tz.querySelector('textarea').oninput = e => { t.content = e.target.value; count.textContent = T.caracteres(t.content.length); count.classList.toggle('mal', t.content.length > RECALL_CHARS); };
     }
-    if (q('confirmarPartir')) q('confirmarPartir').onclick = () => accion(async () => {
-      const parts = revPartir[el.dataset.k].filter(t => t.content.trim());
-      const r = await fetch('/api/split', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: a.memory_id, parts, reason: T.partirMotivo }) });
+    if (q('confirmarPartir')) q('confirmarPartir').onclick = () => action(async () => {
+      const parts = reviewSplit[el.dataset.k].filter(t => t.content.trim());
+      const r = await fetch('/api/split', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ id: a.memory_id, parts, reason: T.partirMotivo }) });
       if (!r.ok) throw new Error(await r.text());
-      delete revPartir[el.dataset.k];
-      aviso(T.partida(parts.length));
+      delete reviewSplit[el.dataset.k];
+      toast(T.partida(parts.length));
     });
-    if (q('quitar')) q('quitar').onclick = () => accion(async () => {
-      // Se lee la memoria justo antes: la de la página puede ser vieja y se pisaría lo de después.
-      const actual = await herramienta('get', { id: a.memory_id });
-      let content = actual.content;
-      for (const l of enlacesRotos(a, actual)) content = content.split(`[[${l}]]`).join(l);
-      await herramienta('update', { id: a.memory_id, content, reason: T.quitarMotivo });
+    if (q('quitar')) q('quitar').onclick = () => action(async () => {
+      // The memory is read right before: the page's copy may be old and would overwrite later changes.
+      const current = await tool('get', { id: a.memory_id });
+      let content = current.content;
+      for (const l of brokenLinks(a, current)) content = content.split(`[[${l}]]`).join(l);
+      await tool('update', { id: a.memory_id, content, reason: T.quitarMotivo });
     });
-    if (q('redactar')) q('redactar').onclick = () => accion(async () => {
-      const r = await fetch('/api/redact', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: a.memory_id }) });
+    if (q('redactar')) q('redactar').onclick = () => action(async () => {
+      const r = await fetch('/api/redact', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ id: a.memory_id }) });
       if (!r.ok) throw new Error(await r.text());
     });
     if (q('olvidar')) q('olvidar').onclick = () => {
       q('olvido').innerHTML = `${esc(T.seguro)} <button class="btn pri" data-r="si">${T.si}</button> <button class="btn" data-r="no">${T.no}</button>`;
-      q('no').onclick = () => pintar();
-      q('si').onclick = () => accion(() => herramienta('forget', { id: a.memory_id }));
+      q('no').onclick = () => render();
+      q('si').onclick = () => action(() => tool('forget', { id: a.memory_id }));
     };
   }
 }
-// «Partir» (1.12.1): una propuesta de trozos de una memoria demasiado larga, por apartados y párrafos,
-// de unos LARGO_TROZO caracteres (el recall lee 6.000). Un apartado empieza en un título de Markdown o
-// en una línea en negrita (la entrada fechada de un diario: «**19-oct-2026 …**»). Lo que no cabe en un
-// trozo ni siquiera solo (un párrafo enorme) se corta por líneas y, si hace falta, por frases.
-const LARGO_TROZO = 5000, LARGO_RECALL = 6000;
-function proponerTrozos(m) {
-  const piezas = [];
-  // Las escritas en Windows llevan `\r\n`, y `.` no casa con `\r`: sin esto, ningún título encajaba.
+// «Split» (1.12.1): a proposal of chunks of a memory that is too long, by sections and paragraphs,
+// of about CHUNK_CHARS characters (recall reads 6,000). A section starts at a Markdown heading or
+// at a bold line (a diary's dated entry: «**19-oct-2026 …**»). What doesn't fit in a
+// chunk even on its own (a huge paragraph) is cut by lines and, if needed, by sentences.
+const CHUNK_CHARS = 5000, RECALL_CHARS = 6000;
+function proposeChunks(m) {
+  const pieces = [];
+  // Those written on Windows carry `\r\n`, and `.` doesn't match `\r`: without this, no heading matched.
   for (const p of m.content.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
-    if (p.length <= LARGO_TROZO) { piezas.push(p); continue; }
-    let actual = '';
-    for (const l of p.split('\n').flatMap(l => l.length <= LARGO_TROZO ? [l] : l.split(/(?<=[.!?])\s+/))) {
-      if (actual && actual.length + l.length + 1 > LARGO_TROZO) { piezas.push(actual); actual = ''; }
-      actual = actual ? actual + '\n' + l : l;
+    if (p.length <= CHUNK_CHARS) { pieces.push(p); continue; }
+    let current = '';
+    for (const l of p.split('\n').flatMap(l => l.length <= CHUNK_CHARS ? [l] : l.split(/(?<=[.!?])\s+/))) {
+      if (current && current.length + l.length + 1 > CHUNK_CHARS) { pieces.push(current); current = ''; }
+      current = current ? current + '\n' + l : l;
     }
-    if (actual) piezas.push(actual);
+    if (current) pieces.push(current);
   }
-  const apartado = p => /^(#{1,6}\s|\*\*[^*\n]{2,})/.test(p.trimStart());
-  const trozos = [];
-  let actual = '';
-  for (const p of piezas) {
-    const lleno = actual && actual.length + p.length + 2 > LARGO_TROZO;
-    const buenCorte = actual && apartado(p) && actual.length > LARGO_TROZO * 0.6;
-    if (lleno || buenCorte) { trozos.push(actual); actual = ''; }
-    actual = actual ? actual + '\n\n' + p : p;
+  const startsSection = p => /^(#{1,6}\s|\*\*[^*\n]{2,})/.test(p.trimStart());
+  const chunks = [];
+  let current = '';
+  for (const p of pieces) {
+    const full = current && current.length + p.length + 2 > CHUNK_CHARS;
+    const goodCut = current && startsSection(p) && current.length > CHUNK_CHARS * 0.6;
+    if (full || goodCut) { chunks.push(current); current = ''; }
+    current = current ? current + '\n\n' + p : p;
   }
-  if (actual) trozos.push(actual);
-  // El tema de la original, sin lo que va detrás de su primer «;», «(», «:» o raya: los trozos nuevos lo
-  // llevan delante de su propio título, que si no quedaba larguísimo.
-  const tema0 = m.title.split(/[;(:—–]/)[0].trim() || m.title;
-  const n = trozos.length, base = tema0.length > 60 ? tema0.slice(0, 59) + '…' : tema0;
-  return trozos.map((content, i) => {
+  if (current) chunks.push(current);
+  // The original's topic, without what follows its first «;», «(», «:» or dash: the new chunks carry
+  // it before their own title, which otherwise got very long.
+  const topic0 = m.title.split(/[;(:—–]/)[0].trim() || m.title;
+  const n = chunks.length, base = topic0.length > 60 ? topic0.slice(0, 59) + '…' : topic0;
+  return chunks.map((content, i) => {
     if (i === 0) return { title: m.title, content };
-    // Si el trozo empieza por un título, ese dice de qué va; si no, el de la original con su número.
-    const cab = content.trimStart().split('\n')[0].match(/^(?:#{1,6}\s+|\*\*)(.+?)(?:\*\*.*)?$/);
-    const tema = cab ? cab[1].replace(/[*:]+$/, '').trim().slice(0, 80) : '';
-    return { title: tema ? `${base}: ${tema}` : `${base} (${i + 1}/${n})`, content };
+    // If the chunk starts with a heading, that says what it is about; if not, the original's with its number.
+    const headingMatch = content.trimStart().split('\n')[0].match(/^(?:#{1,6}\s+|\*\*)(.+?)(?:\*\*.*)?$/);
+    const topic = headingMatch ? headingMatch[1].replace(/[*:]+$/, '').trim().slice(0, 80) : '';
+    return { title: topic ? `${base}: ${topic}` : `${base} (${i + 1}/${n})`, content };
   });
 }
 
-// Los enlaces del aviso (`links to nothing: [[a]], [[b]]`) que siguen escritos en la memoria.
-function enlacesRotos(a, m) {
+// The links in the warning (`links to nothing: [[a]], [[b]]`) that are still written in the memory.
+function brokenLinks(a, m) {
   return [...new Set([...a.detail.matchAll(/\[\[([^\]]+)\]\]/g)].map(x => x[1]))].filter(l => m && m.content.includes(`[[${l}]]`));
 }
-function avisoHTML(a) {
-  const m = todas.find(x => x.id === a.memory_id), o = a.other_id && todas.find(x => x.id === a.other_id), abierto = revAbiertos[claveAv(a)];
+function warningHTML(a) {
+  const m = memories.find(x => x.id === a.memory_id), o = a.other_id && memories.find(x => x.id === a.other_id), isOpen = reviewOpen[warningKey(a)];
   if (!m) return '';
-  const fila = x => `${pastilla(ambito(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span>`;
-  // Juntar (0.19.0): en una pareja, la más nueva absorbe a la vieja; en «se contradicen» manda la fecha.
-  const juntable = o && ['outdated', 'trade_duplicate', 'superseded', 'contradicts'].includes(a.kind);
-  const [nueva, vieja] = !o ? [null, null] : a.kind === 'contradicts' && m.updated_at > o.updated_at ? [m, o] : [o, m];
-  const juntando = juntable && revJuntar[claveAv(a)];
-  // Los [[enlaces]] que no llevan a nada, para «Quitar el enlace» (solo los que siguen en el texto).
-  const rotos = a.kind === 'broken_link' ? enlacesRotos(a, m) : [];
-  const par = !o ? '' : `<div class="par">
+  const row = x => `${scopePill(scopeOf(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(shortWhen(x.updated_at))}</span>`;
+  // Merge (0.19.0): in a pair, the newer one absorbs the older; in «they disagree» the date decides.
+  const mergeable = o && ['outdated', 'trade_duplicate', 'superseded', 'contradicts'].includes(a.kind);
+  const [newer, older] = !o ? [null, null] : a.kind === 'contradicts' && m.updated_at > o.updated_at ? [m, o] : [o, m];
+  const merging = mergeable && reviewMerge[warningKey(a)];
+  // The [[links]] that lead nowhere, for «Remove the link» (only those still in the text).
+  const broken = a.kind === 'broken_link' ? brokenLinks(a, m) : [];
+  const pairHTML = !o ? '' : `<div class="par">
       <div><span class="lb">${esc(a.kind === 'superseded' ? T.sustituida : a.kind === 'contradicts' ? T.unaEt : T.vieja)}</span><span class="t">${esc(m.title)}</span><div class="md">${md(m.content)}</div></div>
       <div><span class="lb nueva">${esc(a.kind === 'superseded' ? T.sustituta : a.kind === 'contradicts' ? T.otraEt : T.nuevaEt)}</span><span class="t">${esc(o.title)}</span><div class="md">${md(o.content)}</div></div>
     </div>`;
-  let cont = '';
-  const partiendo = a.kind === 'too_long' && revPartir[claveAv(a)];
-  if (partiendo) cont = `<p class="vacio" style="padding:6px 0 0">${esc(T.partirSub(partiendo.length))}</p>
-    ${partiendo.map((t, i) => `<div class="trozo" data-i="${i}">
-      <div class="cab"><span class="lb">${esc(i === 0 ? T.trozoQueda : T.trozoNuevo(i + 1))}</span><span class="what cuenta-trozo${t.content.length > LARGO_RECALL ? ' mal' : ''}">${esc(T.caracteres(t.content.length))}</span></div>
+  let inner = '';
+  const splitting = a.kind === 'too_long' && reviewSplit[warningKey(a)];
+  if (splitting) inner = `<p class="vacio" style="padding:6px 0 0">${esc(T.partirSub(splitting.length))}</p>
+    ${splitting.map((t, i) => `<div class="trozo" data-i="${i}">
+      <div class="cab"><span class="lb">${esc(i === 0 ? T.trozoQueda : T.trozoNuevo(i + 1))}</span><span class="what cuenta-trozo${t.content.length > RECALL_CHARS ? ' mal' : ''}">${esc(T.caracteres(t.content.length))}</span></div>
       <input class="titulo-trozo" value="${esc(t.title)}" spellcheck="false">
       <textarea class="fusion" rows="10" spellcheck="false">${esc(t.content)}</textarea>
     </div>`).join('')}`;
-  else if (juntando) cont = `${par}
+  else if (merging) inner = `${pairHTML}
     <p class="vacio" style="padding:6px 0 0">${esc(T.juntarSub)}</p>
-    <textarea class="fusion" rows="12" spellcheck="false">${esc(nueva.content + '\n\n' + vieja.content)}</textarea>`;
-  else if (abierto && o) cont = par;
-  else if (abierto) cont = `<div class="md" style="max-height:360px;overflow-y:auto">${md(m.content)}</div>`;
-  return `<div class="av" data-k="${esc(claveAv(a))}"${juntable ? ` data-nueva="${esc(nueva.id)}" data-vieja="${esc(vieja.id)}"` : ''}>
+    <textarea class="fusion" rows="12" spellcheck="false">${esc(newer.content + '\n\n' + older.content)}</textarea>`;
+  else if (isOpen && o) inner = pairHTML;
+  else if (isOpen) inner = `<div class="md" style="max-height:360px;overflow-y:auto">${md(m.content)}</div>`;
+  return `<div class="av" data-k="${esc(warningKey(a))}"${mergeable ? ` data-nueva="${esc(newer.id)}" data-vieja="${esc(older.id)}"` : ''}>
     <div class="cab"><span class="t">${esc(m.title)}</span></div>
-    <div class="cab">${fila(m)}</div>
+    <div class="cab">${row(m)}</div>
     ${o ? `<div class="det2">→ ${esc(o.title)} · <b>${esc(T.detalle(a))}</b></div>` : `<div class="det2"><b>${esc(T.detalle(a))}</b></div>`}
     ${a.kind === 'review_date' && m.review_reason ? `<div class="det2 quien">${esc(m.review_reason)}</div>` : ''}
     ${(a.kind === 'superseded' || a.kind === 'contradicts') && (a.author || a.reason) ? `<div class="det2 quien">${esc(T.quienDijo(a))}</div>` : ''}
-    ${cont}
+    ${inner}
     <div class="acts">
-      <button class="btn" data-r="ver">${abierto ? T.ocultar : (o ? T.verDos : T.ver)}</button>
-      ${a.kind === 'too_long' && !partiendo ? `<button class="btn pri" data-r="partir" title="${esc(T.partirT)}">${esc(T.partir)}</button>` : ''}
-      ${partiendo ? `<button class="btn pri" data-r="confirmarPartir">${esc(T.partirEn(partiendo.length))}</button><button class="btn" data-r="cancelarPartir">${esc(T.no)}</button>` : ''}
-      ${rotos.length ? `<button class="btn pri" data-r="quitar" title="${esc(T.quitarEnlaceT)}">${esc(T.quitarEnlace(rotos.length))}</button>` : ''}
+      <button class="btn" data-r="ver">${isOpen ? T.ocultar : (o ? T.verDos : T.ver)}</button>
+      ${a.kind === 'too_long' && !splitting ? `<button class="btn pri" data-r="partir" title="${esc(T.partirT)}">${esc(T.partir)}</button>` : ''}
+      ${splitting ? `<button class="btn pri" data-r="confirmarPartir">${esc(T.partirEn(splitting.length))}</button><button class="btn" data-r="cancelarPartir">${esc(T.no)}</button>` : ''}
+      ${broken.length ? `<button class="btn pri" data-r="quitar" title="${esc(T.quitarEnlaceT)}">${esc(T.quitarEnlace(broken.length))}</button>` : ''}
       <button class="btn" data-r="bien">${esc(a.kind === 'outdated' ? T.bienDesfasada : T.bien)}</button>
-      ${juntable ? `<button class="btn" data-r="juntar">${esc(juntando ? T.no : a.kind === 'outdated' || a.kind === 'contradicts' ? T.juntarIguales : T.juntar)}</button>` : ''}
-      ${juntando ? `<button class="btn pri" data-r="confirmar">${esc(T.juntarBtn)}</button>` : ''}
+      ${mergeable ? `<button class="btn" data-r="juntar">${esc(merging ? T.no : a.kind === 'outdated' || a.kind === 'contradicts' ? T.juntarIguales : T.juntar)}</button>` : ''}
+      ${merging ? `<button class="btn pri" data-r="confirmar">${esc(T.juntarBtn)}</button>` : ''}
       <span class="sp"></span>
       ${a.kind === 'secret' ? `<button class="btn pri" data-r="redactar">${esc(T.redactar)}</button>` : ''}
       ${['outdated', 'superseded', 'unused', 'due', 'review_date'].includes(a.kind) ? `<span data-r="olvido"><button class="btn danger" data-r="olvidar">${a.kind === 'outdated' || a.kind === 'superseded' ? T.olvidarVieja : T.olvidar}</button></span>` : ''}
@@ -1251,383 +1251,383 @@ function avisoHTML(a) {
   </div>`;
 }
 
-/* ---------- Contradicciones: #/contradicciones (1.14) ---------- */
-// Cada pareja que se contradice, lado a lado: «Vale esta» deja la otra sustituida por ella y «Valen las
-// dos» las da por compatibles. La de la derecha (`other_id`) es la contradicha, la que está en espera.
-const fechaRev = m => ((m.tags || []).find(t => /^review:\d{4}-\d{2}-\d{2}$/.test(t)) || '').slice(7);
-const motivosCon = {};
-function pintarContradicciones() {
-  const lista = avisos.filter(a => a.kind === 'contradicts');
-  const tarjeta = a => {
-    const m = todas.find(x => x.id === a.memory_id), o = todas.find(x => x.id === a.other_id), k = claveAv(a);
+/* ---------- Contradictions: #/contradicciones (1.14) ---------- */
+// Each contradicting pair, side by side: «This one holds» leaves the other superseded by it and «Both
+// hold» marks them as compatible. The one on the right (`other_id`) is the contradicted one, on hold.
+const reviewDate = m => ((m.tags || []).find(t => /^review:\d{4}-\d{2}-\d{2}$/.test(t)) || '').slice(7);
+const contradictionReasons = {};
+function renderContradictions() {
+  const list = warnings.filter(a => a.kind === 'contradicts');
+  const card = a => {
+    const m = memories.find(x => x.id === a.memory_id), o = memories.find(x => x.id === a.other_id), k = warningKey(a);
     if (!m || !o) return '';
-    const lado = (x, lb, clase) => `<div><span class="lb ${clase}">${esc(lb)}</span><span class="t">${esc(x.title)}</span>
-        <div class="cab">${pastilla(ambito(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(corta(x.updated_at))}</span></div>
+    const side = (x, lb, className) => `<div><span class="lb ${className}">${esc(lb)}</span><span class="t">${esc(x.title)}</span>
+        <div class="cab">${scopePill(scopeOf(x))} <span class="kt ${x.kind}">${x.kind}</span> <span class="what">${esc(shortWhen(x.updated_at))}</span></div>
         <div class="md">${md(x.content)}</div>
         <button class="btn pri elegir" data-r="vale" data-id="${esc(x.id)}">${esc(T.con.vale)}</button></div>`;
     return `<div class="av con" data-k="${esc(k)}">
       ${a.author || a.reason ? `<div class="det2 quien">${esc(T.quienDijo(a))}</div>` : ''}
-      <div class="par">${lado(m, T.con.contradice, 'nueva')}${lado(o, T.con.espera, 'espera-lb')}</div>
-      <input class="motivo-con" placeholder="${esc(T.con.porQue)}" value="${esc(motivosCon[k] || '')}">
+      <div class="par">${side(m, T.con.contradice, 'nueva')}${side(o, T.con.espera, 'espera-lb')}</div>
+      <input class="motivo-con" placeholder="${esc(T.con.porQue)}" value="${esc(contradictionReasons[k] || '')}">
       <div class="acts"><button class="btn" data-r="dos">${esc(T.con.valenDos)}</button></div>
     </div>`;
   };
   $('vista').innerHTML = `<div class="rev">
     <div class="hero"><div><h1>${esc(T.con.titulo)}</h1><p>${esc(T.con.sub)}</p></div></div>
-    ${lista.length ? lista.map(tarjeta).join('') : `<p class="vacio">${esc(T.con.nada)}</p>`}
+    ${list.length ? list.map(card).join('') : `<p class="vacio">${esc(T.con.nada)}</p>`}
   </div>`;
   for (const el of $('vista').querySelectorAll('.av.con')) {
-    const a = lista.find(x => claveAv(x) === el.dataset.k), entrada = el.querySelector('.motivo-con');
-    entrada.oninput = e => { motivosCon[el.dataset.k] = e.target.value; };
-    const decidir = keep => async () => {
+    const a = list.find(x => warningKey(x) === el.dataset.k), reasonInput = el.querySelector('.motivo-con');
+    reasonInput.oninput = e => { contradictionReasons[el.dataset.k] = e.target.value; };
+    const decide = keep => async () => {
       try {
-        const r = await fetch('/api/contradiction', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ a: a.memory_id, b: a.other_id, keep, reason: entrada.value.trim() }) });
+        const r = await fetch('/api/contradiction', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ a: a.memory_id, b: a.other_id, keep, reason: reasonInput.value.trim() }) });
         if (!r.ok) throw new Error(await r.text());
-        delete motivosCon[el.dataset.k];
-        aviso(keep === 'both' ? T.con.dos : T.con.una, 6000);
-        await cargar();
-      } catch (e) { aviso(T.error + ': ' + e.message); }
+        delete contradictionReasons[el.dataset.k];
+        toast(keep === 'both' ? T.con.dos : T.con.una, 6000);
+        await load();
+      } catch (e) { toast(T.error + ': ' + e.message); }
     };
-    for (const b of el.querySelectorAll('[data-r="vale"]')) b.onclick = decidir(b.dataset.id);
-    el.querySelector('[data-r="dos"]').onclick = decidir('both');
+    for (const b of el.querySelectorAll('[data-r="vale"]')) b.onclick = decide(b.dataset.id);
+    el.querySelector('[data-r="dos"]').onclick = decide('both');
   }
 }
 
-/* ---------- Papelera: #/papelera ---------- */
-// Lo olvidado aquí o en otro equipo, que se puede devolver durante los días de la papelera (30 por
-// defecto, OMOIKANE_TRASH_DAYS). Antes iba al final de Revisar, detrás de todos los avisos, y no se veía.
-function pintarPapelera() {
-  const filas = papelera.map(o => `<div class="av trash" data-t="${esc(o.id)}">
+/* ---------- Trash: #/papelera ---------- */
+// What was forgotten here or on another machine, which can be brought back during the trash days (30 by
+// default, OMOIKANE_TRASH_DAYS). Before, it went at the end of Review, behind all the warnings, and wasn't seen.
+function renderTrash() {
+  const rows = trash.map(o => `<div class="av trash" data-t="${esc(o.id)}">
       <div class="cab"><span class="t">${esc(o.title)}</span></div>
-      <div class="cab">${pastilla(o.project || (o.space ? PRE_ESP + o.space : ''))} <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, corta(o.deleted_at)))}</span></div>
+      <div class="cab">${scopePill(o.project || (o.space ? SPACE_PREFIX + o.space : ''))} <span class="kt ${o.kind}">${o.kind}</span> <span class="what">${esc(T.olvidadaPor(o.by, shortWhen(o.deleted_at)))}</span></div>
       <div class="acts"><button class="btn pri" data-r="restaurar">${esc(T.restaurar)}</button></div>
     </div>`).join('');
   $('vista').innerHTML = `<div class="rev">
     <div class="hero"><div><h1>${esc(T.papelera)}</h1><p>${esc(T.papeleraSub)}</p></div></div>
-    ${filas || `<p class="vacio">${esc(T.papeleraVacia)}</p>`}
+    ${rows || `<p class="vacio">${esc(T.papeleraVacia)}</p>`}
   </div>`;
   for (const el of $('vista').querySelectorAll('.av.trash')) {
-    el.querySelector('[data-r="restaurar"]').onclick = () => accion(async () => {
-      const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...cab }, body: JSON.stringify({ id: el.dataset.t }) });
+    el.querySelector('[data-r="restaurar"]').onclick = () => action(async () => {
+      const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ id: el.dataset.t }) });
       if (!r.ok) throw new Error(await r.text());
     });
   }
 }
 
-/* ---------- Proyectos ---------- */
-function mezcla(ms) {
-  const c = {}; for (const t of TIPOS) c[t] = 0;
+/* ---------- Projects ---------- */
+function kindMix(ms) {
+  const c = {}; for (const t of KINDS) c[t] = 0;
   for (const m of ms) c[m.kind] = (c[m.kind] || 0) + 1;
-  return `<div class="mix">${TIPOS.filter(t => c[t]).map(t => `<i class="${t}" style="flex:${c[t]}" title="${t}: ${c[t]}"></i>`).join('')}</div>`;
+  return `<div class="mix">${KINDS.filter(t => c[t]).map(t => `<i class="${t}" style="flex:${c[t]}" title="${t}: ${c[t]}"></i>`).join('')}</div>`;
 }
-function pintarProyectos() {
-  const es = estados(), pjs = proyectos();
-  // Grupos: cada espacio (lo suyo y sus proyectos), luego los proyectos sin espacio y al final lo global.
-  const grupos = new Map(espacios.map(s => [s.key, []]));
-  grupos.set('', []);
-  for (const x of pjs) {
+function renderProjects() {
+  const statuses = latestStatuses(), projs = projects();
+  // Groups: each space (its own and its projects), then the projects without a space and global last.
+  const groups = new Map(spaces.map(s => [s.key, []]));
+  groups.set('', []);
+  for (const x of projs) {
     if (!x.p) continue;
-    const k = espacioDe(x.p) || '';
-    if (!grupos.has(k)) grupos.set(k, []);
-    grupos.get(k).push(x);
+    const k = spaceOf(x.p) || '';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(x);
   }
-  // Lo del espacio, primero dentro de su grupo.
-  for (const l of grupos.values()) l.sort((a, b) => esEspacio(b.p) - esEspacio(a.p));
-  const global = pjs.find(x => x.p === '');
-  const tarjeta = ({ p, n }) => {
-    const e = es[p], ms = delProyecto(p), ficha = fichas.find(x => x.path === p);
-    return `<a class="card${esEspacio(p) ? ' esp' : ''}" href="${enlaceProyecto(p)}">
-        <div class="hd"><span class="nm">${esEspacio(p) ? '◇ ' : ''}${esc(nombre(p))}</span><span class="n">${ficha && ficha.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>&ensp;` : ''}${esc(T.memoriasN(n))}</span></div>
-        <div class="path" title="${esc(esEspacio(p) ? '' : p)}">${esc(esEspacio(p) ? T.espacioPath(nombre(p)) : p || T.globalPath)}</div>
-        ${mezcla(ms)}
-        ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="txt">${esc(extracto(e.content))}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
+  // The space's own, first within its group.
+  for (const l of groups.values()) l.sort((a, b) => isSpace(b.p) - isSpace(a.p));
+  const global = projs.find(x => x.p === '');
+  const card = ({ p, n }) => {
+    const e = statuses[p], ms = ofProject(p), projectEntry = projectEntries.find(x => x.path === p);
+    return `<a class="card${isSpace(p) ? ' esp' : ''}" href="${projectLink(p)}">
+        <div class="hd"><span class="nm">${isSpace(p) ? '◇ ' : ''}${esc(displayName(p))}</span><span class="n">${projectEntry && projectEntry.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>&ensp;` : ''}${esc(T.memoriasN(n))}</span></div>
+        <div class="path" title="${esc(isSpace(p) ? '' : p)}">${esc(isSpace(p) ? T.espacioPath(displayName(p)) : p || T.globalPath)}</div>
+        ${kindMix(ms)}
+        ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(shortWhen(e.updated_at))}</span></div><div class="txt">${esc(excerpt(e.content))}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
       </a>`;
   };
-  const conEspacios = espacios.length > 0;
-  const seccion = (k, l) => {
+  const withSpaces = spaces.length > 0;
+  const section = (k, l) => {
     if (!l.length) return '';
-    if (!conEspacios) return `<div class="grid">${l.map(tarjeta).join('')}</div>`;
-    const proyectosN = l.filter(x => !esEspacio(x.p)).length, memoriasN = l.reduce((s, x) => s + x.n, 0);
-    const cab = k ? `<h2 class="esp">${esc(nombreEspacio(k))}</h2><span>${esc(T.espacioDe(nombreEspacio(k)))} · ${esc(T.enEspacio(proyectosN, memoriasN))}</span>`
+    if (!withSpaces) return `<div class="grid">${l.map(card).join('')}</div>`;
+    const projectCount = l.filter(x => !isSpace(x.p)).length, memoryCount = l.reduce((s, x) => s + x.n, 0);
+    const header = k ? `<h2 class="esp">${esc(spaceName(k))}</h2><span>${esc(T.espacioDe(spaceName(k)))} · ${esc(T.enEspacio(projectCount, memoryCount))}</span>`
       : `<h2>${esc(T.personal)}</h2><span>${esc(T.personalSub)}</span>`;
-    return `<div class="gsp">${cab}</div><div class="grid">${l.map(tarjeta).join('')}</div>`;
+    return `<div class="gsp">${header}</div><div class="grid">${l.map(card).join('')}</div>`;
   };
-  const cuerpo = [...grupos.entries()].filter(([k]) => k).sort((a, b) => nombreEspacio(a[0]).localeCompare(nombreEspacio(b[0]))).map(([k, l]) => seccion(k, l)).join('')
-    + seccion('', grupos.get(''))
-    + (!global ? '' : conEspacios ? `<div class="gsp"><h2>${esc(T.global)}</h2><span>${esc(T.globalSub)}</span></div><div class="grid">${tarjeta(global)}</div>` : '');
+  const body = [...groups.entries()].filter(([k]) => k).sort((a, b) => spaceName(a[0]).localeCompare(spaceName(b[0]))).map(([k, l]) => section(k, l)).join('')
+    + section('', groups.get(''))
+    + (!global ? '' : withSpaces ? `<div class="gsp"><h2>${esc(T.global)}</h2><span>${esc(T.globalSub)}</span></div><div class="grid">${card(global)}</div>` : '');
   $('vista').innerHTML = `<div class="pjs">
     <div class="hero">
       <div><h1>${T.dondeTitulo}</h1><p>${T.dondeSub}</p></div>
       <div class="stats">
-        <div class="stat"><b>${todas.length}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
-        <div class="stat"><b>${pjs.filter(x => x.p && !esEspacio(x.p)).length}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
-        ${conEspacios ? `<div class="stat"><b>${espacios.length}</b><span>${esc(T.espacios)}</span></div>` : ''}
-        <div class="stat"><b>${Object.keys(es).length}</b><span>${esc(T.conEstado)}</span></div>
+        <div class="stat"><b>${memories.length}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
+        <div class="stat"><b>${projs.filter(x => x.p && !isSpace(x.p)).length}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        ${withSpaces ? `<div class="stat"><b>${spaces.length}</b><span>${esc(T.espacios)}</span></div>` : ''}
+        <div class="stat"><b>${Object.keys(statuses).length}</b><span>${esc(T.conEstado)}</span></div>
       </div>
     </div>
-    ${abiertasHTML()}
-    ${conEspacios ? cuerpo : `<div class="grid">${pjs.map(tarjeta).join('')}</div>`}
-    <div class="leyenda">${TIPOS.map(t => `<span><i class="k ${t}"></i>${t}</span>`).join('')}</div>
+    ${openDecisionsHTML()}
+    ${withSpaces ? body : `<div class="grid">${projs.map(card).join('')}</div>`}
+    <div class="leyenda">${KINDS.map(t => `<span><i class="k ${t}"></i>${t}</span>`).join('')}</div>
   </div>`;
-  conectarAbiertas();
+  wireOpenDecisions();
 }
 
-/* ---------- Panorama: la vista de responsable ---------- */
-// Por espacio, en tres bloques: qué hay, quién lo escribió y qué está desfasado o en pausa. Todo sale
-// de /api/overview, que ya deja solo lo que se ve desde donde arrancó el servidor.
-const nombreProyecto = p => (fichas.find(x => x.path === p) || {}).name || (p ? p.split(/[\\/]/).filter(Boolean).pop() : '');
-function pintarPanorama() {
-  const P = T.pan, d = panorama;
+/* ---------- Overview: the manager view ---------- */
+// By space, in three blocks: what there is, who wrote it and what is outdated or paused. Everything comes
+// from /api/overview, which already keeps only what is seen from where the server started.
+const projectName = p => (projectEntries.find(x => x.path === p) || {}).name || (p ? p.split(/[\\/]/).filter(Boolean).pop() : '');
+function renderOverview() {
+  const P = T.pan, d = overview;
   if (!d) { $('vista').innerHTML = `<div class="pan"><p class="vacio">${esc(T.cargando)}</p></div>`; return; }
   const sp = d.spaces || [];
-  const suma = f => sp.reduce((s, x) => s + f(x), 0);
-  const autoresN = new Set(sp.flatMap(x => x.authors.map(a => a.author))).size;
-  const alcance = d.scope === 'all' ? P.todo : d.space ? P.solo(nombreEspacio(d.space)) : P.soloNinguno;
-  // Una memoria en una línea: el título (abre su proyecto con ella en el panel) y debajo lo que toque.
-  const fila = (m, debajo) => `<button class="fl" data-ir="${esc(m.id || m.memory_id)}"><span class="t" title="${esc(m.title)}">${esc(m.title)}</span><span class="n">${esc(corta(m.updated_at || ''))}</span>${debajo ? `<span class="d">${debajo}</span>` : ''}</button>`;
-  const quien = a => a ? esc(a) : `<i>${esc(P.sinAutor)}</i>`;
-  const donde = (m, x) => m.project ? esc(nombreProyecto(m.project)) : `◇ ${esc(x.name || x.key)}`;
-  const mas = (n, l) => n > l.length ? `<p class="vacio">${esc(P.verTodas(n - l.length))}</p>` : '';
-  const bloqueQue = x => {
-    const pjs = x.projects.length ? x.projects.map(p => `<a class="fl" href="${enlaceProyecto(p.path)}">
+  const sum = f => sp.reduce((s, x) => s + f(x), 0);
+  const authorCount = new Set(sp.flatMap(x => x.authors.map(a => a.author))).size;
+  const scopeNote = d.scope === 'all' ? P.todo : d.space ? P.solo(spaceName(d.space)) : P.soloNinguno;
+  // A memory on one line: the title (opens its project with it in the panel) and below whatever applies.
+  const row = (m, below) => `<button class="fl" data-ir="${esc(m.id || m.memory_id)}"><span class="t" title="${esc(m.title)}">${esc(m.title)}</span><span class="n">${esc(shortWhen(m.updated_at || ''))}</span>${below ? `<span class="d">${below}</span>` : ''}</button>`;
+  const who = a => a ? esc(a) : `<i>${esc(P.sinAutor)}</i>`;
+  const where = (m, x) => m.project ? esc(projectName(m.project)) : `◇ ${esc(x.name || x.key)}`;
+  const more = (n, l) => n > l.length ? `<p class="vacio">${esc(P.verTodas(n - l.length))}</p>` : '';
+  const whatBlock = x => {
+    const projs = x.projects.length ? x.projects.map(p => `<a class="fl" href="${projectLink(p.path)}">
         <span class="t" title="${esc(p.path)}">${esc(p.name)}${p.paused ? `<span class="pz">${esc(P.pausado)}</span>` : ''}${p.gone ? `<span class="ido">${esc(P.idoP)}</span>` : ''}</span>
         <span class="n">${esc(T.memoriasN(p.memories))}${p.pinned ? ' · ' + esc(P.fijadasN(p.pinned)) : ''}</span>
-        ${p.status ? `<span class="d dos" title="${esc(p.status.title)}"><span class="stl">status</span> ${esc(corta(p.status.updated_at))}${p.status.author ? ' · ' + esc(p.status.author) : ''} — ${esc(extracto(p.status.content))}</span>` : `<span class="d">${esc(P.sinEstado)}</span>`}
+        ${p.status ? `<span class="d dos" title="${esc(p.status.title)}"><span class="stl">status</span> ${esc(shortWhen(p.status.updated_at))}${p.status.author ? ' · ' + esc(p.status.author) : ''} — ${esc(excerpt(p.status.content))}</span>` : `<span class="d">${esc(P.sinEstado)}</span>`}
       </a>`).join('') : `<p class="vacio">${esc(P.sinProyectos)}</p>`;
     return `<div class="blq">
       <h3>${esc(P.que)}<span>${esc(T.memoriasN(x.memories))}${x.space_memories ? ' · ' + esc(P.delEspacio(x.space_memories)) : ''}</span></h3>
-      <div class="lst">${pjs}</div>
+      <div class="lst">${projs}</div>
       ${x.open_decisions.count ? `<div class="sub">${esc(P.abiertas)}<span>${x.open_decisions.count}${x.open_decisions.blocking ? ` · ${x.open_decisions.blocking} ${esc(T.bloqueante)}` : ''}</span></div>
-        <div class="lst">${x.open_decisions.items.map(m => fila(m, `${m.blocking ? marcaPrioridad(m) + ' ' : ''}${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>
-        ${mas(x.open_decisions.count, x.open_decisions.items)}
+        <div class="lst">${x.open_decisions.items.map(m => row(m, `${m.blocking ? priorityMark(m) + ' ' : ''}${where(m, x)} · ${who(m.author)}`)).join('')}</div>
+        ${more(x.open_decisions.count, x.open_decisions.items)}
         <div><a class="btn" href="#/proyectos">${esc(P.decidirEn)}</a></div>` : ''}
       ${x.pinned.count ? `<div class="sub">${esc(P.fijadas)}<span>${x.pinned.count}</span></div>
-        <div class="lst">${x.pinned.items.map(m => fila({ ...m, title: '◆ ' + m.title }, `${donde(m, x)} · <span class="kt ${m.kind}">${m.kind}</span>`)).join('')}</div>
-        ${mas(x.pinned.count, x.pinned.items)}` : ''}
+        <div class="lst">${x.pinned.items.map(m => row({ ...m, title: '◆ ' + m.title }, `${where(m, x)} · <span class="kt ${m.kind}">${m.kind}</span>`)).join('')}</div>
+        ${more(x.pinned.count, x.pinned.items)}` : ''}
     </div>`;
   };
-  const bloqueQuien = x => {
+  const whoBlock = x => {
     const max = Math.max(1, ...x.authors.map(a => a.memories));
-    const autores = x.authors.map(a => `<div class="aut">
+    const authors = x.authors.map(a => `<div class="aut">
         <span class="nm${a.author ? '' : ' anon'}"${a.author ? '' : ` title="${esc(P.sinAutorT)}"`}>${esc(a.author || P.sinAutor)}</span>
         <span class="n">${esc(T.memoriasN(a.memories))}</span>
         <span class="barra"><i style="width:${(100 * a.memories / max).toFixed(1)}%"></i></span>
-        <span class="ag">${esc(P.recientes(a.recent, d.recent_days))} · ${esc(P.ultima)} ${esc(corta(a.last))} · ${esc(P.con)} ${a.sources.slice(0, 3).map(s => `<code title="${esc(T.memoriasN(s.memories))}">${esc(s.source)}</code>`).join(' ')}</span>
+        <span class="ag">${esc(P.recientes(a.recent, d.recent_days))} · ${esc(P.ultima)} ${esc(shortWhen(a.last))} · ${esc(P.con)} ${a.sources.slice(0, 3).map(s => `<code title="${esc(T.memoriasN(s.memories))}">${esc(s.source)}</code>`).join(' ')}</span>
       </div>`).join('');
     return `<div class="blq">
       <h3>${esc(P.quien)}<span>${esc(P.autoresN(x.authors.length))}</span></h3>
-      <div class="lst">${autores || `<p class="vacio">—</p>`}</div>
+      <div class="lst">${authors || `<p class="vacio">—</p>`}</div>
       ${x.recent.length ? `<div class="sub">${esc(P.actividad)}</div>
-        <div class="lst">${x.recent.slice(0, 8).map(m => fila(m, `${quien(m.author)} · <code>${esc(m.source)}</code> · ${donde(m, x)} · ${esc(m.created_at === m.updated_at ? T.nueva : T.cambiada)}`)).join('')}</div>` : ''}
+        <div class="lst">${x.recent.slice(0, 8).map(m => row(m, `${who(m.author)} · <code>${esc(m.source)}</code> · ${where(m, x)} · ${esc(m.created_at === m.updated_at ? T.nueva : T.cambiada)}`)).join('')}</div>` : ''}
     </div>`;
   };
-  const bloqueDesfasado = x => {
-    const r = x.review, orden = ['secret', 'review_date', 'superseded', 'contradicts', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
-    const cuentas = orden.filter(k => r.kinds[k]).map(k => `<span class="chip" title="${esc(T.tipos[k][1])}">${esc(T.tipos[k][0])}<b>${r.kinds[k]}</b></span>`).join('');
-    // De Revisar, primero lo que dice que algo ya no vale (desfasadas, sustituidas, contradicciones).
-    const peso = a => ['superseded', 'contradicts', 'outdated', 'trade_duplicate', 'stale_status'].includes(a.kind) ? 0 : 1;
-    const items = [...r.items].sort((a, b) => peso(a) - peso(b)).slice(0, 6);
-    const pausas = x.paused.map(p => `<div class="fl" style="cursor:default">
+  const outdatedBlock = x => {
+    const r = x.review, order = ['secret', 'review_date', 'superseded', 'contradicts', 'outdated', 'trade_duplicate', 'broken_link', 'stale_status', 'code_drift', 'due', 'broken_path', 'unused', 'too_long'];
+    const counts = order.filter(k => r.kinds[k]).map(k => `<span class="chip" title="${esc(T.tipos[k][1])}">${esc(T.tipos[k][0])}<b>${r.kinds[k]}</b></span>`).join('');
+    // From Review, first what says something no longer holds (outdated, superseded, contradictions).
+    const weight = a => ['superseded', 'contradicts', 'outdated', 'trade_duplicate', 'stale_status'].includes(a.kind) ? 0 : 1;
+    const items = [...r.items].sort((a, b) => weight(a) - weight(b)).slice(0, 6);
+    const pausedRows = x.paused.map(p => `<div class="fl" style="cursor:default">
         <span class="t">${esc(p.name)}<span class="pz">${esc(P.pausado)}</span></span><span class="n">${esc(p.machine)}${p.space ? ' → ' + esc(p.space) : ''}</span>
         ${ES ? '' : `<span class="d dos" title="${esc(p.text)}">${esc(p.text)}</span>`}
       </div>
-      <div class="cmd"><code>${esc(p.keep)}</code>${botonEjecutar(p.keep)}<button class="btn" data-copia="${esc(p.keep)}">${esc(T.copiar)}</button></div>
-      <div class="cmd"><code>${esc(p.accept)}</code>${botonEjecutar(p.accept)}<button class="btn" data-copia="${esc(p.accept)}">${esc(T.copiar)}</button></div>`).join('');
+      <div class="cmd"><code>${esc(p.keep)}</code>${runButton(p.keep)}<button class="btn" data-copia="${esc(p.keep)}">${esc(T.copiar)}</button></div>
+      <div class="cmd"><code>${esc(p.accept)}</code>${runButton(p.accept)}<button class="btn" data-copia="${esc(p.accept)}">${esc(T.copiar)}</button></div>`).join('');
     return `<div class="blq">
       <h3>${esc(P.desfasado)}<span>${r.count} ${esc(P.aRevisar)}</span></h3>
-      ${r.count ? `<div class="cuentas">${cuentas}</div>
-        <div class="lst">${items.map(a => fila({ ...a, updated_at: (todas.find(m => m.id === a.memory_id) || {}).updated_at }, `<span class="kt">${esc(T.tipos[a.kind] ? T.tipos[a.kind][0] : a.kind)}</span> · ${donde(a, x)} · ${esc(T.detalle(a))}`)).join('')}</div>
-        ${mas(r.count, items)}
+      ${r.count ? `<div class="cuentas">${counts}</div>
+        <div class="lst">${items.map(a => row({ ...a, updated_at: (memories.find(m => m.id === a.memory_id) || {}).updated_at }, `<span class="kt">${esc(T.tipos[a.kind] ? T.tipos[a.kind][0] : a.kind)}</span> · ${where(a, x)} · ${esc(T.detalle(a))}`)).join('')}</div>
+        ${more(r.count, items)}
         <div><a class="btn" href="#/revisar">${esc(P.verRev)}</a></div>` : `<p class="vacio">${esc(P.nadaRev)}</p>`}
-      ${x.paused.length ? `<div class="sub">${esc(P.pausa)}<span>${x.paused.length}</span></div>${pausas}` : ''}
+      ${x.paused.length ? `<div class="sub">${esc(P.pausa)}<span>${x.paused.length}</span></div>${pausedRows}` : ''}
       <div class="sub">${esc(P.olvidadas)}<span>${esc(P.olvidadasSub(d.months))} · ${x.untouched.count}</span></div>
-      ${x.untouched.count ? `<div class="lst">${x.untouched.items.slice(0, 6).map(m => fila(m, `${donde(m, x)} · ${quien(m.author)}`)).join('')}</div>${mas(x.untouched.count, x.untouched.items.slice(0, 6))}` : `<p class="vacio">${esc(P.nadaOlv)}</p>`}
+      ${x.untouched.count ? `<div class="lst">${x.untouched.items.slice(0, 6).map(m => row(m, `${where(m, x)} · ${who(m.author)}`)).join('')}</div>${more(x.untouched.count, x.untouched.items.slice(0, 6))}` : `<p class="vacio">${esc(P.nadaOlv)}</p>`}
     </div>`;
   };
-  const seccion = x => {
+  const section = x => {
     const n = x.projects.length;
-    const cab = x.key ? `<h2 class="esp">${esc(x.name || x.key)}</h2><span>${esc(T.espacioDe(x.name || x.key))} · ${esc(T.enEspacio(n, x.memories))}</span>`
+    const header = x.key ? `<h2 class="esp">${esc(x.name || x.key)}</h2><span>${esc(T.espacioDe(x.name || x.key))} · ${esc(T.enEspacio(n, x.memories))}</span>`
       : `<h2>${esc(P.sinEspacio)}</h2><span>${esc(P.sinEspacioSub)} · ${esc(T.enEspacio(n, x.memories))}</span>`;
-    return `<div class="gsp">${cab}</div><div class="tres">${bloqueQue(x)}${bloqueQuien(x)}${bloqueDesfasado(x)}</div>`;
+    return `<div class="gsp">${header}</div><div class="tres">${whatBlock(x)}${whoBlock(x)}${outdatedBlock(x)}</div>`;
   };
   $('vista').innerHTML = `<div class="pan">
     <div class="hero">
       <div><h1>${esc(P.titulo)}</h1><p>${esc(P.sub)}</p></div>
       <div class="stats">
         <div class="stat"><b>${sp.filter(x => x.key).length}</b><span>${esc(T.espacios)}</span></div>
-        <div class="stat"><b>${suma(x => x.projects.length)}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
-        <div class="stat"><b>${suma(x => x.memories)}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
-        <div class="stat"><b>${autoresN}</b><span>${esc(P.autores)}</span></div>
-        <div class="stat"><b>${suma(x => x.review.count)}</b><span>${esc(P.aRevisar)}</span></div>
+        <div class="stat"><b>${sum(x => x.projects.length)}</b><span>${esc(T.proyectos.toLowerCase())}</span></div>
+        <div class="stat"><b>${sum(x => x.memories)}</b><span>${esc(T.memorias.toLowerCase())}</span></div>
+        <div class="stat"><b>${authorCount}</b><span>${esc(P.autores)}</span></div>
+        <div class="stat"><b>${sum(x => x.review.count)}</b><span>${esc(P.aRevisar)}</span></div>
       </div>
     </div>
-    <p class="alcance">${esc(alcance)}</p>
+    <p class="alcance">${esc(scopeNote)}</p>
     <label class="ctl">${esc(P.sinTocar)} <select id="meses">${[3, 6, 12, 24].map(n => `<option value="${n}"${n === d.months ? ' selected' : ''}>${esc(P.meses(n))}</option>`).join('')}</select></label>
-    ${sp.length ? sp.map(seccion).join('') : `<p class="vacio">${esc(P.nada)}</p>`}
+    ${sp.length ? sp.map(section).join('') : `<p class="vacio">${esc(P.nada)}</p>`}
     ${d.global_memories ? `<p class="alcance" style="margin-top:18px">${esc(P.global(d.global_memories))}</p>` : ''}
   </div>`;
   const v = $('vista');
-  for (const b of v.querySelectorAll('[data-ir]')) b.onclick = () => irA(b.dataset.ir);
-  conectarEjecutar(v);
+  for (const b of v.querySelectorAll('[data-ir]')) b.onclick = () => goTo(b.dataset.ir);
+  wireRunButtons(v);
   for (const b of v.querySelectorAll('[data-copia]')) b.onclick = async () => {
-    try { await navigator.clipboard.writeText(b.dataset.copia); aviso(T.copiado); } catch (e) { aviso(b.dataset.copia); }
+    try { await navigator.clipboard.writeText(b.dataset.copia); toast(T.copiado); } catch (e) { toast(b.dataset.copia); }
   };
-  $('meses').onchange = async e => { mesesSinTocar = +e.target.value; await cargarPanorama(); pintar(); };
+  $('meses').onchange = async e => { monthsUntouched = +e.target.value; await loadOverview(); render(); };
 }
 
-/* ---------- Decisiones abiertas ---------- */
-// Las decisiones que esperan a la persona (etiqueta `open`), de la más nueva a la más vieja: las mismas
-// que recibe el agente al empezar sesión.
-const ABIERTA = 'open';
-const BLOQUEANTE = 'blocking';
-const esBloqueante = m => (m.tags || []).includes(BLOQUEANTE) || m.blocking === true;
-// Las bloqueantes primero (sort es estable: dentro de cada grupo, de la más nueva a la más vieja).
-const abiertas = () => todas.filter(m => m.kind === 'decision' && m.tags.includes(ABIERTA) && enEspacio(m)).sort((a, b) => esBloqueante(b) - esBloqueante(a));
-const marcaPrioridad = m => esBloqueante(m) ? `<span class="blk" title="${esc(T.bloqueanteT)}">${esc(T.bloqueante)}</span>` : `<span class="blk later">${esc(T.paraDespues)}</span>`;
-function abiertasHTML() {
-  const ds = abiertas();
+/* ---------- Open decisions ---------- */
+// The decisions waiting for the person (tag `open`), from newest to oldest: the same
+// the agent gets when a session starts.
+const OPEN_TAG = 'open';
+const BLOCKING_TAG = 'blocking';
+const isBlocking = m => (m.tags || []).includes(BLOCKING_TAG) || m.blocking === true;
+// Blocking ones first (sort is stable: within each group, from newest to oldest).
+const openDecisions = () => memories.filter(m => m.kind === 'decision' && m.tags.includes(OPEN_TAG) && inSpace(m)).sort((a, b) => isBlocking(b) - isBlocking(a));
+const priorityMark = m => isBlocking(m) ? `<span class="blk" title="${esc(T.bloqueanteT)}">${esc(T.bloqueante)}</span>` : `<span class="blk later">${esc(T.paraDespues)}</span>`;
+function openDecisionsHTML() {
+  const ds = openDecisions();
   if (!ds.length) return '';
   return `<div class="abiertas">
     <div class="gsp"><h2>${esc(T.abiertasTitulo)}</h2><span>${esc(String(ds.length))}</span></div>
     <p class="vacio" style="padding:0 0 10px">${T.abiertasSub}</p>
-    ${ds.map(m => `<div class="av${esBloqueante(m) ? ' bloq' : ''}" data-abierta="${esc(m.id)}">
-      <div class="cab">${marcaPrioridad(m)}<span class="t">${esc(m.title)}</span>${pastilla(ambito(m))}<span class="what">${esc(corta(m.updated_at))}</span></div>
+    ${ds.map(m => `<div class="av${isBlocking(m) ? ' bloq' : ''}" data-abierta="${esc(m.id)}">
+      <div class="cab">${priorityMark(m)}<span class="t">${esc(m.title)}</span>${scopePill(scopeOf(m))}<span class="what">${esc(shortWhen(m.updated_at))}</span></div>
       <div class="md">${md(m.content)}</div>
       <textarea placeholder="${esc(T.respuesta)}" rows="2"></textarea>
       <div class="acts"><button class="btn pri" data-r="decidir">${esc(T.decidir)}</button><button class="btn" data-r="supuesto" title="${esc(T.seQuedaT)}">${esc(T.seQueda)}</button></div>
     </div>`).join('')}
   </div>`;
 }
-// Decidir: la respuesta se añade al final de la memoria y se quita la etiqueta `open`. El botón se
-// apaga mientras tanto (dos clics añadían la respuesta dos veces), y las etiquetas se leen de la memoria
-// justo antes: las de la página pueden ser viejas, y mandarlas pisaría las que se pusieron después.
-function conectarAbiertas() {
+// Decide: the answer is appended to the end of the memory and the `open` tag is removed. The button is
+// disabled meanwhile (two clicks appended the answer twice), and the tags are read from the memory
+// right before: the page's may be old, and sending them would overwrite those added later.
+function wireOpenDecisions() {
   for (const el of $('vista').querySelectorAll('[data-abierta]')) {
     const id = el.dataset.abierta;
-    const boton = el.querySelector('[data-r="decidir"]'), supuesto = el.querySelector('[data-r="supuesto"]');
-    // «Se queda lo supuesto»: el agente siguió con lo que asumió y está bien; sin escribir nada.
-    supuesto.onclick = () => { el.querySelector('textarea').value = T.seQuedaRespuesta; boton.onclick(); };
-    boton.onclick = async () => {
-      const respuesta = el.querySelector('textarea').value.trim();
-      if (!respuesta) { el.querySelector('textarea').focus(); return; }
-      boton.disabled = true; supuesto.disabled = true;
+    const button = el.querySelector('[data-r="decidir"]'), assumeButton = el.querySelector('[data-r="supuesto"]');
+    // «Keep the assumption»: the agent went on with what it assumed and that's fine; nothing is written.
+    assumeButton.onclick = () => { el.querySelector('textarea').value = T.seQuedaRespuesta; button.onclick(); };
+    button.onclick = async () => {
+      const answer = el.querySelector('textarea').value.trim();
+      if (!answer) { el.querySelector('textarea').focus(); return; }
+      button.disabled = true; assumeButton.disabled = true;
       try {
-        await accion(async () => {
-          const actual = await herramienta('get', { id });
-          await herramienta('update', {
+        await action(async () => {
+          const current = await tool('get', { id });
+          await tool('update', {
             id,
-            append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${respuesta}`,
-            tags: [...(actual.tags || []).filter(t => t !== ABIERTA && t !== BLOQUEANTE && t !== 'resolved'), 'resolved'],
+            append: `${T.decidido} (${new Date().toISOString().slice(0, 10)}): ${answer}`,
+            tags: [...(current.tags || []).filter(t => t !== OPEN_TAG && t !== BLOCKING_TAG && t !== 'resolved'), 'resolved'],
             reason: T.decididoMotivo,
           });
         });
       } finally {
-        // Si salió bien, la página ya se pintó de nuevo sin ella; si no, se puede volver a intentar.
-        boton.disabled = false; supuesto.disabled = false;
+        // If it went well, the page was already repainted without it; if not, it can be tried again.
+        button.disabled = false; assumeButton.disabled = false;
       }
     };
   }
 }
 
-let elegidaPanel = null;
-// Las memorias del proyecto en un anillo y las que enlazan de fuera (globales u otros proyectos) en
-// otro, con una línea por enlace. Sin librerías; solo si hay algún enlace.
-function grafoHTML(ms) {
-  // Solo las que tienen algún enlace; con muchas, las etiquetas salen al pasar el ratón.
-  const conEnlace = m => (m.links || []).length || enlazan(m).length;
-  const dentro = ms.filter(conEnlace).slice(0, 24), ids = new Set(dentro.map(m => m.id)), fuera = new Map(), aristas = [];
-  for (const m of dentro) {
-    for (const id of m.links || []) { aristas.push([m.id, id]); if (!ids.has(id)) fuera.set(id, true); }
-    for (const x of enlazan(m)) { if (!ids.has(x.id)) { aristas.push([x.id, m.id]); fuera.set(x.id, true); } }
+let panelMemory = null;
+// The project's memories in a ring and those linking from outside (globals or other projects) in
+// another, with a line per link. No libraries; only if there is any link.
+function graphHTML(ms) {
+  // Only those with some link; with many, the labels show on hover.
+  const hasLinks = m => (m.links || []).length || linkedFrom(m).length;
+  const insideNodes = ms.filter(hasLinks).slice(0, 24), ids = new Set(insideNodes.map(m => m.id)), outside = new Map(), edges = [];
+  for (const m of insideNodes) {
+    for (const id of m.links || []) { edges.push([m.id, id]); if (!ids.has(id)) outside.set(id, true); }
+    for (const x of linkedFrom(m)) { if (!ids.has(x.id)) { edges.push([x.id, m.id]); outside.set(x.id, true); } }
   }
-  if (!aristas.length) return '';
-  const externas = [...fuera.keys()].slice(0, 20).map(id => todas.find(x => x.id === id)).filter(Boolean);
-  const total = dentro.length + externas.length, etiquetas = total <= 14;
+  if (!edges.length) return '';
+  const externalNodes = [...outside.keys()].slice(0, 20).map(id => memories.find(x => x.id === id)).filter(Boolean);
+  const total = insideNodes.length + externalNodes.length, showLabels = total <= 14;
   const W = 760, H = total > 20 ? 420 : 320, cx = W / 2, cy = H / 2, pos = new Map();
-  const anillo = (lista, rx, ry) => lista.forEach((m, i) => { const a = -Math.PI / 2 + 2 * Math.PI * i / Math.max(1, lista.length); pos.set(m.id, [cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); });
-  const r1 = dentro.length > 1 ? Math.min(150, 40 + dentro.length * 6) : 0;
-  anillo(dentro, r1 * 1.6, r1 * 0.8);
-  anillo(externas, Math.min(W / 2 - 40, r1 * 1.6 + 120), Math.min(H / 2 - 24, r1 * 0.8 + 70));
-  const lineas = aristas.filter(([a, b]) => pos.has(a) && pos.has(b)).map(([a, b]) => { const [x1, y1] = pos.get(a), [x2, y2] = pos.get(b); return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"></line>`; }).join('');
-  const nodo = (m, de) => { const [x, y] = pos.get(m.id); return `<circle class="${m.kind}${de ? '' : ' fuera'}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${de ? 8 : 6}" data-ir="${m.id}"><title>${esc(m.title)}</title></circle>` + (etiquetas ? `<text x="${(x + 11).toFixed(1)}" y="${(y + 4).toFixed(1)}">${esc(m.title.slice(0, 28))}</text>` : ''); };
-  return `<div class="grafo"><div class="lb">${T.conexiones} · ${dentro.length + externas.length}</div><svg viewBox="0 0 ${W} ${H}" role="img">${lineas}${dentro.map(m => nodo(m, true)).join('')}${externas.map(m => nodo(m, false)).join('')}</svg></div>`;
+  const ring = (list, rx, ry) => list.forEach((m, i) => { const a = -Math.PI / 2 + 2 * Math.PI * i / Math.max(1, list.length); pos.set(m.id, [cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); });
+  const r1 = insideNodes.length > 1 ? Math.min(150, 40 + insideNodes.length * 6) : 0;
+  ring(insideNodes, r1 * 1.6, r1 * 0.8);
+  ring(externalNodes, Math.min(W / 2 - 40, r1 * 1.6 + 120), Math.min(H / 2 - 24, r1 * 0.8 + 70));
+  const lines = edges.filter(([a, b]) => pos.has(a) && pos.has(b)).map(([a, b]) => { const [x1, y1] = pos.get(a), [x2, y2] = pos.get(b); return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"></line>`; }).join('');
+  const node = (m, isInside) => { const [x, y] = pos.get(m.id); return `<circle class="${m.kind}${isInside ? '' : ' fuera'}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isInside ? 8 : 6}" data-ir="${m.id}"><title>${esc(m.title)}</title></circle>` + (showLabels ? `<text x="${(x + 11).toFixed(1)}" y="${(y + 4).toFixed(1)}">${esc(m.title.slice(0, 28))}</text>` : ''); };
+  return `<div class="grafo"><div class="lb">${T.conexiones} · ${insideNodes.length + externalNodes.length}</div><svg viewBox="0 0 ${W} ${H}" role="img">${lines}${insideNodes.map(m => node(m, true)).join('')}${externalNodes.map(m => node(m, false)).join('')}</svg></div>`;
 }
 
-function pintarProyecto(p) {
-  const ms = delProyecto(p).filter(m => !encontrados || encontrados.includes(m.id)), e = estados()[p];
-  const ordenadas = encontrados ? encontrados.map(id => ms.find(m => m.id === id)).filter(Boolean) : ms;
-  const m = elegidaPanel && todas.find(x => x.id === elegidaPanel && ambito(x) === p);
-  const esp = espacioDe(p), ficha = fichas.find(x => x.path === p);
-  const cols = tiposDe(ms).map(t => {
-    const v = ordenadas.filter(x => x.kind === t), todasCol = columnasAbiertas[p + t], vis = todasCol ? v : v.slice(0, POR_COLUMNA);
+function renderProject(p) {
+  const ms = ofProject(p).filter(m => !found || found.includes(m.id)), e = latestStatuses()[p];
+  const sorted = found ? found.map(id => ms.find(m => m.id === id)).filter(Boolean) : ms;
+  const m = panelMemory && memories.find(x => x.id === panelMemory && scopeOf(x) === p);
+  const spaceKey = spaceOf(p), projectEntry = projectEntries.find(x => x.path === p);
+  const cols = kindsOf(ms).map(t => {
+    const v = sorted.filter(x => x.kind === t), showAll = openColumns[p + t], vis = showAll ? v : v.slice(0, PER_COLUMN);
     return `<div class="col">
       <div class="ch"><i class="k ${t}"></i><span class="kt ${t}">${t}</span><span class="n">${v.length}</span></div>
-      ${vis.map(x => `<button class="mc" data-id="${x.id}" aria-current="${m && m.id === x.id}"><span class="t">${x.pinned ? '◆ ' : ''}${esc(x.title)}</span><span class="m">${esc(corta(x.updated_at))}${x.tags.includes(ESTADO) ? ' <span class="stl">status</span>' : ''}</span></button>`).join('')}
-      ${v.length > POR_COLUMNA ? `<button class="ver-mas" data-col="${t}">${todasCol ? T.menos : T.masN(v.length - POR_COLUMNA)}</button>` : ''}
+      ${vis.map(x => `<button class="mc" data-id="${x.id}" aria-current="${m && m.id === x.id}"><span class="t">${x.pinned ? '◆ ' : ''}${esc(x.title)}</span><span class="m">${esc(shortWhen(x.updated_at))}${x.tags.includes(STATUS_TAG) ? ' <span class="stl">status</span>' : ''}</span></button>`).join('')}
+      ${v.length > PER_COLUMN ? `<button class="ver-mas" data-col="${t}">${showAll ? T.menos : T.masN(v.length - PER_COLUMN)}</button>` : ''}
     </div>`;
   }).join('');
   $('vista').innerHTML = `<div class="pp${m ? ' con-panel' : ''}">
     <div class="work">
-      <div class="crumb"><a href="#/proyectos">${T.proyectos}</a><span>›</span>${esp && !esEspacio(p) ? `${pastilla(PRE_ESP + esp)}<span>›</span>` : ''}<b>${esEspacio(p) ? '◇ ' : ''}${esc(nombre(p))}</b><span class="mono">${esc(esEspacio(p) ? T.espacioPath(nombre(p)) : p || T.globalPath)}</span>${ficha && ficha.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>` : ''}</div>
+      <div class="crumb"><a href="#/proyectos">${T.proyectos}</a><span>›</span>${spaceKey && !isSpace(p) ? `${scopePill(SPACE_PREFIX + spaceKey)}<span>›</span>` : ''}<b>${isSpace(p) ? '◇ ' : ''}${esc(displayName(p))}</b><span class="mono">${esc(isSpace(p) ? T.espacioPath(displayName(p)) : p || T.globalPath)}</span>${projectEntry && projectEntry.gone ? `<span class="ido">${esc(T.yaNoEsta)}</span>` : ''}</div>
       <div class="head">
         <div>
-          <h1>${esc(nombre(p))}</h1>
-          ${esEspacio(p) ? `<div class="cmd" style="margin-bottom:8px">${fichas.filter(x => x.space === esp).map(x => pastilla(x.path)).join('')}</div>` : ''}
-          ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(corta(e.updated_at))}</span></div><div class="md">${md(e.content)}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
+          <h1>${esc(displayName(p))}</h1>
+          ${isSpace(p) ? `<div class="cmd" style="margin-bottom:8px">${projectEntries.filter(x => x.space === spaceKey).map(x => scopePill(x.path)).join('')}</div>` : ''}
+          ${e ? `<div class="where"><div class="lb">${T.donde} <span>${esc(shortWhen(e.updated_at))}</span></div><div class="md">${md(e.content)}</div></div>` : `<div class="where nada">${T.sinEstado}</div>`}
         </div>
-        <div class="nums">${tiposDe(ms).map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
+        <div class="nums">${kindsOf(ms).map(t => `<div class="num"><b>${ms.filter(x => x.kind === t).length}</b><span><i class="k ${t}"></i>${t}</span></div>`).join('')}</div>
       </div>
-      ${grafoHTML(ms)}
+      ${graphHTML(ms)}
       ${ms.length ? `<div class="cols">${cols}</div>` : `<p class="vacio">${T.nada}</p>`}
     </div>
     ${m ? `<aside class="panel" id="panel">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="kt ${m.kind}">${m.kind}</span>${m.tags.map(t => `<span class="chip">#${esc(t)}</span>`).join('')}<button class="cerrar" id="cerrar">Esc ✕</button></div>
       <h2>${m.pinned ? '◆ ' : ''}${esc(m.title)}</h2>
-      ${detalleHTML(m, true)}
+      ${detailHTML(m, true)}
     </aside>` : ''}
   </div>`;
   const v = $('vista');
-  for (const b of v.querySelectorAll('.mc')) b.onclick = () => { elegidaPanel = elegidaPanel === b.dataset.id ? null : b.dataset.id; pintar(); };
-  for (const b of v.querySelectorAll('[data-col]')) b.onclick = () => { columnasAbiertas[p + b.dataset.col] = !columnasAbiertas[p + b.dataset.col]; pintar(); };
-  for (const c of v.querySelectorAll('.grafo [data-ir]')) c.onclick = () => irA(c.dataset.ir);
-  if (m) { $('cerrar').onclick = () => { elegidaPanel = null; pintar(); }; conectar($('panel'), m); }
+  for (const b of v.querySelectorAll('.mc')) b.onclick = () => { panelMemory = panelMemory === b.dataset.id ? null : b.dataset.id; render(); };
+  for (const b of v.querySelectorAll('[data-col]')) b.onclick = () => { openColumns[p + b.dataset.col] = !openColumns[p + b.dataset.col]; render(); };
+  for (const c of v.querySelectorAll('.grafo [data-ir]')) c.onclick = () => goTo(c.dataset.ir);
+  if (m) { $('cerrar').onclick = () => { panelMemory = null; render(); }; wireDetail($('panel'), m); }
 }
 
-/* ---------- Búsqueda, rutas y teclado ---------- */
-let espera;
-// Busca como el agente. Con un espacio elegido, en ese espacio (así los 50 resultados son suyos); si el
-// servidor no lo deja (arrancó en un proyecto de otro espacio), en todo, y el filtro deja los suyos.
-async function buscar() {
-  consulta = $('q').value.trim();
-  if (!consulta) { encontrados = null; pintar(); return; }
-  if (ruta().vista === 'proyectos' || ruta().vista === 'panorama') location.hash = '#/';
-  const args = { query: consulta, limit: 50, all_projects: true };
+/* ---------- Search, routes and keyboard ---------- */
+let searchTimer;
+// Searches like the agent. With a space chosen, in that space (so the 50 results are its own); if the
+// server doesn't allow it (it started in a project of another space), in everything, and the filter keeps its own.
+async function search() {
+  query = $('q').value.trim();
+  if (!query) { found = null; render(); return; }
+  if (route().vista === 'proyectos' || route().vista === 'panorama') location.hash = '#/';
+  const args = { query: query, limit: 50, all_projects: true };
   try {
     let v;
-    if (filtro.espacio && filtro.espacio !== '*') {
-      try { v = await herramienta('search', { query: consulta, limit: 50, space: filtro.espacio }); } catch (e) { v = null; }
+    if (filters.espacio && filters.espacio !== '*') {
+      try { v = await tool('search', { query: query, limit: 50, space: filters.espacio }); } catch (e) { v = null; }
     }
-    if (!v) v = await herramienta('search', args);
-    encontrados = v.map(x => x.id);
-  } catch (e) { aviso(T.error + ': ' + e.message); encontrados = []; }
-  abierta = null; pagina = 1; pintar();
+    if (!v) v = await tool('search', args);
+    found = v.map(x => x.id);
+  } catch (e) { toast(T.error + ': ' + e.message); found = []; }
+  openKey = null; page = 1; render();
 }
-$('q').oninput = () => { clearTimeout(espera); espera = setTimeout(buscar, 180); };
-window.addEventListener('hashchange', () => { elegidaPanel = irPendiente; irPendiente = null; pintar(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs,.pan')?.scrollTo(0, 0); });
+$('q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 180); };
+window.addEventListener('hashchange', () => { panelMemory = pendingGoTo; pendingGoTo = null; render(); $('vista').firstElementChild?.querySelector('.feed,.work,.pjs,.pan')?.scrollTo(0, 0); });
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
-  const r = ruta();
+  const r = route();
   if (e.key === 'Escape') {
-    if (r.vista === 'proyecto' && elegidaPanel) { elegidaPanel = null; pintar(); }
-    else if (r.vista === 'memorias' && abierta) { abierta = null; pintar(); }
+    if (r.vista === 'proyecto' && panelMemory) { panelMemory = null; render(); }
+    else if (r.vista === 'memorias' && openKey) { openKey = null; render(); }
     return;
   }
   if (r.vista === 'memorias' && ['j', 'k', 'ArrowDown', 'ArrowUp'].includes(e.key)) {
     e.preventDefault();
-    const filas = [...document.querySelectorAll('.row')], i = filas.findIndex(f => f.dataset.ev === abierta);
-    const sig = filas[Math.max(0, Math.min(filas.length - 1, i + ((e.key === 'j' || e.key === 'ArrowDown') ? 1 : -1)))];
-    if (sig) abrir(sig.dataset.ev);
+    const rows = [...document.querySelectorAll('.row')], i = rows.findIndex(f => f.dataset.ev === openKey);
+    const sig = rows[Math.max(0, Math.min(rows.length - 1, i + ((e.key === 'j' || e.key === 'ArrowDown') ? 1 : -1)))];
+    if (sig) toggleRow(sig.dataset.ev);
   }
 });
 document.documentElement.lang = ES ? 'es' : 'en';
@@ -1637,7 +1637,7 @@ $('nav-pan').textContent = T.pan.nav;
 $('nav-rev').firstElementChild.textContent = T.revisar;
 $('nav-con').firstElementChild.textContent = T.con.nav;
 $('nav-pap').firstElementChild.textContent = T.papelera;
-cargar();
+load();
 </script>
 </body>
 </html>

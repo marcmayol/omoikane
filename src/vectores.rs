@@ -1,18 +1,18 @@
-//! Vectores de las memorias: guardarlos, tenerlos al día con el modelo y buscar los más parecidos.
+//! Memory vectors: storing them, keeping them up to date with the model and finding the most similar.
 //!
-//! Van en `memory_vec` como BLOB (256 `f32` en little-endian, normalizados). Para comparar se
-//! **centran**: se les resta el vector medio de las memorias de la base. Los modelos estáticos
-//! comparten una dirección común que hace que todo se parezca a todo, sobre todo con textos largos
-//! (con 127 notas reales, el 31 % de los pares de notas distintas pasaba de 0,65 sin centrar; 4 de
-//! 8.001 centrando). La media es siempre la de la base actual; con pocas memorias se mezcla con una
-//! media genérica para que no salga cero.
+//! They go in `memory_vec` as a BLOB (256 little-endian `f32`, normalized). To compare them they are
+//! **centered**: the mean vector of the database's memories is subtracted. Static models
+//! share a common direction that makes everything look like everything, especially with long texts
+//! (with 127 real notes, 31 % of pairs of distinct notes went over 0.65 without centering; 4 of
+//! 8,001 centering). The mean is always that of the current database; with few memories it is mixed
+//! with a generic mean so it doesn't come out zero.
 //!
-//! Leer los vectores enteros cuesta (con 100.000 memorias, 100 MB y 200 ms por consulta), así que se
-//! guarda aparte un **resumen** (tablas locales, ver `db::LOCALES`): la suma de los vectores para la
-//! media y una copia en int8 de cada uno (un cuarto de lo que ocupa) con lo que se aleja del de verdad.
-//! Con ella se acota el parecido de cada memoria y solo se leen enteras las que pueden entrar: el
-//! resultado es el mismo que comparando con todos los vectores. Lo tienen al día los disparadores
-//! de `memory_vec` (apuntan qué cambia en `vec_cambio`) y `al_dia`, que lo aplica al usarlo.
+//! Reading the whole vectors is costly (with 100,000 memories, 100 MB and 200 ms per query), so a
+//! **summary** is kept separately (local tables, see `db::LOCALES`): the sum of the vectors for the
+//! mean and an int8 copy of each (a quarter of the size) with how far it is from the real one.
+//! With it the similarity of each memory is bounded and only those that may make it are read whole: the
+//! result is the same as comparing with all the vectors. It is kept up to date by the triggers
+//! of `memory_vec` (they record what changes in `vec_cambio`) and `up_to_date_summary`, which applies it when used.
 
 use crate::embeber::Modelo;
 use crate::memoria::{Ambito, COLUMNAS, Memoria, Tipo, de_fila};
@@ -20,24 +20,24 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-/// Similitud mínima (vectores centrados) para que la búsqueda añada una memoria que no salió por
-/// palabras. Calibrada en la fase 2 con `tests/busquedas.tsv` y con 127 notas reales: desde 0,25
-/// las consultas sin respuesta no devuelven nada. Con un modelo estático el rescate rara vez
-/// aporta: está para cuando la similitud es alta de verdad.
+/// Minimum similarity (centered vectors) for search to add a memory that didn't come up by
+/// words. Calibrated in phase 2 with `tests/busquedas.tsv` and 127 real notes: from 0.25
+/// queries without an answer return nothing. With a static model the rescue rarely
+/// contributes: it is there for when the similarity is really high.
 pub const SIMILITUD_BUSQUEDA: f32 = 0.25;
 
-/// Cuándo guardar propone actualizar la memoria que ya existe: si el parecido (vectores centrados)
-/// llega a `SIMILITUD_DUPLICADO`, o si llega a `SIMILITUD_DUPLICADO_CON_PALABRAS` y las palabras de la
-/// nueva están en la existente (`COBERTURA_DUPLICADO` de su peso IDF, como en el recall). El vector
-/// solo no separaba: con 0,70, el 3,9 % de 127 notas reales distintas avisaba en falso y solo se
-/// detectaba el 66 % de esas notas guardadas otra vez como lo haría un agente (otro título, el
-/// principio del texto). Con las dos señales: 0 % de avisos en falso (notas y frases cortas) y 89 %
-/// detectadas (`examples/fase2.rs dupcob`). Lo que se pierde: paráfrasis cortas con otras palabras.
+/// When saving proposes updating the memory that already exists: if the similarity (centered vectors)
+/// reaches `SIMILITUD_DUPLICADO`, or if it reaches `SIMILITUD_DUPLICADO_CON_PALABRAS` and the words of the
+/// new one are in the existing one (`COBERTURA_DUPLICADO` of its IDF weight, as in recall). The vector
+/// alone didn't separate: with 0.70, 3.9 % of 127 distinct real notes warned falsely and only
+/// 66 % of those notes saved again as an agent would (another title, the start of the text) were
+/// detected. With both signals: 0 % false warnings (notes and short sentences) and 89 %
+/// detected (`examples/fase2.rs dupcob`). What is lost: short paraphrases with other words.
 pub const SIMILITUD_DUPLICADO: f32 = 0.78;
 pub const SIMILITUD_DUPLICADO_CON_PALABRAS: f32 = 0.40;
 pub const COBERTURA_DUPLICADO: f64 = 0.60;
 
-/// Lo que se convierte en vector: el título y el contenido.
+/// What is turned into a vector: the title and the content.
 pub fn texto(title: &str, content: &str) -> String {
     format!("{title}\n{content}")
 }
@@ -46,260 +46,260 @@ fn bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-pub(crate) fn guardar(tx: &Transaction, n: i64, modelo: &Modelo, title: &str, content: &str) -> Result<()> {
-    let v = modelo.vector(&texto(title, content))?;
+pub(crate) fn guardar(tx: &Transaction, n: i64, model: &Modelo, title: &str, content: &str) -> Result<()> {
+    let v = model.vector(&texto(title, content))?;
     tx.execute("INSERT OR REPLACE INTO memory_vec(n, e) VALUES (?1, ?2)", params![n, bytes(&v)])?;
     Ok(())
 }
 
-/// Deja los vectores al día con `modelo`: si se calcularon con otro, los rehace todos; si faltan
-/// (memorias guardadas sin modelo instalado), los añade. Devuelve cuántos calculó. Con miles de
-/// memorias son milisegundos (un vector cuesta ~0,03 ms).
-pub fn sincronizar(db: &mut Connection, modelo: &Modelo) -> Result<usize> {
-    let guardado: Option<String> =
-        db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;
-    if guardado.as_deref() == Some(modelo.id()) && faltan(db)? == 0 {
+/// Brings the vectors up to date with `model`: if they were computed with another, redoes them all; if
+/// some are missing (memories saved without a model installed), adds them. Returns how many it computed. With
+/// thousands of memories it's milliseconds (a vector costs ~0.03 ms).
+pub fn sincronizar(db: &mut Connection, model: &Modelo) -> Result<usize> {
+    let stored: Option<String> =
+        db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
+    if stored.as_deref() == Some(model.id()) && missing_count(db)? == 0 {
         return Ok(0);
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let guardado: Option<String> =
-        tx.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;
-    if guardado.as_deref() != Some(modelo.id()) {
-        // Antes de borrar: sin resumen, los disparadores no apuntan cada vector viejo en `vec_cambio`.
-        if hay_locales(&tx)? {
+    let stored: Option<String> =
+        tx.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
+    if stored.as_deref() != Some(model.id()) {
+        // Before deleting: without a summary, the triggers don't record each old vector in `vec_cambio`.
+        if has_local_tables(&tx)? {
             olvidar_resumen(&tx)?;
         }
         tx.execute("DELETE FROM memory_vec", [])?;
         tx.execute(
             "INSERT INTO meta(k, v) VALUES ('modelo', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-            [modelo.id()],
+            [model.id()],
         )?;
     }
-    let pendientes: Vec<(i64, String, String)> = {
+    let pending: Vec<(i64, String, String)> = {
         let mut q = tx.prepare(
             "SELECT n, title, content FROM memory m WHERE NOT EXISTS (SELECT 1 FROM memory_vec v WHERE v.n = m.n)",
         )?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    for (n, t, c) in &pendientes {
-        guardar(&tx, *n, modelo, t, c)?;
+    for (n, t, c) in &pending {
+        guardar(&tx, *n, model, t, c)?;
     }
     tx.commit()?;
-    Ok(pendientes.len())
+    Ok(pending.len())
 }
 
-/// Cuánto pesa la media genérica frente a las memorias de la base (como si fueran tantas memorias).
-const PESO_MEDIA_GENERICA: f32 = 20.0;
+/// How much the generic mean weighs against the database's memories (as if it were that many memories).
+const GENERIC_MEAN_WEIGHT: f32 = 20.0;
 
-fn normalizado(mut v: Vec<f32>) -> Vec<f32> {
+fn normalized(mut v: Vec<f32>) -> Vec<f32> {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
     v.iter_mut().for_each(|x| *x /= n);
     v
 }
 
-/// Producto escalar de un vector guardado (bytes little-endian) con otro, sin copiarlo.
-fn punto(b: &[u8], v: &[f32]) -> f32 {
+/// Dot product of a stored vector (little-endian bytes) with another, without copying it.
+fn dot(b: &[u8], v: &[f32]) -> f32 {
     b.as_chunks::<4>().0.iter().zip(v).map(|(x, y)| f32::from_le_bytes(*x) * y).sum()
 }
 
-/// Media de un corpus genérico (el de los tests: código, documentación y frases en muchos idiomas)
-/// con este modelo. Se calcula una vez por modelo (~50 ms) y se guarda en `meta`.
-fn media_generica(db: &Connection, modelo: &Modelo) -> Result<Vec<f32>> {
-    let clave = format!("media:{}", modelo.id());
-    if let Some(t) = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get::<_, String>(0)).optional()? {
+/// Mean of a generic corpus (the tests' one: code, documentation and sentences in many languages)
+/// with this model. Computed once per model (~50 ms) and stored in `meta`.
+fn generic_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
+    let key = format!("media:{}", model.id());
+    if let Some(t) = db.query_row("SELECT v FROM meta WHERE k = ?1", [&key], |row| row.get::<_, String>(0)).optional()? {
         return Ok(serde_json::from_str(&t)?);
     }
-    let lineas: Vec<&str> = include_str!("../tests/corpus.txt").lines().filter(|l| !l.starts_with('#')).collect();
-    let mut media = vec![0f32; modelo.dim()];
-    for l in &lineas {
-        for (m, x) in media.iter_mut().zip(modelo.vector(l)?) {
-            *m += x / lineas.len() as f32;
+    let lines: Vec<&str> = include_str!("../tests/corpus.txt").lines().filter(|l| !l.starts_with('#')).collect();
+    let mut mean = vec![0f32; model.dim()];
+    for l in &lines {
+        for (m, x) in mean.iter_mut().zip(model.vector(l)?) {
+            *m += x / lines.len() as f32;
         }
     }
-    db.execute("INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)", params![clave, serde_json::to_string(&media)?])?;
-    Ok(media)
+    db.execute("INSERT OR IGNORE INTO meta(k, v) VALUES (?1, ?2)", params![key, serde_json::to_string(&mean)?])?;
+    Ok(mean)
 }
 
-/// La media con la que se centra: la de las memorias de la base, con la genérica como si fuera
-/// `PESO_MEDIA_GENERICA` memorias más.
-fn media(db: &Connection, modelo: &Modelo) -> Result<Vec<f32>> {
-    let mut suma: Vec<f32> = media_generica(db, modelo)?.iter().map(|x| x * PESO_MEDIA_GENERICA).collect();
-    let mut n = PESO_MEDIA_GENERICA;
+/// The mean used for centering: that of the database's memories, with the generic one as if it were
+/// `GENERIC_MEAN_WEIGHT` more memories.
+fn centering_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
+    let mut sum: Vec<f32> = generic_mean(db, model)?.iter().map(|x| x * GENERIC_MEAN_WEIGHT).collect();
+    let mut n = GENERIC_MEAN_WEIGHT;
     let mut q = db.prepare("SELECT e FROM memory_vec")?;
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        for (s, x) in suma.iter_mut().zip(f.get_ref(0)?.as_blob()?.as_chunks::<4>().0) {
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        for (s, x) in sum.iter_mut().zip(row.get_ref(0)?.as_blob()?.as_chunks::<4>().0) {
             *s += f32::from_le_bytes(*x);
         }
         n += 1.0;
     }
-    Ok(suma.iter().map(|s| s / n).collect())
+    Ok(sum.iter().map(|s| s / n).collect())
 }
 
-/// La misma media, con la suma del resumen (en `f64`: no depende del orden en que se sumó).
-fn media_de(db: &Connection, modelo: &Modelo, r: &Resumen) -> Result<Vec<f32>> {
-    let generica = media_generica(db, modelo)?;
-    let n = f64::from(PESO_MEDIA_GENERICA) + r.cuantos as f64;
-    Ok(generica.iter().zip(&r.suma).map(|(g, s)| ((f64::from(*g) * f64::from(PESO_MEDIA_GENERICA) + s) / n) as f32).collect())
+/// The same mean, with the summary's sum (in `f64`: it doesn't depend on the order it was summed in).
+fn mean_from_summary(db: &Connection, model: &Modelo, r: &Summary) -> Result<Vec<f32>> {
+    let generic = generic_mean(db, model)?;
+    let n = f64::from(GENERIC_MEAN_WEIGHT) + r.cuantos as f64;
+    Ok(generic.iter().zip(&r.suma).map(|(g, s)| ((f64::from(*g) * f64::from(GENERIC_MEAN_WEIGHT) + s) / n) as f32).collect())
 }
 
-// --- El resumen -----------------------------------------------------------------------------------
+// --- The summary ----------------------------------------------------------------------------------
 
-/// Dónde va en `meta` el estado del resumen.
-const CLAVE_RESUMEN: &str = "vec_resumen";
-/// Cuántos `n` seguidos van en cada fila de `vec_bloque` (`b = n >> BITS_BLOQUE`).
-const BITS_BLOQUE: u32 = 10;
-/// Margen que se añade a cada cota por los redondeos de `f32` (los de verdad son del orden de 1e-5).
-const HOLGURA: f32 = 1e-3;
+/// Where the summary's state goes in `meta`.
+const SUMMARY_KEY: &str = "vec_resumen";
+/// How many consecutive `n` go in each `vec_bloque` row (`b = n >> BLOCK_BITS`).
+const BLOCK_BITS: u32 = 10;
+/// Margin added to each bound for `f32` rounding (the real ones are on the order of 1e-5).
+const SLACK: f32 = 1e-3;
 
-/// La parte del resumen que va en `meta`: la dimensión de los vectores, cuántos hay y su suma.
+/// The part of the summary that goes in `meta`: the dimension of the vectors, how many there are and their sum.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Resumen {
+struct Summary {
     dim: usize,
     cuantos: i64,
     suma: Vec<f64>,
 }
 
-/// Lo que ocupa cada vector en un bloque: escala (`f32`), lo que se aleja del de verdad (`f32`, la
-/// norma de la diferencia, redondeada hacia arriba) y un `i8` por dimensión.
-fn tam_entrada(dim: usize) -> usize {
+/// What each vector takes in a block: scale (`f32`), how far it is from the real one (`f32`, the
+/// norm of the difference, rounded up) and one `i8` per dimension.
+fn entry_size(dim: usize) -> usize {
     8 + dim
 }
 
-fn a_f32(b: &[u8]) -> Vec<f32> {
+fn to_f32(b: &[u8]) -> Vec<f32> {
     b.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect()
 }
 
-/// Un vector en int8: `e ≈ escala · c`, y `|e - escala · c|`, que acota el error de cualquier producto
-/// escalar con él (Cauchy-Schwarz: como mucho eso por la norma del otro vector).
-fn cuantizar(e: &[f32], sale: &mut Vec<u8>) {
-    let maximo = e.iter().fold(0f32, |m, x| m.max(x.abs()));
-    let escala = if maximo > 0.0 { maximo / 127.0 } else { 0.0 };
-    let mut codigos = Vec::with_capacity(e.len());
-    let mut resto = 0f64;
+/// A vector in int8: `e ≈ scale · c`, and `|e - scale · c|`, which bounds the error of any dot
+/// product with it (Cauchy-Schwarz: at most that times the norm of the other vector).
+fn quantize(e: &[f32], out: &mut Vec<u8>) {
+    let max = e.iter().fold(0f32, |m, x| m.max(x.abs()));
+    let scale = if max > 0.0 { max / 127.0 } else { 0.0 };
+    let mut codes = Vec::with_capacity(e.len());
+    let mut residual = 0f64;
     for x in e {
-        let c = if escala > 0.0 { (x / escala).round().clamp(-127.0, 127.0) } else { 0.0 };
-        resto += (f64::from(*x) - f64::from(escala) * f64::from(c)).powi(2);
-        codigos.push(c as i8 as u8);
+        let c = if scale > 0.0 { (x / scale).round().clamp(-127.0, 127.0) } else { 0.0 };
+        residual += (f64::from(*x) - f64::from(scale) * f64::from(c)).powi(2);
+        codes.push(c as i8 as u8);
     }
-    let resto = (resto.sqrt() * (1.0 + 1e-6) + 1e-9) as f32;
-    sale.extend(escala.to_le_bytes());
-    sale.extend(resto.to_le_bytes());
-    sale.extend(codigos);
+    let residual = (residual.sqrt() * (1.0 + 1e-6) + 1e-9) as f32;
+    out.extend(scale.to_le_bytes());
+    out.extend(residual.to_le_bytes());
+    out.extend(codes);
 }
 
-/// Un bloque de `vec_bloque` en memoria: los `n` en orden y sus entradas.
-struct Bloque {
+/// A `vec_bloque` block in memory: the `n` in order and their entries.
+struct Block {
     ns: Vec<i64>,
-    datos: Vec<u8>,
+    data: Vec<u8>,
 }
 
-impl Bloque {
-    fn leer(ns: &[u8], datos: &[u8]) -> Bloque {
-        Bloque { ns: ns.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)).collect(), datos: datos.to_vec() }
+impl Block {
+    fn read(ns: &[u8], data: &[u8]) -> Block {
+        Block { ns: ns.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)).collect(), data: data.to_vec() }
     }
 
     fn ns_bytes(&self) -> Vec<u8> {
         self.ns.iter().flat_map(|n| n.to_le_bytes()).collect()
     }
 
-    /// Quita `n` (si está) y, con `e`, lo vuelve a poner en su sitio.
-    fn poner(&mut self, n: i64, e: Option<&[f32]>, dim: usize) {
-        let t = tam_entrada(dim);
+    /// Removes `n` (if present) and, with `e`, puts it back in its place.
+    fn set(&mut self, n: i64, e: Option<&[f32]>, dim: usize) {
+        let t = entry_size(dim);
         let i = self.ns.partition_point(|x| *x < n);
         if self.ns.get(i) == Some(&n) {
             self.ns.remove(i);
-            self.datos.drain(i * t..(i + 1) * t);
+            self.data.drain(i * t..(i + 1) * t);
         }
         if let Some(e) = e {
-            let mut entrada = Vec::with_capacity(t);
-            cuantizar(e, &mut entrada);
+            let mut entry = Vec::with_capacity(t);
+            quantize(e, &mut entry);
             self.ns.insert(i, n);
-            self.datos.splice(i * t..i * t, entrada);
+            self.data.splice(i * t..i * t, entry);
         }
     }
 }
 
-fn leer_resumen(db: &Connection) -> Result<Option<Resumen>> {
-    let t: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_RESUMEN], |f| f.get(0)).optional()?;
+fn read_summary(db: &Connection) -> Result<Option<Summary>> {
+    let t: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [SUMMARY_KEY], |row| row.get(0)).optional()?;
     Ok(t.and_then(|t| serde_json::from_str(&t).ok()))
 }
 
-fn escribir_resumen(db: &Connection, r: &Resumen) -> Result<()> {
+fn write_summary(db: &Connection, r: &Summary) -> Result<()> {
     db.execute(
         "INSERT INTO meta(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-        params![CLAVE_RESUMEN, serde_json::to_string(r)?],
+        params![SUMMARY_KEY, serde_json::to_string(r)?],
     )?;
     Ok(())
 }
 
-/// Borra el resumen: se rehará entero al usarlo. Lo llama `db::locales` al (re)crear sus tablas.
+/// Deletes the summary: it will be fully rebuilt when used. Called by `db::locales` when (re)creating its tables.
 pub(crate) fn olvidar_resumen(db: &Connection) -> Result<()> {
-    db.execute("DELETE FROM meta WHERE k = ?1", [CLAVE_RESUMEN])?;
+    db.execute("DELETE FROM meta WHERE k = ?1", [SUMMARY_KEY])?;
     db.execute_batch("DELETE FROM vec_bloque; DELETE FROM vec_cambio;")?;
     Ok(())
 }
 
-/// El resumen hecho de nuevo con todos los vectores. `None` si no tienen todos la misma dimensión
-/// (a medias de cambiar de modelo): entonces se compara con todos, como sin resumen.
-fn reconstruir(db: &Connection) -> Result<Option<Resumen>> {
+/// The summary built again with all the vectors. `None` if they don't all have the same dimension
+/// (halfway through a model change): then it compares with all, as without a summary.
+fn rebuild(db: &Connection) -> Result<Option<Summary>> {
     olvidar_resumen(db)?;
-    let mut r: Option<Resumen> = None;
-    let mut bloque: Option<(i64, Bloque)> = None;
-    let mut poner = db.prepare("INSERT INTO vec_bloque(b, ns, datos) VALUES (?1, ?2, ?3)")?;
+    let mut r: Option<Summary> = None;
+    let mut block: Option<(i64, Block)> = None;
+    let mut insert = db.prepare("INSERT INTO vec_bloque(b, ns, datos) VALUES (?1, ?2, ?3)")?;
     let mut q = db.prepare("SELECT n, e FROM memory_vec ORDER BY n")?;
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        let n: i64 = f.get(0)?;
-        let e = a_f32(f.get_ref(1)?.as_blob()?);
-        let r = r.get_or_insert_with(|| Resumen { dim: e.len(), cuantos: 0, suma: vec![0.0; e.len()] });
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let n: i64 = row.get(0)?;
+        let e = to_f32(row.get_ref(1)?.as_blob()?);
+        let r = r.get_or_insert_with(|| Summary { dim: e.len(), cuantos: 0, suma: vec![0.0; e.len()] });
         if e.len() != r.dim || r.dim == 0 {
             olvidar_resumen(db)?;
             return Ok(None);
         }
         r.cuantos += 1;
         r.suma.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
-        let b = n >> BITS_BLOQUE;
-        if let Some((actual, hecho)) = bloque.take_if(|(actual, _)| *actual != b) {
-            poner.execute(params![actual, hecho.ns_bytes(), hecho.datos])?;
+        let b = n >> BLOCK_BITS;
+        if let Some((current, done)) = block.take_if(|(current, _)| *current != b) {
+            insert.execute(params![current, done.ns_bytes(), done.data])?;
         }
-        let (_, actual) = bloque.get_or_insert_with(|| (b, Bloque { ns: Vec::new(), datos: Vec::new() }));
-        actual.ns.push(n);
-        cuantizar(&e, &mut actual.datos);
+        let (_, current) = block.get_or_insert_with(|| (b, Block { ns: Vec::new(), data: Vec::new() }));
+        current.ns.push(n);
+        quantize(&e, &mut current.data);
     }
-    if let Some((b, hecho)) = bloque {
-        poner.execute(params![b, hecho.ns_bytes(), hecho.datos])?;
+    if let Some((b, done)) = block {
+        insert.execute(params![b, done.ns_bytes(), done.data])?;
     }
-    // Sin vectores también hay resumen: vacío, y la dimensión la pone el primero que llegue.
-    let r = r.unwrap_or(Resumen { dim: 0, cuantos: 0, suma: Vec::new() });
-    escribir_resumen(db, &r)?;
+    // Without vectors there is also a summary: empty, and the dimension is set by the first one to arrive.
+    let r = r.unwrap_or(Summary { dim: 0, cuantos: 0, suma: Vec::new() });
+    write_summary(db, &r)?;
     Ok(Some(r))
 }
 
-/// Aplica al resumen lo apuntado en `vec_cambio`. `None` si sale más a cuenta rehacerlo (o no cuadra).
-fn aplicar_cambios(db: &Connection, mut r: Resumen) -> Result<Option<Resumen>> {
-    let cambios: Vec<(i64, Option<Vec<u8>>)> = {
+/// Applies to the summary what was recorded in `vec_cambio`. `None` if rebuilding it pays off more (or it doesn't add up).
+fn apply_changes(db: &Connection, mut r: Summary) -> Result<Option<Summary>> {
+    let changes: Vec<(i64, Option<Vec<u8>>)> = {
         let mut q = db.prepare("SELECT n, viejo FROM vec_cambio ORDER BY n")?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    // Muchos cambios (otro modelo, una importación grande): mejor rehacerlo.
-    if cambios.len() as i64 > (r.cuantos / 4).max(1000) {
+    // Many changes (another model, a large import): better to rebuild it.
+    if changes.len() as i64 > (r.cuantos / 4).max(1000) {
         return Ok(None);
     }
-    let mut actual = db.prepare("SELECT e FROM memory_vec WHERE n = ?1")?;
-    let mut leer_bloque = db.prepare("SELECT ns, datos FROM vec_bloque WHERE b = ?1")?;
-    let mut bloques: std::collections::BTreeMap<i64, Bloque> = std::collections::BTreeMap::new();
-    for (n, viejo) in cambios {
-        if let Some(v) = viejo {
-            let v = a_f32(&v);
+    let mut current = db.prepare("SELECT e FROM memory_vec WHERE n = ?1")?;
+    let mut read_block = db.prepare("SELECT ns, datos FROM vec_bloque WHERE b = ?1")?;
+    let mut blocks: std::collections::BTreeMap<i64, Block> = std::collections::BTreeMap::new();
+    for (n, old) in changes {
+        if let Some(v) = old {
+            let v = to_f32(&v);
             if v.len() != r.dim {
                 return Ok(None);
             }
             r.cuantos -= 1;
             r.suma.iter_mut().zip(&v).for_each(|(s, x)| *s -= f64::from(*x));
         }
-        let ahora: Option<Vec<f32>> = actual.query_row([n], |f| Ok(a_f32(f.get_ref(0)?.as_blob()?))).optional()?;
-        if let Some(e) = &ahora {
+        let now: Option<Vec<f32>> = current.query_row([n], |row| Ok(to_f32(row.get_ref(0)?.as_blob()?))).optional()?;
+        if let Some(e) = &now {
             if r.cuantos == 0 && r.dim == 0 {
                 r.dim = e.len();
                 r.suma = vec![0.0; e.len()];
@@ -310,64 +310,64 @@ fn aplicar_cambios(db: &Connection, mut r: Resumen) -> Result<Option<Resumen>> {
             r.cuantos += 1;
             r.suma.iter_mut().zip(e).for_each(|(s, x)| *s += f64::from(*x));
         }
-        let b = n >> BITS_BLOQUE;
-        let bloque = match bloques.entry(b) {
+        let b = n >> BLOCK_BITS;
+        let block = match blocks.entry(b) {
             std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::btree_map::Entry::Vacant(v) => v.insert(
-                leer_bloque
-                    .query_row([b], |f| Ok(Bloque::leer(f.get_ref(0)?.as_blob()?, f.get_ref(1)?.as_blob()?)))
+                read_block
+                    .query_row([b], |row| Ok(Block::read(row.get_ref(0)?.as_blob()?, row.get_ref(1)?.as_blob()?)))
                     .optional()?
-                    .unwrap_or(Bloque { ns: Vec::new(), datos: Vec::new() }),
+                    .unwrap_or(Block { ns: Vec::new(), data: Vec::new() }),
             ),
         };
-        bloque.poner(n, ahora.as_deref(), r.dim);
+        block.set(n, now.as_deref(), r.dim);
     }
     if r.cuantos < 0 {
         return Ok(None);
     }
-    for (b, bloque) in &bloques {
-        if bloque.ns.is_empty() {
+    for (b, block) in &blocks {
+        if block.ns.is_empty() {
             db.execute("DELETE FROM vec_bloque WHERE b = ?1", [b])?;
         } else {
             db.execute(
                 "INSERT INTO vec_bloque(b, ns, datos) VALUES (?1, ?2, ?3) ON CONFLICT(b) DO UPDATE SET ns = excluded.ns, datos = excluded.datos",
-                params![b, bloque.ns_bytes(), bloque.datos],
+                params![b, block.ns_bytes(), block.data],
             )?;
         }
     }
     db.execute("DELETE FROM vec_cambio", [])?;
-    escribir_resumen(db, &r)?;
+    write_summary(db, &r)?;
     Ok(Some(r))
 }
 
-/// Si la conexión tiene lo que usa el resumen (ver `db::LOCALES`).
-fn hay_locales(db: &Connection) -> Result<bool> {
-    let tablas: i64 =
-        db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('vec_bloque', 'vec_cambio', 'memory_ambito', 'memory_cuenta')", [], |f| f.get(0))?;
-    Ok(tablas == 4)
+/// Whether the connection has what the summary uses (see `db::LOCALES`).
+fn has_local_tables(db: &Connection) -> Result<bool> {
+    let tables: i64 =
+        db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('vec_bloque', 'vec_cambio', 'memory_ambito', 'memory_cuenta')", [], |row| row.get(0))?;
+    Ok(tables == 4)
 }
 
-/// El resumen al día con `memory_vec`: si hay cambios apuntados, se aplican (o se rehace entero), y
-/// se guarda. `None` si no se puede usar (vectores de dimensiones distintas, o una conexión sin las
-/// tablas locales): entonces se compara con todos los vectores.
-fn al_dia(db: &Connection) -> Result<Option<Resumen>> {
-    if !hay_locales(db)? {
+/// The summary up to date with `memory_vec`: if there are recorded changes, they are applied (or it is fully
+/// rebuilt), and it is saved. `None` if it can't be used (vectors of different dimensions, or a connection
+/// without the local tables): then it compares with all the vectors.
+fn up_to_date_summary(db: &Connection) -> Result<Option<Summary>> {
+    if !has_local_tables(db)? {
         return Ok(None);
     }
-    let r = leer_resumen(db)?;
-    let hay_cambios: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM vec_cambio)", [], |f| f.get(0))?;
-    if r.is_some() && !hay_cambios {
+    let r = read_summary(db)?;
+    let has_changes: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM vec_cambio)", [], |row| row.get(0))?;
+    if r.is_some() && !has_changes {
         return Ok(r);
     }
-    // Dentro de la transacción de quien llama, lo que se escribe va con ella; si no, en una propia,
-    // IMMEDIATE, y se mira otra vez lo que hay: otro proceso pudo ponerlo al día mientras se esperaba.
+    // Inside the caller's transaction, what is written goes with it; otherwise, in its own,
+    // IMMEDIATE, and what's there is checked again: another process may have updated it while waiting.
     let tx = if db.is_autocommit() { Some(Transaction::new_unchecked(db, TransactionBehavior::Immediate)?) } else { None };
-    let r = match leer_resumen(db)? {
-        Some(r) => match aplicar_cambios(db, r)? {
+    let r = match read_summary(db)? {
+        Some(r) => match apply_changes(db, r)? {
             Some(r) => Some(r),
-            None => reconstruir(db)?,
+            None => rebuild(db)?,
         },
-        None => reconstruir(db)?,
+        None => rebuild(db)?,
     };
     if let Some(tx) = tx {
         tx.commit()?;
@@ -375,42 +375,42 @@ fn al_dia(db: &Connection) -> Result<Option<Resumen>> {
     Ok(r)
 }
 
-/// Cuántas memorias no tienen vector. Con el resumen, cruzando sus `n` con los de `memory` por el
-/// índice `memory_ambito`, sin leer `memory_vec` (con 100.000 memorias eran 135 ms en cada búsqueda).
-fn faltan(db: &Connection) -> Result<i64> {
-    if al_dia(db)?.is_none() {
+/// How many memories have no vector. With the summary, crossing its `n` with those of `memory` through the
+/// `memory_ambito` index, without reading `memory_vec` (with 100,000 memories it was 135 ms on each search).
+fn missing_count(db: &Connection) -> Result<i64> {
+    if up_to_date_summary(db)?.is_none() {
         return Ok(db.query_row(
             "SELECT count(*) FROM memory m WHERE NOT EXISTS (SELECT 1 FROM memory_vec v WHERE v.n = m.n)",
             [],
-            |f| f.get(0),
+            |row| row.get(0),
         )?);
     }
-    let mut hay: Vec<i64> = Vec::new();
+    let mut present: Vec<i64> = Vec::new();
     {
         let mut q = db.prepare("SELECT ns FROM vec_bloque ORDER BY b")?;
-        let mut filas = q.query([])?;
-        while let Some(f) = filas.next()? {
-            hay.extend(f.get_ref(0)?.as_blob()?.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)));
+        let mut rows = q.query([])?;
+        while let Some(row) = rows.next()? {
+            present.extend(row.get_ref(0)?.as_blob()?.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)));
         }
     }
     let mut q = db.prepare("SELECT m.n FROM memory m INDEXED BY memory_ambito ORDER BY m.n")?;
-    let mut filas = q.query([])?;
-    let (mut i, mut faltan) = (0, 0);
-    while let Some(f) = filas.next()? {
-        let n: i64 = f.get(0)?;
-        while i < hay.len() && hay[i] < n {
+    let mut rows = q.query([])?;
+    let (mut i, mut missing) = (0, 0);
+    while let Some(row) = rows.next()? {
+        let n: i64 = row.get(0)?;
+        while i < present.len() && present[i] < n {
             i += 1;
         }
-        if hay.get(i) != Some(&n) {
-            faltan += 1;
+        if present.get(i) != Some(&n) {
+            missing += 1;
         }
     }
-    Ok(faltan)
+    Ok(missing)
 }
 
-/// `c · q` y `c · m` de una vez, con 8 sumas a la par para que el compilador use instrucciones
-/// vectoriales.
-fn dos_puntos(c: &[u8], q: &[f32], m: &[f32]) -> (f32, f32) {
+/// `c · q` and `c · m` at once, with 8 sums in parallel so the compiler uses vector
+/// instructions.
+fn two_dots(c: &[u8], q: &[f32], m: &[f32]) -> (f32, f32) {
     let (mut aq, mut am) = ([0f32; 8], [0f32; 8]);
     let (cs, cr) = c.as_chunks::<8>();
     let (qs, qr) = q.as_chunks::<8>();
@@ -431,148 +431,148 @@ fn dos_puntos(c: &[u8], q: &[f32], m: &[f32]) -> (f32, f32) {
     (sq, sm)
 }
 
-/// La `limite`-ésima mejor similitud de las calculadas, si ya hay tantas.
-fn peor_de(sims: &[(i64, f32)], limite: usize) -> Option<f32> {
-    (sims.len() >= limite).then(|| {
+/// The `limit`-th best similarity among those computed, if there are already that many.
+fn worst_of(sims: &[(i64, f32)], limit: usize) -> Option<f32> {
+    (sims.len() >= limit).then(|| {
         let mut s: Vec<f32> = sims.iter().map(|x| x.1).collect();
         s.sort_by(|a, b| b.total_cmp(a));
-        s[limite - 1]
+        s[limit - 1]
     })
 }
 
-/// Las más parecidas con el resumen: se acota el parecido de cada vector con su copia int8 y solo se
-/// calcula el de verdad (con el vector entero y la misma cuenta que `lineal`) de las que pueden quedar
-/// entre las `limite` primeras. Lo que se descarta no llega ni a `minimo` ni a la peor de las que
-/// quedan, así que el resultado es el de `lineal` (a igualdad de parecido, primero el `n` menor).
+/// The most similar using the summary: the similarity of each vector is bounded with its int8 copy and the
+/// real one (with the whole vector and the same computation as `linear`) is only computed for those that may end up
+/// among the first `limit`. What is discarded reaches neither `min` nor the worst of those that
+/// remain, so the result is that of `linear` (with equal similarity, the lower `n` first).
 #[allow(clippy::too_many_arguments)]
-fn con_resumen(
+fn with_summary(
     db: &Connection,
-    consulta: &[f32],
-    media: &[f32],
-    ambito: &Ambito,
+    query: &[f32],
+    mean: &[f32],
+    scope: &Ambito,
     kind: Option<Tipo>,
-    minimo: f32,
-    limite: usize,
+    min: f32,
+    limit: usize,
     dim: usize,
 ) -> Result<Vec<(i64, f32)>> {
-    if limite == 0 {
+    if limit == 0 {
         return Ok(Vec::new());
     }
-    let mq: f32 = media.iter().zip(consulta).map(|(a, b)| a * b).sum();
-    let mm: f32 = media.iter().map(|x| x * x).sum();
-    // Si el ámbito no las ve todas (o se pide un tipo), solo cuentan los `n` que ve, en orden como el
-    // resumen. Si las ve todas, no hace falta mirarlo (lo que no exista se descarta al comprobar).
-    let todas: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |f| f.get(0))?;
-    let permitidas: Option<Vec<i64>> = if kind.is_none() && crate::memoria::cuantas(db, ambito)? == todas {
+    let mq: f32 = mean.iter().zip(query).map(|(a, b)| a * b).sum();
+    let mm: f32 = mean.iter().map(|x| x * x).sum();
+    // If the scope doesn't see them all (or a kind is requested), only the `n` it sees count, in order like the
+    // summary. If it sees them all, there is no need to look (what doesn't exist is discarded when checking).
+    let all: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |row| row.get(0))?;
+    let allowed: Option<Vec<i64>> = if kind.is_none() && crate::memoria::cuantas(db, scope)? == all {
         None
     } else {
         let mut q = db.prepare(&format!(
             "SELECT m.n FROM memory m INDEXED BY memory_ambito WHERE {} AND (?1 IS NULL OR m.kind = ?1) ORDER BY m.n",
-            ambito.sql()
+            scope.sql()
         ))?;
-        let v = q.query_map(params![kind.map(Tipo::as_str)], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let v = q.query_map(params![kind.map(Tipo::as_str)], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         Some(v)
     };
-    let mut cotas = cotas_de(db, consulta, media, permitidas.as_deref(), minimo, Some(limite), dim)?;
-    // Primer corte: la `limite`-ésima mejor cota inferior (hay al menos `limite` que llegan a ella).
-    // Si alguna de esas no estaba en el ámbito o ya no existe, se repasan todas hasta `minimo`.
-    let mut corte = if cotas.len() >= limite {
-        let mut inf: Vec<f32> = cotas.iter().map(|c| c.1).collect();
-        let (_, k, _) = inf.select_nth_unstable_by(limite - 1, |a, b| b.total_cmp(a));
-        k.max(minimo)
+    let mut bounds = bounds_of(db, query, mean, allowed.as_deref(), min, Some(limit), dim)?;
+    // First cut: the `limit`-th best lower bound (there are at least `limit` that reach it).
+    // If any of those wasn't in the scope or no longer exists, all are gone over down to `min`.
+    let mut cut = if bounds.len() >= limit {
+        let mut lower: Vec<f32> = bounds.iter().map(|c| c.1).collect();
+        let (_, k, _) = lower.select_nth_unstable_by(limit - 1, |a, b| b.total_cmp(a));
+        k.max(min)
     } else {
-        minimo
+        min
     };
-    cotas.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
-    let mut exacto = db.prepare(&format!(
+    bounds.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+    let mut exact = db.prepare(&format!(
         "SELECT v.e FROM memory_vec v JOIN memory m INDEXED BY memory_ambito ON m.n = v.n
          WHERE v.n = ?1 AND {} AND (?2 IS NULL OR m.kind = ?2)",
-        ambito.sql()
+        scope.sql()
     ))?;
     let mut sims: Vec<(i64, f32)> = Vec::new();
     let mut i = 0;
     loop {
-        let mut peor = peor_de(&sims, limite);
-        while let Some((n, _, sup)) = cotas.get(i) {
-            if *sup < corte || peor.is_some_and(|p| *sup < p) {
+        let mut worst = worst_of(&sims, limit);
+        while let Some((n, _, upper)) = bounds.get(i) {
+            if *upper < cut || worst.is_some_and(|p| *upper < p) {
                 break;
             }
             i += 1;
-            let e: Option<Vec<u8>> = exacto.query_row(params![n, kind.map(Tipo::as_str)], |f| f.get(0)).optional()?;
+            let e: Option<Vec<u8>> = exact.query_row(params![n, kind.map(Tipo::as_str)], |row| row.get(0)).optional()?;
             if let Some(e) = e {
-                let norma = (1.0 - 2.0 * punto(&e, media) + mm).max(1e-12).sqrt();
-                let s = (punto(&e, consulta) - mq) / norma;
-                if s >= minimo {
+                let norm = (1.0 - 2.0 * dot(&e, mean) + mm).max(1e-12).sqrt();
+                let s = (dot(&e, query) - mq) / norm;
+                if s >= min {
                     sims.push((*n, s));
-                    peor = peor_de(&sims, limite);
+                    worst = worst_of(&sims, limit);
                 }
             }
         }
-        if corte <= minimo || peor.is_some_and(|p| p >= corte) {
+        if cut <= min || worst.is_some_and(|p| p >= cut) {
             break;
         }
-        // Las que fijaban el corte no estaban: se rehacen las cotas sin podar (las podadas podrían
-        // entrar) y se sigue con las que aún no se han mirado.
-        let miradas: std::collections::BTreeSet<i64> = cotas[..i].iter().map(|c| c.0).collect();
-        cotas = cotas_de(db, consulta, media, permitidas.as_deref(), minimo, None, dim)?;
-        cotas.retain(|c| !miradas.contains(&c.0));
-        cotas.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+        // The ones that set the cut weren't there: the bounds are redone without pruning (the pruned ones could
+        // make it) and it continues with those not yet looked at.
+        let looked: std::collections::BTreeSet<i64> = bounds[..i].iter().map(|c| c.0).collect();
+        bounds = bounds_of(db, query, mean, allowed.as_deref(), min, None, dim)?;
+        bounds.retain(|c| !looked.contains(&c.0));
+        bounds.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
         i = 0;
-        corte = minimo;
+        cut = min;
     }
     sims.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    sims.truncate(limite);
+    sims.truncate(limit);
     Ok(sims)
 }
 
-/// Un `f32` ordenable, para el montón de `cotas_de`.
+/// An orderable `f32`, for the heap in `bounds_of`.
 #[derive(PartialEq)]
-struct Orden(f32);
+struct Ordered(f32);
 
-impl Eq for Orden {}
+impl Eq for Ordered {}
 
-impl PartialOrd for Orden {
-    fn partial_cmp(&self, otro: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(otro))
+impl PartialOrd for Ordered {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
-impl Ord for Orden {
-    fn cmp(&self, otro: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&otro.0)
+impl Ord for Ordered {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
     }
 }
 
-/// `(n, cota inferior, cota superior)` del parecido de cada vector del resumen (de los `n` de
-/// `permitidas`, si se dan) que puede llegar a `minimo`. Con `podar = Some(k)`, además, se deja fuera
-/// lo que no llega a la `k`-ésima mejor cota inferior vista hasta entonces (no puede quedar entre las
-/// `k` primeras): con una búsqueda que lo pide todo (`minimo` = -1) no se guardan 100.000 cotas para
-/// ordenarlas. Las `k` mejores cotas inferiores siempre se quedan.
-fn cotas_de(
+/// `(n, lower bound, upper bound)` of the similarity of each summary vector (of the `n` in
+/// `allowed`, if given) that may reach `min`. With `prune = Some(k)`, also, what doesn't reach the
+/// `k`-th best lower bound seen so far is left out (it can't end up among the first
+/// `k`): with a search that asks for everything (`min` = -1) 100,000 bounds aren't kept to
+/// sort them. The `k` best lower bounds are always kept.
+fn bounds_of(
     db: &Connection,
-    consulta: &[f32],
-    media: &[f32],
-    permitidas: Option<&[i64]>,
-    minimo: f32,
-    podar: Option<usize>,
+    query: &[f32],
+    mean: &[f32],
+    allowed: Option<&[i64]>,
+    min: f32,
+    prune: Option<usize>,
     dim: usize,
 ) -> Result<Vec<(i64, f32, f32)>> {
-    let mq: f32 = media.iter().zip(consulta).map(|(a, b)| a * b).sum();
-    let mm: f32 = media.iter().map(|x| x * x).sum();
-    let norma = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt() as f32;
-    let (nq, nm) = (norma(consulta), norma(media));
-    let mut mejores: std::collections::BinaryHeap<std::cmp::Reverse<Orden>> = std::collections::BinaryHeap::new();
-    let mut umbral = minimo;
-    let mut cotas: Vec<(i64, f32, f32)> = Vec::new();
-    let t = tam_entrada(dim);
+    let mq: f32 = mean.iter().zip(query).map(|(a, b)| a * b).sum();
+    let mm: f32 = mean.iter().map(|x| x * x).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt() as f32;
+    let (nq, nm) = (norm(query), norm(mean));
+    let mut best: std::collections::BinaryHeap<std::cmp::Reverse<Ordered>> = std::collections::BinaryHeap::new();
+    let mut threshold = min;
+    let mut bounds: Vec<(i64, f32, f32)> = Vec::new();
+    let t = entry_size(dim);
     let mut p = 0;
     let mut q = db.prepare("SELECT ns, datos FROM vec_bloque ORDER BY b")?;
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        let ns = f.get_ref(0)?.as_blob()?;
-        let datos = f.get_ref(1)?.as_blob()?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let ns = row.get_ref(0)?.as_blob()?;
+        let data = row.get_ref(1)?.as_blob()?;
         for (i, n) in ns.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes(*x)).enumerate() {
-            if let Some(v) = &permitidas {
+            if let Some(v) = &allowed {
                 while p < v.len() && v[p] < n {
                     p += 1;
                 }
@@ -580,319 +580,319 @@ fn cotas_de(
                     continue;
                 }
             }
-            let entrada = &datos[i * t..(i + 1) * t];
-            let escala = f32::from_le_bytes([entrada[0], entrada[1], entrada[2], entrada[3]]);
-            let resto = f32::from_le_bytes([entrada[4], entrada[5], entrada[6], entrada[7]]);
-            let (cq, cm) = dos_puntos(&entrada[8..], consulta, media);
-            let (eq, em) = (escala * cq, escala * cm);
-            let (dq, dm) = (resto * nq + HOLGURA, resto * nm + HOLGURA);
-            // s = (e·q - μ·q) / √(1 - 2·e·μ + μ·μ), con e·q y e·μ dentro de ± su error.
-            let raiz_menor = (1.0 - 2.0 * (em + dm) + mm).max(1e-12).sqrt();
-            let raiz_mayor = (1.0 - 2.0 * (em - dm) + mm).max(1e-12).sqrt();
+            let entry = &data[i * t..(i + 1) * t];
+            let scale = f32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+            let residual = f32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]);
+            let (cq, cm) = two_dots(&entry[8..], query, mean);
+            let (eq, em) = (scale * cq, scale * cm);
+            let (dq, dm) = (residual * nq + SLACK, residual * nm + SLACK);
+            // s = (e·q - μ·q) / √(1 - 2·e·μ + μ·μ), with e·q and e·μ within ± their error.
+            let root_low = (1.0 - 2.0 * (em + dm) + mm).max(1e-12).sqrt();
+            let root_high = (1.0 - 2.0 * (em - dm) + mm).max(1e-12).sqrt();
             let (num_min, num_max) = (eq - dq - mq, eq + dq - mq);
-            let sup = if num_max >= 0.0 { num_max / raiz_menor } else { num_max / raiz_mayor };
-            if sup < umbral {
+            let upper = if num_max >= 0.0 { num_max / root_low } else { num_max / root_high };
+            if upper < threshold {
                 continue;
             }
-            let inf = if num_min >= 0.0 { num_min / raiz_mayor } else { num_min / raiz_menor };
-            cotas.push((n, inf, sup));
-            if let Some(k) = podar {
-                mejores.push(std::cmp::Reverse(Orden(inf)));
-                if mejores.len() > k {
-                    mejores.pop();
+            let lower = if num_min >= 0.0 { num_min / root_high } else { num_min / root_low };
+            bounds.push((n, lower, upper));
+            if let Some(k) = prune {
+                best.push(std::cmp::Reverse(Ordered(lower)));
+                if best.len() > k {
+                    best.pop();
                 }
-                if mejores.len() == k
-                    && let Some(std::cmp::Reverse(Orden(peor))) = mejores.peek()
+                if best.len() == k
+                    && let Some(std::cmp::Reverse(Ordered(worst))) = best.peek()
                 {
-                    umbral = umbral.max(*peor);
+                    threshold = threshold.max(*worst);
                 }
             }
         }
     }
-    // Lo que entró antes de subir el umbral y ya no llega.
-    cotas.retain(|c| c.2 >= umbral);
-    Ok(cotas)
+    // What got in before the threshold rose and no longer reaches it.
+    bounds.retain(|c| c.2 >= threshold);
+    Ok(bounds)
 }
 
-/// Memorias más parecidas a `texto`, de la más a la menos, con su similitud (coseno de los vectores
-/// centrados). `proyecto` como en `Ambito`: `Some(p)` = las de `p` más las globales; `None` = todas.
+/// Memories most similar to `text`, from most to least, with their similarity (cosine of the centered
+/// vectors). `project` as in `Ambito`: `Some(p)` = those of `p` plus the globals; `None` = all.
 pub fn parecidas(
     db: &Connection,
-    modelo: &Modelo,
-    texto: &str,
-    proyecto: Option<&str>,
+    model: &Modelo,
+    text: &str,
+    project: Option<&str>,
     kind: Option<Tipo>,
-    minimo: f32,
-    limite: usize,
+    min: f32,
+    limit: usize,
 ) -> Result<Vec<(Memoria, f32)>> {
-    let ambito = match proyecto {
+    let scope = match project {
         Some(p) => Ambito::de(db, p)?,
         None => Ambito::Todos,
     };
-    parecidas_en(db, modelo, texto, &ambito, kind, minimo, limite)
+    parecidas_en(db, model, text, &scope, kind, min, limit)
 }
 
-/// Como `parecidas`, en un ámbito ya resuelto.
+/// Like `parecidas`, in an already resolved scope.
 pub fn parecidas_en(
     db: &Connection,
-    modelo: &Modelo,
-    texto: &str,
-    ambito: &Ambito,
+    model: &Modelo,
+    text: &str,
+    scope: &Ambito,
     kind: Option<Tipo>,
-    minimo: f32,
-    limite: usize,
+    min: f32,
+    limit: usize,
 ) -> Result<Vec<(Memoria, f32)>> {
-    let resumen = al_dia(db)?.filter(|r| r.dim == modelo.dim() || r.cuantos == 0);
-    let media = match &resumen {
-        Some(r) if r.cuantos > 0 => media_de(db, modelo, r)?,
-        Some(_) => media_generica(db, modelo)?,
-        None => media(db, modelo)?,
+    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
+    let mean = match &summary {
+        Some(r) if r.cuantos > 0 => mean_from_summary(db, model, r)?,
+        Some(_) => generic_mean(db, model)?,
+        None => centering_mean(db, model)?,
     };
-    let consulta = normalizado(modelo.vector(texto)?.iter().zip(&media).map(|(x, m)| x - m).collect());
-    let sims = match &resumen {
+    let query = normalized(model.vector(text)?.iter().zip(&mean).map(|(x, m)| x - m).collect());
+    let sims = match &summary {
         Some(r) if r.cuantos == 0 => Vec::new(),
-        Some(r) => con_resumen(db, &consulta, &media, ambito, kind, minimo, limite, r.dim)?,
-        None => lineal(db, &consulta, &media, ambito, kind, minimo, limite)?,
+        Some(r) => with_summary(db, &query, &mean, scope, kind, min, limit, r.dim)?,
+        None => linear(db, &query, &mean, scope, kind, min, limit)?,
     };
-    // Solo se leen enteras las que se devuelven.
+    // Only those returned are read whole.
     let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
     sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
 }
 
-/// Las más parecidas comparando con todos los vectores del ámbito: sin resumen.
-fn lineal(
+/// The most similar comparing with all the vectors of the scope: without a summary.
+fn linear(
     db: &Connection,
-    consulta: &[f32],
-    media: &[f32],
-    ambito: &Ambito,
+    query: &[f32],
+    mean: &[f32],
+    scope: &Ambito,
     kind: Option<Tipo>,
-    minimo: f32,
-    limite: usize,
+    min: f32,
+    limit: usize,
 ) -> Result<Vec<(i64, f32)>> {
-    lineal_donde(db, consulta, media, &ambito.sql(), kind, minimo, limite)
+    linear_where(db, query, mean, &scope.sql(), kind, min, limit)
 }
 
-/// `lineal` entre las memorias que cumplen `condicion` (SQL sobre `memory m`).
-fn lineal_donde(
+/// `linear` among the memories that meet `condition` (SQL over `memory m`).
+fn linear_where(
     db: &Connection,
-    consulta: &[f32],
-    media: &[f32],
-    condicion: &str,
+    query: &[f32],
+    mean: &[f32],
+    condition: &str,
     kind: Option<Tipo>,
-    minimo: f32,
-    limite: usize,
+    min: f32,
+    limit: usize,
 ) -> Result<Vec<(i64, f32)>> {
-    // Con `a` normalizado: cos(a - μ, q) = (a·q - μ·q) / |a - μ|, y |a - μ|² = 1 - 2·a·μ + μ·μ.
-    // Así no hace falta centrar (ni copiar) cada vector guardado: bastan dos productos escalares.
-    let mq: f32 = media.iter().zip(consulta).map(|(a, b)| a * b).sum();
-    let mm: f32 = media.iter().map(|x| x * x).sum();
+    // With `a` normalized: cos(a - μ, q) = (a·q - μ·q) / |a - μ|, and |a - μ|² = 1 - 2·a·μ + μ·μ.
+    // This way there is no need to center (or copy) each stored vector: two dot products suffice.
+    let mq: f32 = mean.iter().zip(query).map(|(a, b)| a * b).sum();
+    let mm: f32 = mean.iter().map(|x| x * x).sum();
     let mut sims: Vec<(i64, f32)> = Vec::new();
     {
         let mut q = db.prepare(&format!(
             "SELECT v.n, v.e FROM memory_vec v JOIN memory m ON m.n = v.n
-             WHERE {condicion} AND (?1 IS NULL OR m.kind = ?1)"
+             WHERE {condition} AND (?1 IS NULL OR m.kind = ?1)"
         ))?;
-        let mut filas = q.query(params![kind.map(Tipo::as_str)])?;
-        while let Some(f) = filas.next()? {
-            let e = f.get_ref(1)?.as_blob()?;
-            let norma = (1.0 - 2.0 * punto(e, media) + mm).max(1e-12).sqrt();
-            let s = (punto(e, consulta) - mq) / norma;
-            if s >= minimo {
-                sims.push((f.get(0)?, s));
+        let mut rows = q.query(params![kind.map(Tipo::as_str)])?;
+        while let Some(row) = rows.next()? {
+            let e = row.get_ref(1)?.as_blob()?;
+            let norm = (1.0 - 2.0 * dot(e, mean) + mm).max(1e-12).sqrt();
+            let s = (dot(e, query) - mq) / norm;
+            if s >= min {
+                sims.push((row.get(0)?, s));
             }
         }
     }
     sims.sort_by(|a, b| b.1.total_cmp(&a.1));
-    sims.truncate(limite);
+    sims.truncate(limit);
     Ok(sims)
 }
 
-/// Si ya hay una memoria casi igual en el mismo ámbito (el proyecto y las globales, o solo las
-/// globales si la nueva es global; todas si `project` es una carpeta general), la devuelve con su
-/// similitud.
-pub fn duplicada(db: &Connection, modelo: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
-    let nueva = texto(title, content);
-    let ambito = Ambito::de(db, project)?;
-    let v = parecidas_en(db, modelo, &nueva, &ambito, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
-    la_duplicada(db, &ambito, &nueva, v)
+/// If there is already an almost identical memory in the same scope (the project and the globals, or only the
+/// globals if the new one is global; all if `project` is a general folder), returns it with its
+/// similarity.
+pub fn duplicada(db: &Connection, model: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
+    let new = texto(title, content);
+    let scope = Ambito::de(db, project)?;
+    let v = parecidas_en(db, model, &new, &scope, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    the_duplicate(db, &scope, &new, v)
 }
 
-/// Como [`duplicada`], para una memoria de oficio (`oficios`, sin el prefijo): desde lo global no se ven
-/// las de oficio (ningún proyecto del ámbito tiene oficios), así que se compara con las globales y con
-/// las de oficio que comparten alguno de sus oficios, sean de quien sean para (`trade-for:`). Es lo que
-/// pasa al promover lo mismo desde dos clientes. `excluir`: la memoria de la que sale (al promover).
+/// Like [`duplicada`], for a trade memory (`trades`, without the prefix): from global the trade ones
+/// aren't seen (no project of the scope has trades), so it compares with the globals and with
+/// the trade ones that share any of its trades, whoever they are for (`trade-for:`). That's what
+/// happens when promoting the same thing from two clients. `exclude`: the memory it comes from (when promoting).
 ///
-/// Se busca solo entre esas: antes se tomaban las 50 más parecidas de toda la base y luego se
-/// filtraban, y con muchas memorias de proyecto parecidas la duplicada de verdad se quedaba fuera. Las
-/// palabras pesan con el IDF de toda la base, como en [`duplicadas_entre`].
-pub fn duplicada_de_oficio(db: &Connection, modelo: &Modelo, oficios: &[String], title: &str, content: &str, excluir: Option<&str>) -> Result<Option<(Memoria, f32)>> {
-    let nueva = texto(title, content);
-    let mut candidatas: Vec<i64> = Vec::new();
+/// It only searches among those: before, the 50 most similar of the whole database were taken and then
+/// filtered, and with many similar project memories the real duplicate was left out. The
+/// words weigh with the IDF of the whole database, as in [`duplicadas_entre`].
+pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], title: &str, content: &str, exclude: Option<&str>) -> Result<Option<(Memoria, f32)>> {
+    let new = texto(title, content);
+    let mut candidates: Vec<i64> = Vec::new();
     {
         let mut q = db.prepare("SELECT m.n, m.id, m.tags FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL")?;
-        let mut filas = q.query([])?;
-        while let Some(f) = filas.next()? {
-            let id: String = f.get(1)?;
-            let tags: Vec<String> = serde_json::from_str(&f.get::<_, String>(2)?).unwrap_or_default();
-            let suyos = crate::oficios::de_etiquetas(&tags);
-            if Some(id.as_str()) != excluir && (suyos.is_empty() || suyos.iter().any(|o| oficios.contains(o))) {
-                candidatas.push(f.get(0)?);
+        let mut rows = q.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(1)?;
+            let tags: Vec<String> = serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default();
+            let its_trades = crate::oficios::de_etiquetas(&tags);
+            if Some(id.as_str()) != exclude && (its_trades.is_empty() || its_trades.iter().any(|o| trades.contains(o))) {
+                candidates.push(row.get(0)?);
             }
         }
     }
-    if candidatas.is_empty() {
+    if candidates.is_empty() {
         return Ok(None);
     }
-    let lista = candidatas.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let v = parecidas_donde(db, modelo, &nueva, &format!("m.n IN ({lista})"), SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
-    la_duplicada(db, &Ambito::Todos, &nueva, v)
+    let list = candidates.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let v = similar_where(db, model, &new, &format!("m.n IN ({list})"), SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    the_duplicate(db, &Ambito::Todos, &new, v)
 }
 
-/// Las más parecidas a `texto` entre las memorias que cumplen `condicion` (SQL sobre `memory m`),
-/// comparando con todos sus vectores: para un conjunto que no es un ámbito.
-fn parecidas_donde(db: &Connection, modelo: &Modelo, texto: &str, condicion: &str, minimo: f32, limite: usize) -> Result<Vec<(Memoria, f32)>> {
-    let resumen = al_dia(db)?.filter(|r| r.dim == modelo.dim() || r.cuantos == 0);
-    let media = match &resumen {
+/// The most similar to `text` among the memories that meet `condition` (SQL over `memory m`),
+/// comparing with all their vectors: for a set that isn't a scope.
+fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, min: f32, limit: usize) -> Result<Vec<(Memoria, f32)>> {
+    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
+    let mean = match &summary {
         Some(r) if r.cuantos == 0 => return Ok(Vec::new()),
-        Some(r) => media_de(db, modelo, r)?,
-        None => media(db, modelo)?,
+        Some(r) => mean_from_summary(db, model, r)?,
+        None => centering_mean(db, model)?,
     };
-    let consulta = normalizado(modelo.vector(texto)?.iter().zip(&media).map(|(x, m)| x - m).collect());
-    let sims = lineal_donde(db, &consulta, &media, condicion, None, minimo, limite)?;
+    let query = normalized(model.vector(text)?.iter().zip(&mean).map(|(x, m)| x - m).collect());
+    let sims = linear_where(db, &query, &mean, condition, None, min, limit)?;
     let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
     sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
 }
 
-/// De las parecidas (de la más a la menos), la duplicada: la primera si llega a `SIMILITUD_DUPLICADO`
-/// y, si no, la que más cubre las palabras de la nueva (al menos `COBERTURA_DUPLICADO`, con el IDF de
-/// `ambito`).
-fn la_duplicada(db: &Connection, ambito: &Ambito, nueva: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
+/// Of the similar ones (from most to least), the duplicate: the first if it reaches `SIMILITUD_DUPLICADO`
+/// and, if not, the one that best covers the new one's words (at least `COBERTURA_DUPLICADO`, with the IDF of
+/// `scope`).
+fn the_duplicate(db: &Connection, scope: &Ambito, new: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
     if v.is_empty() {
         return Ok(None);
     }
-    let coberturas = crate::recall::cobertura_en(db, ambito, nueva, v.iter().map(|x| &x.0))?;
-    let mejor = coberturas.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
-    Ok(mejor.map(|i| v.swap_remove(i)))
+    let coverages = crate::recall::cobertura_en(db, scope, new, v.iter().map(|x| &x.0))?;
+    let best = coverages.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
+    Ok(best.map(|i| v.swap_remove(i)))
 }
 
-/// La media con la que se centran los vectores, sin el modelo: la de la base (del resumen si lo hay) con
-/// la genérica que se guardó en `meta` al usar el modelo. `None` sin vectores.
-fn media_guardada(db: &Connection) -> Result<Option<Vec<f32>>> {
-    let (mut suma, mut n): (Vec<f64>, f64) = match leer_resumen(db)? {
+/// The mean the vectors are centered with, without the model: the database's (from the summary if there is one) with
+/// the generic one stored in `meta` when the model was used. `None` without vectors.
+fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
+    let (mut sum, mut n): (Vec<f64>, f64) = match read_summary(db)? {
         Some(r) if r.cuantos > 0 => (r.suma, r.cuantos as f64),
         _ => {
-            let mut suma: Vec<f64> = Vec::new();
+            let mut sum: Vec<f64> = Vec::new();
             let mut n = 0.0;
             let mut q = db.prepare("SELECT e FROM memory_vec")?;
-            let mut filas = q.query([])?;
-            while let Some(f) = filas.next()? {
-                let e = a_f32(f.get_ref(0)?.as_blob()?);
-                if suma.is_empty() {
-                    suma = vec![0.0; e.len()];
+            let mut rows = q.query([])?;
+            while let Some(row) = rows.next()? {
+                let e = to_f32(row.get_ref(0)?.as_blob()?);
+                if sum.is_empty() {
+                    sum = vec![0.0; e.len()];
                 }
-                if e.len() == suma.len() {
-                    suma.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
+                if e.len() == sum.len() {
+                    sum.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
                     n += 1.0;
                 }
             }
-            (suma, n)
+            (sum, n)
         }
     };
     if n == 0.0 {
         return Ok(None);
     }
-    let modelo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;
-    let generica: Option<Vec<f32>> = match modelo {
+    let model: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
+    let generic: Option<Vec<f32>> = match model {
         Some(m) => db
-            .query_row("SELECT v FROM meta WHERE k = ?1", [format!("media:{m}")], |f| f.get::<_, String>(0))
+            .query_row("SELECT v FROM meta WHERE k = ?1", [format!("media:{m}")], |row| row.get::<_, String>(0))
             .optional()?
             .and_then(|t| serde_json::from_str(&t).ok()),
         None => None,
     };
-    if let Some(g) = generica.filter(|g| g.len() == suma.len()) {
-        suma.iter_mut().zip(&g).for_each(|(s, x)| *s += f64::from(*x) * f64::from(PESO_MEDIA_GENERICA));
-        n += f64::from(PESO_MEDIA_GENERICA);
+    if let Some(g) = generic.filter(|g| g.len() == sum.len()) {
+        sum.iter_mut().zip(&g).for_each(|(s, x)| *s += f64::from(*x) * f64::from(GENERIC_MEAN_WEIGHT));
+        n += f64::from(GENERIC_MEAN_WEIGHT);
     }
-    Ok(Some(suma.iter().map(|s| (s / n) as f32).collect()))
+    Ok(Some(sum.iter().map(|s| (s / n) as f32).collect()))
 }
 
-/// Las parejas de `memorias` (por su posición, `i < j`) que [`duplicada`] habría tomado por duplicadas
-/// al guardar la segunda, con su similitud: con los vectores ya guardados, sin cargar el modelo (para
-/// la revisión). Solo se comparan las de un mismo grupo de `grupos` (posiciones en `memorias`: las de
-/// cada oficio), y cada pareja sale una vez aunque compartan varios. La palabra la tiene la más nueva
-/// frente a la más vieja, como al guardar. Una memoria sin vector (sin modelo) se compara solo por
-/// palabras, y entonces tienen que cubrirse las dos a la otra (`COBERTURA_DUPLICADO` en los dos
-/// sentidos).
+/// The pairs of `memories` (by position, `i < j`) that [`duplicada`] would have taken as duplicates
+/// when saving the second, with their similarity: with the vectors already stored, without loading the model (for
+/// the review). Only those of the same group in `groups` are compared (positions in `memories`: those of
+/// each trade), and each pair comes out once even if they share several. The newer one has the say
+/// against the older, as when saving. A memory without a vector (without a model) is compared only by
+/// words, and then both have to cover each other (`COBERTURA_DUPLICADO` in both
+/// directions).
 ///
-/// Las palabras pesan con el IDF de toda la base (`Ambito::Todos`): las de oficio no se ven desde lo
-/// global, y con ese ámbito (lo que se hacía antes) una base con solo memorias de oficio daba IDF
-/// negativos y ninguna cubría a ninguna. Las palabras, sus pesos y el vector centrado de cada memoria
-/// se calculan una vez, no una por pareja: con 42 memorias de oficio sin modelo, la revisión tardaba
-/// 16,6 s en contar las mismas palabras en el índice para cada pareja.
+/// Words weigh with the IDF of the whole database (`Ambito::Todos`): trade ones aren't seen from
+/// global, and with that scope (what was done before) a database with only trade memories gave negative
+/// IDF and none covered any. The words, their weights and each memory's centered vector
+/// are computed once, not once per pair: with 42 trade memories without a model, the review took
+/// 16.6 s counting the same words in the index for each pair.
 ///
-/// Con `solo`, solo las parejas en las que entra una de esas (las que cambiaron desde el último
-/// cálculo): las demás ya se juzgaron entonces.
-pub fn duplicadas_entre(db: &Connection, memorias: &[&Memoria], grupos: &[Vec<usize>], solo: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
+/// With `only`, only the pairs involving one of those (the ones that changed since the last
+/// computation): the others were already judged then.
+pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<usize>], only: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
     use std::collections::{BTreeSet, HashMap};
-    let cuenta = |i: &usize| solo.is_none_or(|s| s.contains(i));
-    let grupos: Vec<&Vec<usize>> = grupos.iter().filter(|g| g.len() >= 2 && g.iter().any(cuenta)).collect();
-    if grupos.is_empty() {
+    let counts = |i: &usize| only.is_none_or(|s| s.contains(i));
+    let groups: Vec<&Vec<usize>> = groups.iter().filter(|g| g.len() >= 2 && g.iter().any(counts)).collect();
+    if groups.is_empty() {
         return Ok(Vec::new());
     }
-    let media = media_guardada(db)?;
+    let mean = stored_mean(db)?;
     let mut q = db.prepare("SELECT v.e FROM memory_vec v JOIN memory m ON m.n = v.n WHERE m.id = ?1")?;
-    let mut frecuencias = crate::recall::Frecuencias::nuevas(db, &Ambito::Todos)?;
-    // Lo de cada memoria, calculado la primera vez que hace falta.
-    struct DeUna {
-        centrado: Option<Vec<f32>>,
-        pesos: crate::recall::Pesos,
-        fichas: BTreeSet<String>,
+    let mut frequencies = crate::recall::Frecuencias::nuevas(db, &Ambito::Todos)?;
+    // Each memory's data, computed the first time it's needed.
+    struct PerMemory {
+        centered: Option<Vec<f32>>,
+        weights: crate::recall::Pesos,
+        tokens: BTreeSet<String>,
     }
-    let mut de_una: HashMap<usize, DeUna> = HashMap::new();
+    let mut per_memory: HashMap<usize, PerMemory> = HashMap::new();
     let mut r = Vec::new();
-    let mut vistas: BTreeSet<(usize, usize)> = BTreeSet::new();
-    for g in grupos {
+    let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for g in groups {
         for &i in g {
-            if de_una.contains_key(&i) {
+            if per_memory.contains_key(&i) {
                 continue;
             }
-            let m = memorias[i];
-            let e: Option<Vec<u8>> = q.query_row([&m.id], |f| f.get(0)).optional()?;
-            let centrado = match (e, &media) {
+            let m = memories[i];
+            let e: Option<Vec<u8>> = q.query_row([&m.id], |row| row.get(0)).optional()?;
+            let centered = match (e, &mean) {
                 (Some(e), Some(mu)) => {
-                    let e = a_f32(&e);
-                    (e.len() == mu.len()).then(|| normalizado(e.iter().zip(mu).map(|(x, m)| x - m).collect()))
+                    let e = to_f32(&e);
+                    (e.len() == mu.len()).then(|| normalized(e.iter().zip(mu).map(|(x, m)| x - m).collect()))
                 }
                 _ => None,
             };
-            let pesos = crate::recall::Pesos::de(&texto(&m.title, &m.content), &mut frecuencias)?;
-            de_una.insert(i, DeUna { centrado, pesos, fichas: crate::recall::fichas(m) });
+            let weights = crate::recall::Pesos::de(&texto(&m.title, &m.content), &mut frequencies)?;
+            per_memory.insert(i, PerMemory { centered, weights, tokens: crate::recall::fichas(m) });
         }
         for (x, &i) in g.iter().enumerate() {
             for &j in &g[x + 1..] {
-                if i == j || !(cuenta(&i) || cuenta(&j)) || !vistas.insert((i.min(j), i.max(j))) {
+                if i == j || !(counts(&i) || counts(&j)) || !seen.insert((i.min(j), i.max(j))) {
                     continue;
                 }
-                // La nueva frente a la vieja.
-                let (nueva, vieja) = if (memorias[i].created_at.as_str(), memorias[i].id.as_str()) >= (memorias[j].created_at.as_str(), memorias[j].id.as_str()) { (i, j) } else { (j, i) };
-                let cubre = |de: usize, a: usize| de_una[&de].pesos.cobertura(&de_una[&a].fichas);
-                let es = match (&de_una[&i].centrado, &de_una[&j].centrado) {
+                // The new one against the old one.
+                let (new, old) = if (memories[i].created_at.as_str(), memories[i].id.as_str()) >= (memories[j].created_at.as_str(), memories[j].id.as_str()) { (i, j) } else { (j, i) };
+                let covers = |from: usize, to: usize| per_memory[&from].weights.cobertura(&per_memory[&to].tokens);
+                let is_dup = match (&per_memory[&i].centered, &per_memory[&j].centered) {
                     (Some(a), Some(b)) => {
                         let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-                        let dup = sim >= SIMILITUD_DUPLICADO || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS && cubre(nueva, vieja) >= COBERTURA_DUPLICADO);
+                        let dup = sim >= SIMILITUD_DUPLICADO || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS && covers(new, old) >= COBERTURA_DUPLICADO);
                         dup.then_some(sim)
                     }
                     _ => {
-                        // La segunda solo si la primera llega.
-                        let c = cubre(nueva, vieja);
-                        let c = if c >= COBERTURA_DUPLICADO { c.min(cubre(vieja, nueva)) } else { c };
+                        // The second only if the first reaches it.
+                        let c = covers(new, old);
+                        let c = if c >= COBERTURA_DUPLICADO { c.min(covers(old, new)) } else { c };
                         (c >= COBERTURA_DUPLICADO).then_some(c as f32)
                     }
                 };
-                if let Some(sim) = es {
+                if let Some(sim) = is_dup {
                     r.push((i.min(j), i.max(j), sim));
                 }
             }
@@ -901,39 +901,39 @@ pub fn duplicadas_entre(db: &Connection, memorias: &[&Memoria], grupos: &[Vec<us
     Ok(r)
 }
 
-/// Memorias que pueden tratar de lo mismo que una recién guardada sin llegar a duplicadas: las que
-/// mejor puntúan por BM25 con cualquier palabra del título y comparten al menos dos palabras de
-/// título con ella (o la única, si los dos títulos tienen una). No bloquea nada: se devuelven para
-/// que el agente decida si fusionarlas. Así cae también el 10 % de duplicadas que `duplicada` deja
-/// pasar, sin avisar en falso de entrada.
-pub fn relacionadas(db: &Connection, project: &str, title: &str, excluir: &str, limite: usize) -> Result<Vec<Memoria>> {
-    let Some(consulta) = crate::buscar::consulta_fts(title) else { return Ok(Vec::new()) };
-    let propias: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
+/// Memories that may be about the same as a just-saved one without being duplicates: those that
+/// score best by BM25 with any word of the title and share at least two title words
+/// with it (or the only one, if both titles have one). It blocks nothing: they are returned so
+/// the agent decides whether to merge them. This also catches the 10 % of duplicates that `duplicada` lets
+/// through, without false warnings upfront.
+pub fn relacionadas(db: &Connection, project: &str, title: &str, exclude: &str, limit: usize) -> Result<Vec<Memoria>> {
+    let Some(query) = crate::buscar::consulta_fts(title) else { return Ok(Vec::new()) };
+    let own: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
     let mut q = db.prepare(&format!(
         "SELECT {COLUMNAS} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1 AND {} AND m.id != ?2
          ORDER BY bm25(memory_fts) LIMIT 30",
         Ambito::de(db, project)?.sql()
     ))?;
-    let candidatas: Vec<Memoria> = q.query_map(params![consulta, excluir], de_fila)?.collect::<rusqlite::Result<_>>()?;
-    // Probado también exigir un parecido mínimo por vector: cada punto de ruido menos costaba
-    // duplicadas sin cubrir (con 0,15, del 100 % al 98 %), así que no se exige.
-    Ok(candidatas
+    let candidates: Vec<Memoria> = q.query_map(params![query, exclude], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    // Also tried requiring a minimum vector similarity: each point less of noise cost
+    // uncovered duplicates (with 0.15, from 100 % to 98 %), so it isn't required.
+    Ok(candidates
         .into_iter()
         .filter(|m| {
-            let suyas: std::collections::BTreeSet<String> = crate::recall::utiles(&m.title).into_iter().collect();
-            let comunes = propias.intersection(&suyas).count();
-            comunes >= 2 || (comunes == 1 && propias.len() == 1 && suyas.len() == 1)
+            let theirs: std::collections::BTreeSet<String> = crate::recall::utiles(&m.title).into_iter().collect();
+            let common = own.intersection(&theirs).count();
+            common >= 2 || (common == 1 && own.len() == 1 && theirs.len() == 1)
         })
-        .take(limite)
+        .take(limit)
         .collect())
 }
 
-/// Para `doctor`: con qué modelo están calculados los vectores y cuántos hay.
+/// For `doctor`: which model the vectors were computed with and how many there are.
 pub fn estado(db: &Connection) -> Result<(Option<String>, i64)> {
-    let modelo = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?;
-    let n = db.query_row("SELECT count(*) FROM memory_vec", [], |f| f.get(0))?;
-    Ok((modelo, n))
+    let model = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
+    let n = db.query_row("SELECT count(*) FROM memory_vec", [], |row| row.get(0))?;
+    Ok((model, n))
 }
 
 
@@ -942,178 +942,178 @@ mod tests {
     use super::*;
     use crate::memoria::{self, Cambios, Nueva};
 
-    /// Números pseudoaleatorios repetibles (xorshift), para no depender de nada.
-    struct Azar(u64);
+    /// Repeatable pseudo-random numbers (xorshift), so as not to depend on anything.
+    struct Rng(u64);
 
-    impl Azar {
-        fn siguiente(&mut self) -> f32 {
+    impl Rng {
+        fn next_f32(&mut self) -> f32 {
             self.0 ^= self.0 << 13;
             self.0 ^= self.0 >> 7;
             self.0 ^= self.0 << 17;
             (self.0 >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
         }
 
-        /// Un vector de norma 1 cerca de uno de los `centros`: parecidos de todo tipo, como los de
-        /// verdad (unos muy cerca, la mayoría lejos).
-        fn vector(&mut self, centros: &[Vec<f32>]) -> Vec<f32> {
-            let c = &centros[(self.siguiente().abs() * centros.len() as f32) as usize % centros.len()];
-            normalizado(c.iter().map(|x| x + 0.08 * self.siguiente()).collect())
+        /// A norm-1 vector near one of the `centers`: similarities of all kinds, like the
+        /// real ones (some very close, most far).
+        fn vector(&mut self, centers: &[Vec<f32>]) -> Vec<f32> {
+            let c = &centers[(self.next_f32().abs() * centers.len() as f32) as usize % centers.len()];
+            normalized(c.iter().map(|x| x + 0.08 * self.next_f32()).collect())
         }
     }
 
     const DIM: usize = 256;
 
-    /// La base en su carpeta temporal, que se borra al acabar (la carpeta va primero: se suelta después).
-    fn base(nombre: &str) -> (crate::comun::Temporal, Connection) {
-        let dir = crate::comun::Temporal::nueva(&format!("resumen-{nombre}"));
+    /// The database in its temporary folder, deleted at the end (the folder goes first: it is dropped later).
+    fn database(name: &str) -> (crate::comun::Temporal, Connection) {
+        let dir = crate::comun::Temporal::nueva(&format!("resumen-{name}"));
         let db = crate::db::abrir(&dir.join("o.db")).unwrap();
         (dir, db)
     }
 
-    fn guardar(db: &mut Connection, project: &str, kind: Tipo, i: usize) -> (String, i64) {
+    fn save_memory(db: &mut Connection, project: &str, kind: Tipo, i: usize) -> (String, i64) {
         let n = Nueva { project: project.into(), kind: Some(kind), title: format!("nota {i}"), content: format!("texto {i}"), ..Default::default() };
         let m = memoria::guardar(db, n, None).unwrap();
-        let n: i64 = db.query_row("SELECT n FROM memory WHERE id = ?1", [&m.id], |f| f.get(0)).unwrap();
+        let n: i64 = db.query_row("SELECT n FROM memory WHERE id = ?1", [&m.id], |row| row.get(0)).unwrap();
         (m.id, n)
     }
 
-    fn poner_vector(db: &Connection, n: i64, v: &[f32]) {
+    fn set_vector(db: &Connection, n: i64, v: &[f32]) {
         db.execute("INSERT OR REPLACE INTO memory_vec(n, e) VALUES (?1, ?2)", params![n, bytes(v)]).unwrap();
     }
 
-    fn bloques(db: &Connection) -> Vec<(i64, Vec<u8>, Vec<u8>)> {
+    fn blocks(db: &Connection) -> Vec<(i64, Vec<u8>, Vec<u8>)> {
         let mut q = db.prepare("SELECT b, ns, datos FROM vec_bloque ORDER BY b").unwrap();
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    fn cuenta(db: &Connection, sql: &str) -> i64 {
-        db.query_row(sql, [], |f| f.get(0)).unwrap()
+    fn count(db: &Connection, sql: &str) -> i64 {
+        db.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    /// Una base con memorias de dos proyectos, globales y de dos tipos, con vectores al azar.
-    fn con_vectores(nombre: &str, cuantas: usize, azar: &mut Azar) -> (crate::comun::Temporal, Connection, Vec<Vec<f32>>) {
-        let (dir, mut db) = base(nombre);
-        let centros: Vec<Vec<f32>> = (0..12).map(|_| normalizado((0..DIM).map(|_| azar.siguiente()).collect())).collect();
-        for i in 0..cuantas {
+    /// A database with memories of two projects, globals and of two kinds, with random vectors.
+    fn with_vectors(name: &str, how_many: usize, rng: &mut Rng) -> (crate::comun::Temporal, Connection, Vec<Vec<f32>>) {
+        let (dir, mut db) = database(name);
+        let centers: Vec<Vec<f32>> = (0..12).map(|_| normalized((0..DIM).map(|_| rng.next_f32()).collect())).collect();
+        for i in 0..how_many {
             let project = ["/p1", "/p1", "/p2", ""][i % 4];
             let kind = if i % 3 == 0 { Tipo::Gotcha } else { Tipo::Fact };
-            let (_, n) = guardar(&mut db, project, kind, i);
-            poner_vector(&db, n, &azar.vector(&centros));
+            let (_, n) = save_memory(&mut db, project, kind, i);
+            set_vector(&db, n, &rng.vector(&centers));
         }
-        (dir, db, centros)
+        (dir, db, centers)
     }
 
     #[test]
-    fn el_resumen_da_lo_mismo_que_comparar_con_todos() {
-        let mut azar = Azar(0x9e3779b97f4a7c15);
-        let (_dir, db, centros) = con_vectores("igual", 1200, &mut azar);
-        let r = al_dia(&db).unwrap().expect("resumen");
+    fn the_summary_gives_the_same_as_comparing_with_all() {
+        let mut rng = Rng(0x9e3779b97f4a7c15);
+        let (_dir, db, centers) = with_vectors("igual", 1200, &mut rng);
+        let r = up_to_date_summary(&db).unwrap().expect("resumen");
         assert_eq!(r.cuantos, 1200);
-        let media: Vec<f32> = r.suma.iter().map(|s| (*s / r.cuantos as f64) as f32).collect();
-        let ambitos = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::Espacio(None)];
-        let (mut con_algo, mut cortadas) = (0, 0);
+        let mean: Vec<f32> = r.suma.iter().map(|s| (*s / r.cuantos as f64) as f32).collect();
+        let scopes = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::Espacio(None)];
+        let (mut non_empty, mut cut_off) = (0, 0);
         for _ in 0..12 {
-            let consulta = normalizado(azar.vector(&centros).iter().zip(&media).map(|(x, m)| x - m).collect());
-            for ambito in &ambitos {
+            let query = normalized(rng.vector(&centers).iter().zip(&mean).map(|(x, m)| x - m).collect());
+            for scope in &scopes {
                 for kind in [None, Some(Tipo::Gotcha)] {
-                    for (minimo, limite) in [(-1.0, 40), (-1.0, 1), (0.1, 5), (0.35, 2), (0.6, 3), (0.9, 2)] {
-                        let a = lineal(&db, &consulta, &media, ambito, kind, minimo, limite).unwrap();
-                        let b = con_resumen(&db, &consulta, &media, ambito, kind, minimo, limite, DIM).unwrap();
-                        assert_eq!(a, b, "{ambito:?} {kind:?} {minimo} {limite}");
-                        con_algo += usize::from(!a.is_empty());
-                        cortadas += usize::from(a.len() == limite && minimo > 0.0);
+                    for (min, limit) in [(-1.0, 40), (-1.0, 1), (0.1, 5), (0.35, 2), (0.6, 3), (0.9, 2)] {
+                        let a = linear(&db, &query, &mean, scope, kind, min, limit).unwrap();
+                        let b = with_summary(&db, &query, &mean, scope, kind, min, limit, DIM).unwrap();
+                        assert_eq!(a, b, "{scope:?} {kind:?} {min} {limit}");
+                        non_empty += usize::from(!a.is_empty());
+                        cut_off += usize::from(a.len() == limit && min > 0.0);
                     }
                 }
             }
         }
-        // Que se prueben de verdad los dos cortes: por `minimo` y por `limite`.
-        assert!(con_algo > 300 && cortadas > 50, "{con_algo} {cortadas}");
+        // Make sure both cuts are really tested: by `min` and by `limit`.
+        assert!(non_empty > 300 && cut_off > 50, "{non_empty} {cut_off}");
     }
 
     #[test]
-    fn el_resumen_sigue_a_los_cambios() {
-        let mut azar = Azar(0x2545f4914f6cdd1d);
-        let (_dir, mut db, centros) = con_vectores("cambios", 300, &mut azar);
-        al_dia(&db).unwrap().expect("resumen");
-        // Un vector cambiado con `INSERT OR REPLACE` (como al editar), otro con `UPDATE`, uno borrado a
-        // mano, memorias olvidadas (sus vectores se van en cascada), una nueva y otra sin vector.
+    fn the_summary_follows_the_changes() {
+        let mut rng = Rng(0x2545f4914f6cdd1d);
+        let (_dir, mut db, centers) = with_vectors("cambios", 300, &mut rng);
+        up_to_date_summary(&db).unwrap().expect("resumen");
+        // A vector changed with `INSERT OR REPLACE` (as when editing), another with `UPDATE`, one deleted by
+        // hand, forgotten memories (their vectors go in cascade), a new one and another without a vector.
         let ns: Vec<i64> = {
             let mut q = db.prepare("SELECT n FROM memory_vec ORDER BY n").unwrap();
-            q.query_map([], |f| f.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+            q.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
         };
-        poner_vector(&db, ns[3], &azar.vector(&centros));
-        poner_vector(&db, ns[3], &azar.vector(&centros));
-        db.execute("UPDATE memory_vec SET e = ?2 WHERE n = ?1", params![ns[7], bytes(&azar.vector(&centros))]).unwrap();
+        set_vector(&db, ns[3], &rng.vector(&centers));
+        set_vector(&db, ns[3], &rng.vector(&centers));
+        db.execute("UPDATE memory_vec SET e = ?2 WHERE n = ?1", params![ns[7], bytes(&rng.vector(&centers))]).unwrap();
         db.execute("DELETE FROM memory_vec WHERE n = ?1", [ns[11]]).unwrap();
         for i in [20, 21, 299] {
-            let id: String = db.query_row("SELECT id FROM memory WHERE n = ?1", [ns[i]], |f| f.get(0)).unwrap();
+            let id: String = db.query_row("SELECT id FROM memory WHERE n = ?1", [ns[i]], |row| row.get(0)).unwrap();
             memoria::olvidar(&mut db, &id).unwrap();
         }
-        let (_, nueva) = guardar(&mut db, "/p2", Tipo::Fact, 1000);
-        poner_vector(&db, nueva, &azar.vector(&centros));
-        guardar(&mut db, "/p1", Tipo::Fact, 1001);
-        // La nueva reusa el `n` de la última olvidada: un solo apunte, con el vector de antes.
-        assert_eq!(cuenta(&db, "SELECT count(*) FROM vec_cambio"), 6);
-        let r = al_dia(&db).unwrap().expect("resumen");
-        assert_eq!(cuenta(&db, "SELECT count(*) FROM vec_cambio"), 0);
-        assert_eq!(faltan(&db).unwrap(), 2, "la del vector borrado y la nueva sin vector");
-        let poco_a_poco = bloques(&db);
-        // Lo mismo que rehaciéndolo entero.
-        let entero = reconstruir(&db).unwrap().expect("resumen");
-        assert_eq!(r.cuantos, entero.cuantos);
-        assert_eq!(r.cuantos, cuenta(&db, "SELECT count(*) FROM memory_vec"));
-        for (a, b) in r.suma.iter().zip(&entero.suma) {
+        let (_, new) = save_memory(&mut db, "/p2", Tipo::Fact, 1000);
+        set_vector(&db, new, &rng.vector(&centers));
+        save_memory(&mut db, "/p1", Tipo::Fact, 1001);
+        // The new one reuses the `n` of the last forgotten one: a single record, with the previous vector.
+        assert_eq!(count(&db, "SELECT count(*) FROM vec_cambio"), 6);
+        let r = up_to_date_summary(&db).unwrap().expect("resumen");
+        assert_eq!(count(&db, "SELECT count(*) FROM vec_cambio"), 0);
+        assert_eq!(missing_count(&db).unwrap(), 2, "la del vector borrado y la nueva sin vector");
+        let incremental = blocks(&db);
+        // The same as rebuilding it fully.
+        let full = rebuild(&db).unwrap().expect("resumen");
+        assert_eq!(r.cuantos, full.cuantos);
+        assert_eq!(r.cuantos, count(&db, "SELECT count(*) FROM memory_vec"));
+        for (a, b) in r.suma.iter().zip(&full.suma) {
             assert!((a - b).abs() < 1e-9, "{a} {b}");
         }
-        assert_eq!(poco_a_poco, bloques(&db));
+        assert_eq!(incremental, blocks(&db));
     }
 
     #[test]
-    fn sin_las_tablas_locales_se_compara_con_todos() {
-        let mut azar = Azar(7);
-        let (_dir, db, _) = con_vectores("sin-locales", 20, &mut azar);
+    fn without_the_local_tables_compares_with_all() {
+        let mut rng = Rng(7);
+        let (_dir, db, _) = with_vectors("sin-locales", 20, &mut rng);
         db.execute_batch("DROP TABLE vec_bloque").unwrap();
-        assert!(al_dia(&db).unwrap().is_none());
-        assert_eq!(faltan(&db).unwrap(), 0);
+        assert!(up_to_date_summary(&db).unwrap().is_none());
+        assert_eq!(missing_count(&db).unwrap(), 0);
     }
 
     #[test]
-    fn las_cuentas_por_ambito_cuadran() {
-        let (_dir, mut db) = base("cuentas");
+    fn the_counts_per_scope_add_up() {
+        let (_dir, mut db) = database("cuentas");
         let mut ids = Vec::new();
         for i in 0..40 {
-            ids.push(guardar(&mut db, ["/p1", "/p2", "", "/p3"][i % 4], Tipo::Fact, i).0);
+            ids.push(save_memory(&mut db, ["/p1", "/p2", "", "/p3"][i % 4], Tipo::Fact, i).0);
         }
         memoria::olvidar(&mut db, &ids[0]).unwrap();
         memoria::olvidar(&mut db, &ids[2]).unwrap();
-        let mover = Cambios { project: Some("/p2".into()), ..Default::default() };
-        memoria::actualizar(&mut db, &ids[5], mover, None).unwrap();
+        let move_to = Cambios { project: Some("/p2".into()), ..Default::default() };
+        memoria::actualizar(&mut db, &ids[5], move_to, None).unwrap();
         let global = Cambios { project: Some(String::new()), ..Default::default() };
         memoria::actualizar(&mut db, &ids[9], global, None).unwrap();
-        let ambitos = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::de(&db, "/p3").unwrap(), Ambito::Espacio(None)];
-        for ambito in ambitos {
-            let contadas = cuenta(&db, &format!("SELECT count(*) FROM memory m WHERE {}", ambito.sql()));
-            assert_eq!(memoria::cuantas(&db, &ambito).unwrap(), contadas, "{ambito:?}");
+        let scopes = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::de(&db, "/p3").unwrap(), Ambito::Espacio(None)];
+        for scope in scopes {
+            let counted = count(&db, &format!("SELECT count(*) FROM memory m WHERE {}", scope.sql()));
+            assert_eq!(memoria::cuantas(&db, &scope).unwrap(), counted, "{scope:?}");
         }
         assert!(memoria::ve_todas(&db, &Ambito::Todos));
         assert!(!memoria::ve_todas(&db, &Ambito::de(&db, "/p1").unwrap()));
     }
 
-    /// Si falta una pieza (una base que tocó otra versión, o una migración que rehízo `memory`), al
-    /// abrir se rehacen todas y se recuenta; el resumen se rehará al usarlo.
+    /// If a piece is missing (a database another version touched, or a migration that rebuilt `memory`), on
+    /// opening all are rebuilt and recounted; the summary will be rebuilt when used.
     #[test]
-    fn las_piezas_locales_se_rehacen_si_falta_alguna() {
-        let mut azar = Azar(11);
-        let (_dir, mut db, centros) = con_vectores("rehacer", 30, &mut azar);
-        al_dia(&db).unwrap().expect("resumen");
-        let ruta = std::path::PathBuf::from(db.path().unwrap());
+    fn local_pieces_are_rebuilt_if_any_is_missing() {
+        let mut rng = Rng(11);
+        let (_dir, mut db, centers) = with_vectors("rehacer", 30, &mut rng);
+        up_to_date_summary(&db).unwrap().expect("resumen");
+        let path = std::path::PathBuf::from(db.path().unwrap());
         db.execute_batch("DROP TRIGGER memory_cuenta_mas; DROP TRIGGER vec_cambio_pon;").unwrap();
-        let (_, n) = guardar(&mut db, "/p1", Tipo::Fact, 99);
-        poner_vector(&db, n, &azar.vector(&centros));
+        let (_, n) = save_memory(&mut db, "/p1", Tipo::Fact, 99);
+        set_vector(&db, n, &rng.vector(&centers));
         drop(db);
-        let db = crate::db::abrir(&ruta).unwrap();
+        let db = crate::db::abrir(&path).unwrap();
         assert_eq!(memoria::cuantas(&db, &Ambito::Todos).unwrap(), 31);
-        assert!(leer_resumen(&db).unwrap().is_none());
-        assert_eq!(al_dia(&db).unwrap().expect("resumen").cuantos, 31);
+        assert!(read_summary(&db).unwrap().is_none());
+        assert_eq!(up_to_date_summary(&db).unwrap().expect("resumen").cuantos, 31);
     }
 }

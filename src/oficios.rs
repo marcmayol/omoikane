@@ -1,29 +1,29 @@
-//! Oficios (stacks): android, web, wordpress, rust… Lo que pide Kumi, la megafactoría (PLAN §9.7b):
-//! cada cadena de montaje tiene su memoria de oficio. «No matar el emulador con taskkill» le sirve a
-//! cualquier proyecto Android, de cualquier cliente, y no llega a la factoría web.
+//! Trades (stacks): android, web, wordpress, rust… What Kumi, the megafactory, asks for (PLAN §9.7b):
+//! each assembly line has its trade memory. «Don't kill the emulator with taskkill» is useful to
+//! any Android project, of any client, and doesn't reach the web factory.
 //!
-//! Un nivel entre el proyecto y lo global, sin tocar el esquema 10:
-//! - **El oficio de una memoria**: una memoria global (sin proyecto ni espacio) con la etiqueta
-//!   reservada `trade:<oficio>` (puede llevar varias). Viaja, se exporta y se importa como cualquier
-//!   etiqueta, así que una 1.0 la entiende entera (la ve como una global más; ver el CHANGELOG). En una
-//!   memoria de proyecto o de espacio la etiqueta no significa nada: lo de un cliente nunca se vuelve de
-//!   oficio por llevarla.
-//! - **El oficio de un proyecto**: lo que se detecta en sus ficheros (barato y determinista: la raíz y
-//!   un nivel de subcarpetas), más lo que la persona corrige a mano (`omoi trades add|remove|set`), en
-//!   dos tablas locales que no viajan (`project_trade`, `project_trade_seen`): cada equipo lo detecta
-//!   en su carpeta, y una corrección es de quien la hace. Como las de `db::LOCALES`, una 1.0 las ignora.
+//! A level between the project and global, without touching schema 10:
+//! - **A memory's trade**: a global memory (no project or space) with the reserved tag
+//!   `trade:<trade>` (it may carry several). It travels, is exported and imported like any
+//!   tag, so a 1.0 understands it fully (it sees it as one more global; see the CHANGELOG). On a
+//!   project or space memory the tag means nothing: a client's memory never becomes a trade
+//!   one by carrying it.
+//! - **A project's trade**: what is detected in its files (cheap and deterministic: the root and
+//!   one level of subfolders), plus what the person corrects by hand (`omoi trades add|remove|set`), in
+//!   two local tables that don't travel (`project_trade`, `project_trade_seen`): each machine detects it
+//!   in its folder, and a correction belongs to whoever makes it. Like those in `db::LOCALES`, a 1.0 ignores them.
 //!
-//! Desde un proyecto se ven las memorias de los oficios que tiene; desde un espacio, las de los oficios
-//! de sus proyectos; desde la carpeta del usuario, todas (`Ambito::sql`, con [`ocultas`]).
+//! From a project you see the memories of the trades it has; from a space, those of the trades
+//! of its projects; from the user's folder, all of them (`Ambito::sql`, with [`ocultas`]).
 //!
-//! Lo más importante es que por aquí no salga nada de un cliente: al guardar una memoria de oficio,
-//! [`fugas`] avisa si nombra proyectos, espacios (clientes), rutas absolutas, repositorios o dominios
-//! que solo salen en memorias de un cliente (en el texto, las rutas, las etiquetas, la clave y los
-//! datos), y no se guarda salvo los falsos positivos que deje pasar el permiso `allow_leaks` (nunca una
-//! ruta ni un repositorio). Promover a un oficio lo de un cliente crea una memoria nueva
-//! ([`crear_de_oficio`]): su historial y sus veredictos se quedan en el cliente. Y por la sincronización
-//! solo van por el repositorio general (son globales: `sync::va_al_repo` ya no las deja ir a uno de espacio),
-//! y un repositorio de cliente no las trae (`sync`, con [`lleva_oficio`]).
+//! The most important thing is that nothing of a client gets out through here: when saving a trade memory,
+//! [`fugas`] warns if it names projects, spaces (clients), absolute paths, repositories or domains
+//! that only appear in a client's memories (in the text, paths, tags, key and
+//! data), and it isn't saved except for the false positives the `allow_leaks` permission lets through (never a
+//! path or a repository). Promoting a client's memory to a trade creates a new memory
+//! ([`crear_de_oficio`]): its history and verdicts stay with the client. And through sync
+//! they only go through the general repository (they are global: `sync::va_al_repo` no longer lets them go to a space one),
+//! and a client repository doesn't bring them (`sync`, with [`lleva_oficio`]).
 
 use crate::memoria::{Ambito, Memoria};
 use crate::tr;
@@ -33,13 +33,13 @@ use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-/// La etiqueta de una memoria de oficio es este prefijo y el oficio: `trade:android`.
+/// The tag of a trade memory is this prefix and the trade: `trade:android`.
 pub const PREFIJO: &str = "trade:";
 
-/// Los oficios que se detectan solos. Los nombres son los de las factorías de Kumi (`android`, `web`,
-/// `rust`, `plugin-claude`, `python`, `escritorio-node`, `alexa`), para que no haga falta una tabla de
-/// equivalencias; `seo-geo` no se deduce de los ficheros con fiabilidad y se pone a mano, como cualquier
-/// otro (`kotlin`…).
+/// The trades detected automatically. The names are those of Kumi's factories (`android`, `web`,
+/// `rust`, `plugin-claude`, `python`, `escritorio-node`, `alexa`), so no equivalence table is
+/// needed; `seo-geo` can't be reliably inferred from the files and is set by hand, like any
+/// other (`kotlin`…).
 pub const DETECTABLES: &[&str] = &[
     "3d-print",
     "alexa",
@@ -70,7 +70,7 @@ pub const DETECTABLES: &[&str] = &[
     "wordpress",
 ];
 
-const TABLAS: &str = "
+const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS project_trade (
   project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
   trade      TEXT NOT NULL,
@@ -85,57 +85,57 @@ CREATE TABLE IF NOT EXISTS project_trade_seen (
 CREATE INDEX IF NOT EXISTS memory_oficio ON memory(n) WHERE project_id = 0 AND space_id IS NULL AND instr(tags, '\"trade:') > 0;
 ";
 
-/// `project_trade.how`: detectado en los ficheros, añadido a mano o quitado a mano (gana a lo detectado).
+/// `project_trade.how`: detected in the files, added by hand or removed by hand (wins over what is detected).
 const AUTO: &str = "auto";
-const ANADIDO: &str = "add";
-const QUITADO: &str = "off";
+const ADDED: &str = "add";
+const REMOVED: &str = "off";
 
-/// Deja las tablas de los oficios y el índice parcial de las memorias de oficio (`memory_oficio`: solo
-/// las globales con la etiqueta, para listarlas sin recorrer la tabla). Lo normal es que ya estén.
+/// Creates the trade tables and the partial index of trade memories (`memory_oficio`: only
+/// the globals with the tag, to list them without scanning the table). Normally they already exist.
 pub fn crear_tabla(db: &Connection) -> Result<()> {
-    let hay: i64 = db.query_row(
+    let existing: i64 = db.query_row(
         "SELECT count(*) FROM sqlite_schema WHERE name IN ('project_trade', 'project_trade_seen', 'memory_oficio')",
         [],
-        |f| f.get(0),
+        |row| row.get(0),
     )?;
-    if hay < 3 {
-        db.execute_batch(TABLAS)?;
+    if existing < 3 {
+        db.execute_batch(TABLES)?;
     }
     Ok(())
 }
 
-// --- Memorias de oficio ---------------------------------------------------------------------------
+// --- Trade memories -------------------------------------------------------------------------------
 
-/// La etiqueta de un oficio.
-pub fn etiqueta(oficio: &str) -> String {
-    format!("{PREFIJO}{oficio}")
+/// The tag of a trade.
+pub fn etiqueta(trade: &str) -> String {
+    format!("{PREFIJO}{trade}")
 }
 
-/// Los oficios de unas etiquetas (`trade:<oficio>`).
+/// The trades of some tags (`trade:<trade>`).
 pub fn de_etiquetas(tags: &[String]) -> Vec<String> {
     tags.iter().filter_map(|t| t.strip_prefix(PREFIJO)).filter(|t| !t.is_empty()).map(String::from).collect()
 }
 
-/// Si unas etiquetas llevan algún oficio.
+/// Whether some tags carry any trade.
 pub fn lleva_oficio(tags: &[String]) -> bool {
     tags.iter().any(|t| t.starts_with(PREFIJO))
 }
 
-/// Las etiquetas sin las de oficio.
+/// The tags without the trade ones.
 pub fn sin_oficio(tags: Vec<String>) -> Vec<String> {
     tags.into_iter().filter(|t| !t.starts_with(PREFIJO) && !t.starts_with(PARA)).collect()
 }
 
-/// Para quién es una memoria de oficio, si no es para todos: `trade-for:client` (solo los proyectos de
-/// un cliente, los que están en un espacio) o `trade-for:personal` (solo los que no están en ninguno).
-/// Sin la etiqueta, para los dos. No hace falta nada nuevo en el proyecto: el espacio ya lo dice.
+/// Who a trade memory is for, if not for everyone: `trade-for:client` (only a client's projects,
+/// those in a space) or `trade-for:personal` (only those in none).
+/// Without the tag, for both. Nothing new is needed in the project: the space already says it.
 pub const PARA: &str = "trade-for:";
 pub const CLIENTE: &str = "client";
 pub const PERSONAL: &str = "personal";
 
-/// `for` de `remember` y `update`: `client`, `personal` o nada (`""`, `both`: para los dos).
-pub fn para(texto: &str) -> Result<Option<String>> {
-    let t = texto.trim().to_lowercase();
+/// `for` of `remember` and `update`: `client`, `personal` or nothing (`""`, `both`: for both).
+pub fn para(text: &str) -> Result<Option<String>> {
+    let t = text.trim().to_lowercase();
     Ok(match t.as_str() {
         "" | "both" | "all" | "any" => None,
         "client" | "clients" | "cliente" => Some(CLIENTE.to_string()),
@@ -143,30 +143,30 @@ pub fn para(texto: &str) -> Result<Option<String>> {
         _ => anyhow::bail!(tr!(
             "«{}» is not valid for `for`: client (projects in a space), personal (projects in no space) or both",
             "«{}» no vale para `for`: client (proyectos en un espacio), personal (proyectos sin espacio) o both",
-            texto.trim()
+            text.trim()
         )),
     })
 }
 
-/// Para quién es una memoria de oficio por sus etiquetas (`None`: para todos).
+/// Who a trade memory is for, by its tags (`None`: for everyone).
 pub fn para_de(tags: &[String]) -> Option<String> {
     tags.iter().find_map(|t| t.strip_prefix(PARA)).filter(|p| *p == CLIENTE || *p == PERSONAL).map(String::from)
 }
 
-/// Las etiquetas de una memoria de oficio: las suyas (sin las de oficio), sus oficios y para quién.
-pub fn etiquetas_de_oficio(tags: Vec<String>, oficios: &[String], para: Option<&str>) -> Vec<String> {
-    sin_oficio(tags).into_iter().chain(oficios.iter().map(|o| etiqueta(o))).chain(para.map(|p| format!("{PARA}{p}"))).collect()
+/// The tags of a trade memory: its own (without the trade ones), its trades and who it is for.
+pub fn etiquetas_de_oficio(tags: Vec<String>, trades: &[String], for_whom: Option<&str>) -> Vec<String> {
+    sin_oficio(tags).into_iter().chain(trades.iter().map(|o| etiqueta(o))).chain(for_whom.map(|p| format!("{PARA}{p}"))).collect()
 }
 
-/// Los oficios de una memoria: los de sus etiquetas si es global; ninguno si es de un proyecto o de un
-/// espacio (ahí la etiqueta no cuenta).
+/// A memory's trades: those of its tags if it is global; none if it belongs to a project or a
+/// space (there the tag doesn't count).
 pub fn de_memoria(m: &Memoria) -> Vec<String> {
     if m.global() { de_etiquetas(&m.tags) } else { Vec::new() }
 }
 
-/// Un nombre de oficio válido: minúsculas, letras, cifras, `-`, `+`, `.` y `#` (`c#`, `c++`), hasta 32.
-pub fn nombre(texto: &str) -> Result<String> {
-    let n = texto.trim().trim_start_matches(PREFIJO).trim().to_lowercase();
+/// A valid trade name: lowercase, letters, digits, `-`, `+`, `.` and `#` (`c#`, `c++`), up to 32.
+pub fn nombre(text: &str) -> Result<String> {
+    let n = text.trim().trim_start_matches(PREFIJO).trim().to_lowercase();
     ensure!(
         !n.is_empty()
             && n.chars().count() <= 32
@@ -175,16 +175,16 @@ pub fn nombre(texto: &str) -> Result<String> {
         tr!(
             "«{}» is not a valid trade: letters, digits, -, +, . and #, up to 32 (android, web, wordpress…)",
             "«{}» no vale como oficio: letras, cifras, -, +, . y #, hasta 32 (android, web, wordpress…)",
-            texto.trim()
+            text.trim()
         )
     );
     Ok(n)
 }
 
-/// Los oficios de un texto como «android, web» (separados por comas o espacios), validados y sin repetir.
-pub fn lista(texto: &str) -> Result<Vec<String>> {
+/// The trades of a text like «android, web» (separated by commas or spaces), validated and without repeats.
+pub fn lista(text: &str) -> Result<Vec<String>> {
     let mut v: Vec<String> = Vec::new();
-    for t in texto.split([',', ' ']).filter(|t| !t.trim().is_empty()) {
+    for t in text.split([',', ' ']).filter(|t| !t.trim().is_empty()) {
         let n = nombre(t)?;
         if !v.contains(&n) {
             v.push(n);
@@ -193,8 +193,8 @@ pub fn lista(texto: &str) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// Los proyectos cuyos oficios cuentan desde un ámbito, como lista SQL (`None`: desde todo, se ven todas).
-fn proyectos_sql(a: &Ambito) -> Option<String> {
+/// The projects whose trades count from a scope, as an SQL list (`None`: from everything, all are seen).
+fn projects_sql(a: &Ambito) -> Option<String> {
     match a {
         Ambito::Todos => None,
         Ambito::Proyecto { id, .. } => Some(id.to_string()),
@@ -203,12 +203,12 @@ fn proyectos_sql(a: &Ambito) -> Option<String> {
     }
 }
 
-/// Las memorias de oficio (por `n`) que no se ven desde `a`: las de oficios que no tiene ningún
-/// proyecto del ámbito (de cliente si es `trade-for:client`, personal si es `trade-for:personal`). `None` desde todo. Es una subconsulta sin correlación: SQLite la hace una vez
-/// por consulta, por el índice parcial `memory_oficio` (que `crear_tabla` deja siempre; sin `INDEXED BY`,
-/// SQLite prefería `memory_scope` y leía todas las globales), y luego mira cada global por su `n`.
+/// The trade memories (by `n`) not seen from `a`: those of trades no project of the scope has
+/// (client ones if `trade-for:client`, personal ones if `trade-for:personal`). `None` from everything. It is an uncorrelated subquery: SQLite runs it once
+/// per query, through the partial index `memory_oficio` (which `crear_tabla` always creates; without `INDEXED BY`,
+/// SQLite preferred `memory_scope` and read all the globals), and then checks each global by its `n`.
 pub(crate) fn ocultas(a: &Ambito) -> Option<String> {
-    let ps = proyectos_sql(a)?;
+    let ps = projects_sql(a)?;
     Some(format!(
         "SELECT o.n FROM memory o INDEXED BY memory_oficio WHERE o.project_id = 0 AND o.space_id IS NULL AND instr(o.tags, '\"trade:') > 0
            AND NOT EXISTS (SELECT 1 FROM json_each(o.tags) t JOIN project_trade pt ON pt.trade = substr(t.value, 7) JOIN project p ON p.id = pt.project_id
@@ -218,82 +218,82 @@ pub(crate) fn ocultas(a: &Ambito) -> Option<String> {
     ))
 }
 
-/// Si una memoria (por su id) es de oficio y no se ve desde `a`.
+/// Whether a memory (by its id) is a trade one not seen from `a`.
 pub(crate) fn oculta(db: &Connection, a: &Ambito, id: &str) -> Result<bool> {
     match ocultas(a) {
         None => Ok(false),
-        Some(q) => Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory m WHERE m.id = ?1 AND m.n IN ({q}))"), [id], |f| f.get(0))?),
+        Some(q) => Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory m WHERE m.id = ?1 AND m.n IN ({q}))"), [id], |row| row.get(0))?),
     }
 }
 
-/// Cuántas memorias de oficio no se ven desde `a`.
+/// How many trade memories aren't seen from `a`.
 pub(crate) fn cuantas_ocultas(db: &Connection, a: &Ambito) -> Result<i64> {
     match ocultas(a) {
         None => Ok(0),
-        Some(q) => Ok(db.query_row(&format!("SELECT count(*) FROM ({q})"), [], |f| f.get(0))?),
+        Some(q) => Ok(db.query_row(&format!("SELECT count(*) FROM ({q})"), [], |row| row.get(0))?),
     }
 }
 
-// --- Oficios de un proyecto -----------------------------------------------------------------------
+// --- A project's trades ---------------------------------------------------------------------------
 
-/// Los oficios de un proyecto (detectados o puestos a mano, sin los quitados), por orden alfabético.
-pub fn del_proyecto(db: &Connection, proyecto: i64) -> Result<Vec<String>> {
+/// A project's trades (detected or set by hand, without the removed ones), in alphabetical order.
+pub fn del_proyecto(db: &Connection, project: i64) -> Result<Vec<String>> {
     let mut q = db.prepare_cached("SELECT trade FROM project_trade WHERE project_id = ?1 AND how <> 'off' ORDER BY trade")?;
-    Ok(q.query_map([proyecto], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?)
+    Ok(q.query_map([project], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Los oficios de todos los proyectos, por id.
+/// The trades of all projects, by id.
 pub fn de_proyectos(db: &Connection) -> Result<HashMap<i64, Vec<String>>> {
     let mut q = db.prepare("SELECT project_id, trade FROM project_trade WHERE how <> 'off' ORDER BY project_id, trade")?;
     let mut m: HashMap<i64, Vec<String>> = HashMap::new();
-    for f in q.query_map([], |f| Ok((f.get::<_, i64>(0)?, f.get::<_, String>(1)?)))? {
-        let (p, t) = f?;
+    for row in q.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))? {
+        let (p, t) = row?;
         m.entry(p).or_default().push(t);
     }
     Ok(m)
 }
 
-/// Lo que se sabe de los oficios de un proyecto, para `omoi trades`.
+/// What is known about a project's trades, for `omoi trades`.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Estado {
-    /// Los que cuentan.
+    /// The ones that count.
     pub trades: Vec<String>,
-    /// Detectados en sus ficheros.
+    /// Detected in its files.
     pub detected: Vec<String>,
-    /// Puestos a mano.
+    /// Set by hand.
     pub added: Vec<String>,
-    /// Quitados a mano (aunque se detecten).
+    /// Removed by hand (even if detected).
     pub removed: Vec<String>,
-    /// Con `omoi trades set`: la detección ya no añade nada.
+    /// With `omoi trades set`: detection no longer adds anything.
     pub fixed: bool,
-    /// Cuándo se miraron sus ficheros por última vez.
+    /// When its files were last looked at.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<String>,
 }
 
-pub fn estado(db: &Connection, proyecto: i64) -> Result<Estado> {
+pub fn estado(db: &Connection, project: i64) -> Result<Estado> {
     let mut e = Estado::default();
     let mut q = db.prepare("SELECT trade, how FROM project_trade WHERE project_id = ?1 ORDER BY trade")?;
-    for f in q.query_map([proyecto], |f| Ok((f.get::<_, String>(0)?, f.get::<_, String>(1)?)))? {
-        let (t, how) = f?;
+    for row in q.query_map([project], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+        let (t, how) = row?;
         match how.as_str() {
             AUTO => e.detected.push(t),
-            QUITADO => e.removed.push(t),
+            REMOVED => e.removed.push(t),
             _ => e.added.push(t),
         }
     }
-    let visto: Option<(String, bool)> =
-        db.query_row("SELECT seen_at, fixed FROM project_trade_seen WHERE project_id = ?1", [proyecto], |f| Ok((f.get(0)?, f.get(1)?))).optional()?;
-    if let Some((s, fijo)) = visto {
+    let seen: Option<(String, bool)> =
+        db.query_row("SELECT seen_at, fixed FROM project_trade_seen WHERE project_id = ?1", [project], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    if let Some((s, fixed)) = seen {
         e.seen_at = Some(s);
-        e.fixed = fijo;
+        e.fixed = fixed;
     }
     e.trades = e.detected.iter().chain(&e.added).cloned().collect::<BTreeSet<_>>().into_iter().collect();
     Ok(e)
 }
 
-/// Escribe en un `SAVEPOINT` (vale dentro y fuera de una transacción).
-fn en_bloque<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+/// Writes inside a `SAVEPOINT` (works inside and outside a transaction).
+fn in_savepoint<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
     db.execute_batch("SAVEPOINT oficios")?;
     match f() {
         Ok(v) => {
@@ -307,144 +307,144 @@ fn en_bloque<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
     }
 }
 
-fn apuntar_visto(db: &Connection, proyecto: i64, fijo: Option<bool>) -> Result<()> {
+fn mark_seen(db: &Connection, project: i64, fixed: Option<bool>) -> Result<()> {
     db.execute(
         "INSERT INTO project_trade_seen(project_id, seen_at, fixed) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'), COALESCE(?2, 0))
          ON CONFLICT(project_id) DO UPDATE SET seen_at = excluded.seen_at, fixed = COALESCE(?2, fixed)",
-        params![proyecto, fijo],
+        params![project, fixed],
     )?;
     Ok(())
 }
 
-/// Mira los ficheros del proyecto (en `ruta`) y deja apuntado lo que detecta, salvo que se fijaran a
-/// mano (`set`). Solo escribe si algo cambia o es la primera vez. Devuelve los oficios que cuentan.
-/// Una carpeta que no existe aquí no cambia nada.
-pub fn al_dia(db: &Connection, proyecto: i64, ruta: &str) -> Result<Vec<String>> {
-    if proyecto <= 0 || ruta.is_empty() || !crate::proyecto::es_carpeta(Path::new(ruta)) {
-        return del_proyecto(db, proyecto);
+/// Looks at the project's files (in `path`) and records what it detects, unless they were fixed by
+/// hand (`set`). Only writes if something changes or it is the first time. Returns the trades that count.
+/// A folder that doesn't exist here changes nothing.
+pub fn al_dia(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+    if project <= 0 || path.is_empty() || !crate::proyecto::es_carpeta(Path::new(path)) {
+        return del_proyecto(db, project);
     }
-    let e = estado(db, proyecto)?;
+    let e = estado(db, project)?;
     if e.fixed {
         return Ok(e.trades);
     }
-    let detectados = detectar_guardado(db, proyecto, Path::new(ruta));
-    if e.seen_at.is_none() || detectados != e.detected {
-        en_bloque(db, || {
-            db.execute("DELETE FROM project_trade WHERE project_id = ?1 AND how = 'auto'", [proyecto])?;
-            for t in &detectados {
-                db.execute("INSERT OR IGNORE INTO project_trade(project_id, trade, how) VALUES (?1, ?2, 'auto')", params![proyecto, t])?;
+    let detected = detect_cached(db, project, Path::new(path));
+    if e.seen_at.is_none() || detected != e.detected {
+        in_savepoint(db, || {
+            db.execute("DELETE FROM project_trade WHERE project_id = ?1 AND how = 'auto'", [project])?;
+            for t in &detected {
+                db.execute("INSERT OR IGNORE INTO project_trade(project_id, trade, how) VALUES (?1, ?2, 'auto')", params![project, t])?;
             }
-            apuntar_visto(db, proyecto, None)
+            mark_seen(db, project, None)
         })?;
     }
-    del_proyecto(db, proyecto)
+    del_proyecto(db, project)
 }
 
-/// Como `al_dia`, pero solo si nunca se miró (para los sitios que no deben mirar el disco cada vez).
-pub fn al_dia_si_falta(db: &Connection, proyecto: i64, ruta: &str) -> Result<Vec<String>> {
-    let visto: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM project_trade_seen WHERE project_id = ?1)", [proyecto], |f| f.get(0))?;
-    if visto { del_proyecto(db, proyecto) } else { al_dia(db, proyecto, ruta) }
+/// Like `al_dia`, but only if it was never looked at (for places that mustn't look at the disk every time).
+pub fn al_dia_si_falta(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+    let seen: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM project_trade_seen WHERE project_id = ?1)", [project], |row| row.get(0))?;
+    if seen { del_proyecto(db, project) } else { al_dia(db, project, path) }
 }
 
-/// Antes de mirar desde una carpeta (MCP, CLI): sus oficios, si nunca se miraron. Un proyecto que aún
-/// no tiene nada queda apuntado si tiene alguno (las memorias de su oficio ya le sirven), y uno sin
-/// oficios no se apunta. Desde una carpeta general, nada.
-pub fn preparar(db: &Connection, ruta: &str) -> Result<()> {
-    if ruta.is_empty() || crate::proyecto::es_general(ruta) {
+/// Before looking from a folder (MCP, CLI): its trades, if never looked at. A project that has
+/// nothing yet gets recorded if it has any (the memories of its trade already serve it), and one without
+/// trades isn't recorded. From a general folder, nothing.
+pub fn preparar(db: &Connection, path: &str) -> Result<()> {
+    if path.is_empty() || crate::proyecto::es_general(path) {
         return Ok(());
     }
-    match crate::proyecto::resolver(db, ruta)? {
+    match crate::proyecto::resolver(db, path)? {
         Some((id, _)) if id > 0 => {
-            al_dia_si_falta(db, id, ruta)?;
+            al_dia_si_falta(db, id, path)?;
         }
         Some(_) => {}
         None => {
-            if !detectar(Path::new(ruta)).is_empty() {
-                let id = crate::proyecto::registrar(db, ruta)?;
-                al_dia(db, id, ruta)?;
+            if !detectar(Path::new(path)).is_empty() {
+                let id = crate::proyecto::registrar(db, path)?;
+                al_dia(db, id, path)?;
             }
         }
     }
     Ok(())
 }
 
-/// `omoi trades add`: el proyecto tiene este oficio aunque no se detecte.
-pub fn anadir(db: &Connection, proyecto: i64, oficios: &[String]) -> Result<()> {
-    en_bloque(db, || {
-        for t in oficios {
+/// `omoi trades add`: the project has this trade even if not detected.
+pub fn anadir(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+    in_savepoint(db, || {
+        for t in trades {
             db.execute(
                 "INSERT INTO project_trade(project_id, trade, how) VALUES (?1, ?2, ?3) ON CONFLICT(project_id, trade) DO UPDATE SET how = ?3",
-                params![proyecto, t, ANADIDO],
+                params![project, t, ADDED],
             )?;
         }
-        apuntar_visto(db, proyecto, None)
+        mark_seen(db, project, None)
     })
 }
 
-/// `omoi trades remove`: el proyecto no tiene este oficio aunque se detecte.
-pub fn quitar(db: &Connection, proyecto: i64, oficios: &[String]) -> Result<()> {
-    en_bloque(db, || {
-        for t in oficios {
+/// `omoi trades remove`: the project doesn't have this trade even if detected.
+pub fn quitar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+    in_savepoint(db, || {
+        for t in trades {
             db.execute(
                 "INSERT INTO project_trade(project_id, trade, how) VALUES (?1, ?2, ?3) ON CONFLICT(project_id, trade) DO UPDATE SET how = ?3",
-                params![proyecto, t, QUITADO],
+                params![project, t, REMOVED],
             )?;
         }
-        apuntar_visto(db, proyecto, None)
+        mark_seen(db, project, None)
     })
 }
 
-/// `omoi trades set`: exactamente estos, y la detección deja de añadir.
-pub fn fijar(db: &Connection, proyecto: i64, oficios: &[String]) -> Result<()> {
-    en_bloque(db, || {
-        db.execute("DELETE FROM project_trade WHERE project_id = ?1", [proyecto])?;
-        for t in oficios {
-            db.execute("INSERT INTO project_trade(project_id, trade, how) VALUES (?1, ?2, ?3)", params![proyecto, t, ANADIDO])?;
+/// `omoi trades set`: exactly these, and detection stops adding.
+pub fn fijar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+    in_savepoint(db, || {
+        db.execute("DELETE FROM project_trade WHERE project_id = ?1", [project])?;
+        for t in trades {
+            db.execute("INSERT INTO project_trade(project_id, trade, how) VALUES (?1, ?2, ?3)", params![project, t, ADDED])?;
         }
-        apuntar_visto(db, proyecto, Some(true))
+        mark_seen(db, project, Some(true))
     })
 }
 
-/// `omoi trades auto`: se olvida lo puesto a mano y se vuelve a detectar.
-pub fn automatico(db: &Connection, proyecto: i64, ruta: &str) -> Result<Vec<String>> {
-    en_bloque(db, || {
-        db.execute("DELETE FROM project_trade WHERE project_id = ?1", [proyecto])?;
-        db.execute("DELETE FROM project_trade_seen WHERE project_id = ?1", [proyecto])?;
+/// `omoi trades auto`: what was set by hand is forgotten and detection runs again.
+pub fn automatico(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+    in_savepoint(db, || {
+        db.execute("DELETE FROM project_trade WHERE project_id = ?1", [project])?;
+        db.execute("DELETE FROM project_trade_seen WHERE project_id = ?1", [project])?;
         Ok(())
     })?;
-    al_dia(db, proyecto, ruta)
+    al_dia(db, project, path)
 }
 
-/// Cuántas memorias de cada oficio hay.
+/// How many memories of each trade there are.
 pub fn memorias_por_oficio(db: &Connection) -> Result<HashMap<String, i64>> {
     let mut q = db.prepare(
         "SELECT substr(t.value, 7), count(*) FROM memory o, json_each(o.tags) t
          WHERE o.project_id = 0 AND o.space_id IS NULL AND instr(o.tags, '\"trade:') > 0 AND t.value LIKE 'trade:%'
          GROUP BY 1",
     )?;
-    Ok(q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+    Ok(q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
 }
 
-// --- Detección ------------------------------------------------------------------------------------
+// --- Detection ------------------------------------------------------------------------------------
 
-/// Subcarpetas de la raíz que se miran como mucho (un monorepo: `app/`, `web/`, `android/`…): las
-/// primeras por orden alfabético, así que con más de estas se miran siempre las mismas.
-const MAX_SUBCARPETAS: usize = 60;
-/// Entradas de una carpeta que se miran como mucho (las primeras por orden alfabético).
-const MAX_ENTRADAS: usize = 3000;
-/// Entradas de una carpeta que se llegan a listar para ordenarlas. Solo una carpeta con más que estas
-/// depende del orden en que las da el sistema.
-const MAX_LISTADAS: usize = 20_000;
-/// Bytes que se leen de un fichero para mirar su contenido.
+/// Root subfolders looked at at most (a monorepo: `app/`, `web/`, `android/`…): the
+/// first ones in alphabetical order, so with more than these the same ones are always looked at.
+const MAX_SUBFOLDERS: usize = 60;
+/// Entries of a folder looked at at most (the first ones in alphabetical order).
+const MAX_ENTRIES: usize = 3000;
+/// Entries of a folder that get listed to sort them. Only a folder with more than these
+/// depends on the order the system gives them.
+const MAX_LISTED: usize = 20_000;
+/// Bytes read from a file to look at its content.
 const MAX_BYTES: u64 = 256 * 1024;
-/// Ficheros `.php` de una carpeta cuyo principio se mira (la cabecera «Plugin Name:»).
+/// `.php` files of a folder whose start is looked at (the «Plugin Name:» header).
 const MAX_PHP: usize = 10;
-/// Dónde se guarda en `meta` (local, no viaja) lo detectado en un proyecto: `<firma>\t<oficios en JSON>`.
-const CLAVE_DETECTADOS: &str = "oficios_detectados:";
+/// Where what was detected in a project is stored in `meta` (local, doesn't travel): `<signature>\t<trades as JSON>`.
+const DETECTED_KEY: &str = "oficios_detectados:";
 
-/// Subcarpetas que no dicen nada del oficio (dependencias, compilados, cachés).
-fn ignorada(nombre: &str) -> bool {
-    let l = nombre.to_lowercase();
+/// Subfolders that say nothing about the trade (dependencies, build output, caches).
+fn ignored(name: &str) -> bool {
+    let l = name.to_lowercase();
     l.starts_with('.')
         || matches!(
             l.as_str(),
@@ -470,31 +470,31 @@ fn ignorada(nombre: &str) -> bool {
         )
 }
 
-/// Los ficheros (en minúsculas) cuyo contenido se mira además de su nombre (y los `.php`).
-fn se_lee(l: &str) -> bool {
+/// The files (lowercase) whose content is looked at besides their name (and the `.php` ones).
+fn is_read(l: &str) -> bool {
     matches!(l, "build.gradle" | "build.gradle.kts" | "settings.gradle" | "settings.gradle.kts" | "package.json" | "style.css" | "pubspec.yaml" | "manifest.json")
 }
 
-/// Una entrada de una carpeta. De los ficheros que se leen, su huella: tamaño, última modificación
-/// (en ns) y si está solo en la nube.
+/// An entry of a folder. For the files that are read, their fingerprint: size, last modification
+/// (in ns) and whether it is cloud-only.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Entrada {
-    nombre: String,
-    es_dir: bool,
-    huella: Option<(u64, u128, bool)>,
+struct Entry {
+    name: String,
+    is_dir: bool,
+    fingerprint: Option<(u64, u128, bool)>,
 }
 
-impl Entrada {
-    /// Si no se puede leer sin descargarlo (OneDrive, Dropbox… con «archivos a petición»).
-    fn en_la_nube(&self) -> bool {
-        self.huella.is_some_and(|h| h.2)
+impl Entry {
+    /// Whether it can't be read without downloading it (OneDrive, Dropbox… with «files on demand»).
+    fn is_cloud_only(&self) -> bool {
+        self.fingerprint.is_some_and(|h| h.2)
     }
 }
 
-/// Si unos atributos de Windows son los de un fichero que solo está en la nube: leerlo (o, con
-/// `RECALL_ON_OPEN`, abrirlo) lo descarga. `OFFLINE` es el de siempre de los ficheros archivados.
+/// Whether some Windows attributes are those of a cloud-only file: reading it (or, with
+/// `RECALL_ON_OPEN`, opening it) downloads it. `OFFLINE` is the long-standing one for archived files.
 #[cfg(any(windows, test))]
-fn atributos_de_nube(a: u32) -> bool {
+fn cloud_attributes(a: u32) -> bool {
     const OFFLINE: u32 = 0x0000_1000;
     const RECALL_ON_OPEN: u32 = 0x0004_0000;
     const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
@@ -502,114 +502,114 @@ fn atributos_de_nube(a: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn en_la_nube(m: &std::fs::Metadata) -> bool {
+fn metadata_is_cloud_only(m: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    atributos_de_nube(m.file_attributes())
+    cloud_attributes(m.file_attributes())
 }
 
 #[cfg(not(windows))]
-fn en_la_nube(_: &std::fs::Metadata) -> bool {
+fn metadata_is_cloud_only(_: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Las entradas de una carpeta, por orden alfabético (sin mirar mayúsculas) y hasta `MAX_ENTRADAS`.
-/// Lo que se sabe de cada fichero sale del listado (en Windows, `metadata` de una entrada viene con
-/// él y no abre el fichero), así que un fichero que solo está en la nube no se descarga por listarlo.
-fn leer_carpeta(dir: &Path) -> Vec<Entrada> {
+/// The entries of a folder, in alphabetical order (case-insensitive) and up to `MAX_ENTRIES`.
+/// What is known about each file comes from the listing (on Windows, an entry's `metadata` comes with
+/// it and doesn't open the file), so a cloud-only file isn't downloaded by listing it.
+fn read_folder(dir: &Path) -> Vec<Entry> {
     let Ok(it) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut v: Vec<(String, std::fs::DirEntry)> = it.flatten().take(MAX_LISTADAS).map(|e| (e.file_name().to_string_lossy().into_owned(), e)).collect();
+    let mut v: Vec<(String, std::fs::DirEntry)> = it.flatten().take(MAX_LISTED).map(|e| (e.file_name().to_string_lossy().into_owned(), e)).collect();
     v.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.0.cmp(&b.0)));
-    v.truncate(MAX_ENTRADAS);
+    v.truncate(MAX_ENTRIES);
     let mut php = 0;
     v.into_iter()
-        .map(|(nombre, e)| {
-            let es_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            let l = nombre.to_lowercase();
-            let lee = !es_dir
-                && (se_lee(&l)
+        .map(|(name, e)| {
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let l = name.to_lowercase();
+            let reads = !is_dir
+                && (is_read(&l)
                     || (l.ends_with(".php") && {
                         php += 1;
                         php <= MAX_PHP
                     }));
-            let huella = lee.then(|| match e.metadata() {
+            let fingerprint = reads.then(|| match e.metadata() {
                 Ok(m) => {
-                    let cuando = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
-                    (m.len(), cuando, en_la_nube(&m))
+                    let when = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                    (m.len(), when, metadata_is_cloud_only(&m))
                 }
                 Err(_) => (0, 0, false),
             });
-            Entrada { nombre, es_dir, huella }
+            Entry { name, is_dir, fingerprint }
         })
         .collect()
 }
 
-/// Lo que se ve de una carpeta para detectar sus oficios, sin leer ningún fichero.
+/// What is seen of a folder to detect its trades, without reading any file.
 #[derive(Debug)]
-struct Carpeta {
-    /// Su nombre dentro de la raíz (vacío: la raíz).
+struct Folder {
+    /// Its name inside the root (empty: the root).
     rel: String,
-    entradas: Vec<Entrada>,
-    /// Tiene `hooks/hooks.json` (un mod de Claude Code).
+    entries: Vec<Entry>,
+    /// Has `hooks/hooks.json` (a Claude Code mod).
     hooks: bool,
-    /// Tiene `src/main/AndroidManifest.xml` (un módulo de Android).
-    manifiesto: bool,
+    /// Has `src/main/AndroidManifest.xml` (an Android module).
+    manifest: bool,
 }
 
-/// La raíz de un proyecto y un nivel de subcarpetas, tal como se ven en sus listados.
+/// A project's root and one level of subfolders, as seen in their listings.
 #[derive(Debug)]
-struct Recorrido {
-    raiz: std::path::PathBuf,
-    carpetas: Vec<Carpeta>,
+struct Walk {
+    root: std::path::PathBuf,
+    folders: Vec<Folder>,
 }
 
-/// La raíz y sus subcarpetas (sin dependencias, compilados ni ocultas), las primeras `MAX_SUBCARPETAS`
-/// por orden alfabético. Lista carpetas y nada más: no lee ningún fichero.
-fn recorrer(raiz: &Path) -> Recorrido {
-    let carpeta = |rel: String, dir: &Path| {
-        let entradas = leer_carpeta(dir);
-        let hay_dir = |n: &str| entradas.iter().any(|e| e.es_dir && e.nombre.eq_ignore_ascii_case(n));
-        let hooks = hay_dir("hooks") && dir.join("hooks").join("hooks.json").is_file();
-        let manifiesto = hay_dir("src") && dir.join("src").join("main").join("AndroidManifest.xml").is_file();
-        Carpeta { rel, entradas, hooks, manifiesto }
+/// The root and its subfolders (without dependencies, build output or hidden ones), the first `MAX_SUBFOLDERS`
+/// in alphabetical order. Lists folders and nothing else: doesn't read any file.
+fn walk(root: &Path) -> Walk {
+    let folder = |rel: String, dir: &Path| {
+        let entries = read_folder(dir);
+        let has_dir = |n: &str| entries.iter().any(|e| e.is_dir && e.name.eq_ignore_ascii_case(n));
+        let hooks = has_dir("hooks") && dir.join("hooks").join("hooks.json").is_file();
+        let manifest = has_dir("src") && dir.join("src").join("main").join("AndroidManifest.xml").is_file();
+        Folder { rel, entries, hooks, manifest }
     };
-    let primera = carpeta(String::new(), raiz);
-    let subs: Vec<String> = primera.entradas.iter().filter(|e| e.es_dir && !ignorada(&e.nombre)).take(MAX_SUBCARPETAS).map(|e| e.nombre.clone()).collect();
-    let mut carpetas = vec![primera];
-    carpetas.extend(subs.into_iter().map(|n| {
-        let d = raiz.join(&n);
-        carpeta(n, &d)
+    let first = folder(String::new(), root);
+    let subs: Vec<String> = first.entries.iter().filter(|e| e.is_dir && !ignored(&e.name)).take(MAX_SUBFOLDERS).map(|e| e.name.clone()).collect();
+    let mut folders = vec![first];
+    folders.extend(subs.into_iter().map(|n| {
+        let d = root.join(&n);
+        folder(n, &d)
     }));
-    Recorrido { raiz: raiz.to_path_buf(), carpetas }
+    Walk { root: root.to_path_buf(), folders }
 }
 
-impl Recorrido {
-    /// Cambia si cambia algo de lo que depende la detección: un nombre, una carpeta, o el tamaño, la
-    /// fecha o el estado en la nube de un fichero que se lee.
-    fn firma(&self) -> String {
+impl Walk {
+    /// Changes if anything detection depends on changes: a name, a folder, or the size, the
+    /// date or the cloud state of a file that is read.
+    fn signature(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        for c in &self.carpetas {
-            h.update(format!("{}\0{}{}\n", c.rel, u8::from(c.hooks), u8::from(c.manifiesto)).as_bytes());
-            for e in &c.entradas {
-                h.update(format!("{}\0{}\0{:?}\n", e.nombre, u8::from(e.es_dir), e.huella).as_bytes());
+        for c in &self.folders {
+            h.update(format!("{}\0{}{}\n", c.rel, u8::from(c.hooks), u8::from(c.manifest)).as_bytes());
+            for e in &c.entries {
+                h.update(format!("{}\0{}\0{:?}\n", e.name, u8::from(e.is_dir), e.fingerprint).as_bytes());
             }
         }
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Los oficios, leyendo el principio de los ficheros que se leen (nunca el de uno en la nube).
-    fn oficios(&self) -> Vec<String> {
+    /// The trades, reading the start of the files that are read (never that of a cloud-only one).
+    fn trades(&self) -> Vec<String> {
         let mut v = BTreeSet::new();
-        let mut gradle_sin_android = false;
-        for c in &self.carpetas {
-            mirar(&self.raiz.join(&c.rel), c, c.rel.is_empty(), &mut v, &mut gradle_sin_android);
+        let mut gradle_without_android = false;
+        for c in &self.folders {
+            inspect(&self.root.join(&c.rel), c, c.rel.is_empty(), &mut v, &mut gradle_without_android);
         }
-        // Un Gradle sin Android (en ningún sitio) es de la JVM: en un proyecto Android, el `settings.gradle`
-        // de la raíz no siempre lo nombra.
-        if gradle_sin_android && !v.contains("android") {
+        // A Gradle without Android (anywhere) is JVM: in an Android project, the root's `settings.gradle`
+        // doesn't always name it.
+        if gradle_without_android && !v.contains("android") {
             v.insert("jvm".into());
         }
-        // Una app de escritorio hecha con tecnología web no es una web (su `vite.config` tampoco lo dice).
+        // A desktop app built with web technology is not a website (its `vite.config` doesn't say so either).
         if v.contains("escritorio-node") {
             v.remove("web");
         }
@@ -617,35 +617,35 @@ impl Recorrido {
     }
 }
 
-/// El principio de un fichero, en minúsculas (vacío si no se puede leer). `None` si solo está en la
-/// nube: leerlo lo descargaría (en una carpeta de OneDrive, en cada arranque de sesión).
-fn principio(ruta: &Path, e: &Entrada) -> Option<String> {
+/// The start of a file, lowercase (empty if it can't be read). `None` if it is cloud-only:
+/// reading it would download it (in a OneDrive folder, on every session start).
+fn file_start(path: &Path, e: &Entry) -> Option<String> {
     use std::io::Read;
-    if e.en_la_nube() {
+    if e.is_cloud_only() {
         return None;
     }
     let mut s = Vec::new();
-    if let Ok(f) = std::fs::File::open(ruta) {
+    if let Ok(f) = std::fs::File::open(path) {
         let _ = f.take(MAX_BYTES).read_to_end(&mut s);
     }
     Some(String::from_utf8_lossy(&s).to_lowercase())
 }
 
-/// Lo que dice un `package.json` (su texto; `None` si no se pudo leer sin descargarlo): sus dependencias.
-fn de_package_json(texto: Option<String>, v: &mut BTreeSet<String>) {
+/// What a `package.json` says (its text; `None` if it couldn't be read without downloading it): its dependencies.
+fn from_package_json(text: Option<String>, v: &mut BTreeSet<String>) {
     v.insert("node".into());
-    // `principio` lo da en minúsculas: las claves van como `devdependencies`.
-    let Some(Ok(j)) = texto.map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { return };
+    // `file_start` gives it lowercase: the keys come as `devdependencies`.
+    let Some(Ok(j)) = text.map(|t| serde_json::from_str::<serde_json::Value>(&t)) else { return };
     let deps: HashSet<String> = ["dependencies", "devDependencies", "peerDependencies"]
         .iter()
         .filter_map(|k| j.get(k.to_lowercase()).and_then(|d| d.as_object()))
         .flat_map(|d| d.keys().cloned())
         .collect();
-    let movil = deps.contains("react-native") || deps.contains("expo");
-    if movil {
+    let mobile = deps.contains("react-native") || deps.contains("expo");
+    if mobile {
         v.insert("react-native".into());
     }
-    // Una app de escritorio con Electron o Tauri (su interfaz es web, pero no es una web).
+    // A desktop app with Electron or Tauri (its interface is web, but it isn't a website).
     if ["electron", "@tauri-apps/api", "@tauri-apps/cli", "nw", "neutralinojs"].iter().any(|d| deps.contains(*d)) {
         v.insert("escritorio-node".into());
     }
@@ -674,174 +674,174 @@ fn de_package_json(texto: Option<String>, v: &mut BTreeSet<String>) {
         "webpack",
         "parcel",
     ];
-    // React a secas es web salvo en una app de React Native (que también lo lleva).
-    if WEB.iter().any(|w| deps.contains(*w)) || (!movil && (deps.contains("react") || deps.contains("react-dom"))) {
+    // Plain React is web except in a React Native app (which also carries it).
+    if WEB.iter().any(|w| deps.contains(*w)) || (!mobile && (deps.contains("react") || deps.contains("react-dom"))) {
         v.insert("web".into());
     }
 }
 
-/// Los oficios de un proyecto por sus ficheros: la raíz y un nivel de subcarpetas (sin dependencias,
-/// compilados ni ocultas), sin recorrer el árbol. Determinista: los mismos ficheros dan lo mismo.
-pub fn detectar(raiz: &Path) -> Vec<String> {
-    recorrer(raiz).oficios()
+/// A project's trades by its files: the root and one level of subfolders (without dependencies,
+/// build output or hidden ones), without walking the tree. Deterministic: the same files give the same result.
+pub fn detectar(root: &Path) -> Vec<String> {
+    walk(root).trades()
 }
 
-/// Como [`detectar`], con lo detectado la última vez en este proyecto si sus carpetas no han cambiado
-/// ([`Recorrido::firma`]): así solo se listan carpetas, y el principio de sus ficheros se lee cuando
-/// alguno cambia (en OneDrive o en una carpeta de red, leerlos en cada arranque es lento).
-fn detectar_guardado(db: &Connection, proyecto: i64, raiz: &Path) -> Vec<String> {
-    let r = recorrer(raiz);
-    let firma = r.firma();
-    let clave = format!("{CLAVE_DETECTADOS}{proyecto}");
-    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).optional().ok().flatten();
-    if let Some((f, json)) = guardado.as_deref().and_then(|g| g.split_once('\t'))
-        && f == firma
+/// Like [`detectar`], with what was detected last time in this project if its folders haven't changed
+/// ([`Walk::signature`]): this way only folders are listed, and the start of their files is read when
+/// one changes (on OneDrive or a network folder, reading them on every start is slow).
+fn detect_cached(db: &Connection, project: i64, root: &Path) -> Vec<String> {
+    let r = walk(root);
+    let signature = r.signature();
+    let key = format!("{DETECTED_KEY}{project}");
+    let stored: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&key], |row| row.get(0)).optional().ok().flatten();
+    if let Some((f, json)) = stored.as_deref().and_then(|g| g.split_once('\t'))
+        && f == signature
         && let Ok(v) = serde_json::from_str::<Vec<String>>(json)
     {
         return v;
     }
-    let v = r.oficios();
+    let v = r.trades();
     if let Ok(json) = serde_json::to_string(&v) {
-        // Solo es un atajo: si no se puede guardar, la próxima vez se vuelve a leer.
-        let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, format!("{firma}\t{json}")]);
+        // It's only a shortcut: if it can't be saved, next time it is read again.
+        let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![key, format!("{signature}\t{json}")]);
     }
     v
 }
 
-fn mirar(dir: &Path, c: &Carpeta, raiz: bool, v: &mut BTreeSet<String>, gradle_sin_android: &mut bool) {
-    let mut aqui: BTreeSet<String> = BTreeSet::new();
-    let mut paquetes: BTreeSet<String> = BTreeSet::new();
-    let mut pon = |t: &str| {
-        aqui.insert(t.to_string());
+fn inspect(dir: &Path, c: &Folder, is_root: bool, v: &mut BTreeSet<String>, gradle_without_android: &mut bool) {
+    let mut here: BTreeSet<String> = BTreeSet::new();
+    let mut packages: BTreeSet<String> = BTreeSet::new();
+    let mut put = |t: &str| {
+        here.insert(t.to_string());
     };
-    let nombres: HashSet<String> = c.entradas.iter().map(|e| e.nombre.to_lowercase()).collect();
-    for e in &c.entradas {
-        let l = e.nombre.to_lowercase();
+    let names: HashSet<String> = c.entries.iter().map(|e| e.name.to_lowercase()).collect();
+    for e in &c.entries {
+        let l = e.name.to_lowercase();
         let ext = l.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-        if e.es_dir {
+        if e.is_dir {
             match l.as_str() {
-                "wp-content" | "wp-includes" => pon("wordpress"),
-                "skill-package" => pon("alexa"),
-                ".claude-plugin" => pon("plugin-claude"),
-                "src-tauri" => pon("escritorio-node"),
-                "projectsettings" if nombres.contains("assets") => pon("unity"),
-                _ if ext == "xcodeproj" || ext == "xcworkspace" => pon("ios"),
+                "wp-content" | "wp-includes" => put("wordpress"),
+                "skill-package" => put("alexa"),
+                ".claude-plugin" => put("plugin-claude"),
+                "src-tauri" => put("escritorio-node"),
+                "projectsettings" if names.contains("assets") => put("unity"),
+                _ if ext == "xcodeproj" || ext == "xcworkspace" => put("ios"),
                 _ => {}
             }
             continue;
         }
-        let ruta = dir.join(&e.nombre);
-        let leer = || principio(&ruta, e);
+        let path = dir.join(&e.name);
+        let read = || file_start(&path, e);
         match l.as_str() {
             "build.gradle" | "build.gradle.kts" | "settings.gradle" | "settings.gradle.kts" => {
-                // Uno que solo está en la nube no dice nada (leerlo lo descargaría).
-                match leer() {
-                    Some(t) if t.contains("android") => pon("android"),
-                    Some(_) => *gradle_sin_android = true,
+                // A cloud-only one says nothing (reading it would download it).
+                match read() {
+                    Some(t) if t.contains("android") => put("android"),
+                    Some(_) => *gradle_without_android = true,
                     None => {}
                 }
             }
-            "androidmanifest.xml" => pon("android"),
-            "pom.xml" => pon("jvm"),
-            "cargo.toml" => pon("rust"),
-            "go.mod" => pon("go"),
-            "pyproject.toml" | "setup.py" | "setup.cfg" | "pipfile" | "uv.lock" | "poetry.lock" => pon("python"),
-            "package.json" => de_package_json(leer(), &mut paquetes),
-            "angular.json" => pon("web"),
-            "index.html" | "_config.yml" | "hugo.toml" if raiz => pon("web"),
-            "wp-config.php" => pon("wordpress"),
+            "androidmanifest.xml" => put("android"),
+            "pom.xml" => put("jvm"),
+            "cargo.toml" => put("rust"),
+            "go.mod" => put("go"),
+            "pyproject.toml" | "setup.py" | "setup.cfg" | "pipfile" | "uv.lock" | "poetry.lock" => put("python"),
+            "package.json" => from_package_json(read(), &mut packages),
+            "angular.json" => put("web"),
+            "index.html" | "_config.yml" | "hugo.toml" if is_root => put("web"),
+            "wp-config.php" => put("wordpress"),
             "style.css" => {
-                if leer().is_some_and(|t| t.contains("theme name:")) {
-                    pon("wordpress");
+                if read().is_some_and(|t| t.contains("theme name:")) {
+                    put("wordpress");
                 }
             }
-            "composer.json" => pon("php"),
-            "gemfile" => pon("ruby"),
+            "composer.json" => put("php"),
+            "gemfile" => put("ruby"),
             "pubspec.yaml" => {
-                pon("dart");
-                if leer().is_some_and(|t| t.contains("flutter")) {
-                    pon("flutter");
+                put("dart");
+                if read().is_some_and(|t| t.contains("flutter")) {
+                    put("flutter");
                 }
             }
-            "podfile" => pon("ios"),
-            "package.swift" => pon("swift"),
-            "cmakelists.txt" => pon("cpp"),
-            "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => pon("docker"),
-            "project.godot" => pon("godot"),
+            "podfile" => put("ios"),
+            "package.swift" => put("swift"),
+            "cmakelists.txt" => put("cpp"),
+            "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => put("docker"),
+            "project.godot" => put("godot"),
             "manifest.json" => {
-                if leer().is_some_and(|t| t.contains("\"manifest_version\"")) {
-                    pon("browser-extension");
+                if read().is_some_and(|t| t.contains("\"manifest_version\"")) {
+                    put("browser-extension");
                 }
             }
-            "deno.json" | "deno.jsonc" => pon("deno"),
-            "tauri.conf.json" => pon("escritorio-node"),
-            "ask-resources.json" => pon("alexa"),
+            "deno.json" | "deno.jsonc" => put("deno"),
+            "tauri.conf.json" => put("escritorio-node"),
+            "ask-resources.json" => put("alexa"),
             _ => {}
         }
         if l.starts_with("requirements") && ext == "txt" {
-            pon("python");
+            put("python");
         }
         if l.starts_with("dockerfile.") {
-            pon("docker");
+            put("docker");
         }
         if ["astro.config.", "next.config.", "vite.config.", "nuxt.config.", "svelte.config.", "gatsby-config.", "remix.config."].iter().any(|p| l.starts_with(p)) {
-            pon("web");
+            put("web");
         }
         match ext {
-            "py" | "ipynb" if raiz => pon("python"),
-            "csproj" | "fsproj" | "vbproj" | "sln" => pon("dotnet"),
-            "tf" => pon("terraform"),
-            "stl" | "3mf" | "gcode" => pon("3d-print"),
+            "py" | "ipynb" if is_root => put("python"),
+            "csproj" | "fsproj" | "vbproj" | "sln" => put("dotnet"),
+            "tf" => put("terraform"),
+            "stl" | "3mf" | "gcode" => put("3d-print"),
             "php" => {
-                pon("php");
-                // Un plugin de WordPress: su fichero principal lleva la cabecera «Plugin Name:» (se
-                // miran los `MAX_PHP` primeros, los que tienen huella).
-                if e.huella.is_some() && leer().is_some_and(|t| t.contains("plugin name:")) {
-                    pon("wordpress");
+                put("php");
+                // A WordPress plugin: its main file carries the «Plugin Name:» header (the
+                // first `MAX_PHP` are looked at, the ones with a fingerprint).
+                if e.fingerprint.is_some() && read().is_some_and(|t| t.contains("plugin name:")) {
+                    put("wordpress");
                 }
             }
             _ => {}
         }
     }
-    // Un mod de Claude Code: `hooks/hooks.json` (en la raíz o en un módulo).
+    // A Claude Code mod: `hooks/hooks.json` (at the root or in a module).
     if c.hooks {
-        pon("plugin-claude");
+        put("plugin-claude");
     }
-    // El manifiesto de Android vive en `<módulo>/src/main/`.
-    if c.manifiesto {
-        pon("android");
+    // The Android manifest lives in `<module>/src/main/`.
+    if c.manifest {
+        put("android");
     }
-    v.extend(aqui);
-    v.extend(paquetes);
+    v.extend(here);
+    v.extend(packages);
 }
 
-// --- Fugas: lo de un cliente que no debe ir en una memoria de oficio ----------------------------
+// --- Leaks: what of a client must not go in a trade memory ----------------------------------------
 
-/// Algo del texto de una memoria de oficio que parece de un proyecto o de un cliente.
+/// Something in the text of a trade memory that looks like a project's or a client's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Fuga {
-    /// `project` (nombre de un proyecto), `space` (un espacio: un cliente), `path` (ruta absoluta),
-    /// `repository` (URL de un repositorio conocido o por SSH) o `domain` (un dominio que solo sale en
-    /// memorias de un cliente, o el servidor git de uno).
+    /// `project` (a project's name), `space` (a space: a client), `path` (absolute path),
+    /// `repository` (URL of a known repository or via SSH) or `domain` (a domain that only appears in
+    /// a client's memories, or one's git server).
     #[serde(rename = "type")]
     pub tipo: &'static str,
     pub text: String,
-    /// Dónde está: `title`, `content`, `paths`, `tag`, `key`, `data` o `answer` (vacío si no se sabe).
-    /// Una clave que nombra un proyecto («kumi-ruta») se arregla en un momento si se sabe que es la clave.
+    /// Where it is: `title`, `content`, `paths`, `tag`, `key`, `data` or `answer` (empty if unknown).
+    /// A key that names a project («kumi-ruta») is fixed in a moment if it is known to be the key.
     #[serde(rename = "field", skip_serializing_if = "str::is_empty")]
     pub campo: &'static str,
 }
 
-/// Nombres de proyecto tan genéricos que nombrarlos no dice de quién es (y los de los oficios).
-const GENERICOS: &[&str] = &[
+/// Project names so generic that naming them doesn't say whose it is (and the trade names).
+const GENERIC: &[&str] = &[
     "app", "apps", "web", "site", "website", "server", "client", "backend", "frontend", "api", "docs", "test", "tests", "demo", "main", "core", "common",
     "shared", "utils", "tools", "scripts", "plugin", "plugins", "mobile", "scratchpad", "temp", "project", "projects", "proyecto", "build", "release",
     "android", "kotlin", "java", "gradle", "react", "python", "node", "docker", "wordpress", "rust", "cargo", "astro", "next", "vite", "flutter", "swift",
     "theme", "themes", "library", "lib", "sdk", "cli", "bot", "service", "worker", "landing", "blog", "shop", "store", "admin", "dashboard", "src",
 ];
 
-/// Extensiones de fichero que, al final de una palabra con punto, no son un dominio (`README.md`).
-const EXTENSIONES: &[&str] = &[
+/// File extensions that, at the end of a dotted word, are not a domain (`README.md`).
+const EXTENSIONS: &[&str] = &[
     "rs", "kt", "kts", "java", "py", "js", "ts", "tsx", "jsx", "mjs", "cjs", "json", "jsonc", "md", "mdx", "toml", "yaml", "yml", "xml", "gradle", "txt", "html",
     "htm", "css", "scss", "php", "lock", "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "sh", "ps1", "bat", "cmd", "exe", "dll", "so", "dylib", "apk",
     "aab", "db", "sql", "log", "cfg", "ini", "conf", "properties", "vue", "svelte", "astro", "go", "rb", "cs", "swift", "c", "h", "cpp", "hpp", "zip",
@@ -850,38 +850,38 @@ const EXTENSIONES: &[&str] = &[
     "patch", "diff", "orig", "bak", "tmp", "old", "dat", "pak", "ttf", "otf", "woff", "woff2", "map", "min", "spec", "test", "local", "example", "sample",
 ];
 
-/// Forjas públicas: su dominio no es de nadie (un repositorio en ellas sí, si es de un proyecto conocido).
-const FORJAS: &[&str] = &["github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "dev.azure.com", "ssh.dev.azure.com", "sr.ht", "git.sr.ht", "huggingface.co"];
+/// Public forges: their domain belongs to nobody (a repository on them does, if it belongs to a known project).
+const FORGES: &[&str] = &["github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "dev.azure.com", "ssh.dev.azure.com", "sr.ht", "git.sr.ht", "huggingface.co"];
 
-/// Si `nombre` (en minúsculas) sale en `texto` (en minúsculas) como palabra entera.
-fn aparece(texto: &str, nombre: &str) -> bool {
-    if nombre.is_empty() {
+/// Whether `name` (lowercase) appears in `text` (lowercase) as a whole word.
+fn appears(text: &str, name: &str) -> bool {
+    if name.is_empty() {
         return false;
     }
-    let borde = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
-    let mut desde = 0;
-    while let Some(i) = texto[desde..].find(nombre) {
-        let ini = desde + i;
-        let fin = ini + nombre.len();
-        if borde(texto[..ini].chars().next_back()) && borde(texto[fin..].chars().next()) {
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    let mut from = 0;
+    while let Some(i) = text[from..].find(name) {
+        let start = from + i;
+        let end = start + name.len();
+        if boundary(text[..start].chars().next_back()) && boundary(text[end..].chars().next()) {
             return true;
         }
-        desde = ini + texto[ini..].chars().next().map_or(1, char::len_utf8);
+        from = start + text[start..].chars().next().map_or(1, char::len_utf8);
     }
     false
 }
 
-/// Las palabras del texto, partidas por espacios y por lo que suele rodear una ruta o una URL.
-fn palabras(texto: &str) -> impl Iterator<Item = &str> {
-    texto
+/// The words of the text, split by spaces and by what usually surrounds a path or a URL.
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text
         .split(|c: char| c.is_whitespace() || "`\"'«»()[]<>,;|*".contains(c))
         .map(|p| p.trim_end_matches(['.', ':', '?', '!']))
         .filter(|p| !p.is_empty())
 }
 
-/// Si una palabra es una ruta absoluta de las que dicen de quién es: de una unidad de Windows (salvo
-/// `Program Files` y `Windows`), una carpeta compartida, o una casa o una web de Unix.
-fn ruta_personal(p: &str) -> bool {
+/// Whether a word is an absolute path of the kind that says whose it is: on a Windows drive (except
+/// `Program Files` and `Windows`), a shared folder, or a Unix home or web root.
+fn personal_path(p: &str) -> bool {
     let b = p.as_bytes();
     let l = p.to_lowercase().replace('\\', "/");
     if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
@@ -893,37 +893,37 @@ fn ruta_personal(p: &str) -> bool {
     ["/home/", "/users/", "/var/www/", "/srv/", "/root/"].iter().any(|s| l.starts_with(s) && l.len() > s.len())
 }
 
-/// El dominio de una palabra (`https://a.b.com/x` o `a.b.com`), en minúsculas, si lo parece.
-fn dominio(p: &str) -> Option<String> {
+/// The domain of a word (`https://a.b.com/x` or `a.b.com`), lowercase, if it looks like one.
+fn domain(p: &str) -> Option<String> {
     let l = p.to_lowercase();
-    let resto = l.split_once("://").map_or(l.as_str(), |(_, r)| r);
-    let resto = resto.rsplit_once('@').map_or(resto, |(_, r)| r);
-    let host = resto.split(['/', '?', '#']).next()?.split(':').next()?.trim_end_matches('.');
-    let etiquetas: Vec<&str> = host.split('.').collect();
-    let tld = etiquetas.last()?;
-    let valido = etiquetas.len() >= 2
-        && etiquetas.iter().all(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    let rest = l.split_once("://").map_or(l.as_str(), |(_, r)| r);
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next()?.split(':').next()?.trim_end_matches('.');
+    let labels: Vec<&str> = host.split('.').collect();
+    let tld = labels.last()?;
+    let valid = labels.len() >= 2
+        && labels.iter().all(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
         && tld.len() >= 2
         && tld.chars().all(|c| c.is_ascii_alphabetic())
-        && (l.contains("://") || !EXTENSIONES.contains(tld));
-    valido.then(|| host.to_string())
+        && (l.contains("://") || !EXTENSIONS.contains(tld));
+    valid.then(|| host.to_string())
 }
 
-/// Los dominios que aparecen en un texto.
-fn dominios_en(texto: &str) -> HashSet<String> {
-    palabras(texto).filter_map(dominio).collect()
+/// The domains that appear in a text.
+fn domains_in(text: &str) -> HashSet<String> {
+    words(text).filter_map(domain).collect()
 }
 
-/// Los dos últimos trozos de un dominio (`gitlab.acme.com` → `acme.com`).
+/// The last two labels of a domain (`gitlab.acme.com` → `acme.com`).
 fn registrable(host: &str) -> String {
     let v: Vec<&str> = host.split('.').collect();
     v[v.len().saturating_sub(2)..].join(".")
 }
 
-/// Las formas de un nombre (ya en minúsculas y sin acentos) que se buscan en el texto: tal cual, con
-/// cada separador cambiado por los otros y sin separadores («social-publish», «social publish»,
+/// The forms of a name (already lowercase and without accents) searched for in the text: as is, with
+/// each separator swapped for the others and without separators («social-publish», «social publish»,
 /// «social_publish», «socialpublish»).
-fn variantes(n: &str) -> Vec<String> {
+fn variants(n: &str) -> Vec<String> {
     let mut v = vec![n.to_string(), n.replace(['-', '_'], " "), n.replace(['-', ' '], "_"), n.replace(['_', ' '], "-"), n.replace(['-', '_', ' ', '.'], "")];
     v.retain(|x| !x.is_empty());
     v.sort();
@@ -931,10 +931,10 @@ fn variantes(n: &str) -> Vec<String> {
     v
 }
 
-/// Las etiquetas reservadas no dicen nada de nadie: las de oficio (`trade:`, `trade-for:`), la fecha de
-/// revisión (`review:`) y las de estado (`open`, `blocking`, `resolved`, `status`). De la de la clave
-/// (`topic:<clave>`) cuenta la clave. Devuelve lo que hay que mirar de una etiqueta.
-fn etiqueta_libre(t: &str) -> Option<&str> {
+/// Reserved tags say nothing about anyone: the trade ones (`trade:`, `trade-for:`), the review
+/// date (`review:`) and the status ones (`open`, `blocking`, `resolved`, `status`). Of the key one
+/// (`topic:<key>`) the key counts. Returns what must be looked at of a tag.
+fn free_tag(t: &str) -> Option<&str> {
     use crate::memoria::{ABIERTA, BLOQUEANTE, ESTADO, ETIQUETA_TEMA, RESUELTA};
     if t.starts_with(PREFIJO) || t.starts_with(PARA) || t.starts_with(crate::revisar::ETIQUETA_FECHA) || [ABIERTA, BLOQUEANTE, RESUELTA, ESTADO].contains(&t) {
         return None;
@@ -942,341 +942,341 @@ fn etiqueta_libre(t: &str) -> Option<&str> {
     Some(t.strip_prefix(ETIQUETA_TEMA).unwrap_or(t))
 }
 
-/// Las claves y los textos de unos datos (`data`), aplanados, para mirarlos como texto.
-fn aplanar(v: &serde_json::Value, salida: &mut Vec<String>) {
+/// The keys and texts of some data (`data`), flattened, to look at them as text.
+fn flatten(v: &serde_json::Value, out: &mut Vec<String>) {
     match v {
-        serde_json::Value::String(s) => salida.push(s.clone()),
-        serde_json::Value::Array(a) => a.iter().for_each(|x| aplanar(x, salida)),
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| flatten(x, out)),
         serde_json::Value::Object(o) => {
             for (k, x) in o {
-                salida.push(k.clone());
-                aplanar(x, salida);
+                out.push(k.clone());
+                flatten(x, out);
             }
         }
         _ => {}
     }
 }
 
-/// Todo lo que se mira en una memoria de oficio, como un texto: los trozos que se den (título,
-/// contenido, rutas…), sus etiquetas sin las reservadas ([`etiqueta_libre`]), la clave y los datos
-/// (sus claves y sus textos).
-pub fn texto_para_fugas(partes: &[&str], tags: &[String], clave: Option<&str>, datos: Option<&serde_json::Value>) -> String {
-    let campos: Vec<(&'static str, &str)> = partes.iter().map(|p| ("", *p)).collect();
-    campos_para_fugas(&campos, tags, clave, datos).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
+/// Everything looked at in a trade memory, as one text: the pieces given (title,
+/// content, paths…), its tags without the reserved ones ([`free_tag`]), the key and the data
+/// (its keys and its texts).
+pub fn texto_para_fugas(parts: &[&str], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> String {
+    let fields: Vec<(&'static str, &str)> = parts.iter().map(|p| ("", *p)).collect();
+    campos_para_fugas(&fields, tags, key, data).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
 }
 
-/// Lo mismo que [`texto_para_fugas`], campo a campo (`title`, `content`, `paths`, `tag`, `key`,
-/// `data`…), para poder decir dónde está cada fuga.
-pub fn campos_para_fugas(partes: &[(&'static str, &str)], tags: &[String], clave: Option<&str>, datos: Option<&serde_json::Value>) -> Vec<(&'static str, String)> {
-    let mut v: Vec<(&'static str, String)> = partes.iter().map(|(c, p)| (*c, p.to_string())).collect();
-    v.extend(tags.iter().filter_map(|t| etiqueta_libre(t)).map(|t| ("tag", t.to_string())));
-    v.extend(clave.map(|k| ("key", k.to_string())));
-    if let Some(d) = datos {
-        let mut textos = Vec::new();
-        aplanar(d, &mut textos);
-        v.extend(textos.into_iter().map(|t| ("data", t)));
+/// The same as [`texto_para_fugas`], field by field (`title`, `content`, `paths`, `tag`, `key`,
+/// `data`…), to be able to say where each leak is.
+pub fn campos_para_fugas(parts: &[(&'static str, &str)], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> Vec<(&'static str, String)> {
+    let mut v: Vec<(&'static str, String)> = parts.iter().map(|(c, p)| (*c, p.to_string())).collect();
+    v.extend(tags.iter().filter_map(|t| free_tag(t)).map(|t| ("tag", t.to_string())));
+    v.extend(key.map(|k| ("key", k.to_string())));
+    if let Some(d) = data {
+        let mut texts = Vec::new();
+        flatten(d, &mut texts);
+        v.extend(texts.into_iter().map(|t| ("data", t)));
     }
     v.retain(|(_, x)| !x.trim().is_empty());
     v
 }
 
-/// [`fugas`] de unos campos, cada fuga con el campo en que aparece (el primero que la contiene).
-pub fn fugas_en(db: &Connection, campos: &[(&'static str, String)]) -> Result<Vec<Fuga>> {
-    let texto = campos.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-    let norma = |s: &str| crate::nombres::sin_acentos(&s.to_lowercase());
-    let campos_n: Vec<(&'static str, String)> = campos.iter().map(|(c, t)| (*c, norma(t))).collect();
-    let mut v = fugas(db, &texto)?;
+/// [`fugas`] of some fields, each leak with the field it appears in (the first one containing it).
+pub fn fugas_en(db: &Connection, fields: &[(&'static str, String)]) -> Result<Vec<Fuga>> {
+    let text = fields.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
+    let normalize = |s: &str| crate::nombres::sin_acentos(&s.to_lowercase());
+    let normalized: Vec<(&'static str, String)> = fields.iter().map(|(c, t)| (*c, normalize(t))).collect();
+    let mut v = fugas(db, &text)?;
     for f in &mut v {
-        let buscado = norma(&f.text);
-        // Como palabra (con límites, como la detecta `fugas`): «acme» no es del campo que dice «acmeco»;
-        // si no sale así en ninguno (la detectó una variante), el primero que la contenga.
-        f.campo = campos_n
+        let wanted = normalize(&f.text);
+        // As a word (with boundaries, as `fugas` detects it): «acme» isn't from the field that says «acmeco»;
+        // if it doesn't appear that way in any (a variant detected it), the first one containing it.
+        f.campo = normalized
             .iter()
-            .find(|(_, t)| aparece(t, &buscado))
-            .or_else(|| campos_n.iter().find(|(_, t)| t.contains(&buscado)))
+            .find(|(_, t)| appears(t, &wanted))
+            .or_else(|| normalized.iter().find(|(_, t)| t.contains(&wanted)))
             .map(|(c, _)| *c)
             .unwrap_or("");
     }
     Ok(v)
 }
 
-/// Las fugas que impiden guardar. Con el permiso de fugas (`allow_leaks`), solo las que nunca son un
-/// falso positivo: una ruta absoluta personal o la URL de un repositorio.
-pub fn bloquean(fugas: Vec<Fuga>, permitir: bool) -> Vec<Fuga> {
-    if permitir { fugas.into_iter().filter(|f| f.tipo == "path" || f.tipo == "repository").collect() } else { fugas }
+/// The leaks that prevent saving. With the leaks permission (`allow_leaks`), only those that are never a
+/// false positive: a personal absolute path or a repository URL.
+pub fn bloquean(leaks: Vec<Fuga>, allow: bool) -> Vec<Fuga> {
+    if allow { leaks.into_iter().filter(|f| f.tipo == "path" || f.tipo == "repository").collect() } else { leaks }
 }
 
-/// Lo que en el texto de una memoria de oficio parece de un proyecto o de un cliente: nombres de
-/// proyectos y de espacios, rutas absolutas personales, URLs de repositorios conocidos (o por SSH) y
-/// dominios que solo salen en memorias de un cliente (o el de su servidor git). Sin repetir. Los
-/// nombres se comparan sin mayúsculas ni acentos («balua» es «Balùa»).
-pub fn fugas(db: &Connection, texto: &str) -> Result<Vec<Fuga>> {
-    let min = crate::nombres::sin_acentos(&texto.to_lowercase());
+/// What in the text of a trade memory looks like a project's or a client's: names of
+/// projects and spaces, personal absolute paths, URLs of known repositories (or via SSH) and
+/// domains that only appear in a client's memories (or its git server's). Without repeats. Names
+/// are compared case- and accent-insensitively («balua» is «Balùa»).
+pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
+    let lower = crate::nombres::sin_acentos(&text.to_lowercase());
     let mut v: Vec<Fuga> = Vec::new();
-    let mut pon = |tipo: &'static str, text: String| {
-        if !v.iter().any(|f| f.tipo == tipo && f.text.eq_ignore_ascii_case(&text)) {
-            v.push(Fuga { tipo, text, campo: "" });
+    let mut put = |kind: &'static str, text: String| {
+        if !v.iter().any(|f| f.tipo == kind && f.text.eq_ignore_ascii_case(&text)) {
+            v.push(Fuga { tipo: kind, text, campo: "" });
         }
     };
-    // Espacios: un cliente, se llame como se llame (desde 2 letras: «QA», «HP»).
-    let espacios: Vec<(String, String)> = {
+    // Spaces: a client, whatever its name (from 2 letters: «QA», «HP»).
+    let spaces: Vec<(String, String)> = {
         let mut q = db.prepare("SELECT key, name FROM space")?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    for (key, name) in &espacios {
+    for (key, name) in &spaces {
         for n in [key, name] {
             let n = crate::nombres::sin_acentos(&n.trim().to_lowercase());
-            if n.chars().count() >= 2 && variantes(&n).iter().any(|x| x.chars().count() >= 2 && aparece(&min, x)) {
-                pon("space", name.clone());
+            if n.chars().count() >= 2 && variants(&n).iter().any(|x| x.chars().count() >= 2 && appears(&lower, x)) {
+                put("space", name.clone());
             }
         }
     }
-    // Proyectos, salvo los de nombre genérico o muy corto.
-    let proyectos: Vec<(String, String)> = {
+    // Projects, except those with a generic or very short name.
+    let projects: Vec<(String, String)> = {
         let mut q = db.prepare("SELECT name, key FROM project WHERE id != 0")?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    for (name, _) in &proyectos {
+    for (name, _) in &projects {
         let n = crate::nombres::sin_acentos(&name.trim().to_lowercase());
-        if n.chars().count() < 4 || GENERICOS.contains(&n.as_str()) || DETECTABLES.contains(&n.as_str()) || n.starts_with("tmp.") {
+        if n.chars().count() < 4 || GENERIC.contains(&n.as_str()) || DETECTABLES.contains(&n.as_str()) || n.starts_with("tmp.") {
             continue;
         }
-        if variantes(&n).iter().any(|x| x.chars().count() >= 4 && aparece(&min, x)) {
-            pon("project", name.clone());
+        if variants(&n).iter().any(|x| x.chars().count() >= 4 && appears(&lower, x)) {
+            put("project", name.clone());
         }
     }
-    // Rutas absolutas.
-    for p in palabras(texto) {
-        if ruta_personal(p) {
-            pon("path", p.to_string());
+    // Absolute paths.
+    for p in words(text) {
+        if personal_path(p) {
+            put("path", p.to_string());
         }
     }
-    // Repositorios: los de los proyectos conocidos (por su clave o el `origin` de sus carpetas).
-    let mut origenes: Vec<String> = proyectos.iter().filter_map(|(_, k)| k.strip_prefix("git:").map(String::from)).collect();
+    // Repositories: those of known projects (by their key or the `origin` of their folders).
+    let mut origins: Vec<String> = projects.iter().filter_map(|(_, k)| k.strip_prefix("git:").map(String::from)).collect();
     {
         let mut q = db.prepare("SELECT DISTINCT origin FROM project_path WHERE origin != ''")?;
-        origenes.extend(q.query_map([], |f| f.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        origins.extend(q.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
     }
-    origenes.retain(|o| o.contains('/'));
-    // Los servidores git que no son una forja pública son de alguien (`gitlab.acme.com`).
-    let servidores: HashSet<String> = origenes
+    origins.retain(|o| o.contains('/'));
+    // Git servers that aren't a public forge belong to someone (`gitlab.acme.com`).
+    let servers: HashSet<String> = origins
         .iter()
         .filter_map(|o| o.split('/').next())
-        .filter(|h| h.contains('.') && !FORJAS.contains(h))
+        .filter(|h| h.contains('.') && !FORGES.contains(h))
         .map(registrable)
         .collect();
-    for p in palabras(texto) {
+    for p in words(text) {
         let l = p.to_lowercase();
         if l.starts_with("git@") || l.starts_with("ssh://") {
-            pon("repository", p.to_string());
+            put("repository", p.to_string());
             continue;
         }
         if !l.contains("://") && !l.contains('/') {
             continue;
         }
         let n = crate::sync::normalizar_remoto(&l);
-        if origenes.iter().any(|o| n == *o || n.starts_with(&format!("{o}/"))) {
-            pon("repository", p.to_string());
+        if origins.iter().any(|o| n == *o || n.starts_with(&format!("{o}/"))) {
+            put("repository", p.to_string());
         }
     }
-    // Dominios: el de un servidor git de alguien, o uno que sale en memorias de un cliente (de un
-    // espacio o de sus proyectos) y en ninguna global.
-    let aqui = dominios_en(texto);
-    if aqui.is_empty() {
+    // Domains: that of someone's git server, or one that appears in a client's memories (of a
+    // space or its projects) and in no global one.
+    let here = domains_in(text);
+    if here.is_empty() {
         return Ok(v);
     }
-    let mut de_clientes: HashSet<String> = HashSet::new();
-    if !espacios.is_empty() {
+    let mut from_clients: HashSet<String> = HashSet::new();
+    if !spaces.is_empty() {
         let mut q = db.prepare(
             "SELECT m.title || ' ' || m.content FROM memory m
              WHERE m.space_id IS NOT NULL OR m.project_id IN (SELECT id FROM project WHERE space_id IS NOT NULL)",
         )?;
-        for t in q.query_map([], |f| f.get::<_, String>(0))? {
-            de_clientes.extend(dominios_en(&t?).into_iter().filter(|d| aqui.contains(d)));
+        for t in q.query_map([], |row| row.get::<_, String>(0))? {
+            from_clients.extend(domains_in(&t?).into_iter().filter(|d| here.contains(d)));
         }
-        if !de_clientes.is_empty() {
+        if !from_clients.is_empty() {
             let mut q = db.prepare("SELECT m.title || ' ' || m.content FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL")?;
-            for t in q.query_map([], |f| f.get::<_, String>(0))? {
-                for d in dominios_en(&t?) {
-                    de_clientes.remove(&d);
+            for t in q.query_map([], |row| row.get::<_, String>(0))? {
+                for d in domains_in(&t?) {
+                    from_clients.remove(&d);
                 }
             }
         }
     }
-    let mut aqui: Vec<String> = aqui.into_iter().collect();
-    aqui.sort();
-    for d in aqui {
-        if de_clientes.contains(&d) || servidores.contains(&registrable(&d)) {
-            pon("domain", d);
+    let mut here: Vec<String> = here.into_iter().collect();
+    here.sort();
+    for d in here {
+        if from_clients.contains(&d) || servers.contains(&registrable(&d)) {
+            put("domain", d);
         }
     }
     Ok(v)
 }
 
-/// Las memorias cuyo historial no viaja: las que una versión previa de la 1.8.0 (sin publicar) promovió
-/// de un cliente a un oficio con el mismo id y apuntó en `meta('historial_local:<id>')`. Desde que
-/// promover lo de un cliente crea una memoria nueva ([`crear_de_oficio`]) ya no se apunta ninguna; las
-/// que haya siguen sin viajar y su historial solo se enseña desde una carpeta general
+/// The memories whose history doesn't travel: those a pre-1.8.0 version (unreleased) promoted
+/// from a client to a trade with the same id and recorded in `meta('historial_local:<id>')`. Since
+/// promoting a client's memory creates a new memory ([`crear_de_oficio`]) none is recorded any more; those
+/// that exist still don't travel and their history is only shown from a general folder
 /// (`memoria::historial_en`).
 pub(crate) fn historiales_solo_aqui(db: &Connection) -> Result<HashSet<String>> {
     let mut q = db.prepare("SELECT substr(k, 17) FROM meta WHERE k LIKE 'historial_local:%'")?;
-    Ok(q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?)
+    Ok(q.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Si el historial de esta memoria se quedó en este equipo (ver [`historiales_solo_aqui`]).
+/// Whether this memory's history stayed on this machine (see [`historiales_solo_aqui`]).
 pub(crate) fn historial_solo_aqui(db: &Connection, id: &str) -> Result<bool> {
-    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE k = 'historial_local:' || ?1)", [id], |f| f.get(0))?)
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE k = 'historial_local:' || ?1)", [id], |row| row.get(0))?)
 }
 
-/// Lo que pide un `update` que toca los oficios (MCP y CLI).
+/// What an `update` touching the trades asks for (MCP and CLI).
 pub struct PedidoCambio<'a> {
-    /// `trade`: los oficios («android, web»); `Some("")` deja de ser de oficio.
+    /// `trade`: the trades («android, web»); `Some("")` stops being a trade one.
     pub trade: Option<&'a str>,
-    /// `for`: `client`, `personal` o `both`.
+    /// `for`: `client`, `personal` or `both`.
     pub para: Option<&'a str>,
-    /// Lo que cambia (título, contenido, `replace`, `append`, rutas, etiquetas, a dónde va).
+    /// What changes (title, content, `replace`, `append`, paths, tags, where it goes).
     pub cambios: &'a crate::memoria::Cambios,
-    /// Los datos nuevos (`Some(None)`: se quitan), si se cambian.
+    /// The new data (`Some(None)`: removed), if changed.
     pub datos: Option<Option<&'a serde_json::Value>>,
-    /// El permiso de fugas (`allow_leaks`): deja pasar lo que parezca un falso positivo, nunca una
-    /// ruta ni un repositorio.
+    /// The leaks permission (`allow_leaks`): lets through what looks like a false positive, never a
+    /// path or a repository.
     pub permitir_fugas: bool,
 }
 
-/// Qué hacer con los oficios en un `update`.
+/// What to do with the trades in an `update`.
 #[derive(Debug, Default)]
 pub struct Plan {
-    /// Las etiquetas que quedan (`None`: no cambian).
+    /// The tags that remain (`None`: unchanged).
     pub tags: Option<Vec<String>>,
-    /// Hay que llevarla a global (era de un proyecto o de un espacio y pasa a ser de oficio).
+    /// It has to be made global (it was a project's or a space's and becomes a trade one).
     pub hacer_global: bool,
-    /// Pasa de un cliente (un espacio, o un proyecto en uno) a un oficio: no se mueve, se crea una
-    /// memoria de oficio nueva ([`crear_de_oficio`]) y la de cliente se queda donde estaba.
+    /// Goes from a client (a space, or a project in one) to a trade: it isn't moved, a new trade
+    /// memory is created ([`crear_de_oficio`]) and the client's stays where it was.
     pub nueva: bool,
 }
 
-/// Lo que hace un `update` con los oficios: hacerla de oficio (promoverla), dejar de serlo, cambiar para
-/// quién es, o sacarla de su oficio al llevarla a un proyecto o un espacio. Lo nuevo de una memoria de
-/// oficio pasa por `fugas` (todo lo que quedará si entra en un oficio: texto, rutas, etiquetas, clave y
-/// datos), salvo lo que deje pasar el permiso de fugas: `Err` con ellas en `Ok(Err(…))`.
+/// What an `update` does with the trades: make it a trade one (promote it), stop being one, change who
+/// it is for, or take it out of its trade when moving it to a project or a space. What is new in a trade
+/// memory goes through `fugas` (everything that will remain if it enters a trade: text, paths, tags, key and
+/// data), except what the leaks permission lets through: `Err` with them in `Ok(Err(…))`.
 ///
-/// Promover una memoria personal (de un proyecto sin espacio) la mueve con su id, su historial y sus
-/// veredictos: todo eso es de la persona. Promover una de un cliente crea una memoria nueva (`nueva`):
-/// su historial y sus veredictos son del cliente y no deben llegar a los demás.
-pub fn al_cambiar(db: &Connection, actual: &Memoria, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
-    let norma = |v: &[String]| -> Vec<String> {
+/// Promoting a personal memory (of a project without a space) moves it with its id, its history and its
+/// verdicts: all of that belongs to the person. Promoting a client's creates a new memory (`nueva`):
+/// its history and verdicts belong to the client and must not reach the others.
+pub fn al_cambiar(db: &Connection, current: &Memoria, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
+    let normalize = |v: &[String]| -> Vec<String> {
         let mut v: Vec<String> = v.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty()).collect();
         v.sort();
         v.dedup();
         v
     };
     let c = p.cambios;
-    let base = norma(&c.tags.clone().unwrap_or_else(|| actual.tags.clone()));
-    let a_proyecto = c.space_id.is_some() || c.project.as_deref().is_some_and(|d| !d.is_empty());
-    let a_global = c.project.as_deref() == Some("");
-    let era = de_memoria(actual);
-    let quitar = p.trade.is_some_and(|t| t.trim().is_empty());
-    let mut pedidos = match p.trade.map(str::trim).filter(|t| !t.is_empty()) {
+    let base = normalize(&c.tags.clone().unwrap_or_else(|| current.tags.clone()));
+    let to_project = c.space_id.is_some() || c.project.as_deref().is_some_and(|d| !d.is_empty());
+    let to_global = c.project.as_deref() == Some("");
+    let was = de_memoria(current);
+    let drop_trade = p.trade.is_some_and(|t| t.trim().is_empty());
+    let mut requested = match p.trade.map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => lista(t)?,
         None => Vec::new(),
     };
     for o in de_etiquetas(&base) {
         let o = nombre(&o)?;
-        if !pedidos.contains(&o) {
-            pedidos.push(o);
+        if !requested.contains(&o) {
+            requested.push(o);
         }
     }
-    let para_nuevo = p.para.map(para).transpose()?;
-    let cambia = |tags: Vec<String>| -> Option<Vec<String>> {
-        let tags = norma(&tags);
-        (tags != norma(&actual.tags)).then_some(tags)
+    let new_for = p.para.map(para).transpose()?;
+    let changed = |tags: Vec<String>| -> Option<Vec<String>> {
+        let tags = normalize(&tags);
+        (tags != normalize(&current.tags)).then_some(tags)
     };
-    if quitar || a_proyecto {
-        return Ok(Ok(Plan { tags: cambia(sin_oficio(base)), ..Plan::default() }));
+    if drop_trade || to_project {
+        return Ok(Ok(Plan { tags: changed(sin_oficio(base)), ..Plan::default() }));
     }
-    let entra = !pedidos.is_empty() && (p.trade.is_some() || actual.global() || a_global);
-    if !entra && era.is_empty() {
-        ensure!(para_nuevo.is_none(), tr!("`for` only applies to a trade memory: give `trade` too", "`for` solo vale en una memoria de oficio: di también `trade`"));
-        return Ok(Ok(Plan { tags: c.tags.as_ref().and_then(|_| cambia(sin_oficio(base))), ..Plan::default() }));
+    let enters = !requested.is_empty() && (p.trade.is_some() || current.global() || to_global);
+    if !enters && was.is_empty() {
+        ensure!(new_for.is_none(), tr!("`for` only applies to a trade memory: give `trade` too", "`for` solo vale en una memoria de oficio: di también `trade`"));
+        return Ok(Ok(Plan { tags: c.tags.as_ref().and_then(|_| changed(sin_oficio(base))), ..Plan::default() }));
     }
-    let oficios = if entra { pedidos } else { era.clone() };
-    let para_final = para_nuevo.unwrap_or_else(|| para_de(&actual.tags));
-    let nuevo_oficio = era.is_empty() || oficios.iter().any(|o| !era.contains(o));
-    let texto = if nuevo_oficio {
-        // Entra en un oficio (o en otro): todo lo que quedará, como quedará (tras `replace` y `append`).
-        let (titulo, contenido) = crate::memoria::texto_tras(actual, c)?;
-        let rutas = c.paths.clone().unwrap_or_else(|| actual.paths.clone());
-        let datos = match p.datos {
+    let trades = if enters { requested } else { was.clone() };
+    let final_for = new_for.unwrap_or_else(|| para_de(&current.tags));
+    let new_trade = was.is_empty() || trades.iter().any(|o| !was.contains(o));
+    let text = if new_trade {
+        // Enters a trade (or another one): everything that will remain, as it will remain (after `replace` and `append`).
+        let (title, content) = crate::memoria::texto_tras(current, c)?;
+        let paths = c.paths.clone().unwrap_or_else(|| current.paths.clone());
+        let data = match p.datos {
             Some(d) => d.cloned(),
-            None => crate::memoria::datos_de(db, &[actual.id.as_str()])?.remove(&actual.id),
+            None => crate::memoria::datos_de(db, &[current.id.as_str()])?.remove(&current.id),
         };
-        campos_para_fugas(&[("title", &titulo), ("content", &contenido), ("paths", &rutas.join(" "))], &base, None, datos.as_ref())
+        campos_para_fugas(&[("title", &title), ("content", &content), ("paths", &paths.join(" "))], &base, None, data.as_ref())
     } else {
-        // Ya era de este oficio: lo nuevo (lo que ponen `replace` y `append`, el título, el contenido y
-        // las rutas que vengan, las etiquetas que no tenía y los datos nuevos).
-        let mut partes: Vec<(&'static str, String)> = c.replace.iter().map(|(_, con)| ("content", con.clone())).collect();
-        partes.extend(c.append.clone().map(|a| ("content", a)));
-        partes.extend(c.title.clone().map(|t| ("title", t)));
-        partes.extend(c.content.clone().map(|t| ("content", t)));
-        partes.extend(c.paths.iter().flatten().cloned().map(|r| ("paths", r)));
-        let tenia = norma(&actual.tags);
-        let nuevas: Vec<String> = base.iter().filter(|t| !tenia.contains(t)).cloned().collect();
-        campos_para_fugas(&partes.iter().map(|(c, t)| (*c, t.as_str())).collect::<Vec<_>>(), &nuevas, None, p.datos.flatten())
+        // It was already of this trade: what's new (what `replace` and `append` put, the title, the content and
+        // the paths that come, the tags it didn't have and the new data).
+        let mut parts: Vec<(&'static str, String)> = c.replace.iter().map(|(_, with)| ("content", with.clone())).collect();
+        parts.extend(c.append.clone().map(|a| ("content", a)));
+        parts.extend(c.title.clone().map(|t| ("title", t)));
+        parts.extend(c.content.clone().map(|t| ("content", t)));
+        parts.extend(c.paths.iter().flatten().cloned().map(|r| ("paths", r)));
+        let had = normalize(&current.tags);
+        let new_tags: Vec<String> = base.iter().filter(|t| !had.contains(t)).cloned().collect();
+        campos_para_fugas(&parts.iter().map(|(c, t)| (*c, t.as_str())).collect::<Vec<_>>(), &new_tags, None, p.datos.flatten())
     };
-    let f = bloquean(fugas_en(db, &texto)?, p.permitir_fugas);
+    let f = bloquean(fugas_en(db, &text)?, p.permitir_fugas);
     if !f.is_empty() {
         return Ok(Err(f));
     }
     Ok(Ok(Plan {
-        tags: cambia(etiquetas_de_oficio(base, &oficios, para_final.as_deref())),
-        hacer_global: !actual.global(),
-        nueva: !actual.global() && !actual.space.is_empty(),
+        tags: changed(etiquetas_de_oficio(base, &trades, final_for.as_deref())),
+        hacer_global: !current.global(),
+        nueva: !current.global() && !current.space.is_empty(),
     }))
 }
 
-/// Promover a un oficio una memoria de un cliente: una memoria de oficio NUEVA (otro id, sin historial
-/// ni veredictos) con el texto tal como queda tras los cambios (`c`, que ya pasaron por `fugas`), sus
-/// rutas, su tipo, sus datos y las etiquetas del plan (`tags`, con el oficio). La del cliente no se toca:
-/// sigue en su proyecto o en su espacio, con su historial, y la sincronización la sigue llevando por el
-/// repositorio de su cliente (moverla al general dejaba la copia de los otros equipos del cliente en
-/// conflicto, y su historial era texto del cliente).
+/// Promoting a client's memory to a trade: a NEW trade memory (another id, no history
+/// or verdicts) with the text as it remains after the changes (`c`, which already went through `fugas`), its
+/// paths, its kind, its data and the plan's tags (`tags`, with the trade). The client's isn't touched:
+/// it stays in its project or its space, with its history, and sync keeps carrying it through
+/// its client's repository (moving it to the general one left the copy on the client's other machines in
+/// conflict, and its history was client text).
 pub fn crear_de_oficio(
     db: &mut Connection,
-    actual: &Memoria,
+    current: &Memoria,
     c: &crate::memoria::Cambios,
     tags: Vec<String>,
-    origen: &str,
-    modelo: Option<&crate::embeber::Modelo>,
+    source: &str,
+    model: Option<&crate::embeber::Modelo>,
 ) -> Result<Memoria> {
-    let (title, content) = crate::memoria::texto_tras(actual, c)?;
-    let datos = crate::memoria::datos_de(db, &[actual.id.as_str()])?.remove(&actual.id);
-    let nueva = crate::memoria::Nueva {
+    let (title, content) = crate::memoria::texto_tras(current, c)?;
+    let data = crate::memoria::datos_de(db, &[current.id.as_str()])?.remove(&current.id);
+    let new = crate::memoria::Nueva {
         project_id: Some(0),
-        kind: Some(c.kind.unwrap_or(actual.kind)),
-        kind_text: if c.kind.is_none() { actual.kind_text.clone() } else { None },
+        kind: Some(c.kind.unwrap_or(current.kind)),
+        kind_text: if c.kind.is_none() { current.kind_text.clone() } else { None },
         title,
         content,
-        paths: c.paths.clone().unwrap_or_else(|| actual.paths.clone()),
+        paths: c.paths.clone().unwrap_or_else(|| current.paths.clone()),
         tags,
-        pinned: c.pinned.unwrap_or(actual.pinned),
-        source: origen.to_string(),
+        pinned: c.pinned.unwrap_or(current.pinned),
+        source: source.to_string(),
         ..Default::default()
     };
-    let m = crate::memoria::guardar(db, nueva, modelo)?;
-    if let Some(d) = datos {
+    let m = crate::memoria::guardar(db, new, model)?;
+    if let Some(d) = data {
         crate::memoria::poner_datos(db, &m.id, Some(d))?;
     }
     Ok(m)
 }
 
-/// Lo que se le dice al agente con las fugas.
+/// What the agent is told about the leaks.
 pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks: each says its `field`, so a key like `acme-route` is renamed, not the text rewritten). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
 
-/// Lo que se le dice al agente cuando la memoria de oficio que acaba de promover dice casi lo mismo
-/// que otra de su oficio (`duplicate_of`).
+/// What the agent is told when the trade memory it just promoted says nearly the same
+/// as another of its trade (`duplicate_of`).
 pub const AVISO_DUPLICADA: &str = "This trade memory says nearly the same as another one of its trade (duplicate_of), maybe promoted from another client: propose merging them to the user (`update` the one to keep with `absorb` and the other's id), or `forget` this one.";
 
-/// Lo que se le dice al agente al promover una memoria de un cliente.
+/// What the agent is told when promoting a client's memory.
 pub const AVISO_PROMOVIDA: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";
 
 #[cfg(test)]
@@ -1284,7 +1284,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nombres_de_oficio() {
+    fn trade_names() {
         assert_eq!(nombre(" Android ").unwrap(), "android");
         assert_eq!(nombre("trade:web").unwrap(), "web");
         assert_eq!(nombre("c++").unwrap(), "c++");
@@ -1294,65 +1294,65 @@ mod tests {
         assert_eq!(lista("android, web android").unwrap(), ["android", "web"]);
     }
 
-    /// El campo de una fuga es el que la tiene como palabra: «QA» sale en el contenido, no en el título
-    /// que dice «qatar» (antes se cogía el primero que la contuviera).
+    /// A leak's field is the one that has it as a word: «QA» appears in the content, not in the title
+    /// that says «qatar» (before, the first one containing it was taken).
     #[test]
-    fn el_campo_de_una_fuga_es_por_palabras() {
+    fn a_leaks_field_is_by_words() {
         let t = crate::comun::Temporal::nueva("oficios-campo");
         let db = crate::db::abrir(&t.join("o.db")).unwrap();
         crate::proyecto::crear_espacio(&db, "QA").unwrap();
-        let campos = vec![("title", "Vuelos a Qatar".to_string()), ("content", "Lo vimos en QA ayer.".to_string())];
-        let f = fugas_en(&db, &campos).unwrap();
+        let fields = vec![("title", "Vuelos a Qatar".to_string()), ("content", "Lo vimos en QA ayer.".to_string())];
+        let f = fugas_en(&db, &fields).unwrap();
         let qa = f.iter().find(|x| x.tipo == "space").unwrap();
         assert_eq!(qa.campo, "content", "{f:?}");
     }
 
     #[test]
-    fn palabras_enteras() {
-        assert!(aparece("en balua el emulador", "balua"));
-        assert!(!aparece("en baluarte", "balua"));
-        assert!(aparece("ver social-publish-plugin/x", "social-publish-plugin"));
-        assert!(aparece("ñandú y acme", "acme"));
+    fn whole_words() {
+        assert!(appears("en balua el emulador", "balua"));
+        assert!(!appears("en baluarte", "balua"));
+        assert!(appears("ver social-publish-plugin/x", "social-publish-plugin"));
+        assert!(appears("ñandú y acme", "acme"));
     }
 
     #[test]
-    fn rutas_y_dominios() {
-        assert!(ruta_personal(r"C:\Users\ana\acme\app"));
-        assert!(ruta_personal("D:/Clientes/acme"));
-        assert!(!ruta_personal(r"C:\Program Files\Android\Android Studio"));
-        assert!(ruta_personal("/home/ana/acme"));
-        assert!(!ruta_personal("/system/bin/sh"));
-        assert!(!ruta_personal("app/src/main"));
-        assert_eq!(dominio("https://staging.acme-shop.com/login").as_deref(), Some("staging.acme-shop.com"));
-        assert_eq!(dominio("acme-shop.com").as_deref(), Some("acme-shop.com"));
-        assert_eq!(dominio("README.md"), None);
-        assert_eq!(dominio("build.gradle.kts"), None);
-        assert_eq!(dominio("v1.2.3"), None);
+    fn paths_and_domains() {
+        assert!(personal_path(r"C:\Users\ana\acme\app"));
+        assert!(personal_path("D:/Clientes/acme"));
+        assert!(!personal_path(r"C:\Program Files\Android\Android Studio"));
+        assert!(personal_path("/home/ana/acme"));
+        assert!(!personal_path("/system/bin/sh"));
+        assert!(!personal_path("app/src/main"));
+        assert_eq!(domain("https://staging.acme-shop.com/login").as_deref(), Some("staging.acme-shop.com"));
+        assert_eq!(domain("acme-shop.com").as_deref(), Some("acme-shop.com"));
+        assert_eq!(domain("README.md"), None);
+        assert_eq!(domain("build.gradle.kts"), None);
+        assert_eq!(domain("v1.2.3"), None);
         assert_eq!(registrable("gitlab.acme.com"), "acme.com");
     }
 
     #[test]
-    fn detecta_por_ficheros() {
+    fn detects_by_files() {
         let t = crate::comun::Temporal::nueva("oficios-detecta");
-        let raiz = t.to_path_buf();
-        let escribe = |r: &str, c: &str| {
-            let p = raiz.join(r);
+        let root = t.to_path_buf();
+        let write = |r: &str, c: &str| {
+            let p = root.join(r);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, c).unwrap();
         };
-        // Un monorepo: Android en `app/`, una web Astro en `web/`, y lo que no cuenta.
-        escribe("settings.gradle.kts", "rootProject.name = \"x\"\ninclude(\":app\")");
-        escribe("app/build.gradle.kts", "plugins { id(\"com.android.application\") }");
-        escribe("web/package.json", r#"{"dependencies":{"astro":"5.0.0"}}"#);
-        escribe("node_modules/x/Cargo.toml", "");
-        escribe(".hidden/go.mod", "");
-        escribe("web/sub/deep/Cargo.toml", "");
-        assert_eq!(detectar(&raiz), ["android", "node", "web"]);
-        // Gradle sin Android: JVM.
+        // A monorepo: Android in `app/`, an Astro website in `web/`, and what doesn't count.
+        write("settings.gradle.kts", "rootProject.name = \"x\"\ninclude(\":app\")");
+        write("app/build.gradle.kts", "plugins { id(\"com.android.application\") }");
+        write("web/package.json", r#"{"dependencies":{"astro":"5.0.0"}}"#);
+        write("node_modules/x/Cargo.toml", "");
+        write(".hidden/go.mod", "");
+        write("web/sub/deep/Cargo.toml", "");
+        assert_eq!(detectar(&root), ["android", "node", "web"]);
+        // Gradle without Android: JVM.
         let t2 = crate::comun::Temporal::nueva("oficios-jvm");
         std::fs::write(t2.join("build.gradle"), "plugins { id 'java' }").unwrap();
         assert_eq!(detectar(&t2), ["jvm"]);
-        // Un tema de WordPress y un plugin.
+        // A WordPress theme and a plugin.
         let t3 = crate::comun::Temporal::nueva("oficios-wp");
         std::fs::write(t3.join("style.css"), "/*\nTheme Name: Acme\n*/").unwrap();
         std::fs::write(t3.join("functions.php"), "<?php").unwrap();
@@ -1360,16 +1360,16 @@ mod tests {
         let t4 = crate::comun::Temporal::nueva("oficios-wp-plugin");
         std::fs::write(t4.join("mi-plugin.php"), "<?php\n/**\n * Plugin Name: Mi plugin\n */").unwrap();
         assert_eq!(detectar(&t4), ["php", "wordpress"]);
-        // React Native no es web.
+        // React Native is not web.
         let t5 = crate::comun::Temporal::nueva("oficios-rn");
         std::fs::write(t5.join("package.json"), r#"{"dependencies":{"react":"18","react-native":"0.76"}}"#).unwrap();
         assert_eq!(detectar(&t5), ["node", "react-native"]);
-        // Electron con React: escritorio, no web.
+        // Electron with React: desktop, not web.
         let t7 = crate::comun::Temporal::nueva("oficios-electron");
         std::fs::write(t7.join("package.json"), r#"{"dependencies":{"react":"18"},"devDependencies":{"Electron":"30"}}"#).unwrap();
         std::fs::write(t7.join("vite.config.ts"), "").unwrap();
         assert_eq!(detectar(&t7), ["escritorio-node", "node"]);
-        // Un plugin de Claude Code en Rust (Omoikane), y una skill de Alexa.
+        // A Claude Code plugin in Rust (Omoikane), and an Alexa skill.
         let t8 = crate::comun::Temporal::nueva("oficios-plugin");
         std::fs::create_dir_all(t8.join(".claude-plugin")).unwrap();
         std::fs::write(t8.join(".claude-plugin").join("plugin.json"), "{}").unwrap();
@@ -1380,16 +1380,16 @@ mod tests {
         std::fs::create_dir_all(t9.join("hooks")).unwrap();
         std::fs::write(t9.join("hooks").join("hooks.json"), "{}").unwrap();
         assert_eq!(detectar(&t9), ["alexa", "plugin-claude"]);
-        // Nada que detectar.
+        // Nothing to detect.
         let t6 = crate::comun::Temporal::nueva("oficios-nada");
         std::fs::write(t6.join("notas.md"), "x").unwrap();
         assert!(detectar(&t6).is_empty());
     }
 
     #[test]
-    fn con_muchas_subcarpetas_mira_siempre_las_mismas() {
+    fn with_many_subfolders_always_looks_at_the_same() {
         let t = crate::comun::Temporal::nueva("oficios-subcarpetas");
-        // 70 subcarpetas: se miran las 60 primeras por orden alfabético, creadas en el orden que sea.
+        // 70 subfolders: the first 60 in alphabetical order are looked at, created in whatever order.
         for i in (0..70).rev() {
             std::fs::create_dir_all(t.join(format!("m{i:02}"))).unwrap();
         }
@@ -1398,66 +1398,66 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(detectar(&t), ["go"]);
         }
-        let r = recorrer(&t);
-        assert_eq!(r.carpetas.len(), 1 + MAX_SUBCARPETAS);
-        assert_eq!(r.carpetas.last().unwrap().rel, "m59");
-        assert_eq!(r.firma(), recorrer(&t).firma());
+        let r = walk(&t);
+        assert_eq!(r.folders.len(), 1 + MAX_SUBFOLDERS);
+        assert_eq!(r.folders.last().unwrap().rel, "m59");
+        assert_eq!(r.signature(), walk(&t).signature());
     }
 
     #[test]
-    fn lo_detectado_se_guarda_hasta_que_cambian_los_ficheros() {
+    fn detected_is_cached_until_the_files_change() {
         let t = crate::comun::Temporal::nueva("oficios-guardado");
-        // La base, fuera de la carpeta que se mira (sus ficheros cambian).
+        // The database, outside the folder being looked at (its files change).
         let tb = crate::comun::Temporal::nueva("oficios-guardado-db");
         let db = crate::db::abrir(&tb.join("o.db")).unwrap();
         let gradle = t.join("build.gradle");
         std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
-        assert_eq!(detectar_guardado(&db, 7, &t), ["android"]);
-        // Lo guardado manda mientras las carpetas y los ficheros que se leen no cambien.
-        let clave = format!("{CLAVE_DETECTADOS}7");
-        let v: String = db.query_row("SELECT v FROM meta WHERE k = ?1", [&clave], |f| f.get(0)).unwrap();
-        let (firma, _) = v.split_once('\t').unwrap();
-        db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", params![clave, format!("{firma}\t[\"guardado\"]")]).unwrap();
-        assert_eq!(detectar_guardado(&db, 7, &t), ["guardado"]);
-        // Cambia el fichero (su tamaño o su fecha): se vuelve a leer.
+        assert_eq!(detect_cached(&db, 7, &t), ["android"]);
+        // What is stored rules as long as the folders and the files that are read don't change.
+        let key = format!("{DETECTED_KEY}7");
+        let v: String = db.query_row("SELECT v FROM meta WHERE k = ?1", [&key], |row| row.get(0)).unwrap();
+        let (signature, _) = v.split_once('\t').unwrap();
+        db.execute("UPDATE meta SET v = ?2 WHERE k = ?1", params![key, format!("{signature}\t[\"guardado\"]")]).unwrap();
+        assert_eq!(detect_cached(&db, 7, &t), ["guardado"]);
+        // The file changes (its size or date): it is read again.
         std::fs::write(&gradle, "plugins { id 'java' } // sin el otro").unwrap();
-        assert_eq!(detectar_guardado(&db, 7, &t), ["jvm"]);
-        // Un fichero nuevo también.
+        assert_eq!(detect_cached(&db, 7, &t), ["jvm"]);
+        // A new file too.
         std::fs::write(t.join("Cargo.toml"), "").unwrap();
-        assert_eq!(detectar_guardado(&db, 7, &t), ["jvm", "rust"]);
+        assert_eq!(detect_cached(&db, 7, &t), ["jvm", "rust"]);
     }
 
     #[test]
-    fn atributos_de_un_fichero_en_la_nube() {
-        assert!(atributos_de_nube(0x0040_0000)); // RECALL_ON_DATA_ACCESS (OneDrive)
-        assert!(atributos_de_nube(0x0004_0000)); // RECALL_ON_OPEN
-        assert!(atributos_de_nube(0x0000_1000 | 0x20)); // OFFLINE
-        assert!(!atributos_de_nube(0x20 | 0x0040_0000 >> 1)); // ARCHIVE, PINNED (descargado)
-        assert!(!atributos_de_nube(0));
+    fn attributes_of_a_cloud_file() {
+        assert!(cloud_attributes(0x0040_0000)); // RECALL_ON_DATA_ACCESS (OneDrive)
+        assert!(cloud_attributes(0x0004_0000)); // RECALL_ON_OPEN
+        assert!(cloud_attributes(0x0000_1000 | 0x20)); // OFFLINE
+        assert!(!cloud_attributes(0x20 | 0x0040_0000 >> 1)); // ARCHIVE, PINNED (downloaded)
+        assert!(!cloud_attributes(0));
     }
 
-    /// Un fichero marcado como solo en la nube no se lee (leerlo lo descargaría), y cuando se descarga
-    /// cambia la firma y se lee.
+    /// A file marked as cloud-only isn't read (reading it would download it), and when it is downloaded
+    /// the signature changes and it is read.
     #[cfg(windows)]
     #[test]
-    fn no_lee_lo_que_esta_en_la_nube() {
+    fn does_not_read_what_is_in_the_cloud() {
         let t = crate::comun::Temporal::nueva("oficios-nube");
-        // La base, fuera de la carpeta que se mira (sus ficheros cambian).
+        // The database, outside the folder being looked at (its files change).
         let tb = crate::comun::Temporal::nueva("oficios-nube-db");
         let db = crate::db::abrir(&tb.join("o.db")).unwrap();
         let gradle = t.join("build.gradle");
         std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
         std::fs::write(t.join("package.json"), r#"{"dependencies":{"astro":"5"}}"#).unwrap();
-        let attrib = |signo: &str, p: &Path| {
-            let ok = std::process::Command::new("attrib").arg(format!("{signo}O")).arg(p).status().unwrap().success();
-            assert!(ok, "attrib {signo}O");
+        let attrib = |sign: &str, p: &Path| {
+            let ok = std::process::Command::new("attrib").arg(format!("{sign}O")).arg(p).status().unwrap().success();
+            assert!(ok, "attrib {sign}O");
         };
         attrib("+", &gradle);
         attrib("+", &t.join("package.json"));
-        // Por el nombre sí: `package.json` es de Node; lo que dicen dentro, no.
-        assert_eq!(detectar_guardado(&db, 3, &t), ["node"]);
+        // By name yes: `package.json` is Node; what it says inside, no.
+        assert_eq!(detect_cached(&db, 3, &t), ["node"]);
         attrib("-", &gradle);
         attrib("-", &t.join("package.json"));
-        assert_eq!(detectar_guardado(&db, 3, &t), ["android", "node", "web"]);
+        assert_eq!(detect_cached(&db, 3, &t), ["android", "node", "web"]);
     }
 }

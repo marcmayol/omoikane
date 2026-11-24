@@ -1,7 +1,7 @@
-//! 0.17.0: veredictos. Lo que el agente dice de dos memorias (sustituye, se contradicen, valen las
-//! dos) y la fecha de revisión de cada tipo, como `mem_judge`, `mem_compare` y `mem_review` de
-//! engram, pero sin herramientas nuevas y sin pedir juicio en cada guardado.
-//! 0.19.0: cada veredicto con su motivo y su autor, y las sustituciones encadenadas (A → B → C).
+//! 0.17.0: verdicts. What the agent says about two memories (supersedes, they contradict, both
+//! hold) and the review date for each kind, like engram's `mem_judge`, `mem_compare` and `mem_review`,
+//! but without new tools and without asking for a judgement on every save.
+//! 0.19.0: each verdict with its reason and its author, and chained supersessions (A → B → C).
 
 mod comun;
 
@@ -11,13 +11,13 @@ use omoikane::revisar;
 use omoikane::veredictos::{self, Veredicto};
 use rusqlite::Connection;
 
-fn base(nombre: &str) -> (comun::Temporal, Connection) {
-    let dir = comun::Temporal::nueva(&format!("veredictos-{nombre}"));
+fn fixture(name: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("veredictos-{name}"));
     let db = db::abrir(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
-fn guardar(db: &mut Connection, kind: Tipo, title: &str, content: &str, tags: &[&str]) -> String {
+fn save(db: &mut Connection, kind: Tipo, title: &str, content: &str, tags: &[&str]) -> String {
     let n = Nueva {
         project: "/p".into(),
         kind: Some(kind),
@@ -29,156 +29,156 @@ fn guardar(db: &mut Connection, kind: Tipo, title: &str, content: &str, tags: &[
     memoria::guardar(db, n, None).unwrap().id
 }
 
-fn avisos(db: &Connection) -> Vec<(String, String, String)> {
+fn warnings(db: &Connection) -> Vec<(String, String, String)> {
     revisar::avisos(db, &Ambito::Todos).unwrap().into_iter().map(|a| (a.kind, a.memory_id, a.other_id)).collect()
 }
 
-fn notas(db: &Connection, id: &str, busqueda: bool) -> Option<String> {
+fn notes(db: &Connection, id: &str, search: bool) -> Option<String> {
     let m = memoria::obtener(db, id).unwrap();
-    let mut n = if busqueda { revisar::notas_busqueda(db, &Ambito::Todos, &[&m]) } else { revisar::notas(db, &Ambito::Todos, &[&m]) }.unwrap();
+    let mut n = if search { revisar::notas_busqueda(db, &Ambito::Todos, &[&m]) } else { revisar::notas(db, &Ambito::Todos, &[&m]) }.unwrap();
     n.remove(id)
 }
 
 #[test]
-fn sustituida_sale_en_revisar_en_el_recall_y_en_la_busqueda() {
-    let (_dir, mut db) = base("sustituye");
-    let vieja = guardar(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
-    let nueva = guardar(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
-    assert!(avisos(&db).is_empty());
-    veredictos::poner(&db, &vieja, &nueva, veredictos::SUSTITUIDA, "", "").unwrap();
-    assert_eq!(avisos(&db), vec![(revisar::SUSTITUIDA.to_string(), vieja.clone(), nueva.clone())]);
-    let n = notas(&db, &vieja, false).unwrap();
-    assert!(n.starts_with("superseded by") && n.contains(&nueva[..12]), "{n}");
-    // La nueva no lleva nota: es la buena.
-    assert_eq!(notas(&db, &nueva, true), None);
-    // Si la vieja se corrige después, el veredicto deja de valer.
+fn superseded_shows_in_review_recall_and_search() {
+    let (_dir, mut db) = fixture("sustituye");
+    let old_id = save(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
+    let new_id = save(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
+    assert!(warnings(&db).is_empty());
+    veredictos::poner(&db, &old_id, &new_id, veredictos::SUSTITUIDA, "", "").unwrap();
+    assert_eq!(warnings(&db), vec![(revisar::SUSTITUIDA.to_string(), old_id.clone(), new_id.clone())]);
+    let n = notes(&db, &old_id, false).unwrap();
+    assert!(n.starts_with("superseded by") && n.contains(&new_id[..12]), "{n}");
+    // The new one carries no note: it is the good one.
+    assert_eq!(notes(&db, &new_id, true), None);
+    // If the old one is corrected afterwards, the verdict no longer holds.
     let c = Cambios { content: Some("La cookie sigue para la web; la API va con JWT.".into()), reason: Some("aclarado".into()), ..Default::default() };
-    memoria::actualizar(&mut db, &vieja, c, None).unwrap();
-    assert!(avisos(&db).is_empty());
+    memoria::actualizar(&mut db, &old_id, c, None).unwrap();
+    assert!(warnings(&db).is_empty());
 }
 
 #[test]
-fn se_contradicen_hasta_que_cambia_una_y_compatible_quita_el_aviso() {
-    let (_dir, mut db) = base("contradicen");
-    let a = guardar(&mut db, Tipo::Fact, "El backup se hace de noche", "La copia corre a las 3:00.", &[]);
-    let b = guardar(&mut db, Tipo::Fact, "El backup se hace al mediodía", "La copia corre a las 12:00.", &[]);
+fn contradict_until_one_changes_and_compatible_clears_warning() {
+    let (_dir, mut db) = fixture("contradicen");
+    let a = save(&mut db, Tipo::Fact, "El backup se hace de noche", "La copia corre a las 3:00.", &[]);
+    let b = save(&mut db, Tipo::Fact, "El backup se hace al mediodía", "La copia corre a las 12:00.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::CONTRADICE, "", "").unwrap();
-    assert_eq!(avisos(&db), vec![(revisar::CONTRADICE.to_string(), a.clone(), b.clone())]);
-    // Las dos llevan la nota, cada una nombrando a la otra.
-    assert!(notas(&db, &a, false).unwrap().contains(&b[..12]));
-    assert!(notas(&db, &b, false).unwrap().contains(&a[..12]));
-    // El veredicto más nuevo de la pareja manda, en cualquier orden.
+    assert_eq!(warnings(&db), vec![(revisar::CONTRADICE.to_string(), a.clone(), b.clone())]);
+    // Both carry the note, each naming the other.
+    assert!(notes(&db, &a, false).unwrap().contains(&b[..12]));
+    assert!(notes(&db, &b, false).unwrap().contains(&a[..12]));
+    // The pair's newest verdict rules, in either order.
     veredictos::poner(&db, &b, &a, veredictos::COMPATIBLE, "", "").unwrap();
-    assert!(avisos(&db).is_empty());
-    assert_eq!(notas(&db, &a, true), None);
+    assert!(warnings(&db).is_empty());
+    assert_eq!(notes(&db, &a, true), None);
 }
 
 #[test]
-fn esta_bien_asi_en_una_desfasada_es_compatible() {
-    let (_dir, mut db) = base("desfasada");
-    let vieja = guardar(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
-    let nueva = guardar(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
-    assert_eq!(avisos(&db), vec![(revisar::DESFASADA.to_string(), vieja.clone(), nueva.clone())]);
-    revisar::descartar(&db, &vieja, revisar::DESFASADA, &nueva).unwrap();
-    assert!(avisos(&db).is_empty());
-    assert_eq!(notas(&db, &vieja, false), None);
+fn fine_as_is_on_outdated_is_compatible() {
+    let (_dir, mut db) = fixture("desfasada");
+    let old_id = save(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
+    let new_id = save(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
+    assert_eq!(warnings(&db), vec![(revisar::DESFASADA.to_string(), old_id.clone(), new_id.clone())]);
+    revisar::descartar(&db, &old_id, revisar::DESFASADA, &new_id).unwrap();
+    assert!(warnings(&db).is_empty());
+    assert_eq!(notes(&db, &old_id, false), None);
 }
 
 #[test]
-fn fecha_de_revision_por_tipo() {
-    let (_dir, mut db) = base("revision");
-    let decision = guardar(&mut db, Tipo::Decision, "Los precios van en céntimos", "Todos los importes en enteros de céntimos.", &[]);
-    let hecho = guardar(&mut db, Tipo::Fact, "El servidor de pruebas es lento", "Tarda unos 10 s en arrancar.", &[]);
-    let pref = guardar(&mut db, Tipo::Preference, "Commits cortos y en inglés", "Una línea, en inglés.", &[]);
-    // Hace 150 días: a la decisión ya le toca (120), al hecho no (180), a la preferencia nunca.
+fn review_date_by_kind() {
+    let (_dir, mut db) = fixture("revision");
+    let decision = save(&mut db, Tipo::Decision, "Los precios van en céntimos", "Todos los importes en enteros de céntimos.", &[]);
+    let fact = save(&mut db, Tipo::Fact, "El servidor de pruebas es lento", "Tarda unos 10 s en arrancar.", &[]);
+    let pref = save(&mut db, Tipo::Preference, "Commits cortos y en inglés", "Una línea, en inglés.", &[]);
+    // 150 days ago: the decision is due (120), the fact is not (180), the preference never.
     db.execute("UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-150 days'), created_at = updated_at", []).unwrap();
-    let due: Vec<String> = avisos(&db).into_iter().filter(|a| a.0 == revisar::POR_REVISAR).map(|a| a.1).collect();
+    let due: Vec<String> = warnings(&db).into_iter().filter(|a| a.0 == revisar::POR_REVISAR).map(|a| a.1).collect();
     assert_eq!(due, vec![decision.clone()]);
-    // Sale en la búsqueda pero no en el recall, que solo avisa de lo que puede estar mal.
-    assert!(notas(&db, &decision, true).unwrap().starts_with("not reviewed in 150 days"));
-    assert_eq!(notas(&db, &decision, false), None);
-    assert_eq!(notas(&db, &hecho, true), None);
-    assert_eq!(notas(&db, &pref, true), None);
-    // Si el agente la recibió hace poco y nadie la corrigió, está repasada: no toca.
+    // It shows in search but not in recall, which only warns about what may be wrong.
+    assert!(notes(&db, &decision, true).unwrap().starts_with("not reviewed in 150 days"));
+    assert_eq!(notes(&db, &decision, false), None);
+    assert_eq!(notes(&db, &fact, true), None);
+    assert_eq!(notes(&db, &pref, true), None);
+    // If the agent received it recently and nobody corrected it, it is reviewed: not due.
     db.execute("UPDATE memory SET recalled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 days'), recall_count = 3 WHERE id = ?1", [&decision]).unwrap();
-    assert!(!avisos(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
+    assert!(!warnings(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
     db.execute("UPDATE memory SET recalled_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-140 days') WHERE id = ?1", [&decision]).unwrap();
-    assert!(avisos(&db).iter().any(|a| a.0 == revisar::POR_REVISAR), "recordada hace 140 días: sí toca");
-    // «Está bien así» pone el reloj a cero.
+    assert!(warnings(&db).iter().any(|a| a.0 == revisar::POR_REVISAR), "recordada hace 140 días: sí toca");
+    // «Fine as is» resets the clock.
     revisar::descartar(&db, &decision, revisar::POR_REVISAR, "").unwrap();
-    assert!(!avisos(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
+    assert!(!warnings(&db).iter().any(|a| a.0 == revisar::POR_REVISAR));
 }
 
-/// Una fecha puesta al guardar (`review:AAAA-MM-DD`): avisa ese día aunque la memoria sea nueva y de
-/// un tipo que no caduca, también en el recall, y deja de avisar al tocarla o darla por buena.
+/// A date set when saving (`review:YYYY-MM-DD`): it warns on that day even if the memory is new and of
+/// a kind that doesn't expire, also in recall, and stops warning once touched or accepted.
 #[test]
-fn fecha_de_revision_puesta_a_mano() {
-    let (_dir, mut db) = base("fecha");
-    let hoy: String = db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0)).unwrap();
-    let manana: String = db.query_row("SELECT date('now', 'localtime', '+1 day')", [], |f| f.get(0)).unwrap();
-    let token = guardar(&mut db, Tipo::Gotcha, "El token del vigilante caduca", "Hay que renovarlo en el panel.", &[&format!("review:{hoy}")]);
-    let oferta = guardar(&mut db, Tipo::Preference, "Usar la oferta del hosting", "Precio rebajado.", &[&format!("review:{manana}")]);
-    // Se guardó hace un mes con la fecha de hoy.
+fn review_date_set_by_hand() {
+    let (_dir, mut db) = fixture("fecha");
+    let today: String = db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0)).unwrap();
+    let tomorrow: String = db.query_row("SELECT date('now', 'localtime', '+1 day')", [], |f| f.get(0)).unwrap();
+    let token = save(&mut db, Tipo::Gotcha, "El token del vigilante caduca", "Hay que renovarlo en el panel.", &[&format!("review:{today}")]);
+    let offer = save(&mut db, Tipo::Preference, "Usar la oferta del hosting", "Precio rebajado.", &[&format!("review:{tomorrow}")]);
+    // Saved a month ago with today's date.
     db.execute("UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days'), created_at = updated_at", []).unwrap();
-    let fechas: Vec<String> = avisos(&db).into_iter().filter(|a| a.0 == revisar::FECHA).map(|a| a.1).collect();
-    assert_eq!(fechas, vec![token.clone()], "la de mañana aún no");
+    let dates: Vec<String> = warnings(&db).into_iter().filter(|a| a.0 == revisar::FECHA).map(|a| a.1).collect();
+    assert_eq!(dates, vec![token.clone()], "la de mañana aún no");
     let a = revisar::avisos(&db, &Ambito::Todos).unwrap().into_iter().find(|a| a.kind == revisar::FECHA).unwrap();
-    assert_eq!(a.detail, format!("review date {hoy} reached: is it still true?"));
-    // Sale en el recall (puede haber dejado de valer) y en la búsqueda.
-    assert_eq!(notas(&db, &token, false).unwrap(), format!("review date {hoy} reached: check it still holds"));
-    assert!(notas(&db, &token, true).is_some());
-    assert_eq!(notas(&db, &oferta, false), None);
-    // Una sola fecha llegada basta para el aviso al empezar, muy por debajo del umbral.
-    let cifras = revisar::pendientes(&db, &Ambito::Todos).unwrap();
-    assert_eq!(cifras.get(revisar::FECHA), Some(&1));
-    let aviso = revisar::aviso(&db, &cifras, 2).unwrap().expect("avisa con una sola");
-    assert!(aviso.contains("1 review dates reached"), "{aviso}");
-    // «Está bien así» la da por revisada.
+    assert_eq!(a.detail, format!("review date {today} reached: is it still true?"));
+    // It shows in recall (it may no longer hold) and in search.
+    assert_eq!(notes(&db, &token, false).unwrap(), format!("review date {today} reached: check it still holds"));
+    assert!(notes(&db, &token, true).is_some());
+    assert_eq!(notes(&db, &offer, false), None);
+    // A single reached date is enough for the startup warning, far below the threshold.
+    let counts = revisar::pendientes(&db, &Ambito::Todos).unwrap();
+    assert_eq!(counts.get(revisar::FECHA), Some(&1));
+    let warning = revisar::aviso(&db, &counts, 2).unwrap().expect("avisa con una sola");
+    assert!(warning.contains("1 review dates reached"), "{warning}");
+    // «Fine as is» marks it as reviewed.
     revisar::descartar(&db, &token, revisar::FECHA, "").unwrap();
-    assert!(!avisos(&db).iter().any(|a| a.0 == revisar::FECHA));
-    assert_eq!(notas(&db, &token, false), None);
-    // Una etiqueta que no es una fecha no se guarda.
+    assert!(!warnings(&db).iter().any(|a| a.0 == revisar::FECHA));
+    assert_eq!(notes(&db, &token, false), None);
+    // A tag that is not a date is not saved.
     let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Mal".into(), content: "x".into(), tags: vec!["review:25-nov".into()], ..Default::default() };
     let e = memoria::guardar(&mut db, n, None).unwrap_err().to_string();
     assert!(e.contains("review:YYYY-MM-DD"), "{e}");
     let c = Cambios { tags: Some(vec!["review:2026-13-01".into()]), ..Default::default() };
-    assert!(memoria::actualizar(&mut db, &oferta, c, None).is_err());
+    assert!(memoria::actualizar(&mut db, &offer, c, None).is_err());
 }
 
 #[test]
-fn de_otro_equipo_gana_el_mas_nuevo() {
-    let (_dir, mut db) = base("recibir");
-    let a = guardar(&mut db, Tipo::Fact, "Uno", "El puerto es el 8080.", &[]);
-    let b = guardar(&mut db, Tipo::Fact, "Dos", "El puerto es el 9090.", &[]);
+fn from_another_machine_newest_wins() {
+    let (_dir, mut db) = fixture("recibir");
+    let a = save(&mut db, Tipo::Fact, "Uno", "El puerto es el 8080.", &[]);
+    let b = save(&mut db, Tipo::Fact, "Dos", "El puerto es el 9090.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::CONTRADICE, "", "").unwrap();
-    let mio = veredictos::todos(&db).unwrap().remove(0);
-    // Uno más viejo del mismo veredicto no entra; uno más nuevo de la pareja manda.
-    let viejo = Veredicto { hlc: "0000000000001-0000000000-otro".into(), ..mio.clone() };
-    assert!(!veredictos::recibir(&db, &viejo).unwrap());
-    let futuro = format!("{}-0000000000-otro", mio.hlc[..13].parse::<u64>().unwrap().saturating_add(1000));
-    let nuevo = Veredicto { memory_id: b.clone(), other_id: a.clone(), relation: veredictos::COMPATIBLE.into(), hlc: futuro, ..mio };
-    assert!(veredictos::recibir(&db, &nuevo).unwrap());
-    assert!(avisos(&db).is_empty());
+    let mine = veredictos::todos(&db).unwrap().remove(0);
+    // An older one of the same verdict doesn't get in; a newer one for the pair rules.
+    let older = Veredicto { hlc: "0000000000001-0000000000-otro".into(), ..mine.clone() };
+    assert!(!veredictos::recibir(&db, &older).unwrap());
+    let future = format!("{}-0000000000-otro", mine.hlc[..13].parse::<u64>().unwrap().saturating_add(1000));
+    let newer = Veredicto { memory_id: b.clone(), other_id: a.clone(), relation: veredictos::COMPATIBLE.into(), hlc: future, ..mine };
+    assert!(veredictos::recibir(&db, &newer).unwrap());
+    assert!(warnings(&db).is_empty());
 }
 
-/// Una memoria escrita a mano en una base de un esquema viejo (con `project` como ruta).
-fn memoria_vieja(db: &Connection, n: i64, id: &str, title: &str, content: &str, cuando: &str) {
+/// A memory written by hand into a database with an old schema (with `project` as a path).
+fn insert_old_memory(db: &Connection, n: i64, id: &str, title: &str, content: &str, when: &str) {
     db.execute(
         "INSERT INTO memory(n, id, project, kind, title, content, created_at, updated_at) VALUES (?1, ?2, '/p', 'fact', ?3, ?4, ?5, ?5)",
-        rusqlite::params![n, id, title, content, cuando],
+        rusqlite::params![n, id, title, content, when],
     )
     .unwrap();
     db.execute("INSERT INTO memory_fts(rowid, title, content, tags, paths) VALUES (?1, ?2, ?3, '', '')", rusqlite::params![n, title, content]).unwrap();
 }
 
 #[test]
-fn los_descartes_de_antes_pasan_a_veredictos() {
+fn old_dismissals_become_verdicts() {
     let dir = comun::Temporal::nueva("veredictos-migrar");
     let a = "01JAAAAAAAAAAAAAAAAAAAAAAA";
     {
-        // Una base del esquema 7 con un «está bien así» en `review`.
+        // A schema 7 database with a «fine as is» in `review`.
         let db = db::abrir_en_esquema(&dir.join("o.db"), 7).unwrap();
-        memoria_vieja(&db, 1, a, "Uno", "Algo que nadie usa.", "2026-10-28T00:00:00.000Z");
+        insert_old_memory(&db, 1, a, "Uno", "Algo que nadie usa.", "2026-10-28T00:00:00.000Z");
         db.execute(
             "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, 'unused', '', '', '2026-10-29T00:00:00.000Z', '2026-10-29T00:01:00.000Z')",
             [a],
@@ -189,150 +189,150 @@ fn los_descartes_de_antes_pasan_a_veredictos() {
     let v = veredictos::todos(&db).unwrap();
     assert_eq!(v.len(), 1);
     assert_eq!((v[0].memory_id.as_str(), v[0].relation.as_str()), (a, "ok:unused"));
-    // El esquema 10 deja `review` como caché: sin `dismissed_at`.
+    // Schema 10 leaves `review` as a cache: without `dismissed_at`.
     assert!(db.query_row("SELECT count(*) FROM review WHERE dismissed_at IS NOT NULL", [], |f| f.get::<_, i64>(0)).is_err());
-    // Y el «está bien así» sigue valiendo (la memoria no ha cambiado desde entonces).
+    // And the «fine as is» still holds (the memory hasn't changed since then).
     assert!(veredictos::oks(&db, true).unwrap().contains_key(&(a.to_string(), "unused".to_string())));
 }
 
-/// Los falsos positivos de la base real de Marc (30-oct-2026): dentro de un proyecto, dos memorias
-/// que no tienen nada que ver se marcaban como desfasadas solo por nombrar versiones distintas.
+/// The false positives from Marc's real database (30-oct-2026): within a project, two unrelated
+/// memories were marked as outdated just for naming different versions.
 #[test]
-fn una_version_a_secas_no_contradice_a_otro_tema() {
-    let (_dir, mut db) = base("temas");
-    guardar(&mut db, Tipo::Fact, "Clave de firma de las Releases", "Desde la 0.14.0 el flujo firma SHA256SUMS con una clave Ed25519 guardada en los secretos del repositorio.", &[]);
-    guardar(&mut db, Tipo::Decision, "Eslogan del proyecto", "Desde la 0.14.1 el eslogan es «Memoria eterna, viva y ultrarrápida».", &[]);
-    assert!(avisos(&db).is_empty(), "{:?}", avisos(&db));
-    // Con nombre sí: la dependencia es la misma cosa aunque las memorias no se parezcan.
-    guardar(&mut db, Tipo::Fact, "Compilación en Linux", "Con rusqlite 0.41.0 hace falta glibc 2.35.", &[]);
-    guardar(&mut db, Tipo::Gotcha, "Pruebas en macOS", "Desde rusqlite 0.42.0 el bundled ya no falla en Intel.", &[]);
-    assert_eq!(avisos(&db).iter().filter(|a| a.0 == revisar::DESFASADA).count(), 1);
+fn bare_version_does_not_contradict_other_topic() {
+    let (_dir, mut db) = fixture("temas");
+    save(&mut db, Tipo::Fact, "Clave de firma de las Releases", "Desde la 0.14.0 el flujo firma SHA256SUMS con una clave Ed25519 guardada en los secretos del repositorio.", &[]);
+    save(&mut db, Tipo::Decision, "Eslogan del proyecto", "Desde la 0.14.1 el eslogan es «Memoria eterna, viva y ultrarrápida».", &[]);
+    assert!(warnings(&db).is_empty(), "{:?}", warnings(&db));
+    // With a name, yes: the dependency is the same thing even if the memories don't look alike.
+    save(&mut db, Tipo::Fact, "Compilación en Linux", "Con rusqlite 0.41.0 hace falta glibc 2.35.", &[]);
+    save(&mut db, Tipo::Gotcha, "Pruebas en macOS", "Desde rusqlite 0.42.0 el bundled ya no falla en Intel.", &[]);
+    assert_eq!(warnings(&db).iter().filter(|a| a.0 == revisar::DESFASADA).count(), 1);
 }
 
-/// Un «está bien así» frente a la memoria de estado no caduca cuando el estado cambia.
+/// A «fine as is» against the status memory doesn't expire when the status changes.
 #[test]
-fn compatible_sobrevive_a_los_cambios_de_la_otra() {
-    let (_dir, mut db) = base("sobrevive");
-    let vieja = guardar(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
-    let estado = guardar(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
-    assert_eq!(avisos(&db).len(), 1);
-    revisar::descartar(&db, &vieja, revisar::DESFASADA, &estado).unwrap();
+fn compatible_survives_changes_to_the_other() {
+    let (_dir, mut db) = fixture("sobrevive");
+    let old_id = save(&mut db, Tipo::Fact, "Lumbre: memoria para agentes en Rust", "La v0.2.0 publicada el 28-oct-2026 con el instalador.\nFalta publicar en crates.io.", &[]);
+    let status_id = save(&mut db, Tipo::Fact, "Lumbre: estado al 29-oct-2026", "La 0.9.2 está publicada en GitHub y crates.io.", &["status"]);
+    assert_eq!(warnings(&db).len(), 1);
+    revisar::descartar(&db, &old_id, revisar::DESFASADA, &status_id).unwrap();
     let c = Cambios { content: Some("La 0.10.0 está publicada en GitHub y crates.io.".into()), reason: Some("otra versión".into()), ..Default::default() };
-    memoria::actualizar(&mut db, &estado, c, None).unwrap();
-    assert!(avisos(&db).is_empty(), "{:?}", avisos(&db));
-    // Pero si cambia la juzgada, el aviso puede volver.
+    memoria::actualizar(&mut db, &status_id, c, None).unwrap();
+    assert!(warnings(&db).is_empty(), "{:?}", warnings(&db));
+    // But if the judged one changes, the warning can come back.
     let c = Cambios { content: Some("La v0.2.0 publicada el 28-oct-2026.\nFalta publicar en crates.io y en Homebrew.".into()), reason: Some("más".into()), ..Default::default() };
-    memoria::actualizar(&mut db, &vieja, c, None).unwrap();
-    assert_eq!(avisos(&db).len(), 1);
+    memoria::actualizar(&mut db, &old_id, c, None).unwrap();
+    assert_eq!(warnings(&db).len(), 1);
 }
 
-/// 0.19.0: el motivo y el autor se guardan y salen donde sale el veredicto.
+/// 0.19.0: the reason and the author are saved and shown wherever the verdict is.
 #[test]
-fn motivo_y_autor_se_guardan_y_salen_en_la_nota() {
-    let (_dir, mut db) = base("motivo");
-    let vieja = guardar(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
-    let nueva = guardar(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
-    veredictos::poner(&db, &vieja, &nueva, veredictos::SUSTITUIDA, "  JWT replaced the cookie\n in 0.19 ", "agent:claude-code").unwrap();
+fn reason_and_author_saved_and_shown_in_note() {
+    let (_dir, mut db) = fixture("motivo");
+    let old_id = save(&mut db, Tipo::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[]);
+    let new_id = save(&mut db, Tipo::Decision, "La autenticación va con JWT", "Se pasó a JWT en la cabecera Authorization.", &[]);
+    veredictos::poner(&db, &old_id, &new_id, veredictos::SUSTITUIDA, "  JWT replaced the cookie\n in 0.19 ", "agent:claude-code").unwrap();
     let v = veredictos::todos(&db).unwrap();
     assert_eq!((v[0].reason.as_str(), v[0].author.as_str()), ("JWT replaced the cookie\n in 0.19", "agent:claude-code"));
-    // En la nota del recall y de la búsqueda, el motivo en una línea.
-    let n = notas(&db, &vieja, false).unwrap();
-    assert_eq!(n, format!("superseded by {} «La autenticación va con JWT»: JWT replaced the cookie in 0.19", &nueva[..12]), "{n}");
-    assert_eq!(notas(&db, &vieja, true).unwrap(), n);
-    // En Revisar, con quién lo dijo.
+    // In the recall and search note, the reason on one line.
+    let n = notes(&db, &old_id, false).unwrap();
+    assert_eq!(n, format!("superseded by {} «La autenticación va con JWT»: JWT replaced the cookie in 0.19", &new_id[..12]), "{n}");
+    assert_eq!(notes(&db, &old_id, true).unwrap(), n);
+    // In Review, with who said it.
     let a = revisar::avisos(&db, &Ambito::Todos).unwrap().remove(0);
-    assert_eq!((a.kind.as_str(), a.other_id.as_str(), a.via), (revisar::SUSTITUIDA, nueva.as_str(), 0));
+    assert_eq!((a.kind.as_str(), a.other_id.as_str(), a.via), (revisar::SUSTITUIDA, new_id.as_str(), 0));
     assert_eq!((a.reason.as_str(), a.author.as_str()), ("JWT replaced the cookie\n in 0.19", "agent:claude-code"));
     assert_eq!(a.detail, "replaced by the other one: JWT replaced the cookie in 0.19 · by agent:claude-code");
-    // Un motivo largo se corta a 120 caracteres en la nota; sin motivo, la nota de siempre.
-    let largo = "x".repeat(200);
-    veredictos::poner(&db, &vieja, &nueva, veredictos::CONTRADICE, &largo, "Marc").unwrap();
-    let n = notas(&db, &vieja, false).unwrap();
-    let cabeza = format!("contradicts {} «La autenticación va con JWT» (on hold until the user says which holds): ", &nueva[..12]);
-    assert_eq!(n, format!("{cabeza}{}…", "x".repeat(120)), "{n}");
+    // A long reason is cut to 120 characters in the note; without a reason, the usual note.
+    let long = "x".repeat(200);
+    veredictos::poner(&db, &old_id, &new_id, veredictos::CONTRADICE, &long, "Marc").unwrap();
+    let n = notes(&db, &old_id, false).unwrap();
+    let head = format!("contradicts {} «La autenticación va con JWT» (on hold until the user says which holds): ", &new_id[..12]);
+    assert_eq!(n, format!("{head}{}…", "x".repeat(120)), "{n}");
     let a = revisar::avisos(&db, &Ambito::Todos).unwrap().remove(0);
     assert!(a.detail.ends_with("… · by Marc"), "{}", a.detail);
-    veredictos::poner(&db, &vieja, &nueva, veredictos::SUSTITUIDA, "", "").unwrap();
-    assert!(notas(&db, &vieja, false).unwrap().ends_with(": use that one"));
+    veredictos::poner(&db, &old_id, &new_id, veredictos::SUSTITUIDA, "", "").unwrap();
+    assert!(notes(&db, &old_id, false).unwrap().ends_with(": use that one"));
     assert_eq!(revisar::avisos(&db, &Ambito::Todos).unwrap()[0].detail, "replaced by the other one");
-    // «Está bien así» lo firma el usuario.
-    revisar::descartar(&db, &vieja, revisar::SUSTITUIDA, &nueva).unwrap();
+    // «Fine as is» is signed by the user.
+    revisar::descartar(&db, &old_id, revisar::SUSTITUIDA, &new_id).unwrap();
     let v = veredictos::todos(&db).unwrap();
     let ok = v.iter().find(|x| x.relation == veredictos::COMPATIBLE).unwrap();
     assert_eq!((ok.author.as_str(), ok.reason.as_str()), ("user", ""));
 }
 
-/// Quién firma: la persona de la sincronización, o el cliente que llama.
+/// Who signs: the sync person, or the calling client.
 #[test]
-fn el_autor_es_la_persona_de_la_sync_o_el_cliente() {
-    let (_dir, db) = base("autor");
-    // Se llama a la biblioteca en este proceso, que hereda el entorno de quien lanza `cargo test`: si
-    // es la sesión de un agente con `OMOIKANE_AUTHOR`, firma ese autor por encima de todo (y quitarla
-    // aquí sería tocar el entorno de un proceso con varios hilos de tests).
-    let de_la_sesion = omoikane::entorno::autor();
-    let espera = |sin: &str| de_la_sesion.clone().unwrap_or_else(|| sin.to_string());
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), espera("agent:claude-code"));
-    assert_eq!(veredictos::autor(&db, "mcp", ""), espera("agent"));
-    assert_eq!(veredictos::autor(&db, "", ""), espera("agent"));
-    assert_eq!(veredictos::autor(&db, "cli", ""), espera("cli"));
+fn author_is_sync_person_or_client() {
+    let (_dir, db) = fixture("autor");
+    // The library is called in this process, which inherits the environment of whoever runs `cargo test`: if
+    // it is an agent session with `OMOIKANE_AUTHOR`, that author signs above everything (and removing it
+    // here would mean touching the environment of a process with several test threads).
+    let from_session = omoikane::entorno::autor();
+    let expected = |fallback: &str| from_session.clone().unwrap_or_else(|| fallback.to_string());
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), expected("agent:claude-code"));
+    assert_eq!(veredictos::autor(&db, "mcp", ""), expected("agent"));
+    assert_eq!(veredictos::autor(&db, "", ""), expected("agent"));
+    assert_eq!(veredictos::autor(&db, "cli", ""), expected("cli"));
     db.execute("INSERT INTO meta(k, v) VALUES ('autor', 'Marc')", []).unwrap();
-    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), espera("Marc"));
+    assert_eq!(veredictos::autor(&db, "mcp:claude-code", ""), expected("Marc"));
 }
 
-/// A sustituida por B y B por C: la nota de A lleva a C, con el motivo del último eslabón.
+/// A superseded by B and B by C: A's note leads to C, with the reason of the last link.
 #[test]
-fn la_cadena_de_sustituciones_lleva_a_la_ultima() {
-    let (_dir, mut db) = base("cadena");
-    let a = guardar(&mut db, Tipo::Fact, "El puerto es el 8080", "Escucha en el 8080.", &[]);
-    let b = guardar(&mut db, Tipo::Fact, "El puerto es el 9090", "Escucha en el 9090 desde la migración.", &[]);
-    let c = guardar(&mut db, Tipo::Fact, "El puerto es el 7070", "Escucha en el 7070 detrás de Caddy.", &[]);
+fn supersession_chain_leads_to_last() {
+    let (_dir, mut db) = fixture("cadena");
+    let a = save(&mut db, Tipo::Fact, "El puerto es el 8080", "Escucha en el 8080.", &[]);
+    let b = save(&mut db, Tipo::Fact, "El puerto es el 9090", "Escucha en el 9090 desde la migración.", &[]);
+    let c = save(&mut db, Tipo::Fact, "El puerto es el 7070", "Escucha en el 7070 detrás de Caddy.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "migración", "Marc").unwrap();
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), Some((b.clone(), 1)));
     veredictos::poner(&db, &b, &c, veredictos::SUSTITUIDA, "detrás de Caddy", "Ana").unwrap();
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), Some((c.clone(), 2)));
     assert_eq!(veredictos::ultima_de_cadena(&db, &b).unwrap(), Some((c.clone(), 1)));
     assert_eq!(veredictos::ultima_de_cadena(&db, &c).unwrap(), None);
-    let n = notas(&db, &a, false).unwrap();
+    let n = notes(&db, &a, false).unwrap();
     assert_eq!(n, format!("superseded by {} «El puerto es el 7070» (via 2): detrás de Caddy", &c[..12]), "{n}");
-    assert_eq!(notas(&db, &b, false).unwrap(), format!("superseded by {} «El puerto es el 7070»: detrás de Caddy", &c[..12]));
-    assert_eq!(notas(&db, &c, true), None);
-    // En Revisar, A apunta al final de la cadena.
-    let av = revisar::avisos(&db, &Ambito::Todos).unwrap();
-    let de_a = av.iter().find(|x| x.memory_id == a).unwrap();
-    assert_eq!((de_a.other_id.as_str(), de_a.via, de_a.reason.as_str(), de_a.author.as_str()), (c.as_str(), 2, "detrás de Caddy", "Ana"));
-    assert_eq!(de_a.detail, "replaced by the other one: detrás de Caddy (via 2) · by Ana");
-    let de_b = av.iter().find(|x| x.memory_id == b).unwrap();
-    assert_eq!((de_b.other_id.as_str(), de_b.via), (c.as_str(), 0));
-    // Si B cambia, su veredicto caduca y la cadena de A se queda en B.
-    let cambio = Cambios { content: Some("Escucha en el 9090, y el 7070 es solo el proxy.".into()), reason: Some("aclarado".into()), ..Default::default() };
-    memoria::actualizar(&mut db, &b, cambio, None).unwrap();
+    assert_eq!(notes(&db, &b, false).unwrap(), format!("superseded by {} «El puerto es el 7070»: detrás de Caddy", &c[..12]));
+    assert_eq!(notes(&db, &c, true), None);
+    // In Review, A points to the end of the chain.
+    let warns = revisar::avisos(&db, &Ambito::Todos).unwrap();
+    let of_a = warns.iter().find(|x| x.memory_id == a).unwrap();
+    assert_eq!((of_a.other_id.as_str(), of_a.via, of_a.reason.as_str(), of_a.author.as_str()), (c.as_str(), 2, "detrás de Caddy", "Ana"));
+    assert_eq!(of_a.detail, "replaced by the other one: detrás de Caddy (via 2) · by Ana");
+    let of_b = warns.iter().find(|x| x.memory_id == b).unwrap();
+    assert_eq!((of_b.other_id.as_str(), of_b.via), (c.as_str(), 0));
+    // If B changes, its verdict expires and A's chain stops at B.
+    let change = Cambios { content: Some("Escucha en el 9090, y el 7070 es solo el proxy.".into()), reason: Some("aclarado".into()), ..Default::default() };
+    memoria::actualizar(&mut db, &b, change, None).unwrap();
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), Some((b.clone(), 1)));
-    assert!(notas(&db, &a, false).unwrap().contains(&b[..12]));
+    assert!(notes(&db, &a, false).unwrap().contains(&b[..12]));
 }
 
-/// Un ciclo (A → B → A) o una cadena larguísima no cuelgan: el camino corta el ciclo y hay tope.
+/// A cycle (A → B → A) or a very long chain doesn't hang: the walk cuts the cycle and there is a cap.
 #[test]
-fn un_ciclo_de_sustituciones_no_cuelga() {
-    let (_dir, mut db) = base("ciclo");
-    let a = guardar(&mut db, Tipo::Fact, "Uno", "El backup corre a las 3:00.", &[]);
-    let b = guardar(&mut db, Tipo::Fact, "Dos", "El backup corre a las 12:00.", &[]);
+fn supersession_cycle_does_not_hang() {
+    let (_dir, mut db) = fixture("ciclo");
+    let a = save(&mut db, Tipo::Fact, "Uno", "El backup corre a las 3:00.", &[]);
+    let b = save(&mut db, Tipo::Fact, "Dos", "El backup corre a las 12:00.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "", "").unwrap();
     veredictos::poner(&db, &b, &a, veredictos::SUSTITUIDA, "", "").unwrap();
-    // De la pareja manda el más nuevo (B sustituida por A), así que A ya no está sustituida.
+    // The pair's newest one rules (B superseded by A), so A is no longer superseded.
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), None);
     assert_eq!(veredictos::ultima_de_cadena(&db, &b).unwrap(), Some((a.clone(), 1)));
-    // Un ciclo de tres (A → B → C → A): desde A se llega a C y ahí se para; desde C, a B.
-    let c = guardar(&mut db, Tipo::Fact, "Tres", "El backup corre a las 18:00.", &[]);
+    // A cycle of three (A → B → C → A): from A it reaches C and stops there; from C, B.
+    let c = save(&mut db, Tipo::Fact, "Tres", "El backup corre a las 18:00.", &[]);
     veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "", "").unwrap();
     veredictos::poner(&db, &b, &c, veredictos::SUSTITUIDA, "", "").unwrap();
     veredictos::poner(&db, &c, &a, veredictos::SUSTITUIDA, "", "").unwrap();
     assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap(), Some((c.clone(), 2)));
     assert_eq!(veredictos::ultima_de_cadena(&db, &c).unwrap(), Some((b.clone(), 2)));
-    assert!(notas(&db, &a, false).unwrap().contains("(via 2)"));
-    // Treinta eslabones: se para en el tope (20), sin colgarse.
-    let mut ids = vec![guardar(&mut db, Tipo::Fact, "Eslabón 0", "Primero.", &[])];
+    assert!(notes(&db, &a, false).unwrap().contains("(via 2)"));
+    // Thirty links: it stops at the cap (20), without hanging.
+    let mut ids = vec![save(&mut db, Tipo::Fact, "Eslabón 0", "Primero.", &[])];
     for i in 1..30 {
-        let id = guardar(&mut db, Tipo::Fact, &format!("Eslabón {i}"), &format!("Número {i}."), &[]);
+        let id = save(&mut db, Tipo::Fact, &format!("Eslabón {i}"), &format!("Número {i}."), &[]);
         veredictos::poner(&db, &ids[i - 1], &id, veredictos::SUSTITUIDA, "", "").unwrap();
         ids.push(id);
     }
@@ -340,16 +340,16 @@ fn un_ciclo_de_sustituciones_no_cuelga() {
     assert_eq!(veredictos::ultima_de_cadena(&db, &ids[27]).unwrap(), Some((ids[29].clone(), 2)));
 }
 
-/// Esquema 8 → 10: los veredictos que ya había se conservan, sin motivo ni autor, y siguen valiendo.
+/// Schema 8 → 10: the existing verdicts are kept, without reason or author, and still hold.
 #[test]
-fn los_veredictos_del_esquema_8_se_conservan() {
+fn schema_8_verdicts_are_kept() {
     let dir = comun::Temporal::nueva("veredictos-esquema8");
     let (a, b) = ("01JAAAAAAAAAAAAAAAAAAAAAAA", "01JBBBBBBBBBBBBBBBBBBBBBBB");
     {
-        // Una base del esquema 8: la tabla `verdict` sin motivo ni autor, y sellos de contador corto.
+        // A schema 8 database: the `verdict` table without reason or author, and short-counter stamps.
         let db = db::abrir_en_esquema(&dir.join("o.db"), 8).unwrap();
-        memoria_vieja(&db, 1, a, "Uno", "El puerto es el 8080.", "2026-10-28T10:00:00.000Z");
-        memoria_vieja(&db, 2, b, "Dos", "El puerto es el 9090.", "2026-10-28T11:00:00.000Z");
+        insert_old_memory(&db, 1, a, "Uno", "El puerto es el 8080.", "2026-10-28T10:00:00.000Z");
+        insert_old_memory(&db, 2, b, "Dos", "El puerto es el 9090.", "2026-10-28T11:00:00.000Z");
         db.execute_batch(&format!(
             "INSERT INTO verdict(memory_id, other_id, relation, at, hlc) VALUES ('{a}', '{b}', 'superseded', '2026-10-28T12:00:00.000Z', '1793188800000-0003-pc');
              INSERT INTO verdict(memory_id, other_id, relation, at, hlc) VALUES ('{a}', '', 'ok:unused', '2026-10-28T12:00:00.000Z', '1793188800000-0004-pc');"
@@ -359,15 +359,15 @@ fn los_veredictos_del_esquema_8_se_conservan() {
     let db = db::abrir(&dir.join("o.db")).unwrap();
     let v: i64 = db.query_row("PRAGMA user_version", [], |f| f.get(0)).unwrap();
     assert_eq!(v, db::VERSION_ESQUEMA);
-    // Los sellos, al formato de ahora.
-    let sello: String = db.query_row("SELECT hlc FROM verdict WHERE relation = 'superseded'", [], |f| f.get(0)).unwrap();
-    assert_eq!(sello, "1793188800000-0000000003-pc");
-    let mut todos = veredictos::todos(&db).unwrap();
-    todos.sort_by(|x, y| x.relation.cmp(&y.relation));
-    assert_eq!(todos.len(), 2);
-    assert_eq!((todos[0].relation.as_str(), todos[0].reason.as_str(), todos[0].author.as_str()), ("ok:unused", "", ""));
-    assert_eq!((todos[1].memory_id.as_str(), todos[1].other_id.as_str(), todos[1].relation.as_str(), todos[1].reason.as_str()), (a, b, "superseded", ""));
-    assert!(notas(&db, a, false).unwrap().ends_with(": use that one"));
+    // The stamps, in the current format.
+    let stamp: String = db.query_row("SELECT hlc FROM verdict WHERE relation = 'superseded'", [], |f| f.get(0)).unwrap();
+    assert_eq!(stamp, "1793188800000-0000000003-pc");
+    let mut all = veredictos::todos(&db).unwrap();
+    all.sort_by(|x, y| x.relation.cmp(&y.relation));
+    assert_eq!(all.len(), 2);
+    assert_eq!((all[0].relation.as_str(), all[0].reason.as_str(), all[0].author.as_str()), ("ok:unused", "", ""));
+    assert_eq!((all[1].memory_id.as_str(), all[1].other_id.as_str(), all[1].relation.as_str(), all[1].reason.as_str()), (a, b, "superseded", ""));
+    assert!(notes(&db, a, false).unwrap().ends_with(": use that one"));
     let ok: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
     assert_eq!(ok, "ok");
 }

@@ -1,47 +1,47 @@
-//! Memoria compartida por git: los equipos de una persona (o un grupo) juntan sus memorias en un
-//! repositorio git suyo, sin servicio propio y sin coste. Omoikane solo usa el `git` del usuario, con
-//! sus credenciales.
+//! Memory shared through git: a person's (or a group's) machines pool their memories in a git
+//! repository of their own, with no service of its own and at no cost. Omoikane only uses the user's `git`, with
+//! their credentials.
 //!
-//! - **Qué se sube:** texto, nunca el SQLite. Una línea por memoria (y por cada olvido), ordenadas y
-//!   partidas por proyecto y por equipo: `<proyecto>/<equipo>.jsonl`, `global/<equipo>.jsonl` y
-//!   `olvidos/<equipo>.jsonl`, donde `<equipo>` es un nombre opaco derivado de la clave (el nombre del
-//!   equipo, que lleva el del sistema, solo va dentro de las líneas cifradas). Cada equipo solo
-//!   escribe sus ficheros, así que git nunca tiene conflictos; al bajar se leen solo los ficheros que
-//!   cambiaron desde la última vez. Los commits van firmados como «omoikane», sin nombres.
-//! - **Cifrado solo en el remoto:** cada línea va cifrada con AES-SIV (RFC 5297), que es determinista:
-//!   una línea que no cambia queda igual byte a byte y el diff de git sigue siendo de una línea. Las
-//!   carpetas de proyecto tienen un nombre opaco derivado de la clave. En el equipo todo está en claro.
-//!   El repositorio lleva un fichero de comprobación (`omoikane.check`) cifrado con su clave: un equipo
-//!   con otra clave lo sabe antes de leer nada.
-//! - **Claves con id y rotación (0.20.0):** cada línea lleva el id de la clave que la cifró (`k2:…`;
-//!   sin prefijo, la clave 1, como todas las de antes). `omoikane.check` dice qué claves hay y cuál es
-//!   la vigente. `omoi sync rotate` crea una clave nueva, vuelve a cifrar con ella todo lo de este
-//!   equipo y da el código nuevo: quien solo tiene la vieja deja de leer lo que se escriba desde
-//!   entonces (y `omoi sync status` se lo dice). Un equipo guarda todas las claves que ha recibido,
-//!   para leer lo que otros aún no han vuelto a cifrar, y escribe siempre con la más nueva.
-//! - **Un repositorio por espacio:** además del general, uno por espacio (`omoi sync init --space
-//!   <nombre>`), cada uno con su clave; `omoi sync` y la sincronización de fondo los recorren todos.
-//!   Lo de un espacio (sus proyectos y lo suyo) va solo a su repositorio; el general lleva lo que no
-//!   es de ningún espacio (`va_al_repo`).
-//! - **Quién gana:** el sello del reloj lógico (`reloj`) más alto. La versión de aquí que pierde queda
-//!   en el historial con el motivo `sync: <equipo>`. Los olvidos se aplican antes que las memorias, así
-//!   que lo olvidado no resucita; lo que olvida otro equipo se guarda aquí aparte (`omoi sync restore`).
-//! - **Proyectos en rutas distintas:** se reconocen por el remoto `origin` de git (o, sin remoto, por
-//!   la persona y el nombre de la carpeta), y cada equipo guarda la memoria con su propia ruta.
-//! - **Automático:** después de cada cambio, `programar` lanza `omoi sync --background` aparte; espera
-//!   unos segundos para juntar cambios y solo corre uno a la vez por equipo.
-//! - **A mitad de sesión:** con cada mensaje (y en `omoi serve`, con un temporizador), cada 2 minutos
-//!   como mucho, `traer_si_toca` lanza `omoi sync --pull` aparte: un `git fetch` y comparar con lo
-//!   último leído; la sincronización completa, solo si el remoto trae algo. La hora del último intento
-//!   va en `meta('sync_traido')`.
+//! - **What is pushed:** text, never the SQLite. One line per memory (and per tombstone), sorted and
+//!   split by project and by machine: `<project>/<machine>.jsonl`, `global/<machine>.jsonl` and
+//!   `olvidos/<machine>.jsonl`, where `<machine>` is an opaque name derived from the key (the machine
+//!   name, which carries the system's, only goes inside the encrypted lines). Each machine only
+//!   writes its own files, so git never has conflicts; on pull only the files that changed since
+//!   last time are read. Commits are signed as «omoikane», with no names.
+//! - **Encrypted only on the remote:** each line is encrypted with AES-SIV (RFC 5297), which is deterministic:
+//!   a line that doesn't change stays the same byte for byte and the git diff is still one line. Project
+//!   folders have an opaque name derived from the key. On the machine everything is in plain text.
+//!   The repository carries a check file (`omoikane.check`) encrypted with its key: a machine
+//!   with another key knows before reading anything.
+//! - **Keys with id and rotation (0.20.0):** each line carries the id of the key that encrypted it (`k2:…`;
+//!   without prefix, key 1, like all the earlier ones). `omoikane.check` says which keys exist and which is
+//!   current. `omoi sync rotate` creates a new key, re-encrypts with it everything from this
+//!   machine and gives the new code: whoever only has the old one stops reading what is written from
+//!   then on (and `omoi sync status` tells them). A machine keeps every key it has received,
+//!   to read what others haven't re-encrypted yet, and always writes with the newest.
+//! - **One repository per space:** besides the general one, one per space (`omoi sync init --space
+//!   <name>`), each with its key; `omoi sync` and the background sync go through all of them.
+//!   A space's memories (its projects and its own) go only to its repository; the general one carries what
+//!   belongs to no space (`goes_to_repo`).
+//! - **Who wins:** the highest logical clock stamp (`reloj`). The local version that loses stays
+//!   in the history with the reason `sync: <machine>`. Tombstones are applied before memories, so
+//!   what was forgotten doesn't come back; what another machine forgets is kept here separately (`omoi sync restore`).
+//! - **Projects at different paths:** they are recognized by git's `origin` remote (or, without a remote, by
+//!   the person and the folder name), and each machine stores the memory with its own path.
+//! - **Automatic:** after each change, `programar` launches `omoi sync --background` separately; it waits
+//!   a few seconds to batch changes and only one runs at a time per machine.
+//! - **Mid-session:** with each message (and in `omoi serve`, with a timer), every 2 minutes
+//!   at most, `traer_si_toca` launches `omoi sync --pull` separately: a `git fetch` and a comparison with what was
+//!   last read; the full sync, only if the remote brings something. The time of the last attempt
+//!   goes in `meta('sync_traido')`.
 //!
-//! Todo vive junto a la base: `sync.json` (configuración), `sync.key` (claves), `sync/` (el clon),
-//! `sync-estado.json`, `sync.pendiente`, `sync.hecho` y `sync.lock`. Cada espacio con repositorio
-//! propio, en `sync-spaces/<espacio>/`: `sync.json`, `sync.key`, `repo/` (su clon) y `estado.json`
-//! (la marca de pendiente y el cerrojo son los de la base: una sincronización los recorre todos). Con
-//! una base que no se llama `omoikane.db`, los nombres llevan delante el de la base
-//! (`trabajo.sync.json`, `trabajo.sync-spaces/`…), para que dos bases en la misma carpeta no
-//! compartan sincronización.
+//! Everything lives next to the database: `sync.json` (configuration), `sync.key` (keys), `sync/` (the clone),
+//! `sync-estado.json`, `sync.pendiente`, `sync.hecho` and `sync.lock`. Each space with its own
+//! repository, in `sync-spaces/<space>/`: `sync.json`, `sync.key`, `repo/` (its clone) and `estado.json`
+//! (the pending marker and the lock are the database's: one sync goes through all of them). With
+//! a database not called `omoikane.db`, the names are prefixed with the database's
+//! (`trabajo.sync.json`, `trabajo.sync-spaces/`…), so that two databases in the same folder don't
+//! share sync.
 
 use crate::embeber::Modelo;
 use crate::memoria::{self, COLUMNAS, Cambios, Memoria, NCOL, Nueva, Origen, Tipo, de_fila};
@@ -59,37 +59,37 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Cabecera asociada al cifrado: una línea de otro formato o versión no se descifra por accidente.
-const CABECERA: &[u8] = b"omoikane-sync-v1";
-const RAMA: &str = "main";
-const PREFIJO_CODIGO: &str = "omoi1.";
-/// El fichero de comprobación de la clave, en la raíz del repositorio, y lo que lleva dentro (cifrado).
-const CHEQUEO: &str = "omoikane.check";
-const TEXTO_CHEQUEO: &str = "omoikane-key-check-v1";
-/// La cabecera de `omoikane.check` cuando el repositorio tiene más de una clave.
-const CABECERA_CHEQUEO: &str = "omoikane-check-v2";
-/// Dónde viven los repositorios de los espacios, junto a la base.
-const CARPETA_ESPACIOS: &str = "sync-spaces";
-/// Lo que hace falta para entender el repositorio, en su raíz y cifrado con la clave vigente (como las
-/// líneas de `omoikane.check`): `{"min_reader": 1}`. Lo escribe la primera sincronización tras `init`
-/// (y la siguiente en los repositorios de antes) y no se cambia si ya existe; tras una rotación se
-/// vuelve a cifrar con la clave nueva, con el mismo contenido.
-const FORMATO_REPO: &str = "omoikane.format";
-/// El lector de repositorios de esta versión. Un repositorio cuyo `min_reader` pase de aquí lo ha
-/// escrito una versión que cambió el significado de algo que ya había: esta no escribe en él (ni lee)
-/// y avisa. Solo sube con un cambio así; lo que solo añade (un campo, un tipo de línea) no lo sube.
+/// Associated data for the encryption: a line of another format or version is not decrypted by accident.
+const ASSOCIATED_DATA: &[u8] = b"omoikane-sync-v1";
+const BRANCH: &str = "main";
+const CODE_PREFIX: &str = "omoi1.";
+/// The key check file, at the repository root, and what it contains (encrypted).
+const CHECK_FILE: &str = "omoikane.check";
+const CHECK_TEXT: &str = "omoikane-key-check-v1";
+/// The header of `omoikane.check` when the repository has more than one key.
+const CHECK_HEADER: &str = "omoikane-check-v2";
+/// Where the space repositories live, next to the database.
+const SPACES_DIR: &str = "sync-spaces";
+/// What is needed to understand the repository, at its root and encrypted with the current key (like the
+/// lines of `omoikane.check`): `{"min_reader": 1}`. The first sync after `init` writes it
+/// (and the next one in older repositories) and it is not changed if it already exists; after a rotation it
+/// is re-encrypted with the new key, with the same contents.
+const REPO_FORMAT_FILE: &str = "omoikane.format";
+/// This version's repository reader. A repository whose `min_reader` goes beyond this was
+/// written by a version that changed the meaning of something that already existed: this one doesn't write to it (or read)
+/// and warns. It only goes up with such a change; what only adds (a field, a line type) doesn't raise it.
 pub const LECTOR_REPO: u64 = 1;
-/// Las líneas que sabe leer esta versión (`meta('sync_lector')`). Sube cada vez que una versión
-/// aprende a leer algo que las anteriores se saltaban (un tipo de línea nuevo): al sincronizar con un
-/// `sync_lector` menor, se olvida por dónde iba cada repositorio (`sync_commit*`) y se relee todo,
-/// así que lo que se saltó antes de actualizar entra ahora.
+/// The lines this version can read (`meta('sync_lector')`). It goes up every time a version
+/// learns to read something earlier ones skipped (a new line type): when syncing with a lower
+/// `sync_lector`, where each repository was up to (`sync_commit*`) is forgotten and everything is reread,
+/// so what was skipped before updating comes in now.
 pub const LECTOR_LINEAS: i64 = 1;
-/// Lo que puede tardar una orden de git antes de darla por colgada.
-const LIMITE_GIT: Duration = Duration::from_secs(120);
+/// How long a git command may take before it is considered hung.
+const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
-// --- Rutas y configuración -------------------------------------------------------------------------
+// --- Paths and configuration ----------------------------------------------------------------------
 
-/// Los ficheros de la sincronización, junto a la base.
+/// The sync files, next to the database.
 pub struct Rutas {
     pub config: PathBuf,
     pub clave: PathBuf,
@@ -98,28 +98,28 @@ pub struct Rutas {
     pub pendiente: PathBuf,
     pub hecho: PathBuf,
     pub cerrojo: PathBuf,
-    /// El espacio de este repositorio (`None`: el general).
+    /// This repository's space (`None`: the general one).
     pub espacio: Option<String>,
-    /// La clave de `meta` donde la base apunta el último commit leído de este repositorio.
+    /// The `meta` key where the database records the last commit read from this repository.
     pub(crate) marca_commit: String,
 }
 
-/// Las rutas del repositorio general.
+/// The paths of the general repository.
 pub fn rutas(db: &Path) -> Rutas {
     rutas_de(db, None)
 }
 
-/// Las rutas del repositorio general (`None`) o del de un espacio.
-pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
+/// The paths of the general repository (`None`) or of a space's.
+pub fn rutas_de(db: &Path, space: Option<&str>) -> Rutas {
     let dir = db.parent().map(Path::to_path_buf).unwrap_or_default();
-    let delante = match db.file_name().map(|n| n.to_string_lossy().into_owned()) {
+    let prefix = match db.file_name().map(|n| n.to_string_lossy().into_owned()) {
         Some(n) if n != "omoikane.db" && !n.is_empty() => {
             format!("{}.", db.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(n))
         }
         _ => String::new(),
     };
-    let f = |nombre: &str| dir.join(format!("{delante}{nombre}"));
-    match espacio {
+    let f = |name: &str| dir.join(format!("{prefix}{name}"));
+    match space {
         None => Rutas {
             config: f("sync.json"),
             clave: f("sync.key"),
@@ -132,7 +132,7 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
             marca_commit: "sync_commit".into(),
         },
         Some(e) => {
-            let d = f(CARPETA_ESPACIOS).join(e);
+            let d = f(SPACES_DIR).join(e);
             Rutas {
                 config: d.join("sync.json"),
                 clave: d.join("sync.key"),
@@ -148,10 +148,10 @@ pub fn rutas_de(db: &Path, espacio: Option<&str>) -> Rutas {
     }
 }
 
-/// Los espacios con repositorio propio en este equipo, por orden de nombre.
+/// The spaces with their own repository on this machine, in name order.
 pub fn espacios(db: &Path) -> Vec<String> {
-    let carpeta = rutas_de(db, Some("x")).config.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
-    let mut v: Vec<String> = std::fs::read_dir(carpeta)
+    let folder = rutas_de(db, Some("x")).config.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
+    let mut v: Vec<String> = std::fs::read_dir(folder)
         .into_iter()
         .flatten()
         .flatten()
@@ -163,12 +163,12 @@ pub fn espacios(db: &Path) -> Vec<String> {
     v
 }
 
-/// El repositorio del espacio de esta clave en este equipo, si lo tiene.
-pub fn repo_de_espacio(db: &Path, clave: &str) -> Option<Rutas> {
-    espacios(db).into_iter().find(|e| crate::proyecto::clave_de_espacio(e) == clave).map(|e| rutas_de(db, Some(&e)))
+/// The repository of the space with this key on this machine, if it has one.
+pub fn repo_de_espacio(db: &Path, key: &str) -> Option<Rutas> {
+    espacios(db).into_iter().find(|e| crate::proyecto::clave_de_espacio(e) == key).map(|e| rutas_de(db, Some(&e)))
 }
 
-/// Todos los repositorios configurados en este equipo: el general (si lo está) y uno por espacio.
+/// All the repositories configured on this machine: the general one (if it is) and one per space.
 pub fn repos(db: &Path) -> Vec<Rutas> {
     let general = rutas(db);
     let mut v = Vec::new();
@@ -179,468 +179,468 @@ pub fn repos(db: &Path) -> Vec<Rutas> {
     v
 }
 
-/// El nombre de un espacio tal como se guarda (es el nombre de una carpeta): minúsculas, números,
-/// `-` y `_`, hasta 64.
-pub fn espacio_valido(nombre: &str) -> Result<String> {
-    let n = nombre.trim().to_lowercase();
+/// A space name as stored (it is a folder name): lowercase, digits,
+/// `-` and `_`, up to 64.
+pub fn espacio_valido(name: &str) -> Result<String> {
+    let n = name.trim().to_lowercase();
     ensure!(
         !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !n.starts_with(['-', '_']),
         tr!(
             "«{}» is not a valid space name (letters, digits, - and _)",
             "«{}» no vale como nombre de espacio (letras, números, - y _)",
-            nombre
+            name
         )
     );
     Ok(n)
 }
 
-/// Qué se comparte y cómo. Se decide en `omoi sync init` (o `join`). Vale para lo que se sube y para
-/// lo que se acepta de los demás.
+/// What is shared and how. Decided in `omoi sync init` (or `join`). It applies to what is pushed and to
+/// what is accepted from the others.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub url: String,
-    /// Tipos que se comparten (las preferencias, solo si se eligió compartirlas).
+    /// Kinds that are shared (preferences, only if sharing them was chosen).
     pub kinds: Vec<Tipo>,
-    /// Si se comparten las memorias globales.
+    /// Whether global memories are shared.
     pub global: bool,
-    /// Proyectos que se comparten, por su clave; ninguno = todos.
+    /// Projects that are shared, by their key; none = all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projects: Option<Vec<String>>,
-    /// Solo en el repositorio general: los espacios (por su clave) que también van por él. Sin esta
-    /// lista, lo de los espacios no va por el general: cada espacio tiene su repositorio (`space`).
+    /// Only in the general repository: the spaces (by their key) that also go through it. Without this
+    /// list, space memories don't go through the general one: each space has its repository (`space`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spaces: Option<Vec<String>>,
-    /// El nombre que se apunta como autor de cada memoria; ninguno = no se apunta.
+    /// The name recorded as the author of each memory; none = not recorded.
     #[serde(default)]
     pub author: Option<String>,
-    /// Para reconocer los proyectos sin remoto git: los de la misma persona se juntan entre sus
-    /// equipos, los de dos personas no.
+    /// To recognize projects without a git remote: the same person's are merged across their
+    /// machines, two people's are not.
     pub person: String,
-    /// El espacio cuyas memorias van a este repositorio (`None`: el repositorio general). Los
-    /// `sync.json` de antes no lo llevan: son el general.
+    /// The space whose memories go to this repository (`None`: the general repository). Older
+    /// `sync.json` files don't have it: they are the general one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
-    /// El repositorio general de otra persona (`join --another-person`, 1.8.6): su clave la tiene
-    /// también esa persona, así que de ella no sale la clave de sellos de esta (`verificado::llaves`).
-    /// Los `sync.json` de antes no lo llevan.
+    /// Another person's general repository (`join --another-person`, 1.8.6): that person also has its
+    /// key, so this person's seal key is not derived from it (`verificado::llaves`).
+    /// Older `sync.json` files don't have it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub another_person: bool,
 }
 
 impl Config {
-    /// Si se comparte una memoria de este tipo (un tipo que esta versión no conoce cuenta como `fact`),
-    /// de este proyecto (`clave`) y de este espacio (`espacio`: el de la memoria o el de su proyecto).
-    /// A qué repositorio va cada una lo decide `va_al_repo`.
-    fn acepta(&self, kind: &str, clave: &str, espacio: &str) -> bool {
+    /// Whether a memory of this kind is shared (a kind this version doesn't know counts as `fact`),
+    /// of this project (`key`) and of this space (`space`: the memory's or its project's).
+    /// Which repository each one goes to is decided by `goes_to_repo`.
+    fn accepts(&self, kind: &str, key: &str, space: &str) -> bool {
         let kind = kind.parse::<Tipo>().unwrap_or(Tipo::Fact);
-        // Una preferencia guardada para todo un espacio (`remember --space`) es del equipo, no de la
-        // persona: va siempre por el repositorio de ese espacio, aunque no se compartan preferencias.
-        let del_equipo = kind == Tipo::Preference && clave.is_empty() && !espacio.is_empty() && self.space.is_some();
-        if !del_equipo && !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
+        // A preference saved for a whole space (`remember --space`) belongs to the team, not the
+        // person: it always goes through that space's repository, even if preferences are not shared.
+        let team_preference = kind == Tipo::Preference && key.is_empty() && !space.is_empty() && self.space.is_some();
+        if !team_preference && !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
             return false;
         }
-        if clave.is_empty() {
-            // Las de nivel espacio van con su espacio; las globales, si se eligió compartirlas.
-            return !espacio.is_empty() || self.global;
+        if key.is_empty() {
+            // Space-level ones go with their space; global ones, if sharing them was chosen.
+            return !space.is_empty() || self.global;
         }
-        self.projects.as_ref().is_none_or(|p| p.iter().any(|k| k == clave))
+        self.projects.as_ref().is_none_or(|p| p.iter().any(|k| k == key))
     }
 
-    /// Lo que se sube de este equipo y lo que se acepta de los demás: lo elegido y de este repositorio.
-    fn admite(&self, kind: &str, clave: &str, espacio: &str) -> bool {
-        self.acepta(kind, clave, espacio) && va_al_repo(self, espacio)
+    /// What this machine pushes and what it accepts from the others: what was chosen and belongs to this repository.
+    fn admits(&self, kind: &str, key: &str, space: &str) -> bool {
+        self.accepts(kind, key, space) && goes_to_repo(self, space)
     }
 
-    fn comparte(&self, m: &Memoria) -> bool {
-        // Una memoria de oficio (global con `trade:`) es de la persona o de la factoría: nunca va por el
-        // repositorio de un cliente (por ser global ya no iría; esto lo deja dicho).
-        self.admite(m.tipo_texto(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
+    fn shares(&self, m: &Memoria) -> bool {
+        // A trade memory (global with `trade:`) belongs to the person or the factory: it never goes through a
+        // client's repository (being global it wouldn't anyway; this makes it explicit).
+        self.admits(m.tipo_texto(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
     }
 }
 
-/// Si una memoria de este espacio (su clave; vacío: de ninguno) va al repositorio de esta
-/// configuración. El de un espacio (`config.space`) lleva solo lo de ese espacio: sus proyectos y lo
-/// suyo, nunca lo global ni lo de proyectos sin espacio. El general, lo que no es de ningún espacio, y
-/// de los espacios solo los que diga expresamente su `spaces`: así lo de un cliente no acaba en el
-/// repositorio personal por defecto. Vale igual para lo que llega: un repositorio de cliente no puede
-/// meter memorias en otros espacios ni globales.
-fn va_al_repo(config: &Config, espacio: &str) -> bool {
+/// Whether a memory of this space (its key; empty: none) goes to this configuration's
+/// repository. A space's (`config.space`) carries only that space's: its projects and its
+/// own memories, never global ones or those of projects without a space. The general one, what belongs to no space, and
+/// of the spaces only those its `spaces` explicitly lists: so a client's memories don't end up in the
+/// personal repository by default. The same applies to what arrives: a client repository can't
+/// bring memories into other spaces or global ones.
+fn goes_to_repo(config: &Config, space: &str) -> bool {
     match &config.space {
-        Some(propio) => !espacio.is_empty() && espacio == crate::proyecto::clave_de_espacio(propio),
-        None => espacio.is_empty() || config.spaces.as_ref().is_some_and(|s| s.iter().any(|k| k == espacio)),
+        Some(own) => !space.is_empty() && space == crate::proyecto::clave_de_espacio(own),
+        None => space.is_empty() || config.spaces.as_ref().is_some_and(|s| s.iter().any(|k| k == space)),
     }
 }
 
-/// La configuración del repositorio general.
+/// The general repository's configuration.
 pub fn leer_config(db: &Path) -> Result<Option<Config>> {
     leer_config_de(&rutas(db))
 }
 
-/// La configuración de un repositorio (el general o el de un espacio).
+/// A repository's configuration (the general one or a space's).
 pub fn leer_config_de(r: &Rutas) -> Result<Option<Config>> {
     if !r.config.exists() {
         return Ok(None);
     }
-    let texto = std::fs::read_to_string(&r.config)?;
-    Ok(Some(serde_json::from_str(&texto).with_context(|| format!("{}", r.config.display()))?))
+    let text = std::fs::read_to_string(&r.config)?;
+    Ok(Some(serde_json::from_str(&text).with_context(|| format!("{}", r.config.display()))?))
 }
 
-/// Las claves que tiene este equipo para un repositorio (`sync.key`): una por línea, en hex, con su
-/// id delante como en las líneas cifradas (`k2:<hex>`; sin prefijo, la 1). El fichero de antes de las
-/// claves con id, una sola clave en hex, es la clave 1 y sigue valiendo tal cual.
+/// The keys this machine has for a repository (`sync.key`): one per line, in hex, with its
+/// id in front as in the encrypted lines (`k2:<hex>`; without prefix, key 1). The file from before
+/// keys with id, a single key in hex, is key 1 and still works as is.
 pub(crate) fn leer_claves(r: &Rutas) -> Result<Cifra> {
-    let texto = std::fs::read_to_string(&r.clave).with_context(|| tr!("can't read the sync key {}", "no se puede leer la clave de sincronización {}", r.clave.display()))?;
-    let danada = || anyhow!(tr!("the sync key is damaged", "la clave de sincronización está dañada"));
-    let mut claves = BTreeMap::new();
-    for l in texto.lines().filter(|l| !l.trim().is_empty()) {
-        let (id, hex) = partir(l).ok_or_else(danada)?;
-        let k = desde_hex(hex).ok_or_else(danada)?;
-        ensure!(k.len() == 64, danada());
-        claves.insert(id, k);
+    let text = std::fs::read_to_string(&r.clave).with_context(|| tr!("can't read the sync key {}", "no se puede leer la clave de sincronización {}", r.clave.display()))?;
+    let damaged = || anyhow!(tr!("the sync key is damaged", "la clave de sincronización está dañada"));
+    let mut keys = BTreeMap::new();
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (id, hex) = split_key_id(l).ok_or_else(damaged)?;
+        let k = from_hex(hex).ok_or_else(damaged)?;
+        ensure!(k.len() == 64, damaged());
+        keys.insert(id, k);
     }
-    ensure!(!claves.is_empty(), danada());
-    Ok(Cifra { claves })
+    ensure!(!keys.is_empty(), damaged());
+    Ok(Cifra { keys })
 }
 
-fn guardar_claves(r: &Rutas, cifra: &Cifra) -> Result<()> {
-    let texto: String = cifra.claves.iter().map(|(id, k)| format!("{}{}\n", prefijo(*id), a_hex(k))).collect();
-    escribir_privado(&r.clave, &texto)
+fn save_keys(r: &Rutas, cipher: &Cifra) -> Result<()> {
+    let text: String = cipher.keys.iter().map(|(id, k)| format!("{}{}\n", key_prefix(*id), to_hex(k))).collect();
+    write_private(&r.clave, &text)
 }
 
-/// Escribe un fichero que solo puede leer el usuario (en unix, creado ya con permisos 0600).
-fn escribir_privado(ruta: &Path, texto: &str) -> Result<()> {
+/// Writes a file only the user can read (on unix, created directly with permissions 0600).
+fn write_private(path: &Path, text: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let tmp = ruta.with_extension("tmp");
+        let tmp = path.with_extension("tmp");
         let _ = std::fs::remove_file(&tmp);
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
-        f.write_all(texto.as_bytes())?;
+        f.write_all(text.as_bytes())?;
         drop(f);
-        std::fs::rename(&tmp, ruta)?;
+        std::fs::rename(&tmp, path)?;
     }
     #[cfg(not(unix))]
-    std::fs::write(ruta, texto)?;
+    std::fs::write(path, text)?;
     Ok(())
 }
 
-fn a_hex(b: &[u8]) -> String {
+fn to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn desde_hex(s: &str) -> Option<Vec<u8>> {
+fn from_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// Quita usuario y contraseña de las URL de un texto (`https://token@host/…` → `https://***@host/…`),
-/// y el valor de los parámetros de su consulta que suenan a credencial (`?access_token=…`,
-/// `&private_token=…`, `?sig=…`): para enseñar URLs y errores sin enseñar credenciales.
-pub fn sin_credenciales(texto: &str) -> String {
-    let mut s = String::with_capacity(texto.len());
-    let mut resto = texto;
-    while let Some(i) = resto.find("://") {
-        let (antes, despues) = resto.split_at(i + 3);
-        s.push_str(antes);
-        let fin_url = despues.find(|c: char| c.is_whitespace() || c == '\'' || c == '"').unwrap_or(despues.len());
-        let url = &despues[..fin_url];
-        let fin = url.find(['/', '?', '#']).unwrap_or(url.len());
-        let anfitrion = &url[..fin];
-        match anfitrion.rfind('@') {
+/// Strips user and password from the URLs in a text (`https://token@host/…` → `https://***@host/…`),
+/// and the value of the query parameters that sound like a credential (`?access_token=…`,
+/// `&private_token=…`, `?sig=…`): to show URLs and errors without showing credentials.
+pub fn sin_credenciales(text: &str) -> String {
+    let mut s = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let (before, after) = rest.split_at(i + 3);
+        s.push_str(before);
+        let url_end = after.find(|c: char| c.is_whitespace() || c == '\'' || c == '"').unwrap_or(after.len());
+        let url = &after[..url_end];
+        let end = url.find(['/', '?', '#']).unwrap_or(url.len());
+        let host_part = &url[..end];
+        match host_part.rfind('@') {
             Some(a) => {
                 s.push_str("***@");
-                s.push_str(&anfitrion[a + 1..]);
+                s.push_str(&host_part[a + 1..]);
             }
-            None => s.push_str(anfitrion),
+            None => s.push_str(host_part),
         }
-        s.push_str(&sin_credenciales_en_consulta(&url[fin..]));
-        resto = &despues[fin_url..];
+        s.push_str(&redact_query(&url[end..]));
+        rest = &after[url_end..];
     }
-    s.push_str(resto);
+    s.push_str(rest);
     s
 }
 
-/// El camino y la consulta de una URL, con `***` en el valor de cada parámetro que suena a credencial.
-fn sin_credenciales_en_consulta(resto: &str) -> String {
-    let Some(q) = resto.find('?') else { return resto.to_string() };
-    let (camino, consulta) = resto.split_at(q + 1);
-    let (consulta, fragmento) = match consulta.find('#') {
-        Some(f) => consulta.split_at(f),
-        None => (consulta, ""),
+/// The path and query of a URL, with `***` in the value of each parameter that sounds like a credential.
+fn redact_query(rest: &str) -> String {
+    let Some(q) = rest.find('?') else { return rest.to_string() };
+    let (path_part, query) = rest.split_at(q + 1);
+    let (query, fragment) = match query.find('#') {
+        Some(f) => query.split_at(f),
+        None => (query, ""),
     };
-    let secreto = |nombre: &str| {
-        let n = nombre.to_lowercase();
+    let is_secret = |name: &str| {
+        let n = name.to_lowercase();
         ["token", "secret", "pass", "pwd", "key", "auth", "sig", "credential", "session"].iter().any(|x| n.contains(x))
     };
-    let partes: Vec<String> = consulta
+    let parts: Vec<String> = query
         .split('&')
         .map(|p| match p.split_once('=') {
-            Some((n, v)) if secreto(n) && !v.is_empty() => format!("{n}=***"),
+            Some((n, v)) if is_secret(n) && !v.is_empty() => format!("{n}=***"),
             _ => p.to_string(),
         })
         .collect();
-    format!("{camino}{}{fragmento}", partes.join("&"))
+    format!("{path_part}{}{fragment}", parts.join("&"))
 }
 
-// --- Cifrado ---------------------------------------------------------------------------------------
+// --- Encryption -----------------------------------------------------------------------------------
 
-/// Las claves de un repositorio que tiene este equipo, por su id: se cifra con la vigente (la de id
-/// más alto) y se descifra con la que diga cada línea.
+/// The keys this machine has for a repository, by id: it encrypts with the current one (the one with the
+/// highest id) and decrypts with whichever each line says.
 ///
-/// Una línea cifrada es `k<id>:<base64>`, y sin prefijo es de la clave 1: así las líneas de los
-/// repositorios de antes de las claves con id siguen valiendo, y las que escribe un equipo con solo la
-/// clave 1 siguen saliendo igual byte a byte. El base64 nunca lleva `:`, así que lo de antes del primer
-/// `:` es siempre una etiqueta; una que no sea `k<número>` es de un formato futuro y la línea se salta
-/// como ilegible. El texto cifrado lleva siempre la misma cabecera asociada (`CABECERA`).
+/// An encrypted line is `k<id>:<base64>`, and without prefix it is key 1's: that way the lines of
+/// repositories from before keys with id still work, and those written by a machine with only
+/// key 1 still come out the same byte for byte. Base64 never contains `:`, so whatever comes before the first
+/// `:` is always a label; one that is not `k<number>` is from a future format and the line is skipped
+/// as unreadable. The ciphertext always carries the same associated data (`ASSOCIATED_DATA`).
 #[derive(Clone)]
 pub(crate) struct Cifra {
-    claves: BTreeMap<u32, Vec<u8>>,
+    keys: BTreeMap<u32, Vec<u8>>,
 }
 
 impl Cifra {
-    /// Las claves, de la más vieja a la vigente (para sacar de ellas la clave de sellos de la persona:
+    /// The keys, from oldest to current (to derive from them the person's seal key:
     /// `verificado::llaves`).
     pub(crate) fn por_orden(&self) -> impl Iterator<Item = &Vec<u8>> {
-        self.claves.values()
+        self.keys.values()
     }
 }
 
-/// El id y el cuerpo de una línea con id de clave (`k2:…`, o sin prefijo: la 1). `None` si lleva una
-/// etiqueta que no es de clave.
-fn partir(linea: &str) -> Option<(u32, &str)> {
-    let l = linea.trim();
+/// The id and body of a line with a key id (`k2:…`, or without prefix: key 1). `None` if it carries a
+/// label that is not a key's.
+fn split_key_id(line: &str) -> Option<(u32, &str)> {
+    let l = line.trim();
     match l.split_once(':') {
         None => Some((1, l)),
-        Some((etiqueta, cuerpo)) => {
-            let id = etiqueta.strip_prefix('k')?.parse::<u32>().ok().filter(|n| *n >= 1)?;
-            Some((id, cuerpo))
+        Some((label, body)) => {
+            let id = label.strip_prefix('k')?.parse::<u32>().ok().filter(|n| *n >= 1)?;
+            Some((id, body))
         }
     }
 }
 
-/// Lo que va delante de una línea de la clave `id` (nada para la 1).
-fn prefijo(id: u32) -> String {
+/// What goes in front of a line of key `id` (nothing for key 1).
+fn key_prefix(id: u32) -> String {
     if id == 1 { String::new() } else { format!("k{id}:") }
 }
 
-/// Lo que lleva dentro la línea de la clave `id` en `omoikane.check`: el id va dentro (salvo en la 1,
-/// que es la de siempre), para que la línea de una clave no pase por la de otra.
-fn texto_chequeo(id: u32) -> String {
-    if id == 1 { TEXTO_CHEQUEO.to_string() } else { format!("{TEXTO_CHEQUEO} k{id}") }
+/// What key `id`'s line in `omoikane.check` contains: the id goes inside (except for key 1,
+/// which is the usual one), so that one key's line can't pass for another's.
+fn check_text(id: u32) -> String {
+    if id == 1 { CHECK_TEXT.to_string() } else { format!("{CHECK_TEXT} k{id}") }
 }
 
-/// Un nombre opaco derivado de una clave.
-fn opaco(clave: &[u8], partes: &[&[u8]]) -> String {
+/// An opaque name derived from a key.
+fn opaque_name(key: &[u8], parts: &[&[u8]]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(clave);
-    for p in partes {
+    h.update(key);
+    for p in parts {
         h.update(p);
     }
-    a_hex(&h.finalize())[..16].to_string()
+    to_hex(&h.finalize())[..16].to_string()
 }
 
 impl Cifra {
-    /// Una sola clave, con su id.
-    pub(crate) fn una(id: u32, clave: Vec<u8>) -> Cifra {
-        Cifra { claves: BTreeMap::from([(id, clave)]) }
+    /// A single key, with its id.
+    pub(crate) fn una(id: u32, key: Vec<u8>) -> Cifra {
+        Cifra { keys: BTreeMap::from([(id, key)]) }
     }
 
-    /// Estas claves y una más (la nueva de una rotación, o la que llega en un código).
-    fn con(&self, id: u32, clave: Vec<u8>) -> Cifra {
+    /// These keys plus one more (the new one from a rotation, or the one that arrives in a code).
+    fn with_key(&self, id: u32, key: Vec<u8>) -> Cifra {
         let mut c = self.clone();
-        c.claves.insert(id, clave);
+        c.keys.insert(id, key);
         c
     }
 
-    /// El id de la clave con la que se cifra.
+    /// The id of the key used to encrypt.
     pub(crate) fn vigente(&self) -> u32 {
-        self.claves.keys().next_back().copied().unwrap_or(1)
+        self.keys.keys().next_back().copied().unwrap_or(1)
     }
 
-    /// Los ids de las claves que hay.
+    /// The ids of the keys there are.
     pub(crate) fn ids(&self) -> Vec<u32> {
-        self.claves.keys().copied().collect()
+        self.keys.keys().copied().collect()
     }
 
-    fn clave_vigente(&self) -> &[u8] {
-        self.claves.values().next_back().map(Vec::as_slice).unwrap_or_default()
+    fn current_key(&self) -> &[u8] {
+        self.keys.values().next_back().map(Vec::as_slice).unwrap_or_default()
     }
 
-    fn siv(clave: &[u8]) -> Aes256Siv {
-        Aes256Siv::new_from_slice(clave).expect("clave de 64 bytes")
+    fn siv(key: &[u8]) -> Aes256Siv {
+        Aes256Siv::new_from_slice(key).expect("clave de 64 bytes")
     }
 
-    /// Cifra con la clave vigente, con su id delante.
-    pub(crate) fn cifrar(&self, texto: &str) -> Result<String> {
-        self.cifrar_con(self.vigente(), texto)
+    /// Encrypts with the current key, with its id in front.
+    pub(crate) fn cifrar(&self, text: &str) -> Result<String> {
+        self.encrypt_with(self.vigente(), text)
     }
 
-    fn cifrar_con(&self, id: u32, texto: &str) -> Result<String> {
-        let clave = self.claves.get(&id).context("clave")?;
-        let c = Cifra::siv(clave).encrypt([CABECERA], texto.as_bytes()).map_err(|_| anyhow!("AES-SIV"))?;
-        Ok(format!("{}{}", prefijo(id), base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)))
+    fn encrypt_with(&self, id: u32, text: &str) -> Result<String> {
+        let key = self.keys.get(&id).context("clave")?;
+        let c = Cifra::siv(key).encrypt([ASSOCIATED_DATA], text.as_bytes()).map_err(|_| anyhow!("AES-SIV"))?;
+        Ok(format!("{}{}", key_prefix(id), base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)))
     }
 
-    /// Descifra con la clave que diga la línea.
-    pub(crate) fn descifrar(&self, linea: &str) -> Result<String> {
-        let mal = || anyhow!(clave_ajena());
-        let (id, cuerpo) = partir(linea).ok_or_else(mal)?;
-        let Some(clave) = self.claves.get(&id) else {
+    /// Decrypts with the key the line says.
+    pub(crate) fn descifrar(&self, line: &str) -> Result<String> {
+        let bad = || anyhow!(wrong_key_msg());
+        let (id, body) = split_key_id(line).ok_or_else(bad)?;
+        let Some(key) = self.keys.get(&id) else {
             bail!(tr!(
                 "this was encrypted with key k{} and this computer doesn't have it: ask for the current code (`omoi sync code` on a computer that has it) and run `omoi sync join <code>` here",
                 "esto va cifrado con la clave k{} y este equipo no la tiene: pide el código vigente (`omoi sync code` en un equipo que la tenga) y aquí `omoi sync join <código>`",
                 id
             ));
         };
-        let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(cuerpo).map_err(|_| mal())?;
-        let t = Cifra::siv(clave).decrypt([CABECERA], &c).map_err(|_| mal())?;
-        String::from_utf8(t).map_err(|_| mal())
+        let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(body).map_err(|_| bad())?;
+        let t = Cifra::siv(key).decrypt([ASSOCIATED_DATA], &c).map_err(|_| bad())?;
+        String::from_utf8(t).map_err(|_| bad())
     }
 
-    /// Nombre opaco de la carpeta de un proyecto: no dice qué proyecto es a quien no tiene la clave.
-    fn carpeta(&self, clave_proyecto: &str) -> String {
-        format!("p-{}", opaco(self.clave_vigente(), &[clave_proyecto.as_bytes()]))
+    /// Opaque name of a project's folder: it doesn't say which project it is to whoever lacks the key.
+    fn folder(&self, project_key_: &str) -> String {
+        format!("p-{}", opaque_name(self.current_key(), &[project_key_.as_bytes()]))
     }
 
-    /// Nombre opaco del fichero de un equipo: el nombre del equipo (con el del sistema) no queda a la
-    /// vista en el repositorio.
-    fn fichero(&self, equipo: &str) -> String {
-        format!("m-{}.jsonl", opaco(self.clave_vigente(), &[b"equipo:", equipo.as_bytes()]))
+    /// Opaque name of a machine's file: the machine name (with the system's) is not
+    /// visible in the repository.
+    fn file(&self, machine: &str) -> String {
+        format!("m-{}.jsonl", opaque_name(self.current_key(), &[b"equipo:", machine.as_bytes()]))
     }
 
-    /// Los nombres que tenían los ficheros de este equipo con sus claves viejas.
-    fn ficheros_viejos(&self, equipo: &str) -> Vec<String> {
+    /// The names this machine's files had with its old keys.
+    fn old_files(&self, machine: &str) -> Vec<String> {
         let vigente = self.vigente();
-        self.claves.iter().filter(|(id, _)| **id != vigente).map(|(_, k)| format!("m-{}.jsonl", opaco(k, &[b"equipo:", equipo.as_bytes()]))).collect()
+        self.keys.iter().filter(|(id, _)| **id != vigente).map(|(_, k)| format!("m-{}.jsonl", opaque_name(k, &[b"equipo:", machine.as_bytes()]))).collect()
     }
 
-    /// Si la línea de la clave `id` de `omoikane.check` se abre con la clave `id` de aquí.
-    fn abre(&self, id: u32, linea: &str) -> bool {
-        self.claves.contains_key(&id) && partir(linea).is_some_and(|(i, _)| i == id) && self.descifrar(linea).is_ok_and(|t| t == texto_chequeo(id))
+    /// Whether key `id`'s line in `omoikane.check` opens with the local key `id`.
+    fn opens(&self, id: u32, line: &str) -> bool {
+        self.keys.contains_key(&id) && split_key_id(line).is_some_and(|(i, _)| i == id) && self.descifrar(line).is_ok_and(|t| t == check_text(id))
     }
 }
 
-/// `omoikane.check`: qué claves tiene el repositorio y cuál es la vigente.
+/// `omoikane.check`: which keys the repository has and which is current.
 ///
-/// Una línea por clave, cifrada con ella y con su id delante como las demás (`k2:…`, la 1 sin nada),
-/// con `texto_chequeo(id)` dentro. Con más de una clave va delante la cabecera
-/// `omoikane-check-v2 current=<id>`; con solo la 1, el fichero es el de siempre (una línea), y las
-/// versiones de antes lo siguen entendiendo. Así un equipo que no tiene una clave sabe igual que
-/// existe, aunque no pueda abrir su línea. De la cabecera se ignora lo que no se entienda (para que
-/// pueda crecer), y una línea con una etiqueta que no es de clave también.
+/// One line per key, encrypted with it and with its id in front like the others (`k2:…`, key 1 with nothing),
+/// with `check_text(id)` inside. With more than one key the header
+/// `omoikane-check-v2 current=<id>` goes first; with only key 1, the file is the usual one (one line), and
+/// older versions still understand it. That way a machine that lacks a key still knows it
+/// exists, even if it can't open its line. Whatever isn't understood in the header is ignored (so it
+/// can grow), and so is a line with a label that is not a key's.
 #[derive(Debug, Default)]
-struct Chequeo {
-    lineas: BTreeMap<u32, String>,
-    /// La vigente según la cabecera (0 si no la lleva).
-    actual: u32,
+struct KeyCheck {
+    lines: BTreeMap<u32, String>,
+    /// The current one according to the header (0 if it has none).
+    current: u32,
 }
 
-impl Chequeo {
-    fn de_texto(texto: &str) -> Chequeo {
-        let mut c = Chequeo::default();
-        for l in texto.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            if let Some(resto) = l.strip_prefix("omoikane-check-") {
-                for campo in resto.split_whitespace() {
-                    if let Some(n) = campo.strip_prefix("current=").and_then(|n| n.trim_start_matches('k').parse().ok()) {
-                        c.actual = n;
+impl KeyCheck {
+    fn parse(text: &str) -> KeyCheck {
+        let mut c = KeyCheck::default();
+        for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if let Some(rest) = l.strip_prefix("omoikane-check-") {
+                for field in rest.split_whitespace() {
+                    if let Some(n) = field.strip_prefix("current=").and_then(|n| n.trim_start_matches('k').parse().ok()) {
+                        c.current = n;
                     }
                 }
-            } else if let Some((id, _)) = partir(l) {
-                c.lineas.insert(id, l.to_string());
+            } else if let Some((id, _)) = split_key_id(l) {
+                c.lines.insert(id, l.to_string());
             }
         }
         c
     }
 
-    /// El del clon; `None` si el repositorio no lo tiene.
-    fn leer(clon: &Path) -> Option<Chequeo> {
-        std::fs::read_to_string(clon.join(CHEQUEO)).ok().map(|t| Chequeo::de_texto(&t))
+    /// The clone's one; `None` if the repository doesn't have it.
+    fn read(clone_dir: &Path) -> Option<KeyCheck> {
+        std::fs::read_to_string(clone_dir.join(CHECK_FILE)).ok().map(|t| KeyCheck::parse(&t))
     }
 
-    /// El id de la clave vigente del repositorio.
+    /// The id of the repository's current key.
     fn vigente(&self) -> u32 {
-        self.actual.max(self.lineas.keys().next_back().copied().unwrap_or(0))
+        self.current.max(self.lines.keys().next_back().copied().unwrap_or(0))
     }
 
     fn texto(&self) -> String {
         let mut t = String::new();
-        if self.lineas.len() > 1 || self.vigente() > 1 {
-            t.push_str(&format!("{CABECERA_CHEQUEO} current={}\n", self.vigente()));
+        if self.lines.len() > 1 || self.vigente() > 1 {
+            t.push_str(&format!("{CHECK_HEADER} current={}\n", self.vigente()));
         }
-        for l in self.lineas.values() {
+        for l in self.lines.values() {
             t.push_str(l);
             t.push('\n');
         }
         t
     }
 
-    /// Cuántas claves de aquí abren su línea, y cuáles tienen línea y no la abren (otra clave con el
-    /// mismo id).
-    fn comprobar(&self, cifra: &Cifra) -> (usize, Vec<u32>) {
-        let (mut abren, mut fallan) = (0, Vec::new());
-        for id in cifra.ids() {
-            match self.lineas.get(&id) {
-                Some(l) if cifra.abre(id, l) => abren += 1,
-                Some(_) => fallan.push(id),
+    /// How many local keys open their line, and which have a line and don't open it (another key with the
+    /// same id).
+    fn verify(&self, cipher: &Cifra) -> (usize, Vec<u32>) {
+        let (mut opened, mut failed) = (0, Vec::new());
+        for id in cipher.ids() {
+            match self.lines.get(&id) {
+                Some(l) if cipher.opens(id, l) => opened += 1,
+                Some(_) => failed.push(id),
                 None => {}
             }
         }
-        (abren, fallan)
+        (opened, failed)
     }
 }
 
-fn clave_ajena() -> String {
+fn wrong_key_msg() -> String {
     tr!(
         "this computer's key is not the repository's: join it with `omoi sync join <code>` (from `omoi sync code` on a computer that already syncs)",
         "la clave de este equipo no es la del repositorio: únete con `omoi sync join <código>` (de `omoi sync code` en un equipo que ya sincroniza)"
     )
 }
 
-// --- Formato de las líneas -------------------------------------------------------------------------
+// --- Line format ----------------------------------------------------------------------------------
 
-/// Los campos de una línea que esta versión no conoce (los añadió una versión más nueva). Se guardan
-/// con lo que acompañan (`memory.extra`, `verdict.extra`; los de un olvido, en `meta`; los de una
-/// memoria de la papelera, dentro de ella) y se vuelven a escribir tal cual cuando este equipo
-/// reexporta esa cosa, aunque la haya cambiado: así un campo nuevo no se pierde por pasar por un
-/// equipo con una versión vieja. Se reexportan solo los que no son campos que esta versión ya conoce.
+/// The fields of a line this version doesn't know (a newer version added them). They are stored
+/// with what they come with (`memory.extra`, `verdict.extra`; a tombstone's, in `meta`; those of a
+/// memory in the trash, inside it) and written back as is when this machine
+/// re-exports that thing, even if it changed it: so a new field isn't lost by going through a
+/// machine with an old version. Only those that are not fields this version already knows are re-exported.
 pub(crate) type Extra = serde_json::Map<String, serde_json::Value>;
 
-/// Los campos de cada tipo de línea que conoce esta versión (más `type`): lo que no sea esto va a `extra`.
-const CAMPOS_MEMORIA: &[&str] = &[
+/// The fields of each line type this version knows (plus `type`): anything else goes to `extra`.
+const MEMORY_FIELDS: &[&str] = &[
     "type", "id", "project_key", "project_path", "space_key", "kind", "title", "content", "paths", "tags", "pinned", "created_at", "updated_at", "hlc",
     "content_hlc", "author", "machine", "versions",
 ];
-const CAMPOS_OLVIDO: &[&str] = &["type", "id", "deleted_at", "hlc", "space_key", "machine"];
-const CAMPOS_VEREDICTO: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
-const CAMPOS_PAPELERA: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
-const CAMPOS_PROYECTO: &[&str] = &["type", "key", "name", "space_key", "hlc", "moved", "machine"];
+const TOMBSTONE_FIELDS: &[&str] = &["type", "id", "deleted_at", "hlc", "space_key", "machine"];
+const VERDICT_FIELDS: &[&str] = &["type", "memory_id", "other_id", "relation", "at", "hlc", "reason", "author", "machine"];
+const FORGOTTEN_FIELDS: &[&str] = &["type", "id", "memory", "versions", "hlc", "deleted_at", "by"];
+const PROJECT_FIELDS: &[&str] = &["type", "key", "name", "space_key", "hlc", "moved", "machine"];
 
-/// `extra` sin lo que esta versión ya conoce (lo guardó una versión anterior que no lo conocía).
-fn solo_desconocidos(mut extra: Extra, conocidos: &[&str]) -> Extra {
-    extra.retain(|k, _| !conocidos.contains(&k.as_str()));
+/// `extra` without what this version already knows (an earlier version that didn't know it stored it).
+fn only_unknown(mut extra: Extra, known_fields: &[&str]) -> Extra {
+    extra.retain(|k, _| !known_fields.contains(&k.as_str()));
     extra
 }
 
-/// `extra` desde el JSON guardado en la base (`'{}'` o lo que sea que no se entienda: vacío).
-pub(crate) fn extra_de(texto: &str) -> Extra {
-    serde_json::from_str(texto).unwrap_or_default()
+/// `extra` from the JSON stored in the database (`'{}'` or anything not understood: empty).
+pub(crate) fn extra_de(text: &str) -> Extra {
+    serde_json::from_str(text).unwrap_or_default()
 }
 
-/// `extra` como se guarda en la base.
+/// `extra` as stored in the database.
 pub(crate) fn extra_a_texto(extra: &Extra) -> String {
     serde_json::to_string(extra).unwrap_or_else(|_| "{}".into())
 }
 
-/// Los campos desconocidos de un olvido van en `meta` (`olvido_extra:<id>`): la tabla `tombstone` no
-/// tiene columna para ellos y el esquema 10 es el que congela la 1.0; solo los trae una versión más
-/// nueva, así que casi nunca hay ninguno. Esta es la columna con los del olvido `t` (`'{}'` si no hay).
+/// A tombstone's unknown fields go in `meta` (`olvido_extra:<id>`): the `tombstone` table has no
+/// column for them and schema 10 is the one 1.0 freezes; only a newer version brings them,
+/// so there are almost never any. This is the column with those of tombstone `t` (`'{}'` if none).
 pub(crate) const EXTRA_OLVIDO: &str = "COALESCE((SELECT v FROM meta WHERE k = 'olvido_extra:' || t.id), '{}')";
 
-/// Apunta (o borra, si no hay) los campos desconocidos del olvido de `id`.
+/// Records (or deletes, if there are none) the unknown fields of `id`'s tombstone.
 pub(crate) fn guardar_extra_olvido(db: &Connection, id: &str, extra: &Extra) -> Result<()> {
     let k = format!("olvido_extra:{id}");
     if extra.is_empty() {
@@ -651,15 +651,15 @@ pub(crate) fn guardar_extra_olvido(db: &Connection, id: &str, extra: &Extra) -> 
     Ok(())
 }
 
-/// Los campos desconocidos de la línea `project` de un proyecto, en `meta` (`proyecto_extra:<clave>`),
-/// como los de los olvidos: la tabla `project` no tiene columna para ellos.
-fn extra_proyecto(db: &Connection, clave: &str) -> Result<Extra> {
-    let t: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("proyecto_extra:{clave}")], |f| f.get(0)).optional()?;
+/// The unknown fields of a project's `project` line, in `meta` (`proyecto_extra:<key>`),
+/// like the tombstones': the `project` table has no column for them.
+fn project_extra(db: &Connection, key: &str) -> Result<Extra> {
+    let t: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [format!("proyecto_extra:{key}")], |f| f.get(0)).optional()?;
     Ok(t.map(|t| extra_de(&t)).unwrap_or_default())
 }
 
-fn guardar_extra_proyecto(db: &Connection, clave: &str, extra: &Extra) -> Result<()> {
-    let k = format!("proyecto_extra:{clave}");
+fn save_project_extra(db: &Connection, key: &str, extra: &Extra) -> Result<()> {
+    let k = format!("proyecto_extra:{key}");
     if extra.is_empty() {
         db.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
     } else {
@@ -668,21 +668,21 @@ fn guardar_extra_proyecto(db: &Connection, clave: &str, extra: &Extra) -> Result
     Ok(())
 }
 
-/// Una memoria tal como viaja: en las líneas `memory` (sincronización y `omoi export`) y dentro de las
-/// `forgotten` (la papelera, en `omoi export`), para que una memoria restaurada en otro equipo caiga en
-/// su proyecto y su espacio.
+/// A memory as it travels: in `memory` lines (sync and `omoi export`) and inside
+/// `forgotten` ones (the trash, in `omoi export`), so that a memory restored on another machine lands in
+/// its project and its space.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CuerpoMemoria {
     pub id: String,
-    /// Cómo se reconoce el proyecto en otro equipo (vacío: global o de espacio).
+    /// How the project is recognized on another machine (empty: global or space-level).
     pub project_key: String,
-    /// La ruta en el equipo de origen, por si aquí aún no hay ningún proyecto con esa clave.
+    /// The path on the source machine, in case there is no project with that key here yet.
     pub project_path: String,
-    /// El espacio (su clave): el de la memoria si es de espacio (sin `project_key`), o el de su
-    /// proyecto. Las versiones de antes de la 0.20.0 no lo mandan.
+    /// The space (its key): the memory's if it is space-level (without `project_key`), or its
+    /// project's. Versions before 0.20.0 don't send it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub space_key: String,
-    /// Texto: un tipo de una versión futura llega tal cual (aquí cuenta como `fact`) y se reexporta igual.
+    /// Text: a kind from a future version arrives as is (here it counts as `fact`) and is re-exported the same.
     pub kind: String,
     pub title: String,
     pub content: String,
@@ -695,32 +695,32 @@ pub(crate) struct CuerpoMemoria {
     pub created_at: String,
     pub updated_at: String,
     pub hlc: String,
-    /// El sello del último cambio de título, contenido o tipo (con el que caducan los veredictos),
-    /// solo si no es `hlc` (fijar o mover cambian `hlc` y no este).
+    /// The stamp of the last change of title, content or kind (with which verdicts expire),
+    /// only if it is not `hlc` (pinning or moving change `hlc` and not this one).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content_hlc: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author: String,
-    /// El equipo que escribió el fichero (para el historial: «sync: <equipo>»).
+    /// The machine that wrote the file (for the history: «sync: <machine>»).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine: String,
-    /// Las versiones anteriores (`omoi export` y, desde la 0.20.0, la sincronización). Las versiones
-    /// de antes las ignoran; lo que ya hay con ese número se queda.
+    /// The previous versions (`omoi export` and, since 0.20.0, sync). Older versions
+    /// ignore them; whatever already exists with that number stays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<crate::memoria::Version>,
-    /// Campos de una versión más nueva (`Extra`).
+    /// Fields from a newer version (`Extra`).
     #[serde(flatten)]
     pub extra: Extra,
 }
 
 impl CuerpoMemoria {
-    /// Una memoria de la base como viaja: la clave del proyecto sale de la tabla `project` (calculada
-    /// una vez), así que es la misma por la sincronización y por `omoi export`.
-    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> CuerpoMemoria {
-        // La procedencia, solo lo que le toca según dónde está (una global no lleva la rama de un cliente).
-        // (La de la papelera no trae `project_id`: cuenta como de un proyecto si trae su clave o su carpeta.)
-        let de_proyecto = m.project_id != 0 || !m.project_key.is_empty() || !m.project.is_empty();
-        crate::procedencia::recortar_extra(&mut extra, i64::from(de_proyecto), &m.tags);
+    /// A database memory as it travels: the project key comes from the `project` table (computed
+    /// once), so it is the same through sync and through `omoi export`.
+    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> CuerpoMemoria {
+        // The provenance, only what applies to where it is (a global one doesn't carry a client's branch).
+        // (The trash one has no `project_id`: it counts as a project's if it has its key or its folder.)
+        let in_project = m.project_id != 0 || !m.project_key.is_empty() || !m.project.is_empty();
+        crate::procedencia::recortar_extra(&mut extra, i64::from(in_project), &m.tags);
         CuerpoMemoria {
             kind: m.tipo_texto().to_string(),
             id: m.id,
@@ -737,29 +737,29 @@ impl CuerpoMemoria {
             content_hlc: if content_hlc == hlc { String::new() } else { content_hlc },
             hlc,
             author: m.author,
-            machine: equipo.to_string(),
+            machine: machine.to_string(),
             versions,
-            extra: solo_desconocidos(extra, CAMPOS_MEMORIA),
+            extra: only_unknown(extra, MEMORY_FIELDS),
         }
     }
 
-    /// Como se guarda en la papelera (`forgotten.memory`, el `Memoria` de siempre): lo que no tiene
-    /// sitio en `Memoria` (los campos desconocidos) lo añade `a_papelera`.
-    fn a_memoria(&self, origen: &str) -> Memoria {
-        let tipo = self.kind.parse::<Tipo>().ok();
+    /// As stored in the trash (`forgotten.memory`, the usual `Memoria`): whatever has no
+    /// place in `Memoria` (the unknown fields) is added by `a_papelera`.
+    fn to_memory(&self, source: &str) -> Memoria {
+        let parsed_kind = self.kind.parse::<Tipo>().ok();
         Memoria {
             id: self.id.clone(),
             project: self.project_path.clone(),
             project_key: self.project_key.clone(),
             space: self.space_key.clone(),
-            kind: tipo.unwrap_or(Tipo::Fact),
-            kind_text: if tipo.is_none() { Some(self.kind.clone()) } else { None },
+            kind: parsed_kind.unwrap_or(Tipo::Fact),
+            kind_text: if parsed_kind.is_none() { Some(self.kind.clone()) } else { None },
             title: self.title.clone(),
             content: self.content.clone(),
             paths: self.paths.clone(),
             tags: self.tags.clone(),
             pinned: self.pinned,
-            source: origen.to_string(),
+            source: source.to_string(),
             content_hlc: self.content_hlc.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
@@ -769,36 +769,36 @@ impl CuerpoMemoria {
     }
 }
 
-/// Las claves que la papelera añade al JSON de `Memoria` (que las ignora al leerlo): los campos
-/// desconocidos de la memoria y los de la línea `forgotten`.
+/// The keys the trash adds to the JSON of `Memoria` (which ignores them when reading it): the
+/// memory's unknown fields and those of the `forgotten` line.
 pub(crate) const PAPELERA_EXTRA: &str = "extra";
 pub(crate) const PAPELERA_EXTRA_LINEA: &str = "extra_forgotten";
 
-/// El JSON que se guarda en `forgotten.memory`: el `Memoria` de siempre (lo que leen la papelera y
-/// `restaurar`) y, si los hay, los campos desconocidos.
-pub(crate) fn a_papelera(m: &Memoria, extra: &Extra, extra_linea: &Extra) -> Result<String> {
+/// The JSON stored in `forgotten.memory`: the usual `Memoria` (what the trash and
+/// `restaurar` read) and, if there are any, the unknown fields.
+pub(crate) fn a_papelera(m: &Memoria, extra: &Extra, line_extra: &Extra) -> Result<String> {
     let mut v = serde_json::to_value(m)?;
     if !extra.is_empty() {
         v[PAPELERA_EXTRA] = serde_json::Value::Object(extra.clone());
     }
-    if !extra_linea.is_empty() {
-        v[PAPELERA_EXTRA_LINEA] = serde_json::Value::Object(extra_linea.clone());
+    if !line_extra.is_empty() {
+        v[PAPELERA_EXTRA_LINEA] = serde_json::Value::Object(line_extra.clone());
     }
     Ok(v.to_string())
 }
 
-/// Lo que guarda `forgotten.memory`: la memoria y sus campos desconocidos (los de la memoria y los de
-/// la línea). `None` si no se entiende.
-pub(crate) fn de_papelera(texto: &str) -> Option<(Memoria, Extra, Extra)> {
-    let v: serde_json::Value = serde_json::from_str(texto).ok()?;
-    let objeto = |k: &str| v.get(k).and_then(|x| x.as_object()).cloned().unwrap_or_default();
-    let (extra, extra_linea) = (objeto(PAPELERA_EXTRA), objeto(PAPELERA_EXTRA_LINEA));
-    Some((serde_json::from_value(v).ok()?, extra, extra_linea))
+/// What `forgotten.memory` stores: the memory and its unknown fields (the memory's and the
+/// line's). `None` if it isn't understood.
+pub(crate) fn de_papelera(text: &str) -> Option<(Memoria, Extra, Extra)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let object = |k: &str| v.get(k).and_then(|x| x.as_object()).cloned().unwrap_or_default();
+    let (extra, line_extra) = (object(PAPELERA_EXTRA), object(PAPELERA_EXTRA_LINEA));
+    Some((serde_json::from_value(v).ok()?, extra, line_extra))
 }
 
-/// La memoria de una línea `forgotten`: la forma de `CuerpoMemoria` (desde la 0.20.0) o el `Memoria`
-/// de la API JSON que escribían la 0.18.0 y la 0.19.0 (sin `project_path`; con `project`, la ruta).
-/// Las de entonces no llevan su sello dentro: queda vacío y vale el de la línea.
+/// The memory of a `forgotten` line: the shape of `CuerpoMemoria` (since 0.20.0) or the `Memoria`
+/// of the JSON API that 0.18.0 and 0.19.0 wrote (without `project_path`; with `project`, the path).
+/// Those from back then don't carry their stamp inside: it stays empty and the line's counts.
 fn cuerpo_olvidado<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<CuerpoMemoria, D::Error> {
     use serde::de::Error;
     let v = serde_json::Value::deserialize(d)?;
@@ -809,13 +809,13 @@ fn cuerpo_olvidado<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Resul
     Ok(CuerpoMemoria::de(m, String::new(), String::new(), "", Vec::new(), Extra::new()))
 }
 
-/// Cada línea de la sincronización y de `omoi export`, en JSON con su tipo en `type`.
+/// Each line of sync and of `omoi export`, in JSON with its type in `type`.
 ///
-/// Reglas para que lo que venga después de la 1.0 no rompa a quien siga en ella: un campo nuevo es
-/// opcional y lo conserva quien no lo entiende (`Extra`); un tipo nuevo lo salta quien no lo entiende,
-/// que lo cuenta como «de una versión más nueva» y lo vuelve a leer al actualizarse (`LECTOR`); lo que
-/// cambie el significado de lo que ya hay sube `min_reader` en `omoikane.format` (o la versión del
-/// formato de `omoi export`), y entonces las versiones viejas no escriben en ese repositorio.
+/// Rules so that what comes after 1.0 doesn't break whoever stays on it: a new field is
+/// optional and kept by whoever doesn't understand it (`Extra`); a new type is skipped by whoever doesn't understand it,
+/// who counts it as «from a newer version» and rereads it on updating (`LECTOR`); whatever
+/// changes the meaning of what already exists raises `min_reader` in `omoikane.format` (or the version of the
+/// `omoi export` format), and then old versions don't write to that repository.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub(crate) enum Linea {
@@ -824,8 +824,8 @@ pub(crate) enum Linea {
         id: String,
         deleted_at: String,
         hlc: String,
-        /// El espacio de lo olvidado (su clave), con el que el olvido va solo a su repositorio. Vacío:
-        /// de ninguno, o de una versión que no lo manda (por el repositorio de un espacio, de ese).
+        /// The space of what was forgotten (its key), with which the tombstone goes only to its repository. Empty:
+        /// none, or from a version that doesn't send it (through a space's repository, that one's).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         space_key: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -833,8 +833,8 @@ pub(crate) enum Linea {
         #[serde(flatten)]
         extra: Extra,
     },
-    /// Un veredicto (`veredictos`), en la carpeta de la memoria juzgada. Las versiones de antes de la
-    /// 0.17.0 no lo entienden y se lo saltan; las de antes de la 0.19.0 ignoran `reason` y `author`.
+    /// A verdict (`veredictos`), in the judged memory's folder. Versions before
+    /// 0.17.0 don't understand it and skip it; those before 0.19.0 ignore `reason` and `author`.
     Verdict {
         memory_id: String,
         #[serde(default)]
@@ -851,9 +851,9 @@ pub(crate) enum Linea {
         #[serde(flatten)]
         extra: Extra,
     },
-    /// Una memoria de la papelera, con su historial: solo en `omoi export` (una copia sin la papelera
-    /// no sería fiel). `memory` tiene la forma de una línea `memory` (`CuerpoMemoria`), con su proyecto
-    /// y su espacio por clave.
+    /// A memory in the trash, with its history: only in `omoi export` (a copy without the trash
+    /// wouldn't be faithful). `memory` has the shape of a `memory` line (`CuerpoMemoria`), with its project
+    /// and its space by key.
     Forgotten {
         id: String,
         #[serde(deserialize_with = "cuerpo_olvidado")]
@@ -867,26 +867,26 @@ pub(crate) enum Linea {
         #[serde(flatten)]
         extra: Extra,
     },
-    /// El espacio de un proyecto (desde la 1.0): cada equipo escribe una por proyecto cuyo espacio se
-    /// haya cambiado alguna vez (`project.hlc`), solo en el repositorio que lleva ese espacio (el
-    /// general, los que no son de ninguno). En el general, la de un proyecto que está en un espacio no
-    /// lo nombra: va con `moved` y, como `key`, el nombre opaco del proyecto (`Cifra::carpeta`), sin
-    /// nombre ni espacio; solo dice «otro equipo lo pasó a un espacio».
+    /// A project's space (since 1.0): each machine writes one per project whose space has
+    /// ever changed (`project.hlc`), only in the repository that carries that space (the
+    /// general one, those that belong to none). In the general one, the line of a project that is in a space doesn't
+    /// name it: it goes with `moved` and, as `key`, the project's opaque name (`Cifra::folder`), without
+    /// name or space; it only says «another machine moved it to a space».
     ///
-    /// Nunca cambia el espacio de nada: quien tenga la clave de un repositorio puede escribirla (la
-    /// persona y el equipo van en claro). Si dice otro espacio que el de aquí y es más nueva que lo que
-    /// este equipo sabía del proyecto, el proyecto queda en pausa (`proyecto::Pausa`): ni se sube ni se
-    /// acepta nada suyo hasta que la persona decida aquí. Lo peor que puede hacer es pausar, nunca
-    /// sacar lo de un cliente a otro repositorio.
+    /// It never changes the space of anything: whoever has a repository's key can write it (the
+    /// person and the machine are in plain text). If it says a different space than the local one and is newer than what
+    /// this machine knew about the project, the project is paused (`proyecto::Pausa`): nothing of it is pushed or
+    /// accepted until the person decides here. The worst it can do is pause, never
+    /// move a client's memories to another repository.
     Project {
         key: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         name: String,
-        /// El espacio (su clave); vacío: ninguno.
+        /// The space (its key); empty: none.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         space_key: String,
         hlc: String,
-        /// Solo en el general: el proyecto está en un espacio que el general no lleva (`key` es opaca).
+        /// Only in the general one: the project is in a space the general one doesn't carry (`key` is opaque).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         moved: bool,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -894,7 +894,7 @@ pub(crate) enum Linea {
         #[serde(flatten)]
         extra: Extra,
     },
-    /// Primera línea de un fichero de `omoi export`.
+    /// First line of an `omoi export` file.
     Header {
         format: String,
         version: u32,
@@ -903,32 +903,32 @@ pub(crate) enum Linea {
         machine: String,
         #[serde(default)]
         encrypted: bool,
-        /// La persona local de la base que exporta (la de sus claves `dir:`): un import en una base
-        /// recién creada la adopta, como quien restaura su base en un equipo nuevo.
+        /// The local person of the exporting database (the one in its `dir:` keys): an import into a
+        /// freshly created database adopts it, like someone restoring their database on a new machine.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         person: String,
     },
-    /// Última línea de un fichero de `omoi export`: cuántas líneas van entre medias y su SHA-256.
+    /// Last line of an `omoi export` file: how many lines are in between and their SHA-256.
     End {
         count: usize,
         sha256: String,
     },
 }
 
-/// Los tipos de línea que entiende esta versión.
-const TIPOS_DE_LINEA: &[&str] = &["memory", "tombstone", "verdict", "forgotten", "project", "header", "end"];
+/// The line types this version understands.
+const LINE_TYPES: &[&str] = &["memory", "tombstone", "verdict", "forgotten", "project", "header", "end"];
 
-/// Si un texto es una línea de un tipo que esta versión no conoce: JSON con un `type` que no es de los
-/// suyos (lo escribió una versión más nueva). Las demás que no se entienden están dañadas.
-pub(crate) fn de_tipo_nuevo(texto: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(texto)
+/// Whether a text is a line of a type this version doesn't know: JSON with a `type` that is not one of
+/// its own (a newer version wrote it). The others that aren't understood are damaged.
+pub(crate) fn de_tipo_nuevo(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|v| v.get("type")?.as_str().map(|t| !TIPOS_DE_LINEA.contains(&t)))
+        .and_then(|v| v.get("type")?.as_str().map(|t| !LINE_TYPES.contains(&t)))
         .unwrap_or(false)
 }
 
 impl Linea {
-    /// El id que la línea afecta (vacío en la cabecera y el final).
+    /// The id the line affects (empty in the header and the end).
     pub(crate) fn id(&self) -> &str {
         match self {
             Linea::Memory(c) => &c.id,
@@ -939,14 +939,14 @@ impl Linea {
         }
     }
 
-    /// Si los ids que lleva son como los que escribe Omoikane.
+    /// Whether the ids it carries look like the ones Omoikane writes.
     pub(crate) fn valida(&self) -> bool {
         match self {
             Linea::Header { .. } | Linea::End { .. } => true,
-            Linea::Verdict { memory_id, other_id, .. } => id_valido(memory_id) && (other_id.is_empty() || id_valido(other_id)),
-            Linea::Forgotten { id, memory, .. } => id_valido(id) && memory.id == *id,
+            Linea::Verdict { memory_id, other_id, .. } => valid_id(memory_id) && (other_id.is_empty() || valid_id(other_id)),
+            Linea::Forgotten { id, memory, .. } => valid_id(id) && memory.id == *id,
             Linea::Project { key, hlc, .. } => !key.trim().is_empty() && key.len() <= 1024 && !hlc.is_empty(),
-            otra => id_valido(otra.id()),
+            other => valid_id(other.id()),
         }
     }
 
@@ -958,13 +958,13 @@ impl Linea {
         }
     }
 
-    /// Un olvido como viaja, con su espacio y sus campos desconocidos.
-    pub(crate) fn olvido(id: String, deleted_at: String, hlc: String, space_key: String, equipo: &str, extra: Extra) -> Linea {
-        Linea::Tombstone { id, deleted_at, hlc, space_key, machine: equipo.to_string(), extra: solo_desconocidos(extra, CAMPOS_OLVIDO) }
+    /// A tombstone as it travels, with its space and its unknown fields.
+    pub(crate) fn olvido(id: String, deleted_at: String, hlc: String, space_key: String, machine: &str, extra: Extra) -> Linea {
+        Linea::Tombstone { id, deleted_at, hlc, space_key, machine: machine.to_string(), extra: only_unknown(extra, TOMBSTONE_FIELDS) }
     }
 
-    /// Un veredicto como viaja, con sus campos desconocidos.
-    pub(crate) fn veredicto(v: crate::veredictos::Veredicto, equipo: &str) -> Linea {
+    /// A verdict as it travels, with its unknown fields.
+    pub(crate) fn veredicto(v: crate::veredictos::Veredicto, machine: &str) -> Linea {
         Linea::Verdict {
             memory_id: v.memory_id,
             other_id: v.other_id,
@@ -973,16 +973,16 @@ impl Linea {
             hlc: v.hlc,
             reason: v.reason,
             author: v.author,
-            machine: equipo.to_string(),
-            extra: solo_desconocidos(extra_de(&v.extra), CAMPOS_VEREDICTO),
+            machine: machine.to_string(),
+            extra: only_unknown(extra_de(&v.extra), VERDICT_FIELDS),
         }
     }
 
-    /// Una memoria de la papelera como va en `omoi export`: `texto` es lo que guarda `forgotten.memory`.
-    /// Sin la clave de su proyecto (lo olvidado antes del esquema 10), se busca por su ruta en la tabla
-    /// `project`. `None` si no se entiende.
-    pub(crate) fn papelera(db: &Connection, id: String, texto: &str, versions: Vec<crate::memoria::Version>, hlc: String, deleted_at: String, by: String) -> Result<Option<Linea>> {
-        let Some((mut m, extra, extra_linea)) = de_papelera(texto) else { return Ok(None) };
+    /// A memory in the trash as it goes in `omoi export`: `text` is what `forgotten.memory` stores.
+    /// Without its project's key (forgotten before schema 10), it is looked up by its path in the
+    /// `project` table. `None` if it isn't understood.
+    pub(crate) fn papelera(db: &Connection, id: String, text: &str, versions: Vec<crate::memoria::Version>, hlc: String, deleted_at: String, by: String) -> Result<Option<Linea>> {
+        let Some((mut m, extra, line_extra)) = de_papelera(text) else { return Ok(None) };
         if m.project_key.is_empty()
             && !m.project.is_empty()
             && let Some((p, _)) = crate::proyecto::resolver(db, &m.project)?
@@ -993,63 +993,63 @@ impl Linea {
             }
         }
         let content_hlc = if m.content_hlc.is_empty() { hlc.clone() } else { m.content_hlc.clone() };
-        // Sin `machine` dentro: quién la olvidó lo dice `by`, y el equipo que exporta, la cabecera.
+        // Without `machine` inside: who forgot it is told by `by`, and the exporting machine, by the header.
         let memory = CuerpoMemoria::de(m, hlc.clone(), content_hlc, "", Vec::new(), extra);
-        Ok(Some(Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra: solo_desconocidos(extra_linea, CAMPOS_PAPELERA) }))
+        Ok(Some(Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra: only_unknown(line_extra, FORGOTTEN_FIELDS) }))
     }
 }
 
-/// Un id como los que escribe Omoikane (ULID: 26 letras y números en mayúsculas). Una línea con otro
-/// id no se acepta.
-fn id_valido(id: &str) -> bool {
+/// An id like the ones Omoikane writes (ULID: 26 uppercase letters and digits). A line with another
+/// id is not accepted.
+fn valid_id(id: &str) -> bool {
     id.len() == 26 && id.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
 }
 
-// --- Proyectos ---------------------------------------------------------------------------------------
+// --- Projects -------------------------------------------------------------------------------------
 
-/// La clave de un proyecto para reconocerlo en otro equipo: el remoto `origin` de git, normalizado
-/// (`git:github.com/dueño/repo`), o, sin remoto, la persona y el nombre de la carpeta
-/// (`dir:<persona>/<carpeta>`), para que dos personas con una carpeta `web` no se mezclen.
-pub fn clave(project: &str, persona: &str) -> String {
+/// A project's key to recognize it on another machine: git's `origin` remote, normalized
+/// (`git:github.com/owner/repo`), or, without a remote, the person and the folder name
+/// (`dir:<person>/<folder>`), so two people with a `web` folder don't get mixed up.
+pub fn clave(project: &str, person: &str) -> String {
     if project.is_empty() {
         return String::new();
     }
     if let Some(url) = origen_git(Path::new(project)) {
         return format!("git:{}", normalizar_remoto(&url));
     }
-    let ruta = Path::new(project);
-    // Un worktree sin `origin` lleva el nombre de su repositorio, no el de su carpeta (1.8.0): así sus
-    // worktrees (y los de otros equipos) dan la misma clave. Las claves ya guardadas no cambian.
-    let nombre = crate::proyecto::nombre_de_worktree(ruta)
-        .unwrap_or_else(|| ruta.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| project.to_lowercase()));
-    format!("dir:{persona}/{nombre}")
+    let path = Path::new(project);
+    // A worktree without `origin` takes its repository's name, not its folder's (1.8.0): so its
+    // worktrees (and other machines') give the same key. Keys already stored don't change.
+    let name = crate::proyecto::nombre_de_worktree(path)
+        .unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| project.to_lowercase()));
+    format!("dir:{person}/{name}")
 }
 
-/// La URL del remoto `origin`, leyendo `.git/config` (rápido; en un worktree, el del repositorio).
-pub(crate) fn origen_git(raiz: &Path) -> Option<String> {
-    // Local, o en el recurso de red de la carpeta en la que se trabaja (`proyecto::legible`).
-    if !crate::proyecto::legible(raiz) {
+/// The URL of the `origin` remote, reading `.git/config` (fast; in a worktree, the repository's).
+pub(crate) fn origen_git(root: &Path) -> Option<String> {
+    // Local, or on the network share of the folder being worked in (`proyecto::legible`).
+    if !crate::proyecto::legible(root) {
         return None;
     }
-    let punto_git = raiz.join(".git");
-    let config = if punto_git.is_dir() {
-        punto_git.join("config")
+    let dot_git = root.join(".git");
+    let config = if dot_git.is_dir() {
+        dot_git.join("config")
     } else {
-        // Worktree: `.git` es un fichero «gitdir: <repo>/.git/worktrees/<nombre>» (nunca de otro recurso
-        // de red).
-        let t = std::fs::read_to_string(&punto_git).ok()?;
-        let gitdir = crate::proyecto::si_legible(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
-        let comun = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| gitdir.join(c.trim())).unwrap_or(gitdir);
-        crate::proyecto::si_legible(comun)?.join("config")
+        // Worktree: `.git` is a file «gitdir: <repo>/.git/worktrees/<name>» (never on another network
+        // share).
+        let t = std::fs::read_to_string(&dot_git).ok()?;
+        let gitdir = crate::proyecto::si_legible(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+        let common_dir = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| gitdir.join(c.trim())).unwrap_or(gitdir);
+        crate::proyecto::si_legible(common_dir)?.join("config")
     };
-    let texto = std::fs::read_to_string(config).ok()?;
-    let mut en_origin = false;
-    for l in texto.lines() {
+    let text = std::fs::read_to_string(config).ok()?;
+    let mut in_origin = false;
+    for l in text.lines() {
         let l = l.trim();
         if l.starts_with('[') {
-            en_origin = l == "[remote \"origin\"]";
-        } else if en_origin && let Some(resto) = l.strip_prefix("url") {
-            return Some(resto.trim_start_matches([' ', '\t', '=']).trim().to_string());
+            in_origin = l == "[remote \"origin\"]";
+        } else if in_origin && let Some(rest) = l.strip_prefix("url") {
+            return Some(rest.trim_start_matches([' ', '\t', '=']).trim().to_string());
         }
     }
     None
@@ -1065,24 +1065,24 @@ pub(crate) fn normalizar_remoto(url: &str) -> String {
     if let Some((_, r)) = u.split_once('@') {
         u = r.to_string();
     }
-    // `host:dueño/repo` (scp) y `host/dueño/repo` son lo mismo; un puerto (`host:22/…`) se quita.
-    if let Some((host, resto)) = u.split_once(':') {
-        let resto = resto.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start_matches('/');
-        u = format!("{host}/{resto}");
+    // `host:owner/repo` (scp) and `host/owner/repo` are the same; a port (`host:22/…`) is removed.
+    if let Some((host, rest)) = u.split_once(':') {
+        let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start_matches('/');
+        u = format!("{host}/{rest}");
     }
     u.trim_end_matches('/').trim_end_matches(".git").to_string()
 }
 
-/// Una persona como parte de una clave: minúsculas, letras y números (vacío si no queda nada).
-pub fn persona(nombre: &str) -> String {
-    let p: String = nombre.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+/// A person as part of a key: lowercase, letters and digits (empty if nothing is left).
+pub fn persona(name: &str) -> String {
+    let p: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     p.trim_matches('-').to_string()
 }
 
-/// La carpeta de un proyecto queda apuntada: si su clave es la de un proyecto que llegó de otro equipo
-/// (o la de un clon, un worktree o una carpeta movida con el mismo `origin`), sus memorias ya son de
-/// aquí, sin moverlas (van por el id del proyecto). Devuelve cuántas memorias tenía ese proyecto si la
-/// carpeta no estaba apuntada (0 si ya lo estaba o es nuevo).
+/// A project's folder gets recorded: if its key is that of a project that came from another machine
+/// (or that of a clone, a worktree or a moved folder with the same `origin`), its memories are already
+/// local, without moving them (they go by the project id). Returns how many memories that project had if the
+/// folder wasn't recorded (0 if it already was or it is new).
 pub fn adoptar(db: &Connection, project: &str) -> Result<usize> {
     if project.is_empty() || crate::proyecto::es_general(project) || crate::proyecto::apuntada(db, project)? {
         return Ok(0);
@@ -1091,15 +1091,15 @@ pub fn adoptar(db: &Connection, project: &str) -> Result<usize> {
     Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [id], |f| f.get::<_, i64>(0))? as usize)
 }
 
-// --- git ---------------------------------------------------------------------------------------------
+// --- git ------------------------------------------------------------------------------------------
 
 #[cfg(windows)]
-const NULO: &str = "NUL";
+const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
-const NULO: &str = "/dev/null";
+const NULL_DEVICE: &str = "/dev/null";
 
-/// Sin ventanas en Windows (en segundo plano no hay consola; cada orden abriría una).
-fn sin_ventana(c: &mut std::process::Command) {
+/// No windows on Windows (in the background there is no console; each command would open one).
+fn no_window(c: &mut std::process::Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1109,23 +1109,23 @@ fn sin_ventana(c: &mut std::process::Command) {
     let _ = c;
 }
 
-/// Si el usuario ya dice cómo usar ssh (`GIT_SSH_COMMAND`, `GIT_SSH` o `core.sshCommand`: plink, una
-/// clave concreta…). Entonces se respeta; si no, ssh va en modo sin preguntas.
-fn ssh_propio() -> bool {
-    static PROPIO: OnceLock<bool> = OnceLock::new();
-    *PROPIO.get_or_init(|| {
+/// Whether the user already says how to use ssh (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`: plink, a
+/// specific key…). Then it is respected; if not, ssh runs in no-questions mode.
+fn user_ssh_config() -> bool {
+    static USER_SSH: OnceLock<bool> = OnceLock::new();
+    *USER_SSH.get_or_init(|| {
         if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
             return true;
         }
         let mut c = std::process::Command::new("git");
         c.args(["config", "--get", "core.sshCommand"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        sin_ventana(&mut c);
+        no_window(&mut c);
         c.output().is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
     })
 }
 
-/// Mata git y lo que haya lanzado (git-remote-https, ssh…), no solo el proceso git.
-fn matar_arbol(h: &mut std::process::Child) {
+/// Kills git and whatever it launched (git-remote-https, ssh…), not just the git process.
+fn kill_tree(h: &mut std::process::Child) {
     #[cfg(windows)]
     {
         let mut k = std::process::Command::new("taskkill");
@@ -1133,13 +1133,13 @@ fn matar_arbol(h: &mut std::process::Child) {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        sin_ventana(&mut k);
+        no_window(&mut k);
         let _ = k.status();
     }
     #[cfg(unix)]
     {
-        // git va en su propio grupo de procesos: se mata el grupo entero.
-        // SAFETY: kill con un pid de grupo negativo solo manda la señal a ese grupo.
+        // git runs in its own process group: the whole group is killed.
+        // SAFETY: kill with a negative group pid only sends the signal to that group.
         unsafe {
             libc::kill(-(h.id() as libc::pid_t), libc::SIGKILL);
         }
@@ -1148,12 +1148,12 @@ fn matar_arbol(h: &mut std::process::Child) {
     let _ = h.wait();
 }
 
-/// Lee una salida en un hilo, guardando lo que llega a medida que llega: si un nieto de git (un ssh
-/// con `ControlPersist`) la deja abierta, se puede seguir sin esperar a que la cierre.
-fn lector(mut r: Box<dyn Read + Send>) -> (Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
-    let datos = Arc::new(Mutex::new(Vec::new()));
-    let fin = Arc::new(AtomicBool::new(false));
-    let (d, f) = (datos.clone(), fin.clone());
+/// Reads an output in a thread, keeping what arrives as it arrives: if a git grandchild (an ssh
+/// with `ControlPersist`) leaves it open, we can carry on without waiting for it to close.
+fn spawn_reader(mut r: Box<dyn Read + Send>) -> (Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+    let data = Arc::new(Mutex::new(Vec::new()));
+    let end = Arc::new(AtomicBool::new(false));
+    let (d, f) = (data.clone(), end.clone());
     std::thread::spawn(move || {
         let mut b = [0u8; 8192];
         loop {
@@ -1164,17 +1164,17 @@ fn lector(mut r: Box<dyn Read + Send>) -> (Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>)
         }
         f.store(true, Ordering::Relaxed);
     });
-    (datos, fin)
+    (data, end)
 }
 
-/// Ejecuta git en el clon. Sin preguntas ni ventanas (en segundo plano no hay nadie para contestar),
-/// sin los hooks ni las conversiones de fin de línea de la configuración del usuario (el clon es de
-/// Omoikane, y un hook que rechace texto cifrado lo atascaría), y con un límite de tiempo para toda la
-/// orden, también para leer lo que escribe.
+/// Runs git in the clone. No prompts or windows (in the background there is nobody to answer),
+/// without the hooks or the line-ending conversions of the user's configuration (the clone is
+/// Omoikane's, and a hook that rejected encrypted text would jam it), and with a time limit for the whole
+/// command, also for reading what it writes.
 fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let mut c = std::process::Command::new("git");
     c.arg("-c")
-        .arg(format!("core.hooksPath={NULO}"))
+        .arg(format!("core.hooksPath={NULL_DEVICE}"))
         .args(["-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-C"])
         .arg(dir)
         .args(args)
@@ -1183,42 +1183,42 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if !ssh_propio() {
+    if !user_ssh_config() {
         c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     }
-    sin_ventana(&mut c);
+    no_window(&mut c);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
     let mut h = c.spawn().with_context(|| tr!("can't run git: is it installed?", "no se puede ejecutar git: ¿está instalado?"))?;
-    let (salida, fin_salida) = lector(Box::new(h.stdout.take().expect("stdout")));
-    let (errores, fin_errores) = lector(Box::new(h.stderr.take().expect("stderr")));
-    let limite = Instant::now() + LIMITE_GIT;
-    let colgado = || anyhow!("git {}: {}", args.first().unwrap_or(&""), tr!("no answer after {} s", "sin respuesta tras {} s", LIMITE_GIT.as_secs()));
-    let estado = loop {
+    let (stdout_buf, stdout_done) = spawn_reader(Box::new(h.stdout.take().expect("stdout")));
+    let (stderr_buf, stderr_done) = spawn_reader(Box::new(h.stderr.take().expect("stderr")));
+    let deadline = Instant::now() + GIT_TIMEOUT;
+    let timed_out = || anyhow!("git {}: {}", args.first().unwrap_or(&""), tr!("no answer after {} s", "sin respuesta tras {} s", GIT_TIMEOUT.as_secs()));
+    let status = loop {
         if let Some(e) = h.try_wait()? {
             break e;
         }
-        if Instant::now() > limite {
-            matar_arbol(&mut h);
-            return Err(colgado());
+        if Instant::now() > deadline {
+            kill_tree(&mut h);
+            return Err(timed_out());
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    // Lo que quede por leer: hasta que se cierren las salidas, con un margen corto (un nieto que las
-    // deja abiertas no debe colgar la sincronización) y nunca más allá del límite.
-    let margen = (Instant::now() + Duration::from_secs(2)).min(limite);
-    while !(fin_salida.load(Ordering::Relaxed) && fin_errores.load(Ordering::Relaxed)) && Instant::now() < margen {
+    // Whatever is left to read: until the outputs close, with a short grace period (a grandchild that
+    // leaves them open must not hang the sync) and never beyond the deadline.
+    let grace = (Instant::now() + Duration::from_secs(2)).min(deadline);
+    while !(stdout_done.load(Ordering::Relaxed) && stderr_done.load(Ordering::Relaxed)) && Instant::now() < grace {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let out = salida.lock().map(|v| v.clone()).unwrap_or_default();
-    let err = errores.lock().map(|v| v.clone()).unwrap_or_default();
-    if estado.success() {
+    let out = stdout_buf.lock().map(|v| v.clone()).unwrap_or_default();
+    let err = stderr_buf.lock().map(|v| v.clone()).unwrap_or_default();
+    if status.success() {
         Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
-        // La orden también sin credenciales: la de `clone` lleva la URL, quizá con el token de una CI.
+        // The command also without credentials: the `clone` one carries the URL, maybe with a CI token.
         bail!("git {}: {}", sin_credenciales(&args.join(" ")), sin_credenciales(String::from_utf8_lossy(&err).trim()))
     }
 }
@@ -1226,109 +1226,109 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-fn remoto_tiene_rama(clon: &Path) -> Result<bool> {
-    Ok(!git(clon, &["ls-remote", "--heads", "origin", RAMA])?.trim().is_empty())
+fn remote_has_branch(clone_dir: &Path) -> Result<bool> {
+    Ok(!git(clone_dir, &["ls-remote", "--heads", "origin", BRANCH])?.trim().is_empty())
 }
 
-fn hay_head(clon: &Path) -> bool {
-    git(clon, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok()
+fn has_head(clone_dir: &Path) -> bool {
+    git(clone_dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok()
 }
 
-/// Clona el repositorio (vacío o no), deja la rama `main` y una identidad propia y neutra en el clon:
-/// los commits no dependen de que el usuario tenga git configurado ni dejan su nombre a la vista.
-fn clonar(url: &str, clon: &Path) -> Result<()> {
-    if clon.exists() {
-        std::fs::remove_dir_all(clon).with_context(|| format!("{}", clon.display()))?;
+/// Clones the repository (empty or not), leaves the `main` branch and a neutral identity of its own in the clone:
+/// commits don't depend on the user having git configured and don't expose their name.
+fn clone_repo(url: &str, clone_dir: &Path) -> Result<()> {
+    if clone_dir.exists() {
+        std::fs::remove_dir_all(clone_dir).with_context(|| format!("{}", clone_dir.display()))?;
     }
-    // Git se lanza desde la carpeta padre: con un destino relativo lo buscaría dentro de ella.
-    let clon = &std::path::absolute(clon)?;
-    let padre = clon.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(padre)?;
-    let destino = clon.to_string_lossy().into_owned();
-    git(padre, &["clone", "--quiet", "--", url, &destino]).with_context(|| tr!("can't clone {}", "no se puede clonar {}", sin_credenciales(url)))?;
-    if remoto_tiene_rama(clon)? {
-        git(clon, &["checkout", "--quiet", "--force", "-B", RAMA, &format!("origin/{RAMA}")])?;
+    // Git is launched from the parent folder: with a relative destination it would look for it inside it.
+    let clone_dir = &std::path::absolute(clone_dir)?;
+    let parent = clone_dir.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let dest = clone_dir.to_string_lossy().into_owned();
+    git(parent, &["clone", "--quiet", "--", url, &dest]).with_context(|| tr!("can't clone {}", "no se puede clonar {}", sin_credenciales(url)))?;
+    if remote_has_branch(clone_dir)? {
+        git(clone_dir, &["checkout", "--quiet", "--force", "-B", BRANCH, &format!("origin/{BRANCH}")])?;
     } else {
-        git(clon, &["symbolic-ref", "HEAD", &format!("refs/heads/{RAMA}")])?;
+        git(clone_dir, &["symbolic-ref", "HEAD", &format!("refs/heads/{BRANCH}")])?;
     }
-    git(clon, &["config", "user.name", "omoikane"])?;
-    git(clon, &["config", "user.email", "omoikane@localhost"])?;
-    git(clon, &["config", "commit.gpgsign", "false"])?;
+    git(clone_dir, &["config", "user.name", "omoikane"])?;
+    git(clone_dir, &["config", "user.email", "omoikane@localhost"])?;
+    git(clone_dir, &["config", "commit.gpgsign", "false"])?;
     Ok(())
 }
 
-/// Deja el clon como el remoto (o como su último commit): lo de este equipo se vuelve a escribir desde
-/// la base en cada sincronización, así que un commit o un índice a medias de una vez anterior (un
-/// proceso que murió, un commit que falló) no atasca nada.
-fn limpiar(clon: &Path) -> Result<()> {
-    if hay_head(clon) {
-        git(clon, &["reset", "--quiet", "--hard", "HEAD"])?;
+/// Leaves the clone like the remote (or like its last commit): this machine's memories are rewritten from
+/// the database on each sync, so a half-done commit or index from an earlier time (a
+/// process that died, a commit that failed) doesn't jam anything.
+fn reset_clone(clone_dir: &Path) -> Result<()> {
+    if has_head(clone_dir) {
+        git(clone_dir, &["reset", "--quiet", "--hard", "HEAD"])?;
     }
-    git(clon, &["clean", "--quiet", "-fdx"])?;
-    if remoto_tiene_rama(clon)? {
-        git(clon, &["fetch", "--quiet", "origin", RAMA])?;
-        git(clon, &["checkout", "--quiet", "--force", "-B", RAMA, &format!("origin/{RAMA}")])?;
+    git(clone_dir, &["clean", "--quiet", "-fdx"])?;
+    if remote_has_branch(clone_dir)? {
+        git(clone_dir, &["fetch", "--quiet", "origin", BRANCH])?;
+        git(clone_dir, &["checkout", "--quiet", "--force", "-B", BRANCH, &format!("origin/{BRANCH}")])?;
     }
     Ok(())
 }
 
-/// Los ficheros fijos del repositorio: sin conversiones de texto, y la comprobación de la clave.
-fn ficheros_fijos(clon: &Path, cifra: &Cifra) -> Result<()> {
-    let atributos = clon.join(".gitattributes");
-    if !atributos.exists() {
-        std::fs::write(atributos, "* -text\n")?;
+/// The repository's fixed files: no text conversions, and the key check.
+fn write_fixed_files(clone_dir: &Path, cipher: &Cifra) -> Result<()> {
+    let attributes = clone_dir.join(".gitattributes");
+    if !attributes.exists() {
+        std::fs::write(attributes, "* -text\n")?;
     }
-    let antes = std::fs::read_to_string(clon.join(CHEQUEO)).ok();
-    let mut ch = antes.as_deref().map(Chequeo::de_texto).unwrap_or_default();
-    let (abren, fallan) = ch.comprobar(cifra);
-    if !fallan.is_empty() || (abren == 0 && !ch.lineas.is_empty()) {
-        bail!(clave_ajena());
+    let before = std::fs::read_to_string(clone_dir.join(CHECK_FILE)).ok();
+    let mut ch = before.as_deref().map(KeyCheck::parse).unwrap_or_default();
+    let (opened, failed) = ch.verify(cipher);
+    if !failed.is_empty() || (opened == 0 && !ch.lines.is_empty()) {
+        bail!(wrong_key_msg());
     }
-    // Las claves de aquí que el repositorio aún no apunta: la de un repositorio nuevo, la nueva de una
-    // rotación, o una cuya subida se perdió.
-    for id in cifra.ids() {
-        if let std::collections::btree_map::Entry::Vacant(e) = ch.lineas.entry(id) {
-            e.insert(cifra.cifrar_con(id, &texto_chequeo(id))?);
+    // The local keys the repository doesn't list yet: a new repository's, the new one from a
+    // rotation, or one whose push was lost.
+    for id in cipher.ids() {
+        if let std::collections::btree_map::Entry::Vacant(e) = ch.lines.entry(id) {
+            e.insert(cipher.encrypt_with(id, &check_text(id))?);
         }
     }
-    ch.actual = ch.vigente();
-    let texto = ch.texto();
-    if antes.as_deref() != Some(texto.as_str()) {
-        std::fs::write(clon.join(CHEQUEO), texto)?;
+    ch.current = ch.vigente();
+    let text = ch.texto();
+    if before.as_deref() != Some(text.as_str()) {
+        std::fs::write(clone_dir.join(CHECK_FILE), text)?;
     }
-    // `omoikane.format`: si no está, el de esta versión; si está cifrado con una clave anterior a la
-    // vigente de aquí (una rotación), el mismo contenido con la vigente. Lo que no se pueda abrir no se
-    // toca.
-    let formato = clon.join(FORMATO_REPO);
-    match std::fs::read_to_string(&formato) {
-        Err(_) => std::fs::write(&formato, cifra.cifrar(&serde_json::json!({ "min_reader": LECTOR_REPO }).to_string())? + "\n")?,
+    // `omoikane.format`: if it's missing, this version's; if it is encrypted with a key older than the
+    // local current one (a rotation), the same contents with the current one. Whatever can't be opened is not
+    // touched.
+    let format_file = clone_dir.join(REPO_FORMAT_FILE);
+    match std::fs::read_to_string(&format_file) {
+        Err(_) => std::fs::write(&format_file, cipher.cifrar(&serde_json::json!({ "min_reader": LECTOR_REPO }).to_string())? + "\n")?,
         Ok(t) => {
-            if let Some((id, _)) = partir(t.trim())
-                && id < cifra.vigente()
-                && let Ok(claro) = cifra.descifrar(t.trim())
+            if let Some((id, _)) = split_key_id(t.trim())
+                && id < cipher.vigente()
+                && let Ok(plain) = cipher.descifrar(t.trim())
             {
-                std::fs::write(&formato, cifra.cifrar(&claro)? + "\n")?;
+                std::fs::write(&format_file, cipher.cifrar(&plain)? + "\n")?;
             }
         }
     }
     Ok(())
 }
 
-/// El `min_reader` de `omoikane.format` en el clon, si lo tiene y este equipo lo puede abrir.
-fn lector_pedido(clon: &Path, cifra: &Cifra) -> Option<u64> {
-    let t = std::fs::read_to_string(clon.join(FORMATO_REPO)).ok()?;
-    let claro = cifra.descifrar(t.trim()).ok()?;
-    serde_json::from_str::<serde_json::Value>(&claro).ok()?.get("min_reader")?.as_u64()
+/// The `min_reader` of `omoikane.format` in the clone, if it has one and this machine can open it.
+fn required_reader(clone_dir: &Path, cipher: &Cifra) -> Option<u64> {
+    let t = std::fs::read_to_string(clone_dir.join(REPO_FORMAT_FILE)).ok()?;
+    let plain = cipher.descifrar(t.trim()).ok()?;
+    serde_json::from_str::<serde_json::Value>(&plain).ok()?.get("min_reader")?.as_u64()
 }
 
-/// Si el repositorio pide una versión más nueva de omoi que esta (según su clon, sin red): el
-/// `min_reader` que pide.
+/// Whether the repository asks for a newer version of omoi than this one (according to its clone, offline): the
+/// `min_reader` it asks for.
 pub fn necesita_version(r: &Rutas) -> Option<u64> {
-    let cifra = leer_claves(r).ok()?;
-    lector_pedido(&r.clon, &cifra).filter(|n| *n > LECTOR_REPO)
+    let cipher = leer_claves(r).ok()?;
+    required_reader(&r.clon, &cipher).filter(|n| *n > LECTOR_REPO)
 }
 
-/// El aviso de `necesita_version`.
+/// The notice for `necesita_version`.
 pub fn aviso_version() -> String {
     tr!(
         "this repository needs a newer version of omoi: update it (`omoi upgrade`); until then nothing is written to it",
@@ -1336,19 +1336,19 @@ pub fn aviso_version() -> String {
     )
 }
 
-/// Tras una rotación, los ficheros de este equipo con el nombre de una clave vieja: lo suyo se vuelve
-/// a escribir con la vigente (y con el nombre de la vigente), así que los viejos se borran. Si no,
-/// quien solo tiene la clave vieja seguiría leyendo lo que este equipo escribió antes.
-fn retirar_viejos(clon: &Path, equipo: &str, cifra: &Cifra) -> Result<()> {
-    let viejos = cifra.ficheros_viejos(equipo);
-    if viejos.is_empty() {
+/// After a rotation, this machine's files with an old key's name: its memories are rewritten
+/// with the current one (and with the current one's name), so the old ones are deleted. Otherwise,
+/// whoever only has the old key would keep reading what this machine wrote before.
+fn remove_old_files(clone_dir: &Path, machine: &str, cipher: &Cifra) -> Result<()> {
+    let old_names = cipher.old_files(machine);
+    if old_names.is_empty() {
         return Ok(());
     }
-    for e in std::fs::read_dir(clon)?.flatten() {
+    for e in std::fs::read_dir(clone_dir)?.flatten() {
         if e.file_name().to_string_lossy().starts_with('.') || !e.path().is_dir() {
             continue;
         }
-        for n in &viejos {
+        for n in &old_names {
             let f = e.path().join(n);
             if f.exists() {
                 std::fs::remove_file(f)?;
@@ -1358,14 +1358,14 @@ fn retirar_viejos(clon: &Path, equipo: &str, cifra: &Cifra) -> Result<()> {
     Ok(())
 }
 
-/// Si el repositorio ya cifra con una clave que este equipo no tiene (otro la rotó): lo que se escriba
-/// desde entonces no se puede leer aquí. Mira el clon de la última sincronización (sin red).
+/// Whether the repository already encrypts with a key this machine doesn't have (another rotated it): whatever is written
+/// from then on can't be read here. It looks at the clone from the last sync (offline).
 pub fn clave_cambiada(r: &Rutas) -> bool {
-    let Ok(cifra) = leer_claves(r) else { return false };
-    Chequeo::leer(&r.clon).is_some_and(|c| c.vigente() > 0 && !cifra.claves.contains_key(&c.vigente()))
+    let Ok(cipher) = leer_claves(r) else { return false };
+    KeyCheck::read(&r.clon).is_some_and(|c| c.vigente() > 0 && !cipher.keys.contains_key(&c.vigente()))
 }
 
-/// El aviso de `clave_cambiada`.
+/// The notice for `clave_cambiada`.
 pub fn aviso_clave_cambiada() -> String {
     tr!(
         "this repository's key has changed: ask for the new code (`omoi sync code` on a computer that has it) and run `omoi sync join <code>` here",
@@ -1373,17 +1373,17 @@ pub fn aviso_clave_cambiada() -> String {
     )
 }
 
-/// Los ids de las claves que tiene este equipo para un repositorio y el de la vigente del repositorio
-/// (según su clon; 0 si aún no se sabe).
+/// The ids of the keys this machine has for a repository and that of the repository's current one
+/// (according to its clone; 0 if not known yet).
 pub fn claves_de(r: &Rutas) -> (Vec<u32>, u32) {
     let ids = leer_claves(r).map(|c| c.ids()).unwrap_or_default();
-    (ids, Chequeo::leer(&r.clon).map_or(0, |c| c.vigente()))
+    (ids, KeyCheck::read(&r.clon).map_or(0, |c| c.vigente()))
 }
 
-// --- Exportar e importar -----------------------------------------------------------------------------
+// --- Export and import ----------------------------------------------------------------------------
 
-/// Todas las memorias, con su sello (`hlc`), el de su último cambio de texto (`content_hlc`) y sus
-/// campos desconocidos (`extra`).
+/// All memories, with their stamp (`hlc`), that of their last text change (`content_hlc`) and their
+/// unknown fields (`extra`).
 pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String, Extra)>> {
     let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m ORDER BY m.id"))?;
     let v = q
@@ -1392,156 +1392,156 @@ pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String, Ext
     Ok(v)
 }
 
-/// La línea de una memoria, para la sincronización y `omoi export`.
-pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, equipo: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Linea {
-    Linea::Memory(CuerpoMemoria::de(m, hlc, content_hlc, equipo, versions, extra))
+/// A memory's line, for sync and `omoi export`.
+pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Linea {
+    Linea::Memory(CuerpoMemoria::de(m, hlc, content_hlc, machine, versions, extra))
 }
 
-/// Qué subiría este equipo (para el resumen de `init` y `join`): globales, de proyectos y cuántos
-/// proyectos.
+/// What this machine would push (for the summary of `init` and `join`): global ones, project ones and how many
+/// projects.
 pub fn resumen_de_subida(db: &Connection, config: &Config) -> Result<(usize, usize, usize)> {
-    let (mut globales, mut de_proyectos, mut proyectos) = (0, 0, HashSet::new());
+    let (mut globals, mut in_projects, mut projects) = (0, 0, HashSet::new());
     for (m, _, _, _) in todas(db)? {
-        if config.comparte(&m) {
+        if config.shares(&m) {
             if m.project_key.is_empty() {
-                globales += 1;
+                globals += 1;
             } else {
-                de_proyectos += 1;
-                proyectos.insert(m.project_key);
+                in_projects += 1;
+                projects.insert(m.project_key);
             }
         }
     }
-    Ok((globales, de_proyectos, proyectos.len()))
+    Ok((globals, in_projects, projects.len()))
 }
 
-/// Escribe los ficheros de este equipo en el clon y borra los suyos que ya no tocan. Devuelve cuántas
-/// memorias exportó.
-fn exportar(db: &Connection, clon: &Path, equipo: &str, config: &Config, cifra: &Cifra) -> Result<usize> {
-    let mut ficheros: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// Writes this machine's files into the clone and deletes its own that no longer apply. Returns how many
+/// memories it exported.
+fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cipher: &Cifra) -> Result<usize> {
+    let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut n = 0;
-    // La carpeta de cada memoria que se comparte: sus veredictos van con ella.
-    let mut carpetas: HashMap<String, String> = HashMap::new();
-    // El historial de todas, en una consulta (una por memoria eran 50.000 con una base grande).
-    let mut historiales = crate::memoria::historiales(db)?;
-    // Lo que una versión previa de la 1.8.0 pasó de un cliente a un oficio con su id no lleva su
-    // historial (era texto del cliente). Desde que eso crea una memoria nueva ya no se apunta ninguna.
+    // The folder of each shared memory: its verdicts go with it.
+    let mut folders: HashMap<String, String> = HashMap::new();
+    // Everyone's history, in one query (one per memory was 50,000 with a large database).
+    let mut histories = crate::memoria::historiales(db)?;
+    // What a version before 1.8.0 moved from a client to a trade with its id doesn't carry its
+    // history (it was the client's text). Since that now creates a new memory, none is recorded any more.
     for id in crate::oficios::historiales_solo_aqui(db)? {
-        historiales.remove(&id);
+        histories.remove(&id);
     }
-    // Lo de un proyecto en pausa no va a ningún repositorio hasta que la persona decida.
-    let en_pausa: HashSet<String> = {
+    // A paused project's memories go to no repository until the person decides.
+    let paused_keys: HashSet<String> = {
         let mut q = db.prepare("SELECT key FROM project WHERE paused != ''")?;
         q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
     for (m, hlc, content_hlc, extra) in todas(db)? {
-        if !config.comparte(&m) || (!m.project_key.is_empty() && en_pausa.contains(&m.project_key)) {
+        if !config.shares(&m) || (!m.project_key.is_empty() && paused_keys.contains(&m.project_key)) {
             continue;
         }
-        let carpeta = if !m.project_key.is_empty() {
-            cifra.carpeta(&m.project_key)
+        let folder = if !m.project_key.is_empty() {
+            cipher.folder(&m.project_key)
         } else if !m.space.is_empty() {
-            cifra.carpeta(&format!("space:{}", m.space))
+            cipher.folder(&format!("space:{}", m.space))
         } else {
             "global".to_string()
         };
-        carpetas.insert(m.id.clone(), carpeta.clone());
-        // El historial viaja con la memoria: quien se une a un repositorio (un compañero, al pasar un
-        // proyecto personal a un espacio) la recibe con sus versiones de antes.
-        let versiones = historiales.remove(&m.id).unwrap_or_default();
-        // Segunda capa: lo que se guardó antes de la 0.19.0 (o con `OMOIKANE_REDACT=0` en otro momento)
-        // no sale del equipo con su secreto, ni en la memoria ni en sus versiones. Aquí se queda como
-        // está, con su aviso en Revisar.
-        let (m, versiones) = if crate::secretos::activo() {
-            let tapar = |t: &str| crate::secretos::redactar(t).0;
-            let versiones = versiones.into_iter().map(|v| crate::memoria::Version { title: tapar(&v.title), content: tapar(&v.content), ..v }).collect();
-            (Memoria { title: tapar(&m.title), content: tapar(&m.content), ..m }, versiones)
+        folders.insert(m.id.clone(), folder.clone());
+        // The history travels with the memory: whoever joins a repository (a colleague, when moving a
+        // personal project to a space) gets it with its earlier versions.
+        let versions = histories.remove(&m.id).unwrap_or_default();
+        // Second layer: what was saved before 0.19.0 (or with `OMOIKANE_REDACT=0` at some other time)
+        // doesn't leave the machine with its secret, neither in the memory nor in its versions. Here it stays as
+        // it is, with its notice in Review.
+        let (m, versions) = if crate::secretos::activo() {
+            let redact = |t: &str| crate::secretos::redactar(t).0;
+            let versions = versions.into_iter().map(|v| crate::memoria::Version { title: redact(&v.title), content: redact(&v.content), ..v }).collect();
+            (Memoria { title: redact(&m.title), content: redact(&m.content), ..m }, versions)
         } else {
-            (m, versiones)
+            (m, versions)
         };
-        let l = linea_de(m, hlc, content_hlc, equipo, versiones, extra);
-        ficheros.entry(carpeta).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
+        let l = linea_de(m, hlc, content_hlc, machine, versions, extra);
+        files.entry(folder).or_default().push(cipher.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
     }
     for v in crate::veredictos::todos(db)? {
-        // Solo si las dos memorias viajan: un veredicto sobre algo que el otro equipo no tiene no sirve.
-        let (Some(carpeta), true) = (carpetas.get(&v.memory_id), v.other_id.is_empty() || carpetas.contains_key(&v.other_id)) else {
+        // Only if both memories travel: a verdict about something the other machine doesn't have is useless.
+        let (Some(folder), true) = (folders.get(&v.memory_id), v.other_id.is_empty() || folders.contains_key(&v.other_id)) else {
             continue;
         };
-        let l = Linea::veredicto(v, equipo);
-        ficheros.entry(carpeta.clone()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
+        let l = Linea::veredicto(v, machine);
+        files.entry(folder.clone()).or_default().push(cipher.cifrar(&serde_json::to_string(&l)?)?);
     }
-    // El espacio de cada proyecto que lo cambió alguna vez (`project.hlc`), en el repositorio que lo
-    // lleva. En el general, de los que están en un espacio que no lleva, solo que se movieron (sin
-    // nombrarlos): así el equipo que aún lo tiene sin espacio lo pausa, sin que el general diga de qué
-    // cliente es.
+    // The space of each project that ever changed it (`project.hlc`), in the repository that
+    // carries it. In the general one, of those in a space it doesn't carry, only that they moved (without
+    // naming them): so the machine that still has it without a space pauses it, without the general one saying which
+    // client it belongs to.
     {
         let mut q = db.prepare(
             "SELECT p.key, p.name, COALESCE((SELECT key FROM space WHERE id = p.space_id), ''), p.hlc FROM project p
              WHERE p.id != 0 AND p.key != '' AND p.hlc != '' ORDER BY p.key",
         )?;
-        let proyectos: Vec<(String, String, String, String)> =
+        let projects: Vec<(String, String, String, String)> =
             q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (key, name, espacio, hlc) in proyectos {
+        for (key, name, space, hlc) in projects {
             if config.projects.as_ref().is_some_and(|p| !p.contains(&key)) {
                 continue;
             }
-            let l = if va_al_repo(config, &espacio) {
-                let extra = solo_desconocidos(extra_proyecto(db, &key)?, CAMPOS_PROYECTO);
-                Linea::Project { key, name, space_key: espacio, hlc, moved: false, machine: equipo.to_string(), extra }
+            let l = if goes_to_repo(config, &space) {
+                let extra = only_unknown(project_extra(db, &key)?, PROJECT_FIELDS);
+                Linea::Project { key, name, space_key: space, hlc, moved: false, machine: machine.to_string(), extra }
             } else if config.space.is_none() {
-                Linea::Project { key: cifra.carpeta(&key), name: String::new(), space_key: String::new(), hlc, moved: true, machine: equipo.to_string(), extra: Extra::new() }
+                Linea::Project { key: cipher.folder(&key), name: String::new(), space_key: String::new(), hlc, moved: true, machine: machine.to_string(), extra: Extra::new() }
             } else {
                 continue;
             };
-            ficheros.entry("proyectos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
+            files.entry("proyectos".into()).or_default().push(cipher.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
     {
         let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {EXTRA_OLVIDO} FROM tombstone t ORDER BY t.id"))?;
-        let marcas: Vec<(String, String, String, String, String)> =
+        let tombstones: Vec<(String, String, String, String, String)> =
             q.query_map([], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?, f.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (id, deleted_at, hlc, espacio, extra) in marcas {
-            // Cada olvido, solo al repositorio de su espacio: el que tenía la memoria al olvidarla (o el
-            // del repositorio por el que llegó). Sin espacio (o de antes del esquema 10), al general.
-            if !va_al_repo(config, &espacio) {
+        for (id, deleted_at, hlc, space, extra) in tombstones {
+            // Each tombstone, only to its space's repository: the one the memory had when it was forgotten (or the one
+            // of the repository it arrived through). Without a space (or from before schema 10), to the general one.
+            if !goes_to_repo(config, &space) {
                 continue;
             }
-            let l = Linea::olvido(id, deleted_at, hlc, espacio, equipo, extra_de(&extra));
-            ficheros.entry("olvidos".into()).or_default().push(cifra.cifrar(&serde_json::to_string(&l)?)?);
+            let l = Linea::olvido(id, deleted_at, hlc, space, machine, extra_de(&extra));
+            files.entry("olvidos".into()).or_default().push(cipher.cifrar(&serde_json::to_string(&l)?)?);
         }
     }
-    let nombre = cifra.fichero(equipo);
-    // Los ficheros de este equipo que ya no tienen nada se borran.
-    for e in std::fs::read_dir(clon)?.flatten() {
-        let carpeta = e.file_name().to_string_lossy().into_owned();
-        if carpeta.starts_with('.') || !e.path().is_dir() {
+    let name = cipher.file(machine);
+    // This machine's files that no longer have anything are deleted.
+    for e in std::fs::read_dir(clone_dir)?.flatten() {
+        let folder = e.file_name().to_string_lossy().into_owned();
+        if folder.starts_with('.') || !e.path().is_dir() {
             continue;
         }
-        let f = e.path().join(&nombre);
-        if f.exists() && !ficheros.contains_key(&carpeta) {
+        let f = e.path().join(&name);
+        if f.exists() && !files.contains_key(&folder) {
             std::fs::remove_file(&f)?;
         }
     }
-    for (carpeta, mut lineas) in ficheros {
-        // Ordenadas (por texto cifrado, que es determinista): el mismo contenido da el mismo fichero.
-        lineas.sort();
-        let dir = clon.join(&carpeta);
+    for (folder, mut lines) in files {
+        // Sorted (by ciphertext, which is deterministic): the same contents give the same file.
+        lines.sort();
+        let dir = clone_dir.join(&folder);
         std::fs::create_dir_all(&dir)?;
-        let destino = dir.join(&nombre);
-        let texto = lineas.join("\n") + "\n";
-        if std::fs::read_to_string(&destino).ok().as_deref() != Some(texto.as_str()) {
-            let tmp = dir.join(format!(".{nombre}.tmp"));
-            std::fs::write(&tmp, texto)?;
-            std::fs::rename(&tmp, &destino)?;
+        let dest = dir.join(&name);
+        let text = lines.join("\n") + "\n";
+        if std::fs::read_to_string(&dest).ok().as_deref() != Some(text.as_str()) {
+            let tmp = dir.join(format!(".{name}.tmp"));
+            std::fs::write(&tmp, text)?;
+            std::fs::rename(&tmp, &dest)?;
         }
     }
     Ok(n)
 }
 
-/// Si la base se sincronizó por última vez con un lector de líneas más viejo que el de esta versión
-/// (`LECTOR_LINEAS`; sin apuntar, el 0), olvida por dónde iba en todos los repositorios para releerlo
-/// todo, y apunta el de ahora. Devuelve si lo hizo.
-fn releer_si_hace_falta(db: &Connection) -> Result<bool> {
+/// If the database last synced with a line reader older than this version's
+/// (`LECTOR_LINEAS`; unrecorded, 0), forgets where it was in every repository to reread
+/// everything, and records the current one. Returns whether it did.
+fn reread_if_needed(db: &Connection) -> Result<bool> {
     let v: i64 = db
         .query_row("SELECT v FROM meta WHERE k = 'sync_lector'", [], |f| f.get::<_, String>(0))
         .optional()?
@@ -1555,31 +1555,31 @@ fn releer_si_hace_falta(db: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-/// Qué ficheros de otros equipos hay que leer: los que cambiaron desde la última sincronización, o
-/// todos si es la primera (o si la base no recuerda por dónde iba).
-fn por_leer(db: &Connection, clon: &Path, equipo: &str, cifra: &Cifra, marca: &str) -> Result<Vec<PathBuf>> {
-    let propio = cifra.fichero(equipo);
-    let ultimo: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [marca], |f| f.get(0)).optional()?;
-    let cambiados: Option<Vec<String>> = match ultimo {
-        Some(u) => git(clon, &["diff", "--name-only", &u, "HEAD"]).ok().map(|s| s.lines().map(String::from).collect()),
+/// Which files from other machines must be read: those that changed since the last sync, or
+/// all of them if it is the first (or if the database doesn't remember where it was).
+fn files_to_read(db: &Connection, clone_dir: &Path, machine: &str, cipher: &Cifra, mark: &str) -> Result<Vec<PathBuf>> {
+    let own = cipher.file(machine);
+    let last: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [mark], |f| f.get(0)).optional()?;
+    let changed: Option<Vec<String>> = match last {
+        Some(u) => git(clone_dir, &["diff", "--name-only", &u, "HEAD"]).ok().map(|s| s.lines().map(String::from).collect()),
         None => None,
     };
-    let mut v: Vec<PathBuf> = match cambiados {
-        Some(lista) => lista.into_iter().map(|f| clon.join(f)).filter(|p| p.exists()).collect(),
+    let mut v: Vec<PathBuf> = match changed {
+        Some(list) => list.into_iter().map(|f| clone_dir.join(f)).filter(|p| p.exists()).collect(),
         None => {
-            let mut todos = Vec::new();
-            for e in std::fs::read_dir(clon)?.flatten() {
+            let mut all = Vec::new();
+            for e in std::fs::read_dir(clone_dir)?.flatten() {
                 if e.file_name().to_string_lossy().starts_with('.') || !e.path().is_dir() {
                     continue;
                 }
                 for f in std::fs::read_dir(e.path())?.flatten() {
-                    todos.push(f.path());
+                    all.push(f.path());
                 }
             }
-            todos
+            all
         }
     };
-    v.retain(|p| p.extension().is_some_and(|x| x == "jsonl") && p.file_name().is_some_and(|n| n.to_string_lossy() != propio));
+    v.retain(|p| p.extension().is_some_and(|x| x == "jsonl") && p.file_name().is_some_and(|n| n.to_string_lossy() != own));
     v.sort();
     Ok(v)
 }
@@ -1592,78 +1592,78 @@ pub struct Resumen {
     pub nuevas: usize,
     pub actualizadas: usize,
     pub olvidadas: usize,
-    /// Líneas de otros equipos que no se pudieron descifrar o no son válidas (se saltan).
+    /// Lines from other machines that couldn't be decrypted or are not valid (they are skipped).
     pub ilegibles: usize,
-    /// Líneas de un tipo (o con una etiqueta de cifrado) que esta versión no conoce: las escribió un
-    /// omoi más nuevo. Se saltan y se vuelven a leer al actualizar (`LECTOR_LINEAS`).
+    /// Lines of a type (or with an encryption label) this version doesn't know: a newer omoi
+    /// wrote them. They are skipped and reread on updating (`LECTOR_LINEAS`).
     pub de_version_nueva: usize,
-    /// Líneas rechazadas porque tocan algo que aquí es de otro espacio (un proyecto, una memoria, las
-    /// de un veredicto o un olvido) o llegan por un repositorio que no lleva su espacio: nada de un
-    /// cliente entra en otro ni cambia de espacio por lo que llega. No se aplican.
+    /// Lines rejected because they touch something that here belongs to another space (a project, a memory, those
+    /// of a verdict or a tombstone) or arrive through a repository that doesn't carry their space: nothing from one
+    /// client gets into another or changes space because of what arrives. They are not applied.
     pub conflictos_de_espacio: usize,
-    /// Líneas de memorias de un proyecto en pausa aquí (`proyecto::Pausa`): no se aplican hasta que la
-    /// persona decida, y entonces se vuelven a leer.
+    /// Lines of memories of a project paused here (`proyecto::Pausa`): they are not applied until the
+    /// person decides, and then they are reread.
     pub en_pausa: usize,
-    /// Memorias que llegaron por el repositorio de un espacio con el sello de verificada de otra
-    /// persona (ver `sello_de_otro`): aquí no cuentan como verificadas.
+    /// Memories that arrived through a space's repository with another person's verified
+    /// seal (see `foreign_seal`): here they don't count as verified.
     pub sellos_ajenos: usize,
-    /// Memorias con una clave (`--key`) que otro equipo también creó sin verla: quedan sustituidas por
-    /// la que manda (`memoria::resolver_claves_repetidas`).
+    /// Memories with a key (`--key`) that another machine also created without seeing it: they become superseded by
+    /// the one that rules (`memoria::resolver_claves_repetidas`).
     #[serde(rename = "duplicate_keys")]
     pub claves_repetidas: usize,
-    /// Por fichero leído en esta pasada (ruta dentro del repositorio), cuántas líneas malas tenía.
+    /// Per file read in this pass (path inside the repository), how many bad lines it had.
     #[serde(skip)]
     pub malos: BTreeMap<String, usize>,
-    /// Lo mismo con las de una versión más nueva.
+    /// The same with those from a newer version.
     #[serde(skip)]
     pub futuros: BTreeMap<String, usize>,
-    /// Lo mismo con las rechazadas por ser de otro espacio.
+    /// The same with those rejected for being from another space.
     #[serde(skip)]
     pub conflictos: BTreeMap<String, usize>,
-    /// Lo mismo con las de un proyecto en pausa.
+    /// The same with those of a paused project.
     #[serde(skip)]
     pub pausadas: BTreeMap<String, usize>,
-    /// Por fichero leído, los proyectos que allí están en otro espacio (`Choque`).
+    /// Per file read, the projects that are in another space there (`Choque`).
     #[serde(skip)]
     pub choques: BTreeMap<String, BTreeSet<Choque>>,
-    /// Los de la línea que se está aplicando (`importar` los pasa a `choques`, con su fichero).
+    /// Those of the line being applied (`import` moves them to `choques`, with their file).
     #[serde(skip)]
     pendientes: Vec<Choque>,
-    /// Lo que conviene decir: por proyecto, los que están en otro espacio en otro equipo con la orden
-    /// que lo arregla, y los que están en pausa con las dos órdenes que la deciden.
+    /// What is worth saying: per project, those in another space on another machine with the command
+    /// that fixes it, and those paused with the two commands that decide it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub avisos: Vec<String>,
 }
 
-/// Un proyecto que aquí está en un espacio y en otro equipo en otro: lo que llega de él no se aplica.
-/// Se avisa con la orden que lo arregla, y desaparece en cuanto los dos coinciden: los ficheros con
-/// alguno se vuelven a leer en cada sincronización.
+/// A project that here is in one space and on another machine in another: what arrives from it is not applied.
+/// It is reported with the command that fixes it, and disappears as soon as both agree: files with
+/// any are reread on every sync.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Choque {
     pub key: String,
     pub name: String,
-    /// Su espacio aquí (vacío: ninguno).
+    /// Its space here (empty: none).
     pub here: String,
-    /// El que trae la línea (vacío: ninguno).
+    /// The one the line brings (empty: none).
     pub there: String,
-    /// El equipo que lo tiene así.
+    /// The machine that has it that way.
     pub machine: String,
 }
 
-/// Un nombre de proyecto como argumento de una orden (entre comillas si hace falta).
-fn argumento(n: &str) -> String {
+/// A project name as a command argument (quoted if needed).
+fn shell_arg(n: &str) -> String {
     if !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || "-_./:@".contains(c)) { n.to_string() } else { format!("\"{}\"", n.replace('"', "\\\"")) }
 }
 
 impl Choque {
-    /// La orden que lo arregla: la que deja aquí el proyecto donde lo tiene el otro equipo, salvo si el
-    /// otro aún lo tiene sin espacio (por el general) y aquí está en uno: entonces, la que hay que
-    /// ejecutar en ese equipo.
+    /// The command that fixes it: the one that leaves the project here where the other machine has it, unless the
+    /// other one still has it without a space (through the general one) and here it is in one: then, the one to
+    /// run on that machine.
     pub fn orden(&self) -> String {
-        let n = argumento(&self.name);
+        let n = shell_arg(&self.name);
         match (self.there.is_empty(), self.here.is_empty()) {
-            // Aquí no está en ningún espacio y otro equipo dice que sí: meterlo es decisión de esta
-            // persona, no del repositorio que lo propone (quizá lo hizo personal a propósito).
+            // Here it is in no space and another machine says it is: putting it in one is this
+            // person's decision, not the proposing repository's (maybe they made it personal on purpose).
             (false, true) => format!("omoi projects move {n} --space {} --force", self.there),
             (false, false) => format!("omoi projects move {n} --space {} --force", self.there),
             (true, _) => format!("omoi projects move {n} --space {}", self.here),
@@ -1672,15 +1672,15 @@ impl Choque {
 
     pub fn texto(&self) -> String {
         let (n, m, o) = (&self.name, &self.machine, self.orden());
-        let (aqui_en, aqui_es) = if self.here.is_empty() {
+        let (here_en, here_es) = if self.here.is_empty() {
             ("in no space".to_string(), "en ninguno".to_string())
         } else {
             (format!("in {}", self.here), format!("en {}", self.here))
         };
         match self.there.is_empty() {
             false => tr!(
-                "{n} is in the space {} on {m} and {aqui_en} here, so its changes are not applied; if it is the same project and belongs in {}: `{o}`",
-                "{n} está en el espacio {} en {m} y aquí {aqui_es}, así que sus cambios no se aplican; si es el mismo proyecto y va en {}: `{o}`",
+                "{n} is in the space {} on {m} and {here_en} here, so its changes are not applied; if it is the same project and belongs in {}: `{o}`",
+                "{n} está en el espacio {} en {m} y aquí {here_es}, así que sus cambios no se aplican; si es el mismo proyecto y va en {}: `{o}`",
                 self.there,
                 self.there
             ),
@@ -1693,18 +1693,18 @@ impl Choque {
     }
 }
 
-/// Los choques de varios ficheros, uno por proyecto y situación (sin repetir el de cada equipo).
-pub fn sin_repetir<'a>(choques: impl IntoIterator<Item = &'a Choque>) -> Vec<Choque> {
-    let mut vistos = HashSet::new();
-    choques.into_iter().filter(|c| vistos.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
+/// The clashes from several files, one per project and situation (without repeating each machine's).
+pub fn sin_repetir<'a>(clashes: impl IntoIterator<Item = &'a Choque>) -> Vec<Choque> {
+    let mut seen = HashSet::new();
+    clashes.into_iter().filter(|c| seen.insert((c.key.clone(), c.here.clone(), c.there.clone()))).cloned().collect()
 }
 
-/// La otra orden, la que no deja el proyecto como está: pasarlo al espacio que dice la línea que lo
-/// pausó (siempre con `--force`: su repositorio pasaría a ser el de ese cliente), o sacarlo del suyo.
-/// Si no se sabe a cuál, con `<space>`. En la pausa de una carpeta reclamada (`claimed`), sacarlo del
-/// espacio: es personal.
+/// The other command, the one that doesn't leave the project as it is: move it to the space the line that
+/// paused it says (always with `--force`: its repository would become that client's), or take it out of its own.
+/// If it isn't known which, with `<space>`. For the pause of a claimed folder (`claimed`), take it out of the
+/// space: it is personal.
 pub fn orden_aceptar(p: &crate::proyecto::EnPausa) -> String {
-    let n = argumento(&p.name);
+    let n = shell_arg(&p.name);
     match (p.pausa.claimed, p.pausa.unknown, p.pausa.space.is_empty()) {
         (true, _, _) | (false, false, true) => format!("omoi space unassign {n} --force"),
         (false, true, _) => format!("omoi projects move {n} --space <space> --force"),
@@ -1712,42 +1712,42 @@ pub fn orden_aceptar(p: &crate::proyecto::EnPausa) -> String {
     }
 }
 
-/// La orden que lo deja donde está (`omoi projects keep`): la primera que se recomienda.
+/// The command that leaves it where it is (`omoi projects keep`): the first one recommended.
 pub fn orden_quedarse(p: &crate::proyecto::EnPausa) -> String {
-    format!("omoi projects keep {}", argumento(&p.name))
+    format!("omoi projects keep {}", shell_arg(&p.name))
 }
 
-/// Lo que se dice de un proyecto en pausa, con las dos órdenes (`omoi sync`, `sync status`, `doctor`,
-/// `review` y Revisar).
-pub fn texto_pausa(ruta_db: &Path, p: &crate::proyecto::EnPausa) -> String {
-    let (n, m, si, no) = (&p.name, &p.pausa.machine, orden_aceptar(p), orden_quedarse(p));
-    let (aqui_en, aqui_es) = if p.here.is_empty() { ("in no space".to_string(), "en ninguno".to_string()) } else { (format!("in {}", p.here), format!("en {}", p.here)) };
+/// What is said about a paused project, with the two commands (`omoi sync`, `sync status`, `doctor`,
+/// `review` and Review).
+pub fn texto_pausa(db_path: &Path, p: &crate::proyecto::EnPausa) -> String {
+    let (n, m, accept, keep) = (&p.name, &p.pausa.machine, orden_aceptar(p), orden_quedarse(p));
+    let (here_en, here_es) = if p.here.is_empty() { ("in no space".to_string(), "en ninguno".to_string()) } else { (format!("in {}", p.here), format!("en {}", p.here)) };
     let e = &p.pausa.space;
-    // Lo que dice otro equipo no se repite como si fuera cierto: puede ser un error o una línea escrita a
-    // propósito. Primero, la orden que lo deja como está.
+    // What another machine says is not repeated as if it were true: it can be a mistake or a line written on
+    // purpose. First, the command that leaves it as it is.
     let mut t = if p.pausa.claimed {
         tr!(
-            "{n} is paused: this folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What you save in it stays here until you decide: if it is {e}'s, `{no}`; if it is yours, `{si}` (it goes to the general repository, never to {e})",
-            "{n} está en pausa: esta carpeta es del espacio {e} solo porque lo dice el repositorio de {e} (este equipo no tenía ninguna carpeta suya). Lo que guardes en ella se queda aquí hasta que decidas: si es de {e}, `{no}`; si es tuya, `{si}` (va al repositorio general, nunca a {e})"
+            "{n} is paused: this folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What you save in it stays here until you decide: if it is {e}'s, `{keep}`; if it is yours, `{accept}` (it goes to the general repository, never to {e})",
+            "{n} está en pausa: esta carpeta es del espacio {e} solo porque lo dice el repositorio de {e} (este equipo no tenía ninguna carpeta suya). Lo que guardes en ella se queda aquí hasta que decidas: si es de {e}, `{keep}`; si es tuya, `{accept}` (va al repositorio general, nunca a {e})"
         )
     } else if p.pausa.unknown {
         tr!(
-            "{n} is paused: another computer ({m}) says it moved it to a space (the general repository doesn't say which); here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is). If it does belong to a client, first join that client's repository (`omoi sync join --space <space> <code>`, with the code from a computer that is in it): then this notice names the space, and `{si}` moves it",
-            "{n} está en pausa: otro equipo ({m}) dice que lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está). Si sí es de un cliente, primero únete al repositorio de ese cliente (`omoi sync join --space <espacio> <código>`, con el código de un equipo que esté en él): entonces este aviso dice el espacio, y `{si}` lo mueve"
+            "{n} is paused: another computer ({m}) says it moved it to a space (the general repository doesn't say which); here it is {here_en}. Nothing of it is synced until you decide. If you don't know, `{keep}` (it stays as it is). If it does belong to a client, first join that client's repository (`omoi sync join --space <space> <code>`, with the code from a computer that is in it): then this notice names the space, and `{accept}` moves it",
+            "{n} está en pausa: otro equipo ({m}) dice que lo pasó a un espacio (el repositorio general no dice a cuál); aquí está {here_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{keep}` (se queda como está). Si sí es de un cliente, primero únete al repositorio de ese cliente (`omoi sync join --space <espacio> <código>`, con el código de un equipo que esté en él): entonces este aviso dice el espacio, y `{accept}` lo mueve"
         )
     } else if e.is_empty() {
         tr!(
-            "{n} is paused: another computer ({m}) says it is in no space; here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to take it out, `{si}` (its memories would go to the general repository)",
-            "{n} está en pausa: otro equipo ({m}) dice que no es de ningún espacio; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para sacarlo, `{si}` (sus memorias irían al repositorio general)"
+            "{n} is paused: another computer ({m}) says it is in no space; here it is {here_en}. Nothing of it is synced until you decide. If you don't know, `{keep}` (it stays as it is); to take it out, `{accept}` (its memories would go to the general repository)",
+            "{n} está en pausa: otro equipo ({m}) dice que no es de ningún espacio; aquí está {here_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{keep}` (se queda como está); para sacarlo, `{accept}` (sus memorias irían al repositorio general)"
         )
     } else {
         tr!(
-            "{n} is paused: another computer ({m}) says it belongs to the space {e}; here it is {aqui_en}. Nothing of it is synced until you decide. If you don't know, `{no}` (it stays as it is); to move it to {e}, `{si}`",
-            "{n} está en pausa: otro equipo ({m}) dice que es del espacio {e}; aquí está {aqui_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{no}` (se queda como está); para pasarlo a {e}, `{si}`"
+            "{n} is paused: another computer ({m}) says it belongs to the space {e}; here it is {here_en}. Nothing of it is synced until you decide. If you don't know, `{keep}` (it stays as it is); to move it to {e}, `{accept}`",
+            "{n} está en pausa: otro equipo ({m}) dice que es del espacio {e}; aquí está {here_es}. No se sincroniza nada suyo hasta que decidas. Si no lo sabes, `{keep}` (se queda como está); para pasarlo a {e}, `{accept}`"
         )
     };
-    // Si va a un espacio cuyo repositorio este equipo no tiene: cómo unirse.
-    if !p.pausa.claimed && !e.is_empty() && repo_de_espacio(ruta_db, e).is_none() {
+    // If it goes to a space whose repository this machine doesn't have: how to join.
+    if !p.pausa.claimed && !e.is_empty() && repo_de_espacio(db_path, e).is_none() {
         t.push_str(&tr!(
             " (to sync it in {e}, join its repository: `omoi sync join --space {e} <code>`; `omoi sync code --space {e}` on a computer that has it gives the code)",
             " (para sincronizarlo en {e}, únete a su repositorio: `omoi sync join --space {e} <código>`; el código lo da `omoi sync code --space {e}` en un equipo que ya lo tenga)"
@@ -1756,60 +1756,60 @@ pub fn texto_pausa(ruta_db: &Path, p: &crate::proyecto::EnPausa) -> String {
     t
 }
 
-/// Los avisos de los proyectos en pausa de esta base.
-pub fn avisos_de_pausa(db: &Connection, ruta_db: &Path) -> Vec<String> {
-    crate::proyecto::en_pausa(db).unwrap_or_default().iter().map(|p| texto_pausa(ruta_db, p)).collect()
+/// The notices for this database's paused projects.
+pub fn avisos_de_pausa(db: &Connection, db_path: &Path) -> Vec<String> {
+    crate::proyecto::en_pausa(db).unwrap_or_default().iter().map(|p| texto_pausa(db_path, p)).collect()
 }
 
-/// Si un proyecto no tiene ninguna memoria.
-fn sin_memorias(db: &Connection, proyecto: i64) -> Result<bool> {
-    Ok(db.query_row("SELECT NOT EXISTS (SELECT 1 FROM memory WHERE project_id = ?1)", [proyecto], |f| f.get(0))?)
+/// Whether a project has no memories.
+fn has_no_memories(db: &Connection, project: i64) -> Result<bool> {
+    Ok(db.query_row("SELECT NOT EXISTS (SELECT 1 FROM memory WHERE project_id = ?1)", [project], |f| f.get(0))?)
 }
 
-/// Sin nadie delante (`OMOIKANE_NONINTERACTIVE=1`): si el repositorio del espacio `espacio` (su clave)
-/// es uno de los de `OMOIKANE_SYNC_CODE`, es decir, si una de las claves que este equipo tiene para él
-/// es la de un código de la variable con ese espacio, y la clave del proyecto es la de un remoto git
-/// (`git:`; una `dir:` es solo el nombre de una carpeta y no dice de quién es). Lo demás que hace
-/// falta (que el `origin` de una carpeta de aquí sea esa clave) lo mira `proyecto::adopta_en`.
-pub(crate) fn adopta_por_entorno(db: &Connection, clave: &str, espacio: &str) -> bool {
-    if !crate::entorno::desatendido() || !clave.starts_with("git:") || espacio.is_empty() {
+/// With nobody at the keyboard (`OMOIKANE_NONINTERACTIVE=1`): whether the repository of space `space` (its key)
+/// is one of those from `OMOIKANE_SYNC_CODE`, that is, whether one of the keys this machine has for it
+/// is that of a code in the variable with that space, and the project key is a git remote's
+/// (`git:`; a `dir:` is only a folder name and doesn't say whose it is). The rest that is
+/// needed (that the `origin` of a local folder is that key) is checked by `proyecto::adopta_en`.
+pub(crate) fn adopta_por_entorno(db: &Connection, key: &str, space: &str) -> bool {
+    if !crate::entorno::desatendido() || !key.starts_with("git:") || space.is_empty() {
         return false;
     }
-    let codigos = crate::entorno::codigos_sync();
-    if codigos.is_empty() {
+    let codes = crate::entorno::codigos_sync();
+    if codes.is_empty() {
         return false;
     }
-    let Some(r) = db.path().filter(|p| !p.is_empty()).and_then(|p| repo_de_espacio(Path::new(p), espacio)) else { return false };
-    let Ok(cifra) = leer_claves(&r) else { return false };
-    codigos.iter().filter_map(|k| leer_codigo(k).ok()).any(|c| {
-        c.espacio.as_deref().is_some_and(|e| crate::proyecto::clave_de_espacio(e) == espacio) && cifra.claves.get(&c.id).is_some_and(|k| *k == c.clave)
+    let Some(r) = db.path().filter(|p| !p.is_empty()).and_then(|p| repo_de_espacio(Path::new(p), space)) else { return false };
+    let Ok(cipher) = leer_claves(&r) else { return false };
+    codes.iter().filter_map(|k| leer_codigo(k).ok()).any(|c| {
+        c.espacio.as_deref().is_some_and(|e| crate::proyecto::clave_de_espacio(e) == space) && cipher.keys.get(&c.id).is_some_and(|k| *k == c.clave)
     })
 }
 
-/// Para el agente, al empezar la sesión: una línea por proyecto en pausa, con lo que tiene que hacer.
+/// For the agent, at session start: one line per paused project, with what it has to do.
 pub fn aviso_de_pausa_agente(db: &Connection) -> Option<String> {
     let v = crate::proyecto::en_pausa(db).ok()?;
-    // Sin nadie delante no hay a quién preguntar: que no ejecute ninguna de las dos órdenes (decidir
-    // es de una persona) y que sepa que lo que guarde ahí no sale de este equipo.
-    let nadie = crate::entorno::desatendido();
-    let lineas: Vec<String> = v
+    // With nobody at the keyboard there is nobody to ask: it must run neither command (deciding
+    // is a person's job) and know that what it saves there doesn't leave this machine.
+    let unattended = crate::entorno::desatendido();
+    let lines: Vec<String> = v
         .iter()
         .map(|p| {
-            let (si, no) = (orden_aceptar(p), orden_quedarse(p));
+            let (accept, keep) = (orden_aceptar(p), orden_quedarse(p));
             let e = &p.pausa.space;
-            if nadie {
+            if unattended {
                 return format!(
-                    "The project {} is paused until a person decides which space it belongs to; nobody can decide it here, so run neither `{no}` nor `{si}`. Nothing of it is synced: what you save in it stays on this computer.",
+                    "The project {} is paused until a person decides which space it belongs to; nobody can decide it here, so run neither `{keep}` nor `{accept}`. Nothing of it is synced: what you save in it stays on this computer.",
                     p.name
                 );
             }
             if p.pausa.claimed {
                 return format!(
-                    "The project {} is paused: its folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What is saved in it stays on this computer until the user decides. Ask the user whether it belongs to {e}: if so, run `{no}`; if it is theirs, `{si}`.",
+                    "The project {} is paused: its folder is in the space {e} only because {e}'s repository says so (this computer had no folder of it). What is saved in it stays on this computer until the user decides. Ask the user whether it belongs to {e}: if so, run `{keep}`; if it is theirs, `{accept}`.",
                     p.name
                 );
             }
-            let dice = if p.pausa.unknown {
+            let says = if p.pausa.unknown {
                 "another computer says it moved it to a space (the general repository doesn't say which)".to_string()
             } else if e.is_empty() {
                 "another computer says it is in no space".to_string()
@@ -1817,17 +1817,17 @@ pub fn aviso_de_pausa_agente(db: &Connection) -> Option<String> {
                 format!("another computer says it belongs to the space {e}")
             };
             format!(
-                "The project {} is paused: {dice}. Nothing of it is synced until the user decides. Ask the user; if they don't know, run `{no}` (it stays as it is); to accept the change, `{si}`.",
+                "The project {} is paused: {says}. Nothing of it is synced until the user decides. Ask the user; if they don't know, run `{keep}` (it stays as it is); to accept the change, `{accept}`.",
                 p.name
             )
         })
         .collect();
-    (!lineas.is_empty()).then(|| lineas.join("\n"))
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 impl Resumen {
-    /// Junta las cuentas de otro repositorio (los ficheros malos se apuntan en el estado de cada uno).
-    fn sumar(&mut self, o: Resumen) {
+    /// Adds up another repository's counts (bad files are recorded in each one's status).
+    fn add(&mut self, o: Resumen) {
         self.exportadas += o.exportadas;
         self.leidos += o.leidos;
         self.nuevas += o.nuevas;
@@ -1843,135 +1843,135 @@ impl Resumen {
     }
 }
 
-/// Si la línea de una memoria que llega por el repositorio de un espacio (compartido con otras
-/// personas) trae un sello de verificada que no puso la persona de aquí. Lo decide la firma del sello
-/// con la clave de sellos de esta persona (`verificado::sello_propio`; sale de su repositorio general,
-/// que nadie más tiene), nunca su `by`: cualquiera que comparta el espacio puede escribir
-/// `"by": "<tu nombre>"`. Ese sello no cuenta aquí: es la confianza de otra persona. Por el repositorio
-/// general (el de la persona, entre sus equipos) los sellos cuentan, como siempre. Devuelve lo que
-/// identifica ese sello (`by` y `at`, para [`crate::verificado::SELLO_AJENO`]).
-fn sello_de_otro(db: &Connection, c: &Config, id: &str, extra: &Extra) -> Result<Option<String>> {
+/// Whether the line of a memory arriving through a space's repository (shared with other
+/// people) carries a verified seal the local person didn't put. It is decided by the seal's signature
+/// with this person's seal key (`verificado::sello_propio`; derived from their general repository,
+/// which nobody else has), never by its `by`: anyone sharing the space can write
+/// `"by": "<your name>"`. That seal doesn't count here: it is another person's trust. Through the general
+/// repository (the person's, across their machines) seals count, as always. Returns what
+/// identifies that seal (`by` and `at`, for [`crate::verificado::SELLO_AJENO`]).
+fn foreign_seal(db: &Connection, c: &Config, id: &str, extra: &Extra) -> Result<Option<String>> {
     if c.space.is_none() {
         return Ok(None);
     }
     let Some(v) = extra.get(crate::verificado::CLAVE) else { return Ok(None) };
-    let texto = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    // Uno suyo, pero anterior a cuando la persona le quitó aquí la verificación: otro del espacio puede
-    // volver a mandar un sello viejo de la persona (lleva su firma) para deshacer ese «ya no».
-    let desverificada_despues = match crate::verificado::desverificada_en(db, id)? {
-        Some(d) => d > texto("at"),
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    // One of theirs, but older than when the person removed the verification here: someone else in the space could
+    // resend an old seal of the person (it carries their signature) to undo that «no longer».
+    let unverified_after = match crate::verificado::desverificada_en(db, id)? {
+        Some(d) => d > text("at"),
         None => false,
     };
-    if !desverificada_despues && crate::verificado::sello_propio(&crate::verificado::llaves(db, false)?, id, v) {
+    if !unverified_after && crate::verificado::sello_propio(&crate::verificado::llaves(db, false)?, id, v) {
         return Ok(None);
     }
-    Ok(Some(format!("{}\n{}", texto("by"), texto("at"))))
+    Ok(Some(format!("{}\n{}", text("by"), text("at"))))
 }
 
 fn hlc_local(db: &Connection, id: &str) -> Result<Option<String>> {
     Ok(db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?)
 }
 
-fn hlc_olvido(db: &Connection, id: &str) -> Result<Option<String>> {
+fn tombstone_hlc(db: &Connection, id: &str) -> Result<Option<String>> {
     Ok(db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?)
 }
 
-/// El olvido de `id` en el espacio `espacio`: el que puede parar una memoria de ese espacio. Uno que
-/// llegó por el repositorio de otro espacio no la para (no puede borrar lo de otro cliente).
-fn hlc_olvido_en(db: &Connection, id: &str, espacio: &str) -> Result<Option<String>> {
-    Ok(db.query_row("SELECT hlc FROM tombstone WHERE id = ?1 AND space_key = ?2", [id, espacio], |f| f.get(0)).optional()?)
+/// The tombstone of `id` in space `space`: the one that can stop a memory of that space. One that
+/// arrived through another space's repository doesn't stop it (it can't delete another client's memories).
+fn tombstone_hlc_in(db: &Connection, id: &str, space: &str) -> Result<Option<String>> {
+    Ok(db.query_row("SELECT hlc FROM tombstone WHERE id = ?1 AND space_key = ?2", [id, space], |f| f.get(0)).optional()?)
 }
 
-/// El espacio (su clave; vacía si no es de ninguno) del proyecto de esta clave, si aquí hay uno.
-fn espacio_del_proyecto(db: &Connection, clave: &str) -> Result<Option<String>> {
+/// The space (its key; empty if none) of the project with this key, if there is one here.
+fn project_space(db: &Connection, key: &str) -> Result<Option<String>> {
     Ok(db
-        .query_row("SELECT COALESCE((SELECT key FROM space WHERE id = p.space_id), '') FROM project p WHERE p.key = ?1", [clave], |f| f.get(0))
+        .query_row("SELECT COALESCE((SELECT key FROM space WHERE id = p.space_id), '') FROM project p WHERE p.key = ?1", [key], |f| f.get(0))
         .optional()?)
 }
 
-/// El espacio de una memoria de la papelera: el que tiene ahora aquí su proyecto (si aquí está), o el
-/// que se apuntó al olvidarla.
-pub(crate) fn espacio_de_papelera(db: &Connection, texto: &str) -> Result<String> {
-    let Some((m, _, _)) = de_papelera(texto) else { return Ok(String::new()) };
+/// The space of a memory in the trash: the one its project has here now (if it is here), or the one
+/// recorded when it was forgotten.
+pub(crate) fn espacio_de_papelera(db: &Connection, text: &str) -> Result<String> {
+    let Some((m, _, _)) = de_papelera(text) else { return Ok(String::new()) };
     if !m.project_key.is_empty()
-        && let Some(e) = espacio_del_proyecto(db, &m.project_key)?
+        && let Some(e) = project_space(db, &m.project_key)?
     {
         return Ok(e);
     }
     Ok(m.space)
 }
 
-/// El espacio (su clave; vacía si no es de ninguno) de una memoria de aquí, viva o en la papelera;
-/// `None` si aquí no está.
+/// The space (its key; empty if none) of a local memory, live or in the trash;
+/// `None` if it is not here.
 pub(crate) fn espacio_aqui(db: &Connection, id: &str) -> Result<Option<String>> {
-    let viva: Option<String> = db
+    let live: Option<String> = db
         .query_row(
             "SELECT COALESCE((SELECT key FROM space WHERE id = COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id))), '') FROM memory m WHERE m.id = ?1",
             [id],
             |f| f.get(0),
         )
         .optional()?;
-    if viva.is_some() {
-        return Ok(viva);
+    if live.is_some() {
+        return Ok(live);
     }
-    let papelera: Option<String> = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get(0)).optional()?;
-    papelera.map(|t| espacio_de_papelera(db, &t)).transpose()
+    let trash: Option<String> = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get(0)).optional()?;
+    trash.map(|t| espacio_de_papelera(db, &t)).transpose()
 }
 
-/// `a` es igual o posterior a `b`.
-fn no_menor(a: &str, b: &str) -> bool {
+/// `a` is equal to or later than `b`.
+fn not_older(a: &str, b: &str) -> bool {
     reloj::comparar(a, b) != std::cmp::Ordering::Less
 }
 
-/// Aplica líneas con las reglas de la sincronización, vengan del repositorio o de un fichero de
-/// `omoi export`: gana el sello más nuevo, lo olvidado no resucita, un proyecto se reconoce por su
-/// clave y, si aquí no existe, toma la ruta de origen. Sin `config` (un import) se acepta todo.
+/// Applies lines with the sync rules, whether they come from the repository or from an
+/// `omoi export` file: the newest stamp wins, what was forgotten doesn't come back, a project is recognized by its
+/// key and, if it doesn't exist here, takes the source path. Without `config` (an import) everything is accepted.
 pub(crate) struct Aplicador<'a> {
     config: Option<&'a Config>,
     person: String,
-    /// Los nombres opacos de los proyectos de aquí (`Cifra::carpeta`, con cada clave del repositorio)
-    /// y su clave: con ellos se reconoce la línea `project` con `moved` del general.
-    opacos: HashMap<String, String>,
+    /// The opaque names of the local projects (`Cifra::folder`, with each repository key)
+    /// and their key: with them the general repository's `project` line with `moved` is recognized.
+    opaque: HashMap<String, String>,
 }
 
 impl<'a> Aplicador<'a> {
-    /// Con `actual` (la carpeta de la sesión), esa carpeta queda apuntada antes de aplicar nada: lo que
-    /// llegue con su clave es ya suyo.
-    pub(crate) fn nuevo(db: &Connection, config: Option<&'a Config>, actual: Option<&str>) -> Result<Self> {
+    /// With `current` (the session's folder), that folder is recorded before applying anything: whatever
+    /// arrives with its key is already its own.
+    pub(crate) fn nuevo(db: &Connection, config: Option<&'a Config>, current: Option<&str>) -> Result<Self> {
         let person = crate::db::persona_de(db);
-        if let Some(a) = actual.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
+        if let Some(a) = current.filter(|a| !a.is_empty() && !crate::proyecto::es_general(a)) {
             crate::proyecto::registrar(db, a)?;
         }
-        Ok(Aplicador { config, person, opacos: HashMap::new() })
+        Ok(Aplicador { config, person, opaque: HashMap::new() })
     }
 
-    /// Apunta los nombres opacos de los proyectos de aquí con las claves de este repositorio.
-    fn con_opacos(&mut self, db: &Connection, cifra: &Cifra) -> Result<()> {
+    /// Records the opaque names of the local projects with this repository's keys.
+    fn with_opaque(&mut self, db: &Connection, cipher: &Cifra) -> Result<()> {
         let mut q = db.prepare("SELECT key FROM project WHERE id != 0 AND key != ''")?;
-        let claves: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-        for k in claves {
-            for clave in cifra.claves.values() {
-                self.opacos.insert(format!("p-{}", opaco(clave, &[k.as_bytes()])), k.clone());
+        let keys: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for k in keys {
+            for key in cipher.keys.values() {
+                self.opaque.insert(format!("p-{}", opaque_name(key, &[k.as_bytes()])), k.clone());
             }
         }
         Ok(())
     }
 
-    /// Aplica una línea. `Err` es una línea que no se pudo aplicar (se cuenta y se sigue). Las
-    /// marcas de olvido conviene aplicarlas antes que las memorias, y los veredictos después.
-    pub(crate) fn aplicar(&mut self, db: &mut Connection, origen: &str, l: Linea, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
+    /// Applies a line. `Err` is a line that couldn't be applied (it is counted and we carry on).
+    /// Tombstones are best applied before memories, and verdicts after.
+    pub(crate) fn aplicar(&mut self, db: &mut Connection, source: &str, l: Linea, model: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
         match l {
             Linea::Header { .. } | Linea::End { .. } => Ok(()),
             Linea::Project { key, name, space_key, hlc, moved, extra, .. } => {
-                // En un import no se aplica: el espacio de un proyecto nuevo lo traen sus memorias, y uno
-                // de aquí no cambia de espacio por una copia.
+                // Not applied in an import: a new project's space comes with its memories, and a local
+                // one doesn't change space because of a copy.
                 let Some(c) = self.config else { return Ok(()) };
-                // Una de más de una hora en el futuro no se aplica (se cuenta como no válida): con ese
-                // sello, quedarse el proyecto (`keep`) lo dejaría sordo a los movimientos de verdad.
+                // One more than an hour in the future is not applied (it counts as invalid): with that
+                // stamp, keeping the project (`keep`) would make it deaf to real moves.
                 ensure!(!reloj::del_futuro(&hlc), "project: {hlc}");
-                // La del general sin nombre: el proyecto de aquí con ese nombre opaco (si no hay, nada).
+                // The general one's without a name: the local project with that opaque name (if none, nothing).
                 let key = match moved {
-                    true => match self.opacos.get(&key) {
+                    true => match self.opaque.get(&key) {
                         Some(k) => k.clone(),
                         None => return Ok(()),
                     },
@@ -1987,11 +1987,11 @@ impl<'a> Aplicador<'a> {
                         |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?, f.get(3)?)),
                     )
                     .optional()?;
-                let Some((id, aqui, sello, pausa)) = local else {
-                    // Un proyecto que aquí aún no está: se apunta en su espacio solo si lo dice el
-                    // repositorio de ese espacio (una carpeta suya que aparezca aquí entra en él). Sin
-                    // espacio, o por otro repositorio, nada que apuntar.
-                    if moved || space_key.is_empty() || !va_al_repo(c, &space_key) {
+                let Some((id, here, stamp, pause)) = local else {
+                    // A project not here yet: it is recorded in its space only if that space's
+                    // repository says so (a folder of it that shows up here joins it). Without a
+                    // space, or through another repository, nothing to record.
+                    if moved || space_key.is_empty() || !goes_to_repo(c, &space_key) {
                         return Ok(());
                     }
                     let id = crate::proyecto::de_clave(db, &key, "", &self.person, false)?;
@@ -2000,41 +2000,41 @@ impl<'a> Aplicador<'a> {
                     }
                     let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
                     db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
-                    guardar_extra_proyecto(db, &key, &extra)?;
+                    save_project_extra(db, &key, &extra)?;
                     reloj::recibir(db, &hlc)?;
                     return Ok(());
                 };
-                // Lo que este equipo ya sabía del proyecto: su sello, o el de la línea que lo pausó. Una
-                // línea que no es más nueva no cambia nada (salvo que diga a qué espacio va el que se
-                // pausó sin saberlo: la misma decisión, ahora con nombre).
-                let pausa = crate::proyecto::Pausa::de(&pausa);
-                let sabido = match &pausa {
-                    Some(p) if reloj::mayor(&p.hlc, &sello) => p.hlc.clone(),
-                    _ => sello,
+                // What this machine already knew about the project: its stamp, or that of the line that paused it. A
+                // line that is not newer changes nothing (unless it says which space the one that was
+                // paused without knowing goes to: the same decision, now with a name).
+                let pause = crate::proyecto::Pausa::de(&pause);
+                let known = match &pause {
+                    Some(p) if reloj::mayor(&p.hlc, &stamp) => p.hlc.clone(),
+                    _ => stamp,
                 };
-                let con_nombre = pausa.as_ref().is_some_and(|p| p.unknown && !moved && p.hlc == hlc);
-                if no_menor(&sabido, &hlc) && !con_nombre {
+                let names_space = pause.as_ref().is_some_and(|p| p.unknown && !moved && p.hlc == hlc);
+                if not_older(&known, &hlc) && !names_space {
                     return Ok(());
                 }
-                // Dice lo mismo que hay aquí: nada que hacer. Ni su sello se apunta (una línea escrita a mano
-                // no deja el proyecto sordo a los movimientos que vengan después), ni saca de la pausa (de
-                // ella solo se sale decidiendo aquí).
-                if !moved && space_key == aqui {
+                // It says the same as what is here: nothing to do. Its stamp isn't recorded (a hand-written line
+                // doesn't make the project deaf to later moves), nor does it lift the pause (that
+                // only happens by deciding here).
+                if !moved && space_key == here {
                     return Ok(());
                 }
-                // «Se movió a un espacio» de uno que aquí ya está en uno: puede ser el mismo; no se sabe.
-                if moved && !aqui.is_empty() {
+                // «Moved to a space» for one that is already in one here: it may be the same one; we can't know.
+                if moved && !here.is_empty() {
                     return Ok(());
                 }
-                // Sin nadie delante y unido a este repositorio por `OMOIKANE_SYNC_CODE`: una carpeta de
-                // aquí (la de la CI) con el mismo `origin`, sin espacio y sin memorias que pudieran ser de
-                // otro repositorio, entra en el espacio sin pausa (`proyecto::adopta_en`).
+                // With nobody at the keyboard and joined to this repository through `OMOIKANE_SYNC_CODE`: a local
+                // folder (the CI's) with the same `origin`, without a space and without memories that could belong to
+                // another repository, joins the space without a pause (`proyecto::adopta_en`).
                 if !moved
-                    && aqui.is_empty()
-                    && pausa.is_none()
+                    && here.is_empty()
+                    && pause.is_none()
                     && c.space.is_some()
-                    && va_al_repo(c, &space_key)
-                    && sin_memorias(db, id)?
+                    && goes_to_repo(c, &space_key)
+                    && has_no_memories(db, id)?
                     && crate::proyecto::adopta_en(db, id, &space_key)?
                 {
                     let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
@@ -2042,53 +2042,53 @@ impl<'a> Aplicador<'a> {
                     reloj::recibir(db, &hlc)?;
                     return Ok(());
                 }
-                // Otro espacio: ni se mueve ni se sigue sincronizando; en pausa hasta que se decida aquí.
-                let quien = reloj::partes(&hlc).2.to_string();
-                let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: quien, ..Default::default() };
+                // Another space: it neither moves nor keeps syncing; paused until it is decided here.
+                let who = reloj::partes(&hlc).2.to_string();
+                let p = crate::proyecto::Pausa { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: who, ..Default::default() };
                 crate::proyecto::pausar(db, id, &p)?;
                 reloj::recibir(db, &p.hlc)?;
                 Ok(())
             }
             Linea::Tombstone { id, deleted_at, hlc, space_key, extra, .. } => {
-                if hlc_olvido(db, &id)?.is_some_and(|h| no_menor(&h, &hlc)) {
+                if tombstone_hlc(db, &id)?.is_some_and(|h| not_older(&h, &hlc)) {
                     return Ok(());
                 }
-                // Por el repositorio de un espacio solo llegan olvidos de ese espacio (sin `space_key`,
-                // de una versión que no lo manda: el del repositorio).
-                let espacio = match (space_key.is_empty(), self.config.and_then(|c| c.space.as_deref())) {
+                // Through a space's repository only that space's tombstones arrive (without `space_key`,
+                // from a version that doesn't send it: the repository's).
+                let space = match (space_key.is_empty(), self.config.and_then(|c| c.space.as_deref())) {
                     (true, Some(e)) => crate::proyecto::clave_de_espacio(e),
                     _ => space_key,
                 };
-                // Lo olvidado del todo aquí (sin copia en la papelera) es del espacio de su marca.
-                let marca: Option<String> = db.query_row("SELECT space_key FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?;
-                let aqui = match espacio_aqui(db, &id)? {
+                // What was forgotten for good here (no copy in the trash) belongs to its tombstone's space.
+                let mark: Option<String> = db.query_row("SELECT space_key FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?;
+                let here = match espacio_aqui(db, &id)? {
                     Some(e) => Some(e),
-                    None => marca,
+                    None => mark,
                 };
-                // Un olvido solo borra lo que lleva el repositorio por el que llega: el de acme no olvida
-                // una memoria de beta (ni una personal), ni cambia de espacio la marca de una de ellas.
+                // A tombstone only deletes what the repository it arrives through carries: acme's doesn't forget
+                // a beta memory (nor a personal one), nor changes the space of the tombstone of one of them.
                 if let Some(c) = self.config
-                    && (!va_al_repo(c, &espacio) || aqui.as_deref().is_some_and(|e| !va_al_repo(c, e)))
+                    && (!goes_to_repo(c, &space) || here.as_deref().is_some_and(|e| !goes_to_repo(c, e)))
                 {
                     r.conflictos_de_espacio += 1;
                     return Ok(());
                 }
-                let espacio = aqui.unwrap_or(espacio);
-                // La marca que llega pasa a ser la de aquí (en cualquiera de los tres casos): sus campos
-                // desconocidos, con ella.
+                let space = here.unwrap_or(space);
+                // The incoming tombstone becomes the local one (in any of the three cases): its unknown
+                // fields go with it.
                 guardar_extra_olvido(db, &id, &extra)?;
                 match hlc_local(db, &id)? {
                     Some(local) if reloj::mayor(&local, &hlc) => {
-                        // Aquí se cambió después de que allí se olvidara: se queda, y la marca vieja se apunta.
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &espacio)?;
+                        // It was changed here after it was forgotten there: it stays, and the old tombstone is recorded.
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &space)?;
                         reloj::recibir(db, &hlc)?;
                     }
                     Some(_) => {
-                        memoria::olvidar_con(db, &id, &hlc, &deleted_at, origen)?;
+                        memoria::olvidar_con(db, &id, &hlc, &deleted_at, source)?;
                         r.olvidadas += 1;
                     }
                     None => {
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &espacio)?;
+                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &space)?;
                         reloj::recibir(db, &hlc)?;
                     }
                 }
@@ -2096,80 +2096,80 @@ impl<'a> Aplicador<'a> {
             }
             Linea::Memory(CuerpoMemoria { id, project_key, project_path, space_key, kind, title, content, paths, tags, pinned, created_at, updated_at, hlc, content_hlc, author, versions, extra, .. }) => {
                 if let Some(c) = self.config {
-                    // Un repositorio de cliente no trae memorias de oficio (globales con `trade:`): las
-                    // verían los proyectos de ese oficio de todos los clientes.
+                    // A client repository doesn't bring trade memories (global with `trade:`): the
+                    // projects of that trade across all clients would see them.
                     if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::oficios::lleva_oficio(&tags) {
                         r.conflictos_de_espacio += 1;
                         return Ok(());
                     }
-                    // Por un repositorio solo entra lo de su espacio (el general: lo de ninguno, y los
-                    // espacios que diga su `spaces`): lo demás se rechaza y se cuenta.
-                    if !va_al_repo(c, &space_key) {
+                    // Only its space's memories come in through a repository (the general one: those of none, and the
+                    // spaces its `spaces` lists): the rest is rejected and counted.
+                    if !goes_to_repo(c, &space_key) {
                         r.conflictos_de_espacio += 1;
                         return Ok(());
                     }
-                    // Lo que este equipo no comparte tampoco se acepta (p. ej. las preferencias de otra
-                    // persona).
-                    if !c.acepta(&kind, &project_key, &space_key) {
+                    // What this machine doesn't share isn't accepted either (e.g. another person's
+                    // preferences).
+                    if !c.accepts(&kind, &project_key, &space_key) {
                         return Ok(());
                     }
                 }
-                // Lo de un proyecto en pausa no entra (de ningún repositorio) hasta que se decida: se cuenta,
-                // y el fichero se vuelve a leer entonces.
+                // A paused project's memories don't come in (from any repository) until it is decided: they are counted,
+                // and the file is reread then.
                 if self.config.is_some() {
-                    let pausada: bool = if project_key.is_empty() { false } else { crate::proyecto::pausado(db, &project_key)? };
-                    let suya_pausada: bool = db
+                    let project_paused: bool = if project_key.is_empty() { false } else { crate::proyecto::pausado(db, &project_key)? };
+                    let own_paused: bool = db
                         .query_row("SELECT p.paused != '' FROM memory m JOIN project p ON p.id = m.project_id WHERE m.id = ?1", [&id], |f| f.get(0))
                         .optional()?
                         .unwrap_or(false);
-                    if pausada || suya_pausada {
+                    if project_paused || own_paused {
                         r.en_pausa += 1;
                         return Ok(());
                     }
                 }
-                // Lo olvidado no vuelve; por la sincronización, solo lo para un olvido de su mismo espacio.
-                let olvido = if self.config.is_some() { hlc_olvido_en(db, &id, &space_key)? } else { hlc_olvido(db, &id)? };
-                if olvido.is_some_and(|h| no_menor(&h, &hlc)) {
+                // What was forgotten doesn't come back; through sync, only a tombstone from its same space stops it.
+                let tombstone = if self.config.is_some() { tombstone_hlc_in(db, &id, &space_key)? } else { tombstone_hlc(db, &id)? };
+                if tombstone.is_some_and(|h| not_older(&h, &hlc)) {
                     return Ok(());
                 }
                 let local = hlc_local(db, &id)?;
-                if local.as_ref().is_some_and(|h| no_menor(h, &hlc)) {
+                if local.as_ref().is_some_and(|h| not_older(h, &hlc)) {
                     return Ok(());
                 }
-                // Nada cambia de espacio por lo que llega: ni una memoria de aquí, ni un proyecto de aquí.
-                // Una línea que caería en otro espacio (la carpeta `web` de otro cliente con la misma
-                // clave, o una clave de beta escrita en el repositorio de acme) se rechaza.
+                // Nothing changes space because of what arrives: neither a local memory nor a local project.
+                // A line that would land in another space (another client's `web` folder with the same
+                // key, or a beta key written in acme's repository) is rejected.
                 if self.config.is_some() {
-                    let memoria_fuera = local.is_some() && espacio_aqui(db, &id)?.is_some_and(|e| e != space_key);
-                    let proyecto_fuera = if project_key.is_empty() { None } else { espacio_del_proyecto(db, &project_key)?.filter(|e| *e != space_key) };
-                    if memoria_fuera || proyecto_fuera.is_some() {
+                    let memory_elsewhere = local.is_some() && espacio_aqui(db, &id)?.is_some_and(|e| e != space_key);
+                    let project_elsewhere = if project_key.is_empty() { None } else { project_space(db, &project_key)?.filter(|e| *e != space_key) };
+                    if memory_elsewhere || project_elsewhere.is_some() {
                         r.conflictos_de_espacio += 1;
-                        // De qué proyecto, para decir qué orden lo arregla.
-                        if let Some(aqui) = proyecto_fuera {
+                        // Which project, to say which command fixes it.
+                        if let Some(here) = project_elsewhere {
                             let name = db.query_row("SELECT name FROM project WHERE key = ?1", [&project_key], |f| f.get(0))?;
-                            r.pendientes.push(Choque { key: project_key, name, here: aqui, there: space_key, machine: origen.to_string() });
+                            r.pendientes.push(Choque { key: project_key, name, here, there: space_key, machine: source.to_string() });
                         }
                         return Ok(());
                     }
                 }
-                // El proyecto, por su clave (si aquí no hay ninguno, con la ruta de origen, que se adopta
-                // en cuanto aparezca aquí una carpeta con esa clave); o el espacio; o global.
+                // The project, by its key (if there is none here, with the source path, which is adopted
+                // as soon as a folder with that key shows up here); or the space; or global.
                 let (project_id, space_id) = if !project_key.is_empty() {
                     let p = crate::proyecto::de_clave(db, &project_key, &project_path, &self.person, self.config.is_none())?;
-                    // Un proyecto nuevo toma el espacio que trae la línea (por la sincronización, uno que ya
-                    // estaba aquí en otro espacio se ha rechazado arriba; en un import, uno sin espacio
-                    // toma el que trae).
+                    // A new project takes the space the line brings (through sync, one that was already
+                    // here in another space was rejected above; in an import, one without a space
+                    // takes the one it brings).
                     if !space_key.is_empty() && crate::proyecto::espacio_de(db, p)?.is_none() {
                         let s = crate::proyecto::espacio_de_clave(db, &space_key)?;
                         db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![p, s])?;
-                        // Si su carpeta ya estaba aquí (la misma ruta, con la misma clave), es una carpeta
-                        // de aquí que entra en un espacio porque lo dice su repositorio: en pausa hasta
-                        // que la persona lo confirme, como si la abriera después.
-                        // Sin nadie delante y unido a este repositorio por la variable, la carpeta de la CI
-                        // entra sin pausa si no tenía nada (lo que tuviera podría ser de otro repositorio).
+                        // If its folder was already here (the same path, with the same key), it is a local
+                        // folder joining a space because its repository says so: paused until
+                        // the person confirms it, as if it were opened afterwards.
+                        // With nobody at the keyboard and joined to this repository through the variable, the CI folder
+                        // joins without a pause if it had nothing (whatever it had could belong to another repository).
                         if self.config.is_some()
                             && crate::proyecto::carpetas_propias(db, p)? > 0
-                            && !(sin_memorias(db, p)? && crate::proyecto::adopta_sin_pausa(db, p)?)
+                            && !(has_no_memories(db, p)? && crate::proyecto::adopta_sin_pausa(db, p)?)
                         {
                             crate::proyecto::pausar_por_reclamo(db, p)?;
                         }
@@ -2180,98 +2180,98 @@ impl<'a> Aplicador<'a> {
                 } else {
                     (Some(0), None)
                 };
-                let tipo = kind.parse::<Tipo>().ok();
-                let kind_text = if tipo.is_none() { Some(kind.clone()) } else { None };
-                // El sello de verificada de otra persona no cuenta aquí (ver `sello_de_otro`). Se guarda tal
-                // cual (la línea que este equipo vuelva a escribir lo lleva, para los demás) y se apunta en
-                // `meta` que aquí no vale: `memoria::COLUMNAS` no lo da por verificado.
+                let parsed_kind = kind.parse::<Tipo>().ok();
+                let kind_text = if parsed_kind.is_none() { Some(kind.clone()) } else { None };
+                // Another person's verified seal doesn't count here (see `foreign_seal`). It is stored as
+                // is (the line this machine writes again carries it, for the others) and `meta` records
+                // that it doesn't count here: `memoria::COLUMNAS` doesn't treat it as verified.
                 if let Some(c) = self.config {
-                    let marca = format!("{}{id}", crate::verificado::SELLO_AJENO);
-                    match sello_de_otro(db, c, &id, &extra)? {
-                        Some(sello) => {
+                    let mark = format!("{}{id}", crate::verificado::SELLO_AJENO);
+                    match foreign_seal(db, c, &id, &extra)? {
+                        Some(stamp) => {
                             r.sellos_ajenos += 1;
-                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![marca, sello])?;
+                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![mark, stamp])?;
                         }
                         None => {
-                            db.execute("DELETE FROM meta WHERE k = ?1", [&marca])?;
+                            db.execute("DELETE FROM meta WHERE k = ?1", [&mark])?;
                         }
                     }
                 }
-                // Aquí se le quitó la verificación (`verify --unverify`, o se cambió su texto): la fecha se
-                // queda y un sello de antes no vuelve, aunque la línea sea más nueva y traiga el texto que se
-                // verificó (otro equipo que aún no había visto el cambio, una copia). Por el repositorio de
-                // un espacio se queda en la línea para los demás y aquí no cuenta (`sello_de_otro`).
+                // The verification was removed here (`verify --unverify`, or its text changed): the date
+                // stays and an earlier seal doesn't come back, even if the line is newer and brings the text that was
+                // verified (another machine that hadn't seen the change yet, a copy). Through a space's
+                // repository it stays in the line for the others and doesn't count here (`foreign_seal`).
                 let mut extra = extra;
                 if local.is_some()
                     && let Some(d) = crate::verificado::desverificada_en(db, &id)?
                 {
                     crate::verificado::sin_sello_viejo(&mut extra, &d, self.config.is_none_or(|c| c.space.is_none()));
                 }
-                // Los campos que esta versión no conoce se guardan con ella, para volver a escribirlos.
+                // The fields this version doesn't know are stored with it, to write them back.
                 let extra = extra_a_texto(&extra);
                 let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author, extra: &extra };
-                // Una línea que no pasa las comprobaciones (título vacío o largo, contenido vacío…) se
-                // salta y se cuenta: nunca para la sincronización.
+                // A line that doesn't pass the checks (empty or long title, empty content…) is
+                // skipped and counted: it never stops the sync.
                 if local.is_some() {
                     let c = Cambios {
                         title: Some(title),
                         content: Some(content),
-                        kind: Some(tipo.unwrap_or(Tipo::Fact)),
+                        kind: Some(parsed_kind.unwrap_or(Tipo::Fact)),
                         kind_text,
                         paths: Some(paths),
                         tags: Some(tags),
                         pinned: Some(pinned),
                         project_id,
                         space_id,
-                        reason: Some(format!("sync: {origen}")),
+                        reason: Some(format!("sync: {source}")),
                         ..Default::default()
                     };
-                    memoria::actualizar_con_origen(db, &id, c, &o, modelo)?;
+                    memoria::actualizar_con_origen(db, &id, c, &o, model)?;
                     r.actualizadas += 1;
                 } else {
-                    let nueva = Nueva {
+                    let new_memory = Nueva {
                         project: String::new(),
                         project_id,
                         space_id,
-                        kind: Some(tipo.unwrap_or(Tipo::Fact)),
+                        kind: Some(parsed_kind.unwrap_or(Tipo::Fact)),
                         kind_text,
                         title,
                         content,
                         paths,
                         tags,
                         pinned,
-                        source: format!("sync:{origen}"),
+                        source: format!("sync:{source}"),
                         provenance: None,
                         evidence: Vec::new(),
                         review_reason: None,
                     };
-                    memoria::guardar_con_id(db, &id, nueva, &o, modelo)?;
+                    memoria::guardar_con_id(db, &id, new_memory, &o, model)?;
                     r.nuevas += 1;
                 }
-                // Vuelve a existir con un sello posterior a su olvido (otro equipo la restauró): ya no
-                // está en la papelera.
+                // It exists again with a stamp later than its tombstone (another machine restored it): it is no
+                // longer in the trash.
                 db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
-                // El historial que venga: lo que ya hay con ese número se queda.
+                // Whatever history comes: what already exists with that number stays.
                 for v in &versions {
                     memoria::poner_version(db, &id, v)?;
                 }
                 Ok(())
             }
             Linea::Verdict { memory_id, other_id, relation, at, hlc, reason, author, extra, .. } => {
-                // De una memoria que aquí no está (no se comparte, o se olvidó del todo) no se apunta
-                // nada. Las de la papelera, sí: si vuelve, vuelve con sus veredictos (`omoi export` los
-                // lleva, y van después de la papelera).
-                let Some(de_una) = espacio_aqui(db, &memory_id)? else { return Ok(()) };
-                let de_otra = match other_id.is_empty() {
+                // For a memory that isn't here (not shared, or forgotten for good) nothing is
+                // recorded. Those in the trash, yes: if it comes back, it comes back with its verdicts (`omoi export`
+                // carries them, and they go after the trash).
+                let Some(first_space) = espacio_aqui(db, &memory_id)? else { return Ok(()) };
+                let other_space = match other_id.is_empty() {
                     true => None,
                     false => match espacio_aqui(db, &other_id)? {
                         Some(e) => Some(e),
                         None => return Ok(()),
                     },
                 };
-                // Un veredicto solo toca memorias de lo que lleva el repositorio por el que llega.
+                // A verdict only touches memories of what the repository it arrives through carries.
                 if let Some(c) = self.config
-                    && (!va_al_repo(c, &de_una) || de_otra.as_deref().is_some_and(|e| !va_al_repo(c, e)))
+                    && (!goes_to_repo(c, &first_space) || other_space.as_deref().is_some_and(|e| !goes_to_repo(c, e)))
                 {
                     r.conflictos_de_espacio += 1;
                     return Ok(());
@@ -2281,31 +2281,31 @@ impl<'a> Aplicador<'a> {
                 Ok(())
             }
             Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra } => {
-                // A la papelera, si aquí no está viva ni ya en la papelera. Se guarda como la de aquí
-                // (`Memoria`, con su proyecto y su espacio por clave) y con sus campos desconocidos.
+                // To the trash, if it isn't live here nor already in the trash. It is stored like the local one
+                // (`Memoria`, with its project and its space by key) and with its unknown fields.
                 if hlc_local(db, &id)?.is_some() {
                     return Ok(());
                 }
-                let origen = if memory.machine.is_empty() { format!("sync:{origen}") } else { format!("sync:{}", memory.machine) };
-                let texto = a_papelera(&memory.a_memoria(&origen), &memory.extra, &extra)?;
+                let source = if memory.machine.is_empty() { format!("sync:{source}") } else { format!("sync:{}", memory.machine) };
+                let text = a_papelera(&memory.to_memory(&source), &memory.extra, &extra)?;
                 let n = db.execute(
                     "INSERT OR IGNORE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, texto, serde_json::to_string(&versions)?, hlc, deleted_at, by],
+                    params![id, text, serde_json::to_string(&versions)?, hlc, deleted_at, by],
                 )?;
-                // Como en una línea `memory`: el sello de otra persona que llega en la papelera por el
-                // repositorio de un espacio no cuenta aquí si se restaura (`memoria::restaurar` lo
-                // conserva tal cual).
+                // As in a `memory` line: another person's seal arriving in the trash through a
+                // space's repository doesn't count here if restored (`memoria::restaurar` keeps
+                // it as is).
                 if n > 0
                     && let Some(c) = self.config
                 {
-                    let marca = format!("{}{id}", crate::verificado::SELLO_AJENO);
-                    match sello_de_otro(db, c, &id, &memory.extra)? {
-                        Some(sello) => {
+                    let mark = format!("{}{id}", crate::verificado::SELLO_AJENO);
+                    match foreign_seal(db, c, &id, &memory.extra)? {
+                        Some(stamp) => {
                             r.sellos_ajenos += 1;
-                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![marca, sello])?;
+                            db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![mark, stamp])?;
                         }
                         None => {
-                            db.execute("DELETE FROM meta WHERE k = ?1", [&marca])?;
+                            db.execute("DELETE FROM meta WHERE k = ?1", [&mark])?;
                         }
                     }
                 }
@@ -2315,81 +2315,81 @@ impl<'a> Aplicador<'a> {
     }
 }
 
-/// Lee los ficheros de otros equipos y aplica sus líneas. Una línea que no se entiende (de una versión
-/// futura, de otra clave, o dañada) se salta y se cuenta, sin parar la sincronización.
+/// Reads other machines' files and applies their lines. A line that isn't understood (from a future
+/// version, another key, or damaged) is skipped and counted, without stopping the sync.
 #[allow(clippy::too_many_arguments)]
-fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Config, cifra: &Cifra, actual: Option<&str>, modelo: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
-    let mut aplicador = Aplicador::nuevo(db, Some(config), actual)?;
-    aplicador.con_opacos(db, cifra)?;
-    // (equipo de origen, fichero, línea)
-    let mut lineas: Vec<(String, String, Linea)> = Vec::new();
-    for f in ficheros {
-        let relativo = f.strip_prefix(clon).unwrap_or(f).to_string_lossy().replace('\\', "/");
-        let texto = std::fs::read_to_string(f).with_context(|| format!("{}", f.display()))?;
-        r.malos.insert(relativo.clone(), 0);
-        r.futuros.insert(relativo.clone(), 0);
-        r.conflictos.insert(relativo.clone(), 0);
-        r.pausadas.insert(relativo.clone(), 0);
-        for l in texto.lines().filter(|l| !l.trim().is_empty()) {
-            // Una etiqueta que no es de clave (`x1:…`) es de un formato futuro.
-            if partir(l).is_none() {
-                *r.futuros.entry(relativo.clone()).or_default() += 1;
+fn import(db: &mut Connection, clone_dir: &Path, files: &[PathBuf], config: &Config, cipher: &Cifra, current: Option<&str>, model: Option<&Modelo>, r: &mut Resumen) -> Result<()> {
+    let mut applier = Aplicador::nuevo(db, Some(config), current)?;
+    applier.with_opaque(db, cipher)?;
+    // (source machine, file, line)
+    let mut lines: Vec<(String, String, Linea)> = Vec::new();
+    for f in files {
+        let rel_path = f.strip_prefix(clone_dir).unwrap_or(f).to_string_lossy().replace('\\', "/");
+        let text = std::fs::read_to_string(f).with_context(|| format!("{}", f.display()))?;
+        r.malos.insert(rel_path.clone(), 0);
+        r.futuros.insert(rel_path.clone(), 0);
+        r.conflictos.insert(rel_path.clone(), 0);
+        r.pausadas.insert(rel_path.clone(), 0);
+        for l in text.lines().filter(|l| !l.trim().is_empty()) {
+            // A label that is not a key's (`x1:…`) is from a future format.
+            if split_key_id(l).is_none() {
+                *r.futuros.entry(rel_path.clone()).or_default() += 1;
                 continue;
             }
-            let Ok(claro) = cifra.descifrar(l) else {
-                *r.malos.entry(relativo.clone()).or_default() += 1;
+            let Ok(plain) = cipher.descifrar(l) else {
+                *r.malos.entry(rel_path.clone()).or_default() += 1;
                 continue;
             };
-            let x = match serde_json::from_str::<Linea>(&claro) {
+            let x = match serde_json::from_str::<Linea>(&plain) {
                 Ok(x) => x,
-                // Un tipo de línea de una versión más nueva: se cuenta aparte, para pedir que se
-                // actualice, y se volverá a leer entonces.
-                Err(_) if de_tipo_nuevo(&claro) => {
-                    *r.futuros.entry(relativo.clone()).or_default() += 1;
+                // A line type from a newer version: counted separately, to ask for an
+                // update, and it will be reread then.
+                Err(_) if de_tipo_nuevo(&plain) => {
+                    *r.futuros.entry(rel_path.clone()).or_default() += 1;
                     continue;
                 }
                 Err(_) => {
-                    *r.malos.entry(relativo.clone()).or_default() += 1;
+                    *r.malos.entry(rel_path.clone()).or_default() += 1;
                     continue;
                 }
             };
             if !x.valida() {
-                *r.malos.entry(relativo.clone()).or_default() += 1;
+                *r.malos.entry(rel_path.clone()).or_default() += 1;
                 continue;
             }
-            let origen = if x.machine().is_empty() { f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { x.machine().to_string() };
-            lineas.push((origen, relativo.clone(), x));
+            let source = if x.machine().is_empty() { f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { x.machine().to_string() };
+            lines.push((source, rel_path.clone(), x));
         }
         r.leidos += 1;
     }
-    // Primero los olvidos (para no traer algo que se va a borrar), luego los proyectos (el espacio en
-    // el que caen sus memorias), luego las memorias y al final los veredictos, que las necesitan.
-    let orden = |l: &Linea| match l {
+    // Tombstones first (so as not to bring something about to be deleted), then projects (the space
+    // their memories land in), then memories and finally verdicts, which need them.
+    let rank = |l: &Linea| match l {
         Linea::Tombstone { .. } => 0,
         Linea::Project { .. } => 1,
         Linea::Memory(_) => 2,
         _ => 3,
     };
-    // Las `project`, de la más nueva a la más vieja: la que gana se aplica antes, y las demás ya no
-    // cambian nada ni avisan de lo que ya no es.
-    let sello = |l: &Linea| match l {
+    // `project` lines, from newest to oldest: the winner is applied first, and the rest no longer
+    // change anything or warn about what no longer is.
+    let stamp_of = |l: &Linea| match l {
         Linea::Project { hlc, .. } => hlc.clone(),
         _ => String::new(),
     };
-    lineas.sort_by(|(_, _, x), (_, _, y)| orden(x).cmp(&orden(y)).then_with(|| reloj::comparar(&sello(y), &sello(x))));
-    for (origen, fichero, l) in lineas {
-        let (antes, en_pausa) = (r.conflictos_de_espacio, r.en_pausa);
-        if aplicador.aplicar(db, &origen, l, modelo, r).is_err() {
-            *r.malos.entry(fichero.clone()).or_default() += 1;
+    lines.sort_by(|(_, _, x), (_, _, y)| rank(x).cmp(&rank(y)).then_with(|| reloj::comparar(&stamp_of(y), &stamp_of(x))));
+    for (source, file, l) in lines {
+        let (before, paused_before) = (r.conflictos_de_espacio, r.en_pausa);
+        if applier.aplicar(db, &source, l, model, r).is_err() {
+            *r.malos.entry(file.clone()).or_default() += 1;
         }
-        if r.conflictos_de_espacio > antes {
-            *r.conflictos.entry(fichero.clone()).or_default() += r.conflictos_de_espacio - antes;
+        if r.conflictos_de_espacio > before {
+            *r.conflictos.entry(file.clone()).or_default() += r.conflictos_de_espacio - before;
         }
-        if r.en_pausa > en_pausa {
-            *r.pausadas.entry(fichero.clone()).or_default() += r.en_pausa - en_pausa;
+        if r.en_pausa > paused_before {
+            *r.pausadas.entry(file.clone()).or_default() += r.en_pausa - paused_before;
         }
         for c in std::mem::take(&mut r.pendientes) {
-            r.choques.entry(fichero.clone()).or_default().insert(c);
+            r.choques.entry(file.clone()).or_default().insert(c);
         }
     }
     r.ilegibles = r.malos.values().sum();
@@ -2397,142 +2397,142 @@ fn importar(db: &mut Connection, clon: &Path, ficheros: &[PathBuf], config: &Con
     Ok(())
 }
 
-// --- Sincronizar -----------------------------------------------------------------------------------
+// --- Sync -----------------------------------------------------------------------------------------
 
-fn no_configurada() -> String {
+fn not_configured() -> String {
     tr!(
         "sync is not set up: `omoi sync init <git url>` (or `omoi sync join <code>`)",
         "la sincronización no está configurada: `omoi sync init <url de git>` (o `omoi sync join <código>`)"
     )
 }
 
-/// Una sincronización completa de cada repositorio de este equipo (el general y el de cada espacio):
-/// bajar, juntar, escribir lo de este equipo, commit y subir. Apunta cómo fue cada uno en su estado;
-/// si uno falla, los demás se sincronizan igual y se devuelve el primer error.
-pub fn sincronizar(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<Resumen> {
-    let repos = repos(ruta_db);
-    ensure!(!repos.is_empty(), no_configurada());
+/// A full sync of each repository on this machine (the general one and each space's):
+/// pull, merge, write this machine's memories, commit and push. Records how each one went in its status;
+/// if one fails, the others sync anyway and the first error is returned.
+pub fn sincronizar(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Modelo>) -> Result<Resumen> {
+    let repos = repos(db_path);
+    ensure!(!repos.is_empty(), not_configured());
     let mut total = Resumen { equipo: reloj::equipo(db)?, ..Default::default() };
-    let mut fallo = None;
+    let mut first_error = None;
     for r in &repos {
         let res = leer_config_de(r)
-            .and_then(|c| c.context(no_configurada()))
-            .and_then(|config| sincronizar_repo(db, r, &config, actual, modelo, None))
+            .and_then(|c| c.context(not_configured()))
+            .and_then(|config| sync_repo(db, r, &config, current, model, None))
             .map(|(res, _)| res);
         let res = match &r.espacio {
             Some(e) => res.with_context(|| tr!("space {}", "espacio {}", e)),
             None => res,
         };
-        apuntar(r, &res);
+        record_status(r, &res);
         match res {
-            Ok(x) => total.sumar(x),
+            Ok(x) => total.add(x),
             Err(e) => {
-                fallo.get_or_insert(e);
+                first_error.get_or_insert(e);
             }
         }
     }
-    // Los proyectos en pausa (de este repositorio o de otro): una vez, con sus órdenes.
-    total.avisos.extend(avisos_de_pausa(db, ruta_db));
-    match fallo {
+    // The paused projects (of this repository or another): once, with their commands.
+    total.avisos.extend(avisos_de_pausa(db, db_path));
+    match first_error {
         Some(e) => Err(e),
         None => Ok(total),
     }
 }
 
-/// Sincroniza un repositorio. Con `rotar`, antes de escribir nada estrena esa clave: le da el id
-/// siguiente al más alto que conozca el repositorio, la apunta en `omoikane.check` como vigente y
-/// cifra con ella todo lo de este equipo. Devuelve las claves con las que lo hizo.
-fn sincronizar_repo(db: &mut Connection, r: &Rutas, config: &Config, actual: Option<&str>, modelo: Option<&Modelo>, rotar: Option<&[u8]>) -> Result<(Resumen, Cifra)> {
+/// Syncs a repository. With `rotate`, before writing anything it starts using that key: it gives it the id
+/// after the highest the repository knows, records it in `omoikane.check` as current and
+/// encrypts with it everything from this machine. Returns the keys it used.
+fn sync_repo(db: &mut Connection, r: &Rutas, config: &Config, current: Option<&str>, model: Option<&Modelo>, rotar: Option<&[u8]>) -> Result<(Resumen, Cifra)> {
     let base = leer_claves(r)?;
     ensure!(r.clon.join(".git").exists(), tr!("the sync clone is missing: run `omoi sync init` again", "falta el clon de la sincronización: vuelve a hacer `omoi sync init`"));
-    if let Some(a) = actual {
+    if let Some(a) = current {
         adoptar(db, a)?;
     }
-    let equipo = reloj::equipo(db)?;
-    releer_si_hace_falta(db)?;
-    for intento in 0..4 {
-        // Las cuentas, de cada intento: un reintento vuelve a leer los mismos ficheros.
-        let mut res = Resumen { equipo: equipo.clone(), ..Default::default() };
-        limpiar(&r.clon)?;
-        // El id de la clave nueva, de cada intento: si otro equipo rotó entre medias, la siguiente.
-        let cifra = match rotar {
-            Some(k) => base.con(Chequeo::leer(&r.clon).map_or(0, |c| c.vigente()).max(base.vigente()) + 1, k.to_vec()),
+    let machine = reloj::equipo(db)?;
+    reread_if_needed(db)?;
+    for attempt in 0..4 {
+        // The counts, for each attempt: a retry rereads the same files.
+        let mut res = Resumen { equipo: machine.clone(), ..Default::default() };
+        reset_clone(&r.clon)?;
+        // The new key's id, for each attempt: if another machine rotated in between, the next one.
+        let cipher = match rotar {
+            Some(k) => base.with_key(KeyCheck::read(&r.clon).map_or(0, |c| c.vigente()).max(base.vigente()) + 1, k.to_vec()),
             None => base.clone(),
         };
-        // Un repositorio que pide un lector más nuevo: ni se lee ni se escribe en él.
-        if lector_pedido(&r.clon, &cifra).is_some_and(|n| n > LECTOR_REPO) {
+        // A repository that asks for a newer reader: it is neither read nor written.
+        if required_reader(&r.clon, &cipher).is_some_and(|n| n > LECTOR_REPO) {
             bail!(aviso_version());
         }
-        ficheros_fijos(&r.clon, &cifra)?;
-        retirar_viejos(&r.clon, &equipo, &cifra)?;
-        let mut ficheros = por_leer(db, &r.clon, &equipo, &cifra, &r.marca_commit)?;
-        // Los ficheros con líneas rechazadas por estar su proyecto en otro espacio (o con un aviso de
-        // proyecto) o en pausa se vuelven a leer siempre, aunque no hayan cambiado: si aquí el proyecto
-        // ya está donde dicen (se movió a mano, o se decidió su pausa), sus cambios entran ahora, y si
-        // no, el aviso se vuelve a calcular. Los que ya no existen se dejan de contar.
+        write_fixed_files(&r.clon, &cipher)?;
+        remove_old_files(&r.clon, &machine, &cipher)?;
+        let mut files = files_to_read(db, &r.clon, &machine, &cipher, &r.marca_commit)?;
+        // Files with lines rejected because their project is in another space (or with a project
+        // notice) or paused are always reread, even if they haven't changed: if the project here
+        // is already where they say (it was moved by hand, or its pause was decided), their changes come in now, and if
+        // not, the notice is recomputed. Those that no longer exist stop being counted.
         let e = leer_estado_de(r);
-        let releer = |f: &String| e.ficheros_conflicto.contains_key(f) || e.ficheros_choques.contains_key(f) || e.ficheros_en_pausa.contains_key(f);
+        let reread = |f: &String| e.ficheros_conflicto.contains_key(f) || e.ficheros_choques.contains_key(f) || e.ficheros_en_pausa.contains_key(f);
         for f in e.ficheros_conflicto.keys().chain(e.ficheros_choques.keys()).chain(e.ficheros_en_pausa.keys()).chain(e.ficheros_malos.keys()).chain(e.ficheros_futuros.keys()) {
-            let ruta = r.clon.join(f);
-            if !ruta.exists() {
-                for cuentas in [&mut res.malos, &mut res.futuros, &mut res.conflictos, &mut res.pausadas] {
-                    cuentas.insert(f.clone(), 0);
+            let path = r.clon.join(f);
+            if !path.exists() {
+                for counts in [&mut res.malos, &mut res.futuros, &mut res.conflictos, &mut res.pausadas] {
+                    counts.insert(f.clone(), 0);
                 }
-            } else if releer(f) && !ficheros.contains(&ruta) {
-                ficheros.push(ruta);
+            } else if reread(f) && !files.contains(&path) {
+                files.push(path);
             }
         }
-        ficheros.sort();
-        importar(db, &r.clon, &ficheros, config, &cifra, actual, modelo, &mut res)?;
-        // Dos equipos que crearon la misma clave sin verse: manda una y las demás quedan sustituidas
-        // por ella, con un veredicto que sale en este mismo `exportar`.
+        files.sort();
+        import(db, &r.clon, &files, config, &cipher, current, model, &mut res)?;
+        // Two machines that created the same key without seeing each other: one rules and the others become superseded
+        // by it, with a verdict that goes out in this same `export`.
         res.claves_repetidas += crate::memoria::resolver_claves_repetidas(db)?;
         res.avisos = sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto).collect();
-        // Si esta versión se saltó líneas nuevas y la base la usó antes una más nueva (se volvió a una
-        // vieja), esa tendrá que releerlas cuando vuelva.
+        // If this version skipped new lines and a newer one used the database before (it went back to an
+        // old one), that one will have to reread them when it comes back.
         if res.de_version_nueva > 0 {
             db.execute("UPDATE meta SET v = ?1 WHERE k = 'sync_lector' AND CAST(v AS INTEGER) > ?1", [LECTOR_LINEAS])?;
         }
-        res.exportadas = exportar(db, &r.clon, &equipo, config, &cifra)?;
+        res.exportadas = export(db, &r.clon, &machine, config, &cipher)?;
         git(&r.clon, &["add", "-A"])?;
         if !git(&r.clon, &["status", "--porcelain"])?.trim().is_empty() {
             git(&r.clon, &["commit", "--quiet", "--no-verify", "-m", "omoikane"])?;
         }
-        let hay_commits = hay_head(&r.clon);
-        let subir = if hay_commits { git(&r.clon, &["push", "--quiet", "origin", &format!("HEAD:{RAMA}")]) } else { Ok(String::new()) };
-        match subir {
+        let has_commits = has_head(&r.clon);
+        let push = if has_commits { git(&r.clon, &["push", "--quiet", "origin", &format!("HEAD:{BRANCH}")]) } else { Ok(String::new()) };
+        match push {
             Ok(_) => {
-                if hay_commits {
+                if has_commits {
                     let head = git(&r.clon, &["rev-parse", "HEAD"])?;
                     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![r.marca_commit, head.trim()])?;
                 }
-                // Lo que llegó de otros equipos puede dejar anticuadas memorias de aquí (o al revés).
+                // What came from other machines may leave local memories outdated (or the other way round).
                 let _ = crate::revisar::al_dia(db);
-                return Ok((res, cifra));
+                return Ok((res, cipher));
             }
-            // Otro equipo subió entre medias: se baja lo suyo y se vuelve a intentar.
-            Err(_) if intento < 3 => std::thread::sleep(Duration::from_millis(200 * (intento + 1))),
+            // Another machine pushed in between: its changes are pulled and we try again.
+            Err(_) if attempt < 3 => std::thread::sleep(Duration::from_millis(200 * (attempt + 1))),
             Err(e) => return Err(e),
         }
     }
     unreachable!()
 }
 
-// --- Configurar: init, join, code ------------------------------------------------------------------
+// --- Setup: init, join, code ----------------------------------------------------------------------
 
-/// Lo que se elige al configurar.
+/// What is chosen when setting up.
 #[derive(Clone, Debug)]
 pub struct Eleccion {
     pub preferencias: bool,
     pub global: bool,
-    /// Carpetas de proyecto; vacío = todos.
+    /// Project folders; empty = all.
     pub proyectos: Vec<String>,
-    /// Espacios (nombre o clave) que también van por el repositorio general; vacío = ninguno.
+    /// Spaces (name or key) that also go through the general repository; empty = none.
     pub espacios: Vec<String>,
     pub autor: Option<String>,
 }
 
-/// El nombre de git del usuario (`git config user.name`), si lo tiene.
+/// The user's git name (`git config user.name`), if they have one.
 pub fn nombre_git() -> Option<String> {
     let o = std::process::Command::new("git").args(["config", "--get", "user.name"]).output().ok()?;
     let n = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -2543,17 +2543,17 @@ pub fn config_de(url: &str, e: &Eleccion) -> Config {
     config_con_persona(url, e, None, "")
 }
 
-/// Como `config_de`, pero con la persona ya decidida (`join` usa la del equipo que invita: así los
-/// proyectos sin remoto de una misma persona se juntan entre sus equipos aunque cada uno lleve otro
-/// nombre de autor) y, si no hay ni autor ni nombre de git, la persona local de la base (`local`).
-pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>, local: &str) -> Config {
+/// Like `config_de`, but with the person already decided (`join` uses the inviting machine's: so the
+/// projects without a remote of the same person merge across their machines even if each one has a different
+/// author name) and, if there is neither an author nor a git name, the database's local person (`local`).
+pub fn config_con_persona(url: &str, e: &Eleccion, fixed: Option<&str>, local: &str) -> Config {
     let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Procedure];
     if e.preferencias {
         kinds.push(Tipo::Preference);
     }
-    // La persona: la que se da; si no, la del nombre; sin nombre, un identificador fijo al azar
-    // (guardado en la configuración y pasado en el código para unirse), nunca uno común a todos.
-    let person = fija
+    // The person: the given one; if not, the name's; without a name, a fixed random identifier
+    // (stored in the configuration and passed in the code for joining), never one shared by everyone.
+    let person = fixed
         .map(persona)
         .filter(|p| !p.is_empty())
         .or_else(|| e.autor.clone().or_else(nombre_git).map(|n| persona(&n)).filter(|p| !p.is_empty()))
@@ -2564,70 +2564,70 @@ pub fn config_con_persona(url: &str, e: &Eleccion, fija: Option<&str>, local: &s
     Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.autor.clone(), person, space: None, another_person: false }
 }
 
-/// Tras `sync init` o `join`: si la persona de la sincronización (`nueva`) no es la de esta base, pasa
-/// a serlo (es la misma persona en otro equipo): las claves `dir:` de los proyectos de aquí se vuelven a
-/// calcular con ella y sus memorias se vuelven a sellar, para que viajen con la clave buena, y todos
-/// los repositorios de este equipo la apuntan. Con `--another-person`, la de la configuración ya es la
-/// local y no cambia nada. Devuelve cuántos proyectos cambiaron de clave.
-pub fn adoptar_persona(db: &mut Connection, ruta_db: &Path, nueva: &str) -> Result<usize> {
-    let vieja = crate::db::persona_de(db);
-    if nueva.is_empty() || vieja == nueva {
+/// After `sync init` or `join`: if the sync person (`new_person`) is not this database's, it becomes
+/// it (it is the same person on another machine): the `dir:` keys of the local projects are recomputed
+/// with it and their memories are re-stamped, so they travel with the right key, and all
+/// this machine's repositories record it. With `--another-person`, the configuration's is already the
+/// local one and nothing changes. Returns how many projects changed key.
+pub fn adoptar_persona(db: &mut Connection, db_path: &Path, new_person: &str) -> Result<usize> {
+    let old_person = crate::db::persona_de(db);
+    if new_person.is_empty() || old_person == new_person {
         return Ok(0);
     }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('persona', ?1)", [nueva])?;
-    let n = crate::proyecto::cambiar_persona(&tx, &vieja, nueva)?;
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('persona', ?1)", [new_person])?;
+    let n = crate::proyecto::cambiar_persona(&tx, &old_person, new_person)?;
     tx.commit()?;
-    let (de, a) = (format!("dir:{vieja}/"), format!("dir:{nueva}/"));
-    for r in repos(ruta_db) {
+    let (de, a) = (format!("dir:{old_person}/"), format!("dir:{new_person}/"));
+    for r in repos(db_path) {
         let Some(mut c) = leer_config_de(&r)? else { continue };
-        c.person = nueva.to_string();
+        c.person = new_person.to_string();
         for k in c.projects.iter_mut().flatten() {
-            if let Some(resto) = k.strip_prefix(&de) {
-                *k = format!("{a}{resto}");
+            if let Some(rest) = k.strip_prefix(&de) {
+                *k = format!("{a}{rest}");
             }
         }
-        escribir_privado(&r.config, &serde_json::to_string_pretty(&c)?)?;
+        write_private(&r.config, &serde_json::to_string_pretty(&c)?)?;
     }
     Ok(n)
 }
 
-/// Si la clave de un proyecto ya está en el repositorio general, según el clon de este equipo (sin red):
-/// la subió este equipo u otro. Sin repositorio general, no. Si no se pueden leer sus claves, se da por
-/// que sí (`proyecto::clave_con_espacio` deja entonces la clave como estaba).
-pub(crate) fn en_el_general(db: &Connection, clave: &str) -> bool {
-    let Some(ruta) = db.path().filter(|p| !p.is_empty()) else { return false };
-    let r = rutas(Path::new(ruta));
+/// Whether a project's key is already in the general repository, according to this machine's clone (offline):
+/// this machine or another pushed it. Without a general repository, no. If its keys can't be read, it is taken
+/// as yes (`proyecto::clave_con_espacio` then leaves the key as it was).
+pub(crate) fn en_el_general(db: &Connection, key: &str) -> bool {
+    let Some(path) = db.path().filter(|p| !p.is_empty()) else { return false };
+    let r = rutas(Path::new(path));
     if !r.config.exists() {
         return false;
     }
-    let Ok(cifra) = leer_claves(&r) else { return true };
-    cifra.claves.values().any(|k| r.clon.join(format!("p-{}", opaco(k, &[clave.as_bytes()]))).exists())
+    let Ok(cipher) = leer_claves(&r) else { return true };
+    cipher.keys.values().any(|k| r.clon.join(format!("p-{}", opaque_name(k, &[key.as_bytes()]))).exists())
 }
 
-/// La clave de un proyecto cambió (`proyecto::cambiar_clave`): la lista `projects` de los
-/// repositorios que la nombran pasa a la nueva.
-pub(crate) fn cambiar_clave_en_configs(ruta_db: &Path, vieja: &str, nueva: &str) -> Result<()> {
-    for r in repos(ruta_db) {
+/// A project's key changed (`proyecto::cambiar_clave`): the `projects` list of the
+/// repositories that name it switches to the new one.
+pub(crate) fn cambiar_clave_en_configs(db_path: &Path, old_key: &str, new_key: &str) -> Result<()> {
+    for r in repos(db_path) {
         let Some(mut c) = leer_config_de(&r)? else { continue };
-        let Some(p) = c.projects.as_mut().filter(|p| p.iter().any(|k| k == vieja)) else { continue };
-        for k in p.iter_mut().filter(|k| *k == vieja) {
-            *k = nueva.to_string();
+        let Some(p) = c.projects.as_mut().filter(|p| p.iter().any(|k| k == old_key)) else { continue };
+        for k in p.iter_mut().filter(|k| *k == old_key) {
+            *k = new_key.to_string();
         }
-        escribir_privado(&r.config, &serde_json::to_string_pretty(&c)?)?;
+        write_private(&r.config, &serde_json::to_string_pretty(&c)?)?;
     }
     Ok(())
 }
 
-fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) -> Result<()> {
+fn save_config(db: &Connection, r: &Rutas, config: &Config, cipher: &Cifra) -> Result<()> {
     if let Some(d) = r.config.parent() {
         std::fs::create_dir_all(d)?;
     }
-    guardar_claves(r, cifra)?;
-    escribir_privado(&r.config, &serde_json::to_string_pretty(config)?)?;
-    // El autor del repositorio general firma lo que no es de ningún espacio (`meta` `autor`); el del
-    // repositorio de un espacio, solo lo de ese espacio (`autor:<espacio>`, vacío si se unió sin autor):
-    // el nombre con el que alguien se une a un cliente no firma nunca lo de otro (`memoria::autor_en`).
+    save_keys(r, cipher)?;
+    write_private(&r.config, &serde_json::to_string_pretty(config)?)?;
+    // The general repository's author signs what belongs to no space (`meta` `autor`); a
+    // space repository's, only that space's (`autor:<space>`, empty if joined without an author):
+    // the name someone joins a client with never signs another's (`memoria::autor_en`).
     match &r.espacio {
         None => match &config.author {
             Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
@@ -2642,40 +2642,40 @@ fn guardar_config(db: &Connection, r: &Rutas, config: &Config, cifra: &Cifra) ->
     Ok(())
 }
 
-fn hay_memorias_en(clon: &Path) -> bool {
-    std::fs::read_dir(clon).into_iter().flatten().flatten().any(|e| {
+fn has_memories_in(clone_dir: &Path) -> bool {
+    std::fs::read_dir(clone_dir).into_iter().flatten().flatten().any(|e| {
         e.path().is_dir()
             && !e.file_name().to_string_lossy().starts_with('.')
             && std::fs::read_dir(e.path()).into_iter().flatten().flatten().any(|f| f.path().extension().is_some_and(|x| x == "jsonl"))
     })
 }
 
-fn ya_en_uso() -> String {
+fn already_in_use() -> String {
     tr!(
         "this repository is already in use by Omoikane: on a computer that already syncs with it run `omoi sync code`, and here `omoi sync join <code>`",
         "Omoikane ya usa este repositorio: en un equipo que ya sincroniza con él ejecuta `omoi sync code` y aquí `omoi sync join <código>`"
     )
 }
 
-/// `omoi sync init <url>`: un repositorio nuevo (vacío o sin memorias), con una clave nueva.
-pub fn iniciar(db: &mut Connection, ruta_db: &Path, config: &Config) -> Result<()> {
-    let r = rutas_de(ruta_db, config.space.as_deref());
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    clonar(&config.url, &r.clon)?;
-    if r.clon.join(CHEQUEO).exists() || hay_memorias_en(&r.clon) {
+/// `omoi sync init <url>`: a new repository (empty or without memories), with a new key.
+pub fn iniciar(db: &mut Connection, db_path: &Path, config: &Config) -> Result<()> {
+    let r = rutas_de(db_path, config.space.as_deref());
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    clone_repo(&config.url, &r.clon)?;
+    if r.clon.join(CHECK_FILE).exists() || has_memories_in(&r.clon) {
         let _ = std::fs::remove_dir_all(&r.clon);
-        bail!(ya_en_uso());
+        bail!(already_in_use());
     }
-    guardar_config(db, &r, config, &Cifra::una(1, clave_nueva()?))?;
-    tras_cambiar_claves(db, &r);
+    save_config(db, &r, config, &Cifra::una(1, new_key()?))?;
+    after_key_change(db, &r);
     Ok(())
 }
 
-/// Tras cambiar las claves del repositorio general (`init`, `join`, una clave nueva de una rotación):
-/// las verificaciones de la persona siguen valiendo con la clave de sellos nueva
-/// (`verificado::tras_cambio_de_claves`). Si falla, se dice y la sincronización sigue: lo peor es que
-/// algún sello siga como estaba.
-fn tras_cambiar_claves(db: &Connection, r: &Rutas) {
+/// After changing the general repository's keys (`init`, `join`, a new key from a rotation):
+/// the person's verifications keep working with the new seal key
+/// (`verificado::tras_cambio_de_claves`). If it fails, it says so and the sync carries on: the worst is that
+/// some seal stays as it was.
+fn after_key_change(db: &Connection, r: &Rutas) {
     if r.espacio.is_some() {
         return;
     }
@@ -2684,124 +2684,124 @@ fn tras_cambiar_claves(db: &Connection, r: &Rutas) {
     }
 }
 
-fn clave_nueva() -> Result<Vec<u8>> {
-    let mut clave = vec![0u8; 64];
-    getrandom::fill(&mut clave).map_err(|e| anyhow!("getrandom: {e}"))?;
-    Ok(clave)
+fn new_key() -> Result<Vec<u8>> {
+    let mut key = vec![0u8; 64];
+    getrandom::fill(&mut key).map_err(|e| anyhow!("getrandom: {e}"))?;
+    Ok(key)
 }
 
-/// El código para unir otro equipo a un repositorio (el general o el de un espacio): lleva la URL y
-/// la clave vigente con su id (¡pásalo por un canal privado!). Un repositorio que nunca rotó da el
-/// mismo código que antes de las claves con id (sin `id`).
-pub fn codigo(ruta_db: &Path, espacio: Option<&str>) -> Result<String> {
-    let r = rutas_de(ruta_db, espacio);
+/// The code to join another machine to a repository (the general one or a space's): it carries the URL and
+/// the current key with its id (pass it through a private channel!). A repository that never rotated gives the
+/// same code as before keys with id (without `id`).
+pub fn codigo(db_path: &Path, space: Option<&str>) -> Result<String> {
+    let r = rutas_de(db_path, space);
     let config = leer_config_de(&r)?.context(tr!("sync is not set up", "la sincronización no está configurada"))?;
-    let cifra = leer_claves(&r)?;
-    let mut json = serde_json::json!({ "url": config.url, "key": a_hex(cifra.clave_vigente()), "person": config.person });
-    if cifra.vigente() != 1 {
-        json["id"] = cifra.vigente().into();
+    let cipher = leer_claves(&r)?;
+    let mut json = serde_json::json!({ "url": config.url, "key": to_hex(cipher.current_key()), "person": config.person });
+    if cipher.vigente() != 1 {
+        json["id"] = cipher.vigente().into();
     }
     if let Some(e) = &config.space {
         json["space"] = e.clone().into();
     }
-    Ok(format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string())))
+    Ok(format!("{CODE_PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string())))
 }
 
-/// Lo que lleva un código de `omoi sync code`.
+/// What an `omoi sync code` code carries.
 #[derive(Debug, PartialEq)]
 pub struct Codigo {
     pub url: String,
     pub clave: Vec<u8>,
-    /// El id de la clave (los códigos de antes de las claves con id son de la 1).
+    /// The key's id (codes from before keys with id are key 1's).
     pub id: u32,
-    /// La persona del equipo que invita (los códigos de antes no la llevan).
+    /// The inviting machine's person (older codes don't have it).
     pub persona: Option<String>,
-    /// El espacio del repositorio (`None`: el general).
+    /// The repository's space (`None`: the general one).
     pub espacio: Option<String>,
 }
 
-/// URL, clave y persona de un código de `omoi sync code`.
-pub fn leer_codigo(codigo: &str) -> Result<Codigo> {
-    let mal = || anyhow!(tr!("that is not an Omoikane sync code", "eso no es un código de sincronización de Omoikane"));
-    let resto = codigo.trim().strip_prefix(PREFIJO_CODIGO).ok_or_else(mal)?;
-    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(resto).map_err(|_| mal())?;
-    let v: serde_json::Value = serde_json::from_slice(&json).map_err(|_| mal())?;
-    let url = v["url"].as_str().ok_or_else(mal)?.to_string();
-    let k = desde_hex(v["key"].as_str().ok_or_else(mal)?).ok_or_else(mal)?;
-    ensure!(k.len() == 64, mal());
+/// URL, key and person of an `omoi sync code` code.
+pub fn leer_codigo(code: &str) -> Result<Codigo> {
+    let bad = || anyhow!(tr!("that is not an Omoikane sync code", "eso no es un código de sincronización de Omoikane"));
+    let rest = code.trim().strip_prefix(CODE_PREFIX).ok_or_else(bad)?;
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(rest).map_err(|_| bad())?;
+    let v: serde_json::Value = serde_json::from_slice(&json).map_err(|_| bad())?;
+    let url = v["url"].as_str().ok_or_else(bad)?.to_string();
+    let k = from_hex(v["key"].as_str().ok_or_else(bad)?).ok_or_else(bad)?;
+    ensure!(k.len() == 64, bad());
     let id = match v.get("id") {
         None => 1,
-        Some(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n >= 1).ok_or_else(mal)?,
+        Some(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n >= 1).ok_or_else(bad)?,
     };
-    let espacio = v["space"].as_str().filter(|e| !e.is_empty()).map(espacio_valido).transpose()?;
-    Ok(Codigo { url, clave: k, id, persona: v["person"].as_str().filter(|p| !p.is_empty()).map(String::from), espacio })
+    let space = v["space"].as_str().filter(|e| !e.is_empty()).map(espacio_valido).transpose()?;
+    Ok(Codigo { url, clave: k, id, persona: v["person"].as_str().filter(|p| !p.is_empty()).map(String::from), espacio: space })
 }
 
-/// `omoi sync join <código>`: el repositorio y la clave de otro equipo. Comprueba que la clave abre
-/// el repositorio antes de guardar nada.
-pub fn unirse(db: &mut Connection, ruta_db: &Path, config: &Config, id: u32, clave: &[u8]) -> Result<()> {
-    let r = rutas_de(ruta_db, config.space.as_deref());
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    clonar(&config.url, &r.clon)?;
-    let cifra = Cifra::una(id, clave.to_vec());
-    let vale = match Chequeo::leer(&r.clon) {
-        Some(ch) => ch.lineas.get(&id).is_some_and(|l| cifra.abre(id, l)),
-        // Un repositorio sin comprobación (o aún vacío): la primera línea que haya.
+/// `omoi sync join <code>`: another machine's repository and key. It checks that the key opens
+/// the repository before saving anything.
+pub fn unirse(db: &mut Connection, db_path: &Path, config: &Config, id: u32, key: &[u8]) -> Result<()> {
+    let r = rutas_de(db_path, config.space.as_deref());
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    clone_repo(&config.url, &r.clon)?;
+    let cipher = Cifra::una(id, key.to_vec());
+    let vale = match KeyCheck::read(&r.clon) {
+        Some(ch) => ch.lines.get(&id).is_some_and(|l| cipher.opens(id, l)),
+        // A repository without a check (or still empty): the first line there is.
         None => std::fs::read_dir(&r.clon)?
             .flatten()
             .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
             .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
             .filter(|f| f.path().extension().is_some_and(|x| x == "jsonl"))
             .find_map(|f| std::fs::read_to_string(f.path()).ok().and_then(|t| t.lines().next().map(String::from)))
-            .is_none_or(|l| cifra.descifrar(&l).is_ok()),
+            .is_none_or(|l| cipher.descifrar(&l).is_ok()),
     };
     if !vale {
         let _ = std::fs::remove_dir_all(&r.clon);
-        bail!(clave_ajena());
+        bail!(wrong_key_msg());
     }
-    guardar_config(db, &r, config, &cifra)?;
-    // El general de otra persona: lo que se hubiera apuntado de él antes (unido sin la marca) se olvida.
+    save_config(db, &r, config, &cipher)?;
+    // Another person's general one: whatever was recorded from it before (joined without the flag) is forgotten.
     if config.another_person && r.espacio.is_none() {
         crate::verificado::olvidar_las_del_general(db)?;
     }
-    tras_cambiar_claves(db, &r);
+    after_key_change(db, &r);
     Ok(())
 }
 
-/// `omoi sync join <código>` en un equipo que ya sincroniza con ese repositorio (tras una rotación):
-/// guarda la clave nueva junto a las que ya tenía, que siguen sirviendo para leer lo que otros aún no
-/// han vuelto a cifrar, y la siguiente sincronización vuelve a leerlo todo y recifra lo de este
-/// equipo con ella. `false` si ya la tenía.
-pub fn anadir_clave(db: &Connection, ruta_db: &Path, espacio: Option<&str>, id: u32, clave: &[u8]) -> Result<bool> {
-    let r = rutas_de(ruta_db, espacio);
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    let otro = || {
+/// `omoi sync join <code>` on a machine that already syncs with that repository (after a rotation):
+/// it stores the new key next to the ones it already had, which still serve to read what others haven't
+/// re-encrypted yet, and the next sync rereads everything and re-encrypts this
+/// machine's memories with it. `false` if it already had it.
+pub fn anadir_clave(db: &Connection, db_path: &Path, space: Option<&str>, id: u32, key: &[u8]) -> Result<bool> {
+    let r = rutas_de(db_path, space);
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    let other_repo = || {
         anyhow!(tr!(
             "that code is for another repository, and this computer already syncs one here (`omoi sync status`; `omoi sync off` to start over)",
             "ese código es de otro repositorio, y este equipo ya sincroniza uno aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"
         ))
     };
-    let cifra = leer_claves(&r)?;
-    if let Some(k) = cifra.claves.get(&id) {
-        ensure!(k.as_slice() == clave, otro());
+    let cipher = leer_claves(&r)?;
+    if let Some(k) = cipher.keys.get(&id) {
+        ensure!(k.as_slice() == key, other_repo());
         return Ok(false);
     }
-    limpiar(&r.clon)?;
-    let nueva = Cifra::una(id, clave.to_vec());
-    ensure!(Chequeo::leer(&r.clon).and_then(|c| c.lineas.get(&id).cloned()).is_some_and(|l| nueva.abre(id, &l)), otro());
-    guardar_claves(&r, &cifra.con(id, clave.to_vec()))?;
+    reset_clone(&r.clon)?;
+    let new_cipher = Cifra::una(id, key.to_vec());
+    ensure!(KeyCheck::read(&r.clon).and_then(|c| c.lines.get(&id).cloned()).is_some_and(|l| new_cipher.opens(id, &l)), other_repo());
+    save_keys(&r, &cipher.with_key(id, key.to_vec()))?;
     db.execute("DELETE FROM meta WHERE k = ?1", [&r.marca_commit])?;
-    tras_cambiar_claves(db, &r);
+    after_key_change(db, &r);
     Ok(true)
 }
 
-/// Otra URL para un repositorio con el que este equipo ya sincroniza (`OMOIKANE_SYNC_URL` con un token
-/// nuevo de la CI, o `omoi sync join --url`): la apunta en su configuración y en el remoto `origin`
-/// de su clon. Devuelve la que tenía (`None` si ya era esa). La URL puede llevar un token: no sale en
-/// ningún mensaje.
-pub fn cambiar_url(ruta_db: &Path, espacio: Option<&str>, url: &str) -> Result<Option<String>> {
-    let r = rutas_de(ruta_db, espacio);
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+/// Another URL for a repository this machine already syncs with (`OMOIKANE_SYNC_URL` with a new CI
+/// token, or `omoi sync join --url`): it records it in its configuration and in its clone's `origin`
+/// remote. Returns the one it had (`None` if it already was that one). The URL may carry a token: it doesn't appear in
+/// any message.
+pub fn cambiar_url(db_path: &Path, space: Option<&str>, url: &str) -> Result<Option<String>> {
+    let r = rutas_de(db_path, space);
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
     let Some(mut config) = leer_config_de(&r)? else { return Ok(None) };
     if config.url == url {
         return Ok(None);
@@ -2809,42 +2809,42 @@ pub fn cambiar_url(ruta_db: &Path, espacio: Option<&str>, url: &str) -> Result<O
     if r.clon.join(".git").exists() {
         git(&r.clon, &["remote", "set-url", "origin", url])?;
     }
-    let vieja = std::mem::replace(&mut config.url, url.to_string());
-    escribir_privado(&r.config, &serde_json::to_string_pretty(&config)?)?;
-    Ok(Some(vieja))
+    let old_url = std::mem::replace(&mut config.url, url.to_string());
+    write_private(&r.config, &serde_json::to_string_pretty(&config)?)?;
+    Ok(Some(old_url))
 }
 
-/// `omoi sync rotate`: una clave nueva para un repositorio. La apunta como vigente en
-/// `omoikane.check`, vuelve a cifrar con ella todo lo de este equipo (y borra sus ficheros con la
-/// vieja), hace commit y push, y la guarda aquí junto a las viejas. Desde entonces `omoi sync code` da
-/// el código de la nueva; quien solo tiene la vieja ya no lee lo que se escriba con ella. Devuelve el
-/// id de la clave nueva.
-pub fn rotar(db: &mut Connection, ruta_db: &Path, espacio: Option<&str>, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<(u32, Resumen)> {
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    let r = rutas_de(ruta_db, espacio);
-    let config = leer_config_de(&r)?.context(no_configurada())?;
-    let nueva = clave_nueva()?;
-    let res = sincronizar_repo(db, &r, &config, actual, modelo, Some(&nueva));
-    let (res, cifra) = match res {
-        Ok((res, cifra)) => (Ok(res), Some(cifra)),
+/// `omoi sync rotate`: a new key for a repository. It records it as current in
+/// `omoikane.check`, re-encrypts with it everything from this machine (and deletes its files with the
+/// old one), commits and pushes, and stores it here next to the old ones. From then on `omoi sync code` gives
+/// the new one's code; whoever only has the old one no longer reads what is written with it. Returns the
+/// new key's id.
+pub fn rotar(db: &mut Connection, db_path: &Path, space: Option<&str>, current: Option<&str>, model: Option<&Modelo>) -> Result<(u32, Resumen)> {
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    let r = rutas_de(db_path, space);
+    let config = leer_config_de(&r)?.context(not_configured())?;
+    let new_key = new_key()?;
+    let res = sync_repo(db, &r, &config, current, model, Some(&new_key));
+    let (res, cipher) = match res {
+        Ok((res, cipher)) => (Ok(res), Some(cipher)),
         Err(e) => (Err(e), None),
     };
-    // Solo con la subida hecha: si no, el repositorio no sabe nada de la clave nueva.
-    if let Some(c) = &cifra {
-        guardar_claves(&r, c)?;
-        tras_cambiar_claves(db, &r);
+    // Only once the push is done: otherwise the repository knows nothing about the new key.
+    if let Some(c) = &cipher {
+        save_keys(&r, c)?;
+        after_key_change(db, &r);
     }
-    apuntar(&r, &res);
-    Ok((cifra.map_or(0, |c| c.vigente()), res?))
+    record_status(&r, &res);
+    Ok((cipher.map_or(0, |c| c.vigente()), res?))
 }
 
-/// Deja de sincronizar un repositorio (el general o el de un espacio): borra su configuración, sus
-/// claves y su clon (las memorias de aquí se quedan).
-pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Result<()> {
-    let r = rutas_de(ruta_db, espacio);
-    let c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    // Antes de borrar la clave del general: la de sellos que sale de ella se queda apuntada aquí, para
-    // que las verificaciones de la persona hechas con ella sigan valiendo (`verificado::recordar`).
+/// Stops syncing a repository (the general one or a space's): deletes its configuration, its
+/// keys and its clone (the local memories stay).
+pub fn desactivar(db: &Connection, db_path: &Path, space: Option<&str>) -> Result<()> {
+    let r = rutas_de(db_path, space);
+    let c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    // Before deleting the general one's key: the seal key derived from it stays recorded here, so
+    // that the person's verifications made with it keep working (`verificado::recordar`).
     if r.espacio.is_none() {
         crate::verificado::recordar(db)?;
     }
@@ -2865,7 +2865,7 @@ pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Res
             db.execute("DELETE FROM meta WHERE k = 'autor'", [])?;
         }
     }
-    if repos(ruta_db).is_empty() {
+    if repos(db_path).is_empty() {
         let _ = std::fs::remove_file(&r.pendiente);
         let _ = std::fs::remove_file(&r.hecho);
     }
@@ -2874,145 +2874,145 @@ pub fn desactivar(db: &Connection, ruta_db: &Path, espacio: Option<&str>) -> Res
     Ok(())
 }
 
-fn otra_en_marcha() -> String {
+fn another_running() -> String {
     tr!("another sync is running; try again in a moment", "hay otra sincronización en marcha; prueba dentro de un momento")
 }
 
-// --- En segundo plano ------------------------------------------------------------------------------
+// --- In the background ----------------------------------------------------------------------------
 
-/// Cómo fue la última sincronización.
+/// How the last sync went.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Estado {
     pub ultimo_ok: Option<String>,
     pub ultimo_error: Option<String>,
-    /// Desde cuándo falla (la primera vez seguida).
+    /// Since when it has been failing (the first time in a row).
     pub error_desde: Option<String>,
-    /// Algo que conviene saber aunque haya ido bien (líneas que no se pudieron leer).
+    /// Something worth knowing even if it went well (lines that couldn't be read).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aviso: Option<String>,
-    /// Ficheros del repositorio con líneas que no se pudieron leer, y cuántas: se quedan hasta que una
-    /// sincronización vuelva a leer el fichero y esté bien.
+    /// Repository files with lines that couldn't be read, and how many: they stay until a
+    /// sync rereads the file and it is fine.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_malos: BTreeMap<String, usize>,
-    /// Lo mismo con las líneas de una versión más nueva de omoi.
+    /// The same with lines from a newer version of omoi.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_futuros: BTreeMap<String, usize>,
-    /// Lo mismo con las líneas rechazadas por tocar algo de otro espacio (`Resumen::conflictos_de_espacio`).
+    /// The same with lines rejected for touching something of another space (`Resumen::conflictos_de_espacio`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_conflicto: BTreeMap<String, usize>,
-    /// Lo mismo con las de un proyecto en pausa (`Resumen::en_pausa`): se vuelven a leer en cada
-    /// sincronización, para que entren en cuanto se decida.
+    /// The same with those of a paused project (`Resumen::en_pausa`): they are reread on every
+    /// sync, so they come in as soon as it is decided.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_en_pausa: BTreeMap<String, usize>,
-    /// Por fichero, los proyectos que allí están en otro espacio (`Choque`): se vuelven a leer en cada
-    /// sincronización hasta que no quede ninguno.
+    /// Per file, the projects that are in another space there (`Choque`): they are reread on every
+    /// sync until none is left.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ficheros_choques: BTreeMap<String, BTreeSet<Choque>>,
 }
 
 impl Estado {
-    /// Cuántas líneas de una versión más nueva quedan sin leer en el repositorio.
+    /// How many lines from a newer version are left unread in the repository.
     pub fn de_version_nueva(&self) -> usize {
         self.ficheros_futuros.values().sum()
     }
 
-    /// Cuántas líneas del repositorio se rechazaron por tocar algo de otro espacio.
+    /// How many repository lines were rejected for touching something of another space.
     pub fn conflictos_de_espacio(&self) -> usize {
         self.ficheros_conflicto.values().sum()
     }
 
-    /// Los proyectos que están en otro espacio en otro equipo, uno por situación.
+    /// The projects that are in another space on another machine, one per situation.
     pub fn choques(&self) -> Vec<Choque> {
         sin_repetir(self.ficheros_choques.values().flatten())
     }
 }
 
-/// Los proyectos en otro espacio en otro equipo, de todos los repositorios de este equipo (para
-/// Revisar, `omoi review` y `doctor`).
-pub fn choques(ruta_db: &Path) -> Vec<Choque> {
-    let todos: Vec<Choque> = repos(ruta_db).iter().flat_map(|r| leer_estado_de(r).choques()).collect();
-    sin_repetir(&todos)
+/// The projects in another space on another machine, from all this machine's repositories (for
+/// Review, `omoi review` and `doctor`).
+pub fn choques(db_path: &Path) -> Vec<Choque> {
+    let all: Vec<Choque> = repos(db_path).iter().flat_map(|r| leer_estado_de(r).choques()).collect();
+    sin_repetir(&all)
 }
 
-/// Cómo fue la última sincronización del repositorio general.
-pub fn leer_estado(ruta_db: &Path) -> Estado {
-    leer_estado_de(&rutas(ruta_db))
+/// How the general repository's last sync went.
+pub fn leer_estado(db_path: &Path) -> Estado {
+    leer_estado_de(&rutas(db_path))
 }
 
 pub fn leer_estado_de(r: &Rutas) -> Estado {
     std::fs::read_to_string(&r.estado).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
-fn ahora() -> String {
+fn now() -> String {
     let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     s.to_string()
 }
 
-fn segundos(s: &str) -> u64 {
+fn seconds(s: &str) -> u64 {
     s.parse().unwrap_or(0)
 }
 
-fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
+fn record_status(r: &Rutas, result: &Result<Resumen>) {
     let mut e = leer_estado_de(r);
-    match resultado {
+    match result {
         Ok(r) => {
-            e.ultimo_ok = Some(ahora());
+            e.ultimo_ok = Some(now());
             e.ultimo_error = None;
             e.error_desde = None;
-            for (cuentas, nuevas) in
+            for (counts, fresh) in
                 [(&mut e.ficheros_malos, &r.malos), (&mut e.ficheros_futuros, &r.futuros), (&mut e.ficheros_conflicto, &r.conflictos), (&mut e.ficheros_en_pausa, &r.pausadas)]
             {
-                for (f, n) in nuevas {
+                for (f, n) in fresh {
                     if *n == 0 {
-                        cuentas.remove(f);
+                        counts.remove(f);
                     } else {
-                        cuentas.insert(f.clone(), *n);
+                        counts.insert(f.clone(), *n);
                     }
                 }
             }
-            // Los de cada fichero leído (todos pasan por `malos`), en lugar de los de la vez anterior.
+            // Those of each file read (they all go through `malos`), instead of those from the previous time.
             for f in r.malos.keys() {
                 match r.choques.get(f).filter(|c| !c.is_empty()) {
                     Some(c) => e.ficheros_choques.insert(f.clone(), c.clone()),
                     None => e.ficheros_choques.remove(f),
                 };
             }
-            let malas: usize = e.ficheros_malos.values().sum();
-            let futuras = e.de_version_nueva();
-            let mut avisos = Vec::new();
-            if malas > 0 {
-                avisos.push(tr!(
+            let bad_lines: usize = e.ficheros_malos.values().sum();
+            let newer_lines = e.de_version_nueva();
+            let mut notices = Vec::new();
+            if bad_lines > 0 {
+                notices.push(tr!(
                     "{} shared line(s) couldn't be read and were skipped (another key, or not valid)",
                     "{} línea(s) compartidas no se pudieron leer y se saltaron (otra clave, o no válidas)",
-                    malas
+                    bad_lines
                 ));
             }
-            if futuras > 0 {
-                avisos.push(aviso_lineas_nuevas(futuras));
+            if newer_lines > 0 {
+                notices.push(aviso_lineas_nuevas(newer_lines));
             }
-            let conflictos = e.conflictos_de_espacio();
-            if conflictos > 0 {
-                avisos.push(tr!(
+            let conflicts = e.conflictos_de_espacio();
+            if conflicts > 0 {
+                notices.push(tr!(
                     "{} shared line(s) rejected: they touch a project or memory that is in another space here (nothing from one space reaches another)",
                     "{} línea(s) compartidas rechazadas: tocan un proyecto o una memoria que aquí es de otro espacio (nada de un espacio llega a otro)",
-                    conflictos
+                    conflicts
                 ));
             }
-            let en_pausa: usize = e.ficheros_en_pausa.values().sum();
-            if en_pausa > 0 {
-                avisos.push(tr!(
+            let paused: usize = e.ficheros_en_pausa.values().sum();
+            if paused > 0 {
+                notices.push(tr!(
                     "{} shared line(s) held back: their project is paused here (they come in once you decide)",
                     "{} línea(s) compartidas en espera: su proyecto está aquí en pausa (entran en cuanto decidas)",
-                    en_pausa
+                    paused
                 ));
             }
-            // Qué proyecto y qué orden lo arregla.
-            avisos.extend(e.choques().iter().map(Choque::texto));
-            e.aviso = (!avisos.is_empty()).then(|| avisos.join(" · "));
+            // Which project and which command fixes it.
+            notices.extend(e.choques().iter().map(Choque::texto));
+            e.aviso = (!notices.is_empty()).then(|| notices.join(" · "));
         }
         Err(err) => {
             e.ultimo_error = Some(sin_credenciales(&format!("{err:#}")));
-            e.error_desde.get_or_insert_with(ahora);
+            e.error_desde.get_or_insert_with(now);
         }
     }
     if let Ok(t) = serde_json::to_string_pretty(&e) {
@@ -3020,24 +3020,24 @@ fn apuntar(r: &Rutas, resultado: &Result<Resumen>) {
     }
 }
 
-/// Hay cambios sin subir: la última marca de cambio no es la que ya se sincronizó.
-pub fn pendiente(ruta_db: &Path) -> bool {
-    let r = rutas(ruta_db);
+/// There are unpushed changes: the last change marker is not the one already synced.
+pub fn pendiente(db_path: &Path) -> bool {
+    let r = rutas(db_path);
     match std::fs::read_to_string(&r.pendiente) {
         Ok(m) => std::fs::read_to_string(&r.hecho).ok().as_deref() != Some(m.as_str()),
         Err(_) => false,
     }
 }
 
-/// La primera línea de un error, sin credenciales ni lo que el servidor añada (`remote: …`), que no
-/// debe llegar al contexto del agente.
-fn error_corto(e: &str) -> String {
+/// The first line of an error, without credentials or whatever the server adds (`remote: …`), which must
+/// not reach the agent's context.
+fn short_error(e: &str) -> String {
     let l = e.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("remote:")).unwrap_or_default();
     let l = l.split("remote:").next().unwrap_or_default().trim();
     sin_credenciales(&l.chars().take(200).collect::<String>())
 }
 
-/// «N líneas de una versión más nueva: actualiza omoi».
+/// «N lines from a newer version: update omoi».
 pub fn aviso_lineas_nuevas(n: usize) -> String {
     tr!(
         "{} line(s) from a newer version: update omoi (`omoi upgrade`)",
@@ -3046,123 +3046,123 @@ pub fn aviso_lineas_nuevas(n: usize) -> String {
     )
 }
 
-/// Un aviso para el inicio de sesión: si algún repositorio pide una versión más nueva de omoi (en
-/// cuanto se sabe), o si la sincronización lleva más de una hora fallando.
-pub fn aviso(ruta_db: &Path) -> Option<String> {
-    if repos(ruta_db).iter().any(|r| necesita_version(r).is_some()) {
+/// A notice for session start: if some repository asks for a newer version of omoi (as
+/// soon as it is known), or if sync has been failing for more than an hour.
+pub fn aviso(db_path: &Path) -> Option<String> {
+    if repos(db_path).iter().any(|r| necesita_version(r).is_some()) {
         return Some(
             "An Omoikane sync repository needs a newer version of omoi: nothing is written to it until omoi is updated (`omoi upgrade`). Tell the user; `omoi sync status` shows more."
                 .into(),
         );
     }
-    leer_config(ruta_db).ok().flatten()?;
-    let e = leer_estado(ruta_db);
-    let desde = segundos(e.error_desde.as_deref()?);
-    let ahora = segundos(&ahora());
-    (ahora.saturating_sub(desde) >= 3600).then(|| {
+    leer_config(db_path).ok().flatten()?;
+    let e = leer_estado(db_path);
+    let desde = seconds(e.error_desde.as_deref()?);
+    let now = seconds(&now());
+    (now.saturating_sub(desde) >= 3600).then(|| {
         format!(
             "Omoikane sync has been failing for {} h (last error: {}). Tell the user; `omoi sync status` shows more.",
-            (ahora - desde) / 3600,
-            error_corto(e.ultimo_error.as_deref().unwrap_or_default())
+            (now - desde) / 3600,
+            short_error(e.ultimo_error.as_deref().unwrap_or_default())
         )
     })
 }
 
-/// Tras un cambio: si la sincronización está configurada, deja una marca de pendiente nueva y lanza
-/// `omoi sync --background` aparte, sin esperar. No falla nunca (lo peor es no sincronizar ahora).
-pub fn programar(ruta_db: &Path) {
-    // Lo que ha cambiado necesita también su vector de significado (si el modelo está): que el
-    // servicio lo calcule ya, en segundo plano.
-    crate::significado::avisar(ruta_db);
-    let r = rutas(ruta_db);
-    // `OMOIKANE_SYNC_AUTO=0` (o nadie delante sin `=1`): solo a mano (`omoi sync`).
-    if (!r.config.exists() && espacios(ruta_db).is_empty()) || !crate::entorno::sync_automatica() {
+/// After a change: if sync is set up, leaves a new pending marker and launches
+/// `omoi sync --background` separately, without waiting. It never fails (the worst is not syncing now).
+pub fn programar(db_path: &Path) {
+    // What changed also needs its meaning vector (if the model is there): let the
+    // service compute it now, in the background.
+    crate::significado::avisar(db_path);
+    let r = rutas(db_path);
+    // `OMOIKANE_SYNC_AUTO=0` (or nobody at the keyboard without `=1`): only by hand (`omoi sync`).
+    if (!r.config.exists() && espacios(db_path).is_empty()) || !crate::entorno::sync_automatica() {
         return;
     }
-    // Cada cambio, una marca distinta: el proceso de fondo repite mientras la marca no sea la que ya
-    // sincronizó (sin borrarla nunca, así no se pierde una que llegue justo en medio).
-    let marca = ulid::Ulid::generate().to_string();
-    if std::fs::write(&r.pendiente, marca).is_err() {
+    // Each change, a different marker: the background process repeats while the marker is not the one it already
+    // synced (never deleting it, so one arriving right in between isn't lost).
+    let mark = ulid::Ulid::generate().to_string();
+    if std::fs::write(&r.pendiente, mark).is_err() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = std::process::Command::new(exe);
     c.args(["sync", "--background"])
-        .env("OMOIKANE_DB", ruta_db)
+        .env("OMOIKANE_DB", db_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: con una consola oculta propia (así las órdenes
-        // de git que lance tampoco abren ventanas) y sin morir con un Ctrl+C de quien lo lanza.
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: with its own hidden console (so the git
+        // commands it launches don't open windows either) and without dying with a Ctrl+C from whoever launches it.
         c.creation_flags(CREATE_NO_WINDOW | 0x0000_0200);
-        no_heredar_salidas();
+        no_inherit_handles();
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // Su propio grupo de procesos: un Ctrl+C en la terminal de quien lo lanzó no lo corta.
+        // Its own process group: a Ctrl+C in the terminal of whoever launched it doesn't stop it.
         c.process_group(0);
     }
-    if let Ok(mut hijo) = c.spawn() {
-        // Quien espera al hijo es un hilo: en procesos largos (`omoi mcp`, `omoi serve`) no quedan
-        // procesos zombis; en uno corto, al salir, el sistema lo adopta.
+    if let Ok(mut child) = c.spawn() {
+        // A thread waits for the child: in long-lived processes (`omoi mcp`, `omoi serve`) no zombie
+        // processes are left; in a short one, on exit, the system adopts it.
         std::thread::spawn(move || {
-            let _ = hijo.wait();
+            let _ = child.wait();
         });
     }
 }
 
-/// Lanza `omoi <args>` aparte, sin ventana, sin esperarlo y sin que se quede con las salidas de quien
-/// llama (un hook las lee hasta el final). Lo usa la actualización diaria (`actualizar`).
+/// Launches `omoi <args>` separately, without a window, without waiting for it and without it holding on to the outputs of
+/// the caller (a hook reads them until the end). Used by the daily update (`actualizar`).
 pub(crate) fn lanzar_aparte(args: &[&str]) {
     lanzar(args, None);
 }
 
-/// Como `lanzar_aparte`, y con `ruta_db` el hijo abre esa base (`OMOIKANE_DB`), no la de por defecto.
-pub(crate) fn lanzar(args: &[&str], ruta_db: Option<&Path>) {
+/// Like `lanzar_aparte`, and with `db_path` the child opens that database (`OMOIKANE_DB`), not the default one.
+pub(crate) fn lanzar(args: &[&str], db_path: Option<&Path>) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut c = std::process::Command::new(exe);
-    if let Some(r) = ruta_db {
+    if let Some(r) = db_path {
         c.env("OMOIKANE_DB", r);
     }
-    // El hijo sabe que es de fondo: su `--pull` es el barato aunque no haya nadie delante (`traer`).
+    // The child knows it is a background one: its `--pull` is the cheap one even if nobody is at the keyboard (`traer`).
     c.env(crate::entorno::DE_FONDO, "1");
     c.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(CREATE_NO_WINDOW | 0x0000_0200);
-        no_heredar_salidas();
+        no_inherit_handles();
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
-    if let Ok(mut hijo) = c.spawn() {
+    if let Ok(mut child) = c.spawn() {
         std::thread::spawn(move || {
-            let _ = hijo.wait();
+            let _ = child.wait();
         });
     }
 }
 
-/// En Windows un proceso hijo hereda todos los handles heredables, también la entrada y las salidas
-/// de este proceso aunque al hijo se le den otras. Si quien llamó a `omoi` (un hook, un agente) lee
-/// esas salidas, esperaría a que acabe la sincronización en segundo plano. Este proceso termina
-/// enseguida, así que se marcan como no heredables antes de lanzarla.
+/// On Windows a child process inherits every inheritable handle, including this process's input and
+/// outputs even if the child is given others. If whoever called `omoi` (a hook, an agent) reads
+/// those outputs, it would wait for the background sync to finish. This process ends
+/// right away, so they are marked as non-inheritable before launching it.
 #[cfg(windows)]
-fn no_heredar_salidas() {
+fn no_inherit_handles() {
     unsafe extern "system" {
         fn GetStdHandle(n: u32) -> isize;
-        fn SetHandleInformation(h: isize, mascara: u32, flags: u32) -> i32;
+        fn SetHandleInformation(h: isize, mask: u32, flags: u32) -> i32;
     }
     const HANDLE_FLAG_INHERIT: u32 = 1;
-    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE y STD_ERROR_HANDLE (-10, -11, -12).
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE and STD_ERROR_HANDLE (-10, -11, -12).
     for n in [-10i32, -11, -12] {
-        // SAFETY: llamadas de la API de Windows con un handle que devuelve el propio sistema.
+        // SAFETY: Windows API calls with a handle the system itself returns.
         unsafe {
             let h = GetStdHandle(n as u32);
             if h != 0 && h != -1 {
@@ -3172,138 +3172,138 @@ fn no_heredar_salidas() {
     }
 }
 
-/// Si un proceso sigue vivo.
+/// Whether a process is still alive.
 #[cfg(unix)]
-fn vivo(pid: u32) -> bool {
-    // SAFETY: kill con la señal 0 solo comprueba si el proceso existe.
+fn alive(pid: u32) -> bool {
+    // SAFETY: kill with signal 0 only checks whether the process exists.
     let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(windows)]
-fn vivo(pid: u32) -> bool {
+fn alive(pid: u32) -> bool {
     unsafe extern "system" {
-        fn OpenProcess(acceso: u32, heredar: i32, pid: u32) -> isize;
-        fn GetExitCodeProcess(h: isize, codigo: *mut u32) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn GetExitCodeProcess(h: isize, exit_code: *mut u32) -> i32;
         fn CloseHandle(h: isize) -> i32;
     }
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const STILL_ACTIVE: u32 = 259;
-    // SAFETY: llamadas de la API de Windows; el handle se cierra siempre.
+    // SAFETY: Windows API calls; the handle is always closed.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h == 0 {
             return false;
         }
-        let mut codigo = 0u32;
-        let ok = GetExitCodeProcess(h, &mut codigo);
+        let mut exit_code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut exit_code);
         CloseHandle(h);
-        ok != 0 && codigo == STILL_ACTIVE
+        ok != 0 && exit_code == STILL_ACTIVE
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn vivo(_pid: u32) -> bool {
+fn alive(_pid: u32) -> bool {
     true
 }
 
-/// Un cerrojo por equipo: un fichero creado en exclusiva con el pid, la hora y una ficha propia. Uno
-/// de un proceso que ya no existe, o sin renovar en 10 minutos, se da por abandonado. Mientras se tiene,
-/// un hilo lo renueva; al soltarlo solo se borra si sigue siendo el nuestro.
+/// One lock per machine: a file created exclusively with the pid, the time and a token of its own. One
+/// from a process that no longer exists, or not renewed in 10 minutes, is considered abandoned. While held,
+/// a thread renews it; on release it is only deleted if it is still ours.
 pub struct Cerrojo {
-    ruta: PathBuf,
-    ficha: String,
-    parar: Arc<AtomicBool>,
-    hilo: Option<std::thread::JoinHandle<()>>,
+    path: PathBuf,
+    token: String,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
-const CERROJO_CADUCA: u64 = 600;
+const LOCK_EXPIRY_SECS: u64 = 600;
 
 impl Cerrojo {
-    fn contenido(ficha: &str) -> String {
-        format!("{}\n{}\n{ficha}\n", std::process::id(), ahora())
+    fn contents(token: &str) -> String {
+        format!("{}\n{}\n{token}\n", std::process::id(), now())
     }
 
-    fn abandonado(p: &Path) -> bool {
+    fn abandoned(p: &Path) -> bool {
         let Ok(t) = std::fs::read_to_string(p) else { return false };
         let mut l = t.lines();
         let pid = l.next().and_then(|x| x.trim().parse::<u32>().ok());
-        let cuando = l.next().map(|x| segundos(x.trim())).unwrap_or(0);
-        let viejo = segundos(&ahora()).saturating_sub(cuando) > CERROJO_CADUCA;
+        let when = l.next().map(|x| seconds(x.trim())).unwrap_or(0);
+        let stale = seconds(&now()).saturating_sub(when) > LOCK_EXPIRY_SECS;
         match pid {
-            Some(pid) => !vivo(pid) || viejo,
-            // Un cerrojo a medio escribir (o de una versión anterior, vacío): por su fecha.
-            None => std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(CERROJO_CADUCA)),
+            Some(pid) => !alive(pid) || stale,
+            // A half-written lock (or from an earlier version, empty): by its date.
+            None => std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(LOCK_EXPIRY_SECS)),
         }
     }
 
-    pub fn tomar(ruta_db: &Path) -> Option<Cerrojo> {
-        Cerrojo::tomar_en(rutas(ruta_db).cerrojo)
+    pub fn tomar(db_path: &Path) -> Option<Cerrojo> {
+        Cerrojo::tomar_en(rutas(db_path).cerrojo)
     }
 
-    /// Si hay alguien con el cerrojo de `p` (y no está abandonado).
+    /// Whether someone holds the lock at `p` (and it isn't abandoned).
     pub fn ocupado(p: &Path) -> bool {
-        p.exists() && !Cerrojo::abandonado(p)
+        p.exists() && !Cerrojo::abandoned(p)
     }
 
-    /// Como `tomar`, con otro fichero de bloqueo (el del cálculo de las duplicadas de oficio).
+    /// Like `tomar`, with another lock file (the one for computing trade duplicates).
     pub fn tomar_en(p: PathBuf) -> Option<Cerrojo> {
-        let ficha = ulid::Ulid::generate().to_string();
+        let token = ulid::Ulid::generate().to_string();
         for _ in 0..2 {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
                 Ok(f) => {
                     use std::io::Write;
                     let mut f = f;
-                    let _ = f.write_all(Cerrojo::contenido(&ficha).as_bytes());
+                    let _ = f.write_all(Cerrojo::contents(&token).as_bytes());
                     drop(f);
-                    let parar = Arc::new(AtomicBool::new(false));
-                    let hilo = {
-                        let (p, ficha, parar) = (p.clone(), ficha.clone(), parar.clone());
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let thread = {
+                        let (p, token, stop) = (p.clone(), token.clone(), stop.clone());
                         std::thread::spawn(move || {
                             let mut n = 0u32;
-                            while !parar.load(Ordering::Relaxed) {
+                            while !stop.load(Ordering::Relaxed) {
                                 std::thread::sleep(Duration::from_millis(200));
                                 n += 1;
-                                // Cada minuto, si sigue siendo nuestro, se renueva la hora.
-                                if n.is_multiple_of(300) && std::fs::read_to_string(&p).is_ok_and(|t| t.contains(&ficha)) {
-                                    let _ = std::fs::write(&p, Cerrojo::contenido(&ficha));
+                                // Every minute, if it is still ours, the time is renewed.
+                                if n.is_multiple_of(300) && std::fs::read_to_string(&p).is_ok_and(|t| t.contains(&token)) {
+                                    let _ = std::fs::write(&p, Cerrojo::contents(&token));
                                 }
                             }
                         })
                     };
-                    return Some(Cerrojo { ruta: p, ficha, parar, hilo: Some(hilo) });
+                    return Some(Cerrojo { path: p, token, stop, thread: Some(thread) });
                 }
                 Err(_) => {
-                    let visto = std::fs::read_to_string(&p).ok();
-                    if !Cerrojo::abandonado(&p) {
+                    let seen = std::fs::read_to_string(&p).ok();
+                    if !Cerrojo::abandoned(&p) {
                         return None;
                     }
-                    // Se aparta con un nombre propio (renombrar es atómico: si dos lo ven abandonado,
-                    // solo uno lo consigue) y se comprueba que lo apartado es lo que se juzgó abandonado.
-                    let aparte = p.with_extension(format!("lock.{ficha}"));
-                    if std::fs::rename(&p, &aparte).is_err() {
+                    // It is moved aside with a name of its own (renaming is atomic: if two see it abandoned,
+                    // only one succeeds) and it is checked that what was moved aside is what was judged abandoned.
+                    let moved_aside = p.with_extension(format!("lock.{token}"));
+                    if std::fs::rename(&p, &moved_aside).is_err() {
                         return None;
                     }
-                    if std::fs::read_to_string(&aparte).ok() != visto {
-                        // Otro ya lo había tomado entre medias: se le devuelve.
-                        let _ = std::fs::rename(&aparte, &p);
+                    if std::fs::read_to_string(&moved_aside).ok() != seen {
+                        // Another one had taken it in between: it is given back.
+                        let _ = std::fs::rename(&moved_aside, &p);
                         return None;
                     }
-                    let _ = std::fs::remove_file(&aparte);
+                    let _ = std::fs::remove_file(&moved_aside);
                 }
             }
         }
         None
     }
 
-    /// Espera hasta `max` a que quede libre.
-    pub fn esperar(ruta_db: &Path, max: Duration) -> Option<Cerrojo> {
-        let inicio = Instant::now();
+    /// Waits up to `max` for it to be free.
+    pub fn esperar(db_path: &Path, max: Duration) -> Option<Cerrojo> {
+        let start = Instant::now();
         loop {
-            if let Some(c) = Cerrojo::tomar(ruta_db) {
+            if let Some(c) = Cerrojo::tomar(db_path) {
                 return Some(c);
             }
-            if inicio.elapsed() >= max {
+            if start.elapsed() >= max {
                 return None;
             }
             std::thread::sleep(Duration::from_millis(250));
@@ -3313,220 +3313,220 @@ impl Cerrojo {
 
 impl Drop for Cerrojo {
     fn drop(&mut self) {
-        self.parar.store(true, Ordering::Relaxed);
-        if let Some(h) = self.hilo.take() {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.thread.take() {
             let _ = h.join();
         }
-        if std::fs::read_to_string(&self.ruta).is_ok_and(|t| t.contains(&self.ficha)) {
-            let _ = std::fs::remove_file(&self.ruta);
+        if std::fs::read_to_string(&self.path).is_ok_and(|t| t.contains(&self.token)) {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-fn espera() -> Duration {
+fn wait_time() -> Duration {
     Duration::from_millis(std::env::var("OMOIKANE_SYNC_ESPERA_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000))
 }
 
-/// Apunta que la marca de cambio `marca` ya está sincronizada.
-fn hecho(r: &Rutas, marca: Option<&str>) {
-    if let Some(m) = marca {
+/// Records that change marker `mark` is already synced.
+fn mark_done(r: &Rutas, mark: Option<&str>) {
+    if let Some(m) = mark {
         let _ = std::fs::write(&r.hecho, m);
     }
 }
 
-/// `omoi sync --background`: espera unos segundos para juntar cambios, sincroniza, y repite si
-/// mientras tanto llegaron más. Si ya hay otro en marcha, se va (ese verá la marca nueva). `abrir`
-/// no necesita cargar el modelo: lo que llegue sin vector lo completa la siguiente orden que lo abra.
-pub fn en_segundo_plano(ruta_db: &Path, abrir: impl Fn() -> Result<(Connection, Option<Modelo>)>) -> Result<()> {
-    let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
-    let r = rutas(ruta_db);
+/// `omoi sync --background`: waits a few seconds to batch changes, syncs, and repeats if
+/// more arrived meanwhile. If another one is already running, it leaves (that one will see the new marker). `open`
+/// doesn't need to load the model: whatever arrives without a vector is completed by the next command that opens it.
+pub fn en_segundo_plano(db_path: &Path, abrir: impl Fn() -> Result<(Connection, Option<Modelo>)>) -> Result<()> {
+    let Some(_lock) = Cerrojo::tomar(db_path) else { return Ok(()) };
+    let r = rutas(db_path);
     for _ in 0..20 {
-        std::thread::sleep(espera());
-        let marca = std::fs::read_to_string(&r.pendiente).ok();
-        // `sincronizar` apunta cómo fue cada repositorio; un fallo al abrir la base, en el general.
-        let resultado = match abrir() {
-            Ok((mut db, modelo)) => sincronizar(&mut db, ruta_db, None, modelo.as_ref()),
+        std::thread::sleep(wait_time());
+        let mark = std::fs::read_to_string(&r.pendiente).ok();
+        // `sincronizar` records how each repository went; a failure opening the database, in the general one.
+        let result = match abrir() {
+            Ok((mut db, model)) => sincronizar(&mut db, db_path, None, model.as_ref()),
             Err(e) => {
                 let e = Err(e);
-                apuntar(&r, &e);
+                record_status(&r, &e);
                 e
             }
         };
-        if resultado.is_err() {
+        if result.is_err() {
             break;
         }
-        hecho(&r, marca.as_deref());
-        if !pendiente(ruta_db) {
+        mark_done(&r, mark.as_deref());
+        if !pendiente(db_path) {
             break;
         }
     }
     Ok(())
 }
 
-/// `omoi sync` a mano: espera a que acabe uno en segundo plano si lo hay, y apunta el resultado.
-pub fn ahora_mismo(db: &mut Connection, ruta_db: &Path, actual: Option<&str>, modelo: Option<&Modelo>) -> Result<Resumen> {
-    let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
-    let r = rutas(ruta_db);
-    // Un cambio hecho mientras tanto lanza una sincronización de fondo que se va enseguida (este tiene
-    // el cerrojo): se repite aquí mientras la marca de pendiente avance.
-    let mut vueltas = 0;
+/// `omoi sync` by hand: waits for a background one to finish if there is one, and records the result.
+pub fn ahora_mismo(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Modelo>) -> Result<Resumen> {
+    let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
+    let r = rutas(db_path);
+    // A change made meanwhile launches a background sync that leaves right away (this one holds
+    // the lock): it repeats here while the pending marker moves forward.
+    let mut rounds = 0;
     loop {
-        let marca = std::fs::read_to_string(&r.pendiente).ok();
-        let res = sincronizar(db, ruta_db, actual, modelo)?;
-        hecho(&r, marca.as_deref());
-        vueltas += 1;
-        if !pendiente(ruta_db) || vueltas >= 5 {
+        let mark = std::fs::read_to_string(&r.pendiente).ok();
+        let res = sincronizar(db, db_path, current, model)?;
+        mark_done(&r, mark.as_deref());
+        rounds += 1;
+        if !pendiente(db_path) || rounds >= 5 {
             return Ok(res);
         }
     }
 }
 
-// --- Traer lo de otros a mitad de sesión -----------------------------------------------------------
+// --- Pulling others' changes mid-session ----------------------------------------------------------
 
-/// La clave de `meta` con la última vez (segundos Unix) que se lanzó una bajada desde aquí.
-const MARCA_TRAER: &str = "sync_traido";
+/// The `meta` key with the last time (Unix seconds) a pull was launched from here.
+const PULL_MARK: &str = "sync_traido";
 
-/// Cada cuánto se mira, como mucho, si el remoto trae algo (`OMOIKANE_SYNC_EVERY`, en segundos; 120).
+/// How often, at most, to check whether the remote brings something (`OMOIKANE_SYNC_EVERY`, in seconds; 120).
 pub fn cada_cuanto() -> Duration {
     Duration::from_secs(std::env::var("OMOIKANE_SYNC_EVERY").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120))
 }
 
-/// Si la sincronización está configurada y es automática (`entorno::sync_automatica`). Solo mira si
-/// existen unos ficheros: sin sincronización no cuesta nada.
-pub fn automatica(ruta_db: &Path) -> bool {
-    crate::entorno::sync_automatica() && (rutas(ruta_db).config.exists() || !espacios(ruta_db).is_empty())
+/// Whether sync is set up and automatic (`entorno::sync_automatica`). It only checks whether
+/// some files exist: without sync it costs nothing.
+pub fn automatica(db_path: &Path) -> bool {
+    crate::entorno::sync_automatica() && (rutas(db_path).config.exists() || !espacios(db_path).is_empty())
 }
 
-/// Apunta que se acaba de traer (o de lanzar una sincronización completa, al empezar la sesión).
+/// Records that a pull just happened (or that a full sync was launched, at session start).
 pub fn apuntar_traido(db: &Connection) {
-    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![MARCA_TRAER, ahora()]);
+    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![PULL_MARK, now()]);
 }
 
-/// En cada mensaje (y en `omoi serve` con un temporizador): si la sincronización es automática y hace
-/// más de `cada_cuanto` que no se mira, lanza `omoi sync --pull` aparte y vuelve enseguida. La marca
-/// de `meta` se toma con una escritura condicionada, así que con varias sesiones a la vez solo una
-/// lanza el proceso. No falla nunca: lo peor es que lo nuevo llegue en el siguiente intento.
-pub fn traer_si_toca(db: &Connection, ruta_db: &Path) -> bool {
-    if !automatica(ruta_db) {
+/// On every message (and in `omoi serve` with a timer): if sync is automatic and it has been
+/// more than `cada_cuanto` since the last check, launches `omoi sync --pull` separately and returns right away. The `meta`
+/// marker is taken with a conditional write, so with several sessions at once only one
+/// launches the process. It never fails: the worst is that the new changes arrive on the next attempt.
+pub fn traer_si_toca(db: &Connection, db_path: &Path) -> bool {
+    if !automatica(db_path) {
         return false;
     }
-    let ahora = segundos(&ahora()) as i64;
-    let cada = cada_cuanto().as_secs() as i64;
-    // Lo normal es que aún no toque: una lectura y nada más.
-    let ultima: Option<i64> = db.query_row("SELECT v FROM meta WHERE k = ?1", [MARCA_TRAER], |f| f.get::<_, String>(0)).optional().ok().flatten().and_then(|v| v.trim().parse().ok());
-    // Una marca en el futuro (el reloj volvió atrás) tampoco debe parar la bajada para siempre.
-    if ultima.is_some_and(|u| u <= ahora && ahora - u < cada) {
+    let now = seconds(&now()) as i64;
+    let every = cada_cuanto().as_secs() as i64;
+    // Usually it isn't due yet: one read and nothing more.
+    let last: Option<i64> = db.query_row("SELECT v FROM meta WHERE k = ?1", [PULL_MARK], |f| f.get::<_, String>(0)).optional().ok().flatten().and_then(|v| v.trim().parse().ok());
+    // A marker in the future (the clock went back) must not stop pulling forever either.
+    if last.is_some_and(|u| u <= now && now - u < every) {
         return false;
     }
-    let tomada = db
+    let claimed = db
         .execute(
             "INSERT INTO meta(k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v
              WHERE CAST(meta.v AS INTEGER) <= ?3 OR CAST(meta.v AS INTEGER) > ?4",
-            params![MARCA_TRAER, ahora.to_string(), ahora - cada, ahora],
+            params![PULL_MARK, now.to_string(), now - every, now],
         )
         .is_ok_and(|n| n == 1);
-    if tomada {
-        lanzar(&["sync", "--pull"], Some(ruta_db));
+    if claimed {
+        lanzar(&["sync", "--pull"], Some(db_path));
     }
-    tomada
+    claimed
 }
 
-/// Si el remoto de un repositorio tiene commits que esta base aún no ha leído: un `git fetch` y
-/// comparar con el último commit leído. Da ese commit del remoto, o nada ante cualquier duda (sin
-/// clon, sin red).
-fn algo_nuevo(db: &Connection, r: &Rutas) -> Option<String> {
+/// Whether a repository's remote has commits this database hasn't read yet: a `git fetch` and
+/// a comparison with the last commit read. Gives that remote commit, or nothing on any doubt (no
+/// clone, offline).
+fn remote_news(db: &Connection, r: &Rutas) -> Option<String> {
     if !r.clon.join(".git").exists() || !matches!(leer_config_de(r), Ok(Some(_))) {
         return None;
     }
     git(&r.clon, &["fetch", "--quiet", "origin"]).ok()?;
-    let remoto = git(&r.clon, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{RAMA}")]).ok()?.trim().to_string();
-    let leido: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&r.marca_commit], |f| f.get(0)).optional().ok().flatten();
-    (leido.as_deref().map(str::trim) != Some(remoto.as_str())).then_some(remoto)
+    let remote = git(&r.clon, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{BRANCH}")]).ok()?.trim().to_string();
+    let last_read: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&r.marca_commit], |f| f.get(0)).optional().ok().flatten();
+    (last_read.as_deref().map(str::trim) != Some(remote.as_str())).then_some(remote)
 }
 
-/// La clave de `meta` con el último commit del remoto para el que se intentó una sincronización
-/// completa desde una bajada (`sync_intentado`, `sync_intentado:<espacio>`).
-fn marca_intentado(r: &Rutas) -> String {
+/// The `meta` key with the last remote commit for which a full sync was attempted
+/// from a pull (`sync_intentado`, `sync_intentado:<space>`).
+fn attempted_key(r: &Rutas) -> String {
     r.marca_commit.replacen("sync_commit", "sync_intentado", 1)
 }
 
-/// Cada cuánto se reintenta lo mismo (el mismo commit del remoto, la misma marca de pendiente) tras un
-/// intento que no lo resolvió: un corte de red pasajero no lo deja parado hasta que algo cambie.
-const REINTENTO_SEGUNDOS: u64 = 30 * 60;
+/// How often the same thing is retried (the same remote commit, the same pending marker) after an
+/// attempt that didn't solve it: a passing network outage doesn't leave it stuck until something changes.
+const RETRY_SECS: u64 = 30 * 60;
 
-/// Si ya se intentó `valor` en `clave` hace menos de `REINTENTO_SEGUNDOS` (`meta`: `valor@segundos`).
-fn ya_intentado(db: &Connection, clave: &str, valor: &str) -> bool {
-    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [clave], |f| f.get(0)).optional().ok().flatten();
+/// Whether `value` was already tried in `key` less than `RETRY_SECS` ago (`meta`: `value@seconds`).
+fn recently_tried(db: &Connection, key: &str, value: &str) -> bool {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [key], |f| f.get(0)).optional().ok().flatten();
     v.and_then(|v| {
-        let (antes, cuando) = v.rsplit_once('@')?;
-        let cuando: u64 = cuando.parse().ok()?;
-        Some(antes == valor && ahora.saturating_sub(cuando) < REINTENTO_SEGUNDOS && cuando <= ahora)
+        let (before, when) = v.rsplit_once('@')?;
+        let when: u64 = when.parse().ok()?;
+        Some(before == value && now.saturating_sub(when) < RETRY_SECS && when <= now)
     })
     .unwrap_or(false)
 }
 
-fn apuntar_intento(db: &Connection, clave: &str, valor: &str) {
-    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![clave, format!("{valor}@{ahora}")]);
+fn record_attempt(db: &Connection, key: &str, value: &str) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![key, format!("{value}@{now}")]);
 }
 
-/// La clave de `meta` con la marca de pendiente que intentó subir una bajada.
-const PENDIENTE_INTENTADO: &str = "sync_pendiente_intentado";
+/// The `meta` key with the pending marker a pull tried to push.
+const PENDING_TRIED: &str = "sync_pendiente_intentado";
 
-/// `omoi sync --pull`: si no hay otra sincronización en marcha, mira cada repositorio con un `git
-/// fetch`; solo si alguno trae algo (o hay cambios de aquí sin subir) hace la sincronización completa.
-/// Lo que ya se intentó y no se resolvió (el mismo commit del remoto, la misma marca de pendiente: pide
-/// una versión más nueva, un choque que no se resuelve solo) no se repite cada 2 minutos, sino cuando
-/// cambie o pasada media hora.
-pub fn traer(ruta_db: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
-    // Sin nadie delante (una CI que pide `omoi sync --pull`) no vale «ya lo hará otra» ni «sin red, en
-    // el siguiente intento»: espera a la que haya en marcha, sincroniza entero y, si falla, sale con error.
-    // El que lanza `omoi` mismo en segundo plano (con `OMOIKANE_SYNC_AUTO=1` en un servidor) sigue siendo
-    // el barato: nadie espera su resultado.
+/// `omoi sync --pull`: if no other sync is running, checks each repository with a `git
+/// fetch`; only if some brings something (or there are unpushed local changes) does it do the full sync.
+/// What was already tried and not solved (the same remote commit, the same pending marker: it asks for
+/// a newer version, a clash that doesn't solve itself) is not repeated every 2 minutes, but when
+/// it changes or after half an hour.
+pub fn traer(db_path: &Path, abrir: impl Fn() -> Result<Connection>) -> Result<()> {
+    // With nobody at the keyboard (a CI asking for `omoi sync --pull`) «another one will do it» or «offline, on
+    // the next attempt» won't do: it waits for the running one, syncs fully and, if it fails, exits with an error.
+    // The one `omoi` itself launches in the background (with `OMOIKANE_SYNC_AUTO=1` on a server) is still
+    // the cheap one: nobody waits for its result.
     if crate::entorno::desatendido() && !crate::entorno::de_fondo() {
-        let _c = Cerrojo::esperar(ruta_db, Duration::from_secs(60)).context(otra_en_marcha())?;
+        let _c = Cerrojo::esperar(db_path, Duration::from_secs(60)).context(another_running())?;
         let mut db = abrir()?;
-        let r = rutas(ruta_db);
-        let marca = std::fs::read_to_string(&r.pendiente).ok();
-        sincronizar(&mut db, ruta_db, None, None)?;
-        hecho(&r, marca.as_deref());
+        let r = rutas(db_path);
+        let mark = std::fs::read_to_string(&r.pendiente).ok();
+        sincronizar(&mut db, db_path, None, None)?;
+        mark_done(&r, mark.as_deref());
         return Ok(());
     }
-    // Si hay otra en marcha, esa ya baja lo nuevo.
-    let Some(_cerrojo) = Cerrojo::tomar(ruta_db) else { return Ok(()) };
+    // If another is running, that one already pulls the new changes.
+    let Some(_lock) = Cerrojo::tomar(db_path) else { return Ok(()) };
     let mut db = abrir()?;
-    let mut nuevo = false;
-    for r in repos(ruta_db) {
-        let Some(remoto) = algo_nuevo(&db, &r) else { continue };
-        let clave = marca_intentado(&r);
-        if !ya_intentado(&db, &clave, &remoto) {
-            nuevo = true;
-            apuntar_intento(&db, &clave, &remoto);
+    let mut found_new = false;
+    for r in repos(db_path) {
+        let Some(remote) = remote_news(&db, &r) else { continue };
+        let key = attempted_key(&r);
+        if !recently_tried(&db, &key, &remote) {
+            found_new = true;
+            record_attempt(&db, &key, &remote);
         }
     }
-    // La marca de pendiente la deja cada cambio de aquí y también cada inicio de sesión; si la
-    // sincronización falla nunca se da por hecha, así que cuenta como nueva solo una vez.
-    if pendiente(ruta_db)
-        && let Ok(marca) = std::fs::read_to_string(&rutas(ruta_db).pendiente)
-        && !ya_intentado(&db, PENDIENTE_INTENTADO, marca.trim())
+    // The pending marker is left by every local change and also by every session start; if
+    // sync fails it is never considered done, so it counts as new only once.
+    if pendiente(db_path)
+        && let Ok(mark) = std::fs::read_to_string(&rutas(db_path).pendiente)
+        && !recently_tried(&db, PENDING_TRIED, mark.trim())
     {
-        nuevo = true;
-        apuntar_intento(&db, PENDIENTE_INTENTADO, marca.trim());
+        found_new = true;
+        record_attempt(&db, PENDING_TRIED, mark.trim());
     }
-    if !nuevo {
+    if !found_new {
         return Ok(());
     }
-    // Como en `en_segundo_plano`: un cambio de aquí que llegue mientras tanto no lanza otra (este
-    // tiene el cerrojo), así que se repite mientras la marca de pendiente avance.
-    let r = rutas(ruta_db);
+    // As in `en_segundo_plano`: a local change arriving meanwhile doesn't launch another one (this one
+    // holds the lock), so it repeats while the pending marker moves forward.
+    let r = rutas(db_path);
     for _ in 0..5 {
-        let marca = std::fs::read_to_string(&r.pendiente).ok();
-        if sincronizar(&mut db, ruta_db, None, None).is_err() {
+        let mark = std::fs::read_to_string(&r.pendiente).ok();
+        if sincronizar(&mut db, db_path, None, None).is_err() {
             break;
         }
-        hecho(&r, marca.as_deref());
-        if !pendiente(ruta_db) {
+        mark_done(&r, mark.as_deref());
+        if !pendiente(db_path) {
             break;
         }
     }
@@ -3538,7 +3538,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remotos_iguales() {
+    fn same_remotes() {
         let a = normalizar_remoto("git@github.com:Marc/Tienda.git");
         assert_eq!(a, "github.com/marc/tienda");
         assert_eq!(normalizar_remoto("https://github.com/marc/tienda"), a);
@@ -3547,33 +3547,33 @@ mod tests {
     }
 
     #[test]
-    fn cifrado_determinista_y_clave_mala() {
+    fn deterministic_encryption_and_wrong_key() {
         let c = Cifra::una(1, (0..64).collect());
         let x = c.cifrar("{\"hola\":\"mundo, una línea\"}").unwrap();
         assert_eq!(x, c.cifrar("{\"hola\":\"mundo, una línea\"}").unwrap(), "la misma línea cifra igual");
         assert_eq!(c.descifrar(&x).unwrap(), "{\"hola\":\"mundo, una línea\"}");
-        let otra = Cifra::una(1, (1..65).collect());
-        assert!(otra.descifrar(&x).is_err());
-        assert_ne!(c.carpeta("git:a/b"), otra.carpeta("git:a/b"));
-        assert!(c.fichero("marc-pc-abc").starts_with("m-") && !c.fichero("marc-pc-abc").contains("marc"));
-        assert_ne!(c.fichero("a"), c.fichero("b"));
-        assert!(c.carpeta("git:a/b").starts_with("p-"));
+        let other = Cifra::una(1, (1..65).collect());
+        assert!(other.descifrar(&x).is_err());
+        assert_ne!(c.folder("git:a/b"), other.folder("git:a/b"));
+        assert!(c.file("marc-pc-abc").starts_with("m-") && !c.file("marc-pc-abc").contains("marc"));
+        assert_ne!(c.file("a"), c.file("b"));
+        assert!(c.folder("git:a/b").starts_with("p-"));
     }
 
     #[test]
-    fn codigo_va_y_vuelve() {
+    fn code_round_trip() {
         let k: Vec<u8> = (0..64).collect();
-        let json = serde_json::json!({ "url": "git@x:y/z.git", "key": a_hex(&k) });
-        let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
+        let json = serde_json::json!({ "url": "git@x:y/z.git", "key": to_hex(&k) });
+        let c = format!("{CODE_PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
         assert_eq!(leer_codigo(&c).unwrap(), Codigo { url: "git@x:y/z.git".to_string(), clave: k.clone(), id: 1, persona: None, espacio: None });
-        let json = serde_json::json!({ "url": "u", "key": a_hex(&k), "person": "marc" });
-        let c = format!("{PREFIJO_CODIGO}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
+        let json = serde_json::json!({ "url": "u", "key": to_hex(&k), "person": "marc" });
+        let c = format!("{CODE_PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.to_string()));
         assert_eq!(leer_codigo(&c).unwrap().persona.as_deref(), Some("marc"));
         assert!(leer_codigo("hola").is_err());
     }
 
     #[test]
-    fn personas() {
+    fn persons() {
         assert_eq!(persona("Marc Mayol"), "marc-mayol");
         assert_eq!(persona("  "), "");
         let e = Eleccion { preferencias: false, global: true, proyectos: vec![], espacios: vec![], autor: Some(" ".into()) };
@@ -3581,16 +3581,16 @@ mod tests {
         assert!(c.person.starts_with("u-") || !c.person.is_empty(), "nunca vacía: {}", c.person);
         assert_eq!(config_con_persona("x", &e, Some("Ana López"), "").person, "ana-lópez");
         assert_eq!(config_con_persona("x", &e, None, "u-1234abcd").person, "u-1234abcd", "sin autor, la persona local");
-        assert!(id_valido("01M62EWVHRXM0000000000ABCD"));
-        assert!(!id_valido("01m62ewvhrxm0000000000abcd") && !id_valido("CORTO") && !id_valido("01M62EWVHRXM0000000000ABCÑ"));
+        assert!(valid_id("01M62EWVHRXM0000000000ABCD"));
+        assert!(!valid_id("01m62ewvhrxm0000000000abcd") && !valid_id("CORTO") && !valid_id("01M62EWVHRXM0000000000ABCÑ"));
     }
 
     #[test]
-    fn credenciales_fuera() {
+    fn credentials_stripped() {
         assert_eq!(sin_credenciales("https://ghp_x:y@github.com/a/b.git"), "https://***@github.com/a/b.git");
         assert_eq!(sin_credenciales("git clone https://tok@host/r falló; ssh://git@h:22/r"), "git clone https://***@host/r falló; ssh://***@h:22/r");
         assert_eq!(sin_credenciales("git@github.com:a/b.git"), "git@github.com:a/b.git");
-        // Los tokens en la consulta también, y solo los parámetros que suenan a credencial.
+        // Tokens in the query too, and only the parameters that sound like a credential.
         assert_eq!(
             sin_credenciales("fallo en https://h.com/a/b.git?access_token=s3cr3t&ref=main#x y más"),
             "fallo en https://h.com/a/b.git?access_token=***&ref=main#x y más"
@@ -3598,11 +3598,11 @@ mod tests {
         assert_eq!(sin_credenciales("https://u:p@h.com?private_token=abc&sig=zz"), "https://***@h.com?private_token=***&sig=***");
         assert_eq!(sin_credenciales("https://h.com/r?token=t1 'https://h.com/q?Token=T2'"), "https://h.com/r?token=*** 'https://h.com/q?Token=***'");
         assert_eq!(sin_credenciales("https://h.com/buscar?q=deploy"), "https://h.com/buscar?q=deploy");
-        assert_eq!(error_corto("git push: remote: Permission to x denied to ghp\nmás"), "git push:");
+        assert_eq!(short_error("git push: remote: Permission to x denied to ghp\nmás"), "git push:");
     }
 
     #[test]
-    fn rutas_por_base() {
+    fn paths_per_database() {
         let a = rutas(Path::new("/x/omoikane.db"));
         assert!(a.config.ends_with("sync.json") && a.clon.ends_with("sync"));
         let b = rutas(Path::new("/x/trabajo.db"));
@@ -3616,47 +3616,47 @@ mod tests {
     }
 
     #[test]
-    fn lineas_con_id_de_clave() {
+    fn lines_with_key_id() {
         let k1: Vec<u8> = (0..64).collect();
         let k2: Vec<u8> = (64..128).collect();
-        let vieja = Cifra::una(1, k1.clone());
-        let ambas = vieja.con(2, k2.clone());
-        assert_eq!(ambas.vigente(), 2);
-        // La 1 sin prefijo (igual que antes); las demás con `k<id>:`.
-        let l1 = vieja.cifrar("hola").unwrap();
+        let old = Cifra::una(1, k1.clone());
+        let both = old.with_key(2, k2.clone());
+        assert_eq!(both.vigente(), 2);
+        // Key 1 without prefix (as before); the others with `k<id>:`.
+        let l1 = old.cifrar("hola").unwrap();
         assert!(!l1.contains(':'));
-        let l2 = ambas.cifrar("hola").unwrap();
+        let l2 = both.cifrar("hola").unwrap();
         assert!(l2.starts_with("k2:"), "{l2}");
-        assert_eq!(ambas.descifrar(&l1).unwrap(), "hola", "con las dos se lee lo viejo");
-        assert_eq!(ambas.descifrar(&l2).unwrap(), "hola");
-        assert!(vieja.descifrar(&l2).unwrap_err().to_string().contains("k2"), "sin la nueva no se lee, y lo dice");
-        assert_eq!(vieja.descifrar(&format!("k1:{l1}")).unwrap(), "hola", "`k1:` también vale");
-        assert!(ambas.descifrar(&format!("x9:{l1}")).is_err(), "una etiqueta desconocida es de un formato futuro");
-        assert_eq!(Cifra::una(2, k2.clone()).fichero("pc"), ambas.fichero("pc"));
-        assert_eq!(ambas.ficheros_viejos("pc"), vec![vieja.fichero("pc")]);
+        assert_eq!(both.descifrar(&l1).unwrap(), "hola", "con las dos se lee lo viejo");
+        assert_eq!(both.descifrar(&l2).unwrap(), "hola");
+        assert!(old.descifrar(&l2).unwrap_err().to_string().contains("k2"), "sin la nueva no se lee, y lo dice");
+        assert_eq!(old.descifrar(&format!("k1:{l1}")).unwrap(), "hola", "`k1:` también vale");
+        assert!(both.descifrar(&format!("x9:{l1}")).is_err(), "una etiqueta desconocida es de un formato futuro");
+        assert_eq!(Cifra::una(2, k2.clone()).file("pc"), both.file("pc"));
+        assert_eq!(both.old_files("pc"), vec![old.file("pc")]);
     }
 
     #[test]
-    fn el_chequeo_de_siempre_y_el_de_varias_claves() {
+    fn old_check_and_multi_key_check() {
         let k1: Vec<u8> = (0..64).collect();
-        let vieja = Cifra::una(1, k1.clone());
-        // Con solo la 1: una línea, como siempre.
-        let mut ch = Chequeo::default();
-        ch.lineas.insert(1, vieja.cifrar_con(1, &texto_chequeo(1)).unwrap());
+        let old = Cifra::una(1, k1.clone());
+        // With only key 1: one line, as always.
+        let mut ch = KeyCheck::default();
+        ch.lines.insert(1, old.encrypt_with(1, &check_text(1)).unwrap());
         let t = ch.texto();
         assert_eq!(t.lines().count(), 1);
-        assert!(Chequeo::de_texto(&t).comprobar(&vieja) == (1, vec![]));
-        // Con la 2: la cabecera con la vigente, y quien solo tiene la 1 sabe que existe.
-        let ambas = vieja.con(2, (64..128).collect());
-        ch.lineas.insert(2, ambas.cifrar_con(2, &texto_chequeo(2)).unwrap());
+        assert!(KeyCheck::parse(&t).verify(&old) == (1, vec![]));
+        // With key 2: the header with the current one, and whoever only has key 1 knows it exists.
+        let both = old.with_key(2, (64..128).collect());
+        ch.lines.insert(2, both.encrypt_with(2, &check_text(2)).unwrap());
         let t = ch.texto();
         assert!(t.starts_with("omoikane-check-v2 current=2\n"), "{t}");
-        let leido = Chequeo::de_texto(&(t.clone() + "omoikane-check-v3 algo=nuevo\nz7:futuro\n"));
-        assert_eq!(leido.vigente(), 2);
-        assert_eq!(leido.comprobar(&vieja), (1, vec![]));
-        assert_eq!(leido.comprobar(&ambas), (2, vec![]));
-        // Otra clave con el mismo id no pasa, ni la línea de una clave puesta como la de otra.
-        assert_eq!(leido.comprobar(&vieja.con(2, (1..65).collect())), (1, vec![2]));
-        assert!(!ambas.abre(2, &ch.lineas[&1]));
+        let parsed = KeyCheck::parse(&(t.clone() + "omoikane-check-v3 algo=nuevo\nz7:futuro\n"));
+        assert_eq!(parsed.vigente(), 2);
+        assert_eq!(parsed.verify(&old), (1, vec![]));
+        assert_eq!(parsed.verify(&both), (2, vec![]));
+        // Another key with the same id doesn't pass, nor does one key's line placed as another's.
+        assert_eq!(parsed.verify(&old.with_key(2, (1..65).collect())), (1, vec![2]));
+        assert!(!both.opens(2, &ch.lines[&1]));
     }
 }

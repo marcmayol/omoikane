@@ -1,18 +1,18 @@
-//! Un vocabulario de etiquetas cerrado (1.10.1). Los agentes inventan variantes de la misma etiqueta
-//! (`idea` e `ideas`, `test` y `tests`, `Release` y `release`, `a-b` y `a_b`) y cada una parte la
-//! búsqueda por etiquetas en dos. Al guardar una memoria nueva (`remember`, por MCP o CLI), cada
-//! etiqueta que no existe aún pero es una variante de una que ya está en el ámbito de la memoria se
-//! cambia por esa, y la respuesta lo dice. Nada más: lo importado o sincronizado entra tal cual, y una
-//! etiqueta del sistema (`open`, `blocking`, `status`, `draft`, las que llevan `:`) no se cambia ni se
-//! toma como destino.
+//! A closed tag vocabulary (1.10.1). Agents invent variants of the same tag
+//! (`idea` and `ideas`, `test` and `tests`, `Release` and `release`, `a-b` and `a_b`) and each one splits
+//! tag search in two. When a new memory is saved (`remember`, via MCP or CLI), each
+//! tag that does not exist yet but is a variant of one already in the memory's scope is
+//! replaced by that one, and the response says so. Nothing else: imported or synced data goes in as is, and a
+//! system tag (`open`, `blocking`, `status`, `draft`, the ones with `:`) is neither changed nor
+//! used as a target.
 
 use crate::memoria::Ambito;
 use anyhow::Result;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-/// Las etiquetas con significado propio para Omoikane: ni se cambian ni otra se cambia por ellas.
-const DEL_SISTEMA: [&str; 8] = [
+/// Tags with their own meaning for Omoikane: they are never changed and no other tag is changed into them.
+const SYSTEM_TAGS: [&str; 8] = [
     crate::memoria::ESTADO,
     crate::memoria::ABIERTA,
     crate::memoria::BLOQUEANTE,
@@ -23,19 +23,19 @@ const DEL_SISTEMA: [&str; 8] = [
     "review-after",
 ];
 
-fn del_sistema(t: &str) -> bool {
-    t.contains(':') || DEL_SISTEMA.contains(&t)
+fn is_system(t: &str) -> bool {
+    t.contains(':') || SYSTEM_TAGS.contains(&t)
 }
 
-/// La base de una etiqueta: en minúsculas, sin acentos y sin separadores (`-`, `_`, espacios, `.`).
+/// The base of a tag: lowercase, without accents and without separators (`-`, `_`, spaces, `.`).
 fn base(t: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     t.to_lowercase().nfkd().filter(|c| c.is_alphanumeric()).filter(|c| !unicode_normalization::char::is_combining_mark(*c)).collect()
 }
 
-/// Las formas con las que una etiqueta puede coincidir con otra: su base, y sin el plural (`-s`; `-es`
-/// tras n, r, l, d, z, j o y, como «versiones» → «version»). Ninguna de menos de 3 letras.
-fn formas(t: &str) -> Vec<String> {
+/// The forms by which a tag can match another: its base, and without the plural (`-s`; `-es`
+/// after n, r, l, d, z, j or y, as in «versiones» → «version»). None shorter than 3 letters.
+fn forms(t: &str) -> Vec<String> {
     let b = base(t);
     let mut v = vec![b.clone()];
     if let Some(s) = b.strip_suffix('s') {
@@ -50,22 +50,22 @@ fn formas(t: &str) -> Vec<String> {
     v
 }
 
-/// Si dos etiquetas son variantes una de otra.
+/// Whether two tags are variants of each other.
 pub fn variantes(a: &str, b: &str) -> bool {
-    let fb = formas(b);
-    formas(a).iter().any(|f| fb.contains(f))
+    let fb = forms(b);
+    forms(a).iter().any(|f| fb.contains(f))
 }
 
-/// Un cambio hecho: la etiqueta pedida y la que ya existía y queda en su lugar.
+/// A change made: the requested tag and the one that already existed and takes its place.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Cambio {
     pub from: String,
     pub to: String,
 }
 
-/// Dónde se mira el vocabulario de una memoria que va al proyecto de la carpeta `project` (vacía: sin
-/// proyecto) o al espacio `space_id`: lo que se ve desde ese proyecto; de un espacio, lo del espacio;
-/// global, lo que no es de ningún espacio (nunca las etiquetas de un cliente).
+/// Where the vocabulary is looked up for a memory going to the project of folder `project` (empty: no
+/// project) or to space `space_id`: what is visible from that project; for a space, the space's;
+/// global, what belongs to no space (never a client's tags).
 pub fn ambito_de(db: &Connection, project: &str, space_id: Option<i64>) -> Result<Ambito> {
     Ok(match space_id {
         _ if !project.is_empty() => Ambito::de(db, project)?,
@@ -74,9 +74,9 @@ pub fn ambito_de(db: &Connection, project: &str, space_id: Option<i64>) -> Resul
     })
 }
 
-/// Cuántas memorias del ámbito llevan cada etiqueta.
-fn usadas(db: &Connection, ambito: &Ambito) -> Result<HashMap<String, usize>> {
-    let mut q = db.prepare(&format!("SELECT j.value FROM memory m, json_each(m.tags) j WHERE {}", ambito.sql()))?;
+/// How many memories in the scope carry each tag.
+fn tag_counts(db: &Connection, scope: &Ambito) -> Result<HashMap<String, usize>> {
+    let mut q = db.prepare(&format!("SELECT j.value FROM memory m, json_each(m.tags) j WHERE {}", scope.sql()))?;
     let mut n = HashMap::new();
     for t in q.query_map([], |f| f.get::<_, String>(0))? {
         *n.entry(t?).or_insert(0usize) += 1;
@@ -84,84 +84,84 @@ fn usadas(db: &Connection, ambito: &Ambito) -> Result<HashMap<String, usize>> {
     Ok(n)
 }
 
-/// Las etiquetas de una memoria nueva con cada variante cambiada por la etiqueta que ya existe en
-/// `ambito` (la más usada, si son varias), sin repetidas, y los cambios hechos.
-pub fn cerrar(db: &Connection, ambito: &Ambito, tags: Vec<String>) -> Result<(Vec<String>, Vec<Cambio>)> {
-    if tags.iter().all(|t| del_sistema(t)) {
+/// The tags of a new memory with each variant replaced by the tag that already exists in
+/// `scope` (the most used, if there are several), without duplicates, and the changes made.
+pub fn cerrar(db: &Connection, scope: &Ambito, tags: Vec<String>) -> Result<(Vec<String>, Vec<Cambio>)> {
+    if tags.iter().all(|t| is_system(t)) {
         return Ok((tags, Vec::new()));
     }
-    let usadas = usadas(db, ambito)?;
-    Ok(cerrar_con(&usadas, tags))
+    let counts = tag_counts(db, scope)?;
+    Ok(close_with(&counts, tags))
 }
 
-fn cerrar_con(usadas: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String>, Vec<Cambio>) {
-    let mut fuera = Vec::new();
-    let mut cambios = Vec::new();
+fn close_with(counts: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String>, Vec<Cambio>) {
+    let mut out = Vec::new();
+    let mut changes = Vec::new();
     for t in tags {
-        let nueva = if del_sistema(&t) || usadas.contains_key(&t) {
+        let tag = if is_system(&t) || counts.contains_key(&t) {
             t
         } else {
-            let mejor = usadas
+            let best = counts
                 .iter()
-                .filter(|(e, _)| !del_sistema(e) && variantes(&t, e))
+                .filter(|(e, _)| !is_system(e) && variantes(&t, e))
                 .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
                 .map(|(e, _)| e.clone());
-            match mejor {
+            match best {
                 Some(e) => {
-                    cambios.push(Cambio { from: t, to: e.clone() });
+                    changes.push(Cambio { from: t, to: e.clone() });
                     e
                 }
                 None => t,
             }
         };
-        if !fuera.contains(&nueva) {
-            fuera.push(nueva);
+        if !out.contains(&tag) {
+            out.push(tag);
         }
     }
-    (fuera, cambios)
+    (out, changes)
 }
 
-/// Las parejas de etiquetas variantes que ya hay en el ámbito (la más usada primero), para la revisión.
-pub fn parejas(db: &Connection, ambito: &Ambito) -> Result<Vec<(String, usize, String, usize)>> {
-    let usadas = usadas(db, ambito)?;
-    let mut v: Vec<(&String, &usize)> = usadas.iter().filter(|(t, _)| !del_sistema(t)).collect();
+/// The pairs of variant tags already in the scope (the most used first), for review.
+pub fn parejas(db: &Connection, scope: &Ambito) -> Result<Vec<(String, usize, String, usize)>> {
+    let counts = tag_counts(db, scope)?;
+    let mut v: Vec<(&String, &usize)> = counts.iter().filter(|(t, _)| !is_system(t)).collect();
     v.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let mut fuera = Vec::new();
+    let mut out = Vec::new();
     for (i, (a, na)) in v.iter().enumerate() {
         for (b, nb) in &v[i + 1..] {
             if variantes(a, b) {
-                fuera.push(((*a).clone(), **na, (*b).clone(), **nb));
+                out.push(((*a).clone(), **na, (*b).clone(), **nb));
             }
         }
     }
-    Ok(fuera)
+    Ok(out)
 }
 
-/// Cambia la etiqueta `de` por `a` en todas las memorias del ámbito que la llevan, cada una con su
-/// versión en el historial. Devuelve cuántas cambiaron. Las del sistema no se unen.
-pub fn unir(db: &mut Connection, ambito: &Ambito, de: &str, a: &str) -> Result<usize> {
-    let (de, a) = (de.trim().trim_start_matches('#').to_lowercase(), a.trim().trim_start_matches('#').to_lowercase());
-    anyhow::ensure!(!de.is_empty() && !a.is_empty() && de != a, "{}", crate::tr!("give two different tags: --merge FROM TO", "di dos etiquetas distintas: --merge DE A"));
+/// Replaces tag `from` with `to` in every memory of the scope that carries it, each one with its
+/// version in the history. Returns how many changed. System tags are not merged.
+pub fn unir(db: &mut Connection, scope: &Ambito, from: &str, to: &str) -> Result<usize> {
+    let (from, to) = (from.trim().trim_start_matches('#').to_lowercase(), to.trim().trim_start_matches('#').to_lowercase());
+    anyhow::ensure!(!from.is_empty() && !to.is_empty() && from != to, "{}", crate::tr!("give two different tags: --merge FROM TO", "di dos etiquetas distintas: --merge DE A"));
     anyhow::ensure!(
-        !del_sistema(&de) && !del_sistema(&a),
+        !is_system(&from) && !is_system(&to),
         "{}",
-        crate::tr!("«{}» and «{}»: tags with a meaning for Omoikane (open, blocking, status, draft, the ones with `:`…) are not merged", "«{}» y «{}»: las etiquetas con significado para Omoikane (open, blocking, status, draft, las que llevan `:`…) no se unen", de, a)
+        crate::tr!("«{}» and «{}»: tags with a meaning for Omoikane (open, blocking, status, draft, the ones with `:`…) are not merged", "«{}» y «{}»: las etiquetas con significado para Omoikane (open, blocking, status, draft, las que llevan `:`…) no se unen", from, to)
     );
     let ids: Vec<String> = {
-        let mut q = db.prepare(&format!("SELECT m.id FROM memory m WHERE EXISTS (SELECT 1 FROM json_each(m.tags) j WHERE j.value = ?1) AND {}", ambito.sql()))?;
-        q.query_map([&de], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
+        let mut q = db.prepare(&format!("SELECT m.id FROM memory m WHERE EXISTS (SELECT 1 FROM json_each(m.tags) j WHERE j.value = ?1) AND {}", scope.sql()))?;
+        q.query_map([&from], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
     for id in &ids {
         let m = crate::memoria::obtener(db, id)?;
         let mut tags: Vec<String> = Vec::new();
         for t in m.tags {
-            let t = if t == de { a.clone() } else { t };
+            let t = if t == from { to.clone() } else { t };
             if !tags.contains(&t) {
                 tags.push(t);
             }
         }
-        let cambios = crate::memoria::Cambios { tags: Some(tags), reason: Some(format!("tag «{de}» merged into «{a}»")), ..Default::default() };
-        crate::memoria::actualizar(db, id, cambios, None)?;
+        let changes = crate::memoria::Cambios { tags: Some(tags), reason: Some(format!("tag «{from}» merged into «{to}»")), ..Default::default() };
+        crate::memoria::actualizar(db, id, changes, None)?;
     }
     Ok(ids.len())
 }
@@ -171,7 +171,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn variantes_de_verdad() {
+    fn real_variants() {
         for (a, b) in [("idea", "ideas"), ("test", "tests"), ("Release", "release"), ("code-review", "code_review"), ("versión", "version"), ("versiones", "version"), ("errores", "error"), ("doc", "docs")] {
             assert!(variantes(a, b), "{a} ~ {b}");
         }
@@ -181,17 +181,17 @@ mod tests {
     }
 
     #[test]
-    fn cambia_por_la_existente_mas_usada() {
-        let usadas: HashMap<String, usize> = [("tests".to_string(), 5), ("test".to_string(), 2), ("open".to_string(), 3)].into();
-        let (t, c) = cerrar_con(&usadas, vec!["Tests".into(), "nueva".into(), "tests".into(), "opens".into(), "review:2027-01-01".into()]);
+    fn replaces_with_the_most_used_existing() {
+        let counts: HashMap<String, usize> = [("tests".to_string(), 5), ("test".to_string(), 2), ("open".to_string(), 3)].into();
+        let (t, c) = close_with(&counts, vec!["Tests".into(), "nueva".into(), "tests".into(), "opens".into(), "review:2027-01-01".into()]);
         assert_eq!(t, ["tests", "nueva", "opens", "review:2027-01-01"]);
         assert_eq!(c, [Cambio { from: "Tests".into(), to: "tests".into() }]);
     }
 
     #[test]
-    fn las_del_sistema_no_se_tocan() {
-        let usadas: HashMap<String, usize> = [("opens".to_string(), 9), ("statuses".to_string(), 9)].into();
-        let (t, c) = cerrar_con(&usadas, vec!["open".into(), "status".into()]);
+    fn system_tags_are_untouched() {
+        let counts: HashMap<String, usize> = [("opens".to_string(), 9), ("statuses".to_string(), 9)].into();
+        let (t, c) = close_with(&counts, vec!["open".into(), "status".into()]);
         assert_eq!(t, ["open", "status"]);
         assert!(c.is_empty());
     }

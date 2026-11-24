@@ -7,7 +7,7 @@
 // macOS and Linux.
 import type { Register } from 'claude-code'
 
-import { register as nombres } from './nombres'
+import { register as registerNames } from './nombres'
 
 const REPO = 'marcmayol/omoikane'
 
@@ -16,18 +16,18 @@ const SAVE = "Save to Omoikane now, with its `remember` and `update` tools. If t
 
 
 // What `prepare` leaves ready: the binary and the instructions the model reads at session start.
-type Listo = { omoi: string; instrucciones: string }
+type Ready = { omoi: string; instructionsBlock: string }
 
-let listo: Promise<Listo | undefined> | undefined
+let readyPromise: Promise<Ready | undefined> | undefined
 
 // The tools that open a file, and the files already looked up in this session (`classic.PreToolUse`).
-const ABREN = ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']
-const abiertos = new Set<string>()
-let sesionVista: string | undefined
+const OPENERS = ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']
+const openedFiles = new Set<string>()
+let seenSession: string | undefined
 
 export const register: Register = on => {
   // Subagents named "Project: task" (it was the agent-names plugin): see nombres.ts.
-  nombres(on)
+  registerNames(on)
   on('session.start', async ($, e, next) => {
     const l = await ready($)
     if (l !== undefined) await registerTools($, l)
@@ -70,9 +70,9 @@ export const register: Register = on => {
     const r = await next(e)
     const l = await ready($)
     if (l === undefined) return r
-    const recuerdo = await recall($, l.omoi, ['recall', '--session-start'], JSON.stringify(e))
-    const textos = [recuerdo, l.instrucciones].filter((t): t is string => t !== undefined && t !== '')
-    return { ...r, additionalContext: [...(r.additionalContext ?? []), ...textos] }
+    const recalled = await recall($, l.omoi, ['recall', '--session-start'], JSON.stringify(e))
+    const texts = [recalled, l.instructionsBlock].filter((t): t is string => t !== undefined && t !== '')
+    return { ...r, additionalContext: [...(r.additionalContext ?? []), ...texts] }
   })
 
   // When the session ends or compacts, set aside from the conversation what may be worth saving; the
@@ -94,9 +94,9 @@ export const register: Register = on => {
     const r = await next(e)
     const l = await ready($)
     if (l === undefined) return r
-    const recuerdo = await recall($, l.omoi, ['recall'], JSON.stringify(e))
-    if (recuerdo === undefined) return r
-    return { ...r, additionalContext: [...(r.additionalContext ?? []), recuerdo] }
+    const recalled = await recall($, l.omoi, ['recall'], JSON.stringify(e))
+    if (recalled === undefined) return r
+    return { ...r, additionalContext: [...(r.additionalContext ?? []), recalled] }
   })
 
   // Before Read, Edit or Write opens a file: the memories tied to that file by their paths, even if the
@@ -104,23 +104,23 @@ export const register: Register = on => {
   // reopening a file costs nothing; `omoi` also skips memories this session already got.
   on('classic.PreToolUse', async ($, e, next) => {
     const r = await next(e)
-    if (r.deny !== undefined || !ABREN.includes(e.tool)) return r
+    if (r.deny !== undefined || !OPENERS.includes(e.tool)) return r
     const args = e as unknown as Record<string, unknown>
-    const fichero = [args.file_path, args.notebook_path].find((f): f is string => typeof f === 'string' && f !== '')
-    if (fichero === undefined) return r
-    const sesion: string = await $.session.id()
-    if (sesion !== sesionVista) {
-      sesionVista = sesion
-      abiertos.clear()
+    const file = [args.file_path, args.notebook_path].find((f): f is string => typeof f === 'string' && f !== '')
+    if (file === undefined) return r
+    const session: string = await $.session.id()
+    if (session !== seenSession) {
+      seenSession = session
+      openedFiles.clear()
     }
-    if (abiertos.has(fichero)) return r
-    abiertos.add(fichero)
+    if (openedFiles.has(file)) return r
+    openedFiles.add(file)
     const l = await ready($)
     if (l === undefined) return r
-    const entrada = JSON.stringify({ session_id: sesion, tool_name: e.tool, tool_input: { file_path: fichero } })
-    const recuerdo = await recall($, l.omoi, ['recall', '--file-open'], entrada)
-    if (recuerdo === undefined) return r
-    return { ...r, additionalContext: [...(r.additionalContext ?? []), recuerdo] }
+    const input = JSON.stringify({ session_id: session, tool_name: e.tool, tool_input: { file_path: file } })
+    const recalled = await recall($, l.omoi, ['recall', '--file-open'], input)
+    if (recalled === undefined) return r
+    return { ...r, additionalContext: [...(r.additionalContext ?? []), recalled] }
   })
 
   // One handler per tool, so each matcher is exact.
@@ -138,27 +138,27 @@ export const register: Register = on => {
 
 // Whichever hook comes first starts the preparation (classic.SessionStart can fire before
 // session.start); the others wait for the same one.
-function ready($: any): Promise<Listo | undefined> {
-  if (listo === undefined) listo = prepare($)
-  return listo
+function ready($: any): Promise<Ready | undefined> {
+  if (readyPromise === undefined) readyPromise = prepare($)
+  return readyPromise
 }
 
 // The binary to use, installing it when it's missing or of another version.
-async function prepare($: any): Promise<Listo | undefined> {
+async function prepare($: any): Promise<Ready | undefined> {
   try {
-    const manifiesto = JSON.parse(await $.fs.read($.plugin.root + '/.claude-plugin/plugin.json'))
-    const version: string = manifiesto.version
+    const manifest = JSON.parse(await $.fs.read($.plugin.root + '/.claude-plugin/plugin.json'))
+    const version: string = manifest.version
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     const home = (windows ? await $.env.get('USERPROFILE') : await $.env.get('HOME')) ?? ''
-    const carpeta = home + '/.omoikane/bin'
-    const propio = carpeta + (windows ? '/omoi.exe' : '/omoi')
+    const binDir = home + '/.omoikane/bin'
+    const own = binDir + (windows ? '/omoi.exe' : '/omoi')
 
     // OMOIKANE_BIN wins; then our own copy, or an `omoi` on the PATH, if it's this version or newer
     // (omoi updates itself once a day: an older plugin must not put the old binary back).
-    const elegido = (await $.env.get('OMOIKANE_BIN')) ?? undefined
-    let omoi: string | undefined = elegido
+    const chosen = (await $.env.get('OMOIKANE_BIN')) ?? undefined
+    let omoi: string | undefined = chosen
     if (omoi === undefined) {
-      for (const c of [propio, 'omoi']) {
+      for (const c of [own, 'omoi']) {
         if (notOlder(await versionOf($, c), version)) {
           omoi = c
           break
@@ -167,15 +167,15 @@ async function prepare($: any): Promise<Listo | undefined> {
     }
     if (omoi === undefined) {
       $.ui.toast(`Omoikane: installing omoi ${version}…`)
-      await install($, version, windows, carpeta)
-      if (!notOlder(await versionOf($, propio), version)) throw new Error(`the installed omoi isn't ${version}`)
-      omoi = propio
+      await install($, version, windows, binDir)
+      if (!notOlder(await versionOf($, own), version)) throw new Error(`the installed omoi isn't ${version}`)
+      omoi = own
       $.ui.toast(`Omoikane: omoi ${version} installed`)
     }
 
     // The model (search by meaning) downloads in the background; until then, search by words.
-    const estado = await $.process.run([omoi, 'model', 'status', '--json'])
-    if (estado.exitCode === 0 && estado.stdout.trim().startsWith('[]')) {
+    const status = await $.process.run([omoi, 'model', 'status', '--json'])
+    if (status.exitCode === 0 && status.stdout.trim().startsWith('[]')) {
       $.process
         .run([omoi, 'model', 'install'], { timeoutMs: 600_000 })
         .then(
@@ -187,10 +187,10 @@ async function prepare($: any): Promise<Listo | undefined> {
     // in the background, once the memory is large enough to need it (or after
     // `omoi model semantic --on`), and says so at the start of that session.
 
-    const lista = await $.process.run([omoi, 'tool'])
-    if (lista.exitCode !== 0) throw new Error(lista.stderr.trim())
-    const { instructions } = JSON.parse(lista.stdout)
-    return { omoi, instrucciones: `<omoikane-instructions>\n${instructions}\n</omoikane-instructions>` }
+    const list = await $.process.run([omoi, 'tool'])
+    if (list.exitCode !== 0) throw new Error(list.stderr.trim())
+    const { instructions } = JSON.parse(list.stdout)
+    return { omoi, instructionsBlock: `<omoikane-instructions>\n${instructions}\n</omoikane-instructions>` }
   } catch (err) {
     $.ui.toast(`Omoikane couldn't start: ${String((err as Error)?.message ?? err).slice(0, 200)}`, { timeoutMs: 15_000 })
     return undefined
@@ -215,53 +215,53 @@ async function versionOf($: any, omoi: string): Promise<string | undefined> {
 }
 
 // Downloads the release package for this machine, checks it against SHA256SUMS and unpacks it.
-async function install($: any, version: string, windows: boolean, carpeta: string): Promise<void> {
-  let destino: string
+async function install($: any, version: string, windows: boolean, binDir: string): Promise<void> {
+  let target: string
   if (windows) {
-    destino = 'x86_64-pc-windows-msvc'
+    target = 'x86_64-pc-windows-msvc'
   } else {
     const u = await $.process.run(['uname', '-sm'])
-    const [so, maquina] = u.stdout.trim().split(/\s+/)
-    const tabla: Record<string, string> = {
+    const [os, machine] = u.stdout.trim().split(/\s+/)
+    const table: Record<string, string> = {
       'Linux x86_64': 'x86_64-unknown-linux-gnu',
       'Linux aarch64': 'aarch64-unknown-linux-gnu',
       'Linux arm64': 'aarch64-unknown-linux-gnu',
       'Darwin arm64': 'aarch64-apple-darwin',
       'Darwin x86_64': 'x86_64-apple-darwin',
     }
-    destino = tabla[`${so} ${maquina}`]
-    if (destino === undefined) throw new Error(`no prebuilt omoi for ${so} ${maquina}; install it with: cargo install omoikane`)
+    target = table[`${os} ${machine}`]
+    if (target === undefined) throw new Error(`no prebuilt omoi for ${os} ${machine}; install it with: cargo install omoikane`)
   }
-  const paquete = `omoi-${destino}.${windows ? 'zip' : 'tar.gz'}`
+  const pkg = `omoi-${target}.${windows ? 'zip' : 'tar.gz'}`
   const base = `https://github.com/${REPO}/releases/download/v${version}`
 
-  const sumas = await withTimeout($.http.fetch(`${base}/SHA256SUMS`), 60_000, "SHA256SUMS didn't arrive in 60 s")
-  if (!sumas.ok) throw new Error(`can't download SHA256SUMS (HTTP ${sumas.status})`)
-  const esperada = sumas.text
+  const sums = await withTimeout($.http.fetch(`${base}/SHA256SUMS`), 60_000, "SHA256SUMS didn't arrive in 60 s")
+  if (!sums.ok) throw new Error(`can't download SHA256SUMS (HTTP ${sums.status})`)
+  const expected = sums.text
     .split('\n')
     .map((l: string) => l.trim().split(/\s+/))
-    .find((p: string[]) => p[1] === paquete)?.[0]
-  if (esperada === undefined) throw new Error(`${paquete} isn't in SHA256SUMS`)
+    .find((p: string[]) => p[1] === pkg)?.[0]
+  if (expected === undefined) throw new Error(`${pkg} isn't in SHA256SUMS`)
 
-  if (windows) await $.process.run(['cmd', '/c', 'mkdir', carpeta.replaceAll('/', '\\')])
-  else await $.process.run(['mkdir', '-p', carpeta])
-  const archivo = `${carpeta}/${paquete}`
-  await download($, `${base}/${paquete}`, archivo, windows)
+  if (windows) await $.process.run(['cmd', '/c', 'mkdir', binDir.replaceAll('/', '\\')])
+  else await $.process.run(['mkdir', '-p', binDir])
+  const file = `${binDir}/${pkg}`
+  await download($, `${base}/${pkg}`, file, windows)
 
-  const real = await sha256($, archivo, windows)
-  if (real !== esperada.toLowerCase()) {
-    await remove($, archivo, windows)
-    throw new Error(`the SHA-256 of ${paquete} doesn't match; nothing was installed`)
+  const actual = await sha256($, file, windows)
+  if (actual !== expected.toLowerCase()) {
+    await remove($, file, windows)
+    throw new Error(`the SHA-256 of ${pkg} doesn't match; nothing was installed`)
   }
 
   // Windows ships bsdtar, which unpacks zip too; Git's own tar earlier on the PATH doesn't.
   const tar = windows ? ((await $.env.get('SystemRoot')) ?? 'C:\\Windows') + '\\System32\\tar.exe' : 'tar'
-  const abrir = await $.process.run([tar, '-xf', archivo, '-C', carpeta])
-  await remove($, archivo, windows)
-  if (abrir.exitCode !== 0) throw new Error(`can't unpack ${paquete}: ${abrir.stderr.trim()}`)
+  const unpack = await $.process.run([tar, '-xf', file, '-C', binDir])
+  await remove($, file, windows)
+  if (unpack.exitCode !== 0) throw new Error(`can't unpack ${pkg}: ${unpack.stderr.trim()}`)
 }
 
-// Downloads `url` to `archivo`. On Windows, curl.exe (Schannel) gives up on networks where it can't
+// Downloads `url` to `file`. On Windows, curl.exe (Schannel) gives up on networks where it can't
 // check whether GitHub's certificate was revoked, which is common behind company proxies
 // (CRYPT_E_NO_REVOCATION_CHECK): then it tries again with --ssl-revoke-best-effort, which still checks
 // but doesn't block when the check can't be done, and last with PowerShell. The SHA-256 is checked
@@ -269,30 +269,30 @@ async function install($: any, version: string, windows: boolean, carpeta: strin
 //
 // Every attempt has time limits: 30 s to connect, and a transfer that moves under 1 KB/s for 60 s is
 // given up (a network that hangs halfway, a proxy that never answers), all within 290 s, before the
-// process itself is stopped at 300 s. It downloads to `archivo.part` and renames it only when it
+// process itself is stopped at 300 s. It downloads to `file.part` and renames it only when it
 // arrived whole, so a hang or a cut never leaves a half package under the real name.
-async function download($: any, url: string, archivo: string, windows: boolean): Promise<void> {
-  const parte = `${archivo}.part`
-  const limites = ['--connect-timeout', '30', '--speed-limit', '1024', '--speed-time', '60', '--max-time', '290']
-  const intentos: string[][] = [['curl', '-fsSL', '--retry', '2', ...limites, '-o', parte, url]]
+async function download($: any, url: string, file: string, windows: boolean): Promise<void> {
+  const part = `${file}.part`
+  const limits = ['--connect-timeout', '30', '--speed-limit', '1024', '--speed-time', '60', '--max-time', '290']
+  const attempts: string[][] = [['curl', '-fsSL', '--retry', '2', ...limits, '-o', part, url]]
   if (windows) {
-    intentos.push(['curl', '-fsSL', '--retry', '2', ...limites, '--ssl-revoke-best-effort', '-o', parte, url])
-    const ruta = parte.replaceAll('/', '\\').replaceAll("'", "''")
-    intentos.push([
+    attempts.push(['curl', '-fsSL', '--retry', '2', ...limits, '--ssl-revoke-best-effort', '-o', part, url])
+    const psPath = part.replaceAll('/', '\\').replaceAll("'", "''")
+    attempts.push([
       'powershell', '-NoProfile', '-NonInteractive', '-Command',
-      `$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -TimeoutSec 290 -Uri '${url.replaceAll("'", "''")}' -OutFile '${ruta}'`,
+      `$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -TimeoutSec 290 -Uri '${url.replaceAll("'", "''")}' -OutFile '${psPath}'`,
     ])
   }
   let error = ''
-  for (const orden of intentos) {
+  for (const cmd of attempts) {
     try {
-      const r = await $.process.run(orden, { timeoutMs: 300_000 })
+      const r = await $.process.run(cmd, { timeoutMs: 300_000 })
       if (r.exitCode === 0) {
-        const mover = windows
-          ? await $.process.run(['cmd', '/c', 'move', '/y', parte.replaceAll('/', '\\'), archivo.replaceAll('/', '\\')])
-          : await $.process.run(['mv', '-f', parte, archivo])
-        if (mover.exitCode === 0) return
-        error = `can't rename the download: ${(mover.stderr || mover.stdout || '').trim()}`
+        const move = windows
+          ? await $.process.run(['cmd', '/c', 'move', '/y', part.replaceAll('/', '\\'), file.replaceAll('/', '\\')])
+          : await $.process.run(['mv', '-f', part, file])
+        if (move.exitCode === 0) return
+        error = `can't rename the download: ${(move.stderr || move.stdout || '').trim()}`
       } else {
         error = (r.stderr || r.stdout || '').trim()
       }
@@ -300,33 +300,33 @@ async function download($: any, url: string, archivo: string, windows: boolean):
       // Stopped at 300 s, or it couldn't run at all.
       error = String((err as Error)?.message ?? err)
     }
-    await remove($, parte, windows)
+    await remove($, part, windows)
   }
   throw new Error(`can't download ${url.split('/').pop()}: ${error.slice(0, 300)}`)
 }
 
 // `p`, or an error if it takes longer than `ms`.
-async function withTimeout<T>(p: Promise<T>, ms: number, mensaje: string): Promise<T> {
-  let reloj: ReturnType<typeof setTimeout> | undefined
-  const limite = new Promise<never>((_, rechazar) => {
-    reloj = setTimeout(() => rechazar(new Error(mensaje)), ms)
+async function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
   })
   try {
-    return await Promise.race([p, limite])
+    return await Promise.race([p, limit])
   } finally {
-    clearTimeout(reloj)
+    clearTimeout(timer)
   }
 }
 
-async function sha256($: any, archivo: string, windows: boolean): Promise<string> {
+async function sha256($: any, file: string, windows: boolean): Promise<string> {
   if (windows) {
-    const r = await $.process.run(['certutil', '-hashfile', archivo.replaceAll('/', '\\'), 'SHA256'])
+    const r = await $.process.run(['certutil', '-hashfile', file.replaceAll('/', '\\'), 'SHA256'])
     // The second line holds the hash (older Windows put spaces between the bytes).
     return (r.stdout.split(/\r?\n/)[1] ?? '').replace(/\s+/g, '').toLowerCase()
   }
-  for (const orden of [['sha256sum', archivo], ['shasum', '-a', '256', archivo]]) {
+  for (const cmd of [['sha256sum', file], ['shasum', '-a', '256', file]]) {
     try {
-      const r = await $.process.run(orden)
+      const r = await $.process.run(cmd)
       if (r.exitCode === 0) return r.stdout.trim().split(/\s+/)[0].toLowerCase()
     } catch {
       // Not on this system: try the next one.
@@ -335,44 +335,44 @@ async function sha256($: any, archivo: string, windows: boolean): Promise<string
   throw new Error('neither sha256sum nor shasum is available to check the download')
 }
 
-async function remove($: any, archivo: string, windows: boolean): Promise<void> {
+async function remove($: any, file: string, windows: boolean): Promise<void> {
   try {
-    if (windows) await $.process.run(['cmd', '/c', 'del', '/q', archivo.replaceAll('/', '\\')])
-    else await $.process.run(['rm', '-f', archivo])
+    if (windows) await $.process.run(['cmd', '/c', 'del', '/q', file.replaceAll('/', '\\')])
+    else await $.process.run(['rm', '-f', file])
   } catch {
     // A leftover package is harmless.
   }
 }
 
 // Registers the tools as `omoi tool` lists them, so names, descriptions and schemas have one source.
-async function registerTools($: any, l: Listo): Promise<void> {
+async function registerTools($: any, l: Ready): Promise<void> {
   const r = await $.process.run([l.omoi, 'tool'])
   for (const t of JSON.parse(r.stdout).tools) {
-    const { $schema, ...esquema } = t.inputSchema ?? {}
-    await $.tool.register({ name: t.name, description: t.description, inputSchema: { type: 'object', ...esquema } })
+    const { $schema, ...schema } = t.inputSchema ?? {}
+    await $.tool.register({ name: t.name, description: t.description, inputSchema: { type: 'object', ...schema } })
   }
 }
 
-async function runTool($: any, nombre: string, e: any) {
+async function runTool($: any, name: string, e: any) {
   const l = await ready($)
   if (l === undefined) return { deny: 'Omoikane is not ready: its binary could not be installed. See the toast at session start.' }
   const { tool, tool_use_id, agentId, ...args } = e
-  const r = await $.process.run([l.omoi, 'tool', nombre], { stdin: JSON.stringify(args), env: { OMOIKANE_SOURCE: 'mcp:claude-code' } })
-  const texto = (r.stdout.trim() || r.stderr.trim() || '(no output)') as string
-  return r.exitCode === 0 ? { result: texto } : { deny: texto }
+  const r = await $.process.run([l.omoi, 'tool', name], { stdin: JSON.stringify(args), env: { OMOIKANE_SOURCE: 'mcp:claude-code' } })
+  const text = (r.stdout.trim() || r.stderr.trim() || '(no output)') as string
+  return r.exitCode === 0 ? { result: text } : { deny: text }
 }
 
-async function setAside($: any, omoi: string, entrada: string): Promise<void> {
+async function setAside($: any, omoi: string, input: string): Promise<void> {
   try {
-    await $.process.run([omoi, 'recall', '--session-end'], { stdin: entrada, timeoutMs: 1200 })
+    await $.process.run([omoi, 'recall', '--session-end'], { stdin: input, timeoutMs: 1200 })
   } catch {
     // Nothing set aside this time; the session still ends normally.
   }
 }
 
-async function recall($: any, omoi: string, argv: string[], entrada: string): Promise<string | undefined> {
+async function recall($: any, omoi: string, argv: string[], input: string): Promise<string | undefined> {
   try {
-    const r = await $.process.run([omoi, ...argv], { stdin: entrada })
+    const r = await $.process.run([omoi, ...argv], { stdin: input })
     if (r.exitCode !== 0 || r.stdout.trim() === '') return undefined
     return JSON.parse(r.stdout).hookSpecificOutput?.additionalContext
   } catch {

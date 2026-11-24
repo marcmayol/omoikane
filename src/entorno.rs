@@ -1,78 +1,78 @@
-//! Agentes sin persona delante (CI, servidores, contenedores, agentes en la nube), 1.7.0: `omoi` sin
-//! carpeta de usuario, sin preguntas y configurado solo por variables de entorno.
+//! Agents with no person in front (CI, servers, containers, cloud agents), 1.7.0: `omoi` without
+//! a home folder, without questions and configured only through environment variables.
 //!
-//! - `OMOIKANE_HOME`: la carpeta de Omoikane entera (la base, los modelos, la preferencia del modelo
-//!   de significado y su servicio, las actualizaciones). Por defecto `~/.omoikane`. `OMOIKANE_DB` y
-//!   `OMOIKANE_MODELS` siguen mandando por encima para lo suyo. Lo de la sincronización (configuración,
-//!   claves, clones), las copias y el diario viven junto a la base, así que van con ella.
-//! - Sin carpeta de usuario (un contenedor sin `HOME` ni entrada en `/etc/passwd`) y sin
-//!   `OMOIKANE_HOME` ni `OMOIKANE_DB`, `omoi` se niega con un error claro en vez de crear la base en la
-//!   carpeta en la que se ejecuta (podría acabar dentro del repositorio que se está probando).
-//! - `OMOIKANE_NONINTERACTIVE=1`: nadie delante. Ninguna pregunta (lo que necesite confirmación pide
-//!   `--yes`), ninguna descarga que no se haya pedido (el modelo de significado), ninguna
-//!   actualización automática, ningún servicio de significado que se arranque solo (1.7.1; si ya hay
-//!   uno en marcha, se usa) y ninguna sincronización de fondo que sobreviva al proceso (salvo
-//!   `OMOIKANE_SYNC_AUTO=1`). Sin ella, las preguntas ya se saltan si la entrada no es una terminal; lo
-//!   demás no, porque los hooks de los agentes tampoco tienen terminal y ahí sí se quieren.
-//! - `OMOIKANE_AUTHOR`: quién firma lo que se guarda (el autor de cada memoria y de cada veredicto),
-//!   por encima del que se eligió al configurar la sincronización.
-//! - `OMOIKANE_SYNC_CODE` (uno o varios códigos de `omoi sync code`) y `OMOIKANE_SYNC_URL` (otra URL
-//!   para el mismo repositorio, p. ej. con un token de la CI): `omoi sync`, `omoi sync --pull` y
-//!   `omoi sync join` sin código se unen solos a esos repositorios. El código lleva la clave: nunca
-//!   se escribe en la salida ni en un error.
+//! - `OMOIKANE_HOME`: the whole Omoikane folder (the database, the models, the meaning model
+//!   preference and its service, the updates). `~/.omoikane` by default. `OMOIKANE_DB` and
+//!   `OMOIKANE_MODELS` still take precedence for their own part. The sync files (configuration,
+//!   keys, clones), the backups and the journal live next to the database, so they go with it.
+//! - With no home folder (a container with no `HOME` nor entry in `/etc/passwd`) and with no
+//!   `OMOIKANE_HOME` nor `OMOIKANE_DB`, `omoi` refuses with a clear error instead of creating the database in the
+//!   folder it runs in (it could end up inside the repository being tested).
+//! - `OMOIKANE_NONINTERACTIVE=1`: nobody in front. No questions (whatever needs confirmation asks for
+//!   `--yes`), no download nobody asked for (the meaning model), no
+//!   automatic update, no meaning service that starts by itself (1.7.1; if there's already
+//!   one running, it is used) and no background sync that outlives the process (except with
+//!   `OMOIKANE_SYNC_AUTO=1`). Without it, questions are already skipped if the input isn't a terminal; the
+//!   rest isn't, because agents' hooks don't have a terminal either and there they are wanted.
+//! - `OMOIKANE_AUTHOR`: who signs what gets saved (the author of each memory and each verdict),
+//!   over the one chosen when setting up sync.
+//! - `OMOIKANE_SYNC_CODE` (one or several codes from `omoi sync code`) and `OMOIKANE_SYNC_URL` (another URL
+//!   for the same repository, e.g. with a CI token): `omoi sync`, `omoi sync --pull` and
+//!   `omoi sync join` with no code join those repositories by themselves. The code carries the key: it is never
+//!   written to the output or to an error.
 
 use std::path::PathBuf;
 
 use crate::tr;
 
-/// El valor de una variable, sin espacios alrededor; `None` si no está o queda vacía.
-fn valor(nombre: &str) -> Option<String> {
-    std::env::var(nombre).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+/// A variable's value, with no surrounding spaces; `None` if it isn't set or ends up empty.
+fn value(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// `1`, `true`, `yes` u `on` (sin mirar mayúsculas).
-fn encendida(nombre: &str) -> bool {
-    valor(nombre).is_some_and(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+/// `1`, `true`, `yes` or `on` (case-insensitive).
+fn is_on(name: &str) -> bool {
+    value(name).is_some_and(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
-/// La carpeta de Omoikane: `OMOIKANE_HOME` o `~/.omoikane`. `None` si no hay ninguna de las dos (sin
-/// carpeta de usuario, o con un `HOME` vacío o relativo).
+/// The Omoikane folder: `OMOIKANE_HOME` or `~/.omoikane`. `None` if there is neither (no
+/// home folder, or an empty or relative `HOME`).
 ///
-/// `OMOIKANE_HOME` tiene que ser absoluta: una relativa dependería de la carpeta en la que se ejecute
-/// cada orden (cada hook, cada paso de una CI tendría su base). `~` y `~/…` se expanden con la carpeta
-/// de usuario; otra relativa no vale (`None`, y `casa_mala` lo explica).
+/// `OMOIKANE_HOME` must be absolute: a relative one would depend on the folder each
+/// command runs in (each hook, each CI step would have its own database). `~` and `~/…` are expanded with the home
+/// folder; any other relative one is not valid (`None`, and `casa_mala` explains it).
 pub fn casa() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty()) {
-        return casa_de(&h.to_string_lossy());
+        return home_from(&h.to_string_lossy());
     }
     crate::proyecto::casa_local().map(|h| h.join(".omoikane"))
 }
 
-/// `OMOIKANE_HOME` como ruta: absoluta tal cual, `~` o `~/…` desde la carpeta de usuario; otra, `None`.
-/// Tampoco una de red (`\\servidor\recurso`, `//host/x`, `~/\\host\x`…): cada orden abriría la base
-/// y los ficheros de la sincronización ahí (ver `proyecto::ruta_local`).
-fn casa_de(h: &str) -> Option<PathBuf> {
-    let usuario = crate::proyecto::casa_local;
+/// `OMOIKANE_HOME` as a path: absolute as is, `~` or `~/…` from the home folder; anything else, `None`.
+/// Nor a network one (`\\servidor\recurso`, `//host/x`, `~/\\host\x`…): every command would open the database
+/// and the sync files there (see `proyecto::ruta_local`).
+fn home_from(h: &str) -> Option<PathBuf> {
+    let user_home = crate::proyecto::casa_local;
     if h == "~" {
-        return usuario();
+        return user_home();
     }
-    let p = if let Some(resto) = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")) {
-        usuario()?.join(resto)
+    let p = if let Some(rest) = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")) {
+        user_home()?.join(rest)
     } else {
         PathBuf::from(h)
     };
     (p.is_absolute() && crate::proyecto::ruta_local(&p)).then_some(p)
 }
 
-/// El error de un `OMOIKANE_HOME` que no vale (relativo, o con `~` sin carpeta de usuario); `None` si
-/// no está o vale.
+/// The error for an `OMOIKANE_HOME` that isn't valid (relative, or with `~` and no home folder); `None` if
+/// it isn't set or is valid.
 pub fn casa_mala() -> Option<String> {
     let h = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty())?;
     let h = h.to_string_lossy();
-    casa_de(&h).is_none().then(|| {
-        let tras_casa = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")).unwrap_or(&h);
+    home_from(&h).is_none().then(|| {
+        let after_tilde = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")).unwrap_or(&h);
         let local = |r: &str| crate::proyecto::ruta_local(std::path::Path::new(r));
-        if !local(&h) || !local(tras_casa) {
+        if !local(&h) || !local(after_tilde) {
             tr!(
                 "OMOIKANE_HOME must be a folder on this computer (it is «{h}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
                 "OMOIKANE_HOME tiene que ser una carpeta de este equipo (es «{h}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad"
@@ -86,24 +86,24 @@ pub fn casa_mala() -> Option<String> {
     })
 }
 
-/// El error de una base (`--db`, `OMOIKANE_DB`) o una carpeta de modelos (`OMOIKANE_MODELS`) que no es
-/// de este equipo; `None` si vale. Se mira antes de abrir nada.
-pub fn ruta_mala(que: &str, p: &std::path::Path) -> Option<String> {
+/// The error for a database (`--db`, `OMOIKANE_DB`) or a models folder (`OMOIKANE_MODELS`) that isn't
+/// on this computer; `None` if it's valid. Checked before opening anything.
+pub fn ruta_mala(what: &str, p: &std::path::Path) -> Option<String> {
     (!crate::proyecto::ruta_local(p)).then(|| {
         tr!(
-            "{que} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
-            "{que} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad",
+            "{what} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
+            "{what} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad",
             p.display()
         )
     })
 }
 
-/// Si hay dónde guardar la base: `OMOIKANE_DB` o una carpeta de Omoikane.
+/// Whether there is somewhere to keep the database: `OMOIKANE_DB` or an Omoikane folder.
 pub fn hay_donde_guardar() -> bool {
     std::env::var_os("OMOIKANE_DB").is_some_and(|d| !d.is_empty()) || casa().is_some()
 }
 
-/// El error de cuando no hay carpeta de usuario ni variables que digan dónde guardar.
+/// The error for when there is no home folder nor variables saying where to save.
 pub fn sin_casa() -> String {
     tr!(
         "there is no home folder: set OMOIKANE_HOME to the folder Omoikane should use (or OMOIKANE_DB, or pass --db)",
@@ -111,97 +111,97 @@ pub fn sin_casa() -> String {
     )
 }
 
-/// `OMOIKANE_NONINTERACTIVE=1`: no hay nadie delante.
+/// `OMOIKANE_NONINTERACTIVE=1`: there is nobody in front.
 pub fn desatendido() -> bool {
-    encendida("OMOIKANE_NONINTERACTIVE")
+    is_on("OMOIKANE_NONINTERACTIVE")
 }
 
-/// La variable con la que `omoi` marca los procesos que lanza él mismo en segundo plano (la
-/// sincronización de fondo, el `--pull` de los hooks): no es para nadie de fuera.
+/// The variable `omoi` uses to mark the processes it launches itself in the background (the
+/// background sync, the hooks' `--pull`): it's not for anyone outside.
 pub const DE_FONDO: &str = "OMOIKANE_INTERNAL_BACKGROUND";
 
-/// Si este proceso lo lanzó `omoi` en segundo plano (`DE_FONDO`): aunque no haya nadie delante, nadie
-/// espera su resultado.
+/// Whether this process was launched by `omoi` in the background (`DE_FONDO`): even if nobody is in front, nobody
+/// is waiting for its result.
 pub fn de_fondo() -> bool {
-    encendida(DE_FONDO)
+    is_on(DE_FONDO)
 }
 
-/// Si se puede preguntar: hay una terminal en la entrada y no se ha dicho que no hay nadie.
+/// Whether we can ask: there is a terminal on the input and nobody said there's no one there.
 pub fn puede_preguntar() -> bool {
     use std::io::IsTerminal;
     !desatendido() && std::io::stdin().is_terminal()
 }
 
-/// Sin descargas que nadie haya pedido (el modelo de significado al crecer la memoria):
-/// `OMOIKANE_NONINTERACTIVE=1` u `OMOIKANE_NO_MODEL=1`.
+/// No downloads nobody asked for (the meaning model when the memory grows):
+/// `OMOIKANE_NONINTERACTIVE=1` or `OMOIKANE_NO_MODEL=1`.
 pub fn sin_descargas() -> bool {
-    desatendido() || encendida("OMOIKANE_NO_MODEL")
+    desatendido() || is_on("OMOIKANE_NO_MODEL")
 }
 
-/// La sincronización de fondo tras cada cambio y cada pocos minutos: `OMOIKANE_SYNC_AUTO=0` la apaga
-/// y `=1` la enciende; sin decir nada, encendida salvo con nadie delante (en una CI el proceso de
-/// fondo moriría con el trabajo, o lo alargaría: ahí se sincroniza con `omoi sync` al final).
+/// The background sync after each change and every few minutes: `OMOIKANE_SYNC_AUTO=0` turns it off
+/// and `=1` turns it on; if unset, on unless nobody is in front (in a CI the background
+/// process would die with the job, or make it longer: there you sync with `omoi sync` at the end).
 pub fn sync_automatica() -> bool {
-    match valor("OMOIKANE_SYNC_AUTO").as_deref() {
+    match value("OMOIKANE_SYNC_AUTO").as_deref() {
         Some("0") => false,
         Some("1") => true,
         _ => !desatendido(),
     }
 }
 
-/// `OMOIKANE_AUTHOR`: quién firma lo que se guarda aquí.
+/// `OMOIKANE_AUTHOR`: who signs what is saved here.
 pub fn autor() -> Option<String> {
-    valor("OMOIKANE_AUTHOR")
+    value("OMOIKANE_AUTHOR")
 }
 
-/// Los códigos de `OMOIKANE_SYNC_CODE` (separados por espacios, comas o líneas: uno por repositorio,
-/// el general y los de los espacios).
+/// The codes in `OMOIKANE_SYNC_CODE` (separated by spaces, commas or lines: one per repository,
+/// the general one and the spaces' ones).
 pub fn codigos_sync() -> Vec<String> {
-    valor("OMOIKANE_SYNC_CODE")
+    value("OMOIKANE_SYNC_CODE")
         .map(|v| v.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).map(String::from).collect())
         .unwrap_or_default()
 }
 
-/// `OMOIKANE_SYNC_URL`: otra URL para el repositorio del código (solo con un código).
+/// `OMOIKANE_SYNC_URL`: another URL for the code's repository (only with one code).
 pub fn url_sync() -> Option<String> {
-    valor("OMOIKANE_SYNC_URL")
+    value("OMOIKANE_SYNC_URL")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::casa_de;
+    use super::home_from;
 
-    /// `OMOIKANE_HOME` relativa no vale; absoluta, tal cual; `~/…`, desde la carpeta de usuario.
+    /// A relative `OMOIKANE_HOME` is not valid; an absolute one, as is; `~/…`, from the home folder.
     #[test]
-    fn casa_absoluta_o_con_tilde() {
-        assert_eq!(casa_de("relativa/omoikane"), None);
-        assert_eq!(casa_de(".omoikane"), None);
+    fn home_absolute_or_with_tilde() {
+        assert_eq!(home_from("relativa/omoikane"), None);
+        assert_eq!(home_from(".omoikane"), None);
         let abs = std::env::temp_dir().join("omoi-casa");
-        assert_eq!(casa_de(&abs.to_string_lossy()), Some(abs));
+        assert_eq!(home_from(&abs.to_string_lossy()), Some(abs));
         if let Some(u) = std::env::home_dir().filter(|u| u.is_absolute()) {
-            assert_eq!(casa_de("~/omoi"), Some(u.join("omoi")));
-            assert_eq!(casa_de("~"), Some(u));
+            assert_eq!(home_from("~/omoi"), Some(u.join("omoi")));
+            assert_eq!(home_from("~"), Some(u));
         }
     }
 
-    /// Un `OMOIKANE_HOME` de red (también tras `~/`) no vale: cada orden abriría ahí la base. Solo en
-    /// Windows: en Linux y macOS la barra invertida es una letra más del nombre y `//servidor` es una
-    /// carpeta local, así que esas rutas no abren ninguna conexión.
+    /// A network `OMOIKANE_HOME` (also after `~/`) is not valid: every command would open the database there. Only on
+    /// Windows: on Linux and macOS the backslash is just another letter of the name and `//servidor` is a
+    /// local folder, so those paths open no connection.
     #[cfg(windows)]
     #[test]
-    fn casa_de_red_no_vale() {
+    fn network_home_is_not_valid() {
         for h in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"~/\\10.255.255.1\x", r"~\//10.255.255.1/x"] {
-            assert_eq!(casa_de(h), None, "{h}");
+            assert_eq!(home_from(h), None, "{h}");
         }
     }
 
-    /// Un `OMOIKANE_HOME` o una base con el prefijo de ruta extendida de una unidad (`\\?\C:\…`) es de
-    /// este equipo y vale; `\\?\UNC\…` no.
+    /// An `OMOIKANE_HOME` or a database with a drive's extended-path prefix (`\\?\C:\…`) is on
+    /// this computer and is valid; `\\?\UNC\…` isn't.
     #[cfg(windows)]
     #[test]
-    fn la_ruta_extendida_de_una_unidad_vale() {
+    fn extended_path_of_a_drive_is_valid() {
         let h = r"\\?\C:\Users\alguien\.omoikane";
-        assert_eq!(casa_de(h), Some(std::path::PathBuf::from(h)));
+        assert_eq!(home_from(h), Some(std::path::PathBuf::from(h)));
         assert_eq!(super::ruta_mala("--db", std::path::Path::new(r"\\?\C:\x\o.db")), None);
         assert!(super::ruta_mala("--db", std::path::Path::new(r"\\?\UNC\10.255.255.1\x\o.db")).is_some());
     }

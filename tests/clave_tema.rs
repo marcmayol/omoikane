@@ -1,6 +1,6 @@
-//! 1.8.0: la clave de tema (`remember --key`, etiqueta `topic:<clave>`). Una memoria por clave y por
-//! ámbito: guardar con una clave que ya está la actualiza, también con varios procesos a la vez (lo
-//! que hace Kumi con el perfil de cada proyecto, con dos factorías en el mismo repositorio).
+//! 1.8.0: the topic key (`remember --key`, tag `topic:<key>`). One memory per key and per
+//! scope: saving with a key that already exists updates it, also with several processes at once (what
+//! Kumi does with each project's profile, with two factories in the same repository).
 
 mod comun;
 
@@ -10,32 +10,32 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-fn base(nombre: &str) -> (comun::Temporal, Connection) {
-    let dir = comun::Temporal::nueva(&format!("clave-{nombre}"));
+fn base(name: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("clave-{name}"));
     let db = db::abrir(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
-fn nueva(project: &str, title: &str, content: &str) -> Nueva {
+fn new_memory(project: &str, title: &str, content: &str) -> Nueva {
     Nueva { project: project.into(), kind: Some(Tipo::Fact), title: title.into(), content: content.into(), ..Default::default() }
 }
 
-fn con_clave(db: &Connection, clave: &str) -> i64 {
+fn with_key(db: &Connection, key: &str) -> i64 {
     db.query_row(
         "SELECT count(*) FROM memory m WHERE EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = ?1)",
-        [format!("topic:{clave}")],
+        [format!("topic:{key}")],
         |f| f.get(0),
     )
     .unwrap()
 }
 
 #[test]
-fn la_clave_crea_una_vez_y_luego_actualiza() {
+fn the_key_creates_once_and_then_updates() {
     let (_dir, mut db) = base("crea");
-    let a = memoria::guardar_por_clave(&mut db, "Kumi-Perfil", nueva("/p", "Perfil de p", "Factoría web, fase 1."), None, None).unwrap();
+    let a = memoria::guardar_por_clave(&mut db, "Kumi-Perfil", new_memory("/p", "Perfil de p", "Factoría web, fase 1."), None, None).unwrap();
     assert!(a.creada);
     assert_eq!(memoria::clave_de(&a.memoria), Some("kumi-perfil"));
-    let mut n = nueva("/p", "Perfil de p", "Factoría web, fase 2.");
+    let mut n = new_memory("/p", "Perfil de p", "Factoría web, fase 2.");
     n.tags = vec!["kumi".into()];
     n.paths = vec!["src/main.rs".into()];
     let b = memoria::guardar_por_clave(&mut db, "kumi-perfil", n, None, None).unwrap();
@@ -43,67 +43,67 @@ fn la_clave_crea_una_vez_y_luego_actualiza() {
     assert_eq!(b.memoria.id, a.memoria.id);
     assert_eq!(b.memoria.content, "Factoría web, fase 2.");
     assert!(b.memoria.tags.contains(&"kumi".to_string()) && b.memoria.tags.contains(&"topic:kumi-perfil".to_string()));
-    assert_eq!(con_clave(&db, "kumi-perfil"), 1);
-    // La versión anterior queda en el historial, con la clave como motivo.
+    assert_eq!(with_key(&db, "kumi-perfil"), 1);
+    // The previous version stays in the history, with the key as the reason.
     let h = memoria::historial(&db, &a.memoria.id).unwrap();
     assert_eq!(h.len(), 1);
     assert_eq!(h[0].content, "Factoría web, fase 1.");
     assert_eq!(h[0].reason.as_deref(), Some("key kumi-perfil"));
-    // La misma clave en otro proyecto es otra memoria.
-    let c = memoria::guardar_por_clave(&mut db, "kumi-perfil", nueva("/q", "Perfil de q", "Factoría android."), None, None).unwrap();
+    // The same key in another project is another memory.
+    let c = memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("/q", "Perfil de q", "Factoría android."), None, None).unwrap();
     assert!(c.creada && c.memoria.id != a.memoria.id);
-    // `get --key` desde cada proyecto da la suya; la global solo si el proyecto no tiene.
-    memoria::guardar_por_clave(&mut db, "kumi-perfil", nueva("", "Perfil por defecto", "Sin factoría."), None, None).unwrap();
-    let ve = |p: &str| memoria::por_clave(&db, &Ambito::de(&db, p).unwrap(), "KUMI-PERFIL").unwrap().map(|m| m.title);
-    assert_eq!(ve("/p").as_deref(), Some("Perfil de p"));
-    assert_eq!(ve("/q").as_deref(), Some("Perfil de q"));
-    assert_eq!(ve("/r").as_deref(), Some("Perfil por defecto"));
+    // `get --key` from each project gives its own; the global one only if the project has none.
+    memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("", "Perfil por defecto", "Sin factoría."), None, None).unwrap();
+    let sees = |p: &str| memoria::por_clave(&db, &Ambito::de(&db, p).unwrap(), "KUMI-PERFIL").unwrap().map(|m| m.title);
+    assert_eq!(sees("/p").as_deref(), Some("Perfil de p"));
+    assert_eq!(sees("/q").as_deref(), Some("Perfil de q"));
+    assert_eq!(sees("/r").as_deref(), Some("Perfil por defecto"));
     assert!(memoria::por_clave(&db, &Ambito::de(&db, "/p").unwrap(), "otra").unwrap().is_none());
 }
 
 #[test]
-fn avisa_de_una_clave_parecida_y_rechaza_las_raras() {
+fn warns_about_a_similar_key_and_rejects_odd_ones() {
     let (_dir, mut db) = base("parecida");
-    memoria::guardar_por_clave(&mut db, "kumi-perfil", nueva("/p", "Perfil", "uno"), None, None).unwrap();
-    let r = memoria::guardar_por_clave(&mut db, "kumi_perfil", nueva("/p", "Perfil", "dos"), None, None).unwrap();
+    memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("/p", "Perfil", "uno"), None, None).unwrap();
+    let r = memoria::guardar_por_clave(&mut db, "kumi_perfil", new_memory("/p", "Perfil", "dos"), None, None).unwrap();
     assert!(r.creada);
     assert_eq!(r.parecidas, vec!["kumi-perfil".to_string()]);
-    let r = memoria::guardar_por_clave(&mut db, "kumi-perfl", nueva("/p", "Perfil", "tres"), None, None).unwrap();
+    let r = memoria::guardar_por_clave(&mut db, "kumi-perfl", new_memory("/p", "Perfil", "tres"), None, None).unwrap();
     assert!(r.parecidas.contains(&"kumi-perfil".to_string()), "{:?}", r.parecidas);
-    // Distintas de verdad: nada.
-    let r = memoria::guardar_por_clave(&mut db, "deploy-recipe", nueva("/p", "Receta", "cuatro"), None, None).unwrap();
+    // Really different: nothing.
+    let r = memoria::guardar_por_clave(&mut db, "deploy-recipe", new_memory("/p", "Receta", "cuatro"), None, None).unwrap();
     assert!(r.parecidas.is_empty(), "{:?}", r.parecidas);
-    // En otro proyecto no cuenta.
-    let r = memoria::guardar_por_clave(&mut db, "kumi-perfi", nueva("/q", "Perfil", "cinco"), None, None).unwrap();
+    // In another project it does not count.
+    let r = memoria::guardar_por_clave(&mut db, "kumi-perfi", new_memory("/q", "Perfil", "cinco"), None, None).unwrap();
     assert!(r.parecidas.is_empty());
-    for mala in ["", "  ", "dos palabras", "¿qué?"] {
-        assert!(memoria::guardar_por_clave(&mut db, mala, nueva("/p", "x", "y"), None, None).is_err(), "{mala:?}");
+    for bad in ["", "  ", "dos palabras", "¿qué?"] {
+        assert!(memoria::guardar_por_clave(&mut db, bad, new_memory("/p", "x", "y"), None, None).is_err(), "{bad:?}");
     }
 }
 
-/// Varios procesos `omoi` a la vez con la misma clave en el mismo repositorio, por la CLI y por
-/// `omoi tool remember` (el plugin): una sola memoria al final, con el contenido de alguno de ellos.
+/// Several `omoi` processes at once with the same key in the same repository, via the CLI and via
+/// `omoi tool remember` (the plugin): a single memory at the end, with the content of one of them.
 #[test]
-fn varios_procesos_a_la_vez_dejan_una_sola() {
+fn several_processes_at_once_leave_just_one() {
     let dir = comun::Temporal::nueva("clave-procesos");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let casa = dir.join("casa");
-    std::fs::create_dir_all(&casa).unwrap();
-    let db_ruta = dir.join("o.db");
-    assert!(!db_ruta.to_string_lossy().contains(".omoikane"));
-    let lanzar = |i: usize, repo: &Path| {
+    let home = dir.join("casa");
+    std::fs::create_dir_all(&home).unwrap();
+    let db_path = dir.join("o.db");
+    assert!(!db_path.to_string_lossy().contains(".omoikane"));
+    let launch = |i: usize, repo: &Path| {
         let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
         c.current_dir(repo)
-            .env("OMOIKANE_DB", &db_ruta)
+            .env("OMOIKANE_DB", &db_path)
             .env("OMOIKANE_HOME", dir.join("home-omoikane"))
             .env("OMOIKANE_MODELS", dir.join("models"))
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_SEMANTIC", "0")
             .env("OMOIKANE_SYNC_AUTO", "0")
             .env("OMOIKANE_LANG", "en")
-            .env("USERPROFILE", &casa)
-            .env("HOME", &casa)
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if i.is_multiple_of(2) {
@@ -118,173 +118,173 @@ fn varios_procesos_a_la_vez_dejan_una_sola() {
             h
         }
     };
-    for ronda in 0..3 {
-        let hijos: Vec<_> = (0..8).map(|i| lanzar(ronda * 8 + i, &repo)).collect();
-        for h in hijos {
+    for round in 0..3 {
+        let children: Vec<_> = (0..8).map(|i| launch(round * 8 + i, &repo)).collect();
+        for h in children {
             let o = h.wait_with_output().unwrap();
             assert!(o.status.success(), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         }
     }
-    let db = db::abrir(&db_ruta).unwrap();
-    assert_eq!(con_clave(&db, "kumi-perfil"), 1, "una sola memoria con la clave");
+    let db = db::abrir(&db_path).unwrap();
+    assert_eq!(with_key(&db, "kumi-perfil"), 1, "una sola memoria con la clave");
     let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0)).unwrap();
     assert_eq!(total, 1);
-    let versiones: i64 = db.query_row("SELECT count(*) FROM memory_version", [], |f| f.get(0)).unwrap();
-    assert_eq!(versiones, 23, "24 escrituras: una crea y 23 actualizan");
-    // Y se lee por la clave.
+    let versions: i64 = db.query_row("SELECT count(*) FROM memory_version", [], |f| f.get(0)).unwrap();
+    assert_eq!(versions, 23, "24 escrituras: una crea y 23 actualizan");
+    // And it is read by the key.
     let o = Command::new(env!("CARGO_BIN_EXE_omoi"))
         .current_dir(&repo)
         .args(["get", "--key", "kumi-perfil"])
-        .env("OMOIKANE_DB", &db_ruta)
+        .env("OMOIKANE_DB", &db_path)
         .env("OMOIKANE_HOME", dir.join("home-omoikane"))
         .env("OMOIKANE_MODELS", dir.join("models"))
         .env("OMOIKANE_AUTO_UPDATE", "0")
         .env("OMOIKANE_SYNC_AUTO", "0")
         .env("OMOIKANE_LANG", "en")
-        .env("USERPROFILE", &casa)
-        .env("HOME", &casa)
+        .env("USERPROFILE", &home)
+        .env("HOME", &home)
         .output()
         .unwrap();
     let s = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success() && s.contains("Perfil del proyecto") && s.contains("Factoría"), "{s}{}", String::from_utf8_lossy(&o.stderr));
-    // `--data` y `get --key --resolve --json`, por la CLI: global con oficio y del proyecto.
-    let correr = |args: &[&str]| {
+    // `--data` and `get --key --resolve --json`, via the CLI: global with a trade and the project's.
+    let run = |args: &[&str]| {
         let o = Command::new(env!("CARGO_BIN_EXE_omoi"))
             .current_dir(&repo)
             .args(args)
-            .env("OMOIKANE_DB", &db_ruta)
+            .env("OMOIKANE_DB", &db_path)
             .env("OMOIKANE_HOME", dir.join("home-omoikane"))
             .env("OMOIKANE_MODELS", dir.join("models"))
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_SYNC_AUTO", "0")
             .env("OMOIKANE_LANG", "en")
-            .env("USERPROFILE", &casa)
-            .env("HOME", &casa)
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
             .stdin(Stdio::null())
             .output()
             .unwrap();
         assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8_lossy(&o.stdout).to_string()
     };
-    correr(&["trades", "add", "web"]);
-    correr(&["remember", "-k", "fact", "-t", "Ruta web", "--trade", "web", "--key", "kumi-ruta", "--data", r#"{"ruta":["web"]}"#]);
-    correr(&["remember", "-k", "fact", "-t", "Ruta de este repo", "--key", "kumi-ruta", "--data", r#"{"ruta":["web","seo-geo"],"fase":"alpha"}"#, "Sin cyber."]);
-    let capas: serde_json::Value = serde_json::from_str(&correr(&["--json", "get", "--key", "kumi-ruta", "--resolve"])).unwrap();
-    let capas = capas.as_array().unwrap();
-    assert_eq!(capas.iter().map(|c| c["scope"].as_str().unwrap()).collect::<Vec<_>>(), ["project", "trade:web"]);
-    assert_eq!(capas[0]["data"], serde_json::json!({"fase": "alpha", "ruta": ["web", "seo-geo"]}));
-    assert_eq!(capas[0]["text"], "Sin cyber.");
-    assert_eq!(capas[1]["data"], serde_json::json!({"ruta": ["web"]}));
-    // Los datos no van en el texto: ni en la memoria ni en la búsqueda.
-    assert!(!capas[0]["text"].as_str().unwrap().contains("seo-geo"));
-    let hallado = correr(&["--json", "search", "seo-geo"]);
-    assert!(!hallado.contains("Ruta de este repo"), "{hallado}");
-    // `get --key --json` a secas también da los datos.
-    let una: serde_json::Value = serde_json::from_str(&correr(&["--json", "get", "--key", "kumi-ruta"])).unwrap();
-    assert_eq!(una["data"]["fase"], "alpha");
+    run(&["trades", "add", "web"]);
+    run(&["remember", "-k", "fact", "-t", "Ruta web", "--trade", "web", "--key", "kumi-ruta", "--data", r#"{"ruta":["web"]}"#]);
+    run(&["remember", "-k", "fact", "-t", "Ruta de este repo", "--key", "kumi-ruta", "--data", r#"{"ruta":["web","seo-geo"],"fase":"alpha"}"#, "Sin cyber."]);
+    let layers: serde_json::Value = serde_json::from_str(&run(&["--json", "get", "--key", "kumi-ruta", "--resolve"])).unwrap();
+    let layers = layers.as_array().unwrap();
+    assert_eq!(layers.iter().map(|c| c["scope"].as_str().unwrap()).collect::<Vec<_>>(), ["project", "trade:web"]);
+    assert_eq!(layers[0]["data"], serde_json::json!({"fase": "alpha", "ruta": ["web", "seo-geo"]}));
+    assert_eq!(layers[0]["text"], "Sin cyber.");
+    assert_eq!(layers[1]["data"], serde_json::json!({"ruta": ["web"]}));
+    // The data does not go into the text: neither in the memory nor in search.
+    assert!(!layers[0]["text"].as_str().unwrap().contains("seo-geo"));
+    let found = run(&["--json", "search", "seo-geo"]);
+    assert!(!found.contains("Ruta de este repo"), "{found}");
+    // Plain `get --key --json` also gives the data.
+    let one: serde_json::Value = serde_json::from_str(&run(&["--json", "get", "--key", "kumi-ruta"])).unwrap();
+    assert_eq!(one["data"]["fase"], "alpha");
 }
 
-/// La ruta de un proyecto por la megafactoría de Kumi: oficio (la ruta por defecto de la factoría
-/// web), cliente (tras web, siempre seo-geo) y proyecto (sin SEO). `--resolve` las da todas, la más
-/// concreta primero, cada una con su ámbito y sus datos, sin juntarlas; otro cliente no ve la del
-/// cliente X; y regenerar lo mismo no crea versiones.
+/// A project's route through Kumi's megafactory: trade (the default route of the web
+/// factory), client (after web, always seo-geo) and project (no SEO). `--resolve` gives them all, the most
+/// specific first, each with its scope and its data, without merging them; another client does not see
+/// client X's; and regenerating the same thing creates no versions.
 #[test]
-fn la_ruta_de_kumi_en_tres_niveles() {
+fn kumis_route_on_three_levels() {
     use omoikane::proyecto;
     let (_dir, mut db) = base("niveles");
-    let (disney, otro_x, de_y) = ("/clientes/x/disney-countdown", "/clientes/x/tienda", "/clientes/y/web");
+    let (disney, other_x, of_y) = ("/clientes/x/disney-countdown", "/clientes/x/tienda", "/clientes/y/web");
     let x = proyecto::crear_espacio(&db, "Cliente X").unwrap();
     let y = proyecto::crear_espacio(&db, "Cliente Y").unwrap();
-    // Los tres son webs: la capa del oficio solo la ven los proyectos de ese oficio.
-    for (p, s) in [(disney, x), (otro_x, x), (de_y, y)] {
+    // All three are websites: the trade layer is only seen by projects of that trade.
+    for (p, s) in [(disney, x), (other_x, x), (of_y, y)] {
         let id = proyecto::registrar(&db, p).unwrap();
         proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
         omoikane::oficios::anadir(&db, id, &["web".to_string()]).unwrap();
     }
-    let guardar = |db: &mut Connection, mut n: Nueva, tags: &[&str], datos: serde_json::Value| {
+    let save = |db: &mut Connection, mut n: Nueva, tags: &[&str], data: serde_json::Value| {
         n.tags = tags.iter().map(|t| t.to_string()).collect();
-        memoria::guardar_por_clave(db, "kumi-ruta", n, Some(datos), None).unwrap()
+        memoria::guardar_por_clave(db, "kumi-ruta", n, Some(data), None).unwrap()
     };
-    // Oficio: una global con `trade:web` (lo que guarda `--trade web`).
-    let oficio = Nueva { kind: Some(Tipo::Fact), title: "Ruta de la factoría web".into(), content: "La ruta por defecto de una web.".into(), ..Default::default() };
-    guardar(&mut db, oficio.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web", "cyber"]}));
-    // Cliente X (su espacio) y cliente Y.
-    let cliente = |s, ruta: &str| Nueva { space_id: Some(s), kind: Some(Tipo::Fact), title: format!("Ruta del cliente {ruta}"), content: "La ruta del cliente.".into(), ..Default::default() };
-    guardar(&mut db, cliente(x, "seo-geo"), &[], serde_json::json!({"ruta": ["web", "seo-geo"]}));
-    guardar(&mut db, cliente(y, "cyber"), &[], serde_json::json!({"ruta": ["web", "cyber"]}));
-    // Proyecto: disney-countdown sin SEO. Y una global sin oficio.
-    let proyecto_n = Nueva { project: disney.into(), kind: Some(Tipo::Fact), title: "Ruta de disney-countdown".into(), content: "Sin SEO: es una cuenta atrás familiar.".into(), ..Default::default() };
-    guardar(&mut db, proyecto_n, &[], serde_json::json!({"ruta": ["web"], "fase": "alpha"}));
-    guardar(&mut db, Nueva { kind: Some(Tipo::Fact), title: "Ruta por defecto".into(), content: "Sin factoría.".into(), ..Default::default() }, &[], serde_json::json!({"ruta": []}));
+    // Trade: a global one with `trade:web` (what `--trade web` saves).
+    let trade = Nueva { kind: Some(Tipo::Fact), title: "Ruta de la factoría web".into(), content: "La ruta por defecto de una web.".into(), ..Default::default() };
+    save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web", "cyber"]}));
+    // Client X (its space) and client Y.
+    let client = |s, route: &str| Nueva { space_id: Some(s), kind: Some(Tipo::Fact), title: format!("Ruta del cliente {route}"), content: "La ruta del cliente.".into(), ..Default::default() };
+    save(&mut db, client(x, "seo-geo"), &[], serde_json::json!({"ruta": ["web", "seo-geo"]}));
+    save(&mut db, client(y, "cyber"), &[], serde_json::json!({"ruta": ["web", "cyber"]}));
+    // Project: disney-countdown without SEO. And a global one without a trade.
+    let project_mem = Nueva { project: disney.into(), kind: Some(Tipo::Fact), title: "Ruta de disney-countdown".into(), content: "Sin SEO: es una cuenta atrás familiar.".into(), ..Default::default() };
+    save(&mut db, project_mem, &[], serde_json::json!({"ruta": ["web"], "fase": "alpha"}));
+    save(&mut db, Nueva { kind: Some(Tipo::Fact), title: "Ruta por defecto".into(), content: "Sin factoría.".into(), ..Default::default() }, &[], serde_json::json!({"ruta": []}));
 
-    let capas = |p: &str| memoria::capas_de_clave(&db, &Ambito::de(&db, p).unwrap(), "kumi-ruta").unwrap();
-    let ambitos = |p: &str| capas(p).into_iter().map(|c| c.scope).collect::<Vec<_>>();
-    assert_eq!(ambitos(disney), ["project", "space", "trade:web", "global"]);
-    let c = capas(disney);
+    let layers = |p: &str| memoria::capas_de_clave(&db, &Ambito::de(&db, p).unwrap(), "kumi-ruta").unwrap();
+    let scopes = |p: &str| layers(p).into_iter().map(|c| c.scope).collect::<Vec<_>>();
+    assert_eq!(scopes(disney), ["project", "space", "trade:web", "global"]);
+    let c = layers(disney);
     assert_eq!(c[0].text, "Sin SEO: es una cuenta atrás familiar.");
     assert_eq!(c[0].data, Some(serde_json::json!({"fase": "alpha", "ruta": ["web"]})));
     assert_eq!(c[1].data, Some(serde_json::json!({"ruta": ["web", "seo-geo"]})));
     assert_eq!(c[1].title, "Ruta del cliente seo-geo");
-    // Otro proyecto del cliente X: sin la de disney, con la del cliente X.
-    assert_eq!(ambitos(otro_x), ["space", "trade:web", "global"]);
-    // Un proyecto del cliente Y nunca ve la del cliente X.
-    let de_y_capas = capas(de_y);
-    assert_eq!(de_y_capas.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["space", "trade:web", "global"]);
-    assert_eq!(de_y_capas[0].data, Some(serde_json::json!({"ruta": ["web", "cyber"]})));
-    // `get --key` a secas: la más concreta.
+    // Another project of client X: without disney's, with client X's.
+    assert_eq!(scopes(other_x), ["space", "trade:web", "global"]);
+    // A project of client Y never sees client X's.
+    let of_y_layers = layers(of_y);
+    assert_eq!(of_y_layers.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["space", "trade:web", "global"]);
+    assert_eq!(of_y_layers[0].data, Some(serde_json::json!({"ruta": ["web", "cyber"]})));
+    // Plain `get --key`: the most specific one.
     assert_eq!(memoria::por_clave(&db, &Ambito::de(&db, disney).unwrap(), "kumi-ruta").unwrap().unwrap().title, "Ruta de disney-countdown");
 
-    // El oficio y la global sin oficio son ámbitos distintos: una por cada uno.
-    assert_eq!(con_clave(&db, "kumi-ruta"), 5);
-    // Regenerar el oficio con lo mismo (las claves en otro orden) no cambia nada; con otros datos
-    // cambian los datos, sin versión (como `update --data`); con otro texto, versión.
-    let versiones = |db: &Connection| db.query_row("SELECT count(*) FROM memory_version", [], |f| f.get::<_, i64>(0)).unwrap();
-    let antes = versiones(&db);
-    let r = guardar(&mut db, oficio.clone(), &["trade:web"], serde_json::json!({"tests": ["web", "cyber"], "ruta": ["web"]}));
+    // The trade and the global one without a trade are different scopes: one for each.
+    assert_eq!(with_key(&db, "kumi-ruta"), 5);
+    // Regenerating the trade one with the same thing (keys in another order) changes nothing; with other data
+    // the data changes, with no version (like `update --data`); with another text, a version.
+    let versions = |db: &Connection| db.query_row("SELECT count(*) FROM memory_version", [], |f| f.get::<_, i64>(0)).unwrap();
+    let before = versions(&db);
+    let r = save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"tests": ["web", "cyber"], "ruta": ["web"]}));
     assert!(!r.creada);
-    let sello = r.memoria.updated_at.clone();
-    assert_eq!(versiones(&db), antes, "lo mismo no deja versión");
-    let r = guardar(&mut db, oficio.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
-    assert_eq!(versiones(&db), antes, "solo los datos no dejan versión");
-    assert!(r.memoria.updated_at >= sello);
+    let stamp = r.memoria.updated_at.clone();
+    assert_eq!(versions(&db), before, "lo mismo no deja versión");
+    let r = save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
+    assert_eq!(versions(&db), before, "solo los datos no dejan versión");
+    assert!(r.memoria.updated_at >= stamp);
     assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
-    let otro = Nueva { content: "Otra ruta por defecto.".into(), ..oficio.clone() };
-    guardar(&mut db, otro, &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
-    assert_eq!(versiones(&db), antes + 1);
-    assert_eq!(con_clave(&db, "kumi-ruta"), 5);
-    // `trade-for:client` es otro nivel del mismo oficio: no pisa la de todos.
-    let r = guardar(&mut db, oficio, &["trade:web", "trade-for:client"], serde_json::json!({"ruta": ["web", "seo-geo"]}));
+    let other = Nueva { content: "Otra ruta por defecto.".into(), ..trade.clone() };
+    save(&mut db, other, &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
+    assert_eq!(versions(&db), before + 1);
+    assert_eq!(with_key(&db, "kumi-ruta"), 5);
+    // `trade-for:client` is another level of the same trade: it does not overwrite the one for everyone.
+    let r = save(&mut db, trade, &["trade:web", "trade-for:client"], serde_json::json!({"ruta": ["web", "seo-geo"]}));
     assert!(r.creada);
-    assert_eq!(con_clave(&db, "kumi-ruta"), 6);
-    let todas = memoria::capas_de_clave(&db, &Ambito::de(&db, disney).unwrap(), "kumi-ruta").unwrap();
-    assert_eq!(todas.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["project", "space", "trade:web", "trade:web", "global"]);
+    assert_eq!(with_key(&db, "kumi-ruta"), 6);
+    let all = memoria::capas_de_clave(&db, &Ambito::de(&db, disney).unwrap(), "kumi-ruta").unwrap();
+    assert_eq!(all.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["project", "space", "trade:web", "trade:web", "global"]);
 }
 
-/// Los datos de una memoria con clave van en `memory.extra` (como `--data` en cualquier memoria),
-/// nunca en su contenido; guardar la clave sin datos conserva los que tenía, y lo que parezca un
-/// secreto se tapa (el de ejemplo lleva una `~` en el prefijo, como en tests/secretos.rs, para que
-/// ningún escáner lo tome por uno de verdad).
+/// The data of a keyed memory goes in `memory.extra` (like `--data` on any memory),
+/// never in its content; saving the key without data keeps what it had, and anything that looks like a
+/// secret is masked (the example one has a `~` in the prefix, as in tests/secretos.rs, so that
+/// no scanner takes it for a real one).
 #[test]
-fn los_datos_van_aparte_del_texto() {
+fn data_goes_apart_from_the_text() {
     let (_dir, mut db) = base("datos");
     let v = serde_json::json!({"b": 1, "a": {"d": [1, 2], "c": null}});
-    let r = memoria::guardar_por_clave(&mut db, "perfil", nueva("/p", "Perfil", "Texto."), Some(v.clone()), None).unwrap();
+    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto."), Some(v.clone()), None).unwrap();
     assert_eq!(r.memoria.content, "Texto.");
     assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], v);
-    let r = memoria::guardar_por_clave(&mut db, "perfil", nueva("/p", "Perfil", "Texto nuevo."), None, None).unwrap();
+    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), None, None).unwrap();
     assert_eq!(r.memoria.content, "Texto nuevo.");
     assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], v);
-    let r = memoria::guardar_por_clave(&mut db, "perfil", nueva("/p", "Perfil", "Texto nuevo."), Some(serde_json::json!({"token": "export GH=gh~p_abcdefghijklmnopqrstuvwxyz0123456789".replace('~', "")})), None).unwrap();
+    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), Some(serde_json::json!({"token": "export GH=gh~p_abcdefghijklmnopqrstuvwxyz0123456789".replace('~', "")})), None).unwrap();
     assert!(!r.tapados.is_empty());
     let d = memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap();
     assert!(!d[&r.memoria.id]["token"].as_str().unwrap().contains("abcdefghijklmnop"));
 }
 
-/// 1.8.6: la misma clave en dos bases; al importar una en la otra, la que pierde queda sustituida por la
-/// que manda. Si la persona dice «está bien así» (`compatible`), importar otra vez no vuelve a ponerla
-/// sustituida: antes solo se saltaba la pareja si su veredicto vigente era `superseded`.
+/// 1.8.6: the same key in two databases; when importing one into the other, the losing one is superseded by
+/// the winning one. If the person says «it's fine as is» (`compatible`), importing again does not mark it
+/// superseded again: before, the pair was only skipped if its current verdict was `superseded`.
 #[test]
-fn importar_otra_vez_respeta_esta_bien_asi() {
+fn importing_again_respects_its_fine_as_is() {
     let dir = comun::Temporal::nueva("clave-descartada");
     let omoi = |base: &str, args: &[&str]| -> String {
         let o = Command::new(env!("CARGO_BIN_EXE_omoi"))
@@ -303,20 +303,20 @@ fn importar_otra_vez_respeta_esta_bien_asi() {
         assert!(o.status.success(), "omoi {args:?}: {}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         String::from_utf8(o.stdout).unwrap()
     };
-    let id_de = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap()["id"].as_str().unwrap().to_string();
-    let vieja = id_de(omoi("a.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test"]));
-    let nueva = id_de(omoi("b.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test, despliegue"]));
+    let id_of = |s: String| serde_json::from_str::<serde_json::Value>(&s).unwrap()["id"].as_str().unwrap().to_string();
+    let old = id_of(omoi("a.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test"]));
+    let newer = id_of(omoi("b.db", &["--json", "remember", "-k", "fact", "-t", "Ruta de la factoría", "--global", "--key", "ruta", "android, test, despliegue"]));
     let export = dir.join("a.jsonl");
     std::fs::write(&export, omoi("a.db", &["export", "--all"])).unwrap();
     let export = export.to_str().unwrap();
-    let sustituida = || {
+    let superseded = || {
         let rev: serde_json::Value = serde_json::from_str(&omoi("b.db", &["--json", "review"])).unwrap();
-        rev.as_array().unwrap().iter().any(|a| a["kind"] == "superseded" && a["memory_id"] == vieja.as_str())
+        rev.as_array().unwrap().iter().any(|a| a["kind"] == "superseded" && a["memory_id"] == old.as_str())
     };
     omoi("b.db", &["import", export]);
-    assert!(sustituida(), "la que pierde queda sustituida al importar");
-    omoi("b.db", &["review", "--dismiss", &vieja, "--kind", "superseded", "--other", &nueva]);
-    assert!(!sustituida());
+    assert!(superseded(), "la que pierde queda sustituida al importar");
+    omoi("b.db", &["review", "--dismiss", &old, "--kind", "superseded", "--other", &newer]);
+    assert!(!superseded());
     omoi("b.db", &["import", export]);
-    assert!(!sustituida(), "importar otra vez no vuelve a ponerla sustituida");
+    assert!(!superseded(), "importar otra vez no vuelve a ponerla sustituida");
 }

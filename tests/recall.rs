@@ -1,4 +1,4 @@
-//! Fase 4: el recall que inyectan los hooks.
+//! Phase 4: the recall the hooks inject.
 
 mod comun;
 
@@ -9,14 +9,14 @@ use rusqlite::Connection;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-fn base(nombre: &str) -> (comun::Temporal, Connection) {
-    let dir = comun::Temporal::nueva(&format!("recall-{nombre}"));
+fn base(name: &str) -> (comun::Temporal, Connection) {
+    let dir = comun::Temporal::nueva(&format!("recall-{name}"));
     let db = db::abrir(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
-/// Las memorias de tests/busquedas.tsv en el proyecto `/p`, más una preferencia y una fijada.
-fn con_memorias(db: &mut Connection) {
+/// The memories of tests/busquedas.tsv in project `/p`, plus a preference and a pinned one.
+fn with_memories(db: &mut Connection) {
     for l in include_str!("busquedas.tsv").lines().filter(|l| l.starts_with("m\t")) {
         let c: Vec<&str> = l.split('\t').collect();
         let mut n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: c[2].into(), content: c[3].into(), ..Default::default() };
@@ -28,39 +28,39 @@ fn con_memorias(db: &mut Connection) {
     }
     let pref = Nueva { project: String::new(), kind: Some(Tipo::Preference), title: "Respuestas en español".into(), content: "El usuario quiere las respuestas en español y sin rodeos.".into(), ..Default::default() };
     memoria::guardar(db, pref, None).unwrap();
-    let fijada = Nueva { project: "/p".into(), kind: Some(Tipo::Decision), title: "Base de datos única".into(), content: "Todo va en un solo fichero SQLite.".into(), pinned: true, ..Default::default() };
-    memoria::guardar(db, fijada, None).unwrap();
+    let pinned_mem = Nueva { project: "/p".into(), kind: Some(Tipo::Decision), title: "Base de datos única".into(), content: "Todo va en un solo fichero SQLite.".into(), pinned: true, ..Default::default() };
+    memoria::guardar(db, pinned_mem, None).unwrap();
 }
 
-fn entrada(sesion: &str, prompt: &str) -> Entrada {
-    Entrada { session_id: sesion.into(), prompt: prompt.into(), ..Default::default() }
+fn entry(session: &str, prompt: &str) -> Entrada {
+    Entrada { session_id: session.into(), prompt: prompt.into(), ..Default::default() }
 }
 
 #[test]
-fn al_empezar_da_preferencias_y_fijadas() {
+fn session_start_gives_preferences_and_pinned() {
     let (_dir, mut db) = base("empezar");
-    con_memorias(&mut db);
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
+    with_memories(&mut db);
+    let t = recall::al_empezar(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
     assert!(t.starts_with("<omoikane>") && t.ends_with("</omoikane>"));
     assert!(t.contains("20 memories"), "{t}");
     assert!(t.contains("Respuestas en español") && t.contains("[global]"));
     assert!(t.contains("Base de datos única"));
-    // Lo último en lo que se trabajó: 5 títulos con fecha, sin su contenido, y sin repetir lo fijado.
-    let (_, ultimas) = t.split_once("Last worked on").expect("lista de lo último");
-    let lineas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
-    assert_eq!(lineas.len(), recall::RECIENTES, "{t}");
-    assert!(lineas.iter().all(|l| l.starts_with("- 20") && l.contains("(id ") && !l.contains("Base de datos única")), "{t}");
+    // The last things worked on: 5 dated titles, without their content, and not repeating the pinned ones.
+    let (_, recent) = t.split_once("Last worked on").expect("lista de lo último");
+    let lines: Vec<&str> = recent.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(lines.len(), recall::RECIENTES, "{t}");
+    assert!(lines.iter().all(|l| l.starts_with("- 20") && l.contains("(id ") && !l.contains("Base de datos única")), "{t}");
     assert!(!t.contains("/var/log/app:"), "sin el contenido: {t}");
     assert!(t.contains("ask the user right away"), "{t}");
-    // Solo las preferencias y las fijadas cuentan como inyectadas: lo reciente aún puede llegar entero.
+    // Only preferences and pinned ones count as injected: recent ones can still arrive in full.
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
 }
 
 #[test]
-fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
+fn session_start_says_where_each_project_was_left() {
     let (_dir, mut db) = base("estado");
-    con_memorias(&mut db);
-    let estado = |project: &str, title: &str, content: &str| Nueva {
+    with_memories(&mut db);
+    let status = |project: &str, title: &str, content: &str| Nueva {
         project: project.into(),
         kind: Some(Tipo::Fact),
         title: title.into(),
@@ -68,29 +68,29 @@ fn al_empezar_dice_en_que_punto_se_quedo_cada_proyecto() {
         tags: vec!["Status".into()],
         ..Default::default()
     };
-    memoria::guardar(&mut db, estado("/p", "Estado viejo de p", "Fase 1 a medias."), None).unwrap();
+    memoria::guardar(&mut db, status("/p", "Estado viejo de p", "Fase 1 a medias."), None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
-    let largo = format!("Fase 2 hecha; siguiente: la web. {}", "detalle ".repeat(100));
-    let nuevo = memoria::guardar(&mut db, estado("/p", "Estado de p", &largo), None).unwrap();
-    memoria::guardar(&mut db, estado("/otro", "Estado de otro", "No debería salir desde /p."), None).unwrap();
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
-    let (_, estados) = t.split_once("Where work was left").expect("sección de estado");
-    let lineas: Vec<&str> = estados.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
-    // Solo la más reciente de cada proyecto del ámbito, con un trozo largo del contenido pero cortado.
-    assert_eq!(lineas.len(), 1, "{t}");
-    assert!(lineas[0].contains("Estado de p") && lineas[0].contains("siguiente: la web") && lineas[0].ends_with('…'), "{t}");
+    let long = format!("Fase 2 hecha; siguiente: la web. {}", "detalle ".repeat(100));
+    let newest = memoria::guardar(&mut db, status("/p", "Estado de p", &long), None).unwrap();
+    memoria::guardar(&mut db, status("/otro", "Estado de otro", "No debería salir desde /p."), None).unwrap();
+    let t = recall::al_empezar(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
+    let (_, statuses) = t.split_once("Where work was left").expect("sección de estado");
+    let lines: Vec<&str> = statuses.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    // Only the most recent of each project in scope, with a long but cut piece of the content.
+    assert_eq!(lines.len(), 1, "{t}");
+    assert!(lines[0].contains("Estado de p") && lines[0].contains("siguiente: la web") && lines[0].ends_with('…'), "{t}");
     assert!(!t.contains("Estado viejo de p") && !t.contains("Estado de otro"), "{t}");
-    // No se repite en «Last worked on», que sigue con sus 5, ni cuenta como inyectada.
-    let (_, ultimas) = t.split_once("Last worked on").unwrap();
-    let ultimas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
-    assert_eq!(ultimas.len(), recall::RECIENTES, "{t}");
-    assert!(!ultimas.iter().any(|l| l.contains(&nuevo.id[..12])), "{t}");
+    // It isn't repeated in «Last worked on», which keeps its 5, nor counts as injected.
+    let (_, recent) = t.split_once("Last worked on").unwrap();
+    let recent: Vec<&str> = recent.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(recent.len(), recall::RECIENTES, "{t}");
+    assert!(!recent.iter().any(|l| l.contains(&newest.id[..12])), "{t}");
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
     assert!(t.contains("tag `status`"), "{t}");
 }
 
-/// Las líneas de la sección de decisiones abiertas al empezar sesión (vacío si no está).
-fn lineas_abiertas(t: &str) -> Vec<String> {
+/// The lines of the open decisions section at session start (empty if it isn't there).
+fn open_lines(t: &str) -> Vec<String> {
     match t.split_once("Decisions waiting for the user") {
         Some((_, r)) => r.lines().skip(1).take_while(|l| l.starts_with("- ") || l.starts_with('…')).map(str::to_string).collect(),
         None => Vec::new(),
@@ -98,9 +98,9 @@ fn lineas_abiertas(t: &str) -> Vec<String> {
 }
 
 #[test]
-fn al_empezar_recuerda_las_decisiones_abiertas() {
+fn session_start_recalls_open_decisions() {
     let (_dir, mut db) = base("abiertas");
-    con_memorias(&mut db);
+    with_memories(&mut db);
     let decision = |project: &str, title: &str, kind: Tipo, tags: &[&str]| Nueva {
         project: project.into(),
         kind: Some(kind),
@@ -109,95 +109,95 @@ fn al_empezar_recuerda_las_decisiones_abiertas() {
         tags: tags.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    let vieja = memoria::guardar(&mut db, decision("/p", "Precio del plan Pro", Tipo::Decision, &["Open", "precios"]), None).unwrap();
+    let old = memoria::guardar(&mut db, decision("/p", "Precio del plan Pro", Tipo::Decision, &["Open", "precios"]), None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
     memoria::guardar(&mut db, decision("", "Licencia de las plantillas", Tipo::Decision, &["open"]), None).unwrap();
-    // Ni un hecho con la etiqueta, ni una decisión sin ella, ni la de otro proyecto.
+    // Not a fact with the tag, nor a decision without it, nor another project's.
     memoria::guardar(&mut db, decision("/p", "Hecho etiquetado open", Tipo::Fact, &["open"]), None).unwrap();
     memoria::guardar(&mut db, decision("/p", "Decisión ya tomada", Tipo::Decision, &[]), None).unwrap();
     memoria::guardar(&mut db, decision("/otro", "Decisión de otro proyecto", Tipo::Decision, &["open"]), None).unwrap();
 
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
-    let l = lineas_abiertas(&t);
-    // De la más nueva a la más vieja (la global cuenta), con un fragmento corto del contenido.
+    let t = recall::al_empezar(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
+    let l = open_lines(&t);
+    // From newest to oldest (the global one counts), with a short snippet of the content.
     assert_eq!(l.len(), 2, "{t}");
     assert!(l[0].contains("Licencia de las plantillas") && l[1].contains("Precio del plan Pro"), "{t}");
     assert!(l[1].contains("Asumido: por equipo") && l[1].ends_with('…') && l[1].chars().count() < 300, "{t}");
     assert!(!l.iter().any(|x| x.contains("Hecho") || x.contains("Decisión")), "{t}");
     assert!(t.contains("drop the `open` tag"), "{t}");
-    // No se repiten en «Last worked on», que sigue con sus 5.
-    let (_, ultimas) = t.split_once("Last worked on").unwrap();
-    let ultimas: Vec<&str> = ultimas.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
-    assert_eq!(ultimas.len(), recall::RECIENTES, "{t}");
-    assert!(!ultimas.iter().any(|l| l.contains("Precio del plan Pro") || l.contains("Licencia de las plantillas")), "{t}");
-    // No cuentan como inyectadas: siguen solo la preferencia y la fijada.
+    // They aren't repeated in «Last worked on», which keeps its 5.
+    let (_, recent) = t.split_once("Last worked on").unwrap();
+    let recent: Vec<&str> = recent.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
+    assert_eq!(recent.len(), recall::RECIENTES, "{t}");
+    assert!(!recent.iter().any(|l| l.contains("Precio del plan Pro") || l.contains("Licencia de las plantillas")), "{t}");
+    // They don't count as injected: still only the preference and the pinned one.
     assert_eq!(recall::inyectadas(&db, "s1").unwrap(), 2);
 
-    // Cuando la persona decide: se añade la respuesta y se quita la etiqueta, y deja de salir.
+    // When the person decides: the answer is appended and the tag removed, and it stops showing.
     let c = memoria::Cambios { append: Some("Decidido: por usuario.".into()), tags: Some(vec!["precios".into()]), ..Default::default() };
-    memoria::actualizar(&mut db, &vieja.id, c, None).unwrap();
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s2", "")).unwrap().unwrap();
-    let l = lineas_abiertas(&t);
+    memoria::actualizar(&mut db, &old.id, c, None).unwrap();
+    let t = recall::al_empezar(&mut db, "/p", &entry("s2", "")).unwrap().unwrap();
+    let l = open_lines(&t);
     assert_eq!(l.len(), 1, "{t}");
     assert!(l[0].contains("Licencia de las plantillas"), "{t}");
 
-    // Sin ninguna abierta, no hay sección.
-    let ultima = memoria::abiertas(&db, &memoria::Ambito::Todos, 10).unwrap();
-    assert_eq!(ultima.len(), 2, "la global y la de /otro");
-    for m in ultima {
+    // With none open, there's no section.
+    let remaining = memoria::abiertas(&db, &memoria::Ambito::Todos, 10).unwrap();
+    assert_eq!(remaining.len(), 2, "la global y la de /otro");
+    for m in remaining {
         memoria::actualizar(&mut db, &m.id, memoria::Cambios { tags: Some(Vec::new()), ..Default::default() }, None).unwrap();
     }
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s3", "")).unwrap().unwrap();
+    let t = recall::al_empezar(&mut db, "/p", &entry("s3", "")).unwrap().unwrap();
     assert!(!t.contains("Decisions waiting for the user"), "{t}");
 }
 
 #[test]
-fn al_empezar_cuenta_las_decisiones_abiertas_que_no_caben() {
+fn session_start_counts_open_decisions_that_dont_fit() {
     let (_dir, mut db) = base("abiertas-muchas");
-    let temas = ["precios", "licencia", "logotipo", "dominio", "idiomas", "soporte", "pagos", "correo", "nube", "móvil", "datos", "marca", "equipo"];
-    for tema in temas {
+    let topics = ["precios", "licencia", "logotipo", "dominio", "idiomas", "soporte", "pagos", "correo", "nube", "móvil", "datos", "marca", "equipo"];
+    for topic in topics {
         let n = Nueva {
             project: "/p".into(),
             kind: Some(Tipo::Decision),
-            title: format!("Qué hacer con {tema}"),
-            content: format!("Pregunta abierta sobre {tema}; asumido lo de siempre."),
+            title: format!("Qué hacer con {topic}"),
+            content: format!("Pregunta abierta sobre {topic}; asumido lo de siempre."),
             tags: vec!["open".into()],
             ..Default::default()
         };
         memoria::guardar(&mut db, n, None).unwrap();
     }
-    let t = recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap().unwrap();
-    let l = lineas_abiertas(&t);
+    let t = recall::al_empezar(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
+    let l = open_lines(&t);
     assert_eq!(l.iter().filter(|x| x.starts_with("- ")).count(), recall::ABIERTAS, "{t}");
-    assert!(l.last().unwrap().contains(&format!("{} more", temas.len() - recall::ABIERTAS)), "{t}");
+    assert!(l.last().unwrap().contains(&format!("{} more", topics.len() - recall::ABIERTAS)), "{t}");
 }
 
 #[test]
-fn cada_mensaje_trae_lo_que_toca_o_nada() {
+fn each_message_brings_what_fits_or_nothing() {
     let (_dir, mut db) = base("mensaje");
-    con_memorias(&mut db);
-    // Relevante: comparte palabras poco frecuentes con una memoria.
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap();
+    with_memories(&mut db);
+    // Relevant: shares infrequent words with a memory.
+    let t = recall::al_preguntar(&mut db, "/p", &entry("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap();
     let t = t.expect("debería inyectar la del token");
     assert!(t.contains("Bug en auth"), "{t}");
-    // Charla y mensajes cortos: nada.
+    // Chit-chat and short messages: nothing.
     for p in ["vale, sigue", "como ha ido todo?", "1 ok 2 ok 3 ok", "perfecto gracias, dale"] {
-        assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", p), None).unwrap().is_none(), "«{p}» no debería inyectar nada");
+        assert!(recall::al_preguntar(&mut db, "/p", &entry("s1", p), None).unwrap().is_none(), "«{p}» no debería inyectar nada");
     }
-    // Sin relación con ninguna memoria: nada.
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "receta de paella valenciana con conejo y garrofó"), None).unwrap().is_none());
-    // La misma memoria no se repite en la misma sesión…
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "otra vez el middleware de autenticación y la caducidad del token UTC"), None).unwrap().is_none());
-    // …pero sí en otra sesión, y en la misma después de compactar.
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s2", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
-    recall::al_empezar(&mut db, "/p", &entrada("s1", "")).unwrap();
-    assert!(recall::al_preguntar(&mut db, "/p", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
+    // Unrelated to any memory: nothing.
+    assert!(recall::al_preguntar(&mut db, "/p", &entry("s1", "receta de paella valenciana con conejo y garrofó"), None).unwrap().is_none());
+    // The same memory isn't repeated in the same session…
+    assert!(recall::al_preguntar(&mut db, "/p", &entry("s1", "otra vez el middleware de autenticación y la caducidad del token UTC"), None).unwrap().is_none());
+    // …but it is in another session, and in the same one after compacting.
+    assert!(recall::al_preguntar(&mut db, "/p", &entry("s2", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
+    recall::al_empezar(&mut db, "/p", &entry("s1", "")).unwrap();
+    assert!(recall::al_preguntar(&mut db, "/p", &entry("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_some());
 }
 
-/// Con muy pocas memorias, las palabras del mensaje que no están en ninguna no deben hundir la
-/// cobertura de la que sí es del tema (caso real de la prueba con Claude Code).
+/// With very few memories, the message words that are in none of them must not sink the
+/// coverage of the one that is on topic (a real case from the test with Claude Code).
 #[test]
-fn base_pequena_y_palabras_que_no_estan() {
+fn small_base_and_words_that_are_not_there() {
     let (_dir, mut db) = base("pequena");
     for (k, t, c, p) in [
         (Tipo::Preference, "Respuestas cortas y en español", "Como mucho tres frases.", ""),
@@ -206,60 +206,60 @@ fn base_pequena_y_palabras_que_no_estan() {
     ] {
         memoria::guardar(&mut db, Nueva { project: p.into(), kind: Some(k), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
     }
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s", "Estoy pensando en cambiar la pasarela de pago a Stripe"), None).unwrap();
+    let t = recall::al_preguntar(&mut db, "/p", &entry("s", "Estoy pensando en cambiar la pasarela de pago a Stripe"), None).unwrap();
     assert!(t.expect("debería traer la decisión").contains("Redsys"));
 }
 
-/// El recordatorio de guardar: solo en sesiones largas sin nada guardado, y no en cada mensaje.
+/// The save reminder: only in long sessions with nothing saved, and not on every message.
 #[test]
-fn recordatorio_de_guardar() {
+fn save_reminder() {
     let (_dir, mut db) = base("recordatorio");
-    con_memorias(&mut db);
+    with_memories(&mut db);
     recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "startup".into(), ..Default::default() }).unwrap();
-    let charla = |db: &mut Connection| recall::al_preguntar(db, "/p", &entrada("s", "vale, sigue"), None).unwrap();
-    // Recién empezada: nada, aunque haya muchos mensajes.
+    let chat = |db: &mut Connection| recall::al_preguntar(db, "/p", &entry("s", "vale, sigue"), None).unwrap();
+    // Just started: nothing, even with many messages.
     for _ in 0..12 {
-        assert!(charla(&mut db).is_none());
+        assert!(chat(&mut db).is_none());
     }
-    // Una sesión de hace 20 minutos sin nada guardado: toca, una sola vez.
-    // (las memorias de ejemplo se crearon «ahora»: se retrasan para que sean de antes de la sesión)
+    // A session from 20 minutes ago with nothing saved: it's due, just once.
+    // (the sample memories were created «now»: they're moved back so they predate the session)
     db.execute("UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours')", []).unwrap();
     db.execute("UPDATE session SET started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes')", []).unwrap();
-    let t = charla(&mut db).expect("debería recordar");
+    let t = chat(&mut db).expect("debería recordar");
     assert!(t.contains("nothing has been saved"), "{t}");
-    assert!(charla(&mut db).is_none(), "solo una vez cada 30 minutos");
-    // Con algo guardado durante la sesión, ya no.
+    assert!(chat(&mut db).is_none(), "solo una vez cada 30 minutos");
+    // With something saved during the session, no longer.
     db.execute("UPDATE session SET reminded_at = NULL", []).unwrap();
     memoria::guardar(&mut db, Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: "Nueva".into(), content: "algo aprendido".into(), ..Default::default() }, None).unwrap();
-    assert!(charla(&mut db).is_none());
-    // Compactar no reinicia el reloj; una sesión nueva, sí.
-    let antes: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
+    assert!(chat(&mut db).is_none());
+    // Compacting doesn't reset the clock; a new session does.
+    let before: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
     recall::al_empezar(&mut db, "/p", &Entrada { session_id: "s".into(), source: "compact".into(), ..Default::default() }).unwrap();
-    let despues: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
-    assert_eq!(antes, despues);
+    let after: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
+    assert_eq!(before, after);
 }
 
 #[test]
-fn nombrar_un_fichero_trae_sus_memorias() {
+fn naming_a_file_brings_its_memories() {
     let (_dir, mut db) = base("rutas");
-    con_memorias(&mut db);
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s1", "revisa src/middleware/auth.rs por favor"), None).unwrap().unwrap();
+    with_memories(&mut db);
+    let t = recall::al_preguntar(&mut db, "/p", &entry("s1", "revisa src/middleware/auth.rs por favor"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth") && t.contains("src/middleware/auth.rs"), "{t}");
-    // Con el nombre del fichero basta, y en Windows con barras al revés también.
-    let t = recall::al_preguntar(&mut db, "/p", &entrada("s2", r"mira src\middleware\auth.rs"), None).unwrap().unwrap();
+    // The file name is enough, and with backslashes on Windows too.
+    let t = recall::al_preguntar(&mut db, "/p", &entry("s2", r"mira src\middleware\auth.rs"), None).unwrap().unwrap();
     assert!(t.contains("Bug en auth"));
 }
 
 #[test]
-fn otro_proyecto_no_ve_las_memorias() {
+fn another_project_does_not_see_the_memories() {
     let (_dir, mut db) = base("proyecto");
-    con_memorias(&mut db);
-    assert!(recall::al_preguntar(&mut db, "/otro", &entrada("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_none());
-    let t = recall::al_empezar(&mut db, "/otro", &entrada("s1", "")).unwrap().unwrap();
+    with_memories(&mut db);
+    assert!(recall::al_preguntar(&mut db, "/otro", &entry("s1", "el middleware de autenticación compara mal la caducidad del token en UTC"), None).unwrap().is_none());
+    let t = recall::al_empezar(&mut db, "/otro", &entry("s1", "")).unwrap().unwrap();
     assert!(t.contains("Respuestas en español") && !t.contains("Base de datos única"), "{t}");
 }
 
-/// El hook de verdad: `omoi recall` con el JSON que manda Claude Code por stdin.
+/// The real hook: `omoi recall` with the JSON Claude Code sends on stdin.
 fn hook(dir: &std::path::Path, args: &[&str], json: &str) -> (bool, String, String) {
     let mut h = Command::new(env!("CARGO_BIN_EXE_omoi"))
         .arg("recall")
@@ -277,15 +277,15 @@ fn hook(dir: &std::path::Path, args: &[&str], json: &str) -> (bool, String, Stri
 }
 
 #[test]
-fn el_hook_de_claude_code() {
+fn the_claude_code_hook() {
     let dir = comun::Temporal::nueva("recall-hook");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     let cwd = repo.to_string_lossy().replace('\\', "\\\\");
-    // Sin base todavía: no molesta.
+    // No database yet: it stays out of the way.
     let (ok, out, _) = hook(&dir, &[], &format!(r#"{{"session_id":"s","cwd":"{cwd}","prompt":"el token caduca","hook_event_name":"UserPromptSubmit"}}"#));
     assert!(ok && out.is_empty());
-    // Con una memoria del proyecto (el que sale de `cwd`, no de la carpeta del proceso).
+    // With a memory of the project (the one from `cwd`, not from the process folder).
     let o = Command::new(env!("CARGO_BIN_EXE_omoi"))
         .args(["--dir", repo.to_str().unwrap(), "remember", "-k", "gotcha", "-t", "Bug en auth: el token caduca antes de tiempo"])
         .arg("El middleware de autenticación compara la hora local con la caducidad del token, que va en UTC.")
@@ -307,56 +307,56 @@ fn el_hook_de_claude_code() {
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
     assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("Bug en auth"));
-    // Entrada rota: ni error ni salida (un hook nunca debe bloquear al usuario).
+    // Broken input: no error and no output (a hook must never block the user).
     let (ok, out, _) = hook(&dir, &[], "esto no es json");
     assert!(ok && out.is_empty());
 }
 
-/// 1.11: al abrir un fichero (`PreToolUse` de Read, Edit, Write) llegan las memorias que lo llevan en
-/// sus rutas aunque el mensaje no lo nombre, la trampa primero; una vez por sesión, nunca otro fichero
-/// con el mismo final de nombre a medias, y nada con una herramienta que no abre ficheros.
+/// 1.11: opening a file (`PreToolUse` of Read, Edit, Write) brings the memories that have it in
+/// their paths even if the message doesn't name it, the gotcha first; once per session, never another file
+/// whose name merely ends the same way, and nothing with a tool that doesn't open files.
 #[test]
-fn al_abrir_un_fichero_llegan_sus_memorias() {
+fn opening_a_file_brings_its_memories() {
     let (_dir, mut db) = base("abrir");
-    let guardar = |db: &mut Connection, kind: Tipo, titulo: &str, rutas: &[&str]| {
-        let n = Nueva { project: "/p".into(), kind: Some(kind), title: titulo.into(), content: format!("{titulo}."), paths: rutas.iter().map(|r| r.to_string()).collect(), ..Default::default() };
+    let save = |db: &mut Connection, kind: Tipo, title: &str, paths: &[&str]| {
+        let n = Nueva { project: "/p".into(), kind: Some(kind), title: title.into(), content: format!("{title}."), paths: paths.iter().map(|r| r.to_string()).collect(), ..Default::default() };
         memoria::guardar(db, n, None).unwrap().id
     };
-    let hecho = guardar(&mut db, Tipo::Fact, "Cómo se firma el bundle", &["src/okf.rs"]);
-    let trampa = guardar(&mut db, Tipo::Gotcha, "El YAML entrecomilla distinto", &["/p/src/okf.rs", "tests/okf.rs"]);
-    let otra = guardar(&mut db, Tipo::Gotcha, "Otro fichero que acaba igual", &["src/xokf.rs"]);
-    let abrir = |sesion: &str, tool: &str, f: &str| Entrada { session_id: sesion.into(), tool_name: tool.into(), tool_input: serde_json::json!({ "file_path": f }), ..Default::default() };
+    let fact = save(&mut db, Tipo::Fact, "Cómo se firma el bundle", &["src/okf.rs"]);
+    let trap = save(&mut db, Tipo::Gotcha, "El YAML entrecomilla distinto", &["/p/src/okf.rs", "tests/okf.rs"]);
+    let other = save(&mut db, Tipo::Gotcha, "Otro fichero que acaba igual", &["src/xokf.rs"]);
+    let open = |session: &str, tool: &str, f: &str| Entrada { session_id: session.into(), tool_name: tool.into(), tool_input: serde_json::json!({ "file_path": f }), ..Default::default() };
 
-    let t = recall::al_abrir(&mut db, "/p", &abrir("s1", "Read", "/p/src/okf.rs")).unwrap().expect("sus memorias");
+    let t = recall::al_abrir(&mut db, "/p", &open("s1", "Read", "/p/src/okf.rs")).unwrap().expect("sus memorias");
     assert!(t.contains("Memories about `src/okf.rs`"), "{t}");
-    let (i_trampa, i_hecho) = (t.find(&trampa[..12]).expect("la trampa"), t.find(&hecho[..12]).expect("el hecho"));
-    assert!(i_trampa < i_hecho, "la trampa primero: {t}");
-    assert!(!t.contains(&otra[..12]), "`xokf.rs` no es `okf.rs`: {t}");
+    let (i_trap, i_fact) = (t.find(&trap[..12]).expect("la trampa"), t.find(&fact[..12]).expect("el hecho"));
+    assert!(i_trap < i_fact, "la trampa primero: {t}");
+    assert!(!t.contains(&other[..12]), "`xokf.rs` no es `okf.rs`: {t}");
 
-    // Otra vez en la misma sesión: ya las tiene. En otra sesión, vuelven.
-    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s1", "Edit", "src/okf.rs")).unwrap(), None);
-    assert!(recall::al_abrir(&mut db, "/p", &abrir("s2", "Edit", "src/okf.rs")).unwrap().is_some());
-    // Lo que no abre ficheros, o un fichero sin memorias: nada.
-    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s3", "Bash", "src/okf.rs")).unwrap(), None);
-    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s3", "Read", "README.md")).unwrap(), None);
-    // Y lo que ya llegó con un mensaje no se repite al abrir.
-    let t = recall::al_abrir(&mut db, "/p", &abrir("s4", "Read", "tests/okf.rs")).unwrap().unwrap();
-    assert!(t.contains(&trampa[..12]));
-    assert_eq!(recall::al_abrir(&mut db, "/p", &abrir("s4", "Read", "src/okf.rs")).unwrap().map(|t| t.contains(&trampa[..12])), Some(false));
+    // Again in the same session: it already has them. In another session, they come back.
+    assert_eq!(recall::al_abrir(&mut db, "/p", &open("s1", "Edit", "src/okf.rs")).unwrap(), None);
+    assert!(recall::al_abrir(&mut db, "/p", &open("s2", "Edit", "src/okf.rs")).unwrap().is_some());
+    // What doesn't open files, or a file without memories: nothing.
+    assert_eq!(recall::al_abrir(&mut db, "/p", &open("s3", "Bash", "src/okf.rs")).unwrap(), None);
+    assert_eq!(recall::al_abrir(&mut db, "/p", &open("s3", "Read", "README.md")).unwrap(), None);
+    // And what already arrived with a message isn't repeated on open.
+    let t = recall::al_abrir(&mut db, "/p", &open("s4", "Read", "tests/okf.rs")).unwrap().unwrap();
+    assert!(t.contains(&trap[..12]));
+    assert_eq!(recall::al_abrir(&mut db, "/p", &open("s4", "Read", "src/okf.rs")).unwrap().map(|t| t.contains(&trap[..12])), Some(false));
 }
 
-/// Por la CLI, como lo llama el mod: `omoi recall --file-open` con el JSON del hook.
+/// Through the CLI, as the mod calls it: `omoi recall --file-open` with the hook's JSON.
 #[test]
-fn recall_file_open_por_la_cli() {
+fn recall_file_open_through_the_cli() {
     let (dir, mut db) = base("abrir-cli");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let raiz = omoikane::proyecto::de(&repo).unwrap();
-    let n = Nueva { project: raiz.clone(), kind: Some(Tipo::Gotcha), title: "Cuidado con el lector".into(), content: "Lee en NFC.".into(), paths: vec!["src/lector.rs".into()], ..Default::default() };
+    let root = omoikane::proyecto::de(&repo).unwrap();
+    let n = Nueva { project: root.clone(), kind: Some(Tipo::Gotcha), title: "Cuidado con el lector".into(), content: "Lee en NFC.".into(), paths: vec!["src/lector.rs".into()], ..Default::default() };
     memoria::guardar(&mut db, n, None).unwrap();
     drop(db);
-    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi"))
-        .args(["--dir", raiz.as_str(), "recall", "--file-open"])
+    let mut child = Command::new(env!("CARGO_BIN_EXE_omoi"))
+        .args(["--dir", root.as_str(), "recall", "--file-open"])
         .env("OMOIKANE_DB", dir.join("o.db"))
         .env("OMOIKANE_MODELS", dir.join("models"))
         .env("OMOIKANE_AUTO_UPDATE", "0")
@@ -365,8 +365,8 @@ fn recall_file_open_por_la_cli() {
         .spawn()
         .unwrap();
     let e = serde_json::json!({ "session_id": "x", "tool_name": "Write", "tool_input": { "file_path": repo.join("src").join("lector.rs") } });
-    hijo.stdin.take().unwrap().write_all(e.to_string().as_bytes()).unwrap();
-    let o = hijo.wait_with_output().unwrap();
+    child.stdin.take().unwrap().write_all(e.to_string().as_bytes()).unwrap();
+    let o = child.wait_with_output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&o.stdout)));
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("Cuidado con el lector"), "{v}");

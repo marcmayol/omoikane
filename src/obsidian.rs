@@ -1,27 +1,27 @@
-//! Ver la memoria en Obsidian (1.3.5): `omoi export --obsidian <vault>` escribe una nota Markdown por
-//! memoria en `<vault>/omoikane/`, para mirarla con la vista de grafo de Obsidian. La carpeta es un
-//! espejo que se rehace en cada exportación; desde la 1.9.0, `omoi import --obsidian <vault>` trae de
-//! vuelta lo editado allí (ver [`importar`]), y hasta entonces la exportación no pisa ni borra una nota
-//! editada (ver [`pendiente`]).
+//! View the memory in Obsidian (1.3.5): `omoi export --obsidian <vault>` writes one Markdown note per
+//! memory into `<vault>/omoikane/`, to look at it with Obsidian's graph view. The folder is a
+//! mirror rebuilt on every export; since 1.9.0, `omoi import --obsidian <vault>` brings back what was
+//! edited there (see [`importar`]), and until then the export neither overwrites nor deletes an edited
+//! note (see [`pending`]).
 //!
-//! - Una carpeta por proyecto (`_global` para lo global, `_<espacio>` para lo de un espacio sin
-//!   proyecto), plana: el tipo va en las etiquetas, que es lo que colorea el grafo.
-//! - Cada nota enlaza a la de su proyecto (`proyecto-<nombre>`; lo global, a ninguna: casi todo es
-//!   global para quien trabaja desde su carpeta personal, y una sola nota para todo lo convertía en
-//!   el centro de una estrella que tapaba los enlaces de verdad), a las memorias que nombra con
-//!   `[[nombre]]` (resueltos con las reglas de `enlaces`, pero solo entre lo exportado), a las que
-//!   sustituye o contradice (veredictos vigentes, `veredictos::parejas`) y a una nota por fichero
-//!   citado por dos memorias o más (`_ficheros/`).
-//! - Cada nota se llama como el título de su memoria (es lo que Obsidian enseña como título), con el
-//!   final del id detrás solo si otra se llamaría igual: retitular una memoria la mueve de nombre, y
-//!   la vieja se borra. Solo se escribe lo que cambia y solo se borra lo que lleva la marca
-//!   `omoikane:` en la cabecera (lo que haya puesto otra persona en la carpeta se queda).
-//! - Ámbito: por defecto lo personal (proyectos sin espacio) y lo global; con un espacio, solo lo de
-//!   ese cliente, sin lo global. Nunca dos espacios en el mismo vault.
-//! - `.obsidian/graph.json` con un color por tipo, solo si el vault no tiene uno.
-//! - Cada nota de memoria lleva en la cabecera `base` (la huella de lo editable, tal como salió) y
-//!   `sig` (la firma de esta base, con la clave de la de OKF: `okf::firma`), para saber al volver si
-//!   se editó y si de verdad es de esa memoria.
+//! - One folder per project (`_global` for global memories, `_<space>` for those of a space with no
+//!   project), flat: the kind goes in the tags, which is what colours the graph.
+//! - Each note links to its project's note (`proyecto-<name>`; global ones, to none: almost everything is
+//!   global for someone working from their home folder, and a single note for all of it turned it into
+//!   the centre of a star that hid the real links), to the memories it names with
+//!   `[[name]]` (resolved with the rules of `enlaces`, but only among what is exported), to the ones it
+//!   supersedes or contradicts (current verdicts, `veredictos::parejas`) and to one note per file
+//!   cited by two or more memories (`_ficheros/`).
+//! - Each note is named after its memory's title (that's what Obsidian shows as the title), with the
+//!   end of the id appended only if another would have the same name: retitling a memory renames it, and
+//!   the old one is deleted. Only what changes is written and only what carries the `omoikane:` mark in
+//!   the header is deleted (whatever someone else put in the folder stays).
+//! - Scope: by default the personal ones (projects with no space) and the global ones; with a space, only
+//!   that client's, without the global ones. Never two spaces in the same vault.
+//! - `.obsidian/graph.json` with one colour per kind, only if the vault has none.
+//! - Each memory note carries in its header `base` (the fingerprint of the editable part, as exported) and
+//!   `sig` (the signature of this database, with the OKF key: `okf::firma`), to tell on the way back whether
+//!   it was edited and whether it really belongs to that memory.
 
 use crate::memoria::{Ambito, Cambios, Memoria, Tipo};
 use crate::tr;
@@ -31,10 +31,10 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-/// La subcarpeta del vault que es de Omoikane.
+/// The vault subfolder that belongs to Omoikane.
 pub const CARPETA: &str = "omoikane";
 
-/// Lo que hizo una exportación.
+/// What an export did.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Cuenta {
     pub memories: usize,
@@ -43,246 +43,246 @@ pub struct Cuenta {
     pub unchanged: usize,
     pub deleted: usize,
     pub hubs: usize,
-    /// Las notas editadas en Obsidian que aún no se han importado: no se pisan ni se borran.
+    /// Notes edited in Obsidian not yet imported: they are neither overwritten nor deleted.
     pub kept: usize,
 }
 
-/// Qué se exporta: lo personal y lo global, o un espacio sin lo global.
+/// What gets exported: the personal and global ones, or a space without the global ones.
 #[derive(Clone, Copy, Debug)]
 pub enum Que {
     Personal,
     Espacio(i64),
 }
 
-/// Exporta al vault y devuelve qué ha cambiado.
-pub fn exportar(db: &Connection, vault: &Path, que: Que) -> Result<Cuenta> {
-    exportar_con(db, vault, que, &BTreeSet::new(), &BTreeSet::new())
+/// Exports to the vault and returns what changed.
+pub fn exportar(db: &Connection, vault: &Path, what: Que) -> Result<Cuenta> {
+    export_with(db, vault, what, &BTreeSet::new(), &BTreeSet::new())
 }
 
-/// Exporta; las notas de `pisar` se rehacen aunque estén editadas sin importar (`--prefer omoikane`), y
-/// las de `respetar` no se escriben ni se borran (lo que la importación no ha podido traer: notas sin la
-/// firma de esta base que dicen otra cosa que su memoria, notas nuevas que no pueden tocar la suya).
-fn exportar_con(db: &Connection, vault: &Path, que: Que, pisar: &BTreeSet<PathBuf>, respetar: &BTreeSet<PathBuf>) -> Result<Cuenta> {
-    // Una carpeta de red no se mira (ver `proyecto::ruta_local`); con una letra de unidad, sí.
+/// Exports; the notes in `overwrite` are rebuilt even if edited and not imported (`--prefer omoikane`), and
+/// those in `keep` are neither written nor deleted (what the import couldn't bring in: notes without this
+/// database's signature that say something other than their memory, new notes that can't touch theirs).
+fn export_with(db: &Connection, vault: &Path, what: Que, overwrite: &BTreeSet<PathBuf>, keep: &BTreeSet<PathBuf>) -> Result<Cuenta> {
+    // A network folder is not looked at (see `proyecto::ruta_local`); one with a drive letter is.
     crate::proyecto::exigir_local(vault)?;
-    let p = preparar(db, que)?;
-    let raiz = vault.join(CARPETA);
-    std::fs::create_dir_all(&raiz).with_context(|| tr!("could not create {}", "no se pudo crear {}", raiz.display()))?;
-    let clave = crate::okf::firma::clave(db, true)?.context("okf_firma")?;
-    let alcance = alcance_de(db, que)?;
+    let p = prepare(db, what)?;
+    let root = vault.join(CARPETA);
+    std::fs::create_dir_all(&root).with_context(|| tr!("could not create {}", "no se pudo crear {}", root.display()))?;
+    let sign_key = crate::okf::firma::clave(db, true)?.context("okf_firma")?;
+    let scope = scope_of(db, what)?;
 
-    // Lo editado en Obsidian y aún sin importar no se pisa ni se borra (ver `pendiente`).
-    let por_id: HashMap<&str, usize> = p.notas.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
-    let mut guardar: BTreeSet<PathBuf> = BTreeSet::new();
-    for (ruta, l) in notas_del_vault(&raiz, &mut Vec::new()).unwrap_or_default() {
-        if !pisar.contains(&ruta) && pendiente(&l, &p, &por_id, &clave, &alcance) {
-            guardar.insert(ruta);
+    // What was edited in Obsidian and not yet imported is neither overwritten nor deleted (see `pending`).
+    let by_id: HashMap<&str, usize> = p.notes.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
+    let mut kept: BTreeSet<PathBuf> = BTreeSet::new();
+    for (path, l) in vault_notes(&root, &mut Vec::new()).unwrap_or_default() {
+        if !overwrite.contains(&path) && pending(&l, &p, &by_id, &sign_key, &scope) {
+            kept.insert(path);
         }
     }
-    guardar.extend(respetar.iter().filter(|r| !pisar.contains(*r)).cloned());
+    kept.extend(keep.iter().filter(|r| !overwrite.contains(*r)).cloned());
 
-    let mut escritos: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut c = Cuenta { memories: p.notas.len(), kept: guardar.len(), ..Cuenta::default() };
-    for n in &p.notas {
-        let ruta = raiz.join(&n.rel);
-        if !guardar.contains(&ruta) {
-            escribir(&ruta, &firmada(&n.texto, &n.rel, &n.m, &alcance, &clave), &mut c)?;
+    let mut written: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut c = Cuenta { memories: p.notes.len(), kept: kept.len(), ..Cuenta::default() };
+    for n in &p.notes {
+        let path = root.join(&n.rel);
+        if !kept.contains(&path) {
+            write_if_changed(&path, &signed(&n.text, &n.rel, &n.m, &scope, &sign_key), &mut c)?;
         }
-        escritos.insert(ruta);
+        written.insert(path);
     }
-    for (rel, texto) in &p.hubs {
-        let ruta = raiz.join(rel);
-        escribir(&ruta, texto, &mut c)?;
-        escritos.insert(ruta);
+    for (rel, text) in &p.hubs {
+        let path = root.join(rel);
+        write_if_changed(&path, text, &mut c)?;
+        written.insert(path);
         c.hubs += 1;
     }
-    escritos.extend(guardar);
-    c.deleted = limpiar(&raiz, &escritos)?;
-    configurar_grafo(vault)?;
+    written.extend(kept);
+    c.deleted = clean_up(&root, &written)?;
+    configure_graph(vault)?;
     Ok(c)
 }
 
-/// Una nota de memoria como la escribe la exportación ahora (sin `base` ni `sig`).
+/// A memory note as the export writes it now (without `base` or `sig`).
 struct Render {
     m: Memoria,
-    /// Su ruta dentro de `<vault>/omoikane/`.
+    /// Its path inside `<vault>/omoikane/`.
     rel: PathBuf,
-    texto: String,
+    text: String,
 }
 
-/// Todo lo que escribiría una exportación, sin escribir nada.
-struct Preparado {
-    notas: Vec<Render>,
-    /// Las notas de grupo y de fichero (ruta dentro de `omoikane/`, texto).
+/// Everything an export would write, without writing anything.
+struct Prepared {
+    notes: Vec<Render>,
+    /// The group and file notes (path inside `omoikane/`, text).
     hubs: Vec<(PathBuf, String)>,
-    /// Los grupos, por su carpeta en minúsculas: a qué proyecto va una nota nueva puesta en ella.
-    grupos: BTreeMap<String, Grupo>,
-    /// El nombre (en minúsculas) de la nota de cada memoria → su id.
-    nombres: HashMap<String, String>,
+    /// The groups, by their lowercase folder: which project a new note placed in it goes to.
+    groups: BTreeMap<String, Group>,
+    /// The (lowercase) name of each memory's note → its id.
+    names: HashMap<String, String>,
 }
 
-fn preparar(db: &Connection, que: Que) -> Result<Preparado> {
-    let ambito = match que {
+fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
+    let scope = match what {
         Que::Personal => Ambito::Espacio(None),
         Que::Espacio(s) => Ambito::Espacio(Some(s)),
     };
-    let mut todas = crate::memoria::recientes(db, &ambito, None, usize::MAX >> 1)?;
-    if matches!(que, Que::Espacio(_)) {
-        todas.retain(|m| !m.global());
+    let mut all = crate::memoria::recientes(db, &scope, None, usize::MAX >> 1)?;
+    if matches!(what, Que::Espacio(_)) {
+        all.retain(|m| !m.global());
     }
-    todas.sort_by(|a, b| a.id.cmp(&b.id));
-    let espacio = match que {
+    all.sort_by(|a, b| a.id.cmp(&b.id));
+    let space = match what {
         Que::Personal => None,
         Que::Espacio(s) => Some(s),
     };
 
-    // Grupo (carpeta y nota de proyecto) de cada memoria; dos proyectos con el mismo nombre se
-    // distinguen por el principio de su clave.
-    let mut nombres: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for m in &todas {
+    // Group (folder and project note) of each memory; two projects with the same name are
+    // told apart by the start of their key.
+    let mut names: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for m in &all {
         if m.project_id != 0 {
-            nombres.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
+            names.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
-    let grupo = |m: &Memoria| -> Grupo {
+    let group = |m: &Memoria| -> Group {
         if m.project_id == 0 {
             return if m.space.is_empty() {
-                Grupo { carpeta: "_global".into(), nota: String::new(), titulo: tr!("Global", "Global").to_string(), project_id: 0, space_id: None }
+                Group { folder: "_global".into(), note: String::new(), title: tr!("Global", "Global").to_string(), project_id: 0, space_id: None }
             } else {
                 let s = slug(&m.space, 40);
-                Grupo { carpeta: format!("_{s}"), nota: format!("espacio-{s}"), titulo: m.space.clone(), project_id: 0, space_id: espacio }
+                Group { folder: format!("_{s}"), note: format!("espacio-{s}"), title: m.space.clone(), project_id: 0, space_id: space }
             };
         }
-        let nombre = crate::proyecto::nombre_de(&m.project, &m.project_key);
-        let mut s = slug(&nombre, 40);
-        if nombres.get(&nombre).is_some_and(|k| k.len() > 1) {
+        let name = crate::proyecto::nombre_de(&m.project, &m.project_key);
+        let mut s = slug(&name, 40);
+        if names.get(&name).is_some_and(|k| k.len() > 1) {
             s = format!("{s}-{}", corto(&m.project_key));
         }
-        Grupo { carpeta: s.clone(), nota: format!("proyecto-{s}"), titulo: nombre, project_id: m.project_id, space_id: None }
+        Group { folder: s.clone(), note: format!("proyecto-{s}"), title: name, project_id: m.project_id, space_id: None }
     };
 
-    let ocupados: BTreeSet<String> = todas.iter().map(|m| grupo(m).nota.to_lowercase()).filter(|n| !n.is_empty()).collect();
-    let ficheros = nota_por_id(&todas, &ocupados);
-    // Los `[[nombre]]`, como en `enlaces::recalcular`, pero solo entre lo exportado.
-    let mut por_nombre: HashMap<String, Vec<&str>> = HashMap::new();
-    for m in &todas {
+    let taken: BTreeSet<String> = all.iter().map(|m| group(m).note.to_lowercase()).filter(|n| !n.is_empty()).collect();
+    let note_names = note_names_by_id(&all, &taken);
+    // The `[[name]]` links, as in `enlaces::recalcular`, but only among what is exported.
+    let mut by_name: HashMap<String, Vec<&str>> = HashMap::new();
+    for m in &all {
         for t in &m.tags {
-            por_nombre.entry(crate::enlaces::nombre(t)).or_default().push(m.id.as_str());
+            by_name.entry(crate::enlaces::nombre(t)).or_default().push(m.id.as_str());
         }
     }
-    let destinos = |m: &Memoria, e: &str| -> Vec<String> {
-        match por_nombre.get(&crate::enlaces::nombre(e)) {
+    let targets = |m: &Memoria, e: &str| -> Vec<String> {
+        match by_name.get(&crate::enlaces::nombre(e)) {
             Some(v) => v.iter().filter(|d| **d != m.id).map(|d| d.to_string()).collect(),
             None => {
                 let s = e.trim().to_uppercase();
-                let es_id = s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric());
-                if es_id { todas.iter().find(|x| x.id.starts_with(&s) && x.id != m.id).map(|x| vec![x.id.clone()]).unwrap_or_default() } else { vec![] }
+                let is_id = s.len() >= 8 && s.chars().all(|c| c.is_ascii_alphanumeric());
+                if is_id { all.iter().find(|x| x.id.starts_with(&s) && x.id != m.id).map(|x| vec![x.id.clone()]).unwrap_or_default() } else { vec![] }
             }
         }
     };
 
-    // Veredictos vigentes entre lo exportado.
-    let mut sustituida_por: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut sustituye_a: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut contradice: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Current verdicts among what is exported.
+    let mut superseded_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut supersedes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut contradicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for v in crate::veredictos::parejas(db)?.into_values() {
-        if !ficheros.contains_key(&v.memory_id) || !ficheros.contains_key(&v.other_id) {
+        if !note_names.contains_key(&v.memory_id) || !note_names.contains_key(&v.other_id) {
             continue;
         }
         if v.relation == crate::veredictos::SUSTITUIDA {
-            sustituida_por.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
-            sustituye_a.entry(v.other_id).or_default().push(v.memory_id);
+            superseded_by.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
+            supersedes.entry(v.other_id).or_default().push(v.memory_id);
         } else if v.relation == crate::veredictos::CONTRADICE {
-            contradice.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
-            contradice.entry(v.other_id).or_default().push(v.memory_id);
+            contradicts.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
+            contradicts.entry(v.other_id).or_default().push(v.memory_id);
         }
     }
 
-    // Una nota por fichero citado por dos memorias o más.
-    let mut citas: BTreeMap<String, usize> = BTreeMap::new();
-    for m in &todas {
+    // One note per file cited by two or more memories.
+    let mut citations: BTreeMap<String, usize> = BTreeMap::new();
+    for m in &all {
         for p in m.paths.iter().collect::<BTreeSet<_>>() {
-            *citas.entry(p.clone()).or_default() += 1;
+            *citations.entry(p.clone()).or_default() += 1;
         }
     }
-    let nota_fichero: BTreeMap<String, String> = citas.into_iter().filter(|(_, n)| *n >= 2).map(|(p, _)| { let n = nota_de_fichero(&p); (p, n) }).collect();
+    let file_notes: BTreeMap<String, String> = citations.into_iter().filter(|(_, n)| *n >= 2).map(|(p, _)| { let n = file_note(&p); (p, n) }).collect();
 
-    let mut notas = Vec::new();
-    let mut grupos: BTreeMap<String, Grupo> = BTreeMap::new();
-    for m in &todas {
-        let g = grupo(m);
-        let rel = Path::new(&g.carpeta).join(format!("{}.md", ficheros[&m.id]));
-        let texto = nota(m, &g, &ficheros, &destinos, &nota_fichero, &sustituida_por, &sustituye_a, &contradice);
-        notas.push(Render { m: m.clone(), rel, texto });
-        grupos.entry(g.carpeta.to_lowercase()).or_insert(g);
+    let mut notes = Vec::new();
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    for m in &all {
+        let g = group(m);
+        let rel = Path::new(&g.folder).join(format!("{}.md", note_names[&m.id]));
+        let text = render_note(m, &g, &note_names, &targets, &file_notes, &superseded_by, &supersedes, &contradicts);
+        notes.push(Render { m: m.clone(), rel, text });
+        groups.entry(g.folder.to_lowercase()).or_insert(g);
     }
     let mut hubs = Vec::new();
-    for g in grupos.values().filter(|g| !g.nota.is_empty()) {
-        let texto = format!(
+    for g in groups.values().filter(|g| !g.note.is_empty()) {
+        let text = format!(
             "---\nomoikane: hub\ntags: [\"omoikane-hub\"]\n---\n# {}\n\n{}\n",
-            g.titulo,
+            g.title,
             tr!("The memories of this group link here. A copy from Omoikane: rewritten on every export.", "Las memorias de este grupo enlazan aquí. Copia de Omoikane: se rehace en cada exportación.")
         );
-        hubs.push((Path::new(&g.carpeta).join(format!("{}.md", g.nota)), texto));
+        hubs.push((Path::new(&g.folder).join(format!("{}.md", g.note)), text));
     }
-    for (p, n) in &nota_fichero {
-        let texto = format!(
+    for (p, n) in &file_notes {
+        let text = format!(
             "---\nomoikane: hub\ntags: [\"omoikane-fichero\"]\n---\n# {}\n\n{}\n",
             p.replace('\\', "/"),
             tr!("The memories that cite this file link here.", "Las memorias que citan este fichero enlazan aquí.")
         );
-        hubs.push((Path::new(FICHEROS).join(format!("{n}.md")), texto));
+        hubs.push((Path::new(FILES_DIR).join(format!("{n}.md")), text));
     }
-    let nombres = ficheros.into_iter().map(|(id, n)| (n.to_lowercase(), id)).collect();
-    Ok(Preparado { notas, hubs, grupos, nombres })
+    let names = note_names.into_iter().map(|(id, n)| (n.to_lowercase(), id)).collect();
+    Ok(Prepared { notes, hubs, groups, names })
 }
 
-/// La carpeta de las notas de fichero (no son memorias: la vuelta no entra).
-const FICHEROS: &str = "_ficheros";
+/// The folder of the file notes (they aren't memories: the way back skips it).
+const FILES_DIR: &str = "_ficheros";
 
 #[derive(Clone, Debug)]
-struct Grupo {
-    carpeta: String,
-    nota: String,
-    titulo: String,
-    /// Su proyecto (0: lo global o un espacio sin proyecto).
+struct Group {
+    folder: String,
+    note: String,
+    title: String,
+    /// Its project (0: global, or a space with no project).
     project_id: i64,
-    /// El espacio de `_<espacio>` (memorias de un espacio sin proyecto).
+    /// The space of `_<space>` (memories of a space with no project).
     space_id: Option<i64>,
 }
 
-/// El nombre de la nota de cada memoria: su título, que es lo que Obsidian enseña como título de la
-/// nota. Obsidian resuelve los enlaces por nombre en todo el vault sin distinguir mayúsculas, así que
-/// si dos memorias (o una memoria y una nota de grupo) se llamarían igual, llevan detrás el final de
-/// su id, que no cambia.
-fn nota_por_id(todas: &[Memoria], ocupados: &BTreeSet<String>) -> HashMap<String, String> {
-    let mut veces: HashMap<String, usize> = HashMap::new();
-    for m in todas {
-        *veces.entry(titulo_de_fichero(&m.title).to_lowercase()).or_default() += 1;
+/// The name of each memory's note: its title, which is what Obsidian shows as the note's
+/// title. Obsidian resolves links by name across the whole vault, case-insensitively, so
+/// if two memories (or a memory and a group note) would have the same name, they get the end of
+/// their id appended, which doesn't change.
+fn note_names_by_id(all: &[Memoria], taken: &BTreeSet<String>) -> HashMap<String, String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for m in all {
+        *counts.entry(file_title(&m.title).to_lowercase()).or_default() += 1;
     }
-    todas
+    all
         .iter()
         .map(|m| {
-            let t = titulo_de_fichero(&m.title);
+            let t = file_title(&m.title);
             let k = t.to_lowercase();
-            let repetido = veces[&k] > 1 || ocupados.contains(&k) || reservado(&k);
-            (m.id.clone(), if repetido { format!("{t} ({})", corto(&m.id)) } else { t })
+            let clash = counts[&k] > 1 || taken.contains(&k) || reserved(&k);
+            (m.id.clone(), if clash { format!("{t} ({})", corto(&m.id)) } else { t })
         })
         .collect()
 }
 
-/// Un título que vale como nombre de fichero en Windows, macOS y Linux y como enlace de Obsidian: sin
-/// `\ / : * ? " < > |` (Windows) ni `# ^ [ ]` (Obsidian), sin espacios repetidos ni punto o espacio
-/// al final (Windows), y como mucho 100 caracteres.
-fn titulo_de_fichero(titulo: &str) -> String {
-    let limpio: String = titulo.chars().map(|c| if c.is_control() || "\\/:*?\"<>|#^[]".contains(c) { ' ' } else { c }).collect();
-    let r: String = limpio.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(100).collect();
+/// A title that works as a file name on Windows, macOS and Linux and as an Obsidian link: without
+/// `\ / : * ? " < > |` (Windows) or `# ^ [ ]` (Obsidian), without repeated spaces or a trailing dot or
+/// space (Windows), and at most 100 characters.
+fn file_title(title: &str) -> String {
+    let clean: String = title.chars().map(|c| if c.is_control() || "\\/:*?\"<>|#^[]".contains(c) { ' ' } else { c }).collect();
+    let r: String = clean.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(100).collect();
     let r = r.trim_end_matches(['.', ' ']).trim_start_matches(['.', ' ']).to_string();
     if r.is_empty() { "Nota".into() } else { r }
 }
 
-/// Los nombres que Windows no deja usar como fichero.
-fn reservado(k: &str) -> bool {
+/// The names Windows doesn't allow as a file.
+fn reserved(k: &str) -> bool {
     matches!(k, "con" | "prn" | "aux" | "nul") || (k.len() == 4 && (k.starts_with("com") || k.starts_with("lpt")) && k.as_bytes()[3].is_ascii_digit())
 }
 
@@ -291,8 +291,8 @@ pub(crate) fn corto(s: &str) -> String {
     s[s.len().saturating_sub(8)..].iter().collect::<String>().to_lowercase()
 }
 
-/// Un nombre que vale en Windows, macOS, Linux y en un enlace de Obsidian: letras y cifras, el resto
-/// en `-`, en minúsculas y como mucho `max` caracteres.
+/// A name that works on Windows, macOS, Linux and in an Obsidian link: letters and digits, the rest
+/// as `-`, lowercase and at most `max` characters.
 pub(crate) fn slug(s: &str, max: usize) -> String {
     let mut r = String::new();
     for ch in s.chars() {
@@ -309,46 +309,46 @@ pub(crate) fn slug(s: &str, max: usize) -> String {
     if r.is_empty() { "nota".into() } else { r }
 }
 
-/// La nota de un fichero citado: su nombre y un trozo de la suma de la ruta (dos `main.rs` no chocan).
-fn nota_de_fichero(ruta: &str) -> String {
+/// The note of a cited file: its name and a piece of the path's hash (two `main.rs` don't collide).
+fn file_note(path: &str) -> String {
     use sha2::{Digest, Sha256};
-    let normal = ruta.replace('\\', "/");
-    let nombre = normal.trim_end_matches('/').rsplit('/').next().unwrap_or(&normal);
+    let normal = path.replace('\\', "/");
+    let name = normal.trim_end_matches('/').rsplit('/').next().unwrap_or(&normal);
     let h = Sha256::digest(normal.to_lowercase().as_bytes());
-    format!("fichero-{}-{:02x}{:02x}{:02x}", slug(nombre, 50), h[0], h[1], h[2])
+    format!("fichero-{}-{:02x}{:02x}{:02x}", slug(name, 50), h[0], h[1], h[2])
 }
 
 #[allow(clippy::too_many_arguments)]
-fn nota(
+fn render_note(
     m: &Memoria,
-    g: &Grupo,
-    ficheros: &HashMap<String, String>,
-    destinos: &dyn Fn(&Memoria, &str) -> Vec<String>,
-    nota_fichero: &BTreeMap<String, String>,
-    sustituida_por: &BTreeMap<String, Vec<String>>,
-    sustituye_a: &BTreeMap<String, Vec<String>>,
-    contradice: &BTreeMap<String, Vec<String>>,
+    g: &Group,
+    note_names: &HashMap<String, String>,
+    targets: &dyn Fn(&Memoria, &str) -> Vec<String>,
+    file_notes: &BTreeMap<String, String>,
+    superseded_by: &BTreeMap<String, Vec<String>>,
+    supersedes: &BTreeMap<String, Vec<String>>,
+    contradicts: &BTreeMap<String, Vec<String>>,
 ) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
-    let lista = |v: &[String]| format!("[{}]", v.iter().map(|s| q(s)).collect::<Vec<_>>().join(", "));
-    let mut etiquetas = vec![m.kind.as_str().to_string()];
+    let list = |v: &[String]| format!("[{}]", v.iter().map(|s| q(s)).collect::<Vec<_>>().join(", "));
+    let mut tags = vec![m.kind.as_str().to_string()];
     for t in &m.tags {
-        let e = etiqueta(t);
-        if !e.is_empty() && !etiquetas.contains(&e) {
-            etiquetas.push(e);
+        let e = tag(t);
+        if !e.is_empty() && !tags.contains(&e) {
+            tags.push(e);
         }
     }
     let mut s = String::from("---\n");
     s += &format!("omoikane: {}\n", q(&m.id));
     s += &format!("kind: {}\n", m.kind.as_str());
     s += &format!("aliases: [{}]\n", q(&m.title));
-    s += &format!("tags: {}\n", lista(&etiquetas));
-    s += &format!("project: {}\n", q(&g.titulo));
+    s += &format!("tags: {}\n", list(&tags));
+    s += &format!("project: {}\n", q(&g.title));
     if !m.space.is_empty() {
         s += &format!("space: {}\n", q(&m.space));
     }
     if !m.paths.is_empty() {
-        s += &format!("paths: {}\n", lista(&m.paths));
+        s += &format!("paths: {}\n", list(&m.paths));
     }
     if m.pinned {
         s += "pinned: true\n";
@@ -356,38 +356,38 @@ fn nota(
     if !m.author.is_empty() {
         s += &format!("author: {}\n", q(&m.author));
     }
-    // Sin el título como encabezado: Obsidian ya enseña el nombre del fichero, que es el título.
+    // No title as a heading: Obsidian already shows the file name, which is the title.
     s += &format!("created: {}\nupdated: {}\n---\n\n", q(&m.created_at), q(&m.updated_at));
 
-    // El contenido, con cada `[[nombre]]` llevado a la nota que toca (o en texto si no lleva a nada
-    // exportado: así no salen nodos fantasma) y sin que un `#d62828` se vuelva etiqueta.
-    let mut enlazadas: BTreeSet<String> = BTreeSet::new();
+    // The content, with each `[[name]]` pointed at the right note (or left as text if it leads to nothing
+    // exported: that way no ghost nodes appear) and without a `#d62828` turning into a tag.
+    let mut linked: BTreeSet<String> = BTreeSet::new();
     let mut extra: BTreeSet<String> = BTreeSet::new();
-    let contenido = cambiar_enlaces(&m.content, |e| {
-        let d = destinos(m, e);
-        let Some(primera) = d.first() else { return e.to_string() };
-        enlazadas.insert(primera.clone());
+    let content = replace_links(&m.content, |e| {
+        let d = targets(m, e);
+        let Some(first) = d.first() else { return e.to_string() };
+        linked.insert(first.clone());
         extra.extend(d.iter().skip(1).cloned());
-        format!("[[{}|{}]]", ficheros[primera], e)
+        format!("[[{}|{}]]", note_names[first], e)
     });
-    s += &sin_etiquetas(&contenido);
-    s += &format!("\n\n{PIE}\n\n---\n");
-    let enlace = |id: &String| format!("[[{}]]", ficheros[id]);
-    let linea = |s: &mut String, rotulo: &str, ids: Option<&Vec<String>>| {
+    s += &escape_tags(&content);
+    s += &format!("\n\n{FOOTER}\n\n---\n");
+    let link = |id: &String| format!("[[{}]]", note_names[id]);
+    let line = |s: &mut String, label: &str, ids: Option<&Vec<String>>| {
         if let Some(v) = ids.filter(|v| !v.is_empty()) {
-            *s += &format!("- {rotulo}: {}\n", v.iter().map(enlace).collect::<Vec<_>>().join(", "));
+            *s += &format!("- {label}: {}\n", v.iter().map(link).collect::<Vec<_>>().join(", "));
         }
     };
-    if !g.nota.is_empty() {
-        s += &format!("- {}: [[{}]]\n", tr!("Group", "Grupo"), g.nota);
+    if !g.note.is_empty() {
+        s += &format!("- {}: [[{}]]\n", tr!("Group", "Grupo"), g.note);
     }
-    linea(&mut s, &tr!("Superseded by", "Sustituida por"), sustituida_por.get(&m.id));
-    linea(&mut s, &tr!("Supersedes", "Sustituye a"), sustituye_a.get(&m.id));
-    linea(&mut s, &tr!("Contradicts", "Contradice a"), contradice.get(&m.id));
-    let otras: Vec<String> = extra.into_iter().filter(|d| !enlazadas.contains(d)).collect();
-    linea(&mut s, &tr!("Also links to", "También enlaza a"), Some(&otras));
+    line(&mut s, &tr!("Superseded by", "Sustituida por"), superseded_by.get(&m.id));
+    line(&mut s, &tr!("Supersedes", "Sustituye a"), supersedes.get(&m.id));
+    line(&mut s, &tr!("Contradicts", "Contradice a"), contradicts.get(&m.id));
+    let others: Vec<String> = extra.into_iter().filter(|d| !linked.contains(d)).collect();
+    line(&mut s, &tr!("Also links to", "También enlaza a"), Some(&others));
     if !m.paths.is_empty() {
-        let v: Vec<String> = m.paths.iter().map(|p| match nota_fichero.get(p) { Some(n) => format!("[[{n}|{}]]", p.replace('\\', "/")), None => format!("`{}`", p.replace('\\', "/")) }).collect();
+        let v: Vec<String> = m.paths.iter().map(|p| match file_notes.get(p) { Some(n) => format!("[[{n}|{}]]", p.replace('\\', "/")), None => format!("`{}`", p.replace('\\', "/")) }).collect();
         s += &format!("- {}: {}\n", tr!("Files", "Ficheros"), v.join(", "));
     }
     s += &format!(
@@ -400,311 +400,311 @@ fn nota(
     s
 }
 
-/// Una etiqueta de Obsidian: sin espacios ni signos (solo letras, cifras, `_`, `-` y `/`), y no solo cifras.
-fn etiqueta(t: &str) -> String {
+/// An Obsidian tag: no spaces or symbols (only letters, digits, `_`, `-` and `/`), and not digits only.
+fn tag(t: &str) -> String {
     let r: String = t.trim().chars().map(|c| if c.is_alphanumeric() || matches!(c, '_' | '-' | '/') { c } else { '-' }).collect();
     let r = r.trim_matches('-').to_string();
     if r.chars().all(|c| c.is_ascii_digit()) { String::new() } else { r }
 }
 
-/// Cambia cada `[[nombre]]` (o `[[nombre|texto]]`) por lo que diga `f` del nombre.
-fn cambiar_enlaces(texto: &str, mut f: impl FnMut(&str) -> String) -> String {
+/// Replaces each `[[name]]` (or `[[name|text]]`) with what `f` says for the name.
+fn replace_links(text: &str, mut f: impl FnMut(&str) -> String) -> String {
     let mut r = String::new();
-    let mut resto = texto;
-    while let Some(i) = resto.find("[[") {
-        let tras = &resto[i + 2..];
-        let Some(fin) = tras.find("]]") else { break };
-        let dentro = tras[..fin].split('|').next().unwrap_or("").trim();
-        r += &resto[..i];
-        if dentro.is_empty() || dentro.len() > 120 || dentro.contains('\n') {
-            r += &resto[i..i + 2 + fin + 2];
+    let mut rest = text;
+    while let Some(i) = rest.find("[[") {
+        let after = &rest[i + 2..];
+        let Some(end) = after.find("]]") else { break };
+        let inner = after[..end].split('|').next().unwrap_or("").trim();
+        r += &rest[..i];
+        if inner.is_empty() || inner.len() > 120 || inner.contains('\n') {
+            r += &rest[i..i + 2 + end + 2];
         } else {
-            r += &f(dentro);
+            r += &f(inner);
         }
-        resto = &tras[fin + 2..];
+        rest = &after[end + 2..];
     }
-    r + resto
+    r + rest
 }
 
-/// Escapa un `#` pegado a una palabra (en Obsidian sería una etiqueta: `#d62828`, `#3673`) fuera del
-/// código; los títulos (`## Algo`) se quedan.
-fn sin_etiquetas(texto: &str) -> String {
+/// Escapes a `#` stuck to a word (in Obsidian it would be a tag: `#d62828`, `#3673`) outside
+/// code; headings (`## Something`) stay.
+fn escape_tags(text: &str) -> String {
     let mut r = String::new();
-    let mut en_bloque = false;
-    for (n, linea) in texto.split('\n').enumerate() {
+    let mut in_block = false;
+    for (n, line) in text.split('\n').enumerate() {
         if n > 0 {
             r.push('\n');
         }
-        if linea.trim_start().starts_with("```") {
-            en_bloque = !en_bloque;
-            r += linea;
+        if line.trim_start().starts_with("```") {
+            in_block = !in_block;
+            r += line;
             continue;
         }
-        if en_bloque {
-            r += linea;
+        if in_block {
+            r += line;
             continue;
         }
-        let mut en_codigo = false;
-        let mut previo = ' ';
-        let cs: Vec<char> = linea.chars().collect();
+        let mut in_code = false;
+        let mut prev = ' ';
+        let cs: Vec<char> = line.chars().collect();
         for (i, &c) in cs.iter().enumerate() {
             if c == '`' {
-                en_codigo = !en_codigo;
+                in_code = !in_code;
             }
-            let siguiente = cs.get(i + 1).copied().unwrap_or(' ');
-            if c == '#' && !en_codigo && !previo.is_alphanumeric() && previo != '#' && previo != '\\' && (siguiente.is_alphanumeric() || siguiente == '_') {
+            let next = cs.get(i + 1).copied().unwrap_or(' ');
+            if c == '#' && !in_code && !prev.is_alphanumeric() && prev != '#' && prev != '\\' && (next.is_alphanumeric() || next == '_') {
                 r.push('\\');
             }
             r.push(c);
-            previo = c;
+            prev = c;
         }
     }
     r
 }
 
-/// Escribe solo si cambia.
-fn escribir(ruta: &Path, texto: &str, c: &mut Cuenta) -> Result<()> {
-    match std::fs::read(ruta) {
-        Ok(hay) if hay == texto.as_bytes() => {
+/// Writes only if it changes.
+fn write_if_changed(path: &Path, text: &str, c: &mut Cuenta) -> Result<()> {
+    match std::fs::read(path) {
+        Ok(existing) if existing == text.as_bytes() => {
             c.unchanged += 1;
             return Ok(());
         }
         Ok(_) => c.updated += 1,
         Err(_) => c.created += 1,
     }
-    if let Some(p) = ruta.parent() {
+    if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
     }
-    std::fs::write(ruta, texto).with_context(|| tr!("could not write {}", "no se pudo escribir {}", ruta.display()))?;
+    std::fs::write(path, text).with_context(|| tr!("could not write {}", "no se pudo escribir {}", path.display()))?;
     Ok(())
 }
 
-/// Borra las notas de Omoikane que ya no salen (y las carpetas que se queden vacías). Solo las que
-/// llevan la marca `omoikane:` en la cabecera.
-fn limpiar(raiz: &Path, escritos: &BTreeSet<PathBuf>) -> Result<usize> {
-    let mut borrados = 0;
-    let mut carpetas = Vec::new();
-    let mut pendientes = vec![raiz.to_path_buf()];
-    while let Some(d) = pendientes.pop() {
+/// Deletes the Omoikane notes that are no longer exported (and the folders left empty). Only those
+/// carrying the `omoikane:` mark in the header.
+fn clean_up(root: &Path, written: &BTreeSet<PathBuf>) -> Result<usize> {
+    let mut deleted = 0;
+    let mut dirs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let p = e.path();
             let Ok(t) = e.file_type() else { continue };
             if t.is_dir() {
-                carpetas.push(p.clone());
-                pendientes.push(p);
-            } else if p.extension().is_some_and(|x| x == "md") && !escritos.contains(&p) && es_nuestra(&p) {
+                dirs.push(p.clone());
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "md") && !written.contains(&p) && is_ours(&p) {
                 std::fs::remove_file(&p)?;
-                borrados += 1;
+                deleted += 1;
             }
         }
     }
-    carpetas.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-    for d in carpetas {
-        let _ = std::fs::remove_dir(&d); // solo si está vacía
+    dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    for d in dirs {
+        let _ = std::fs::remove_dir(&d); // only if it's empty
     }
-    Ok(borrados)
+    Ok(deleted)
 }
 
-fn es_nuestra(p: &Path) -> bool {
+fn is_ours(p: &Path) -> bool {
     use std::io::{BufRead, BufReader};
     let Ok(f) = std::fs::File::open(p) else { return false };
     let mut l = BufReader::new(f).lines();
     matches!(l.next(), Some(Ok(a)) if a == "---") && matches!(l.next(), Some(Ok(b)) if b.starts_with("omoikane: "))
 }
 
-/// Un color por tipo en la vista de grafo, solo si el vault aún no tiene la suya.
-fn configurar_grafo(vault: &Path) -> Result<()> {
-    let ruta = vault.join(".obsidian").join("graph.json");
-    if ruta.exists() {
+/// One colour per kind in the graph view, only if the vault doesn't have its own yet.
+fn configure_graph(vault: &Path) -> Result<()> {
+    let path = vault.join(".obsidian").join("graph.json");
+    if path.exists() {
         return Ok(());
     }
-    let grupo = |q: &str, rgb: u32| serde_json::json!({ "query": q, "color": { "a": 1, "rgb": rgb } });
+    let group = |q: &str, rgb: u32| serde_json::json!({ "query": q, "color": { "a": 1, "rgb": rgb } });
     let v = serde_json::json!({
         "colorGroups": [
-            grupo("tag:#gotcha", 0xd62828),
-            grupo("tag:#decision", 0xe9a23b),
-            grupo("tag:#preference", 0x2a9d8f),
-            grupo("tag:#procedure", 0x8e7dbe),
-            grupo("tag:#fact", 0x5b8bd6),
-            grupo("tag:#omoikane-hub", 0xeeeeee),
-            grupo("tag:#omoikane-fichero", 0x7a7a7a),
+            group("tag:#gotcha", 0xd62828),
+            group("tag:#decision", 0xe9a23b),
+            group("tag:#preference", 0x2a9d8f),
+            group("tag:#procedure", 0x8e7dbe),
+            group("tag:#fact", 0x5b8bd6),
+            group("tag:#omoikane-hub", 0xeeeeee),
+            group("tag:#omoikane-fichero", 0x7a7a7a),
         ],
         "showArrow": false,
         "showTags": false,
     });
-    std::fs::create_dir_all(ruta.parent().unwrap())?;
-    std::fs::write(&ruta, serde_json::to_string_pretty(&v)?)?;
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, serde_json::to_string_pretty(&v)?)?;
     Ok(())
 }
 
-/// Exporta cada `intervalo` mientras la base cambie (la primera vez, siempre). No vuelve.
-pub fn vigilar(db: &Connection, vault: &Path, que: Que, intervalo: std::time::Duration, mut avisar: impl FnMut(&Cuenta)) -> Result<()> {
-    let mut visto: Option<i64> = None;
+/// Exports every `interval` while the database changes (the first time, always). Never returns.
+pub fn vigilar(db: &Connection, vault: &Path, what: Que, interval: std::time::Duration, mut notify: impl FnMut(&Cuenta)) -> Result<()> {
+    let mut seen: Option<i64> = None;
     loop {
-        // `data_version` cambia cuando otra conexión escribe: si no ha cambiado, no hay nada que mirar.
+        // `data_version` changes when another connection writes: if it hasn't changed, there's nothing to look at.
         let v: i64 = db.query_row("PRAGMA data_version", [], |f| f.get(0))?;
-        if visto != Some(v) {
-            avisar(&exportar(db, vault, que)?);
-            visto = Some(v);
+        if seen != Some(v) {
+            notify(&exportar(db, vault, what)?);
+            seen = Some(v);
         }
-        std::thread::sleep(intervalo);
+        std::thread::sleep(interval);
     }
 }
 
-// --- La vuelta: de Obsidian a Omoikane (1.9.0) ------------------------------------------------------
+// --- The way back: from Obsidian to Omoikane (1.9.0) ------------------------------------------------
 
-/// Lo que separa el texto de una nota (lo que se edita) de los enlaces que la exportación rehace
-/// debajo. Es un comentario de Obsidian: no se ve al leer la nota.
-const PIE: &str = "%% omoikane: below this line, rewritten on every export %%";
-/// El dominio de la firma de una nota (ver [`texto_firma`]).
-const FIRMA: &str = "omoikane-obsidian-1";
+/// What separates a note's text (the editable part) from the links the export rebuilds
+/// below it. It's an Obsidian comment: it isn't shown when reading the note.
+const FOOTER: &str = "%% omoikane: below this line, rewritten on every export %%";
+/// The domain of a note's signature (see [`signed_text`]).
+const SIGNATURE_DOMAIN: &str = "omoikane-obsidian-1";
 
-/// Una nota leída del vault.
+/// A note read from the vault.
 #[derive(Clone, Debug)]
-struct Leida {
-    /// Su nombre sin `.md` (lo que Obsidian enseña como título), en NFC.
+struct ReadNote {
+    /// Its name without `.md` (what Obsidian shows as the title), in NFC.
     stem: String,
-    cab: Map<String, Value>,
-    /// El texto: sin la cabecera y, en una nota de Omoikane, sin lo de debajo de [`PIE`].
-    cuerpo: String,
+    header: Map<String, Value>,
+    /// The text: without the header and, in an Omoikane note, without what's below [`FOOTER`].
+    body: String,
 }
 
-impl Leida {
-    fn campo(&self, k: &str) -> Option<String> {
-        self.cab.get(k).map(crate::okf::escalar_texto).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+impl ReadNote {
+    fn field(&self, k: &str) -> Option<String> {
+        self.header.get(k).map(crate::okf::escalar_texto).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
-    fn lista(&self, k: &str) -> Vec<String> {
-        crate::okf::lista_de_textos(self.cab.get(k)).into_iter().map(|s| s.trim().to_string()).collect()
+    fn list(&self, k: &str) -> Vec<String> {
+        crate::okf::lista_de_textos(self.header.get(k)).into_iter().map(|s| s.trim().to_string()).collect()
     }
 
-    /// El id de su memoria, si es la nota de una memoria exportada por Omoikane.
+    /// The id of its memory, if it's the note of a memory exported by Omoikane.
     fn id(&self) -> Option<String> {
-        self.campo("omoikane").filter(|i| i != "hub")
+        self.field("omoikane").filter(|i| i != "hub")
     }
 
-    fn es_hub(&self) -> bool {
-        self.campo("omoikane").as_deref() == Some("hub")
+    fn is_hub(&self) -> bool {
+        self.field("omoikane").as_deref() == Some("hub")
     }
 }
 
-fn stem_de(rel: &Path) -> String {
+fn stem_of(rel: &Path) -> String {
     crate::okf::nfc(&rel.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())
 }
 
-/// Lee una nota: su cabecera YAML (si la tiene; `None` si no se puede leer) y su texto.
-fn leer_texto(stem: &str, texto: &str) -> Option<Leida> {
-    let texto = crate::okf::sin_crlf_de_git(texto.to_string());
-    let (cab, resto) = match crate::okf::separar(&texto) {
+/// Reads a note: its YAML header (if it has one; `None` if it can't be read) and its text.
+fn parse_note(stem: &str, text: &str) -> Option<ReadNote> {
+    let text = crate::okf::sin_crlf_de_git(text.to_string());
+    let (header, rest) = match crate::okf::separar(&text) {
         Some((c, r)) => (crate::okf::yaml::leer(c).ok()?, r),
-        None => (Map::new(), texto.trim_start_matches('\u{feff}')),
+        None => (Map::new(), text.trim_start_matches('\u{feff}')),
     };
-    let mut cuerpo = resto;
-    if cab.contains_key("omoikane")
-        && let Some(i) = cuerpo.rfind(PIE)
+    let mut body = rest;
+    if header.contains_key("omoikane")
+        && let Some(i) = body.rfind(FOOTER)
     {
-        cuerpo = &cuerpo[..i];
+        body = &body[..i];
     }
-    // En `\n`: un contenido guardado con `\r\n` sale así en la nota, y Obsidian (o el editor) lo puede
-    // guardar en `\n`; eso no es una edición. Las líneas sin tocar vuelven de la memoria, con su `\r`.
-    let cuerpo = cuerpo.replace("\r\n", "\n");
-    Some(Leida { stem: stem.to_string(), cab, cuerpo: cuerpo.trim_start_matches('\n').trim_end().to_string() })
+    // In `\n`: content saved with `\r\n` comes out that way in the note, and Obsidian (or the editor) may
+    // save it with `\n`; that is not an edit. Untouched lines come back from the memory, with their `\r`.
+    let body = body.replace("\r\n", "\n");
+    Some(ReadNote { stem: stem.to_string(), header, body: body.trim_start_matches('\n').trim_end().to_string() })
 }
 
-/// La huella de lo que se puede editar de una nota (nombre, alias, tipo, etiquetas, rutas y texto),
-/// sobre los valores leídos y no sobre el texto de la cabecera: Obsidian la reescribe a su manera
-/// (listas en bloque, sin comillas) al tocar una propiedad, y eso no es un cambio.
-fn vista(l: &Leida) -> String {
+/// The fingerprint of a note's editable part (name, alias, kind, tags, paths and text),
+/// over the parsed values and not the header's text: Obsidian rewrites it its own way
+/// (block lists, no quotes) when a property is touched, and that is not a change.
+fn fingerprint(l: &ReadNote) -> String {
     use sha2::{Digest, Sha256};
-    let v = serde_json::json!([l.stem, l.lista("aliases"), l.campo("kind"), l.lista("tags"), l.lista("paths"), l.cuerpo]);
+    let v = serde_json::json!([l.stem, l.list("aliases"), l.field("kind"), l.list("tags"), l.list("paths"), l.body]);
     Sha256::digest(v.to_string().as_bytes())[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Lo que se firma de una nota exportada: de qué memoria es, desde qué alcance se exportó (`""` lo
-/// personal, o la clave del espacio), qué versión de la memoria tenía (`updated`) y la huella de lo
-/// editable tal como salió (`base`). El texto no: es lo que se edita.
-fn texto_firma(id: &str, alcance: &str, updated: &str, base: &str) -> String {
-    format!("{FIRMA}\n{}", serde_json::json!({ "id": id, "scope": alcance, "updated": updated, "base": base }))
+/// What gets signed in an exported note: which memory it belongs to, from which scope it was exported (`""`
+/// the personal one, or the space key), which version of the memory it had (`updated`) and the fingerprint
+/// of the editable part as exported (`base`). Not the text: that's what gets edited.
+fn signed_text(id: &str, scope: &str, updated: &str, base: &str) -> String {
+    format!("{SIGNATURE_DOMAIN}\n{}", serde_json::json!({ "id": id, "scope": scope, "updated": updated, "base": base }))
 }
 
-/// La nota con su `base` y su `sig` en la cabecera.
-fn firmada(texto: &str, rel: &Path, m: &Memoria, alcance: &str, clave: &[u8]) -> String {
-    let Some(l) = leer_texto(&stem_de(rel), texto) else { return texto.to_string() };
-    let base = vista(&l);
-    let sig = crate::okf::firma::firmar(clave, &texto_firma(&m.id, alcance, &m.updated_at, &base));
-    let i = texto.get(3..).and_then(|t| t.find("\n---\n")).map_or(0, |i| i + 4);
-    format!("{}base: \"{base}\"\nsig: \"{sig}\"\n{}", &texto[..i], &texto[i..])
+/// The note with its `base` and `sig` in the header.
+fn signed(text: &str, rel: &Path, m: &Memoria, scope: &str, key: &[u8]) -> String {
+    let Some(l) = parse_note(&stem_of(rel), text) else { return text.to_string() };
+    let base = fingerprint(&l);
+    let sig = crate::okf::firma::firmar(key, &signed_text(&m.id, scope, &m.updated_at, &base));
+    let i = text.get(3..).and_then(|t| t.find("\n---\n")).map_or(0, |i| i + 4);
+    format!("{}base: \"{base}\"\nsig: \"{sig}\"\n{}", &text[..i], &text[i..])
 }
 
-/// Si la nota la exportó esta base, desde este alcance, para la memoria que dice.
-fn firma_vale(l: &Leida, clave: &[u8], alcance: &str) -> bool {
-    let (Some(id), Some(base), Some(sig)) = (l.id(), l.campo("base"), l.campo("sig")) else { return false };
-    crate::okf::firma::vale(clave, &texto_firma(&id, alcance, &l.campo("updated").unwrap_or_default(), &base), &sig)
+/// Whether the note was exported by this database, from this scope, for the memory it claims.
+fn signature_valid(l: &ReadNote, key: &[u8], scope: &str) -> bool {
+    let (Some(id), Some(base), Some(sig)) = (l.id(), l.field("base"), l.field("sig")) else { return false };
+    crate::okf::firma::vale(key, &signed_text(&id, scope, &l.field("updated").unwrap_or_default(), &base), &sig)
 }
 
-/// Si se ha editado desde que se exportó.
-fn editada(l: &Leida) -> bool {
-    l.campo("base").as_deref() != Some(vista(l).as_str())
+/// Whether it has been edited since it was exported.
+fn edited(l: &ReadNote) -> bool {
+    l.field("base").as_deref() != Some(fingerprint(l).as_str())
 }
 
-fn alcance_de(db: &Connection, que: Que) -> Result<String> {
-    match que {
+fn scope_of(db: &Connection, what: Que) -> Result<String> {
+    match what {
         Que::Personal => Ok(String::new()),
         Que::Espacio(s) => crate::proyecto::clave_espacio(db, Some(s)),
     }
 }
 
-/// Las notas de `<vault>/omoikane/` (menos `_ficheros/`, lo oculto y los enlaces simbólicos), con los
-/// topes de un bundle OKF. Lo que se salta, a `avisos`.
-fn notas_del_vault(raiz: &Path, avisos: &mut Vec<String>) -> Result<Vec<(PathBuf, Leida)>> {
+/// The notes in `<vault>/omoikane/` (except `_ficheros/`, hidden ones and symbolic links), with the
+/// limits of an OKF bundle. What gets skipped goes to `notices`.
+fn vault_notes(root: &Path, notices: &mut Vec<String>) -> Result<Vec<(PathBuf, ReadNote)>> {
     let mut r = Vec::new();
-    let mut vistas = 0usize;
-    let mut pendientes = vec![raiz.to_path_buf()];
-    while let Some(d) = pendientes.pop() {
+    let mut seen = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
-            vistas += 1;
+            seen += 1;
             anyhow::ensure!(
-                vistas <= crate::okf::MAX_FICHEROS,
+                seen <= crate::okf::MAX_FICHEROS,
                 tr!(
                     "{} has over {} files and folders: is it the right vault? Nothing was imported",
                     "{} tiene más de {} ficheros y carpetas: ¿es el vault bueno? No se ha importado nada",
-                    raiz.display(),
+                    root.display(),
                     crate::okf::MAX_FICHEROS
                 )
             );
             let p = e.path();
-            let nombre = e.file_name().to_string_lossy().to_string();
-            if nombre.starts_with('.') {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
                 continue;
             }
             let Ok(t) = e.file_type() else { continue };
-            let rel = p.strip_prefix(raiz).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
             if t.is_symlink() || crate::okf::es_union(&p) {
-                avisos.push(tr!("{rel}: a symbolic link, skipped", "{rel}: un enlace simbólico, saltado"));
+                notices.push(tr!("{rel}: a symbolic link, skipped", "{rel}: un enlace simbólico, saltado"));
                 continue;
             }
             if t.is_dir() {
-                if !(d == raiz && nombre == FICHEROS) {
-                    pendientes.push(p);
+                if !(d == root && name == FILES_DIR) {
+                    stack.push(p);
                 }
                 continue;
             }
-            if !nombre.to_lowercase().ends_with(".md") {
+            if !name.to_lowercase().ends_with(".md") {
                 continue;
             }
             if std::fs::metadata(&p).is_ok_and(|m| m.len() > crate::okf::MAX_CONCEPTO) {
-                avisos.push(tr!("{rel}: over 1 MB, skipped", "{rel}: de más de 1 MB, saltada"));
+                notices.push(tr!("{rel}: over 1 MB, skipped", "{rel}: de más de 1 MB, saltada"));
                 continue;
             }
-            let Ok(texto) = std::fs::read_to_string(&p) else {
-                avisos.push(tr!("{rel}: not UTF-8 text, skipped", "{rel}: no es texto UTF-8, saltada"));
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                notices.push(tr!("{rel}: not UTF-8 text, skipped", "{rel}: no es texto UTF-8, saltada"));
                 continue;
             };
-            match leer_texto(&stem_de(Path::new(&nombre)), &texto) {
+            match parse_note(&stem_of(Path::new(&name)), &text) {
                 Some(l) => r.push((p, l)),
-                None => avisos.push(tr!("{rel}: its YAML header can't be read, skipped", "{rel}: no se puede leer su cabecera YAML, saltada")),
+                None => notices.push(tr!("{rel}: its YAML header can't be read, skipped", "{rel}: no se puede leer su cabecera YAML, saltada")),
             }
         }
     }
@@ -712,141 +712,141 @@ fn notas_del_vault(raiz: &Path, avisos: &mut Vec<String>) -> Result<Vec<(PathBuf
     Ok(r)
 }
 
-/// Lo que dejaría una nota editada en su memoria: todo normalizado como al guardar, para compararlo.
+/// What an edited note would leave in its memory: everything normalized as when saving, to compare it.
 #[derive(Debug)]
-struct Propuesta {
+struct Proposal {
     title: String,
     content: String,
-    /// El tipo, si la nota lo cambia.
+    /// The kind, if the note changes it.
     kind: Option<Tipo>,
     tags: Vec<String>,
     paths: Vec<String>,
-    /// Si al guardarla se tapa algo que parece un secreto (en la memoria ya no se ve: `actualizar` no
-    /// lo vuelve a encontrar, así que se cuenta aquí).
-    tapada: bool,
+    /// Whether saving it hides something that looks like a secret (it's no longer visible in the memory:
+    /// `actualizar` won't find it again, so it's counted here).
+    redacted: bool,
 }
 
-impl Propuesta {
-    /// Si la memoria ya está así (lo importado otra vez, o un cambio que no cambia nada).
-    fn igual(&self, m: &Memoria) -> bool {
-        let orden = |v: &[String]| v.iter().cloned().collect::<BTreeSet<String>>();
+impl Proposal {
+    /// Whether the memory is already like this (imported again, or a change that changes nothing).
+    fn matches(&self, m: &Memoria) -> bool {
+        let as_set = |v: &[String]| v.iter().cloned().collect::<BTreeSet<String>>();
         self.title == m.title
             && self.content == m.content
             && self.kind.is_none_or(|k| k == m.kind && m.kind_text.is_none())
-            && orden(&self.tags) == orden(&m.tags)
-            && orden(&self.paths) == orden(&m.paths)
+            && as_set(&self.tags) == as_set(&m.tags)
+            && as_set(&self.paths) == as_set(&m.paths)
     }
 }
 
-/// Lo que cambia una nota editada (`l`) en su memoria (`m`), comparando con la nota que la exportación
-/// escribiría ahora para ella (`b`). Solo título, texto, tipo, etiquetas y rutas: nunca a qué proyecto
-/// o espacio pertenece, si es global, fijada o verificada. De las etiquetas, solo las sueltas: las que
-/// llevan `:` (`trade:`, `topic:`, `review:`…) dan ámbito o significado y no se quitan ni se ponen.
-fn proponer(l: &Leida, m: &Memoria, b: &Leida, nombres: &HashMap<String, String>) -> Result<Propuesta> {
-    // El título: al exportar, el nombre del fichero es el alias hecho nombre de fichero. Si siguen
-    // casando, manda el alias (editado o no); si no, lo que se haya cambiado: el nombre (Obsidian
-    // renombra el fichero al cambiar el título de la nota) si el alias es el de la memoria, y si no el alias.
-    let alias = |x: &Leida| x.lista("aliases").into_iter().next().unwrap_or_default();
+/// What an edited note (`l`) changes in its memory (`m`), comparing with the note the export
+/// would write for it now (`b`). Only title, text, kind, tags and paths: never which project
+/// or space it belongs to, whether it's global, pinned or verified. Of the tags, only the plain ones: those
+/// with `:` (`trade:`, `topic:`, `review:`…) carry scope or meaning and are neither removed nor added.
+fn propose(l: &ReadNote, m: &Memoria, b: &ReadNote, names: &HashMap<String, String>) -> Result<Proposal> {
+    // The title: on export, the file name is the alias turned into a file name. If they still
+    // match, the alias wins (edited or not); if not, whatever was changed: the name (Obsidian
+    // renames the file when the note's title changes) if the alias is the memory's, otherwise the alias.
+    let alias = |x: &ReadNote| x.list("aliases").into_iter().next().unwrap_or_default();
     let (al, ab) = (alias(l), alias(b));
-    let sufijo = format!(" ({})", corto(&m.id));
-    let nombre = l.stem.strip_suffix(&sufijo).unwrap_or(&l.stem).to_string();
+    let suffix = format!(" ({})", corto(&m.id));
+    let name = l.stem.strip_suffix(&suffix).unwrap_or(&l.stem).to_string();
     let title = if al.is_empty() {
-        nombre
-    } else if titulo_de_fichero(&al) == nombre || al != ab {
+        name
+    } else if file_title(&al) == name || al != ab {
         al
     } else {
-        nombre
+        name
     };
-    let kind = match (l.campo("kind"), b.campo("kind")) {
-        (Some(k), antes) if Some(&k) != antes.as_ref() => Some(k.parse::<Tipo>()?),
+    let kind = match (l.field("kind"), b.field("kind")) {
+        (Some(k), before) if Some(&k) != before.as_ref() => Some(k.parse::<Tipo>()?),
         _ => None,
     };
-    let sueltas = |v: Vec<String>| -> BTreeSet<String> {
+    let plain = |v: Vec<String>| -> BTreeSet<String> {
         v.into_iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty() && t.parse::<Tipo>().is_err()).collect()
     };
-    let (en_nota, antes) = (sueltas(l.lista("tags")), sueltas(b.lista("tags")));
-    let quitadas: BTreeSet<&String> = antes.difference(&en_nota).collect();
+    let (in_note, before) = (plain(l.list("tags")), plain(b.list("tags")));
+    let removed: BTreeSet<&String> = before.difference(&in_note).collect();
     let mut tags = m.tags.clone();
-    tags.retain(|t| t.contains(':') || !quitadas.contains(&etiqueta(t).to_lowercase()));
-    tags.extend(en_nota.difference(&antes).filter(|t| !t.contains(':')).cloned());
-    let paths = if l.lista("paths") != b.lista("paths") { l.lista("paths") } else { m.paths.clone() };
-    let content = if l.cuerpo == b.cuerpo { m.content.clone() } else { fusionar(&m.content, &b.cuerpo, &l.cuerpo, nombres) };
+    tags.retain(|t| t.contains(':') || !removed.contains(&tag(t).to_lowercase()));
+    tags.extend(in_note.difference(&before).filter(|t| !t.contains(':')).cloned());
+    let paths = if l.list("paths") != b.list("paths") { l.list("paths") } else { m.paths.clone() };
+    let content = if l.body == b.body { m.content.clone() } else { merge(&m.content, &b.body, &l.body, names) };
     anyhow::ensure!(
         !content.trim().is_empty(),
         tr!("the note's text is empty: to forget the memory, use `omoi forget`", "el texto de la nota está vacío: para olvidar la memoria, `omoi forget`")
     );
-    let mut tapados = Vec::new();
-    let (title, content, paths, tags) = crate::memoria::como_se_guarda(&title, &content, &paths, &tags, &mut tapados)?;
-    Ok(Propuesta { title, content, kind, tags, paths, tapada: !tapados.is_empty() })
+    let mut redacted = Vec::new();
+    let (title, content, paths, tags) = crate::memoria::como_se_guarda(&title, &content, &paths, &tags, &mut redacted)?;
+    Ok(Proposal { title, content, kind, tags, paths, redacted: !redacted.is_empty() })
 }
 
-/// El texto nuevo de una memoria: cada línea de la nota editada (`e`) que sigue igual que en la
-/// exportada (`b`) vuelve a ser la línea original del contenido (`c`), y las cambiadas pasan por
-/// [`inversa`]. Exportar cambia cada línea por separado (enlaces y `#`), así que `c` y `b` tienen las
-/// mismas líneas; si no (o la nota es enorme), todas pasan por `inversa`.
-fn fusionar(c: &str, b: &str, e: &str, nombres: &HashMap<String, String>) -> String {
+/// The new text of a memory: each line of the edited note (`e`) that is still the same as in the
+/// exported one (`b`) goes back to being the original line of the content (`c`), and the changed ones go
+/// through [`unexport_line`]. Exporting changes each line separately (links and `#`), so `c` and `b` have
+/// the same lines; if not (or the note is huge), all of them go through `unexport_line`.
+fn merge(c: &str, b: &str, e: &str, names: &HashMap<String, String>) -> String {
     let (cl, bl, el): (Vec<&str>, Vec<&str>, Vec<&str>) = (c.split('\n').collect(), b.split('\n').collect(), e.split('\n').collect());
     if cl.len() != bl.len() || bl.len().saturating_mul(el.len()) > 4_000_000 {
-        return el.iter().map(|x| inversa(x, nombres)).collect::<Vec<_>>().join("\n");
+        return el.iter().map(|x| unexport_line(x, names)).collect::<Vec<_>>().join("\n");
     }
-    // La subsecuencia común más larga entre `bl` y `el`.
+    // The longest common subsequence between `bl` and `el`.
     let (n, m) = (bl.len(), el.len());
-    let ancho = m + 1;
-    let mut t = vec![0u32; (n + 1) * ancho];
+    let width = m + 1;
+    let mut t = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            t[i * ancho + j] = if bl[i] == el[j] { t[(i + 1) * ancho + j + 1] + 1 } else { t[(i + 1) * ancho + j].max(t[i * ancho + j + 1]) };
+            t[i * width + j] = if bl[i] == el[j] { t[(i + 1) * width + j + 1] + 1 } else { t[(i + 1) * width + j].max(t[i * width + j + 1]) };
         }
     }
     let (mut i, mut j) = (0, 0);
     let mut r: Vec<String> = Vec::with_capacity(m);
     while j < m {
-        if i < n && bl[i] == el[j] && t[i * ancho + j] == t[(i + 1) * ancho + j + 1] + 1 {
+        if i < n && bl[i] == el[j] && t[i * width + j] == t[(i + 1) * width + j + 1] + 1 {
             r.push(cl[i].to_string());
             i += 1;
             j += 1;
-        } else if i < n && t[(i + 1) * ancho + j] >= t[i * ancho + j + 1] {
+        } else if i < n && t[(i + 1) * width + j] >= t[i * width + j + 1] {
             i += 1;
         } else {
-            r.push(inversa(el[j], nombres));
+            r.push(unexport_line(el[j], names));
             j += 1;
         }
     }
     r.join("\n")
 }
 
-/// Una línea escrita en Obsidian, a como la guarda Omoikane: `[[nota|nombre]]` (como exporta los
-/// enlaces) vuelve a `[[nombre]]`, un `[[nota]]` a otra memoria pasa a `[[<su id>]]` (así se resuelve
-/// en Omoikane) y el `\#` que pone la exportación vuelve a `#`. Los demás enlaces, tal cual.
-fn inversa(linea: &str, nombres: &HashMap<String, String>) -> String {
+/// A line written in Obsidian, turned into how Omoikane stores it: `[[note|name]]` (the way links are
+/// exported) goes back to `[[name]]`, a `[[note]]` to another memory becomes `[[<its id>]]` (that's how it
+/// resolves in Omoikane) and the `\#` added by the export goes back to `#`. Other links, as they are.
+fn unexport_line(line: &str, names: &HashMap<String, String>) -> String {
     let mut r = String::new();
-    let mut resto = linea;
-    while let Some(i) = resto.find("[[") {
-        let tras = &resto[i + 2..];
-        let Some(fin) = tras.find("]]") else { break };
-        let dentro = &tras[..fin];
-        r += &resto[..i];
-        let (destino, texto) = match dentro.split_once('|') {
+    let mut rest = line;
+    while let Some(i) = rest.find("[[") {
+        let after = &rest[i + 2..];
+        let Some(end) = after.find("]]") else { break };
+        let inner = &after[..end];
+        r += &rest[..i];
+        let (target, text) = match inner.split_once('|') {
             Some((a, t)) => (a.trim(), t.trim()),
-            None => (dentro.trim(), ""),
+            None => (inner.trim(), ""),
         };
-        let destino = destino.rsplit('/').next().unwrap_or(destino).trim_end_matches(".md");
-        match nombres.get(&destino.to_lowercase()) {
-            Some(_) if !texto.is_empty() => r += &format!("[[{texto}]]"),
+        let target = target.rsplit('/').next().unwrap_or(target).trim_end_matches(".md");
+        match names.get(&target.to_lowercase()) {
+            Some(_) if !text.is_empty() => r += &format!("[[{text}]]"),
             Some(id) => r += &format!("[[{id}]]"),
-            None => r += &resto[i..i + 2 + fin + 2],
+            None => r += &rest[i..i + 2 + end + 2],
         }
-        resto = &tras[fin + 2..];
+        rest = &after[end + 2..];
     }
-    r += resto;
+    r += rest;
     let cs: Vec<char> = r.chars().collect();
     let mut s = String::with_capacity(r.len());
-    let mut en_codigo = false;
+    let mut in_code = false;
     for (i, &c) in cs.iter().enumerate() {
         if c == '`' {
-            en_codigo = !en_codigo;
+            in_code = !in_code;
         }
-        if c == '\\' && !en_codigo && cs.get(i + 1) == Some(&'#') && cs.get(i + 2).is_some_and(|n| n.is_alphanumeric() || *n == '_') {
+        if c == '\\' && !in_code && cs.get(i + 1) == Some(&'#') && cs.get(i + 2).is_some_and(|n| n.is_alphanumeric() || *n == '_') {
             continue;
         }
         s.push(c);
@@ -854,102 +854,102 @@ fn inversa(linea: &str, nombres: &HashMap<String, String>) -> String {
     s
 }
 
-/// Si una nota de Omoikane está editada y su cambio aún no está en su memoria (sin importar, o en
-/// conflicto): la exportación no la pisa ni la borra. También la de una memoria que ya no sale (olvidada
-/// o llevada a otro sitio): es texto de la persona, y lo borra ella.
-fn pendiente(l: &Leida, p: &Preparado, por_id: &HashMap<&str, usize>, clave: &[u8], alcance: &str) -> bool {
+/// Whether an Omoikane note is edited and its change is not yet in its memory (not imported, or in
+/// conflict): the export neither overwrites nor deletes it. Also the note of a memory no longer exported
+/// (forgotten or moved elsewhere): it's the person's text, and they delete it.
+fn pending(l: &ReadNote, p: &Prepared, by_id: &HashMap<&str, usize>, key: &[u8], scope: &str) -> bool {
     let Some(id) = l.id() else { return false };
-    if !firma_vale(l, clave, alcance) || !editada(l) {
+    if !signature_valid(l, key, scope) || !edited(l) {
         return false;
     }
-    let Some(&i) = por_id.get(id.as_str()) else { return true };
-    let n = &p.notas[i];
-    let Some(b) = leer_texto(&stem_de(&n.rel), &n.texto) else { return true };
-    proponer(l, &n.m, &b, &p.nombres).map(|x| !x.igual(&n.m)).unwrap_or(true)
+    let Some(&i) = by_id.get(id.as_str()) else { return true };
+    let n = &p.notes[i];
+    let Some(b) = parse_note(&stem_of(&n.rel), &n.text) else { return true };
+    propose(l, &n.m, &b, &p.names).map(|x| !x.matches(&n.m)).unwrap_or(true)
 }
 
-/// Si una nota sin la firma de esta base (de una versión anterior a la 1.9.0, de otra base o con la
-/// firma rota) dice lo mismo que la que la exportación escribiría ahora para su memoria: rehacerla no
-/// pierde nada. Una de antes de la 1.9.0 no lleva [`PIE`], así que su texto sigue con los enlaces de
-/// debajo de la raya: cuentan como intactos si son los de ahora (la última línea, el aviso, cambió).
-/// Ante la duda, no: la importación la deja como está.
-fn ajena_intacta(l: &Leida, p: &Preparado, por_id: &HashMap<&str, usize>) -> bool {
-    let Some(i) = l.id().and_then(|id| por_id.get(id.as_str()).copied()) else { return false };
-    let n = &p.notas[i];
-    let Some(b) = leer_texto(&stem_de(&n.rel), &n.texto) else { return false };
-    if vista(l) == vista(&b) {
+/// Whether a note without this database's signature (from a version before 1.9.0, from another database or with a
+/// broken signature) says the same as the one the export would write now for its memory: rebuilding it
+/// loses nothing. One from before 1.9.0 has no [`FOOTER`], so its text still carries the links from
+/// below the line: they count as intact if they are the current ones (the last line, the notice, changed).
+/// When in doubt, no: the import leaves it as it is.
+fn foreign_intact(l: &ReadNote, p: &Prepared, by_id: &HashMap<&str, usize>) -> bool {
+    let Some(i) = l.id().and_then(|id| by_id.get(id.as_str()).copied()) else { return false };
+    let n = &p.notes[i];
+    let Some(b) = parse_note(&stem_of(&n.rel), &n.text) else { return false };
+    if fingerprint(l) == fingerprint(&b) {
         return true;
     }
-    let sin_aviso = |t: &str| t.rsplit_once("\n\n*").map_or(t, |(a, _)| a).trim_end().to_string();
-    let Some((_, debajo)) = n.texto.rsplit_once(PIE) else { return false };
-    if sin_aviso(&l.cuerpo) != format!("{}\n\n{}", b.cuerpo, sin_aviso(debajo.trim())) {
+    let strip_notice = |t: &str| t.rsplit_once("\n\n*").map_or(t, |(a, _)| a).trim_end().to_string();
+    let Some((_, below)) = n.text.rsplit_once(FOOTER) else { return false };
+    if strip_notice(&l.body) != format!("{}\n\n{}", b.body, strip_notice(below.trim())) {
         return false;
     }
     let mut l = l.clone();
-    l.cuerpo = b.cuerpo.clone();
-    vista(&l) == vista(&b)
+    l.body = b.body.clone();
+    fingerprint(&l) == fingerprint(&b)
 }
 
-/// Qué hacer con una nota editada cuya memoria también ha cambiado en Omoikane desde la exportación.
+/// What to do with an edited note whose memory has also changed in Omoikane since the export.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preferir {
-    /// Nada: se dice y se deja como está (la nota no se pisa).
+    /// Nothing: it's reported and left as it is (the note isn't overwritten).
     #[default]
     Nada,
-    /// Lo de Obsidian: la nota se aplica (lo de Omoikane queda en el historial).
+    /// Obsidian's: the note is applied (Omoikane's version stays in the history).
     Obsidian,
-    /// Lo de Omoikane: la nota se rehace desde la memoria y su cambio se pierde.
+    /// Omoikane's: the note is rebuilt from the memory and its change is lost.
     Omoikane,
 }
 
-/// Una nota que no ha entrado, y por qué.
+/// A note that didn't get in, and why.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Saltada {
     pub note: String,
     pub reason: String,
 }
 
-/// Lo que hizo (o haría, en seco) una importación desde Obsidian.
+/// What an import from Obsidian did (or would do, in a dry run).
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Resumen {
-    /// Las notas de memoria (una por memoria) y las nuevas que se han mirado.
+    /// The memory notes (one per memory) and the new ones that were looked at.
     pub notes: usize,
     pub updated: usize,
     pub created: usize,
     pub unchanged: usize,
-    /// Editadas en Obsidian y cambiadas también en Omoikane después de exportarlas: no se tocan.
+    /// Edited in Obsidian and also changed in Omoikane after exporting them: left untouched.
     pub conflicts: Vec<String>,
-    /// Conflictos resueltos con `--prefer obsidian` (aplicados) o `--prefer omoikane` (descartados).
+    /// Conflicts resolved with `--prefer obsidian` (applied) or `--prefer omoikane` (discarded).
     pub conflicts_applied: usize,
     pub conflicts_discarded: usize,
-    /// Con `omoikane:` pero sin la firma de esta base y de este alcance (otra base, otra versión, o
-    /// retocadas en esos campos) y con otro texto que su memoria: no tocan ninguna memoria, y la
-    /// exportación de después no las pisa ni las borra (las que dicen lo mismo cuentan en `unchanged`
-    /// y se rehacen firmadas).
+    /// With `omoikane:` but without the signature of this database and this scope (another database, another version, or
+    /// touched in those fields) and with a different text from their memory: they touch no memory, and the
+    /// following export neither overwrites nor deletes them (those saying the same count in `unchanged`
+    /// and are rebuilt signed).
     pub foreign: Vec<String>,
-    /// Editadas, pero su memoria ya no sale en este vault (olvidada, o llevada a otro sitio).
+    /// Edited, but their memory is no longer exported to this vault (forgotten, or moved elsewhere).
     pub gone: Vec<String>,
-    /// Notas nuevas que no pueden entrar (sin proyecto o sin tipo que se pueda deducir, globales, vacías).
+    /// New notes that can't get in (no project or no kind that can be inferred, global, empty).
     pub skipped: Vec<Saltada>,
     pub failed: Vec<Saltada>,
-    /// Los títulos de las memorias en las que se tapó algo que parecía un secreto.
+    /// The titles of the memories in which something that looked like a secret was hidden.
     pub redacted: Vec<String>,
-    /// Las memorias verificadas por una persona cuyo texto cambió: pierden la verificación.
+    /// Memories verified by a person whose text changed: they lose the verification.
     pub unverified: usize,
-    /// Lo que se saltó al leer el vault.
+    /// What was skipped while reading the vault.
     pub notices: Vec<String>,
-    /// La exportación que deja el vault al día después de importar.
+    /// The export that brings the vault up to date after importing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export: Option<Cuenta>,
 }
 
-/// La clave por la que se guarda una nota nueva: `obsidian:<su ruta>` (importarla otra vez no la
-/// duplica; sin firma, tampoco cambia la memoria que ya salió de ella).
-fn clave_de_nota(rel: &str) -> String {
+/// The key a new note is saved under: `obsidian:<its path>` (importing it again doesn't
+/// duplicate it; without a signature, it doesn't change the memory that already came from it either).
+fn note_key(rel: &str) -> String {
     let r = rel.to_lowercase();
     let r = r.strip_suffix(".md").unwrap_or(&r);
-    let limpio: String = r.chars().map(|c| if c.is_alphanumeric() || "-_./".contains(c) { c } else { '-' }).collect();
-    let k = format!("obsidian:{limpio}");
+    let clean: String = r.chars().map(|c| if c.is_alphanumeric() || "-_./".contains(c) { c } else { '-' }).collect();
+    let k = format!("obsidian:{clean}");
     if k.chars().count() <= 80 {
         return k;
     }
@@ -958,36 +958,36 @@ fn clave_de_nota(rel: &str) -> String {
     format!("{}-{:02x}{:02x}{:02x}{:02x}", k.chars().take(71).collect::<String>(), h[0], h[1], h[2], h[3])
 }
 
-/// Trae a Omoikane lo editado en un vault exportado con [`exportar`] (`omoi import --obsidian`).
+/// Brings into Omoikane what was edited in a vault exported with [`exportar`] (`omoi import --obsidian`).
 ///
-/// - Una nota de memoria (con `omoikane: <id>`) editada pone al día su memoria, con historial (motivo
-///   `obsidian import`): título (el alias o el nombre del fichero), texto, tipo, etiquetas sueltas y
-///   rutas. Solo si la nota lleva la firma de esta base para este alcance (`sig`, ver
-///   [`texto_firma`]): un id no es un secreto (viaja en la sincronización, en los bundles y en otros
-///   vaults), y sin firma nadie puede apuntar una nota a una memoria. Nunca cambia de proyecto o de
-///   espacio, ni la hace global, fijada o verificada; cambiar el texto de una verificada le quita la
-///   verificación, como `update`. Una memoria de oficio pasa por `oficios::fugas`.
-/// - Sin editar (su huella es la de `base`) o ya importada: nada.
-/// - Editada y cambiada también en Omoikane después de exportarla (`updated` ya no es el de la
-///   memoria): conflicto. Sin `preferir`, no se toca ninguna de las dos y se dice; la exportación
-///   tampoco pisa la nota.
-/// - Una nota nueva (sin `omoikane:`) en la carpeta de un proyecto (o con un `project:` que es uno de
-///   este vault) y con `kind:` (o una etiqueta que es un tipo) entra como memoria nueva de ese proyecto
-///   (o del espacio, en `_<espacio>/`), por la clave `obsidian:<ruta>`, sin fijar y con origen
-///   `import:obsidian`; su fichero pasa a ser la copia de Omoikane. En `_global/` no: lo global no se
-///   crea desde un fichero que puede escribir cualquiera. Si de esa ruta ya salió una memoria, la nota
-///   (sin firma) no la cambia: se salta y se queda en el vault.
-/// - Una nota con `omoikane:` sin la firma de esta base (de una versión anterior, de otra base) no
-///   toca ninguna memoria; si su texto no es el de su memoria, la exportación de después la deja.
-/// - Las notas de grupo y de fichero, lo de fuera de `omoikane/` y lo borrado en el vault no hacen nada.
+/// - An edited memory note (with `omoikane: <id>`) updates its memory, with history (reason
+///   `obsidian import`): title (the alias or the file name), text, kind, plain tags and
+///   paths. Only if the note carries this database's signature for this scope (`sig`, see
+///   [`signed_text`]): an id is not a secret (it travels in sync, in bundles and in other
+///   vaults), and without a signature nobody can point a note at a memory. It never changes project or
+///   space, nor makes it global, pinned or verified; changing a verified memory's text removes its
+///   verification, like `update`. A trade memory goes through `oficios::fugas`.
+/// - Not edited (its fingerprint is the one in `base`) or already imported: nothing.
+/// - Edited and also changed in Omoikane after exporting it (`updated` is no longer the
+///   memory's): conflict. Without `prefer`, neither is touched and it's reported; the export
+///   doesn't overwrite the note either.
+/// - A new note (without `omoikane:`) in a project's folder (or with a `project:` that is one of
+///   this vault) and with `kind:` (or a tag that is a kind) comes in as a new memory of that project
+///   (or of the space, in `_<space>/`), under the key `obsidian:<path>`, unpinned and with source
+///   `import:obsidian`; its file becomes Omoikane's copy. Not in `_global/`: global memories are not
+///   created from a file anyone can write. If a memory already came from that path, the note
+///   (unsigned) doesn't change it: it's skipped and stays in the vault.
+/// - A note with `omoikane:` without this database's signature (from an earlier version, from another database) doesn't
+///   touch any memory; if its text isn't its memory's, the following export leaves it.
+/// - Group and file notes, whatever is outside `omoikane/` and what was deleted in the vault do nothing.
 ///
-/// Todo lo que entra pasa por la redacción de secretos, como cualquier escritura. Después, si no es en
-/// seco, exporta otra vez para dejar el vault al día.
-pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, vault: &Path, que: Que, preferir: Preferir, en_seco: bool) -> Result<Resumen> {
+/// Everything that comes in goes through secret redaction, like any write. Afterwards, if it's not a
+/// dry run, it exports again to bring the vault up to date.
+pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vault: &Path, what: Que, prefer: Preferir, dry_run: bool) -> Result<Resumen> {
     crate::proyecto::exigir_local(vault)?;
-    let raiz = vault.join(CARPETA);
+    let root = vault.join(CARPETA);
     anyhow::ensure!(
-        raiz.is_dir(),
+        root.is_dir(),
         tr!(
             "{} has no {CARPETA}/ folder: export to it first (omoi export --obsidian <vault>)",
             "{} no tiene la carpeta {CARPETA}/: exporta antes a él (omoi export --obsidian <vault>)",
@@ -995,130 +995,129 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
         )
     );
     let mut r = Resumen::default();
-    let notas = notas_del_vault(&raiz, &mut r.notices)?;
-    let p = preparar(db, que)?;
-    let alcance = alcance_de(db, que)?;
-    let clave = crate::okf::firma::clave(db, false)?;
-    let rel_de = |ruta: &Path| ruta.strip_prefix(&raiz).unwrap_or(ruta).to_string_lossy().replace('\\', "/");
+    let notes = vault_notes(&root, &mut r.notices)?;
+    let p = prepare(db, what)?;
+    let scope = scope_of(db, what)?;
+    let sign_key = crate::okf::firma::clave(db, false)?;
+    let rel_of = |path: &Path| path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
 
-    // Un vault exportado desde otro alcance (lo personal frente a un espacio): se dice claro.
-    let de_memoria: Vec<&Leida> = notas.iter().map(|(_, l)| l).filter(|l| l.id().is_some()).collect();
-    if let Some(otro) = de_memoria.first().map(|l| l.campo("space").unwrap_or_default())
-        && otro != alcance
-        && de_memoria.iter().all(|l| l.campo("space").unwrap_or_default() == otro)
+    // A vault exported from another scope (the personal one versus a space): say so clearly.
+    let memory_notes: Vec<&ReadNote> = notes.iter().map(|(_, l)| l).filter(|l| l.id().is_some()).collect();
+    if let Some(other) = memory_notes.first().map(|l| l.field("space").unwrap_or_default())
+        && other != scope
+        && memory_notes.iter().all(|l| l.field("space").unwrap_or_default() == other)
     {
-        if alcance.is_empty() {
-            bail!(tr!("this vault was exported from the space «{otro}»: import it with --space {otro}", "este vault se exportó del espacio «{otro}»: impórtalo con --space {otro}"));
+        if scope.is_empty() {
+            bail!(tr!("this vault was exported from the space «{other}»: import it with --space {other}", "este vault se exportó del espacio «{other}»: impórtalo con --space {other}"));
         }
         bail!(tr!(
-            "this vault wasn't exported from the space «{alcance}»: import it with the --space it was exported from (or without --space if it's the personal one)",
-            "este vault no se exportó del espacio «{alcance}»: impórtalo con el --space del que se exportó (o sin --space si es el personal)"
+            "this vault wasn't exported from the space «{scope}»: import it with the --space it was exported from (or without --space if it's the personal one)",
+            "este vault no se exportó del espacio «{scope}»: impórtalo con el --space del que se exportó (o sin --space si es el personal)"
         ));
     }
-
-    let por_id: HashMap<&str, usize> = p.notas.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
-    let mut pisar: BTreeSet<PathBuf> = BTreeSet::new();
-    // Lo que la exportación de después no escribe ni borra: lo que no ha podido entrar y es texto de
-    // alguien (ver `exportar_con`).
-    let mut respetar: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut por_memoria: BTreeMap<String, Vec<(PathBuf, Leida)>> = BTreeMap::new();
-    let mut nuevas: Vec<(PathBuf, Leida)> = Vec::new();
-    for (ruta, l) in notas {
-        if l.es_hub() {
+    let by_id: HashMap<&str, usize> = p.notes.iter().enumerate().map(|(i, n)| (n.m.id.as_str(), i)).collect();
+    let mut overwrite: BTreeSet<PathBuf> = BTreeSet::new();
+    // What the following export neither writes nor deletes: what couldn't get in and is someone's
+    // text (see `export_with`).
+    let mut keep: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut by_memory: BTreeMap<String, Vec<(PathBuf, ReadNote)>> = BTreeMap::new();
+    let mut new_notes: Vec<(PathBuf, ReadNote)> = Vec::new();
+    for (path, l) in notes {
+        if l.is_hub() {
             continue;
         }
-        if !l.cab.contains_key("omoikane") {
-            nuevas.push((ruta, l));
-        } else if let (Some(id), Some(k)) = (l.id(), &clave)
-            && firma_vale(&l, k, &alcance)
+        if !l.header.contains_key("omoikane") {
+            new_notes.push((path, l));
+        } else if let (Some(id), Some(k)) = (l.id(), &sign_key)
+            && signature_valid(&l, k, &scope)
         {
-            por_memoria.entry(id).or_default().push((ruta, l));
-        } else if ajena_intacta(&l, &p, &por_id) {
-            // Sin firma pero igual que su memoria (un vault de una versión anterior sin tocar): la
-            // exportación la rehace firmada y no se pierde nada.
+            by_memory.entry(id).or_default().push((path, l));
+        } else if foreign_intact(&l, &p, &by_id) {
+            // Unsigned but the same as its memory (an untouched vault from an earlier version): the
+            // export rebuilds it signed and nothing is lost.
             r.notes += 1;
             r.unchanged += 1;
         } else {
-            // Sin firma y con otro texto: puede ser una edición (un vault de la 1.8 editado), que no
-            // entra en ninguna memoria; la exportación tampoco la pisa ni la borra.
-            r.foreign.push(rel_de(&ruta));
-            respetar.insert(ruta);
+            // Unsigned and with a different text: it may be an edit (an edited 1.8 vault), which doesn't
+            // go into any memory; the export doesn't overwrite or delete it either.
+            r.foreign.push(rel_of(&path));
+            keep.insert(path);
         }
     }
 
-    for (id, copias) in por_memoria {
+    for (id, copies) in by_memory {
         r.notes += 1;
-        let editadas: Vec<&(PathBuf, Leida)> = copias.iter().filter(|(_, l)| editada(l)).collect();
-        let (ruta, l) = match editadas.as_slice() {
+        let edited_copies: Vec<&(PathBuf, ReadNote)> = copies.iter().filter(|(_, l)| edited(l)).collect();
+        let (path, l) = match edited_copies.as_slice() {
             [] => {
                 r.unchanged += 1;
                 continue;
             }
-            [una] => (&una.0, &una.1),
-            varias => {
-                // Dos copias de la misma memoria editadas (una renombrada y otra que volvió a salir): no
-                // se sabe cuál vale.
-                r.conflicts.push(varias.iter().map(|(p, _)| rel_de(p)).collect::<Vec<_>>().join(" + "));
+            [one] => (&one.0, &one.1),
+            several => {
+                // Two edited copies of the same memory (one renamed and another that was exported again): no
+                // way to know which one counts.
+                r.conflicts.push(several.iter().map(|(p, _)| rel_of(p)).collect::<Vec<_>>().join(" + "));
                 continue;
             }
         };
-        let rel = rel_de(ruta);
-        let Some(&i) = por_id.get(id.as_str()) else {
+        let rel = rel_of(path);
+        let Some(&i) = by_id.get(id.as_str()) else {
             r.gone.push(rel);
             continue;
         };
-        let n = &p.notas[i];
+        let n = &p.notes[i];
         let m = &n.m;
-        let propuesta = leer_texto(&stem_de(&n.rel), &n.texto).context("render").and_then(|b| proponer(l, m, &b, &p.nombres));
-        let propuesta = match propuesta {
+        let proposal = parse_note(&stem_of(&n.rel), &n.text).context("render").and_then(|b| propose(l, m, &b, &p.names));
+        let proposal = match proposal {
             Ok(x) => x,
             Err(e) => {
                 r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
                 continue;
             }
         };
-        // Lo que ya está en su memoria (o se aplica ahora), la exportación de después lo rehace (con el
-        // nombre nuevo si cambió el título), aunque la nota siga pareciendo editada.
-        if propuesta.igual(m) {
+        // What is already in its memory (or is applied now) the following export rebuilds (with the
+        // new name if the title changed), even if the note still looks edited.
+        if proposal.matches(m) {
             r.unchanged += 1;
-            pisar.insert(ruta.clone());
+            overwrite.insert(path.clone());
             continue;
         }
-        if l.campo("updated").as_deref() != Some(m.updated_at.as_str()) {
-            match preferir {
+        if l.field("updated").as_deref() != Some(m.updated_at.as_str()) {
+            match prefer {
                 Preferir::Nada => {
                     r.conflicts.push(rel);
                     continue;
                 }
                 Preferir::Omoikane => {
                     r.conflicts_discarded += 1;
-                    pisar.insert(ruta.clone());
+                    overwrite.insert(path.clone());
                     continue;
                 }
                 Preferir::Obsidian => r.conflicts_applied += 1,
             }
         }
-        let mut cambios = Cambios {
-            title: (propuesta.title != m.title).then(|| propuesta.title.clone()),
-            content: (propuesta.content != m.content).then(|| propuesta.content.clone()),
-            kind: propuesta.kind,
-            paths: Some(propuesta.paths.clone()),
-            tags: Some(propuesta.tags.clone()),
+        let mut changes = Cambios {
+            title: (proposal.title != m.title).then(|| proposal.title.clone()),
+            content: (proposal.content != m.content).then(|| proposal.content.clone()),
+            kind: proposal.kind,
+            paths: Some(proposal.paths.clone()),
+            tags: Some(proposal.tags.clone()),
             reason: Some("obsidian import".into()),
             ..Default::default()
         };
-        // Una memoria de oficio: lo nuevo pasa por `oficios::fugas`, como en `update`.
+        // A trade memory: the new content goes through `oficios::fugas`, as in `update`.
         if crate::oficios::lleva_oficio(&m.tags) {
-            let pedido = crate::oficios::PedidoCambio { trade: None, para: None, cambios: &cambios, datos: None, permitir_fugas: false };
-            match crate::oficios::al_cambiar(db, m, pedido)? {
-                Err(fugas) => {
-                    let lista: Vec<String> = fugas.iter().map(|f| format!("{} «{}»", f.tipo, f.text)).collect();
+            let request = crate::oficios::PedidoCambio { trade: None, para: None, cambios: &changes, datos: None, permitir_fugas: false };
+            match crate::oficios::al_cambiar(db, m, request)? {
+                Err(leaks) => {
+                    let list: Vec<String> = leaks.iter().map(|f| format!("{} «{}»", f.tipo, f.text)).collect();
                     r.failed.push(Saltada {
                         note: rel,
                         reason: tr!(
                             "a trade memory (reaches every project of its trade) and the change names what looks like a project or a client: {}",
                             "una memoria de oficio (llega a todos los proyectos de su oficio) y el cambio nombra algo que parece de un proyecto o de un cliente: {}",
-                            lista.join(", ")
+                            list.join(", ")
                         ),
                     });
                     continue;
@@ -1129,25 +1128,25 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
                 }
                 Ok(plan) => {
                     if let Some(t) = plan.tags {
-                        cambios.tags = Some(t);
+                        changes.tags = Some(t);
                     }
                 }
             }
         }
-        if en_seco {
+        if dry_run {
             r.updated += 1;
-            if propuesta.tapada {
-                r.redacted.push(propuesta.title.clone());
+            if proposal.redacted {
+                r.redacted.push(proposal.title.clone());
             }
             continue;
         }
-        match crate::memoria::actualizar(db, &m.id, cambios, modelo) {
+        match crate::memoria::actualizar(db, &m.id, changes, model) {
             Ok(x) => {
                 r.updated += 1;
-                pisar.insert(ruta.clone());
-                // `actualizar` ya no ve el secreto (lo tapó `proponer`, para comparar): se cuenta por
-                // la propuesta.
-                if propuesta.tapada || !x.redacted.is_empty() {
+                overwrite.insert(path.clone());
+                // `actualizar` no longer sees the secret (`propose` hid it, to compare): it's counted from
+                // the proposal.
+                if proposal.redacted || !x.redacted.is_empty() {
                     r.redacted.push(x.title.clone());
                 }
                 r.unverified += usize::from(x.unverified.is_some());
@@ -1156,41 +1155,41 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
         }
     }
 
-    for (ruta, l) in nuevas {
+    for (path, l) in new_notes {
         r.notes += 1;
-        let rel = rel_de(&ruta);
-        let mut saltar = |motivo: String| r.skipped.push(Saltada { note: rel.clone(), reason: motivo });
-        let carpeta = rel.split_once('/').map(|(c, _)| c.to_lowercase());
-        let grupo = match carpeta.as_ref().and_then(|c| p.grupos.get(c)) {
+        let rel = rel_of(&path);
+        let mut skip = |reason: String| r.skipped.push(Saltada { note: rel.clone(), reason });
+        let folder = rel.split_once('/').map(|(c, _)| c.to_lowercase());
+        let group = match folder.as_ref().and_then(|c| p.groups.get(c)) {
             Some(g) => Some(g),
-            None => l.campo("project").and_then(|t| p.grupos.values().find(|g| g.titulo.eq_ignore_ascii_case(&t) || g.carpeta.eq_ignore_ascii_case(&t))),
+            None => l.field("project").and_then(|t| p.groups.values().find(|g| g.title.eq_ignore_ascii_case(&t) || g.folder.eq_ignore_ascii_case(&t))),
         };
-        let Some(g) = grupo else {
-            saltar(tr!(
+        let Some(g) = group else {
+            skip(tr!(
                 "no project can be told: put it in a project's folder of this vault (or give it a `project:` that is one)",
                 "no se sabe de qué proyecto es: ponla en la carpeta de un proyecto de este vault (o dale un `project:` que sea uno)"
             ));
             continue;
         };
         if g.project_id == 0 && g.space_id.is_none() {
-            saltar(tr!(
+            skip(tr!(
                 "in _global/: a note from the vault doesn't become a global memory (every project sees those); save it with `omoi remember --global`",
                 "en _global/: una nota del vault no se convierte en memoria global (las ve cualquier proyecto); guárdala con `omoi remember --global`"
             ));
             continue;
         }
-        let kind = match l.campo("kind") {
+        let kind = match l.field("kind") {
             Some(k) => match k.parse::<Tipo>() {
                 Ok(t) => t,
                 Err(e) => {
-                    saltar(format!("{e:#}"));
+                    skip(format!("{e:#}"));
                     continue;
                 }
             },
-            None => match l.lista("tags").iter().find_map(|t| t.trim_start_matches('#').parse::<Tipo>().ok()) {
+            None => match l.list("tags").iter().find_map(|t| t.trim_start_matches('#').parse::<Tipo>().ok()) {
                 Some(t) => t,
                 None => {
-                    saltar(tr!(
+                    skip(tr!(
                         "no kind: add `kind: fact` (or decision, gotcha, preference, procedure) to its properties",
                         "sin tipo: añade `kind: fact` (o decision, gotcha, preference, procedure) a sus propiedades"
                     ));
@@ -1198,60 +1197,60 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
                 }
             },
         };
-        if l.cuerpo.trim().is_empty() {
-            saltar(tr!("empty", "vacía").to_string());
+        if l.body.trim().is_empty() {
+            skip(tr!("empty", "vacía").to_string());
             continue;
         }
-        let title = l.lista("aliases").into_iter().next().filter(|t| !t.is_empty()).or_else(|| l.campo("title")).unwrap_or_else(|| l.stem.clone());
+        let title = l.list("aliases").into_iter().next().filter(|t| !t.is_empty()).or_else(|| l.field("title")).unwrap_or_else(|| l.stem.clone());
         let tags: Vec<String> = l
-            .lista("tags")
+            .list("tags")
             .into_iter()
             .map(|t| t.trim_start_matches('#').to_lowercase())
             .filter(|t| !t.is_empty() && !t.contains(':') && t.parse::<Tipo>().is_err())
             .collect();
-        let nueva = crate::memoria::Nueva {
+        let new_memory = crate::memoria::Nueva {
             project_id: (g.project_id != 0).then_some(g.project_id),
             space_id: if g.project_id == 0 { g.space_id } else { None },
             kind: Some(kind),
             title,
-            content: l.cuerpo.clone(),
-            paths: l.lista("paths"),
+            content: l.body.clone(),
+            paths: l.list("paths"),
             tags,
             pinned: false,
             source: "import:obsidian".into(),
             ..Default::default()
         };
-        let clave_nota = clave_de_nota(&rel);
-        let tema = format!("{}{clave_nota}", crate::memoria::ETIQUETA_TEMA);
-        let antes: Option<(String, String)> = db
+        let key = note_key(&rel);
+        let topic = format!("{}{key}", crate::memoria::ETIQUETA_TEMA);
+        let earlier: Option<(String, String)> = db
             .query_row(
                 "SELECT id, hlc FROM memory WHERE project_id = ?1 AND space_id IS ?2
                    AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?3) ORDER BY created_at, id LIMIT 1",
-                rusqlite::params![g.project_id, nueva.space_id, tema],
+                rusqlite::params![g.project_id, new_memory.space_id, topic],
                 |f| Ok((f.get(0)?, f.get(1)?)),
             )
             .optional()?;
-        // De esta nota ya salió una memoria. Sin firma, la nota no la cambia: cualquiera que escriba en
-        // el vault podría pisar lo que se cambió, fijó o verificó después en Omoikane (y su nota
-        // exportada es la que se edita). Si dice lo mismo, no hay nada que hacer; si no, se queda como
-        // está, la exportación no la pisa y se dice cómo traerla.
-        if let Some((id, _)) = &antes {
+        // A memory already came from this note. Unsigned, the note doesn't change it: anyone writing to
+        // the vault could overwrite what was later changed, pinned or verified in Omoikane (and its exported
+        // note is the one that gets edited). If it says the same, there's nothing to do; if not, it stays as
+        // it is, the export doesn't overwrite it and the user is told how to bring it over.
+        if let Some((id, _)) = &earlier {
             let m = match crate::memoria::obtener(db, id) {
                 Ok(m) => m,
                 Err(e) => {
                     r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
-                    respetar.insert(ruta);
+                    keep.insert(path);
                     continue;
                 }
             };
-            let mut tapados = Vec::new();
-            let igual = crate::memoria::como_se_guarda(&nueva.title, &nueva.content, &nueva.paths, &nueva.tags, &mut tapados)
-                .is_ok_and(|(t, c, _, _)| t == m.title && c == m.content && Some(m.kind) == nueva.kind);
-            if igual {
+            let mut redacted = Vec::new();
+            let same = crate::memoria::como_se_guarda(&new_memory.title, &new_memory.content, &new_memory.paths, &new_memory.tags, &mut redacted)
+                .is_ok_and(|(t, c, _, _)| t == m.title && c == m.content && Some(m.kind) == new_memory.kind);
+            if same {
                 r.unchanged += 1;
-                if !en_seco {
-                    // Lo mismo que su memoria: la exportación escribe su copia.
-                    let _ = std::fs::remove_file(&ruta);
+                if !dry_run {
+                    // The same as its memory: the export writes its copy.
+                    let _ = std::fs::remove_file(&path);
                 }
             } else {
                 r.skipped.push(Saltada {
@@ -1264,42 +1263,42 @@ pub fn importar(db: &mut Connection, modelo: Option<&crate::embeber::Modelo>, va
                         m.id
                     ),
                 });
-                respetar.insert(ruta);
+                keep.insert(path);
             }
             continue;
         }
-        if en_seco {
+        if dry_run {
             r.created += 1;
             continue;
         }
-        let (titulo, contenido) = (nueva.title.clone(), nueva.content.clone());
-        match crate::memoria::guardar_por_clave(db, &clave_nota, nueva, None, modelo) {
+        let (title, content) = (new_memory.title.clone(), new_memory.content.clone());
+        match crate::memoria::guardar_por_clave(db, &key, new_memory, None, model) {
             Ok(x) => {
-                let cambiada = match &antes {
+                let changed = match &earlier {
                     None => true,
                     Some((id, hlc)) => crate::memoria::hlc_de(db, id).map(|h| h != *hlc).unwrap_or(true),
                 };
-                match (x.creada, cambiada) {
+                match (x.creada, changed) {
                     (true, _) => r.created += 1,
                     (false, true) => r.updated += 1,
                     (false, false) => r.unchanged += 1,
                 }
-                let tapado = !x.memoria.redacted.is_empty();
-                if tapado {
+                let was_redacted = !x.memoria.redacted.is_empty();
+                if was_redacted {
                     r.redacted.push(x.memoria.title.clone());
                 }
-                // La nota pasa a ser la copia de Omoikane (la exportación de después la escribe con su id).
-                // Si se tapó algo, se queda como está: su texto no es el de la memoria.
-                if !tapado && x.memoria.title == titulo.split_whitespace().collect::<Vec<_>>().join(" ") && x.memoria.content == contenido.trim() {
-                    let _ = std::fs::remove_file(&ruta);
+                // The note becomes Omoikane's copy (the following export writes it with its id).
+                // If something was hidden, it stays as it is: its text isn't the memory's.
+                if !was_redacted && x.memoria.title == title.split_whitespace().collect::<Vec<_>>().join(" ") && x.memoria.content == content.trim() {
+                    let _ = std::fs::remove_file(&path);
                 }
             }
             Err(e) => r.failed.push(Saltada { note: rel, reason: format!("{e:#}") }),
         }
     }
 
-    if !en_seco {
-        r.export = Some(exportar_con(db, vault, que, &pisar, &respetar)?);
+    if !dry_run {
+        r.export = Some(export_with(db, vault, what, &overwrite, &keep)?);
     }
     Ok(r)
 }
@@ -1309,31 +1308,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nombres_y_texto() {
+    fn names_and_text() {
         assert_eq!(slug("¿Publicar 1.3.0 en crates.io?", 60), "publicar-1-3-0-en-crates-io");
         assert_eq!(slug("***", 60), "nota");
-        assert_eq!(titulo_de_fichero("Su \"Netflix casero\": C:\\Users\\x [beta] #1."), "Su Netflix casero C Users x beta 1");
-        assert_eq!(titulo_de_fichero("..."), "Nota");
-        assert!(reservado("con") && reservado("com1") && !reservado("comer"));
-        assert_eq!(etiqueta("project status"), "project-status");
-        assert_eq!(etiqueta("2026"), "");
-        assert_eq!(cambiar_enlaces("ver [[a-b|texto]] y [[c]]", |e| format!("<{e}>")), "ver <a-b> y <c>");
-        assert_eq!(sin_etiquetas("## Título\nrojo #d62828, `#no` y #3673\n```\n#dentro\n```"), "## Título\nrojo \\#d62828, `#no` y \\#3673\n```\n#dentro\n```");
-        assert_ne!(nota_de_fichero("src/main.rs"), nota_de_fichero("tests/main.rs"));
+        assert_eq!(file_title("Su \"Netflix casero\": C:\\Users\\x [beta] #1."), "Su Netflix casero C Users x beta 1");
+        assert_eq!(file_title("..."), "Nota");
+        assert!(reserved("con") && reserved("com1") && !reserved("comer"));
+        assert_eq!(tag("project status"), "project-status");
+        assert_eq!(tag("2026"), "");
+        assert_eq!(replace_links("ver [[a-b|texto]] y [[c]]", |e| format!("<{e}>")), "ver <a-b> y <c>");
+        assert_eq!(escape_tags("## Título\nrojo #d62828, `#no` y #3673\n```\n#dentro\n```"), "## Título\nrojo \\#d62828, `#no` y \\#3673\n```\n#dentro\n```");
+        assert_ne!(file_note("src/main.rs"), file_note("tests/main.rs"));
     }
 
     #[test]
-    fn vuelta_del_texto() {
-        let nombres: HashMap<String, String> = [("usamos y".to_string(), "01ABC".to_string())].into();
-        // Lo exportado, sin tocar, vuelve tal cual; lo nuevo, a la forma de Omoikane.
-        assert_eq!(inversa("ver [[Usamos Y|nota-b]], [[Usamos Y]], [[otra]] y \\#rojo `\\#x`", &nombres), "ver [[nota-b]], [[01ABC]], [[otra]] y #rojo `\\#x`");
+    fn text_round_trip() {
+        let names: HashMap<String, String> = [("usamos y".to_string(), "01ABC".to_string())].into();
+        // What was exported, untouched, comes back as is; what's new, in Omoikane's form.
+        assert_eq!(unexport_line("ver [[Usamos Y|nota-b]], [[Usamos Y]], [[otra]] y \\#rojo `\\#x`", &names), "ver [[nota-b]], [[01ABC]], [[otra]] y #rojo `\\#x`");
         let c = "Ver [[nota-b]].\nEl rojo #d62828.\nFin.";
         let b = "Ver [[Usamos Y|nota-b]].\nEl rojo \\#d62828.\nFin.";
-        assert_eq!(fusionar(c, b, "Ver [[Usamos Y|nota-b]].\nNueva [[Usamos Y]].\nEl rojo \\#d62828.\nFin.", &nombres), "Ver [[nota-b]].\nNueva [[01ABC]].\nEl rojo #d62828.\nFin.");
-        assert_eq!(fusionar(c, b, "El rojo \\#d62828.", &nombres), "El rojo #d62828.");
-        // Un contenido en `\r\n` que vuelve en `\n` (como se lee la nota): solo cambia la línea nueva.
-        let l = leer_texto("x", "---\nomoikane: \"A\"\n---\n\nUno.\r\nDos.\r\n\n%% omoikane: below this line, rewritten on every export %%\n").unwrap();
-        assert_eq!(l.cuerpo, "Uno.\nDos.");
-        assert_eq!(fusionar("Uno.\r\nDos.", &l.cuerpo, "Uno.\nDos.\nTres.", &nombres), "Uno.\r\nDos.\nTres.");
+        assert_eq!(merge(c, b, "Ver [[Usamos Y|nota-b]].\nNueva [[Usamos Y]].\nEl rojo \\#d62828.\nFin.", &names), "Ver [[nota-b]].\nNueva [[01ABC]].\nEl rojo #d62828.\nFin.");
+        assert_eq!(merge(c, b, "El rojo \\#d62828.", &names), "El rojo #d62828.");
+        // Content in `\r\n` coming back in `\n` (as the note is read): only the new line changes.
+        let l = parse_note("x", "---\nomoikane: \"A\"\n---\n\nUno.\r\nDos.\r\n\n%% omoikane: below this line, rewritten on every export %%\n").unwrap();
+        assert_eq!(l.body, "Uno.\nDos.");
+        assert_eq!(merge("Uno.\r\nDos.", &l.body, "Uno.\nDos.\nTres.", &names), "Uno.\r\nDos.\nTres.");
     }
 }

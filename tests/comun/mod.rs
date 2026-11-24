@@ -1,22 +1,22 @@
-//! Lo que comparten los tests (los de `tests/` con `mod comun;` y los de la biblioteca, que lo incluyen
-//! desde `lib.rs`): una carpeta temporal que se borra sola.
+//! What the tests share (the ones in `tests/` with `mod comun;` and the library's, which include it
+//! from `lib.rs`): a temporary folder that deletes itself.
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-/// La carpeta temporal de un test, `<temporal>/omoi-<nombre>-<pid>`, que se borra entera al salir de su
-/// ámbito, también si el test falla (el `Drop` corre al deshacer la pila tras un `panic`). Solo borra
-/// esa carpeta: la ruta la pone `nueva` y no se puede cambiar.
+/// A test's temporary folder, `<temp>/omoi-<name>-<pid>`, deleted entirely when it goes out of
+/// scope, also if the test fails (the `Drop` runs while unwinding the stack after a `panic`). It only deletes
+/// that folder: the path is set by `nueva` and can't be changed.
 ///
-/// Se declara antes que lo que tenga ficheros abiertos dentro (la base): lo de después se suelta
-/// antes, y en Windows no se puede borrar un fichero abierto.
+/// Declare it before whatever keeps files open inside it (the database): what comes after is dropped
+/// first, and on Windows an open file can't be deleted.
 pub struct Temporal(PathBuf);
 
 impl Temporal {
-    /// Vacía: si quedó una de antes con el mismo nombre y pid, se borra primero.
-    pub fn nueva(nombre: &str) -> Temporal {
-        assert!(!nombre.is_empty() && !nombre.contains(['/', '\\', '.']), "nombre de carpeta temporal: {nombre}");
-        let dir = std::env::temp_dir().join(format!("omoi-{nombre}-{}", std::process::id()));
+    /// Empty: if one from before with the same name and pid was left over, it is deleted first.
+    pub fn nueva(name: &str) -> Temporal {
+        assert!(!name.is_empty() && !name.contains(['/', '\\', '.']), "nombre de carpeta temporal: {name}");
+        let dir = std::env::temp_dir().join(format!("omoi-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Temporal(dir)
@@ -43,25 +43,25 @@ impl AsRef<std::ffi::OsStr> for Temporal {
     }
 }
 
-/// Un puerto libre de 127.0.0.1 para un `omoi serve` del test: el que da el sistema al pedir el 0. Uno
-/// fijo por pid (`7600 + pid % 300`) chocaba con el de otro `cargo test` a la vez, como los de otras
-/// ramas en paralelo (en Windows los pid son múltiplos de 4: `pid % 300` solo da 75 puertos): el test
-/// le hablaba al servidor del otro proceso, que a veces se estaba cerrando y contestaba vacío.
+/// A free 127.0.0.1 port for a test's `omoi serve`: the one the system gives when asked for 0. A
+/// fixed one per pid (`7600 + pid % 300`) clashed with another `cargo test` running at the same time, like those of other
+/// branches in parallel (on Windows pids are multiples of 4: `pid % 300` only gives 75 ports): the test
+/// talked to the other process's server, which was sometimes shutting down and answered empty.
 #[allow(dead_code)]
 pub fn puerto_libre() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
 }
 
-/// Las variables que pone la sesión de un agente y que cambian lo que guarda `omoi`: Claude Code pone
-/// `TRACEPARENT` (la procedencia lleva su traza) y un orquestador que firma lo de sus agentes,
-/// `OMOIKANE_AUTHOR` (el autor). En la CI no existen; si los tests corren dentro de una sesión, sí.
+/// The variables an agent session sets that change what `omoi` saves: Claude Code sets
+/// `TRACEPARENT` (the provenance carries its trace) and an orchestrator that signs its agents' work,
+/// `OMOIKANE_AUTHOR` (the author). In CI they don't exist; if the tests run inside a session, they do.
 #[allow(dead_code)]
 pub const DE_LA_SESION: &[&str] = &["OMOIKANE_AUTHOR", "TRACEPARENT", "TRACESTATE"];
 
-/// Quita de la orden las variables de `DE_LA_SESION`, para que el test dé lo mismo desde una sesión de
-/// agente que en la CI. Va en la orden y no en `.cargo/config.toml`: ese fichero solo lo lee Cargo si
-/// se lanza desde dentro del repo, no con `--manifest-path` desde otra carpeta. Un test que necesita
-/// una la pone después.
+/// Removes the `DE_LA_SESION` variables from the command, so the test gives the same result from an agent
+/// session as in CI. It goes in the command and not in `.cargo/config.toml`: Cargo only reads that file if
+/// launched from inside the repo, not with `--manifest-path` from another folder. A test that needs
+/// one sets it afterwards.
 #[allow(dead_code)]
 pub fn sin_la_sesion(c: &mut std::process::Command) -> &mut std::process::Command {
     for v in DE_LA_SESION {
@@ -72,21 +72,21 @@ pub fn sin_la_sesion(c: &mut std::process::Command) -> &mut std::process::Comman
 
 impl Drop for Temporal {
     fn drop(&mut self) {
-        // Un proceso que lanzó el test (`omoi serve`, la sincronización de fondo, git) o el antivirus
-        // pueden tardar en soltar sus ficheros: en Windows no se borran hasta entonces. Con la máquina
-        // cargada por otras compilaciones, 5 s no bastaron (quedaron 8 carpetas de `tests/sync.rs` en
-        // una batería de 751 s); esperar más solo cuesta en ese caso.
-        let limite = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // A process the test launched (`omoi serve`, the background sync, git) or the antivirus
+        // can take a while to release their files: on Windows they aren't deleted until then. With the machine
+        // loaded by other builds, 5 s weren't enough (8 folders of `tests/sync.rs` were left in
+        // a 751 s run); waiting longer only costs in that case.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let error = loop {
             match std::fs::remove_dir_all(&self.0) {
                 Ok(()) => return,
                 Err(_) if !self.0.exists() => return,
-                Err(e) if std::time::Instant::now() >= limite => break e,
+                Err(e) if std::time::Instant::now() >= deadline => break e,
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
             }
         };
-        // Por `io::stderr` y no `eprintln!`: el `Drop` corre dentro del test, con la captura del arnés
-        // activa, y con la macro el aviso solo se vería si el test falla.
+        // Through `io::stderr` and not `eprintln!`: the `Drop` runs inside the test, with the harness's
+        // capture active, and with the macro the warning would only show if the test fails.
         use std::io::Write;
         let _ = writeln!(std::io::stderr(), "aviso: no se pudo borrar la carpeta temporal {}: {error}", self.0.display());
     }

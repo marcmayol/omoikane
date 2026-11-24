@@ -1,4 +1,4 @@
-//! Dónde se van los 1,65 s de cargar el modelo multilingüe.
+//! Where the 1.65 s of loading the multilingual model go.
 
 use std::time::Instant;
 use tokenizers::Tokenizer;

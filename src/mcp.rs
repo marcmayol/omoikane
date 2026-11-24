@@ -1,8 +1,8 @@
-//! Servidor MCP por stdio: lo que la CLI hace, como herramientas para el agente.
+//! MCP server over stdio: what the CLI does, as tools for the agent.
 //!
-//! Cada llamada abre la base en un hilo aparte (rusqlite es bloqueante) y resuelve el proyecto por
-//! la carpeta del proceso, que es la del proyecto en el que el cliente arrancó el servidor. El
-//! modelo se abre una vez y se comparte; si no estaba instalado, se vuelve a mirar en cada llamada.
+//! Each call opens the database in a separate thread (rusqlite is blocking) and resolves the project
+//! from the process's folder, which is that of the project where the client started the server. The
+//! model is opened once and shared; if it was not installed, it is checked again on every call.
 
 use crate::buscar::{self, Opciones};
 use crate::embeber::Modelo;
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-const INSTRUCCIONES: &str = "Omoikane is this user's long-term memory across sessions, scoped to the current project (plus global memories).
+const INSTRUCTIONS: &str = "Omoikane is this user's long-term memory across sessions, scoped to the current project (plus global memories).
 Save a memory with `remember` when you learn something worth knowing next time: a non-obvious bug or trap (kind gotcha, with the file paths it affects), a decision and its reasons (decision), how something in the project works (fact), how the user wants things done (preference), or a procedure that gets repeated, like publishing a release (procedure: numbered steps, plus a line `when: words, that, trigger it`; it comes back whole when the user asks for it).
 When you follow a procedure and a step fails or has changed, `update` the procedure with what you learned (and why), so it is right next time.
 Keep each memory short: one-line title, then what, why and where. Don't save what is obvious from the code or already in the repo docs.
@@ -49,7 +49,7 @@ pub struct Servidor {
     tool_router: ToolRouter<Self>,
 }
 
-// --- Parámetros ------------------------------------------------------------------------------------
+// --- Parameters ------------------------------------------------------------------------------------
 
 #[derive(Deserialize, JsonSchema)]
 pub struct Remember {
@@ -116,7 +116,7 @@ pub struct Search {
     space: Option<String>,
 }
 
-/// `space` en `remember`: `true` (el espacio del proyecto) o el nombre de un espacio.
+/// `space` in `remember`: `true` (the project's space) or a space's name.
 #[derive(Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EspacioParam {
@@ -192,7 +192,7 @@ pub struct Update {
     /// Ids of memories flagged against this one that both hold: clears the warning.
     compatible: Option<Vec<String>>,
     /// Replace its structured data (any JSON; null removes it). Never searched or recalled.
-    #[serde(default, deserialize_with = "doble")]
+    #[serde(default, deserialize_with = "double_option")]
     #[schemars(with = "Option<serde_json::Value>")]
     data: Option<Option<serde_json::Value>>,
     /// Bring a forgotten memory back from the trash (with its history, on every synced computer). The other fields are ignored.
@@ -267,16 +267,16 @@ pub struct Decisions {
     keep: Option<String>,
 }
 
-/// `data` en `update`: sin el campo, no se toca; con `null`, se quitan los datos.
-fn doble<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<serde_json::Value>>, D::Error> {
+/// `data` in `update`: without the field, it is left alone; with `null`, the data is removed.
+fn double_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<serde_json::Value>>, D::Error> {
     Ok(Some(Option::deserialize(d)?))
 }
 
-// --- Respuestas ------------------------------------------------------------------------------------
+// --- Responses -------------------------------------------------------------------------------------
 
-/// Lo que se devuelve en listas: lo justo para decidir si pedir la memoria entera con `get`.
+/// What is returned in lists: just enough to decide whether to ask for the whole memory with `get`.
 #[derive(Serialize)]
-struct Compacta {
+struct Compact {
     id: String,
     kind: Tipo,
     title: String,
@@ -289,46 +289,46 @@ struct Compacta {
     pinned: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     global: bool,
-    /// Sus oficios, si es de oficio (entonces no sale como `global`).
+    /// Its trades, if it is a trade memory (then it doesn't show up as `global`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     trade: Vec<String>,
-    /// Si es de oficio solo para proyectos de cliente o personales.
+    /// Whether a trade memory is only for client or personal projects.
     #[serde(rename = "for", skip_serializing_if = "Option::is_none")]
     para: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// Su espacio, si es de espacio (sin proyecto) o si se enseña el proyecto.
+    /// Its space, if it is a space memory (no project) or if the project is shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     space: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     similarity: Option<f32>,
-    /// Por qué tomarla con cuidado (sustituida, contradicha, desfasada, sin revisar).
+    /// Why to take it with care (superseded, contradicted, outdated, unreviewed).
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    /// «by Marc, 2026-11-08» si la verificó una persona (`verificado`).
+    /// «by Marc, 2026-11-08» if a person verified it (`verificado`).
     #[serde(skip_serializing_if = "Option::is_none")]
     verified: Option<String>,
-    /// En qué se basa (`evidencia`): sus tipos, «tested, user-said»; «inferred» si solo lo dedujo un agente.
+    /// What it is based on (`evidencia`): its kinds, «tested, user-said»; «inferred» if only an agent worked it out.
     #[serde(skip_serializing_if = "Option::is_none")]
     based_on: Option<String>,
 }
 
-const LARGO_FRAGMENTO: usize = 200;
+const SNIPPET_LEN: usize = 200;
 
-fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta {
-    let plano = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let snippet = if plano.chars().count() > LARGO_FRAGMENTO {
-        format!("{}…", plano.chars().take(LARGO_FRAGMENTO).collect::<String>())
+fn compact(m: Memoria, with_project: bool, similarity: Option<f32>) -> Compact {
+    let flat = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let snippet = if flat.chars().count() > SNIPPET_LEN {
+        format!("{}…", flat.chars().take(SNIPPET_LEN).collect::<String>())
     } else {
-        plano
+        flat
     };
     let trade = crate::oficios::de_memoria(&m);
-    Compacta {
+    Compact {
         global: m.global() && trade.is_empty(),
         para: if trade.is_empty() { None } else { crate::oficios::para_de(&m.tags) },
         trade,
-        project: (con_proyecto && !m.project.is_empty()).then(|| m.project.clone()),
-        space: ((m.de_espacio() || con_proyecto) && !m.space.is_empty()).then(|| m.space.clone()),
+        project: (with_project && !m.project.is_empty()).then(|| m.project.clone()),
+        space: ((m.de_espacio() || with_project) && !m.space.is_empty()).then(|| m.space.clone()),
         id: m.id,
         kind: m.kind,
         title: m.title,
@@ -343,39 +343,39 @@ fn compacta(m: Memoria, con_proyecto: bool, similarity: Option<f32>) -> Compacta
     }
 }
 
-/// Lo que hay que mirar cuando llegue la fecha de revisión, limpio. Con fecha (`con_fecha`) es
-/// obligatorio: una fecha sin motivo obliga a releer la memoria entera para saber qué comprobar.
-fn motivo_de_revision(con_fecha: bool, motivo: Option<&str>) -> Result<Option<String>> {
-    let motivo = motivo.and_then(memoria::limpiar_motivo_revision);
+/// What to check when the review date arrives, cleaned up. With a date (`has_date`) it is
+/// required: a date with no reason means rereading the whole memory to know what to check.
+fn review_reason_for(has_date: bool, reason: Option<&str>) -> Result<Option<String>> {
+    let reason = reason.and_then(memoria::limpiar_motivo_revision);
     anyhow::ensure!(
-        !con_fecha || motivo.is_some(),
+        !has_date || reason.is_some(),
         "a review date (tag review:YYYY-MM-DD) needs `review_reason`: what to check that day, e.g. \"the API token expires\""
     );
-    Ok(if con_fecha { motivo } else { None })
+    Ok(if has_date { reason } else { None })
 }
 
-/// Los veredictos que el agente da con `supersedes`, `contradicts` y `compatible` sobre `id`, con su
-/// motivo (el `reason` del `update`, o el título de la memoria nueva) y quién los firma (`origen`:
-/// la persona de la sync o `agent:<cliente>`, ver `veredictos::autor`).
-fn juzgar(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts: Option<Vec<String>>, compatible: Option<Vec<String>>, motivo: &str, origen: &str) -> Result<usize> {
-    let autor = veredictos::autor(db, origen, id);
+/// The verdicts the agent gives with `supersedes`, `contradicts` and `compatible` about `id`, with their
+/// reason (the `update`'s `reason`, or the new memory's title) and who signs them (`source`:
+/// the sync person or `agent:<client>`, see `veredictos::autor`).
+fn judge(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts: Option<Vec<String>>, compatible: Option<Vec<String>>, reason: &str, source: &str) -> Result<usize> {
+    let author = veredictos::autor(db, source, id);
     let mut n = 0;
-    for viejo in supersedes.unwrap_or_default() {
-        veredictos::poner(db, &viejo, id, veredictos::SUSTITUIDA, motivo, &autor)?;
+    for old in supersedes.unwrap_or_default() {
+        veredictos::poner(db, &old, id, veredictos::SUSTITUIDA, reason, &author)?;
         n += 1;
     }
-    for (lista, relacion) in [(contradicts, veredictos::CONTRADICE), (compatible, veredictos::COMPATIBLE)] {
-        for otra in lista.unwrap_or_default() {
-            veredictos::poner(db, id, &otra, relacion, motivo, &autor)?;
+    for (list, relation) in [(contradicts, veredictos::CONTRADICE), (compatible, veredictos::COMPATIBLE)] {
+        for other in list.unwrap_or_default() {
+            veredictos::poner(db, id, &other, relation, reason, &author)?;
             n += 1;
         }
     }
     Ok(n)
 }
 
-/// `redacted: N` y los tipos, si al guardar se quitó algo que parecía un secreto: el agente tiene que
-/// saberlo (y decírselo a la persona), porque lo que guardó ya no es lo que mandó.
-fn con_redactados(r: &mut serde_json::Value, m: &Memoria) {
+/// `redacted: N` and the kinds, if something that looked like a secret was removed when saving: the
+/// agent has to know (and tell the person), because what it saved is no longer what it sent.
+fn with_redacted(r: &mut serde_json::Value, m: &Memoria) {
     if m.redacted.is_empty() {
         return;
     }
@@ -388,70 +388,70 @@ fn json(v: &impl Serialize) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(v).unwrap_or_default())])
 }
 
-/// Un fallo de la herramienta (no existe, tipo mal escrito…) vuelve como resultado con isError,
-/// para que el agente lo lea y lo corrija, en vez de como error de protocolo.
-fn fallo(e: anyhow::Error) -> CallToolResult {
+/// A tool failure (it doesn't exist, misspelt kind…) comes back as a result with isError,
+/// so the agent reads it and fixes it, instead of as a protocol error.
+fn failure(e: anyhow::Error) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 
-fn tipo(t: Option<String>) -> Result<Option<Tipo>> {
+fn parse_kind(t: Option<String>) -> Result<Option<Tipo>> {
     t.filter(|t| !t.trim().is_empty()).map(|t| t.parse()).transpose()
 }
 
-fn limite(n: Option<usize>) -> usize {
+fn limit_of(n: Option<usize>) -> usize {
     n.unwrap_or(10).clamp(1, 50)
 }
 
-/// El ámbito de `search` y `recent`: el de la sesión, o el que pidan (`project`, `space`,
-/// `all_projects`), sin salir nunca del espacio de la sesión (desde una carpeta general, todo).
-fn ambito_pedido(db: &Connection, proyecto: &str, project: Option<&str>, space: Option<&str>, todos: bool) -> Result<Ambito> {
-    let base = Ambito::de(db, proyecto)?;
-    let pedido = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
+/// The scope of `search` and `recent`: the session's, or the requested one (`project`, `space`,
+/// `all_projects`), never leaving the session's space (from a general folder, everything).
+fn requested_scope(db: &Connection, session_project: &str, project: Option<&str>, space: Option<&str>, all: bool) -> Result<Ambito> {
+    let base = Ambito::de(db, session_project)?;
+    let requested = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
         Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
         let id = proyecto::buscar_en(db, p, &base)?;
         Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
-    } else if todos {
+    } else if all {
         base.amplio()
     } else {
         base
     };
-    fuera_de_espacio(&base, &pedido)?;
-    Ok(pedido)
+    outside_space(&base, &requested)?;
+    Ok(requested)
 }
 
-/// Error si desde `base` no se puede ver (ni escribir en) `pedido`: otro espacio.
-fn fuera_de_espacio(base: &Ambito, pedido: &Ambito) -> Result<()> {
+/// Error if `requested` can't be seen (or written to) from `base`: another space.
+fn outside_space(base: &Ambito, requested: &Ambito) -> Result<()> {
     anyhow::ensure!(
-        base.permite(pedido),
+        base.permite(requested),
         "that is in another space: from this project you only see its own space (and the global memories); open the session in that project, or in the home folder, to see it"
     );
     Ok(())
 }
 
-/// El id entero de una memoria que se pide por id (viva, o en la papelera con `papelera`), con error si
-/// desde la sesión no se ve: desde un proyecto, solo las de su espacio (o, sin espacio, las que no
-/// tienen) y las globales; desde una carpeta general, todas. Así `get`, `history`, `update` y `forget`
-/// no sacan nada de otro cliente aunque el agente tenga su id.
-fn id_en_ambito(db: &Connection, proyecto: &str, id: &str, papelera: bool) -> Result<String> {
-    let id = if papelera {
-        let pedido = id.trim().to_uppercase();
+/// The full id of a memory requested by id (live, or in the trash with `trash`), with an error if
+/// it can't be seen from the session: from a project, only those of its space (or, with no space, those
+/// with none) and the global ones; from a general folder, all of them. So `get`, `history`, `update` and
+/// `forget` don't leak anything of another client even if the agent has its id.
+fn id_in_scope(db: &Connection, session_project: &str, id: &str, trash: bool) -> Result<String> {
+    let id = if trash {
+        let requested = id.trim().to_uppercase();
         let mut q = db.prepare("SELECT id FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
-        let ids: Vec<String> = q.query_map([&pedido], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-        // Sin una sola que encaje, lo dirá `restaurar`.
+        let ids: Vec<String> = q.query_map([&requested], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        // Without exactly one match, `restaurar` will say so.
         match <[String; 1]>::try_from(ids) {
-            Ok([uno]) => uno,
-            Err(_) => return Ok(pedido),
+            Ok([single]) => single,
+            Err(_) => return Ok(requested),
         }
     } else {
         memoria::resolver_id(db, id)?
     };
-    let base = Ambito::de(db, proyecto)?;
-    if papelera {
-        // En la papelera no hay oficios que mirar: solo su espacio.
-        let propio = proyecto::clave_espacio(db, base.espacio())?;
+    let base = Ambito::de(db, session_project)?;
+    if trash {
+        // In the trash there are no trades to check: only its space.
+        let own = proyecto::clave_espacio(db, base.espacio())?;
         return match memoria::alcance_de_memoria(db, &id)? {
-            Some((global, espacio)) if !matches!(base, Ambito::Todos) && !global && espacio != propio => anyhow::bail!(
+            Some((global, space)) if !matches!(base, Ambito::Todos) && !global && space != own => anyhow::bail!(
                 "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
             ),
             _ => Ok(id),
@@ -461,9 +461,9 @@ fn id_en_ambito(db: &Connection, proyecto: &str, id: &str, papelera: bool) -> Re
     Ok(id)
 }
 
-/// Los oficios que piden `remember` o `update`: los de `trade` y los de las etiquetas `trade:` que ponga
-/// el agente, validados; y las etiquetas sin estas.
-fn oficios_pedidos(trade: Option<&str>, tags: Vec<String>) -> Result<(Vec<String>, Vec<String>)> {
+/// The trades `remember` or `update` ask for: those in `trade` and those in the `trade:` tags the
+/// agent sets, validated; and the tags without them.
+fn requested_trades(trade: Option<&str>, tags: Vec<String>) -> Result<(Vec<String>, Vec<String>)> {
     let tags: Vec<String> = tags
         .into_iter()
         .map(|t| if t.trim().to_lowercase().starts_with(crate::oficios::PREFIJO) { t.trim().to_lowercase() } else { t })
@@ -481,9 +481,9 @@ fn oficios_pedidos(trade: Option<&str>, tags: Vec<String>) -> Result<(Vec<String
     Ok((v, crate::oficios::sin_oficio(tags)))
 }
 
-/// El espacio de `remember` (`space: true` o su nombre) o de `update` (`space: "<nombre>"`).
-fn espacio_pedido(db: &Connection, proyecto: &str, p: Option<EspacioParam>) -> Result<Option<i64>> {
-    let base = Ambito::de(db, proyecto)?;
+/// The space of `remember` (`space: true` or its name) or of `update` (`space: "<name>"`).
+fn requested_space(db: &Connection, session_project: &str, p: Option<EspacioParam>) -> Result<Option<i64>> {
+    let base = Ambito::de(db, session_project)?;
     let id = match p {
         None | Some(EspacioParam::Si(false)) => return Ok(None),
         Some(EspacioParam::Si(true)) => base.espacio().ok_or_else(|| {
@@ -492,18 +492,18 @@ fn espacio_pedido(db: &Connection, proyecto: &str, p: Option<EspacioParam>) -> R
         Some(EspacioParam::Nombre(n)) if n.trim().is_empty() => return Ok(None),
         Some(EspacioParam::Nombre(n)) => proyecto::buscar_espacio(db, &n)?,
     };
-    fuera_de_espacio(&base, &Ambito::Espacio(Some(id)))?;
+    outside_space(&base, &Ambito::Espacio(Some(id)))?;
     Ok(Some(id))
 }
 
-// --- Servidor --------------------------------------------------------------------------------------
+// --- Server ----------------------------------------------------------------------------------------
 
 impl Servidor {
     pub fn new(db: PathBuf, dir: Option<PathBuf>) -> Servidor {
         Servidor { db, dir, modelo: Arc::new(Mutex::new(None)), tool_router: Self::tool_router() }
     }
 
-    fn modelo(&self) -> Result<Option<Arc<Modelo>>> {
+    fn model(&self) -> Result<Option<Arc<Modelo>>> {
         let mut m = self.modelo.lock().expect("modelo");
         if m.is_none() {
             *m = modelos::abrir_actual()?.map(Arc::new);
@@ -511,175 +511,175 @@ impl Servidor {
         Ok(m.clone())
     }
 
-    /// Ejecuta `f` en un hilo de bloqueo con la base abierta, el modelo (si hay) con los vectores al
-    /// día y el proyecto actual.
-    async fn con_base<T: Send + 'static>(
+    /// Runs `f` in a blocking thread with the database open, the model (if any) with the vectors up
+    /// to date, and the current project.
+    async fn with_db<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Connection, Option<&Modelo>, &str) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let (ruta, dir, modelo) = (self.db.clone(), self.dir.clone(), self.modelo()?);
+        let (path, dir, model) = (self.db.clone(), self.dir.clone(), self.model()?);
         tokio::task::spawn_blocking(move || {
-            let mut db = db::abrir(&ruta)?;
-            if let Some(m) = &modelo {
+            let mut db = db::abrir(&path)?;
+            if let Some(m) = &model {
                 vectores::sincronizar(&mut db, m)?;
             }
-            let proyecto = match &dir {
+            let session_project = match &dir {
                 Some(d) => proyecto::de(d)?,
                 None => proyecto::actual()?,
             };
-            // Sus oficios, si nunca se miraron: sin ellos no vería las memorias de su oficio. Opcional.
-            if let Err(e) = crate::oficios::preparar(&db, &proyecto) {
+            // Its trades, if they were never checked: without them it wouldn't see its trade's memories. Optional.
+            if let Err(e) = crate::oficios::preparar(&db, &session_project) {
                 eprintln!("omoikane: trades: {e:#}");
             }
-            f(&mut db, modelo.as_deref(), &proyecto)
+            f(&mut db, model.as_deref(), &session_project)
         })
         .await?
     }
 
-    /// `remember`, con quién la guarda (`source`): `mcp:<cliente>` por MCP, lo que diga quien llama
-    /// por `omoi tool` o HTTP.
-    async fn guardar(&self, p: Remember, origen: String) -> Result<CallToolResult, ErrorData> {
+    /// `remember`, with who saves it (`source`): `mcp:<client>` over MCP, whatever the caller says
+    /// over `omoi tool` or HTTP.
+    async fn save(&self, p: Remember, source: String) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, modelo, proyecto| {
+            .with_db(move |db, model, session_project| {
                 let kind = Some(p.kind.parse::<Tipo>()?);
-                let space_id = espacio_pedido(db, proyecto, p.space)?;
-                // Memoria de oficio: `trade`, o las etiquetas `trade:` que el agente ponga a mano.
+                let space_id = requested_space(db, session_project, p.space)?;
+                // Trade memory: `trade`, or the `trade:` tags the agent sets by hand.
                 let para = match p.para.as_deref() {
                     Some(x) => crate::oficios::para(x)?,
                     None => crate::oficios::para_de(p.tags.as_deref().unwrap_or_default()),
                 };
-                let (oficios, tags) = oficios_pedidos(p.trade.as_deref(), p.tags.unwrap_or_default())?;
-                let motivo_revision = motivo_de_revision(crate::revisar::fecha_revision(&tags).is_some(), p.review_reason.as_deref())?;
-                let de_oficio = !oficios.is_empty();
-                anyhow::ensure!(de_oficio || para.is_none(), "`for` only applies to a trade memory: give `trade` too");
-                if de_oficio {
+                let (trades, tags) = requested_trades(p.trade.as_deref(), p.tags.unwrap_or_default())?;
+                let review_reason = review_reason_for(crate::revisar::fecha_revision(&tags).is_some(), p.review_reason.as_deref())?;
+                let is_trade = !trades.is_empty();
+                anyhow::ensure!(is_trade || para.is_none(), "`for` only applies to a trade memory: give `trade` too");
+                if is_trade {
                     anyhow::ensure!(
                         space_id.is_none() && p.project.as_deref().is_none_or(|x| x.trim().is_empty()),
                         "a trade memory belongs to no project and no space (every project of the trade sees it): drop `project` and `space`, or drop `trade` to keep it in the project"
                     );
-                    // Todo lo que llevará: texto, rutas, etiquetas, clave y datos. `force` no lo salta (es
-                    // para las duplicadas); `allow_leaks`, solo lo que puede ser un falso positivo.
-                    let rutas = p.paths.as_deref().unwrap_or_default().join(" ");
-                    let motivo_rev = motivo_revision.as_deref().unwrap_or_default();
-                    let campos = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &rutas), ("review_reason", motivo_rev)], &tags, p.key.as_deref(), p.data.as_ref());
-                    let fugas = crate::oficios::bloquean(crate::oficios::fugas_en(db, &campos)?, p.allow_leaks.unwrap_or(false));
-                    if !fugas.is_empty() {
-                        return Ok(serde_json::json!({ "saved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
+                    // Everything it will carry: text, paths, tags, key and data. `force` doesn't skip it (it is
+                    // for duplicates); `allow_leaks`, only what may be a false positive.
+                    let paths = p.paths.as_deref().unwrap_or_default().join(" ");
+                    let review_text = review_reason.as_deref().unwrap_or_default();
+                    let fields = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &paths), ("review_reason", review_text)], &tags, p.key.as_deref(), p.data.as_ref());
+                    let leaks = crate::oficios::bloquean(crate::oficios::fugas_en(db, &fields)?, p.allow_leaks.unwrap_or(false));
+                    if !leaks.is_empty() {
+                        return Ok(serde_json::json!({ "saved": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS }));
                     }
                 }
-                // Las preferencias son de la persona, no de un proyecto ni de un cliente: globales salvo
-                // que se diga otra cosa (`project`, `space`).
-                let preferencia = kind == Some(Tipo::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
+                // Preferences belong to the person, not to a project or a client: global unless
+                // told otherwise (`project`, `space`).
+                let preference = kind == Some(Tipo::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
                 let (project, paths) = match p.project.as_deref().map(str::trim) {
-                    _ if de_oficio || p.global.unwrap_or(false) || preferencia => (String::new(), p.paths.unwrap_or_default()),
+                    _ if is_trade || p.global.unwrap_or(false) || preference => (String::new(), p.paths.unwrap_or_default()),
                     Some("") => (String::new(), p.paths.unwrap_or_default()),
                     Some(d) => (proyecto::de_carpeta(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
-                    None => proyecto::para_guardar(proyecto, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
+                    None => proyecto::para_guardar(session_project, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
                 };
-                let busca_en = if !project.is_empty() && proyecto::es_general(proyecto) { proyecto.to_string() } else { project.clone() };
-                let clave = p.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string);
-                // Con datos y sin texto, la memoria es sobre todo sus datos: su contenido es el título.
+                let search_in = if !project.is_empty() && proyecto::es_general(session_project) { session_project.to_string() } else { project.clone() };
+                let key = p.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string);
+                // With data and no text, the memory is mostly its data: its content is the title.
                 let content = if p.content.trim().is_empty() && p.data.as_ref().is_some_and(|d| !d.is_null()) { p.title.clone() } else { p.content.clone() };
-                if clave.is_none()
+                if key.is_none()
                     && !p.force.unwrap_or(false)
-                    && let Some(m) = modelo
-                    && let Some((existente, sim)) = if de_oficio {
-                        // Entre las de su oficio, que desde lo global no se ven.
-                        vectores::duplicada_de_oficio(db, m, &oficios, &p.title, &p.content, None)?
+                    && let Some(m) = model
+                    && let Some((existing, sim)) = if is_trade {
+                        // Among those of its trade, which can't be seen from the global ones.
+                        vectores::duplicada_de_oficio(db, m, &trades, &p.title, &p.content, None)?
                     } else {
-                        vectores::duplicada(db, m, &busca_en, &p.title, &p.content)?
+                        vectores::duplicada(db, m, &search_in, &p.title, &p.content)?
                     }
                 {
                     return Ok(serde_json::json!({
                         "saved": false,
-                        "duplicate_of": compacta(existente, false, None),
+                        "duplicate_of": compact(existing, false, None),
                         "similarity": (sim * 1000.0).round() / 1000.0,
                         "hint": "A very similar memory exists. Update it with `update` (give a reason), or call `remember` again with force=true if it is a different memory.",
                     }));
                 }
                 if space_id.is_none() && !project.is_empty() {
-                    fuera_de_espacio(&Ambito::de(db, proyecto)?, &Ambito::de(db, &project)?)?;
+                    outside_space(&Ambito::de(db, session_project)?, &Ambito::de(db, &project)?)?;
                 }
-                // Las memorias que juzga (`supersedes`, `contradicts`), comprobadas ANTES de guardar nada,
-                // como en `update`: cada una se ve desde aquí y puede juntarse con donde irá la nueva. Si
-                // no, un error sin ids ni nombres de otro espacio, y la memoria no se guarda.
+                // The memories it judges (`supersedes`, `contradicts`), checked BEFORE saving anything,
+                // as in `update`: each one can be seen from here and can go together with where the new one
+                // will go. If not, an error with no ids or names from another space, and the memory is not saved.
                 let global = project.is_empty() && space_id.is_none();
-                let su_espacio = match space_id {
+                let its_space = match space_id {
                     Some(s) => proyecto::clave_espacio(db, Some(s))?,
                     None if project.is_empty() => String::new(),
                     None => proyecto::clave_espacio(db, Ambito::de(db, &project)?.espacio())?,
                 };
-                let mut juzgar_a: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-                for (i, lista) in [&p.supersedes, &p.contradicts].into_iter().enumerate() {
-                    for otra in lista.iter().flatten() {
-                        let otra = id_en_ambito(db, proyecto, otra, false)?;
-                        veredictos::comprobar_espacios(db, &otra, global, &su_espacio)?;
-                        juzgar_a[i].push(otra);
+                let mut to_judge: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+                for (i, list) in [&p.supersedes, &p.contradicts].into_iter().enumerate() {
+                    for other in list.iter().flatten() {
+                        let other = id_in_scope(db, session_project, other, false)?;
+                        veredictos::comprobar_espacios(db, &other, global, &its_space)?;
+                        to_judge[i].push(other);
                     }
                 }
-                let [supersedes, contradicts] = juzgar_a;
-                // De dónde sale: la sesión y el commit (ver `procedencia`); las de oficio, sin nada del proyecto.
-                // Las globales y las de un espacio, solo la sesión: la rama de esta carpeta puede ser de un
-                // cliente y esas memorias se ven desde otros.
-                let provenance = if de_oficio {
+                let [supersedes, contradicts] = to_judge;
+                // Where it comes from: the session and the commit (see `procedencia`); trade ones, with nothing from the project.
+                // Global and space ones, only the session: this folder's branch may be a client's
+                // and those memories are seen from others.
+                let provenance = if is_trade {
                     None
                 } else if project.is_empty() || space_id.is_some() {
-                    crate::procedencia::solo_sesion(db, proyecto)
+                    crate::procedencia::solo_sesion(db, session_project)
                 } else {
                     crate::procedencia::actual(db, &project)
                 };
-                let evidencia = if de_oficio { Vec::new() } else { crate::evidencia::limpiar(p.evidence.unwrap_or_default())? };
-                // Una variante de una etiqueta que ya existe donde irá (`ideas` con `idea`), por esa.
-                let (tags, tags_merged) = if de_oficio { (tags, Vec::new()) } else { crate::etiquetas::cerrar(db, &crate::etiquetas::ambito_de(db, &project, space_id)?, tags)? };
-                let nueva = Nueva {
+                let evidence = if is_trade { Vec::new() } else { crate::evidencia::limpiar(p.evidence.unwrap_or_default())? };
+                // A variant of a tag that already exists where it will go (`ideas` with `idea`), replaced by that one.
+                let (tags, tags_merged) = if is_trade { (tags, Vec::new()) } else { crate::etiquetas::cerrar(db, &crate::etiquetas::ambito_de(db, &project, space_id)?, tags)? };
+                let new = Nueva {
                     project,
                     space_id,
                     kind,
                     title: p.title,
                     content,
                     paths,
-                    tags: if de_oficio { crate::oficios::etiquetas_de_oficio(tags, &oficios, para.as_deref()) } else { tags },
+                    tags: if is_trade { crate::oficios::etiquetas_de_oficio(tags, &trades, para.as_deref()) } else { tags },
                     pinned: p.pinned.unwrap_or(false),
-                    source: origen.clone(),
+                    source: source.clone(),
                     provenance,
-                    // Las de oficio, sin evidencia: su detalle (un fichero, una cita) sería del proyecto.
-                    evidence: evidencia.clone(),
+                    // Trade ones, without evidence: its detail (a file, a quote) would be the project's.
+                    evidence: evidence.clone(),
                     ..Default::default()
                 };
-                let datos = p.data.filter(|d| !d.is_null());
-                if let Some(d) = &datos {
+                let data = p.data.filter(|d| !d.is_null());
+                if let Some(d) = &data {
                     anyhow::ensure!(serde_json::to_string(d)?.len() <= memoria::DATOS_MAX, "data over {} bytes", memoria::DATOS_MAX);
                 }
-                let antes = crate::revisar::antes(db)?;
-                // Con clave: la de esa clave en este ámbito, creada o actualizada en la misma transacción
-                // (con sus datos, si vienen).
-                let (mut m, por_clave, tapados) = match &clave {
+                let before = crate::revisar::antes(db)?;
+                // With a key: the one with that key in this scope, created or updated in the same transaction
+                // (with its data, if given).
+                let (mut m, by_key, hidden) = match &key {
                     Some(k) => {
-                        let r = memoria::guardar_por_clave(db, k, nueva, datos, modelo)?;
+                        let r = memoria::guardar_por_clave(db, k, new, data, model)?;
                         (r.memoria, Some((r.creada, r.parecidas)), r.tapados)
                     }
                     None => {
-                        let m = memoria::guardar(db, nueva, modelo)?;
-                        let tapados = match datos {
+                        let m = memoria::guardar(db, new, model)?;
+                        let hidden = match data {
                             Some(d) => memoria::poner_datos(db, &m.id, Some(d))?,
                             None => Vec::new(),
                         };
-                        (m, None, tapados)
+                        (m, None, hidden)
                     }
                 };
-                // El motivo de un veredicto dado al guardar es la propia memoria nueva: su título.
-                // Con clave puede haber actualizado una que ya existía: se le añade.
-                if !evidencia.is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                // The reason for a verdict given when saving is the new memory itself: its title.
+                // With a key it may have updated one that already existed: it is added to it.
+                if !evidence.is_empty() && memoria::anadir_evidencia(db, &m.id, &evidence)? {
                     m = memoria::obtener(db, &m.id)?;
                 }
-                if let Some(x) = &motivo_revision
+                if let Some(x) = &review_reason
                     && memoria::poner_motivo_revision(db, &m.id, x)?
                 {
                     m = memoria::obtener(db, &m.id)?;
                 }
-                let juzgadas = juzgar(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &origen)?;
-                let donde = if de_oficio {
-                    format!("(trade {}{})", oficios.join(", "), para.as_deref().map(|x| format!(", {x} projects only")).unwrap_or_default())
+                let judged = judge(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &source)?;
+                let place = if is_trade {
+                    format!("(trade {}{})", trades.join(", "), para.as_deref().map(|x| format!(", {x} projects only")).unwrap_or_default())
                 } else if m.de_espacio() {
                     format!("(space {})", m.space)
                 } else if m.project.is_empty() {
@@ -687,78 +687,78 @@ impl Servidor {
                 } else {
                     m.project.clone()
                 };
-                let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": donde });
+                let mut r = serde_json::json!({ "saved": true, "id": m.id, "project": place });
                 if !tags_merged.is_empty() {
                     r["tags_merged"] = serde_json::json!(tags_merged);
                 }
                 match crate::evidencia::tipos(&m.evidence) {
                     Some(t) => r["based_on"] = serde_json::json!(t),
-                    None if !de_oficio => {
+                    None if !is_trade => {
                         r["evidence_hint"] = serde_json::json!("No evidence: add what it is based on with `update` and `evidence` (user-said, code-read, tested, doc or inferred, with what you saw).")
                     }
                     None => {}
                 }
-                if de_oficio && let Some(aqui) = Ambito::de(db, proyecto)?.proyecto() {
-                    let propios = crate::oficios::del_proyecto(db, aqui)?;
-                    let ajenos: Vec<&String> = oficios.iter().filter(|o| !propios.contains(o)).collect();
-                    if !ajenos.is_empty() {
+                if is_trade && let Some(here) = Ambito::de(db, session_project)?.proyecto() {
+                    let own = crate::oficios::del_proyecto(db, here)?;
+                    let foreign: Vec<&String> = trades.iter().filter(|o| !own.contains(o)).collect();
+                    if !foreign.is_empty() {
                         r["trade_hint"] = serde_json::json!(format!(
                             "This project's trades are [{}], so this memory won't show up here, only in projects of {}. If this project is one, `omoi trades add {}` (or the user does).",
-                            propios.join(", "),
-                            ajenos.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-                            ajenos[0]
+                            own.join(", "),
+                            foreign.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                            foreign[0]
                         ));
                     }
                 }
-                con_redactados(&mut r, &m);
-                if !tapados.is_empty() {
-                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                with_redacted(&mut r, &m);
+                if !hidden.is_empty() {
+                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
                 }
-                if juzgadas > 0 {
-                    r["judged"] = serde_json::json!(juzgadas);
+                if judged > 0 {
+                    r["judged"] = serde_json::json!(judged);
                 }
-                if let Some((creada, parecidas)) = &por_clave {
+                if let Some((created, similar)) = &by_key {
                     r["key"] = serde_json::json!(memoria::clave_de(&m));
-                    r["created"] = serde_json::json!(creada);
-                    if !parecidas.is_empty() {
-                        r["similar_keys"] = serde_json::json!(parecidas);
+                    r["created"] = serde_json::json!(created);
+                    if !similar.is_empty() {
+                        r["similar_keys"] = serde_json::json!(similar);
                         r["key_hint"] = serde_json::json!("New key, but these keys already exist here: if you meant one of them, save with that key and forget this memory.");
                     }
                 }
-                let rel = if por_clave.is_some() { Vec::new() } else { vectores::relacionadas(db, &busca_en, &m.title, &m.id, 3)? };
-                if !rel.is_empty() {
-                    r["related"] = serde_json::json!(rel.into_iter().map(|x| compacta(x, false, None)).collect::<Vec<_>>());
+                let related = if by_key.is_some() { Vec::new() } else { vectores::relacionadas(db, &search_in, &m.title, &m.id, 3)? };
+                if !related.is_empty() {
+                    r["related"] = serde_json::json!(related.into_iter().map(|x| compact(x, false, None)).collect::<Vec<_>>());
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
                 }
-                // Si deja anticuada a otra (versión más alta, o hecho lo que allí estaba pendiente), se dice ya.
-                crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
-                // Solo las que se ven desde aquí: una de oficio puede dejar anticuada una de otro cliente.
-                let aqui = Ambito::de(db, proyecto)?;
-                let viejas: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
+                // If it makes another one outdated (higher version, or what was pending there is done), say so now.
+                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                // Only those visible from here: a trade memory may make another client's one outdated.
+                let here = Ambito::de(db, session_project)?;
+                let olds: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
                     .into_iter()
                     .filter(|(id, _, _)| veredictos::parejas(db).map(|p| !p.contains_key(&veredictos::pareja(id, &m.id))).unwrap_or(true))
-                    .filter(|(id, _, _)| aqui.ve(db, id).unwrap_or(false))
+                    .filter(|(id, _, _)| here.ve(db, id).unwrap_or(false))
                     .collect();
-                if !viejas.is_empty() {
-                    // Una que ya está sustituida (quizá por una cadena) se dice, con el final de la
-                    // cadena: el agente no tiene que volver a juzgarla.
-                    let mut lista = Vec::new();
-                    let mut encadenadas = false;
-                    for (id, titulo, detalle) in &viejas {
-                        let mut e = serde_json::json!({ "id": id, "title": titulo, "why": detalle });
-                        if let Some(fin) = veredictos::cadena(db, id)?
-                            && aqui.ve(db, &fin.id)?
+                if !olds.is_empty() {
+                    // One that is already superseded (maybe by a chain) is reported, with the end of the
+                    // chain: the agent doesn't have to judge it again.
+                    let mut list = Vec::new();
+                    let mut chained = false;
+                    for (id, title, detail) in &olds {
+                        let mut e = serde_json::json!({ "id": id, "title": title, "why": detail });
+                        if let Some(end) = veredictos::cadena(db, id)?
+                            && here.ve(db, &end.id)?
                         {
-                            let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [&fin.id], |f| f.get(0))?;
-                            let via = if fin.saltos > 1 { format!(" (via {})", fin.saltos) } else { String::new() };
-                            e["already_superseded_by"] = serde_json::json!(format!("{} «{}»{via}", fin.id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()));
-                            encadenadas = true;
+                            let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [&end.id], |row| row.get(0))?;
+                            let via = if end.saltos > 1 { format!(" (via {})", end.saltos) } else { String::new() };
+                            e["already_superseded_by"] = serde_json::json!(format!("{} «{}»{via}", end.id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()));
+                            chained = true;
                         }
-                        lista.push(e);
+                        list.push(e);
                     }
-                    r["supersedes"] = serde_json::json!(lista);
+                    r["supersedes"] = serde_json::json!(list);
                     let mut hint = "Saved. It looks newer than these memories, which may now be outdated: if this one replaces them, `update` it with `supersedes` (or forget them); if both hold, `compatible`.".to_string();
-                    if encadenadas {
+                    if chained {
                         hint.push_str(" The ones marked already_superseded_by are already replaced (by that memory, at the end of the chain): judge that one instead.");
                     }
                     r["supersedes_hint"] = serde_json::json!(hint);
@@ -772,56 +772,56 @@ impl Servidor {
         if r.as_ref().is_ok_and(|v| v["saved"] == true) {
             crate::sync::programar(&self.db);
         }
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
-    /// `update`, con quién lo pide (`origen`, como en `guardar`): firma los veredictos que traiga.
-    async fn cambiar(&self, p: Update, origen: String) -> Result<CallToolResult, ErrorData> {
+    /// `update`, with who asks for it (`source`, as in `save`): signs the verdicts it carries.
+    async fn change(&self, p: Update, source: String) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, modelo, proyecto| {
-                let antes = crate::revisar::antes(db)?;
+            .with_db(move |db, model, session_project| {
+                let before = crate::revisar::antes(db)?;
                 if p.restore.unwrap_or(false) {
-                    let id = id_en_ambito(db, proyecto, &p.id, true)?;
-                    let m = memoria::restaurar(db, &id, modelo)?;
-                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
-                    return Ok(serde_json::to_value(compacta(m, false, None))?);
+                    let id = id_in_scope(db, session_project, &p.id, true)?;
+                    let m = memoria::restaurar(db, &id, model)?;
+                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    return Ok(serde_json::to_value(compact(m, false, None))?);
                 }
-                // La memoria y todas las que se nombran (veredictos, absorb), de lo que se ve desde aquí.
-                let base = Ambito::de(db, proyecto)?;
-                let id = id_en_ambito(db, proyecto, &p.id, false)?;
-                for otra in [&p.supersedes, &p.contradicts, &p.compatible, &p.absorb].into_iter().flatten().flatten() {
-                    id_en_ambito(db, proyecto, otra, false)?;
+                // The memory and every one named (verdicts, absorb), among those visible from here.
+                let base = Ambito::de(db, session_project)?;
+                let id = id_in_scope(db, session_project, &p.id, false)?;
+                for other in [&p.supersedes, &p.contradicts, &p.compatible, &p.absorb].into_iter().flatten().flatten() {
+                    id_in_scope(db, session_project, other, false)?;
                 }
                 if let Some(d) = p.project.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-                    fuera_de_espacio(&base, &Ambito::de(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
+                    outside_space(&base, &Ambito::de(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
                 }
-                // El motivo del cambio es también el de los veredictos que vengan con él.
-                let motivo = p.reason.clone().unwrap_or_default();
-                let space_id = espacio_pedido(db, proyecto, p.space.map(EspacioParam::Nombre))?;
-                // Los oficios: hacerla de oficio (promoverla), dejar de serlo, para quién es, o sacarla de
-                // su oficio al llevarla a un proyecto o un espacio. Lo nuevo de una memoria de oficio pasa
-                // por `oficios::fugas`.
-                let actual = memoria::obtener(db, &id)?;
-                // Una fecha de revisión nueva pide qué mirar ese día; un motivo solo, que haya fecha.
-                let fecha_nueva = p.tags.as_deref().and_then(crate::revisar::fecha_revision).is_some_and(|f| crate::revisar::fecha_revision(&actual.tags) != Some(f));
-                let con_fecha = crate::revisar::fecha_revision(p.tags.as_deref().unwrap_or(&actual.tags)).is_some();
-                let pide_motivo = p.review_reason.as_deref().is_some_and(|x| !x.trim().is_empty());
-                anyhow::ensure!(con_fecha || !pide_motivo, "`review_reason` goes with a review date: add the tag review:YYYY-MM-DD too");
-                let motivo_revision = motivo_de_revision(fecha_nueva, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::limpiar_motivo_revision));
-                // En una de oficio (o que lo será), el motivo pasa por las fugas como el texto.
-                if let Some(x) = &motivo_revision
-                    && (!crate::oficios::de_etiquetas(&actual.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
+                // The reason for the change is also that of the verdicts that come with it.
+                let reason = p.reason.clone().unwrap_or_default();
+                let space_id = requested_space(db, session_project, p.space.map(EspacioParam::Nombre))?;
+                // Trades: make it a trade memory (promote it), stop being one, who it is for, or take it out of
+                // its trade by moving it to a project or a space. What is new in a trade memory goes
+                // through `oficios::fugas`.
+                let current = memoria::obtener(db, &id)?;
+                // A new review date asks what to check that day; a reason alone, that there is a date.
+                let new_date = p.tags.as_deref().and_then(crate::revisar::fecha_revision).is_some_and(|f| crate::revisar::fecha_revision(&current.tags) != Some(f));
+                let has_date = crate::revisar::fecha_revision(p.tags.as_deref().unwrap_or(&current.tags)).is_some();
+                let gives_reason = p.review_reason.as_deref().is_some_and(|x| !x.trim().is_empty());
+                anyhow::ensure!(has_date || !gives_reason, "`review_reason` goes with a review date: add the tag review:YYYY-MM-DD too");
+                let review_reason = review_reason_for(new_date, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::limpiar_motivo_revision));
+                // In a trade memory (or one that will be), the reason goes through the leak check like the text.
+                if let Some(x) = &review_reason
+                    && (!crate::oficios::de_etiquetas(&current.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
                 {
-                    let fugas = crate::oficios::bloquean(crate::oficios::fugas_en(db, &crate::oficios::campos_para_fugas(&[("review_reason", x)], &[], None, None))?, p.allow_leaks.unwrap_or(false));
-                    if !fugas.is_empty() {
-                        return Ok(serde_json::json!({ "updated": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS }));
+                    let leaks = crate::oficios::bloquean(crate::oficios::fugas_en(db, &crate::oficios::campos_para_fugas(&[("review_reason", x)], &[], None, None))?, p.allow_leaks.unwrap_or(false));
+                    if !leaks.is_empty() {
+                        return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS }));
                     }
                 }
                 let mut c = Cambios {
                     space_id,
                     title: p.title,
                     content: p.content,
-                    kind: tipo(p.kind)?,
+                    kind: parse_kind(p.kind)?,
                     paths: p.paths,
                     tags: p.tags,
                     pinned: p.pinned,
@@ -835,66 +835,66 @@ impl Servidor {
                     append: p.append,
                     ..Default::default()
                 };
-                let pedido = crate::oficios::PedidoCambio {
+                let request = crate::oficios::PedidoCambio {
                     trade: p.trade.as_deref(),
                     para: p.para.as_deref(),
                     cambios: &c,
                     datos: p.data.as_ref().map(|d| d.as_ref().filter(|d| !d.is_null())),
                     permitir_fugas: p.allow_leaks.unwrap_or(false),
                 };
-                let plan = match crate::oficios::al_cambiar(db, &actual, pedido)? {
+                let plan = match crate::oficios::al_cambiar(db, &current, request)? {
                     Ok(plan) => plan,
-                    Err(fugas) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS })),
+                    Err(leaks) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS })),
                 };
                 c.tags = plan.tags.clone();
-                let absorbe = p.absorb.filter(|ids| !ids.is_empty());
-                // Absorber se lleva el historial, las etiquetas y las rutas de las absorbidas: lo de un
-                // cliente no puede ir a parar a una memoria que ven todos (global o de oficio).
-                if let Some(ids) = &absorbe {
-                    let queda_global = (actual.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.hacer_global;
-                    for otra in ids {
-                        let o = memoria::obtener(db, otra)?;
+                let absorb = p.absorb.filter(|ids| !ids.is_empty());
+                // Absorbing takes the history, tags and paths of the absorbed ones: a client's things
+                // can't end up in a memory everyone sees (global or trade).
+                if let Some(ids) = &absorb {
+                    let stays_global = (current.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.hacer_global;
+                    for other in ids {
+                        let o = memoria::obtener(db, other)?;
                         anyhow::ensure!(
-                            !(queda_global && !o.space.is_empty()),
+                            !(stays_global && !o.space.is_empty()),
                             "memory {} is a client's: absorbing it would carry its history, tags and paths to a memory every client sees; write what holds into this one and `forget` it instead",
                             o.id
                         );
                     }
                 }
-                // De un cliente a un oficio: una memoria nueva, y la del cliente se queda como estaba.
+                // From a client to a trade: a new memory, and the client's one stays as it was.
                 if plan.nueva {
-                    anyhow::ensure!(absorbe.is_none(), "a client's memory becomes a new trade memory: promote it first, without `absorb`");
-                    let tags = c.tags.clone().unwrap_or_else(|| actual.tags.clone());
-                    let m = crate::oficios::crear_de_oficio(db, &actual, &c, tags, &origen, modelo)?;
-                    let tapados = match p.data {
+                    anyhow::ensure!(absorb.is_none(), "a client's memory becomes a new trade memory: promote it first, without `absorb`");
+                    let tags = c.tags.clone().unwrap_or_else(|| current.tags.clone());
+                    let m = crate::oficios::crear_de_oficio(db, &current, &c, tags, &source, model)?;
+                    let hidden = match p.data {
                         Some(d) => memoria::poner_datos(db, &m.id, d)?,
                         None => Vec::new(),
                     };
-                    juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
-                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
-                    let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
-                    con_redactados(&mut r, &m);
+                    judge(db, &m.id, p.supersedes, p.contradicts, p.compatible, &reason, &source)?;
+                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    let mut r = serde_json::to_value(compact(m.clone(), false, None))?;
+                    with_redacted(&mut r, &m);
                     r["created"] = serde_json::json!(true);
-                    r["promoted_from"] = serde_json::json!(actual.id);
+                    r["promoted_from"] = serde_json::json!(current.id);
                     r["promoted_hint"] = serde_json::json!(crate::oficios::AVISO_PROMOVIDA);
-                    // Lo mismo promovido desde otro cliente: no se impide (la promoción ya está hecha), se dice.
-                    if let Some(mo) = modelo
-                        && let Some((otra, sim)) = vectores::duplicada_de_oficio(db, mo, &crate::oficios::de_etiquetas(&m.tags), &m.title, &m.content, Some(&m.id))?
+                    // The same thing promoted from another client: not prevented (the promotion is done), just reported.
+                    if let Some(mo) = model
+                        && let Some((other, sim)) = vectores::duplicada_de_oficio(db, mo, &crate::oficios::de_etiquetas(&m.tags), &m.title, &m.content, Some(&m.id))?
                     {
-                        r["duplicate_of"] = serde_json::to_value(compacta(otra, false, None))?;
+                        r["duplicate_of"] = serde_json::to_value(compact(other, false, None))?;
                         r["similarity"] = serde_json::json!((sim * 1000.0).round() / 1000.0);
                         r["duplicate_hint"] = serde_json::json!(crate::oficios::AVISO_DUPLICADA);
                     }
-                    if !tapados.is_empty() {
-                        r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                    if !hidden.is_empty() {
+                        r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
                     }
                     return Ok(r);
                 }
                 if plan.hacer_global && c.project.is_none() {
                     c.project = Some(String::new());
                 }
-                // Solo veredictos: la memoria no cambia (ni gana una versión vacía en su historial).
-                let solo_juicio = c.title.is_none()
+                // Verdicts only: the memory doesn't change (nor gets an empty version in its history).
+                let only_verdicts = c.title.is_none()
                     && c.content.is_none()
                     && c.kind.is_none()
                     && c.paths.is_none()
@@ -904,44 +904,44 @@ impl Servidor {
                     && c.space_id.is_none()
                     && c.replace.is_empty()
                     && c.append.is_none()
-                    && absorbe.is_none();
-                let datos = p.data;
-                let evidencia = crate::evidencia::limpiar(p.evidence.unwrap_or_default())?;
-                let (mut m, cambiados, absorbidas) = if solo_juicio {
+                    && absorb.is_none();
+                let data = p.data;
+                let evidence = crate::evidencia::limpiar(p.evidence.unwrap_or_default())?;
+                let (mut m, changed, absorbed) = if only_verdicts {
                     (memoria::obtener(db, &id)?, Vec::new(), Vec::new())
-                } else if let Some(ids) = absorbe {
-                    memoria::absorber(db, &id, &ids, c, modelo)?
+                } else if let Some(ids) = absorb {
+                    memoria::absorber(db, &id, &ids, c, model)?
                 } else {
-                    let (m, cambiados) = memoria::actualizar_con_cambios(db, &id, c, modelo)?;
-                    (m, cambiados, Vec::new())
+                    let (m, changed) = memoria::actualizar_con_cambios(db, &id, c, model)?;
+                    (m, changed, Vec::new())
                 };
-                let tapados = match datos {
+                let hidden = match data {
                     Some(d) => memoria::poner_datos(db, &m.id, d)?,
                     None => Vec::new(),
                 };
-                if !evidencia.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(db, &m.id, &evidencia)? {
+                if !evidence.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(db, &m.id, &evidence)? {
                     m = memoria::obtener(db, &m.id)?;
                 }
-                if let Some(x) = &motivo_revision
+                if let Some(x) = &review_reason
                     && memoria::poner_motivo_revision(db, &m.id, x)?
                 {
                     m = memoria::obtener(db, &m.id)?;
                 }
-                juzgar(db, &m.id, p.supersedes, p.contradicts, p.compatible, &motivo, &origen)?;
-                let tocadas: Vec<String> = std::iter::once(m.id.clone()).chain(absorbidas.iter().cloned()).collect();
-                crate::revisar::al_dia_de(db, &antes, if solo_juicio { &[] } else { &tocadas })?;
-                let mut r = serde_json::to_value(compacta(m.clone(), false, None))?;
-                con_redactados(&mut r, &m);
-                if !tapados.is_empty() {
-                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&tapados));
+                judge(db, &m.id, p.supersedes, p.contradicts, p.compatible, &reason, &source)?;
+                let touched: Vec<String> = std::iter::once(m.id.clone()).chain(absorbed.iter().cloned()).collect();
+                crate::revisar::al_dia_de(db, &before, if only_verdicts { &[] } else { &touched })?;
+                let mut r = serde_json::to_value(compact(m.clone(), false, None))?;
+                with_redacted(&mut r, &m);
+                if !hidden.is_empty() {
+                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
                 }
-                if !cambiados.is_empty() {
-                    r["changed"] = serde_json::json!(cambiados);
+                if !changed.is_empty() {
+                    r["changed"] = serde_json::json!(changed);
                 }
-                if !absorbidas.is_empty() {
-                    r["absorbed"] = serde_json::json!(absorbidas);
+                if !absorbed.is_empty() {
+                    r["absorbed"] = serde_json::json!(absorbed);
                 }
-                // La persona verificó el texto de antes: el agente lo dice para que lo vuelva a mirar.
+                // The person verified the previous text: the agent says so, so they look at it again.
                 if let Some(u) = &m.unverified {
                     r["unverified"] = serde_json::json!(format!(
                         "It was verified by {} ({}); changing its text removed that. Tell the user, who can verify it again if it is still right.",
@@ -955,250 +955,250 @@ impl Servidor {
         if r.is_ok() {
             crate::sync::programar(&self.db);
         }
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 }
 
-/// `mcp:<nombre del cliente>` según lo que el cliente dijo al conectarse (`clientInfo`); `mcp` si no
-/// lo dijo.
-fn origen_de(peer: &Peer<RoleServer>) -> String {
-    let nombre = peer.peer_info().map(|i| i.client_info.name.trim().to_lowercase()).unwrap_or_default();
-    if nombre.is_empty() { "mcp".into() } else { format!("mcp:{nombre}") }
+/// `mcp:<client name>` from what the client said when connecting (`clientInfo`); `mcp` if it
+/// didn't say.
+fn source_of(peer: &Peer<RoleServer>) -> String {
+    let name = peer.peer_info().map(|i| i.client_info.name.trim().to_lowercase()).unwrap_or_default();
+    if name.is_empty() { "mcp".into() } else { format!("mcp:{name}") }
 }
 
 #[tool_router(router = tool_router)]
 impl Servidor {
     #[tool(description = "Save a memory for future sessions. If a very similar memory already exists in this project, nothing is saved and you get duplicate_of: update that one instead, or call again with force=true if it really is different. With `key`, it creates or updates the one memory with that key here.")]
     async fn remember(&self, peer: Peer<RoleServer>, Parameters(p): Parameters<Remember>) -> Result<CallToolResult, ErrorData> {
-        self.guardar(p, origen_de(&peer)).await
+        self.save(p, source_of(&peer)).await
     }
 
     #[tool(description = "Search the memories of this project, its space and the global ones (or every project of the space with all_projects, another project with `project`, a space with `space`; from a folder that is not a project, such as the home folder, every project). Returns compact results; use `get` for the whole memory.")]
     async fn search(&self, Parameters(p): Parameters<Search>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, modelo, proyecto| {
-                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let todos = !matches!(ambito, Ambito::Proyecto { .. });
+            .with_db(move |db, model, session_project| {
+                let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let wide = !matches!(scope, Ambito::Proyecto { .. });
                 let o = Opciones {
-                    ambito,
-                    kind: tipo(p.kind)?,
+                    ambito: scope,
+                    kind: parse_kind(p.kind)?,
                     tags: p.tags.unwrap_or_default(),
-                    limite: limite(p.limit),
+                    limite: limit_of(p.limit),
                 };
-                let res = buscar::buscar(db, &p.query, &o, modelo)?;
-                let mut notas = crate::revisar::notas_busqueda(db, &ambito, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
+                let res = buscar::buscar(db, &p.query, &o, model)?;
+                let mut notes = crate::revisar::notas_busqueda(db, &scope, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
                 Ok(res
                     .into_iter()
                     .map(|r| {
-                        let note = notas.remove(&r.memoria.id);
-                        Compacta { note, ..compacta(r.memoria, todos, r.similarity) }
+                        let note = notes.remove(&r.memoria.id);
+                        Compact { note, ..compact(r.memoria, wide, r.similarity) }
                     })
                     .collect::<Vec<_>>())
             })
             .await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
     #[tool(description = "Get a whole memory by id, or by the key it was saved with. It comes with its `data`, if it has any.")]
     async fn get(&self, Parameters(p): Parameters<Get>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, proyecto| {
+            .with_db(move |db, _, session_project| {
                 let m = match (p.id.as_deref(), p.key.as_deref()) {
-                    (None, Some(k)) if p.resolve.unwrap_or(false) => return Ok(serde_json::to_value(memoria::capas_de_clave(db, &Ambito::de(db, proyecto)?, k)?)?),
-                    (Some(id), _) => memoria::obtener(db, &id_en_ambito(db, proyecto, id, false)?)?,
-                    (None, Some(k)) => memoria::por_clave(db, &Ambito::de(db, proyecto)?, k)?.ok_or_else(|| anyhow::anyhow!("no memory with key «{}» here", k.trim()))?,
+                    (None, Some(k)) if p.resolve.unwrap_or(false) => return Ok(serde_json::to_value(memoria::capas_de_clave(db, &Ambito::de(db, session_project)?, k)?)?),
+                    (Some(id), _) => memoria::obtener(db, &id_in_scope(db, session_project, id, false)?)?,
+                    (None, Some(k)) => memoria::por_clave(db, &Ambito::de(db, session_project)?, k)?.ok_or_else(|| anyhow::anyhow!("no memory with key «{}» here", k.trim()))?,
                     (None, None) => anyhow::bail!("give id or key"),
                 };
                 Ok(memoria::con_datos(db, vec![m])?.remove(0))
             })
             .await;
-        Ok(r.map(|m| json(&m)).unwrap_or_else(fallo))
+        Ok(r.map(|m| json(&m)).unwrap_or_else(failure))
     }
 
     #[tool(description = "Change a memory. Only the fields you pass change; the previous version is kept in its history with your reason.")]
     async fn update(&self, peer: Peer<RoleServer>, Parameters(p): Parameters<Update>) -> Result<CallToolResult, ErrorData> {
-        self.cambiar(p, origen_de(&peer)).await
+        self.change(p, source_of(&peer)).await
     }
 
     #[tool(description = "Forget a memory: it goes to the trash with its history for 30 days, and `update` with restore=true brings it back on every synced computer. Use it only when the memory is wrong or no longer applies; if it just changed, use `update`.")]
     async fn forget(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, proyecto| {
-                let id = id_en_ambito(db, proyecto, &p.id, false)?;
-                let antes = crate::revisar::antes(db)?;
+            .with_db(move |db, _, session_project| {
+                let id = id_in_scope(db, session_project, &p.id, false)?;
+                let before = crate::revisar::antes(db)?;
                 let m = memoria::olvidar(db, &id)?;
-                crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
                 Ok(m)
             })
             .await;
         if r.is_ok() {
             crate::sync::programar(&self.db);
         }
-        Ok(r.map(|m| json(&serde_json::json!({ "forgotten": m.id, "title": m.title }))).unwrap_or_else(fallo))
+        Ok(r.map(|m| json(&serde_json::json!({ "forgotten": m.id, "title": m.title }))).unwrap_or_else(failure))
     }
 
     #[tool(description = "Turn a memory into a skill of this repository: writes `.agents/skills/<name>/SKILL.md` (Codex, Cursor, Gemini CLI, Copilot, OpenCode…) and `.claude/skills/<name>/SKILL.md` (Claude Code), with the memory's id, so every agent and teammate loads it once committed. `id` can also be a few words; several matches come back as an error listing them. With suggest=true, the project's memories that could be skills, with ids: offer them when the user asks what could be a skill. Without id, lists the repository's skills from Omoikane: up_to_date, outdated (the memory changed: refresh), edited (by hand: left alone) or orphan (its memory is gone). Refuses a memory that looks like it holds a secret. Tell the user to commit the files; never commit them yourself unless asked.")]
     async fn skill(&self, Parameters(p): Parameters<Skill>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, proyecto| {
+            .with_db(move |db, _, session_project| {
                 let force = p.force.unwrap_or(false);
-                let simulacro = p.dry_run.unwrap_or(false);
+                let dry_run = p.dry_run.unwrap_or(false);
                 if p.suggest.unwrap_or(false) {
-                    return Ok(serde_json::to_value(crate::skill::sugerencias(db, proyecto)?)?);
+                    return Ok(serde_json::to_value(crate::skill::sugerencias(db, session_project)?)?);
                 }
                 Ok(match (p.id.as_deref(), p.refresh.unwrap_or(false)) {
-                    (Some(pedida), _) => {
-                        let id = crate::skill::resolver(db, proyecto, pedida)?;
-                        let id = id_en_ambito(db, proyecto, &id, false)?;
-                        serde_json::to_value(crate::skill::escribir(db, proyecto, &id, crate::skill::Destino::de(p.to.as_deref())?, force, simulacro)?)?
+                    (Some(wanted), _) => {
+                        let id = crate::skill::resolver(db, session_project, wanted)?;
+                        let id = id_in_scope(db, session_project, &id, false)?;
+                        serde_json::to_value(crate::skill::escribir(db, session_project, &id, crate::skill::Destino::de(p.to.as_deref())?, force, dry_run)?)?
                     }
-                    (None, true) => serde_json::to_value(crate::skill::refrescar(db, proyecto, simulacro)?)?,
-                    (None, false) => serde_json::to_value(crate::skill::listar(db, proyecto)?)?,
+                    (None, true) => serde_json::to_value(crate::skill::refrescar(db, session_project, dry_run)?)?,
+                    (None, false) => serde_json::to_value(crate::skill::listar(db, session_project)?)?,
                 })
             })
             .await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
     #[tool(description = "Previous versions of a memory, newest first, with the reason for each change.")]
     async fn history(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.con_base(move |db, _, proyecto| memoria::historial_en(db, &Ambito::de(db, proyecto)?, &id_en_ambito(db, proyecto, &p.id, false)?)).await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        let r = self.with_db(move |db, _, session_project| memoria::historial_en(db, &Ambito::de(db, session_project)?, &id_in_scope(db, session_project, &p.id, false)?)).await;
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
     #[tool(description = "Where you are (this project: folder, sync key, space, how many memories) and the other projects (latest activity first, with their status), the user's preferences and the pinned memories for this project (its space's and the global ones), what is worth reviewing in its memory (memories a newer one contradicts, stale status, broken paths…), and what earlier sessions set aside as possibly worth saving. Call it at the start of a session.")]
     async fn context(&self) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(|db, _, proyecto| {
-                // Sus oficios, mirando otra vez sus ficheros (`con_base` solo los mira la primera vez).
-                if let Some(id) = Ambito::de(db, proyecto)?.proyecto() {
-                    crate::oficios::al_dia(db, id, proyecto)?;
+            .with_db(|db, _, session_project| {
+                // Its trades, looking at its files again (`with_db` only looks the first time).
+                if let Some(id) = Ambito::de(db, session_project)?.proyecto() {
+                    crate::oficios::al_dia(db, id, session_project)?;
                 }
-                let ambito = Ambito::de(db, proyecto)?;
-                let v = memoria::contexto(db, &ambito, 30)?;
-                let memorias: Vec<_> = v.into_iter().map(|m| compacta(m, false, None)).collect();
-                let review = crate::revisar::avisos_sin_esperar(db, &ambito)?;
-                // Dónde está: el proyecto (o la carpeta general) y, de los demás, solo los de su espacio.
-                let actual = match ambito {
+                let scope = Ambito::de(db, session_project)?;
+                let v = memoria::contexto(db, &scope, 30)?;
+                let memories: Vec<_> = v.into_iter().map(|m| compact(m, false, None)).collect();
+                let review = crate::revisar::avisos_sin_esperar(db, &scope)?;
+                // Where it is: the project (or the general folder) and, of the others, only those in its space.
+                let current = match scope {
                     Ambito::Proyecto { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
-                        x.path = proyecto.to_string();
+                        x.path = session_project.to_string();
                         serde_json::to_value(x).unwrap_or_default()
                     }),
-                    Ambito::Todos => Some(serde_json::json!({ "path": proyecto, "general": true, "memories": memoria::cuantas(db, &ambito)? })),
-                    _ => Some(serde_json::json!({ "path": proyecto, "memories": 0 })),
+                    Ambito::Todos => Some(serde_json::json!({ "path": session_project, "general": true, "memories": memoria::cuantas(db, &scope)? })),
+                    _ => Some(serde_json::json!({ "path": session_project, "memories": 0 })),
                 };
-                let filtro = match ambito {
+                let filter = match scope {
                     Ambito::Todos => None,
                     a => Some(a.espacio()),
                 };
-                let proyectos = proyecto::lista(db, None, filtro, 50)?;
-                let mut r = serde_json::json!({ "project": actual, "projects": proyectos, "memories": memorias, "review": review });
-                // Proyectos duplicados o en carpetas temporales: el agente los propone con la orden escrita.
-                let propuestas = crate::nombres::propuestas(db, &ambito)?;
-                if !propuestas.is_empty() {
-                    r["projects_review"] = serde_json::json!(propuestas);
+                let projects = proyecto::lista(db, None, filter, 50)?;
+                let mut r = serde_json::json!({ "project": current, "projects": projects, "memories": memories, "review": review });
+                // Duplicated projects or ones in temporary folders: the agent proposes them with the command written out.
+                let proposals = crate::nombres::propuestas(db, &scope)?;
+                if !proposals.is_empty() {
+                    r["projects_review"] = serde_json::json!(proposals);
                     r["projects_review_hint"] = serde_json::json!("These projects look duplicated or are not real projects. Ask the user before running each `command` (a merge reaches every synced computer); if they say no, run its `dismiss`.");
                 }
-                // El aviso de la revisión acumulada, como al empezar la sesión (y sin repetirlo si ya salió hoy).
-                // Con las mismas cifras que al empezar: sin las rutas rotas (allí no se cuentan), o
-                // tener unas cuantas haría «crecer» la cuenta y repetiría el aviso en la misma sesión.
-                // Los secretos sí, que avisan siempre. Es opcional: si falla, solo se pierde el aviso.
-                let mut cifras = crate::revisar::cifras(&review);
-                cifras.remove(crate::revisar::RUTA_ROTA);
-                if let Some(a) = crate::revisar::aviso(db, &cifras, memoria::cuantas(db, &ambito)? as usize).ok().flatten() {
+                // The accumulated review notice, as at session start (and not repeated if it already showed today).
+                // With the same figures as at the start: without broken paths (they aren't counted there), or
+                // having a few would make the count "grow" and repeat the notice in the same session.
+                // Secrets do count, they always warn. It is optional: if it fails, only the notice is lost.
+                let mut figures = crate::revisar::cifras(&review);
+                figures.remove(crate::revisar::RUTA_ROTA);
+                if let Some(a) = crate::revisar::aviso(db, &figures, memoria::cuantas(db, &scope)? as usize).ok().flatten() {
                     r["review_notice"] = serde_json::json!(a);
                 }
-                // Lo apartado al cerrar otras sesiones: en los agentes sin recall al empezar (Grok,
-                // Windsurf…) solo llega por aquí. Se enseña una vez, como en el recall.
-                let apartadas = crate::candidatas::para_empezar(db, proyecto, "")?;
-                if !apartadas.is_empty() {
-                    r["set_aside"] = serde_json::json!(apartadas.iter().map(|c| format!("[{}] {}", c.kind, c.text.chars().take(900).collect::<String>())).collect::<Vec<_>>());
+                // What was set aside when other sessions closed: in agents with no recall at start (Grok,
+                // Windsurf…) it only arrives here. Shown once, as in recall.
+                let set_aside = crate::candidatas::para_empezar(db, session_project, "")?;
+                if !set_aside.is_empty() {
+                    r["set_aside"] = serde_json::json!(set_aside.iter().map(|c| format!("[{}] {}", c.kind, c.text.chars().take(900).collect::<String>())).collect::<Vec<_>>());
                     r["set_aside_hint"] = serde_json::json!("From earlier sessions here, possibly worth keeping (picked without understanding them): save the ones worth it with `remember`, in the user's words and language, merging into existing memories where they fit; ignore the rest, they won't come back.");
                 }
                 Ok(r)
             })
             .await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
     #[tool(description = "The latest saved or changed memories in this project (its space's and the global ones), or in `project`, `space` or every project of the space (all_projects). With sessions=true, the session diary instead (this computer's past sessions: when, files touched, memories recalled and saved).")]
     async fn recent(&self, Parameters(p): Parameters<Recent>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, proyecto| {
-                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let todos = !matches!(ambito, Ambito::Proyecto { .. });
+            .with_db(move |db, _, session_project| {
+                let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let wide = !matches!(scope, Ambito::Proyecto { .. });
                 if p.sessions.unwrap_or(false) {
-                    let filtro = crate::diario::Filtro {
+                    let filter = crate::diario::Filtro {
                         desde: p.since.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
                         hasta: p.until.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
                         fichero: p.file,
-                        carpeta: p.project.is_none().then(|| proyecto.to_string()),
-                        limite: limite(p.limit),
+                        carpeta: p.project.is_none().then(|| session_project.to_string()),
+                        limite: limit_of(p.limit),
                     };
-                    return Ok(serde_json::to_value(crate::diario::lineas(db, &ambito, &filtro)?)?);
+                    return Ok(serde_json::to_value(crate::diario::lineas(db, &scope, &filter)?)?);
                 }
                 if let Some(tags) = p.tags.filter(|t| !t.is_empty()) {
-                    // Por etiqueta: todas (como mucho `limit`, 200 si no se dice), con sus datos.
-                    let v = memoria::con_etiquetas(db, &ambito, &tags, tipo(p.kind)?, p.limit.unwrap_or(200).clamp(1, 200))?;
-                    let datos = memoria::datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
-                    let mut lista = Vec::new();
+                    // By tag: all of them (at most `limit`, 200 if not given), with their data.
+                    let v = memoria::con_etiquetas(db, &scope, &tags, parse_kind(p.kind)?, p.limit.unwrap_or(200).clamp(1, 200))?;
+                    let data = memoria::datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+                    let mut list = Vec::new();
                     for m in v {
-                        let d = datos.get(&m.id).cloned();
-                        let mut x = serde_json::to_value(compacta(m, todos, None))?;
+                        let d = data.get(&m.id).cloned();
+                        let mut x = serde_json::to_value(compact(m, wide, None))?;
                         if let Some(d) = d {
                             x["data"] = d;
                         }
-                        lista.push(x);
+                        list.push(x);
                     }
-                    return Ok(serde_json::Value::Array(lista));
+                    return Ok(serde_json::Value::Array(list));
                 }
-                let v = memoria::recientes(db, &ambito, tipo(p.kind)?, limite(p.limit))?;
-                Ok(serde_json::to_value(v.into_iter().map(|m| compacta(m, todos, None)).collect::<Vec<_>>())?)
+                let v = memoria::recientes(db, &scope, parse_kind(p.kind)?, limit_of(p.limit))?;
+                Ok(serde_json::to_value(v.into_iter().map(|m| compact(m, wide, None)).collect::<Vec<_>>())?)
             })
             .await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
     #[tool(description = "The open decisions waiting for the user (kind decision, tag `open`) in this project, its space's and the global ones (or in `project`, `space` or every project of the space with all_projects): blocking first (priority `blocking`: work can't go on without the answer), then the ones for later (priority `later`), newest first within each. With blocking=true, only the blocking ones. With `resolve` and `answer`, closes one; with `contradiction` (two ids), `keep` and `answer`, settles two memories that contradict each other with what the user said.")]
     async fn decisions(&self, Parameters(p): Parameters<Decisions>) -> Result<CallToolResult, ErrorData> {
         let r = self
-            .con_base(move |db, _, proyecto| {
+            .with_db(move |db, _, session_project| {
                 if let Some(ids) = p.contradiction {
                     let [a, b] = ids.as_slice() else {
                         anyhow::bail!("`contradiction` takes the two ids that contradict each other")
                     };
-                    let (a, b) = (id_en_ambito(db, proyecto, a, false)?, id_en_ambito(db, proyecto, b, false)?);
-                    let respuesta = p.answer.unwrap_or_default();
-                    anyhow::ensure!(!respuesta.trim().is_empty(), "`answer`: what the user said (their words); ask them which one holds");
-                    let queda = veredictos::Queda::de(db, p.keep.as_deref().unwrap_or_default())?;
-                    let antes = crate::revisar::antes(db)?;
-                    let sustituida = veredictos::resolver(db, &a, &b, &queda, &respuesta, veredictos::USUARIO)?;
-                    crate::revisar::al_dia_de(db, &antes, &[])?;
+                    let (a, b) = (id_in_scope(db, session_project, a, false)?, id_in_scope(db, session_project, b, false)?);
+                    let answer = p.answer.unwrap_or_default();
+                    anyhow::ensure!(!answer.trim().is_empty(), "`answer`: what the user said (their words); ask them which one holds");
+                    let keep = veredictos::Queda::de(db, p.keep.as_deref().unwrap_or_default())?;
+                    let before = crate::revisar::antes(db)?;
+                    let superseded = veredictos::resolver(db, &a, &b, &keep, &answer, veredictos::USUARIO)?;
+                    crate::revisar::al_dia_de(db, &before, &[])?;
                     return Ok(serde_json::json!({
                         "resolved": true,
-                        "kept": match &queda { veredictos::Queda::Una(x) => serde_json::json!(x), veredictos::Queda::LasDos => serde_json::json!("both") },
-                        "superseded": sustituida,
-                        "hint": if sustituida.is_some() { "The other one is now superseded by the one that holds: offer the user to `forget` it if nothing in it still holds." } else { "Both hold: the warning is gone." },
+                        "kept": match &keep { veredictos::Queda::Una(x) => serde_json::json!(x), veredictos::Queda::LasDos => serde_json::json!("both") },
+                        "superseded": superseded,
+                        "hint": if superseded.is_some() { "The other one is now superseded by the one that holds: offer the user to `forget` it if nothing in it still holds." } else { "Both hold: the warning is gone." },
                     }));
                 }
                 if let Some(id) = p.resolve {
-                    let id = id_en_ambito(db, proyecto, &id, false)?;
-                    let respuesta = p.answer.unwrap_or_default();
-                    let antes = crate::revisar::antes(db)?;
-                    let m = match memoria::resolver_decision(db, &id, &respuesta, p.reason, p.allow_leaks.unwrap_or(false))? {
+                    let id = id_in_scope(db, session_project, &id, false)?;
+                    let answer = p.answer.unwrap_or_default();
+                    let before = crate::revisar::antes(db)?;
+                    let m = match memoria::resolver_decision(db, &id, &answer, p.reason, p.allow_leaks.unwrap_or(false))? {
                         Ok(m) => m,
-                        Err(fugas) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": fugas, "hint": crate::oficios::AVISO_FUGAS })),
+                        Err(leaks) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS })),
                     };
-                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
-                    return Ok(serde_json::json!({ "resolved": true, "memory": compacta(m, false, None) }));
+                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    return Ok(serde_json::json!({ "resolved": true, "memory": compact(m, false, None) }));
                 }
                 crate::revisar::limpiar_callado(db);
-                let ambito = ambito_pedido(db, proyecto, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let v = memoria::decisiones(db, &ambito, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
+                let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
+                let v = memoria::decisiones(db, &scope, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
                 Ok(serde_json::to_value(v)?)
             })
             .await;
-        Ok(r.map(|v| json(&v)).unwrap_or_else(fallo))
+        Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 }
 
@@ -1207,48 +1207,48 @@ impl ServerHandler for Servidor {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("omoikane", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCCIONES)
+            .with_instructions(INSTRUCTIONS)
     }
 }
 
-/// Una herramienta sin servidor, para los clientes que no hablan MCP (el mod del plugin de Claude
-/// Code): las mismas herramientas y las mismas respuestas. Sin nombre, la lista de herramientas con
-/// sus esquemas y las instrucciones. Devuelve el texto y si la herramienta respondió con error.
-/// `origen` es el `source` de lo que se guarde con `remember` y firma los veredictos de `update`.
-pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, nombre: Option<&str>, args: &str, origen: &str) -> Result<(String, bool)> {
+/// A tool without a server, for clients that don't speak MCP (the Claude Code plugin's mod):
+/// the same tools and the same responses. With no name, the list of tools with their schemas
+/// and the instructions. Returns the text and whether the tool answered with an error.
+/// `source` is the `source` of whatever `remember` saves and signs `update`'s verdicts.
+pub fn herramienta(db: PathBuf, dir: Option<PathBuf>, name: Option<&str>, args: &str, source: &str) -> Result<(String, bool)> {
     let s = Servidor::new(db, dir);
-    let Some(nombre) = nombre else {
-        let lista = serde_json::json!({ "instructions": INSTRUCCIONES, "tools": s.tool_router.list_all() });
-        return Ok((serde_json::to_string(&lista)?, false));
+    let Some(name) = name else {
+        let list = serde_json::json!({ "instructions": INSTRUCTIONS, "tools": s.tool_router.list_all() });
+        return Ok((serde_json::to_string(&list)?, false));
     };
     let v: serde_json::Value = if args.trim().is_empty() { serde_json::json!({}) } else { serde_json::from_str(args)? };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let r = rt.block_on(async {
-        Ok::<_, anyhow::Error>(match nombre {
-            "remember" => s.guardar(serde_json::from_value(v)?, origen.to_string()).await,
+        Ok::<_, anyhow::Error>(match name {
+            "remember" => s.save(serde_json::from_value(v)?, source.to_string()).await,
             "search" => s.search(Parameters(serde_json::from_value(v)?)).await,
             "get" => s.get(Parameters(serde_json::from_value(v)?)).await,
-            "update" => s.cambiar(serde_json::from_value(v)?, origen.to_string()).await,
+            "update" => s.change(serde_json::from_value(v)?, source.to_string()).await,
             "forget" => s.forget(Parameters(serde_json::from_value(v)?)).await,
             "history" => s.history(Parameters(serde_json::from_value(v)?)).await,
             "context" => s.context().await,
             "recent" => s.recent(Parameters(serde_json::from_value(v)?)).await,
             "decisions" => s.decisions(Parameters(serde_json::from_value(v)?)).await,
             "skill" => s.skill(Parameters(serde_json::from_value(v)?)).await,
-            otro => anyhow::bail!("unknown tool: {otro}"),
+            other => anyhow::bail!("unknown tool: {other}"),
         })
     })?;
     let r = r.map_err(|e| anyhow::anyhow!("{}", e.message))?;
-    let texto = r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect::<Vec<_>>().join("\n");
-    Ok((texto, r.is_error.unwrap_or(false)))
+    let text = r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect::<Vec<_>>().join("\n");
+    Ok((text, r.is_error.unwrap_or(false)))
 }
 
-/// Sirve por stdin/stdout hasta que el cliente cierre. Nada más puede escribir en stdout.
+/// Serves over stdin/stdout until the client closes. Nothing else may write to stdout.
 pub fn servir(db: PathBuf, dir: Option<PathBuf>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
-        let servicio = Servidor::new(db, dir).serve(rmcp::transport::stdio()).await?;
-        servicio.waiting().await?;
+        let service = Servidor::new(db, dir).serve(rmcp::transport::stdio()).await?;
+        service.waiting().await?;
         Ok(())
     })
 }

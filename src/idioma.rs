@@ -1,9 +1,9 @@
-//! Idioma de lo que ve la persona (ayuda, mensajes y errores): inglés por defecto, español con
-//! `OMOIKANE_LANG=es`. El código y sus comentarios siguen en español.
+//! Language of what the person sees (help, messages and errors): English by default, Spanish with
+//! `OMOIKANE_LANG=es`. The code and its comments are in English.
 
 use std::sync::OnceLock;
 
-/// `true` si hay que hablar en español.
+/// `true` if we must speak Spanish.
 pub fn es() -> bool {
     static ES: OnceLock<bool> = OnceLock::new();
     *ES.get_or_init(|| {
@@ -11,7 +11,7 @@ pub fn es() -> bool {
     })
 }
 
-/// El texto en el idioma activo, como `format!`: `tr!("saved {id}", "guardada {id}")`.
+/// The text in the active language, like `format!`: `tr!("saved {id}", "guardada {id}")`.
 #[macro_export]
 macro_rules! tr {
     ($en:literal, $es:literal $(, $($arg:tt)+)?) => {

@@ -1,16 +1,16 @@
-//! `omoi tui`: ver, buscar, fijar y borrar memorias sin pasar por el agente.
+//! `omoi tui`: view, search, pin and delete memories without going through the agent.
 //!
-//! Lista a la izquierda (las recientes, o lo que encuentra la búsqueda), la memoria elegida a la
-//! derecha (debajo, o solo la lista, si la terminal es estrecha). `/` busca mientras se escribe, Intro
-//! abre la memoria entera, `h` su historial, `p` la fija o la suelta, `d` la borra (pide confirmación),
-//! `a` cambia entre este proyecto y todos los que se ven desde aquí, `e` filtra por espacio, `t` abre la
-//! papelera (recuperar, borrar del todo, vaciar) y `q` sale.
+//! List on the left (the recent ones, or what the search finds), the selected memory on the
+//! right (below, or only the list, if the terminal is narrow). `/` searches as you type, Enter
+//! opens the whole memory, `h` its history, `p` pins or unpins it, `d` deletes it (asks for confirmation),
+//! `a` switches between this project and all those visible from here, `e` filters by space, `t` opens the
+//! trash (restore, delete for good, empty) and `q` quits.
 //!
-//! **Quién ve qué**: lo mismo que la vista web (`http::Mirador`), porque mira con ella. Desde un
-//! proyecto de un espacio, «todos» es ese espacio entero y lo global; desde un proyecto sin espacio, los
-//! proyectos sin espacio y lo global; desde la carpeta del usuario, todo. La papelera, el filtro por
-//! espacio y lo que se recupera o se borra del todo pasan por la misma regla: lo de otro cliente no
-//! aparece, ni se toca aunque se tenga su id.
+//! **Who sees what**: the same as the web view (`http::Mirador`), because it looks through it. From a
+//! project in a space, "all" is that whole space plus global; from a project without a space, the
+//! projects without a space plus global; from the user's folder, everything. The trash, the space
+//! filter and what gets restored or deleted for good follow the same rule: another client's memories
+//! don't show up, and aren't touched even if you have their id.
 
 use crate::buscar::{self, Opciones};
 use crate::embeber::Modelo;
@@ -27,9 +27,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use rusqlite::Connection;
 
-const LIMITE: usize = 200;
-/// Por debajo de este ancho, la ficha va debajo de la lista (o no va) en vez de al lado.
-const ANCHO_DOS_COLUMNAS: u16 = 70;
+const LIMIT: usize = 200;
+/// Below this width, the detail pane goes below the list (or is hidden) instead of beside it.
+const TWO_COLUMN_WIDTH: u16 = 70;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vista {
@@ -38,15 +38,15 @@ pub enum Vista {
     Entera,
     Historial,
     Borrar,
-    /// Lo olvidado que se ve desde aquí.
+    /// The forgotten memories visible from here.
     Papelera,
-    /// Confirmar que se borra del todo la elegida de la papelera.
+    /// Confirm deleting the selected trash item for good.
     PapeleraBorrar,
-    /// Confirmar que se vacía la papelera (lo que se ve desde aquí).
+    /// Confirm emptying the trash (what is visible from here).
     PapeleraVaciar,
 }
 
-/// Una memoria de la papelera y cuántos días lleva en ella.
+/// A memory in the trash and how many days it has been there.
 #[derive(Debug, Clone)]
 pub struct EnPapelera {
     pub olvidada: Olvidada,
@@ -56,14 +56,14 @@ pub struct EnPapelera {
 pub struct Estado {
     pub proyecto: String,
     pub todos: bool,
-    /// Filtro por espacio: `None`, sin filtro; `Some(None)`, los proyectos sin espacio; `Some(Some(id))`,
-    /// ese espacio. Lo global se ve siempre, como en la web. Solo vale uno que se vea desde aquí.
+    /// Space filter: `None`, no filter; `Some(None)`, projects without a space; `Some(Some(id))`,
+    /// that space. Global memories are always shown, as on the web. Only one visible from here is valid.
     pub espacio: Option<Option<i64>>,
-    /// Los espacios que se ven desde aquí (para el filtro y los nombres).
+    /// The spaces visible from here (for the filter and the names).
     pub espacios: Vec<Espacio>,
-    /// Si se mira desde la carpeta del usuario (se ve todo).
+    /// Whether it's looking from the user's folder (everything is visible).
     pub ve_todo: bool,
-    /// La clave del espacio del proyecto desde el que se mira (vacía: ninguno, o todo).
+    /// The space key of the project being looked from (empty: none, or everything).
     pub espacio_propio: String,
     pub consulta: String,
     pub memorias: Vec<Memoria>,
@@ -78,9 +78,9 @@ pub struct Estado {
 }
 
 impl Estado {
-    pub fn nuevo(proyecto: String) -> Estado {
+    pub fn nuevo(project: String) -> Estado {
         Estado {
-            proyecto,
+            proyecto: project,
             todos: false,
             espacio: None,
             espacios: Vec::new(),
@@ -99,16 +99,16 @@ impl Estado {
         }
     }
 
-    /// Desde dónde se mira: como la web, se calcula cada vez (un proyecto puede cambiar de espacio
-    /// mientras la TUI está abierta, por la sincronización).
-    fn mirador(&self, db: &Connection) -> Result<Mirador> {
+    /// Where it's looking from: like the web, worked out each time (a project can change space
+    /// while the TUI is open, through sync).
+    fn viewpoint(&self, db: &Connection) -> Result<Mirador> {
         Mirador::nuevo(db, None, self.proyecto.clone())
     }
 
-    /// Lo que enseña la lista: el filtro de espacio si hay uno (y se ve desde aquí), si no «todos» (lo
-    /// amplio desde aquí: su espacio, nunca todo desde un proyecto) o este proyecto.
+    /// What the list shows: the space filter if there is one (and it's visible from here), otherwise "all" (the
+    /// wide scope from here: its space, never everything from a project) or this project.
     pub fn ambito(&self, db: &Connection) -> Result<Ambito> {
-        let m = self.mirador(db)?;
+        let m = self.viewpoint(db)?;
         if let Some(f) = self.espacio {
             let a = Ambito::Espacio(f);
             if m.abarca(&a) {
@@ -118,10 +118,10 @@ impl Estado {
         Ok(if self.todos { m.vista } else { m.base })
     }
 
-    /// Los filtros de espacio que se pueden elegir desde aquí: los espacios que se ven y, si se ven,
-    /// los proyectos sin espacio.
+    /// The space filters that can be picked from here: the visible spaces and, if visible,
+    /// the projects without a space.
     pub fn filtros(&self, db: &Connection) -> Result<Vec<Option<i64>>> {
-        let m = self.mirador(db)?;
+        let m = self.viewpoint(db)?;
         let mut v: Vec<Option<i64>> = self.espacios.iter().map(|e| Some(e.id)).collect();
         v.push(None);
         Ok(v.into_iter().filter(|f| m.abarca(&Ambito::Espacio(*f))).collect())
@@ -135,14 +135,14 @@ impl Estado {
         self.lista_papelera.selected().and_then(|i| self.papelera.get(i))
     }
 
-    /// El nombre de un espacio por su clave (la clave si no se conoce).
-    pub fn nombre_espacio(&self, clave: &str) -> String {
-        self.espacios.iter().find(|e| e.key == clave).map(|e| e.name.clone()).unwrap_or_else(|| clave.to_string())
+    /// A space's name from its key (the key if unknown).
+    pub fn nombre_espacio(&self, key: &str) -> String {
+        self.espacios.iter().find(|e| e.key == key).map(|e| e.name.clone()).unwrap_or_else(|| key.to_string())
     }
 
-    /// Vuelve a leer la lista (recientes o búsqueda) y la papelera, conservando la elegida si sigue.
-    pub fn cargar(&mut self, db: &mut Connection, modelo: Option<&Modelo>) -> Result<()> {
-        let m = self.mirador(db)?;
+    /// Reloads the list (recent or search) and the trash, keeping the selection if it's still there.
+    pub fn cargar(&mut self, db: &mut Connection, model: Option<&Modelo>) -> Result<()> {
+        let m = self.viewpoint(db)?;
         self.ve_todo = m.todo;
         self.espacio_propio = m.espacio.clone();
         self.espacios = crate::proyecto::espacios(db)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect();
@@ -151,59 +151,59 @@ impl Estado {
         {
             self.espacio = None;
         }
-        let ambito = self.ambito(db)?;
-        let antes = self.elegida().map(|m| m.id.clone());
+        let scope = self.ambito(db)?;
+        let before = self.elegida().map(|m| m.id.clone());
         self.memorias = if self.consulta.trim().is_empty() {
-            memoria::recientes(db, &ambito, None, LIMITE)?
+            memoria::recientes(db, &scope, None, LIMIT)?
         } else {
-            let o = Opciones { ambito, kind: None, tags: vec![], limite: 50 };
-            buscar::buscar_sin_apuntar_con(db, &self.consulta, &o, modelo)?.into_iter().map(|r| r.memoria).collect()
+            let o = Opciones { ambito: scope, kind: None, tags: vec![], limite: 50 };
+            buscar::buscar_sin_apuntar_con(db, &self.consulta, &o, model)?.into_iter().map(|r| r.memoria).collect()
         };
-        let i = antes.and_then(|id| self.memorias.iter().position(|m| m.id == id)).unwrap_or(0);
+        let i = before.and_then(|id| self.memorias.iter().position(|m| m.id == id)).unwrap_or(0);
         self.lista.select((!self.memorias.is_empty()).then_some(i));
-        self.cargar_papelera(db, &m)
+        self.load_trash(db, &m)
     }
 
-    /// La papelera como la ve la web (`GET /api/trash`): lo que se ve desde aquí y, con un filtro de
-    /// espacio, solo lo de ese espacio y lo global.
-    fn cargar_papelera(&mut self, db: &Connection, m: &Mirador) -> Result<()> {
-        let antes = self.elegida_papelera().map(|o| o.olvidada.id.clone());
-        let filtro = match self.espacio {
+    /// The trash as the web sees it (`GET /api/trash`): what is visible from here and, with a space
+    /// filter, only that space's memories plus global.
+    fn load_trash(&mut self, db: &Connection, m: &Mirador) -> Result<()> {
+        let before = self.elegida_papelera().map(|o| o.olvidada.id.clone());
+        let space_filter = match self.espacio {
             Some(f) => Some(crate::proyecto::clave_espacio(db, f)?),
             None => None,
         };
-        let mut dias = db.prepare("SELECT julianday('now') - julianday(?1)")?;
+        let mut days_since = db.prepare("SELECT julianday('now') - julianday(?1)")?;
         let mut v = Vec::new();
         for o in memoria::papelera(db)? {
             if !m.ve(db, &o.id)? {
                 continue;
             }
-            if let Some(clave) = &filtro {
+            if let Some(key) = &space_filter {
                 let global = o.project.is_empty() && o.space.is_empty();
-                if !global && o.space != *clave {
+                if !global && o.space != *key {
                     continue;
                 }
             }
-            let d: Option<f64> = dias.query_row([&o.deleted_at], |f| f.get(0))?;
+            let d: Option<f64> = days_since.query_row([&o.deleted_at], |f| f.get(0))?;
             v.push(EnPapelera { olvidada: o, dias: d.unwrap_or(0.0).max(0.0) });
         }
         self.papelera = v;
-        let i = antes.and_then(|id| self.papelera.iter().position(|o| o.olvidada.id == id)).unwrap_or(0);
+        let i = before.and_then(|id| self.papelera.iter().position(|o| o.olvidada.id == id)).unwrap_or(0);
         self.lista_papelera.select((!self.papelera.is_empty()).then_some(i));
         Ok(())
     }
 
-    /// Devuelve de la papelera la memoria `id` (entero), si se ve desde aquí: lo mismo que
-    /// `POST /api/restore` y `omoi restore`. Lo que pase queda en el aviso.
-    pub fn restaurar(&mut self, db: &mut Connection, id: &str, modelo: Option<&Modelo>) -> Result<bool> {
-        if !self.mirador(db)?.ve(db, id)? {
-            self.aviso = fuera();
+    /// Restores memory `id` (full) from the trash, if visible from here: the same as
+    /// `POST /api/restore` and `omoi restore`. The outcome goes in the notice.
+    pub fn restaurar(&mut self, db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<bool> {
+        if !self.viewpoint(db)?.ve(db, id)? {
+            self.aviso = out_of_scope();
             return Ok(false);
         }
-        let antes = crate::revisar::antes(db)?;
-        match memoria::restaurar(db, id, modelo) {
+        let before = crate::revisar::antes(db)?;
+        match memoria::restaurar(db, id, model) {
             Ok(r) => {
-                crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&r.id))?;
+                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&r.id))?;
                 self.aviso = tr!("restored: {}", "recuperada: {}", r.title);
                 Ok(true)
             }
@@ -214,39 +214,39 @@ impl Estado {
         }
     }
 
-    /// Borra del todo de la papelera las memorias `ids` (enteras) que se vean desde aquí; las demás no
-    /// se tocan. Devuelve cuántas.
+    /// Deletes for good from the trash the memories `ids` (full) that are visible from here; the rest are
+    /// left alone. Returns how many.
     pub fn borrar_de_papelera(&mut self, db: &mut Connection, ids: &[String]) -> Result<usize> {
-        let m = self.mirador(db)?;
-        let mut visibles = Vec::new();
+        let m = self.viewpoint(db)?;
+        let mut visible = Vec::new();
         for id in ids {
             if m.ve(db, id)? {
-                visibles.push(id.clone());
+                visible.push(id.clone());
             }
         }
-        if visibles.len() < ids.len() {
-            self.aviso = fuera();
+        if visible.len() < ids.len() {
+            self.aviso = out_of_scope();
         }
-        memoria::vaciar_papelera_de(db, &visibles)
+        memoria::vaciar_papelera_de(db, &visible)
     }
 
-    /// Vacía lo que se ve de la papelera. Desde la carpeta del usuario y sin filtro, la papelera entera
-    /// (como `omoi trash --empty`); desde un proyecto o con filtro, solo lo que enseña.
+    /// Empties the visible part of the trash. From the user's folder and with no filter, the whole trash
+    /// (like `omoi trash --empty`); from a project or with a filter, only what it shows.
     pub fn vaciar_papelera(&mut self, db: &mut Connection) -> Result<usize> {
-        if self.mirador(db)?.todo && self.espacio.is_none() {
+        if self.viewpoint(db)?.todo && self.espacio.is_none() {
             return memoria::vaciar_papelera(db);
         }
         let ids: Vec<String> = self.papelera.iter().map(|o| o.olvidada.id.clone()).collect();
         self.borrar_de_papelera(db, &ids)
     }
 
-    /// Una tecla. Devuelve si hay que volver a cargar la lista.
-    pub fn tecla(&mut self, k: KeyEvent, db: &mut Connection, modelo: Option<&Modelo>) -> Result<bool> {
+    /// One key press. Returns whether the list must be reloaded.
+    pub fn tecla(&mut self, k: KeyEvent, db: &mut Connection, model: Option<&Modelo>) -> Result<bool> {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             self.salir = true;
             return Ok(false);
         }
-        let si = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('s'));
+        let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('s'));
         match self.vista {
             Vista::Buscando => match k.code {
                 KeyCode::Esc => {
@@ -266,10 +266,10 @@ impl Estado {
                 _ => {}
             },
             Vista::Borrar => {
-                if si && let Some(m) = self.elegida().cloned() {
-                    let antes = crate::revisar::antes(db)?;
+                if yes && let Some(m) = self.elegida().cloned() {
+                    let before = crate::revisar::antes(db)?;
                     memoria::olvidar(db, &m.id)?;
-                    crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
                     self.aviso = tr!("forgotten: {} (t: trash)", "olvidada: {} (t: papelera)", m.title);
                     self.vista = Vista::Lista;
                     return Ok(true);
@@ -278,7 +278,7 @@ impl Estado {
             }
             Vista::PapeleraBorrar => {
                 self.vista = Vista::Papelera;
-                if si && let Some(o) = self.elegida_papelera().cloned() {
+                if yes && let Some(o) = self.elegida_papelera().cloned() {
                     if self.borrar_de_papelera(db, std::slice::from_ref(&o.olvidada.id))? > 0 {
                         self.aviso = tr!("deleted for good: {}", "borrada del todo: {}", o.olvidada.title);
                     }
@@ -287,7 +287,7 @@ impl Estado {
             }
             Vista::PapeleraVaciar => {
                 self.vista = Vista::Papelera;
-                if si {
+                if yes {
                     let n = self.vaciar_papelera(db)?;
                     self.aviso = tr!("trash emptied: {n} deleted for good", "papelera vaciada: {n} borradas del todo");
                     return Ok(true);
@@ -295,13 +295,13 @@ impl Estado {
             }
             Vista::Papelera => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') | KeyCode::Left => self.vista = Vista::Lista,
-                KeyCode::Down | KeyCode::Char('j') => mover(&mut self.lista_papelera, self.papelera.len(), 1),
-                KeyCode::Up | KeyCode::Char('k') => mover(&mut self.lista_papelera, self.papelera.len(), -1),
-                KeyCode::PageDown => mover(&mut self.lista_papelera, self.papelera.len(), 15),
-                KeyCode::PageUp => mover(&mut self.lista_papelera, self.papelera.len(), -15),
+                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.lista_papelera, self.papelera.len(), 1),
+                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.lista_papelera, self.papelera.len(), -1),
+                KeyCode::PageDown => move_selection(&mut self.lista_papelera, self.papelera.len(), 15),
+                KeyCode::PageUp => move_selection(&mut self.lista_papelera, self.papelera.len(), -15),
                 KeyCode::Enter | KeyCode::Char('r') => {
                     if let Some(o) = self.elegida_papelera().cloned() {
-                        return self.restaurar(db, &o.olvidada.id, modelo);
+                        return self.restaurar(db, &o.olvidada.id, model);
                     }
                 }
                 KeyCode::Char('x') | KeyCode::Delete if self.elegida_papelera().is_some() => self.vista = Vista::PapeleraBorrar,
@@ -322,10 +322,10 @@ impl Estado {
             Vista::Lista => match k.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.salir = true,
                 KeyCode::Char('/') => self.vista = Vista::Buscando,
-                KeyCode::Down | KeyCode::Char('j') => mover(&mut self.lista, self.memorias.len(), 1),
-                KeyCode::Up | KeyCode::Char('k') => mover(&mut self.lista, self.memorias.len(), -1),
-                KeyCode::PageDown => mover(&mut self.lista, self.memorias.len(), 15),
-                KeyCode::PageUp => mover(&mut self.lista, self.memorias.len(), -15),
+                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.lista, self.memorias.len(), 1),
+                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.lista, self.memorias.len(), -1),
+                KeyCode::PageDown => move_selection(&mut self.lista, self.memorias.len(), 15),
+                KeyCode::PageUp => move_selection(&mut self.lista, self.memorias.len(), -15),
                 KeyCode::Enter | KeyCode::Right => {
                     if self.elegida().is_some() {
                         self.vista = Vista::Entera;
@@ -334,8 +334,8 @@ impl Estado {
                 }
                 KeyCode::Char('h') => {
                     if let Some(m) = self.elegida() {
-                        // Como `omoi history`: por el ámbito de la carpeta, que no saca lo de otro cliente.
-                        self.historial = memoria::historial_en(db, &self.mirador(db)?.base, &m.id)?;
+                        // Like `omoi history`: through the folder's scope, which never shows another client's memories.
+                        self.historial = memoria::historial_en(db, &self.viewpoint(db)?.base, &m.id)?;
                         self.vista = Vista::Historial;
                         self.desplazamiento = 0;
                     }
@@ -343,9 +343,9 @@ impl Estado {
                 KeyCode::Char('p') => {
                     if let Some(m) = self.elegida().cloned() {
                         let c = Cambios { pinned: Some(!m.pinned), reason: Some("pinned from omoi tui".into()), ..Default::default() };
-                        let antes = crate::revisar::antes(db)?;
+                        let before = crate::revisar::antes(db)?;
                         memoria::actualizar(db, &m.id, c, None)?;
-                        crate::revisar::al_dia_de(db, &antes, std::slice::from_ref(&m.id))?;
+                        crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
                         self.aviso = if m.pinned { tr!("unpinned", "soltada") } else { tr!("pinned", "fijada") };
                         return Ok(true);
                     }
@@ -361,13 +361,13 @@ impl Estado {
                     return Ok(true);
                 }
                 KeyCode::Char('e') => {
-                    // Sin filtro → cada espacio que se ve → los proyectos sin espacio → sin filtro.
-                    let filtros = self.filtros(db)?;
-                    self.espacio = match self.espacio.and_then(|f| filtros.iter().position(|x| *x == f)) {
-                        None => filtros.first().copied(),
-                        Some(i) => filtros.get(i + 1).copied(),
+                    // No filter → each visible space → projects without a space → no filter.
+                    let filters = self.filtros(db)?;
+                    self.espacio = match self.espacio.and_then(|f| filters.iter().position(|x| *x == f)) {
+                        None => filters.first().copied(),
+                        Some(i) => filters.get(i + 1).copied(),
                     };
-                    if self.espacio.is_none() && filtros.is_empty() {
+                    if self.espacio.is_none() && filters.is_empty() {
                         self.aviso = tr!("no spaces to filter by from here", "desde aquí no hay espacios por los que filtrar");
                     }
                     return Ok(true);
@@ -382,12 +382,12 @@ impl Estado {
         Ok(false)
     }
 
-    /// Qué se ve, en pocas palabras, para el título.
-    fn texto_ambito(&self) -> String {
+    /// What is shown, in a few words, for the title.
+    fn scope_text(&self) -> String {
         match self.espacio {
             Some(Some(id)) => {
-                let nombre = self.espacios.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_default();
-                tr!("space {} + global", "espacio {} + globales", nombre)
+                let name = self.espacios.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_default();
+                tr!("space {} + global", "espacio {} + globales", name)
             }
             Some(None) => tr!("projects without a space + global", "proyectos sin espacio + globales"),
             None if !self.todos => tr!("this project + global", "este proyecto + globales"),
@@ -397,136 +397,136 @@ impl Estado {
         }
     }
 
-    /// Si la lista mezcla espacios (o lo global con un espacio) y conviene decir el de cada una.
-    fn mezcla_espacios(&self) -> bool {
+    /// Whether the list mixes spaces (or global with a space) and should show each one's space.
+    fn mixes_spaces(&self) -> bool {
         self.todos || self.espacio.is_some()
     }
 
-    /// El espacio de una memoria (o de lo olvidado), corto, para la columna de la lista.
-    fn etiqueta(&self, proyecto: &str, espacio: &str, de_espacio: bool) -> String {
-        if espacio.is_empty() {
-            return if proyecto.is_empty() { tr!("global", "global") } else { "-".to_string() };
+    /// A memory's (or forgotten memory's) space, short, for the list column.
+    fn space_label(&self, project: &str, space: &str, space_level: bool) -> String {
+        if space.is_empty() {
+            return if project.is_empty() { tr!("global", "global") } else { "-".to_string() };
         }
-        let n = self.nombre_espacio(espacio);
-        if de_espacio { format!("◇{n}") } else { n }
+        let n = self.nombre_espacio(space);
+        if space_level { format!("◇{n}") } else { n }
     }
 
-    /// Lo que dice dónde vive una memoria: el proyecto con su espacio, el espacio, o global.
-    fn donde(&self, proyecto: &str, espacio: &str, de_espacio: bool) -> String {
-        if de_espacio {
-            return tr!("space {}", "espacio {}", self.nombre_espacio(espacio));
+    /// Says where a memory lives: the project with its space, the space, or global.
+    fn location(&self, project: &str, space: &str, space_level: bool) -> String {
+        if space_level {
+            return tr!("space {}", "espacio {}", self.nombre_espacio(space));
         }
-        if proyecto.is_empty() {
+        if project.is_empty() {
             return tr!("global", "global");
         }
-        let corto = std::path::Path::new(proyecto).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| proyecto.to_string());
-        if espacio.is_empty() {
-            tr!("{} · no space", "{} · sin espacio", corto)
+        let short = std::path::Path::new(project).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| project.to_string());
+        if space.is_empty() {
+            tr!("{} · no space", "{} · sin espacio", short)
         } else {
-            tr!("{} · space {}", "{} · espacio {}", corto, self.nombre_espacio(espacio))
+            tr!("{} · space {}", "{} · espacio {}", short, self.nombre_espacio(space))
         }
     }
 }
 
-fn fuera() -> String {
+fn out_of_scope() -> String {
     tr!(
         "that memory is not in this scope: it belongs to another space; open omoi tui in that project, or in the home folder",
         "esa memoria no es de este ámbito: es de otro espacio; abre omoi tui en ese proyecto, o en tu carpeta de usuario"
     )
 }
 
-fn mover(lista: &mut ListState, largo: usize, n: i64) {
-    if largo == 0 {
+fn move_selection(list: &mut ListState, len: usize, n: i64) {
+    if len == 0 {
         return;
     }
-    let i = lista.selected().unwrap_or(0) as i64 + n;
-    lista.select(Some(i.clamp(0, largo as i64 - 1) as usize));
+    let i = list.selected().unwrap_or(0) as i64 + n;
+    list.select(Some(i.clamp(0, len as i64 - 1) as usize));
 }
 
-/// `texto` cortado a `ancho` caracteres y rellenado hasta él.
-fn columna(texto: &str, ancho: usize) -> String {
-    format!("{texto:<ancho$.ancho$} ")
+/// `text` cut to `width` characters and padded up to it.
+fn column(text: &str, width: usize) -> String {
+    format!("{text:<width$.width$} ")
 }
 
 pub fn dibujar(f: &mut Frame, e: &mut Estado) {
     let area = f.area();
-    let ayuda = ayuda(e);
-    let linea = if e.aviso.is_empty() { ayuda } else { format!("{} · {ayuda}", e.aviso) };
-    // La línea de ayuda, en las filas que necesite (hasta 3): en 80 columnas no cabe en una.
-    let ancho = area.width.max(1) as usize;
-    let pie = (linea.chars().count().div_ceil(ancho) as u16).clamp(1, 3);
-    let [arriba, centro, abajo] = Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(pie)]).areas(area);
+    let help = help(e);
+    let line = if e.aviso.is_empty() { help } else { format!("{} · {help}", e.aviso) };
+    // The help line, in as many rows as it needs (up to 3): it doesn't fit in one at 80 columns.
+    let width = area.width.max(1) as usize;
+    let footer_rows = (line.chars().count().div_ceil(width) as u16).clamp(1, 3);
+    let [top, middle, bottom] = Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(footer_rows)]).areas(area);
 
-    let en_papelera = matches!(e.vista, Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar);
-    let titulo = if en_papelera {
-        let dias = memoria::dias_papelera();
-        let guarda = if dias > 0.0 { tr!("kept {} days", "se guarda {} días", dias) } else { tr!("kept until emptied", "se guarda hasta vaciarla") };
-        format!(" {} · {} · {} · {guarda} ", tr!("trash", "papelera"), e.texto_ambito(), e.papelera.len())
+    let in_trash = matches!(e.vista, Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar);
+    let title = if in_trash {
+        let days = memoria::dias_papelera();
+        let kept = if days > 0.0 { tr!("kept {} days", "se guarda {} días", days) } else { tr!("kept until emptied", "se guarda hasta vaciarla") };
+        format!(" {} · {} · {} · {kept} ", tr!("trash", "papelera"), e.scope_text(), e.papelera.len())
     } else {
-        format!(" {} · {} · {} ", tr!("search", "buscar"), e.texto_ambito(), e.memorias.len())
+        format!(" {} · {} · {} ", tr!("search", "buscar"), e.scope_text(), e.memorias.len())
     };
     let cursor = if e.vista == Vista::Buscando { "▏" } else { "" };
-    let caja = Block::default().borders(Borders::ALL).title(titulo).border_style(if e.vista == Vista::Buscando {
+    let search_box = Block::default().borders(Borders::ALL).title(title).border_style(if e.vista == Vista::Buscando {
         Style::default().bold()
     } else {
         Style::default()
     });
-    f.render_widget(Paragraph::new(format!("{}{cursor}", e.consulta)).block(caja), arriba);
+    f.render_widget(Paragraph::new(format!("{}{cursor}", e.consulta)).block(search_box), top);
 
     match e.vista {
-        Vista::Entera => dibujar_entera(f, e, centro),
-        Vista::Historial => dibujar_historial(f, e, centro),
-        Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar => dibujar_papelera(f, e, centro),
+        Vista::Entera => draw_full(f, e, middle),
+        Vista::Historial => draw_history(f, e, middle),
+        Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar => draw_trash(f, e, middle),
         _ => {
-            let (izq, der) = partir(centro);
-            let interior = izq.width.saturating_sub(2) as usize;
-            let con_tipo = interior >= 40;
-            let con_espacio = e.mezcla_espacios() && interior >= 30;
+            let (left, right) = split_area(middle);
+            let inner = left.width.saturating_sub(2) as usize;
+            let with_kind = inner >= 40;
+            let with_space = e.mixes_spaces() && inner >= 30;
             let items: Vec<ListItem> = e
                 .memorias
                 .iter()
                 .map(|m| {
-                    let marca = if m.pinned { "* " } else { "  " };
-                    let mut v = vec![Span::raw(marca)];
-                    if con_tipo {
-                        v.push(Span::styled(columna(m.kind.as_str(), 10), Style::default().add_modifier(Modifier::DIM)));
+                    let marker = if m.pinned { "* " } else { "  " };
+                    let mut v = vec![Span::raw(marker)];
+                    if with_kind {
+                        v.push(Span::styled(column(m.kind.as_str(), 10), Style::default().add_modifier(Modifier::DIM)));
                     }
-                    if con_espacio {
-                        v.push(Span::styled(columna(&e.etiqueta(&m.project, &m.space, m.de_espacio()), 8), Style::default().add_modifier(Modifier::DIM)));
+                    if with_space {
+                        v.push(Span::styled(column(&e.space_label(&m.project, &m.space, m.de_espacio()), 8), Style::default().add_modifier(Modifier::DIM)));
                     }
                     v.push(Span::raw(m.title.clone()));
                     ListItem::new(Line::from(v))
                 })
                 .collect();
-            let lista = List::new(items)
+            let list = List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(tr!(" memories ", " memorias ")))
                 .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-            f.render_stateful_widget(lista, izq, &mut e.lista);
-            if let Some(der) = der {
-                let detalle = e.elegida().map(|m| ficha(e, m)).unwrap_or_default();
-                f.render_widget(Paragraph::new(detalle).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL)), der);
+            f.render_stateful_widget(list, left, &mut e.lista);
+            if let Some(right) = right {
+                let detail = e.elegida().map(|m| detail_lines(e, m)).unwrap_or_default();
+                f.render_widget(Paragraph::new(detail).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL)), right);
             }
         }
     }
 
-    f.render_widget(Paragraph::new(linea).wrap(Wrap { trim: true }).style(Style::default().add_modifier(Modifier::DIM)), abajo);
+    f.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }).style(Style::default().add_modifier(Modifier::DIM)), bottom);
 }
 
-/// La lista y, si cabe, la ficha: al lado en una terminal ancha, debajo en una estrecha y alta, y
-/// ninguna si no queda sitio (Intro la abre entera).
-fn partir(area: Rect) -> (Rect, Option<Rect>) {
-    if area.width >= ANCHO_DOS_COLUMNAS {
-        let [izq, der] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
-        (izq, Some(der))
+/// The list and, if it fits, the detail pane: beside it in a wide terminal, below in a narrow tall one, and
+/// none if there's no room (Enter opens it in full).
+fn split_area(area: Rect) -> (Rect, Option<Rect>) {
+    if area.width >= TWO_COLUMN_WIDTH {
+        let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
+        (left, Some(right))
     } else if area.height >= 14 {
-        let [arriba, abajo] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-        (arriba, Some(abajo))
+        let [top, bottom] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+        (top, Some(bottom))
     } else {
         (area, None)
     }
 }
 
-fn ayuda(e: &Estado) -> String {
+fn help(e: &Estado) -> String {
     match e.vista {
         Vista::Buscando => tr!("type to search · Enter: to the list · Esc: clear", "escribe para buscar · Intro: a la lista · Esc: borrar"),
         Vista::Borrar => tr!("forget this memory? It goes to the trash with its history · y / n", "¿olvidar esta memoria? Va a la papelera con su historial · s / n"),
@@ -557,11 +557,11 @@ fn ayuda(e: &Estado) -> String {
     }
 }
 
-/// La memoria como texto: título, datos y contenido.
-fn ficha(e: &Estado, m: &Memoria) -> Vec<Line<'static>> {
+/// The memory as text: title, metadata and content.
+fn detail_lines(e: &Estado, m: &Memoria) -> Vec<Line<'static>> {
     let mut v = vec![Line::from(m.title.clone()).bold(), Line::raw("")];
-    let donde = e.donde(&m.project, &m.space, m.de_espacio());
-    v.push(Line::from(format!("{} · {donde} · {}", m.kind.as_str(), &m.updated_at[..m.updated_at.len().min(10)])).dim());
+    let location = e.location(&m.project, &m.space, m.de_espacio());
+    v.push(Line::from(format!("{} · {location} · {}", m.kind.as_str(), &m.updated_at[..m.updated_at.len().min(10)])).dim());
     if !m.project.is_empty() {
         v.push(Line::from(m.project.clone()).dim());
     }
@@ -576,13 +576,13 @@ fn ficha(e: &Estado, m: &Memoria) -> Vec<Line<'static>> {
     v
 }
 
-fn dibujar_entera(f: &mut Frame, e: &Estado, area: Rect) {
+fn draw_full(f: &mut Frame, e: &Estado, area: Rect) {
     let Some(m) = e.elegida() else { return };
-    let p = Paragraph::new(ficha(e, m)).wrap(Wrap { trim: false }).scroll((e.desplazamiento, 0)).block(Block::default().borders(Borders::ALL));
+    let p = Paragraph::new(detail_lines(e, m)).wrap(Wrap { trim: false }).scroll((e.desplazamiento, 0)).block(Block::default().borders(Borders::ALL));
     f.render_widget(p, area);
 }
 
-fn dibujar_historial(f: &mut Frame, e: &Estado, area: Rect) {
+fn draw_history(f: &mut Frame, e: &Estado, area: Rect) {
     let mut v: Vec<Line> = Vec::new();
     if e.historial.is_empty() {
         v.push(Line::raw(tr!("No previous versions.", "Sin versiones anteriores.")));
@@ -600,63 +600,63 @@ fn dibujar_historial(f: &mut Frame, e: &Estado, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn dibujar_papelera(f: &mut Frame, e: &mut Estado, area: Rect) {
-    let (izq, der) = partir(area);
-    let interior = izq.width.saturating_sub(2) as usize;
-    let con_fecha = interior >= 34;
-    let con_espacio = interior >= 30;
+fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
+    let (left, right) = split_area(area);
+    let inner = left.width.saturating_sub(2) as usize;
+    let with_date = inner >= 34;
+    let with_space = inner >= 30;
     let items: Vec<ListItem> = e
         .papelera
         .iter()
         .map(|o| {
             let o = &o.olvidada;
             let mut v = Vec::new();
-            if con_fecha {
-                v.push(Span::styled(columna(o.deleted_at.get(..10).unwrap_or(&o.deleted_at), 10), Style::default().add_modifier(Modifier::DIM)));
+            if with_date {
+                v.push(Span::styled(column(o.deleted_at.get(..10).unwrap_or(&o.deleted_at), 10), Style::default().add_modifier(Modifier::DIM)));
             }
-            if con_espacio {
-                let de_espacio = o.project.is_empty() && !o.space.is_empty();
-                v.push(Span::styled(columna(&e.etiqueta(&o.project, &o.space, de_espacio), 8), Style::default().add_modifier(Modifier::DIM)));
+            if with_space {
+                let space_level = o.project.is_empty() && !o.space.is_empty();
+                v.push(Span::styled(column(&e.space_label(&o.project, &o.space, space_level), 8), Style::default().add_modifier(Modifier::DIM)));
             }
             v.push(Span::raw(o.title.clone()));
             ListItem::new(Line::from(v))
         })
         .collect();
-    let vacia = items.is_empty();
-    let lista = List::new(items)
+    let empty = items.is_empty();
+    let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(tr!(" trash ", " papelera ")))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(lista, izq, &mut e.lista_papelera);
-    let Some(der) = der else { return };
-    let detalle: Vec<Line> = match e.elegida_papelera() {
-        None if vacia => vec![Line::raw(tr!("The trash is empty.", "La papelera está vacía."))],
+    f.render_stateful_widget(list, left, &mut e.lista_papelera);
+    let Some(right) = right else { return };
+    let detail: Vec<Line> = match e.elegida_papelera() {
+        None if empty => vec![Line::raw(tr!("The trash is empty.", "La papelera está vacía."))],
         None => Vec::new(),
         Some(p) => {
             let o = &p.olvidada;
-            let de_espacio = o.project.is_empty() && !o.space.is_empty();
+            let space_level = o.project.is_empty() && !o.space.is_empty();
             let mut v = vec![Line::from(o.title.clone()).bold(), Line::raw("")];
-            v.push(Line::from(format!("{} · {}", o.kind.as_str(), e.donde(&o.project, &o.space, de_espacio))).dim());
+            v.push(Line::from(format!("{} · {}", o.kind.as_str(), e.location(&o.project, &o.space, space_level))).dim());
             if !o.project.is_empty() {
                 v.push(Line::from(o.project.clone()).dim());
             }
             v.push(Line::from(tr!("forgotten {} on {}", "olvidada el {} en {}", o.deleted_at.get(..10).unwrap_or(&o.deleted_at), o.by)).dim());
             let total = memoria::dias_papelera();
             if total > 0.0 {
-                let quedan = (total - p.dias).max(0.0).ceil() as i64;
-                v.push(Line::from(tr!("deleted for good in {quedan} days", "se borra del todo en {quedan} días")).dim());
+                let remaining = (total - p.dias).max(0.0).ceil() as i64;
+                v.push(Line::from(tr!("deleted for good in {remaining} days", "se borra del todo en {remaining} días")).dim());
             }
             v.push(Line::from(format!("id {}", o.id)).dim());
             v
         }
     };
-    f.render_widget(Paragraph::new(detalle).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL)), der);
+    f.render_widget(Paragraph::new(detail).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL)), right);
 }
 
-/// El bucle de la terminal.
-pub fn ejecutar(db: &mut Connection, modelo: Option<&Modelo>, proyecto: String, todos: bool) -> Result<()> {
-    let mut e = Estado::nuevo(proyecto);
-    e.todos = todos;
-    e.cargar(db, modelo)?;
+/// The terminal loop.
+pub fn ejecutar(db: &mut Connection, model: Option<&Modelo>, project: String, all: bool) -> Result<()> {
+    let mut e = Estado::nuevo(project);
+    e.todos = all;
+    e.cargar(db, model)?;
     let mut terminal = ratatui::init();
     let r = (|| -> Result<()> {
         while !e.salir {
@@ -665,8 +665,8 @@ pub fn ejecutar(db: &mut Connection, modelo: Option<&Modelo>, proyecto: String, 
                 && k.kind == KeyEventKind::Press
             {
                 e.aviso.clear();
-                if e.tecla(k, db, modelo)? {
-                    e.cargar(db, modelo)?;
+                if e.tecla(k, db, model)? {
+                    e.cargar(db, model)?;
                 }
             }
         }

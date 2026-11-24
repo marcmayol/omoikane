@@ -1,9 +1,9 @@
-//! En Windows, `user32.dll` se carga solo si se usa (la vista `omoi tui`, por crossterm): cargarla al
-//! arrancar costaba ~2 ms en cada `omoi`, también en el hook de cada mensaje.
+//! On Windows, `user32.dll` is loaded only if used (the `omoi tui` view, through crossterm): loading it at
+//! startup cost ~2 ms on every `omoi`, including in the hook for every message.
 //!
-//! Y la pila del hilo principal pasa de 1 MB (lo de Windows) a 8 MB (lo de Linux y macOS): en debug, la
-//! CLI entera de clap (cada orden con sus opciones) ya no cabía en 1 MB y `omoi --version` se
-//! desbordaba. Reservar no cuesta nada: la memoria solo se usa si hace falta.
+//! And the main thread's stack goes from 1 MB (the Windows default) to 8 MB (the Linux and macOS one): in debug,
+//! the whole clap CLI (every command with its options) no longer fit in 1 MB and `omoi --version`
+//! overflowed. Reserving costs nothing: the memory is only used if needed.
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg=/DELAYLOAD:user32.dll");

@@ -1,7 +1,7 @@
-//! 1.9.0: la TUI (`omoi tui`) conoce los espacios y la papelera, con el mismo aislamiento que la web
-//! (`tests/aislamiento_web.rs`): desde un proyecto de un cliente, ni la lista, ni «todos», ni el filtro
-//! por espacio, ni la papelera enseñan lo de otro cliente, y lo de otro cliente no se recupera ni se
-//! borra aunque se tenga su id. Desde la carpeta del usuario se ve todo y se filtra por espacio.
+//! 1.9.0: the TUI (`omoi tui`) knows about spaces and the trash, with the same isolation as the web
+//! (`tests/aislamiento_web.rs`): from a client's project, neither the list, nor «all», nor the space
+//! filter, nor the trash show another client's memories, and another client's ones cannot be restored or
+//! deleted even with their id. From the user's folder everything is visible and filtered by space.
 
 mod comun;
 
@@ -11,263 +11,263 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use rusqlite::Connection;
 
-/// Al desarmarla, `let Base { _dir, mut db }` con `_dir` delante: las variables de un patrón se
-/// sueltan al revés de como se declaran, y la base tiene que cerrarse antes de borrar su carpeta (en
-/// Windows no se borra un fichero abierto y la carpeta se quedaba en la temporal).
-struct Base {
+/// When destructuring it, `let Fixture { _dir, mut db }` with `_dir` first: a pattern's variables are
+/// dropped in reverse declaration order, and the database must be closed before deleting its folder (on
+/// Windows an open file can't be deleted and the folder stayed in the temp dir).
+struct Fixture {
     db: Connection,
     _dir: comun::Temporal,
 }
 
-/// Acme (dos proyectos y una memoria del espacio), Globex, un proyecto sin espacio y una preferencia
-/// global; una memoria olvidada en Acme y otra en Globex.
-fn base(nombre: &str) -> Base {
-    let dir = comun::Temporal::nueva(nombre);
+/// Acme (two projects and a space memory), Globex, a project without a space and a global
+/// preference; one forgotten memory in Acme and another in Globex.
+fn fixture(name: &str) -> Fixture {
+    let dir = comun::Temporal::nueva(name);
     let mut db = omoikane::db::abrir(&dir.join("o.db")).unwrap();
-    let guardar = |db: &mut Connection, project: &str, space_id: Option<i64>, kind: Tipo, title: &str| {
+    let save = |db: &mut Connection, project: &str, space_id: Option<i64>, kind: Tipo, title: &str| {
         let n = Nueva { project: project.into(), space_id, kind: Some(kind), title: title.into(), content: format!("{title}."), ..Default::default() };
         memoria::guardar(db, n, None).unwrap().id
     };
-    guardar(&mut db, "", None, Tipo::Preference, "Respuestas cortas");
+    save(&mut db, "", None, Tipo::Preference, "Respuestas cortas");
     let acme = omoikane::proyecto::crear_espacio(&db, "Acme").unwrap();
     let globex = omoikane::proyecto::crear_espacio(&db, "Globex").unwrap();
-    guardar(&mut db, "/acme-api", None, Tipo::Fact, "Acme usa Postgres");
-    guardar(&mut db, "/acme-web", None, Tipo::Fact, "Acme web en Astro");
-    let tirada_acme = guardar(&mut db, "/acme-web", None, Tipo::Fact, "Acme web: tirar");
-    guardar(&mut db, "", Some(acme), Tipo::Decision, "Acme: norma del cliente");
-    guardar(&mut db, "/globex", None, Tipo::Fact, "Globex es Flutter");
-    let tirada_globex = guardar(&mut db, "/globex", None, Tipo::Fact, "Globex: tirar");
-    guardar(&mut db, "/notas", None, Tipo::Fact, "Idea de blog");
+    save(&mut db, "/acme-api", None, Tipo::Fact, "Acme usa Postgres");
+    save(&mut db, "/acme-web", None, Tipo::Fact, "Acme web en Astro");
+    let trashed_acme = save(&mut db, "/acme-web", None, Tipo::Fact, "Acme web: tirar");
+    save(&mut db, "", Some(acme), Tipo::Decision, "Acme: norma del cliente");
+    save(&mut db, "/globex", None, Tipo::Fact, "Globex es Flutter");
+    let trashed_globex = save(&mut db, "/globex", None, Tipo::Fact, "Globex: tirar");
+    save(&mut db, "/notas", None, Tipo::Fact, "Idea de blog");
     for (p, e) in [("/acme-api", acme), ("/acme-web", acme), ("/globex", globex)] {
         let id = omoikane::proyecto::registrar(&db, p).unwrap();
         omoikane::proyecto::asignar_espacio(&db, id, Some(e)).unwrap();
     }
-    memoria::olvidar(&mut db, &tirada_acme).unwrap();
-    memoria::olvidar(&mut db, &tirada_globex).unwrap();
-    Base { db, _dir: dir }
+    memoria::olvidar(&mut db, &trashed_acme).unwrap();
+    memoria::olvidar(&mut db, &trashed_globex).unwrap();
+    Fixture { db, _dir: dir }
 }
 
-fn id_olvidada(db: &Connection, titulo: &str) -> String {
-    memoria::papelera(db).unwrap().into_iter().find(|o| o.title == titulo).unwrap().id
+fn forgotten_id(db: &Connection, title: &str) -> String {
+    memoria::papelera(db).unwrap().into_iter().find(|o| o.title == title).unwrap().id
 }
 
-fn titulos(e: &Estado) -> Vec<String> {
+fn titles(e: &Estado) -> Vec<String> {
     e.memorias.iter().map(|m| m.title.clone()).collect()
 }
 
-fn tecla(e: &mut Estado, db: &mut Connection, c: KeyCode) {
+fn press(e: &mut Estado, db: &mut Connection, c: KeyCode) {
     if e.tecla(KeyEvent::new(c, KeyModifiers::NONE), db, None).unwrap() {
         e.cargar(db, None).unwrap();
     }
 }
 
-/// La pantalla como texto, una línea por fila.
-fn pantalla(e: &mut Estado, ancho: u16, alto: u16) -> String {
-    let mut t = Terminal::new(TestBackend::new(ancho, alto)).unwrap();
+/// The screen as text, one line per row.
+fn screen(e: &mut Estado, width: u16, height: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
     t.draw(|f| dibujar(f, e)).unwrap();
-    let celdas: Vec<String> = t.backend().buffer().content().iter().map(|c| c.symbol().to_string()).collect();
-    celdas.chunks(ancho as usize).map(|f| f.concat().trim_end().to_string()).collect::<Vec<_>>().join("\n")
+    let cells: Vec<String> = t.backend().buffer().content().iter().map(|c| c.symbol().to_string()).collect();
+    cells.chunks(width as usize).map(|f| f.concat().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
-fn sin_otros(que: &str, texto: &str) {
+fn assert_no_others(what: &str, text: &str) {
     for x in ["Globex", "globex", "Idea de blog"] {
-        assert!(!texto.contains(x), "{que} enseña «{x}» desde acme:\n{texto}");
+        assert!(!text.contains(x), "{what} enseña «{x}» desde acme:\n{text}");
     }
 }
 
-fn casa() -> String {
+fn home() -> String {
     omoikane::proyecto::de(&omoikane::proyecto::casa_local().unwrap()).unwrap()
 }
 
 #[test]
-fn desde_un_cliente_no_se_ve_otro_cliente_en_la_tui() {
-    let Base { _dir, mut db } = base("tuiaisla");
+fn other_client_not_visible_from_a_client_in_tui() {
+    let Fixture { _dir, mut db } = fixture("tuiaisla");
     let mut e = Estado::nuevo("/acme-api".into());
     e.cargar(&mut db, None).unwrap();
-    let t = titulos(&e);
+    let t = titles(&e);
     assert!(t.contains(&"Acme usa Postgres".into()) && t.contains(&"Respuestas cortas".into()) && t.contains(&"Acme: norma del cliente".into()), "{t:?}");
     assert!(!t.contains(&"Acme web en Astro".into()), "solo este proyecto: {t:?}");
-    sin_otros("la lista", &t.join("\n"));
+    assert_no_others("la lista", &t.join("\n"));
 
-    // «Todos» desde un proyecto de Acme es Acme entero, nunca todo (antes de la 1.9 era `Ambito::Todos`).
-    tecla(&mut e, &mut db, KeyCode::Char('a'));
-    let t = titulos(&e);
+    // «All» from an Acme project is all of Acme, never everything (before 1.9 it was `Ambito::Todos`).
+    press(&mut e, &mut db, KeyCode::Char('a'));
+    let t = titles(&e);
     assert!(t.contains(&"Acme web en Astro".into()), "{t:?}");
-    sin_otros("«todos»", &t.join("\n"));
-    let p = pantalla(&mut e, 120, 40);
+    assert_no_others("«todos»", &t.join("\n"));
+    let p = screen(&mut e, 120, 40);
     assert!(p.contains("Acme"), "{p}");
-    sin_otros("la pantalla", &p);
-    // Lo mismo si se arranca con `--all`.
-    let mut todos = Estado::nuevo("/acme-api".into());
-    todos.todos = true;
-    todos.cargar(&mut db, None).unwrap();
-    assert_eq!(titulos(&todos), titulos(&e));
+    assert_no_others("la pantalla", &p);
+    // The same when started with `--all`.
+    let mut all_view = Estado::nuevo("/acme-api".into());
+    all_view.todos = true;
+    all_view.cargar(&mut db, None).unwrap();
+    assert_eq!(titles(&all_view), titles(&e));
 
-    // El filtro por espacio solo ofrece el suyo.
+    // The space filter only offers its own.
     assert_eq!(e.espacios.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), ["acme"]);
     assert_eq!(e.filtros(&db).unwrap().len(), 1);
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
+    press(&mut e, &mut db, KeyCode::Char('e'));
     assert!(e.espacio.is_some());
-    sin_otros("el filtro", &titulos(&e).join("\n"));
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
+    assert_no_others("el filtro", &titles(&e).join("\n"));
+    press(&mut e, &mut db, KeyCode::Char('e'));
     assert!(e.espacio.is_none(), "tras el único filtro, sin filtro");
 
-    // La papelera: solo lo olvidado en Acme.
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
+    // The trash: only what was forgotten in Acme.
+    press(&mut e, &mut db, KeyCode::Char('t'));
     assert_eq!(e.vista, Vista::Papelera);
     let t: Vec<&str> = e.papelera.iter().map(|o| o.olvidada.title.as_str()).collect();
     assert_eq!(t, ["Acme web: tirar"]);
-    sin_otros("la papelera", &pantalla(&mut e, 120, 40));
+    assert_no_others("la papelera", &screen(&mut e, 120, 40));
 
-    // Lo de Globex no se recupera ni se borra aunque se tenga su id.
-    let globex = id_olvidada(&db, "Globex: tirar");
+    // Globex's ones are not restored or deleted even with their id.
+    let globex = forgotten_id(&db, "Globex: tirar");
     assert!(!e.restaurar(&mut db, &globex, None).unwrap());
     assert!(e.aviso.contains("espacio") || e.aviso.contains("space"), "{}", e.aviso);
     assert_eq!(e.borrar_de_papelera(&mut db, std::slice::from_ref(&globex)).unwrap(), 0);
     assert!(memoria::papelera(&db).unwrap().iter().any(|o| o.id == globex));
 
-    // Vaciar desde Acme vacía lo de Acme y deja lo de Globex.
-    tecla(&mut e, &mut db, KeyCode::Char('E'));
+    // Emptying from Acme empties Acme's and leaves Globex's.
+    press(&mut e, &mut db, KeyCode::Char('E'));
     assert_eq!(e.vista, Vista::PapeleraVaciar);
-    tecla(&mut e, &mut db, KeyCode::Char('s'));
+    press(&mut e, &mut db, KeyCode::Char('s'));
     assert_eq!(e.vista, Vista::Papelera);
     assert!(e.papelera.is_empty());
-    let quedan: Vec<String> = memoria::papelera(&db).unwrap().into_iter().map(|o| o.title).collect();
-    assert_eq!(quedan, ["Globex: tirar"]);
+    let remaining: Vec<String> = memoria::papelera(&db).unwrap().into_iter().map(|o| o.title).collect();
+    assert_eq!(remaining, ["Globex: tirar"]);
 }
 
 #[test]
-fn un_proyecto_sin_espacio_no_ve_ningun_cliente() {
-    let Base { _dir, mut db } = base("tuisinesp");
+fn project_without_space_sees_no_client() {
+    let Fixture { _dir, mut db } = fixture("tuisinesp");
     let mut e = Estado::nuevo("/notas".into());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();
-    let t = titulos(&e).join("\n");
+    let t = titles(&e).join("\n");
     assert!(t.contains("Idea de blog") && t.contains("Respuestas cortas"), "{t}");
     assert!(!t.contains("Acme") && !t.contains("Globex"), "{t}");
     assert!(e.espacios.is_empty());
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
+    press(&mut e, &mut db, KeyCode::Char('t'));
     assert!(e.papelera.is_empty(), "lo olvidado de los clientes no sale");
 }
 
 #[test]
-fn desde_la_carpeta_del_usuario_se_filtra_por_espacio() {
-    let Base { _dir, mut db } = base("tuifiltro");
-    let mut e = Estado::nuevo(casa());
+fn user_folder_filters_by_space() {
+    let Fixture { _dir, mut db } = fixture("tuifiltro");
+    let mut e = Estado::nuevo(home());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();
     assert!(e.ve_todo);
-    assert_eq!(e.memorias.len(), 6, "{:?}", titulos(&e));
+    assert_eq!(e.memorias.len(), 6, "{:?}", titles(&e));
     assert_eq!(e.filtros(&db).unwrap().len(), 3, "acme, globex y sin espacio");
 
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
-    let t = titulos(&e).join("\n");
+    press(&mut e, &mut db, KeyCode::Char('e'));
+    let t = titles(&e).join("\n");
     assert!(t.contains("Acme usa Postgres") && t.contains("Acme web en Astro") && t.contains("Respuestas cortas"), "{t}");
     assert!(!t.contains("Globex") && !t.contains("Idea de blog"), "{t}");
-    let p = pantalla(&mut e, 120, 40);
+    let p = screen(&mut e, 120, 40);
     assert!(p.contains("◇Acme"), "la memoria del espacio lleva su marca:\n{p}");
 
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
-    let t = titulos(&e).join("\n");
+    press(&mut e, &mut db, KeyCode::Char('e'));
+    let t = titles(&e).join("\n");
     assert!(t.contains("Globex es Flutter") && !t.contains("Acme") && !t.contains("Idea de blog"), "{t}");
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
+    press(&mut e, &mut db, KeyCode::Char('t'));
     let t: Vec<&str> = e.papelera.iter().map(|o| o.olvidada.title.as_str()).collect();
     assert_eq!(t, ["Globex: tirar"], "la papelera con el filtro de Globex");
-    tecla(&mut e, &mut db, KeyCode::Esc);
+    press(&mut e, &mut db, KeyCode::Esc);
 
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
-    let t = titulos(&e).join("\n");
+    press(&mut e, &mut db, KeyCode::Char('e'));
+    let t = titles(&e).join("\n");
     assert!(t.contains("Idea de blog") && t.contains("Respuestas cortas") && !t.contains("Acme") && !t.contains("Globex"), "{t}");
-    tecla(&mut e, &mut db, KeyCode::Char('e'));
+    press(&mut e, &mut db, KeyCode::Char('e'));
     assert!(e.espacio.is_none());
     assert_eq!(e.memorias.len(), 6);
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
+    press(&mut e, &mut db, KeyCode::Char('t'));
     assert_eq!(e.papelera.len(), 2, "sin filtro, toda la papelera");
 }
 
 #[test]
-fn recuperar_y_borrar_del_todo_desde_la_papelera() {
-    let Base { _dir, mut db } = base("tuipapel");
+fn restore_and_purge_from_trash() {
+    let Fixture { _dir, mut db } = fixture("tuipapel");
     let mut e = Estado::nuevo("/acme-web".into());
     e.cargar(&mut db, None).unwrap();
-    assert!(!titulos(&e).contains(&"Acme web: tirar".into()));
-    // Recuperar: vuelve a la lista y sale de la papelera.
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
-    tecla(&mut e, &mut db, KeyCode::Enter);
+    assert!(!titles(&e).contains(&"Acme web: tirar".into()));
+    // Restore: it goes back to the list and leaves the trash.
+    press(&mut e, &mut db, KeyCode::Char('t'));
+    press(&mut e, &mut db, KeyCode::Enter);
     assert!(e.aviso.contains("Acme web: tirar"), "{}", e.aviso);
     assert!(e.papelera.is_empty());
-    assert!(titulos(&e).contains(&"Acme web: tirar".into()));
-    // Olvidarla otra vez (va a la papelera) y borrarla del todo: «n» no borra, «s» sí.
-    tecla(&mut e, &mut db, KeyCode::Esc);
-    let i = titulos(&e).iter().position(|t| t == "Acme web: tirar").unwrap();
+    assert!(titles(&e).contains(&"Acme web: tirar".into()));
+    // Forget it again (it goes to the trash) and delete it for good: «n» doesn't delete, «s» does.
+    press(&mut e, &mut db, KeyCode::Esc);
+    let i = titles(&e).iter().position(|t| t == "Acme web: tirar").unwrap();
     e.lista.select(Some(i));
-    tecla(&mut e, &mut db, KeyCode::Char('d'));
-    tecla(&mut e, &mut db, KeyCode::Char('s'));
-    tecla(&mut e, &mut db, KeyCode::Char('t'));
+    press(&mut e, &mut db, KeyCode::Char('d'));
+    press(&mut e, &mut db, KeyCode::Char('s'));
+    press(&mut e, &mut db, KeyCode::Char('t'));
     assert_eq!(e.papelera.len(), 1);
-    tecla(&mut e, &mut db, KeyCode::Char('x'));
+    press(&mut e, &mut db, KeyCode::Char('x'));
     assert_eq!(e.vista, Vista::PapeleraBorrar);
-    tecla(&mut e, &mut db, KeyCode::Char('n'));
+    press(&mut e, &mut db, KeyCode::Char('n'));
     assert_eq!(e.vista, Vista::Papelera);
     assert_eq!(e.papelera.len(), 1);
-    tecla(&mut e, &mut db, KeyCode::Char('x'));
-    tecla(&mut e, &mut db, KeyCode::Char('s'));
+    press(&mut e, &mut db, KeyCode::Char('x'));
+    press(&mut e, &mut db, KeyCode::Char('s'));
     assert!(e.papelera.is_empty());
     assert!(memoria::papelera(&db).unwrap().iter().all(|o| o.title != "Acme web: tirar"));
     assert!(memoria::papelera(&db).unwrap().iter().any(|o| o.title == "Globex: tirar"), "lo de Globex sigue");
 }
 
-/// Las pantallas nuevas caben en 80×24, en 120×40 y en una terminal pequeña. Con `--nocapture` se ven.
+/// The new screens fit in 80×24, in 120×40 and in a small terminal. With `--nocapture` they are shown.
 #[test]
-fn las_pantallas_caben_en_terminales_pequenas() {
-    let Base { _dir, mut db } = base("tuipantallas");
-    let mut e = Estado::nuevo(casa());
+fn screens_fit_small_terminals() {
+    let Fixture { _dir, mut db } = fixture("tuipantallas");
+    let mut e = Estado::nuevo(home());
     e.todos = true;
     e.cargar(&mut db, None).unwrap();
-    for (ancho, alto) in [(80, 24), (120, 40), (50, 16), (40, 12), (20, 6)] {
+    for (width, height) in [(80, 24), (120, 40), (50, 16), (40, 12), (20, 6)] {
         e.vista = Vista::Lista;
-        let lista = pantalla(&mut e, ancho, alto);
+        let list = screen(&mut e, width, height);
         e.vista = Vista::Papelera;
-        let papelera = pantalla(&mut e, ancho, alto);
-        println!("--- lista {ancho}x{alto} ---\n{lista}\n--- papelera {ancho}x{alto} ---\n{papelera}");
-        if ancho >= 80 {
-            // La ayuda entera, aunque ocupe dos filas, y la columna del espacio.
-            assert!(lista.contains("q salir") || lista.contains("q quit"), "{lista}");
-            assert!(lista.contains("Globex"), "{lista}");
-            assert!(papelera.contains("E vaciar") || papelera.contains("E empty"), "{papelera}");
+        let trash = screen(&mut e, width, height);
+        println!("--- lista {width}x{height} ---\n{list}\n--- papelera {width}x{height} ---\n{trash}");
+        if width >= 80 {
+            // The whole help, even if it takes two rows, and the space column.
+            assert!(list.contains("q salir") || list.contains("q quit"), "{list}");
+            assert!(list.contains("Globex"), "{list}");
+            assert!(trash.contains("E vaciar") || trash.contains("E empty"), "{trash}");
         }
-        if ancho >= 40 {
-            assert!(papelera.contains("tirar"), "{papelera}");
+        if width >= 40 {
+            assert!(trash.contains("tirar"), "{trash}");
         }
     }
     e.vista = Vista::Papelera;
     e.lista_papelera.select(Some(0));
-    tecla(&mut e, &mut db, KeyCode::Char('x'));
-    let confirmar = pantalla(&mut e, 80, 24);
-    println!("--- borrar del todo 80x24 ---\n{confirmar}");
-    assert!(confirmar.contains("s / n") || confirmar.contains("y / n"), "{confirmar}");
+    press(&mut e, &mut db, KeyCode::Char('x'));
+    let confirm = screen(&mut e, 80, 24);
+    println!("--- borrar del todo 80x24 ---\n{confirm}");
+    assert!(confirm.contains("s / n") || confirm.contains("y / n"), "{confirm}");
 }
 
-/// `omoi trash` y `omoi restore` miran la papelera con `http::papelera_desde`: desde un cliente, ni se
-/// lista ni se recupera lo olvidado de otro cliente.
+/// `omoi trash` and `omoi restore` look at the trash with `http::papelera_desde`: from a client, another
+/// client's forgotten memories are neither listed nor restored.
 #[test]
-fn la_papelera_de_la_cli_no_ensena_otro_cliente() {
-    let b = base("papelera-cli");
-    let (desde_acme, todo) = omoikane::http::papelera_desde(&b.db, "/acme-web").unwrap();
-    assert!(!todo);
-    let t: Vec<&str> = desde_acme.iter().map(|o| o.title.as_str()).collect();
+fn cli_trash_does_not_show_other_client() {
+    let b = fixture("papelera-cli");
+    let (from_acme, sees_all) = omoikane::http::papelera_desde(&b.db, "/acme-web").unwrap();
+    assert!(!sees_all);
+    let t: Vec<&str> = from_acme.iter().map(|o| o.title.as_str()).collect();
     assert_eq!(t, vec!["Acme web: tirar"], "desde acme: {t:?}");
-    let (desde_casa, todo) = omoikane::http::papelera_desde(&b.db, &casa()).unwrap();
-    assert!(todo);
-    assert_eq!(desde_casa.len(), 2);
-    let _ = id_olvidada(&b.db, "Globex: tirar");
+    let (from_home, sees_all) = omoikane::http::papelera_desde(&b.db, &home()).unwrap();
+    assert!(sees_all);
+    assert_eq!(from_home.len(), 2);
+    let _ = forgotten_id(&b.db, "Globex: tirar");
 }
 
-/// `omoi restore` pide al menos 4 caracteres del id, como `get` y `forget`.
+/// `omoi restore` asks for at least 4 characters of the id, like `get` and `forget`.
 #[test]
-fn recuperar_pide_al_menos_cuatro_caracteres() {
-    let mut b = base("restore-corto");
-    let id = id_olvidada(&b.db, "Globex: tirar");
+fn restore_needs_at_least_four_chars() {
+    let mut b = fixture("restore-corto");
+    let id = forgotten_id(&b.db, "Globex: tirar");
     assert!(memoria::restaurar(&mut b.db, &id[..1], None).is_err());
     assert!(memoria::restaurar(&mut b.db, &id[..3], None).is_err());
     assert!(memoria::restaurar(&mut b.db, &id, None).is_ok());

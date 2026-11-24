@@ -1,14 +1,14 @@
-//! Proponer recetas (1.5): las secuencias de órdenes que funcionaron y se repiten en varias sesiones
-//! son candidatas a receta (memoria `procedure`). Al cerrar cada sesión se apuntan sus pasos, en una
-//! tabla local (`session_steps`, como el diario: no viaja ni sale en `omoi export`); si alguna
-//! secuencia ya sale en `MIN_SESIONES` sesiones, ninguna receta guardada la cubre y no se propuso
-//! antes, queda apartada como candidata para la sesión siguiente. Decide el agente con el usuario:
-//! Omoikane no sabe si es un procedimiento de verdad.
+//! Proposing recipes (1.5): the command sequences that worked and repeat across several sessions
+//! are recipe candidates (a `procedure` memory). When each session closes its steps are noted, in a
+//! local table (`session_steps`, like the journal: it doesn't travel nor show up in `omoi export`); if some
+//! sequence already shows up in `MIN_SESIONES` sessions, no saved recipe covers it and it wasn't proposed
+//! before, it is set aside as a candidate for the next session. The agent decides with the user:
+//! Omoikane doesn't know if it is really a procedure.
 //!
-//! Calibrado con las conversaciones de Marc (4-nov-2026, 121 sesiones con órdenes): sin quitar lo
-//! que solo mira (`git status`, `git log`…) ni pedir dos programas distintos, lo más repetido era
-//! `git add → git commit → git push`, que hace todo el mundo; con esos filtros sale, por ejemplo,
-//! `git fetch → gh issue → gh pr` (revisar si contestaron en sus PR), que no tenía receta.
+//! Calibrated with Marc's conversations (4-nov-2026, 121 sessions with commands): without removing what
+//! only looks (`git status`, `git log`…) nor requiring two different programs, the most repeated was
+//! `git add → git commit → git push`, which everybody does; with those filters you get, for example,
+//! `git fetch → gh issue → gh pr` (checking if they answered on their PRs), which had no recipe.
 
 use crate::memoria::{AHORA, Tipo};
 use anyhow::Result;
@@ -16,39 +16,39 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// En cuántas sesiones distintas tiene que salir una secuencia.
+/// In how many different sessions a sequence has to show up.
 pub const MIN_SESIONES: usize = 5;
-/// Cuántos días de sesiones se miran (y se guardan).
-const DIAS: i64 = 90;
-/// Largo de las secuencias, en pasos.
-const MIN_PASOS: usize = 3;
-const MAX_PASOS: usize = 6;
-/// Cuántos pasos de una sesión se guardan, como mucho.
-const MAX_PASOS_SESION: usize = 300;
+/// How many days of sessions are looked at (and kept).
+const DAYS: i64 = 90;
+/// Length of the sequences, in steps.
+const MIN_STEPS: usize = 3;
+const MAX_STEPS: usize = 6;
+/// How many steps of a session are kept, at most.
+const MAX_SESSION_STEPS: usize = 300;
 
-/// El tipo de las candidatas que propone.
+/// The kind of the candidates it proposes.
 pub const RECETA: &str = "recipe";
 
-/// Programas que no dicen nada de un procedimiento: mirar, mover ficheros, la propia shell.
-const TRIVIALES: &[&str] = &[
+/// Programs that say nothing about a procedure: looking, moving files, the shell itself.
+const TRIVIAL: &[&str] = &[
     "ls", "cd", "cat", "grep", "rg", "head", "tail", "echo", "sleep", "pwd", "wc", "sed", "find", "mkdir", "rm", "cp", "mv", "python", "python3", "powershell", "pwsh",
     "cmd", "bash", "sh", "for", "sort", "uniq", "awk", "cut", "tr", "du", "date", "timeout", "export", "test", "true", "set", "printf", "diff", "od", "file", "which",
     "type", "source", "node", "taskkill", "curl", "do", "done", "then", "fi", "else", "if", "while", "until", "break", "continue", "in", "exit", "return", "local", "read",
     "xargs", "tee", "start", "ps", "kill", "jq", "dir", "where", "get-content", "select-string", "write-host", "tasklist", "cygpath", "chmod",
 ];
-/// Pasos que solo miran.
-const SOLO_MIRAN: &[&str] = &["git status", "git log", "git diff", "git show", "git branch", "git remote", "gh run", "cargo tree", "cargo metadata"];
+/// Steps that only look.
+const READ_ONLY: &[&str] = &["git status", "git log", "git diff", "git show", "git branch", "git remote", "gh run", "cargo tree", "cargo metadata"];
 
-/// Opciones que llevan un valor detrás (`git -C <carpeta> diff`, `gh -R <repo> pr list`): el valor no
-/// es el subcomando.
-const CON_VALOR: &[&str] = &["-C", "-R", "--repo", "--prefix", "--manifest-path", "--cwd", "--dir", "-f", "--file"];
-/// Lo que va delante del programa de verdad: intérpretes y envoltorios.
-const DELANTE: &[&str] = &["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "sudo", "doas", "runuser", "env", "time", "nohup", "exec", "call"];
-/// Los verbos aprobados de PowerShell (`Get-Verb`): `Verbo-Nombre` es un cmdlet, una orden como
-/// cualquier otra y no un nombre suelto. Los de Linux con la misma forma (`update-grub`, `start-stop-daemon`)
-/// van en minúsculas; un cmdlet se reconoce por la mayúscula (`Remove-Item`) o, todo en minúsculas
-/// (`get-childitem`, que PowerShell también acepta), si su verbo está en `VERBOS_CMDLET_MINUSCULAS`.
-const VERBOS_POWERSHELL: &[&str] = &[
+/// Options followed by a value (`git -C <folder> diff`, `gh -R <repo> pr list`): the value is not
+/// the subcommand.
+const TAKES_VALUE: &[&str] = &["-C", "-R", "--repo", "--prefix", "--manifest-path", "--cwd", "--dir", "-f", "--file"];
+/// What goes in front of the real program: interpreters and wrappers.
+const WRAPPERS: &[&str] = &["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "sudo", "doas", "runuser", "env", "time", "nohup", "exec", "call"];
+/// PowerShell's approved verbs (`Get-Verb`): `Verb-Noun` is a cmdlet, a command like
+/// any other and not a stray name. Linux ones with the same shape (`update-grub`, `start-stop-daemon`)
+/// are lowercase; a cmdlet is recognized by the capital letter (`Remove-Item`) or, all lowercase
+/// (`get-childitem`, which PowerShell also accepts), if its verb is in `LOWERCASE_CMDLET_VERBS`.
+const POWERSHELL_VERBS: &[&str] = &[
     "add", "approve", "assert", "backup", "block", "build", "checkpoint", "clear", "close", "compare", "complete", "compress", "confirm", "connect",
     "convert", "convertfrom", "convertto", "copy", "debug", "deny", "deploy", "disable", "disconnect", "dismount", "edit", "enable", "enter", "exit",
     "expand", "export", "find", "foreach", "format", "get", "grant", "group", "hide", "import", "initialize", "install", "invoke", "join", "limit",
@@ -57,124 +57,124 @@ const VERBOS_POWERSHELL: &[&str] = &[
     "search", "select", "send", "set", "show", "skip", "sort", "split", "start", "step", "stop", "submit", "suspend", "switch", "sync", "tee", "test",
     "trace", "unblock", "undo", "uninstall", "unlock", "unprotect", "unpublish", "unregister", "update", "use", "wait", "watch", "where", "write",
 ];
-/// Los verbos que valen como cmdlet aunque vayan en minúsculas: los de siempre, que ningún programa de
-/// Linux usa como prefijo.
-const VERBOS_CMDLET_MINUSCULAS: &[&str] = &[
+/// The verbs that count as a cmdlet even in lowercase: the usual ones, which no Linux program
+/// uses as a prefix.
+const LOWERCASE_CMDLET_VERBS: &[&str] = &[
     "get", "set", "select", "where", "foreach", "out", "format", "measure", "sort", "test", "new", "remove", "copy", "move", "write", "invoke",
     "convertto", "convertfrom", "import", "export", "rename", "wait", "expand", "compress", "register", "unregister", "enable", "disable",
     "restart", "resolve", "publish", "uninstall", "unblock",
 ];
-/// Cmdlets que solo miran, mueven ficheros o dan forma a la salida (el `ls`, `cat`, `rm`, `curl`…
-/// de PowerShell), por su verbo: no dicen nada de un procedimiento.
-const VERBOS_CMDLET_TRIVIALES: &[&str] = &[
+/// Cmdlets that only look, move files or shape the output (PowerShell's `ls`, `cat`, `rm`, `curl`…),
+/// by their verb: they say nothing about a procedure.
+const TRIVIAL_CMDLET_VERBS: &[&str] = &[
     "get", "select", "where", "foreach", "out", "format", "measure", "sort", "test", "write", "read", "tee", "group", "compare", "join", "split",
     "resolve", "convertto", "convertfrom", "convert", "wait", "clear", "show", "hide", "new", "remove", "copy", "move", "rename", "set", "add", "push",
     "pop", "find", "search", "trace", "debug", "enter", "exit", "skip", "step", "limit", "use", "open", "close",
 ];
-/// Y los que lo son aunque su verbo actúe.
-const CMDLETS_TRIVIALES: &[&str] = &["invoke-webrequest", "invoke-restmethod", "invoke-expression", "invoke-item", "start-process", "start-sleep", "stop-process"];
+/// And the ones that are trivial even though their verb acts.
+const TRIVIAL_CMDLETS: &[&str] = &["invoke-webrequest", "invoke-restmethod", "invoke-expression", "invoke-item", "start-process", "start-sleep", "stop-process"];
 
-/// Las órdenes de una línea de shell: corta por `&&`, `||`, `;`, `|`, saltos de línea, `$(` y comillas
-/// invertidas fuera de las comillas. Lo entrecomillado queda como una sola palabra marcada con `\u{1}`
-/// y solo su último trozo de ruta (`"C:/…/gh.exe" pr list` → `\u{1}gh.exe pr list`): como argumento se
-/// descarta, y en el sitio del programa vale su nombre.
-fn trozos(cmd: &str) -> Vec<String> {
+/// The commands in a shell line: splits on `&&`, `||`, `;`, `|`, newlines, `$(` and backticks
+/// outside quotes. Quoted text stays as a single word marked with `\u{1}`
+/// and only its last path segment (`"C:/…/gh.exe" pr list` → `\u{1}gh.exe pr list`): as an argument it is
+/// discarded, and in the program's place its name counts.
+fn split_commands(cmd: &str) -> Vec<String> {
     let mut r = Vec::new();
-    let mut actual = String::new();
-    let mut comilla: Option<char> = None;
-    let mut dentro = String::new();
-    let mut escapado = false;
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut quoted = String::new();
+    let mut escaped = false;
     let mut cs = cmd.chars().peekable();
     while let Some(c) = cs.next() {
-        if let Some(q) = comilla {
-            if escapado {
-                escapado = false;
-                dentro.push(c);
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+                quoted.push(c);
             } else if c == '\\' && q == '"' {
-                escapado = true;
+                escaped = true;
             } else if c == q {
-                comilla = None;
-                let nombre = dentro.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").replace(char::is_whitespace, "_");
-                actual.push_str(&format!(" \u{1}{nombre} "));
-                dentro.clear();
+                quote = None;
+                let name = quoted.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("").replace(char::is_whitespace, "_");
+                current.push_str(&format!(" \u{1}{name} "));
+                quoted.clear();
             } else {
-                dentro.push(c);
+                quoted.push(c);
             }
             continue;
         }
         match c {
-            '"' | '\'' => comilla = Some(c),
+            '"' | '\'' => quote = Some(c),
             '$' if cs.peek() == Some(&'(') => {
                 cs.next();
-                r.push(std::mem::take(&mut actual));
+                r.push(std::mem::take(&mut current));
             }
-            '&' | ';' | '|' | '\n' | '`' | '(' | ')' => r.push(std::mem::take(&mut actual)),
-            _ => actual.push(c),
+            '&' | ';' | '|' | '\n' | '`' | '(' | ')' => r.push(std::mem::take(&mut current)),
+            _ => current.push(c),
         }
     }
-    r.push(actual);
+    r.push(current);
     r.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-/// Un nombre de programa: letras, cifras, `-`, `_` no (`insert_content` es la acción de una herramienta
-/// de edición con un campo `command`), y `.` (`python3.12`). En minúsculas y sin `.exe`.
-fn programa(t: &str) -> Option<String> {
+/// A program name: letters, digits, `-`, no `_` (`insert_content` is the action of an editing
+/// tool with a `command` field), and `.` (`python3.12`). Lowercase and without `.exe`.
+fn program_name(t: &str) -> Option<String> {
     let t = t.strip_prefix('\u{1}').unwrap_or(t);
     let p = t.rsplit(['/', '\\']).next().unwrap_or(t).to_lowercase();
     let p = p.strip_suffix(".exe").unwrap_or(&p).trim_matches(['{', '}', '[', ']']).to_string();
-    let valido = p.starts_with(|c: char| c.is_ascii_alphabetic()) && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
-    valido.then_some(p)
+    let valid = p.starts_with(|c: char| c.is_ascii_alphabetic()) && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    valid.then_some(p)
 }
 
-/// Si `t` (tal cual se escribió) es un cmdlet de PowerShell (`Remove-Item`, `Invoke-Pester`,
-/// `get-childitem`): su verbo, en minúsculas.
-fn verbo_de_cmdlet(t: &str) -> Option<String> {
+/// If `t` (as written) is a PowerShell cmdlet (`Remove-Item`, `Invoke-Pester`,
+/// `get-childitem`): its verb, lowercase.
+fn cmdlet_verb(t: &str) -> Option<String> {
     let t = t.strip_prefix('\u{1}').unwrap_or(t);
     let t = t.rsplit(['/', '\\']).next().unwrap_or(t);
-    let (verbo, nombre) = t.split_once('-')?;
-    if nombre.is_empty() || !nombre.chars().all(|c| c.is_ascii_alphanumeric()) {
+    let (verb, noun) = t.split_once('-')?;
+    if noun.is_empty() || !noun.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }
-    let v = verbo.to_ascii_lowercase();
-    let con_mayuscula = t.starts_with(|c: char| c.is_ascii_uppercase()) || nombre.starts_with(|c: char| c.is_ascii_uppercase());
-    (VERBOS_POWERSHELL.contains(&v.as_str()) && (con_mayuscula || VERBOS_CMDLET_MINUSCULAS.contains(&v.as_str()))).then_some(v)
+    let v = verb.to_ascii_lowercase();
+    let capitalized = t.starts_with(|c: char| c.is_ascii_uppercase()) || noun.starts_with(|c: char| c.is_ascii_uppercase());
+    (POWERSHELL_VERBS.contains(&v.as_str()) && (capitalized || LOWERCASE_CMDLET_VERBS.contains(&v.as_str()))).then_some(v)
 }
 
-/// Opciones de `sudo` (y `doas`, `runuser`) que llevan un valor: `sudo -u postgres psql` es `psql`,
-/// no `postgres`.
-const CON_VALOR_SUDO: &[&str] = &["-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user", "--chdir", "--host", "--prompt", "--role", "--type", "--close-from", "--command-timeout"];
-/// Y de `env`: `env -u VAR -C carpeta cargo test`.
-const CON_VALOR_ENV: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"];
+/// Options of `sudo` (and `doas`, `runuser`) that take a value: `sudo -u postgres psql` is `psql`,
+/// not `postgres`.
+const SUDO_TAKES_VALUE: &[&str] = &["-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user", "--chdir", "--host", "--prompt", "--role", "--type", "--close-from", "--command-timeout"];
+/// And of `env`: `env -u VAR -C folder cargo test`.
+const ENV_TAKES_VALUE: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir", "--split-string"];
 
-/// Los pasos de una orden: el programa y su subcomando (`cargo build --release && git tag -a v1` →
-/// `cargo build`, `git tag`), sin lo trivial ni lo que solo mira.
+/// The steps of a command: the program and its subcommand (`cargo build --release && git tag -a v1` →
+/// `cargo build`, `git tag`), without the trivial ones nor those that only look.
 pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
-    // Un script de varias líneas suele ser de un solo uso; de un heredoc, solo cuenta su primera
-    // línea (el resto es lo que se le pasa).
+    // A multi-line script is usually single-use; of a heredoc, only its first
+    // line counts (the rest is what gets passed to it).
     let cmd = if cmd.contains("<<") { cmd.lines().next().unwrap_or("") } else { cmd };
     if cmd.lines().count() > 3 {
         return Vec::new();
     }
     let mut r = Vec::new();
-    for parte in trozos(cmd) {
-        // Fuera las redirecciones, las asignaciones y las opciones (con su valor si lo llevan).
+    for part in split_commands(cmd) {
+        // Drop redirections, assignments and options (with their value if they take one).
         let mut ts: Vec<&str> = Vec::new();
-        let mut saltar = false;
-        for t in parte.split_whitespace() {
-            if saltar {
-                saltar = false;
+        let mut skip = false;
+        for t in part.split_whitespace() {
+            if skip {
+                skip = false;
                 continue;
             }
-            if CON_VALOR.contains(&t) {
-                saltar = true;
+            if TAKES_VALUE.contains(&t) {
+                skip = true;
                 continue;
             }
-            // Las opciones con valor del envoltorio que va justo antes (`sudo -u <usuario> <orden>`).
-            let envoltorio = ts.last().and_then(|p| programa(p));
-            if matches!(envoltorio.as_deref(), Some("sudo" | "doas" | "runuser")) && CON_VALOR_SUDO.contains(&t)
-                || envoltorio.as_deref() == Some("env") && CON_VALOR_ENV.contains(&t)
+            // The options with a value of the wrapper right before (`sudo -u <user> <command>`).
+            let wrapper = ts.last().and_then(|p| program_name(p));
+            if matches!(wrapper.as_deref(), Some("sudo" | "doas" | "runuser")) && SUDO_TAKES_VALUE.contains(&t)
+                || wrapper.as_deref() == Some("env") && ENV_TAKES_VALUE.contains(&t)
             {
-                saltar = true;
+                skip = true;
                 continue;
             }
             if t.starts_with('-') || t.contains('=') || t.contains('>') || t.contains('<') || (t.starts_with('/') && t.len() <= 3) {
@@ -182,46 +182,46 @@ pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
             }
             ts.push(t);
         }
-        // Lo que va delante (`bash -lc …`, `cmd /c …`, `sudo …`) no es el programa.
-        let mut delante = false;
-        while ts.first().and_then(|t| programa(t)).is_some_and(|p| DELANTE.contains(&p.as_str())) {
+        // What goes in front (`bash -lc …`, `cmd /c …`, `sudo …`) isn't the program.
+        let mut wrapped = false;
+        while ts.first().and_then(|t| program_name(t)).is_some_and(|p| WRAPPERS.contains(&p.as_str())) {
             ts.remove(0);
-            delante = true;
+            wrapped = true;
         }
-        // `powershell -Command "…"`: lo de dentro de las comillas no se ve, así que no es un paso.
-        if delante && ts.first().is_some_and(|t| t.starts_with('\u{1}')) {
+        // `powershell -Command "…"`: what's inside the quotes can't be seen, so it isn't a step.
+        if wrapped && ts.first().is_some_and(|t| t.starts_with('\u{1}')) {
             continue;
         }
-        let Some(prog) = ts.first().and_then(|t| programa(t)) else { continue };
-        if TRIVIALES.contains(&prog.as_str()) {
+        let Some(prog) = ts.first().and_then(|t| program_name(t)) else { continue };
+        if TRIVIAL.contains(&prog.as_str()) {
             continue;
         }
-        // Un cmdlet es una orden entera: lo que lleva detrás son argumentos, no un subcomando
-        // (`Restart-Service omoikane` es `restart-service`). Fuera los que solo miran o mueven ficheros.
-        if let Some(verbo) = ts.first().and_then(|t| verbo_de_cmdlet(t)) {
-            if !VERBOS_CMDLET_TRIVIALES.contains(&verbo.as_str()) && !CMDLETS_TRIVIALES.contains(&prog.as_str()) {
+        // A cmdlet is a whole command: what follows it are arguments, not a subcommand
+        // (`Restart-Service omoikane` is `restart-service`). Drop the ones that only look or move files.
+        if let Some(verb) = ts.first().and_then(|t| cmdlet_verb(t)) {
+            if !TRIVIAL_CMDLET_VERBS.contains(&verb.as_str()) && !TRIVIAL_CMDLETS.contains(&prog.as_str()) {
                 r.push(prog);
             }
             continue;
         }
         let sub = ts.get(1).filter(|s| !s.starts_with('\u{1}') && s.len() > 1 && s.chars().all(|c| c.is_ascii_lowercase() || c == '-')).copied().unwrap_or("");
-        let paso = if sub.is_empty() { prog } else { format!("{prog} {sub}") };
-        if !SOLO_MIRAN.contains(&paso.as_str()) {
-            r.push(paso);
+        let step = if sub.is_empty() { prog } else { format!("{prog} {sub}") };
+        if !READ_ONLY.contains(&step.as_str()) {
+            r.push(step);
         }
     }
     r
 }
 
-/// Los pasos de una conversación, en orden, sin repetir el mismo seguido.
-pub fn pasos(ruta: &Path) -> Result<Vec<String>> {
-    Ok(pasos_de_turnos(&crate::candidatas::turnos(ruta)?))
+/// The steps of a conversation, in order, without repeating the same one in a row.
+pub fn pasos(path: &Path) -> Result<Vec<String>> {
+    Ok(pasos_de_turnos(&crate::candidatas::turnos(path)?))
 }
 
-/// `pasos` con los turnos ya leídos.
-pub fn pasos_de_turnos(turnos: &[crate::candidatas::Turno]) -> Vec<String> {
+/// `pasos` with the turns already read.
+pub fn pasos_de_turnos(turns: &[crate::candidatas::Turno]) -> Vec<String> {
     let mut r: Vec<String> = Vec::new();
-    for t in turnos {
+    for t in turns {
         if let crate::candidatas::Turno::Comando(c) = t {
             for p in pasos_de_orden(c) {
                 if r.last() != Some(&p) {
@@ -230,118 +230,118 @@ pub fn pasos_de_turnos(turnos: &[crate::candidatas::Turno]) -> Vec<String> {
             }
         }
     }
-    r.truncate(MAX_PASOS_SESION);
+    r.truncate(MAX_SESSION_STEPS);
     r
 }
 
-fn crear(db: &Connection) -> Result<()> {
+fn create_table(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS session_steps (session TEXT PRIMARY KEY, at TEXT NOT NULL, steps TEXT NOT NULL);")?;
     Ok(())
 }
 
-/// Al cerrar o compactar: apunta los pasos de la sesión (si tiene) y borra los de hace más de `DIAS`.
-pub fn apuntar(db: &Connection, session: &str, pasos: &[String]) -> Result<()> {
-    if session.is_empty() || pasos.is_empty() {
+/// On close or compaction: notes the session's steps (if it has any) and deletes those older than `DAYS`.
+pub fn apuntar(db: &Connection, session: &str, steps: &[String]) -> Result<()> {
+    if session.is_empty() || steps.is_empty() {
         return Ok(());
     }
-    crear(db)?;
-    db.execute(&format!("INSERT OR REPLACE INTO session_steps(session, at, steps) VALUES (?1, {AHORA}, ?2)"), params![session, serde_json::to_string(pasos)?])?;
-    db.execute(&format!("DELETE FROM session_steps WHERE julianday({AHORA}) - julianday(at) > {DIAS}"), [])?;
+    create_table(db)?;
+    db.execute(&format!("INSERT OR REPLACE INTO session_steps(session, at, steps) VALUES (?1, {AHORA}, ?2)"), params![session, serde_json::to_string(steps)?])?;
+    db.execute(&format!("DELETE FROM session_steps WHERE julianday({AHORA}) - julianday(at) > {DAYS}"), [])?;
     Ok(())
 }
 
-/// Cuántas sesiones, de las más recientes, se miran para contar.
-const MAX_SESIONES: usize = 500;
+/// How many sessions, the most recent ones, are looked at for counting.
+const MAX_SESSIONS: usize = 500;
 
-/// Las palabras de un texto para ver si una receta nombra un paso: sin signos alrededor, en minúsculas.
-fn palabras(t: &str) -> std::collections::HashSet<String> {
+/// The words of a text, to see whether a recipe names a step: without surrounding punctuation, lowercase.
+fn words(t: &str) -> std::collections::HashSet<String> {
     t.to_lowercase().split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '.')).map(|w| w.trim_matches('.').to_string()).filter(|w| !w.is_empty()).collect()
 }
 
-/// De las secuencias de `actuales` (los pasos de la sesión que se cierra), la que más se repite en las
-/// sesiones guardadas (en al menos `MIN_SESIONES`, con dos programas distintos o más), que ninguna
-/// receta guardada cubre y que no se propuso antes, con en cuántas sesiones sale. Solo se miran las de
-/// esta sesión: así el coste no crece con el historial y la propuesta cae en el proyecto donde pasa.
-pub fn propuesta(db: &Connection, actuales: &[String]) -> Result<Option<(Vec<String>, usize)>> {
-    let hay: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
-    if !hay || actuales.len() < MIN_PASOS {
+/// Of the sequences in `current` (the steps of the session being closed), the one most repeated in the
+/// saved sessions (in at least `MIN_SESIONES`, with two or more different programs), that no saved
+/// recipe covers and that wasn't proposed before, with how many sessions it shows up in. Only this session's
+/// are looked at: that way the cost doesn't grow with the history and the proposal lands in the project where it happens.
+pub fn propuesta(db: &Connection, current: &[String]) -> Result<Option<(Vec<String>, usize)>> {
+    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
+    if !exists || current.len() < MIN_STEPS {
         return Ok(None);
     }
-    // Las candidatas: las secuencias de esta sesión.
-    let mut cuenta: std::collections::HashMap<Vec<String>, BTreeSet<usize>> = std::collections::HashMap::new();
-    for n in MIN_PASOS..=MAX_PASOS {
-        for w in actuales.windows(n) {
-            let programas: BTreeSet<&str> = w.iter().map(|p| p.split(' ').next().unwrap_or("")).collect();
-            if w.iter().collect::<BTreeSet<_>>().len() == n && programas.len() >= 2 {
-                cuenta.entry(w.to_vec()).or_default();
+    // The candidates: this session's sequences.
+    let mut counts: std::collections::HashMap<Vec<String>, BTreeSet<usize>> = std::collections::HashMap::new();
+    for n in MIN_STEPS..=MAX_STEPS {
+        for w in current.windows(n) {
+            let programs: BTreeSet<&str> = w.iter().map(|p| p.split(' ').next().unwrap_or("")).collect();
+            if w.iter().collect::<BTreeSet<_>>().len() == n && programs.len() >= 2 {
+                counts.entry(w.to_vec()).or_default();
             }
         }
     }
-    if cuenta.is_empty() {
+    if counts.is_empty() {
         return Ok(None);
     }
-    // En qué sesiones guardadas sale cada una (sin copiar: se busca con el trozo).
+    // Which saved sessions each one shows up in (without copying: looked up by the slice).
     let mut q = db.prepare("SELECT steps FROM session_steps ORDER BY at DESC LIMIT ?1")?;
-    let filas = q.query_map([MAX_SESIONES as i64], |f| f.get::<_, String>(0))?;
-    for (i, texto) in filas.enumerate() {
-        let pasos: Vec<String> = serde_json::from_str(&texto?).unwrap_or_default();
-        for n in MIN_PASOS..=MAX_PASOS {
-            for w in pasos.windows(n) {
-                if let Some(s) = cuenta.get_mut(w) {
+    let rows = q.query_map([MAX_SESSIONS as i64], |f| f.get::<_, String>(0))?;
+    for (i, text) in rows.enumerate() {
+        let steps: Vec<String> = serde_json::from_str(&text?).unwrap_or_default();
+        for n in MIN_STEPS..=MAX_STEPS {
+            for w in steps.windows(n) {
+                if let Some(s) = counts.get_mut(w) {
                     s.insert(i);
                 }
             }
         }
     }
-    let mut v: Vec<(Vec<String>, BTreeSet<usize>)> = cuenta.into_iter().filter(|(_, s)| s.len() >= MIN_SESIONES).collect();
-    // Fuera las que están dentro de otra más larga que sale en las mismas sesiones.
-    let todas = v.clone();
-    v.retain(|(w, s)| !todas.iter().any(|(o, so)| o.len() > w.len() && so == s && o.windows(w.len()).any(|x| x == w.as_slice())));
+    let mut v: Vec<(Vec<String>, BTreeSet<usize>)> = counts.into_iter().filter(|(_, s)| s.len() >= MIN_SESIONES).collect();
+    // Drop the ones contained in a longer one that shows up in the same sessions.
+    let all = v.clone();
+    v.retain(|(w, s)| !all.iter().any(|(o, so)| o.len() > w.len() && so == s && o.windows(w.len()).any(|x| x == w.as_slice())));
     v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(b.0.len().cmp(&a.0.len())).then(a.0.cmp(&b.0)));
-    let recetas: Vec<std::collections::HashSet<String>> = {
+    let recipes: Vec<std::collections::HashSet<String>> = {
         let mut q = db.prepare("SELECT title || ' ' || content FROM memory WHERE kind = ?1")?;
-        q.query_map([Tipo::Procedure.as_str()], |f| f.get::<_, String>(0))?.filter_map(|t| t.ok()).map(|t| palabras(&t)).collect()
+        q.query_map([Tipo::Procedure.as_str()], |f| f.get::<_, String>(0))?.filter_map(|t| t.ok()).map(|t| words(&t)).collect()
     };
-    let ya: std::collections::HashSet<String> = {
+    let already: std::collections::HashSet<String> = {
         let mut q = db.prepare("SELECT k FROM meta WHERE k LIKE 'receta_propuesta:%'")?;
         q.query_map([], |f| f.get::<_, String>(0))?.filter_map(|k| k.ok()).collect()
     };
     for (w, s) in v {
-        // Cubierta si una receta nombra cada paso: su programa y su subcomando, aunque no vayan juntos
-        // («git add -A, commit y push» cubre `git commit`).
-        let cubierta = recetas.iter().any(|ps| w.iter().all(|p| p.split(' ').all(|x| ps.contains(x))));
-        if !cubierta && !ya.contains(&format!("receta_propuesta:{}", w.join(" > "))) {
+        // Covered if a recipe names every step: its program and its subcommand, even if not together
+        // («git add -A, commit y push» covers `git commit`).
+        let covered = recipes.iter().any(|ps| w.iter().all(|p| p.split(' ').all(|x| ps.contains(x))));
+        if !covered && !already.contains(&format!("receta_propuesta:{}", w.join(" > "))) {
             return Ok(Some((w, s.len())));
         }
     }
     Ok(None)
 }
 
-/// Al cerrar: si entre los pasos de esta sesión hay una secuencia para proponer, la aparta como
-/// candidata para la sesión siguiente en `project` (y no la vuelve a proponer). Devuelve si apartó una.
-pub fn proponer(db: &Connection, project: &str, session: &str, actuales: &[String]) -> Result<bool> {
-    let Some((w, n)) = propuesta(db, actuales)? else { return Ok(false) };
-    let texto = format!(
+/// On close: if among this session's steps there is a sequence to propose, sets it aside as a
+/// candidate for the next session in `project` (and doesn't propose it again). Returns whether it set one aside.
+pub fn proponer(db: &Connection, project: &str, session: &str, current: &[String]) -> Result<bool> {
+    let Some((w, n)) = propuesta(db, current)? else { return Ok(false) };
+    let text = format!(
         "steps repeated in {n} sessions: `{}`. If it is a procedure the user follows, ask them and save it as a recipe (kind procedure, numbered steps and a `when:` line); if not, ignore it",
         w.join("` → `")
     );
-    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"), params![project, session, RECETA, texto])?;
-    let clave = format!("receta_propuesta:{}", w.join(" > "));
-    db.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, {AHORA})"), [&clave])?;
+    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"), params![project, session, RECETA, text])?;
+    let key = format!("receta_propuesta:{}", w.join(" > "));
+    db.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, {AHORA})"), [&key])?;
     Ok(true)
 }
 
-/// Las secuencias que se propusieron (para la vista y para comprobar).
+/// The sequences that were proposed (for the view and for checking).
 pub fn propuestas(db: &Connection) -> Result<Vec<String>> {
     let mut q = db.prepare("SELECT substr(k, 18) FROM meta WHERE k LIKE 'receta_propuesta:%' ORDER BY v DESC")?;
     let v = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Lo apuntado de una sesión (para los tests).
+/// What was noted for a session (for the tests).
 pub fn de_sesion(db: &Connection, session: &str) -> Result<Option<Vec<String>>> {
-    let hay: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
-    if !hay {
+    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
+    if !exists {
         return Ok(None);
     }
     let t: Option<String> = db.query_row("SELECT steps FROM session_steps WHERE session = ?1", [session], |f| f.get(0)).optional()?;
@@ -353,14 +353,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pasos_de_una_orden() {
+    fn steps_of_a_command() {
         assert_eq!(pasos_de_orden("cargo build --release 2>&1 && git tag -a v1.4.1 -m \"1.4.1\" && git push origin v1.4.1"), ["cargo build", "git tag", "git push"]);
         assert_eq!(pasos_de_orden("git status --short | head; cargo test -q 2>&1 | grep -E \"FAILED|panicked\""), ["cargo test"]);
         assert_eq!(pasos_de_orden("cd D:/x && ls"), Vec::<String>::new());
         assert_eq!(pasos_de_orden("C:/Users/m/.cargo/bin/omoi.exe recall --session-end"), ["omoi recall"]);
         assert_eq!(pasos_de_orden("id=$(gh run list -L 5) && gh release view v1"), ["gh release"]);
         assert_eq!(pasos_de_orden("insert_content"), Vec::<String>::new());
-        // Lo que encontró la revisión de la 1.5.0.
+        // What the 1.5.0 review found.
         assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
         assert_eq!(pasos_de_orden("bash -lc cargo test && git push"), ["cargo test", "git push"]);
         assert_eq!(pasos_de_orden("cmd /c npm run build"), ["npm run"]);
@@ -374,10 +374,10 @@ mod tests {
         assert_eq!(pasos_de_orden("GIT.EXE tag v1"), ["git tag"]);
     }
 
-    /// 1.8.6: los cmdlets de PowerShell son órdenes (con su nombre entero, sin subcomando), y los que
-    /// solo miran o mueven ficheros se quitan como `ls` o `rm`.
+    /// 1.8.6: PowerShell cmdlets are commands (with their whole name, no subcommand), and the ones that
+    /// only look or move files are dropped like `ls` or `rm`.
     #[test]
-    fn cmdlets_de_powershell() {
+    fn powershell_cmdlets() {
         assert_eq!(pasos_de_orden("Invoke-Pester -Path tests; git push"), ["invoke-pester", "git push"]);
         assert_eq!(pasos_de_orden("Restart-Service omoikane"), ["restart-service"]);
         assert_eq!(pasos_de_orden("Install-Module PSReadLine -Scope CurrentUser"), ["install-module"]);
@@ -386,21 +386,21 @@ mod tests {
         assert_eq!(pasos_de_orden("Register-ScheduledTask -TaskName vigilante -Xml (Get-Content x.xml | Out-String)"), ["register-scheduledtask"]);
         assert_eq!(pasos_de_orden("Update-Help"), ["update-help"]);
         assert_eq!(pasos_de_orden(r"unblock-file .\omoi.exe"), ["unblock-file"]);
-        // Lo que solo mira, mueve ficheros o da forma a la salida, fuera.
+        // What only looks, moves files or shapes the output, out.
         assert!(pasos_de_orden("Get-ChildItem -Recurse src | Select-Object -First 5").is_empty());
         assert!(pasos_de_orden(r"Remove-Item -Recurse -Force D:\tmp\x; Set-Location D:\x; New-Item -ItemType Directory y").is_empty());
         assert!(pasos_de_orden("Invoke-WebRequest -Uri https://x -OutFile y; Start-Sleep 2; Start-Process notepad").is_empty());
         assert!(pasos_de_orden("get-content a.txt | where-object { $_ -match 'x' }").is_empty());
         assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
-        // Los de Linux con forma de cmdlet, en minúsculas, siguen siendo programas.
+        // Linux ones shaped like a cmdlet, in lowercase, are still programs.
         assert_eq!(pasos_de_orden("update-grub"), ["update-grub"]);
         assert_eq!(pasos_de_orden("docker-compose up -d"), ["docker-compose up"]);
         assert_eq!(pasos_de_orden("pre-commit run --all-files"), ["pre-commit run"]);
     }
 
-    /// 1.8.6: `sudo -u <usuario> <orden>` es `<orden>`, no el usuario.
+    /// 1.8.6: `sudo -u <user> <command>` is `<command>`, not the user.
     #[test]
-    fn sudo_con_usuario() {
+    fn sudo_with_user() {
         assert_eq!(pasos_de_orden("sudo -u postgres psql -c 'select 1'"), ["psql"]);
         assert_eq!(pasos_de_orden("sudo -u www-data git -C /srv/app pull"), ["git pull"]);
         assert_eq!(pasos_de_orden("sudo -E -u marc docker compose up -d"), ["docker compose"]);
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(pasos_de_orden("sudo systemctl restart caddy"), ["systemctl restart"]);
         assert_eq!(pasos_de_orden("doas -u marc make install"), ["make install"]);
         assert_eq!(pasos_de_orden("env -u RUST_LOG cargo test"), ["cargo test"]);
-        // `-u` de otra orden no se come nada: `git push -u origin main` sigue siendo `git push`.
+        // Another command's `-u` swallows nothing: `git push -u origin main` is still `git push`.
         assert_eq!(pasos_de_orden("git push -u origin main"), ["git push"]);
     }
 }

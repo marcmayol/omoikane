@@ -8,25 +8,25 @@ import type { Register } from 'claude-code'
 // model, and the description tells it what to put there.
 
 const MAX = 60
-const FORMA = /^\S[^:\n]{0,29}: \S/u
+const SHAPE = /^\S[^:\n]{0,29}: \S/u
 
-const REGLA = `Name it "Project: task": the project or request this session is working on, a colon, then the task in a few plain words, in the user's language. Use the name the user knows the project by, never a path. Under ${MAX} characters. Examples: "Billing app: review login", "Docs site: fix broken links".`
+const RULE = `Name it "Project: task": the project or request this session is working on, a colon, then the task in a few plain words, in the user's language. Use the name the user knows the project by, never a path. Under ${MAX} characters. Examples: "Billing app: review login", "Docs site: fix broken links".`
 
-export const esValido = (nombre: string) => nombre.length <= MAX && FORMA.test(nombre)
+export const esValido = (name: string) => name.length <= MAX && SHAPE.test(name)
 
-function motivo (nombre: string) {
-  const cuanto = nombre.length > MAX ? `It has ${nombre.length} characters. ` : ''
-  return `Omoikane: «${nombre}» isn't a valid subagent name. ${cuanto}${REGLA} Call the tool again with a new description.`
+function reason (name: string) {
+  const howLong = name.length > MAX ? `It has ${name.length} characters. ` : ''
+  return `Omoikane: «${name}» isn't a valid subagent name. ${howLong}${RULE} Call the tool again with a new description.`
 }
 
 export const register: Register = on => {
   on('tool.describe', { tool: 'Agent' }, async ($, e, next) => {
     const r = await next(e)
-    return { ...r, description: `${r.description}\n\nThe \`description\` parameter is what the user sees in the list of agents. ${REGLA}` }
+    return { ...r, description: `${r.description}\n\nThe \`description\` parameter is what the user sees in the list of agents. ${RULE}` }
   })
 
   // A broken guard must not stop the work: if it fails, the subagent still starts.
   on('tool.call', { tool: 'Agent' }, ($, e, next) =>
-    esValido(e.description) ? next(e) : { deny: motivo(e.description) },
+    esValido(e.description) ? next(e) : { deny: reason(e.description) },
   ).catch(($, e, next) => next(e))
 }

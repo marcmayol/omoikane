@@ -1,56 +1,57 @@
-//! Procedencia (1.8.5, de OntoSmith: cada hecho atado a su fuente): con cada memoria nueva se
-//! apunta en qué sesión del agente y en qué commit del proyecto se escribió, para poder volver a la
-//! fuente (la conversación, el código de ese momento).
+//! Provenance (1.8.5, from OntoSmith: every fact tied to its source): with each new memory we
+//! record in which agent session and in which project commit it was written, so we can go back to
+//! the source (the conversation, the code at that moment).
 //!
-//! Va en `memory.extra` con la clave [`CLAVE`], como los datos y la verificación: sin cambiar el
-//! esquema, viaja como un campo `provenance` de la línea y una 1.0–1.8 lo conserva sin entenderlo.
-//! Es la de cuando se creó: cambiarla después no la toca (el historial dice cuándo cambió).
+//! It goes in `memory.extra` under the key [`CLAVE`], like the data and the verification: without
+//! changing the schema, it travels as a `provenance` field of the line and a 1.0–1.8 keeps it without understanding it.
+//! It is the one from when it was created: changing it later doesn't touch it (the history says when it changed).
 //!
-//! Barato a propósito, porque va en cada `remember`: la sesión sale del entorno o de la tabla
-//! `session` que ya llenan los hooks, y el commit de leer `.git/HEAD` y su referencia (dos o tres
-//! ficheros pequeños), sin lanzar `git`.
+//! Cheap on purpose, because it goes on every `remember`: the session comes from the environment or
+//! from the `session` table the hooks already fill, and the commit from reading `.git/HEAD` and its
+//! ref (two or three small files), without launching `git`.
 //!
-//! La sesión, por orden: `OMOIKANE_SESSION` (quien llame la dice), `CLAUDE_CODE_SESSION_ID` (Claude
-//! Code la pone en el entorno de lo que lanza: su shell y sus servidores MCP), y si no, la única
-//! sesión que los hooks hayan apuntado en ese proyecto en las últimas 12 horas. Con varias a la vez
-//! en el mismo proyecto no se adivina: mejor sin sesión que con la de otra conversación.
+//! The session, in order: `OMOIKANE_SESSION` (the caller says it), `CLAUDE_CODE_SESSION_ID` (Claude
+//! Code puts it in the environment of what it launches: its shell and its MCP servers), and otherwise
+//! the only session the hooks have recorded in that project in the last 12 hours. With several at
+//! once in the same project we don't guess: better no session than another conversation's.
 //!
-//! La traza (1.9): si quien lanzó al agente le pasó `TRACEPARENT` (W3C Trace Context, el estándar de
-//! OpenTelemetry; una central de agentes lo pone por paso y Claude Code lo hereda a su shell y a sus
-//! servidores MCP), se apuntan su `trace_id` y su `span_id`. Con eso, desde la traza de una ejecución
-//! se llega a las memorias que dejó, y desde una memoria al paso exacto que la escribió. Son ids
-//! aleatorios, sin nada del proyecto, así que van también en las globales y en las de un espacio.
+//! The trace (1.9): if whoever launched the agent passed it `TRACEPARENT` (W3C Trace Context, the
+//! OpenTelemetry standard; an agent hub sets it per step and Claude Code passes it down to its shell
+//! and its MCP servers), its `trace_id` and `span_id` are recorded. With that, from the trace of a run
+//! you reach the memories it left, and from a memory the exact step that wrote it. They are random
+//! ids, with nothing from the project, so they also go on global and space memories.
 //!
-//! Una memoria de oficio no lleva procedencia: es de todos los proyectos de su oficio y no debe
-//! llevar nada de un cliente (ni el nombre de su rama). Una global o de un espacio sin proyecto, solo
-//! la sesión: el commit y la rama son de la carpeta en la que se escribió, que puede ser la de un
-//! cliente, y esas memorias se ven desde otros. Lo mismo al moverla después (promoverla a un oficio la
-//! deja sin procedencia; a global, sin commit ni rama) y al leerla o exportarla ([`para_memoria`]).
+//! A trade memory carries no provenance: it belongs to every project of its trade and must not carry
+//! anything from a client (not even its branch name). A global one, or one from a space without a
+//! project, only the session: the commit and branch belong to the folder it was written in, which may
+//! be a client's, and those memories are seen from others. Same when moving it later (promoting it to
+//! a trade leaves it without provenance; to global, without commit or branch) and when reading or
+//! exporting it ([`para_memoria`]).
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// La clave en `memory.extra` (y el campo `provenance` de la línea que viaja).
+/// The key in `memory.extra` (and the `provenance` field of the line that travels).
 pub const CLAVE: &str = "provenance";
 
 
-/// De dónde salió una memoria.
+/// Where a memory came from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Procedencia {
-    /// El id de la sesión del agente.
+    /// The agent session id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub session: String,
-    /// El commit (HEAD) del repositorio del proyecto.
+    /// The commit (HEAD) of the project repository.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub commit: String,
-    /// La rama de ese HEAD (vacía con un HEAD suelto).
+    /// The branch of that HEAD (empty with a detached HEAD).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
-    /// El `trace_id` de `TRACEPARENT` (32 hex), si el agente corría dentro de una traza.
+    /// The `trace_id` from `TRACEPARENT` (32 hex), if the agent ran inside a trace.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub trace_id: String,
-    /// El `span_id` de `TRACEPARENT` (16 hex): el paso de esa traza que lanzó al agente.
+    /// The `span_id` from `TRACEPARENT` (16 hex): the step of that trace that launched the agent.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub span_id: String,
 }
@@ -60,51 +61,51 @@ impl Procedencia {
         self.session.is_empty() && self.commit.is_empty() && self.trace_id.is_empty()
     }
 
-    /// En una línea: «session 2bd891d2… · commit e564a66 (master)».
+    /// On one line: «session 2bd891d2… · commit e564a66 (master)».
     pub fn texto(&self) -> String {
-        let mut v = Vec::new();
+        let mut parts = Vec::new();
         if !self.session.is_empty() {
-            v.push(format!("session {}", self.session));
+            parts.push(format!("session {}", self.session));
         }
         if !self.commit.is_empty() {
-            let rama = if self.branch.is_empty() { String::new() } else { format!(" ({})", self.branch) };
-            v.push(format!("commit {}{rama}", self.commit.get(..12).unwrap_or(&self.commit)));
+            let branch = if self.branch.is_empty() { String::new() } else { format!(" ({})", self.branch) };
+            parts.push(format!("commit {}{branch}", self.commit.get(..12).unwrap_or(&self.commit)));
         }
         if !self.trace_id.is_empty() {
-            v.push(format!("trace {}/{}", self.trace_id, self.span_id));
+            parts.push(format!("trace {}/{}", self.trace_id, self.span_id));
         }
-        v.join(" · ")
+        parts.join(" · ")
     }
 }
 
-/// La de su columna en `memoria::COLUMNAS` (el JSON de `extra.provenance`).
+/// The one from its column in `memoria::COLUMNAS` (the JSON of `extra.provenance`).
 pub(crate) fn de_columna(json: Option<&str>) -> Option<Procedencia> {
     serde_json::from_str::<Procedencia>(json?).ok().filter(|p| !p.vacia())
 }
 
-/// La procedencia de lo que se guarda ahora en la carpeta de proyecto `proyecto` (la raíz, como la da
-/// `proyecto::de`; vacía: global sin carpeta), o `None` si no hay nada que apuntar.
-pub fn actual(db: &Connection, proyecto: &str) -> Option<Procedencia> {
-    let session = sesion(db, proyecto).unwrap_or_default();
-    let (commit, branch) = if proyecto.is_empty() { None } else { commit_de(Path::new(proyecto)) }.unwrap_or_default();
-    let (trace_id, span_id) = traza().unwrap_or_default();
+/// The provenance of what is being saved now in the project folder `project` (the root, as given by
+/// `proyecto::de`; empty: global without a folder), or `None` if there is nothing to record.
+pub fn actual(db: &Connection, project: &str) -> Option<Procedencia> {
+    let session = session(db, project).unwrap_or_default();
+    let (commit, branch) = if project.is_empty() { None } else { commit_de(Path::new(project)) }.unwrap_or_default();
+    let (trace_id, span_id) = trace().unwrap_or_default();
     let p = Procedencia { session, commit, branch, trace_id, span_id };
     (!p.vacia()).then_some(p)
 }
 
-/// Solo la sesión del agente (sin commit ni rama), para lo que no es del proyecto de la carpeta
-/// `proyecto`: una memoria global, de un espacio sin proyecto o de oficio no debe llevar la rama de la
-/// carpeta en la que se escribió, que puede ser de un cliente (`feature/acme-…`) y se vería desde
-/// cualquier otro.
-pub fn solo_sesion(db: &Connection, proyecto: &str) -> Option<Procedencia> {
-    let (trace_id, span_id) = traza().unwrap_or_default();
-    let p = Procedencia { session: sesion(db, proyecto).unwrap_or_default(), trace_id, span_id, ..Default::default() };
+/// Only the agent session (no commit or branch), for what doesn't belong to the project of the folder
+/// `project`: a global memory, one from a space without a project, or a trade one must not carry the
+/// branch of the folder it was written in, which may be a client's (`feature/acme-…`) and would be
+/// seen from any other.
+pub fn solo_sesion(db: &Connection, project: &str) -> Option<Procedencia> {
+    let (trace_id, span_id) = trace().unwrap_or_default();
+    let p = Procedencia { session: session(db, project).unwrap_or_default(), trace_id, span_id, ..Default::default() };
     (!p.vacia()).then_some(p)
 }
 
-/// La que puede llevar una memoria según dónde está ahora: ninguna si es de oficio (es de todos los
-/// proyectos de su oficio), solo la sesión si no es de un proyecto (global o de un espacio), y entera si
-/// es de un proyecto. Vale para lo que se guardó antes de recortarla y para lo que se mueve después.
+/// The one a memory may carry depending on where it is now: none if it is a trade one (it belongs to
+/// every project of its trade), only the session if it isn't a project's (global or a space's), and
+/// all of it if it is a project's. Works for what was saved before trimming it and for what is moved later.
 pub(crate) fn para_memoria(p: Option<Procedencia>, project_id: i64, tags: &[String]) -> Option<Procedencia> {
     let mut p = p?;
     if tags.iter().any(|t| t.starts_with(crate::oficios::PREFIJO)) {
@@ -117,13 +118,13 @@ pub(crate) fn para_memoria(p: Option<Procedencia>, project_id: i64, tags: &[Stri
     (!p.vacia()).then_some(p)
 }
 
-/// [`para_memoria`] sobre un `extra` (el de `memory.extra` o el de una línea que sale): quita la clave
-/// o la recorta. `true` si ha cambiado algo.
+/// [`para_memoria`] on an `extra` (the one of `memory.extra` or of an outgoing line): removes the key
+/// or trims it. `true` if anything changed.
 pub(crate) fn recortar_extra(extra: &mut serde_json::Map<String, serde_json::Value>, project_id: i64, tags: &[String]) -> bool {
-    // Una que no se entiende (de una versión futura con otra forma) se deja como está.
-    let Some(antes) = extra.get(CLAVE).and_then(|v| serde_json::from_value::<Procedencia>(v.clone()).ok()) else { return false };
-    match para_memoria(Some(antes.clone()), project_id, tags) {
-        Some(p) if p == antes => false,
+    // One we don't understand (from a future version with another shape) is left as it is.
+    let Some(before) = extra.get(CLAVE).and_then(|v| serde_json::from_value::<Procedencia>(v.clone()).ok()) else { return false };
+    match para_memoria(Some(before.clone()), project_id, tags) {
+        Some(p) if p == before => false,
         Some(p) => {
             extra.insert(CLAVE.into(), serde_json::to_value(p).unwrap_or_default());
             true
@@ -135,33 +136,33 @@ pub(crate) fn recortar_extra(extra: &mut serde_json::Map<String, serde_json::Val
     }
 }
 
-fn variable(k: &str) -> Option<String> {
+fn env_var(k: &str) -> Option<String> {
     std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 200)
 }
 
-/// `trace_id` y `span_id` de `TRACEPARENT`, si es válido: `vv-<32 hex>-<16 hex>-<2 hex>`, versión que
-/// no sea `ff` (una versión futura puede añadir campos detrás: se leen los cuatro primeros), ids que no
-/// sean todo ceros. Uno mal formado se ignora, como manda el estándar.
-fn traza() -> Option<(String, String)> {
-    traza_de(&variable("TRACEPARENT")?)
+/// `trace_id` and `span_id` from `TRACEPARENT`, if valid: `vv-<32 hex>-<16 hex>-<2 hex>`, a version
+/// other than `ff` (a future version may add fields after: the first four are read), ids that aren't
+/// all zeros. A malformed one is ignored, as the standard says.
+fn trace() -> Option<(String, String)> {
+    traza_de(&env_var("TRACEPARENT")?)
 }
 
 pub(crate) fn traza_de(v: &str) -> Option<(String, String)> {
-    let mut partes = v.split('-');
-    let (version, trace, span, flags) = (partes.next()?, partes.next()?, partes.next()?, partes.next()?);
+    let mut parts = v.split('-');
+    let (version, trace, span, flags) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    let ceros = |s: &str| s.bytes().all(|b| b == b'0');
-    (hex(version, 2) && version != "ff" && (version != "00" || partes.next().is_none()) && hex(trace, 32) && hex(span, 16) && hex(flags, 2)
-        && !ceros(trace) && !ceros(span))
+    let zeros = |s: &str| s.bytes().all(|b| b == b'0');
+    (hex(version, 2) && version != "ff" && (version != "00" || parts.next().is_none()) && hex(trace, 32) && hex(span, 16) && hex(flags, 2)
+        && !zeros(trace) && !zeros(span))
         .then(|| (trace.to_string(), span.to_string()))
 }
 
-/// La sesión del agente que guarda (ver el principio del módulo).
-fn sesion(db: &Connection, proyecto: &str) -> Option<String> {
-    if let Some(s) = variable("OMOIKANE_SESSION").or_else(|| variable("CLAUDE_CODE_SESSION_ID")) {
+/// The session of the agent that saves (see the start of the module).
+fn session(db: &Connection, project: &str) -> Option<String> {
+    if let Some(s) = env_var("OMOIKANE_SESSION").or_else(|| env_var("CLAUDE_CODE_SESSION_ID")) {
         return Some(s);
     }
-    if proyecto.is_empty() {
+    if project.is_empty() {
         return None;
     }
     let mut q = db
@@ -170,61 +171,61 @@ fn sesion(db: &Connection, proyecto: &str) -> Option<String> {
                AND started_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-12 hours') LIMIT 2",
         )
         .ok()?;
-    let v: Vec<String> = q.query_map(params![proyecto], |f| f.get(0)).ok()?.filter_map(|x| x.ok()).collect();
+    let v: Vec<String> = q.query_map(params![project], |row| row.get(0)).ok()?.filter_map(|x| x.ok()).collect();
     match v.as_slice() {
-        [una] => Some(una.clone()),
+        [only] => Some(only.clone()),
         _ => None,
     }
 }
 
-/// El commit de HEAD y su rama en el repositorio con raíz `raiz`, leyendo los ficheros de git: `.git`
-/// (o, en un worktree, el fichero `gitdir:` y su `commondir`), `HEAD`, la referencia suelta o
-/// `packed-refs`. `None` si no es un repositorio, aún no tiene commits o no se entiende (reftable).
-pub fn commit_de(raiz: &Path) -> Option<(String, String)> {
-    // Cada fichero que se abre cuesta (en Windows, ~0,1 ms): los mínimos. Un repositorio normal: HEAD
-    // y su rama; un worktree: además `.git` y `commondir`.
-    // Local, o en el recurso de red de la carpeta en la que se trabaja (`proyecto::legible`).
-    if !crate::proyecto::legible(raiz) {
+/// The HEAD commit and its branch in the repository rooted at `root`, reading git's files: `.git`
+/// (or, in a worktree, the `gitdir:` file and its `commondir`), `HEAD`, the loose ref or
+/// `packed-refs`. `None` if it isn't a repository, has no commits yet or can't be understood (reftable).
+pub fn commit_de(root: &Path) -> Option<(String, String)> {
+    // Every file opened costs (on Windows, ~0.1 ms): the minimum. A normal repository: HEAD
+    // and its branch; a worktree: also `.git` and `commondir`.
+    // Local, or on the network share of the folder being worked in (`proyecto::legible`).
+    if !crate::proyecto::legible(root) {
         return None;
     }
-    let punto = raiz.join(".git");
-    let (gitdir, comun) = match std::fs::read_to_string(&punto) {
-        // `.git` es un fichero: un worktree (o un submódulo, sin `commondir`). La carpeta común (la del
-        // repositorio principal) es donde están las ramas. Ni una ni otra pueden ser de otro recurso de red.
+    let dot_git = root.join(".git");
+    let (gitdir, common) = match std::fs::read_to_string(&dot_git) {
+        // `.git` is a file: a worktree (or a submodule, without `commondir`). The common folder (the
+        // main repository's) is where the branches are. Neither can be on another network share.
         Ok(t) => {
-            let gitdir = crate::proyecto::si_legible(raiz.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
-            let comun = std::fs::read_to_string(gitdir.join("commondir")).map(|c| gitdir.join(c.trim())).unwrap_or_else(|_| gitdir.clone());
-            let comun = crate::proyecto::si_legible(comun)?;
-            (gitdir, comun)
+            let gitdir = crate::proyecto::si_legible(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+            let common = std::fs::read_to_string(gitdir.join("commondir")).map(|c| gitdir.join(c.trim())).unwrap_or_else(|_| gitdir.clone());
+            let common = crate::proyecto::si_legible(common)?;
+            (gitdir, common)
         }
-        Err(_) => (punto.clone(), punto),
+        Err(_) => (dot_git.clone(), dot_git),
     };
     let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
     let head = head.trim();
-    let Some(referencia) = head.strip_prefix("ref:").map(str::trim) else {
-        return es_sha(head).then(|| (head.to_string(), String::new()));
+    let Some(reference) = head.strip_prefix("ref:").map(str::trim) else {
+        return is_sha(head).then(|| (head.to_string(), String::new()));
     };
-    let rama = referencia.strip_prefix("refs/heads/").unwrap_or(referencia).to_string();
-    // Las ramas, en la común; lo propio de un worktree (`refs/bisect`…), en la suya.
-    let dirs = if gitdir == comun { vec![&comun] } else { vec![&comun, &gitdir] };
+    let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference).to_string();
+    // Branches, in the common one; a worktree's own refs (`refs/bisect`…), in its own.
+    let dirs = if gitdir == common { vec![&common] } else { vec![&common, &gitdir] };
     for dir in dirs {
-        if let Ok(s) = std::fs::read_to_string(dir.join(referencia)) {
+        if let Ok(s) = std::fs::read_to_string(dir.join(reference)) {
             let s = s.trim();
-            if es_sha(s) {
-                return Some((s.to_string(), rama));
+            if is_sha(s) {
+                return Some((s.to_string(), branch));
             }
         }
     }
-    let empaquetadas = std::fs::read_to_string(comun.join("packed-refs")).ok()?;
-    empaquetadas
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    packed
         .lines()
         .filter_map(|l| l.split_once(' '))
-        .find(|(sha, r)| r.trim() == referencia && es_sha(sha))
-        .map(|(sha, _)| (sha.to_string(), rama))
+        .find(|(sha, r)| r.trim() == reference && is_sha(sha))
+        .map(|(sha, _)| (sha.to_string(), branch))
 }
 
-/// SHA-1 (40) o SHA-256 (64) en hex.
-fn es_sha(s: &str) -> bool {
+/// SHA-1 (40) or SHA-256 (64) in hex.
+fn is_sha(s: &str) -> bool {
     (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -233,29 +234,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lee_head_suelto_rama_y_empaquetada() {
+    fn reads_detached_head_branch_and_packed() {
         let t = crate::comun::Temporal::nueva("procedencia");
-        let raiz = t.join("repo");
-        let git = raiz.join(".git");
+        let root = t.join("repo");
+        let git = root.join(".git");
         std::fs::create_dir_all(git.join("refs").join("heads")).unwrap();
-        assert_eq!(commit_de(&raiz), None, "sin HEAD");
+        assert_eq!(commit_de(&root), None, "sin HEAD");
         let a = "a".repeat(40);
         let b = "b".repeat(40);
-        // Rama con su fichero.
+        // Branch with its file.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(git.join("refs").join("heads").join("main"), format!("{a}\n")).unwrap();
-        assert_eq!(commit_de(&raiz), Some((a.clone(), "main".into())));
-        // Rama solo en packed-refs.
+        assert_eq!(commit_de(&root), Some((a.clone(), "main".into())));
+        // Branch only in packed-refs.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/vieja\n").unwrap();
         std::fs::write(git.join("packed-refs"), format!("# pack-refs with: peeled fully-peeled sorted\n{b} refs/heads/vieja\n")).unwrap();
-        assert_eq!(commit_de(&raiz), Some((b.clone(), "vieja".into())));
-        // Rama sin commits.
+        assert_eq!(commit_de(&root), Some((b.clone(), "vieja".into())));
+        // Branch without commits.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/nueva\n").unwrap();
-        assert_eq!(commit_de(&raiz), None);
-        // HEAD suelto.
+        assert_eq!(commit_de(&root), None);
+        // Detached HEAD.
         std::fs::write(git.join("HEAD"), format!("{a}\n")).unwrap();
-        assert_eq!(commit_de(&raiz), Some((a.clone(), String::new())));
-        // Un worktree: `.git` es un fichero, HEAD propio y las ramas en la carpeta común.
+        assert_eq!(commit_de(&root), Some((a.clone(), String::new())));
+        // A worktree: `.git` is a file, its own HEAD and the branches in the common folder.
         let wt = t.join("wt");
         let gitdir = git.join("worktrees").join("wt");
         std::fs::create_dir_all(&gitdir).unwrap();
@@ -268,11 +269,11 @@ mod tests {
     }
 
     #[test]
-    fn traceparent_valido_e_invalidos() {
+    fn traceparent_valid_and_invalid() {
         let t = "4bf92f3577b34da6a3ce929d0e0e4736";
         let s = "00f067aa0ba902b7";
         assert_eq!(traza_de(&format!("00-{t}-{s}-01")), Some((t.into(), s.into())));
-        // Una versión futura puede traer campos detrás; la 00, no.
+        // A future version may bring fields after; version 00, no.
         assert_eq!(traza_de(&format!("01-{t}-{s}-01-extra")), Some((t.into(), s.into())));
         assert_eq!(traza_de(&format!("00-{t}-{s}-01-extra")), None);
         assert_eq!(traza_de(&format!("ff-{t}-{s}-01")), None);
@@ -284,17 +285,17 @@ mod tests {
     }
 
     #[test]
-    fn solo_con_traza_no_esta_vacia_y_se_ve() {
+    fn trace_only_is_not_empty_and_shows() {
         let p = Procedencia { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(), span_id: "00f067aa0ba902b7".into(), ..Default::default() };
         assert!(!p.vacia());
         assert_eq!(p.texto(), "trace 4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7");
-        // Una global la conserva (son ids sin nada del proyecto); una de oficio, no.
+        // A global one keeps it (they are ids with nothing from the project); a trade one, no.
         assert_eq!(para_memoria(Some(p.clone()), 0, &[]), Some(p.clone()));
         assert_eq!(para_memoria(Some(p), 3, &[format!("{}android", crate::oficios::PREFIJO)]), None);
     }
 
     #[test]
-    fn texto_corto() {
+    fn short_text() {
         let p = Procedencia { session: "s1".into(), commit: "0123456789abcdef0123456789abcdef01234567".into(), branch: "main".into(), ..Default::default() };
         assert_eq!(p.texto(), "session s1 · commit 0123456789ab (main)");
         assert!(de_columna(Some("{}")).is_none());

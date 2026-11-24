@@ -15,22 +15,22 @@ $repo = 'marcmayol/omoikane'
 $dir = if ($env:OMOIKANE_INSTALL_DIR) { $env:OMOIKANE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\omoikane' }
 $base = if ($env:OMOIKANE_VERSION) { "https://github.com/$repo/releases/download/$($env:OMOIKANE_VERSION)" } else { "https://github.com/$repo/releases/latest/download" }
 # Windows on ARM runs the x64 binary through emulation.
-$paquete = 'omoi-x86_64-pc-windows-msvc.zip'
+$package = 'omoi-x86_64-pc-windows-msvc.zip'
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("omoikane-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-    Write-Host "Downloading $paquete..."
-    Invoke-WebRequest -UseBasicParsing "$base/$paquete" -OutFile (Join-Path $tmp $paquete)
+    Write-Host "Downloading $package..."
+    Invoke-WebRequest -UseBasicParsing "$base/$package" -OutFile (Join-Path $tmp $package)
     Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
 
     # The checksum must match before anything is installed.
-    $linea = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match " $([regex]::Escape($paquete))$" }
-    $esperada = if ($linea) { ($linea -split ' ')[0] } else { '' }
-    $real = (Get-FileHash (Join-Path $tmp $paquete) -Algorithm SHA256).Hash.ToLower()
-    if (-not $esperada -or $esperada -ne $real) { throw "the SHA-256 checksum of $paquete doesn't match; nothing was installed" }
+    $line = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match " $([regex]::Escape($package))$" }
+    $expected = if ($line) { ($line -split ' ')[0] } else { '' }
+    $actual = (Get-FileHash (Join-Path $tmp $package) -Algorithm SHA256).Hash.ToLower()
+    if (-not $expected -or $expected -ne $actual) { throw "the SHA-256 checksum of $package doesn't match; nothing was installed" }
 
-    Expand-Archive (Join-Path $tmp $paquete) -DestinationPath $tmp -Force
+    Expand-Archive (Join-Path $tmp $package) -DestinationPath $tmp -Force
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $exe = Join-Path $dir 'omoi.exe'
     try {
@@ -41,9 +41,9 @@ try {
     Write-Host "Installed: $exe ($(& $exe --version))"
 
     if (-not $env:OMOIKANE_NO_PATH) {
-        $usuario = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if (-not (($usuario -split ';') -contains $dir)) {
-            [Environment]::SetEnvironmentVariable('Path', ($(if ($usuario) { "$usuario;" }) + $dir), 'User')
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not (($userPath -split ';') -contains $dir)) {
+            [Environment]::SetEnvironmentVariable('Path', ($(if ($userPath) { "$userPath;" }) + $dir), 'User')
             Write-Host "Added to your user PATH: $dir (new terminals will see it)."
         }
         if (-not (($env:Path -split ';') -contains $dir)) { $env:Path = "$env:Path;$dir" }

@@ -1,23 +1,23 @@
-//! Lo que conviene revisar en la memoria (Fase 7.1, y los enlaces rotos de la 7.4): memorias que otra más nueva contradice, estados
-//! que se han quedado atrás, rutas que ya no existen, memorias que nunca se usan y notas demasiado
-//! largas para el recall. Sin modelo: palabras, fechas y versiones.
+//! What is worth reviewing in memory (Phase 7.1, and the broken links of 7.4): memories that a newer
+//! one contradicts, statuses that have fallen behind, paths that no longer exist, memories never used
+//! and notes too long for recall. No model: words, dates and versions.
 //!
-//! Las desfasadas se calculan por parejas y se guardan en `review`; se recalculan solas cuando la
-//! base cambia (por una huella de `memory`), entre por donde entre el cambio (CLI, MCP, sync,
-//! importar). Lo demás depende de la hora o del disco y se mira al leer. «Está bien así» se apunta en
-//! la misma tabla y vale hasta que la memoria vuelva a cambiar.
+//! Outdated ones are computed in pairs and stored in `review`; they recompute themselves when the
+//! database changes (via a fingerprint of `memory`), whichever way the change comes in (CLI, MCP, sync,
+//! import). The rest depends on the time or the disk and is checked on read. "It's fine as it is" is
+//! recorded in the same table and holds until the memory changes again.
 //!
-//! Quien sabe qué memorias ha escrito (remember, update, forget, restore, absorb) llama a `al_dia_de`,
-//! que solo rehace las parejas y los enlaces en los que entran ellas, con candidatas sacadas del
-//! índice de texto; la sincronización, la importación y la lectura, que no lo saben, a `al_dia`, que
-//! rehace todo. Con 50.000 memorias, guardar pasó de 2,9 s a unos 15 ms de revisión. Por partes, qué
-//! palabra es rara se toma del último recálculo entero (en `meta`), que se repite cuando el número
-//! de memorias cambia más de un 5 %.
+//! Whoever knows which memories it wrote (remember, update, forget, restore, absorb) calls `al_dia_de`,
+//! which only redoes the pairs and links those memories take part in, with candidates taken from the
+//! text index; sync, import and reads, which don't know, call `al_dia`, which redoes everything. With
+//! 50,000 memories, saving went from 2.9 s to about 15 ms of review. When working incrementally, which
+//! word is rare is taken from the last full recomputation (in `meta`), which is repeated when the number
+//! of memories changes by more than 5 %.
 //!
-//! Calibrado con las 137 memorias reales de Marc del 29-oct-2026: sale el caso que lo motivó (la
-//! nota de Omoikane que seguía en la 0.2.0 frente a la de estado en la 0.10.0) y ningún falso
-//! positivo. Las primeras versiones del detector daban cinco avisos, cuatro falsos: «pendiente» en
-//! una y «hecho» en otra, hablando de cosas distintas.
+//! Calibrated with Marc's 137 real memories of 29-oct-2026: the case that motivated it shows up (the
+//! Omoikane note still on 0.2.0 versus the status one on 0.10.0) and no false positives. The first
+//! versions of the detector gave five warnings, four of them false: "pendiente" in one and "hecho" in
+//! another, talking about different things.
 
 use crate::memoria::{AHORA, Ambito, Memoria};
 use crate::recall::LARGO_PARA_RECALL;
@@ -32,57 +32,57 @@ pub const RUTA_ROTA: &str = "broken_path";
 pub const SIN_USO: &str = "unused";
 pub const LARGA: &str = "too_long";
 pub const ENLACE_ROTO: &str = "broken_link";
-/// Una que el agente dijo que otra sustituye (`supersedes`), o que contradice a otra (`contradicts`).
+/// One the agent said another replaces (`supersedes`), or that contradicts another (`contradicts`).
 pub const SUSTITUIDA: &str = crate::veredictos::SUSTITUIDA;
 pub const CONTRADICE: &str = crate::veredictos::CONTRADICE;
-/// Le ha llegado la fecha de revisión de su tipo (`dias_para_revisar`).
+/// The review date for its kind has arrived (`dias_para_revisar`).
 pub const POR_REVISAR: &str = "due";
-/// Lleva algo que parece un secreto (`secretos`): guardada antes de la 0.19.0 o con `OMOIKANE_REDACT=0`.
+/// Contains something that looks like a secret (`secretos`): saved before 0.19.0 or with `OMOIKANE_REDACT=0`.
 pub const SECRETO: &str = "secret";
-/// Le ha llegado la fecha que alguien le puso al guardarla (`review:AAAA-MM-DD`): un token que caduca,
-/// una oferta, un plan con día. Avisa siempre al empezar la sesión, como un secreto.
+/// The date someone set when saving it has arrived (`review:YYYY-MM-DD`): a token that expires,
+/// an offer, a plan with a day. Always warns at session start, like a secret.
 pub const FECHA: &str = "review_date";
-/// La etiqueta de la fecha de revisión: `review:2026-11-25`.
+/// The review date tag: `review:2026-11-25`.
 pub const ETIQUETA_FECHA: &str = "review:";
-/// Sus ficheros han cambiado mucho desde que se escribió o se revisó (`deriva`).
+/// Its files have changed a lot since it was written or reviewed (`deriva`).
 pub const DERIVA_CODIGO: &str = crate::deriva::DERIVA;
-/// Dos memorias de un mismo oficio que dicen lo mismo (lo mismo promovido desde dos clientes, o
-/// guardado con `force`): para juntarlas. Se calcula al leer, con los vectores guardados
+/// Two memories of the same trade that say the same thing (the same thing promoted from two clients,
+/// or saved with `force`): to be merged. Computed on read, with the stored vectors
 /// ([`duplicadas_de_oficio`]).
 pub const DUPLICADA_OFICIO: &str = "trade_duplicate";
-const TIPOS: [&str; 13] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, DUPLICADA_OFICIO, ENLACE_ROTO, ESTADO_VIEJO, DERIVA_CODIGO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
+const KINDS: [&str; 13] = [SECRETO, FECHA, SUSTITUIDA, CONTRADICE, DESFASADA, DUPLICADA_OFICIO, ENLACE_ROTO, ESTADO_VIEJO, DERIVA_CODIGO, POR_REVISAR, RUTA_ROTA, SIN_USO, LARGA];
 
-/// Días sin tocar a partir de los que una memoria `status` con cambios posteriores se avisa.
+/// Days untouched after which a `status` memory with later changes is flagged.
 pub const DIAS_ESTADO: f64 = 7.0;
-/// Días sin tocar a partir de los que un estado viejo se va solo a la papelera, si su proyecto ya tiene
-/// otro más nuevo (`limpiar`): para entonces ya avisó dos semanas y no lo lee nadie, porque al empezar
-/// sale el último.
+/// Days untouched after which an old status goes to the trash by itself, if its project already has
+/// a newer one (`limpiar`): by then it has warned for two weeks and nobody reads it, because session
+/// start shows the latest.
 pub const DIAS_ESTADO_A_PAPELERA: f64 = 21.0;
-/// Un estado global no es de ningún proyecto: lo que cambie en las demás globales no lo deja atrás. Avisa
-/// solo cuando lleva este tiempo sin tocar.
+/// A global status belongs to no project: what changes in the other global ones doesn't leave it
+/// behind. It only warns after being untouched this long.
 pub const DIAS_ESTADO_GLOBAL: f64 = 30.0;
 
-/// Si un estado cuenta un trabajo ya cerrado («hecho», «publicada», «descartado») y no deja nada
-/// pendiente: no se queda viejo, porque lo que dice no va a cambiar. Mira el título y el principio.
+/// Whether a status tells of work already closed ("hecho", "publicada", "descartado") and leaves nothing
+/// pending: it doesn't go stale, because what it says won't change. Looks at the title and the start.
 pub fn estado_cerrado(m: &Memoria) -> bool {
-    let principio: String = m.content.chars().take(240).collect();
-    let t = normal(&format!("{}\n{}", m.title, frases(&principio).first().copied().unwrap_or("")));
-    (contiene_palabra(&t, HECHO) || contiene_palabra(&t, CERRADO)) && !contiene_palabra(&t, PENDIENTE)
+    let start: String = m.content.chars().take(240).collect();
+    let t = normalize(&format!("{}\n{}", m.title, sentences(&start).first().copied().unwrap_or("")));
+    (contains_word(&t, DONE) || contains_word(&t, CLOSED)) && !contains_word(&t, PENDING)
 }
 
-/// Lo que, además de [`HECHO`], dice que un trabajo se cerró.
-const CERRADO: &[&str] = &["descartado", "descartada", "cerrado", "cerrada", "completado", "completada", "finished", "closed", "discarded"];
+/// What, besides [`DONE`], says a piece of work was closed.
+const CLOSED: &[&str] = &["descartado", "descartada", "cerrado", "cerrada", "completado", "completada", "finished", "closed", "discarded"];
 
-/// `limpiar` sin cortar a quien llama (un error solo se cuenta en stderr) y, si cambió algo, con los
-/// avisos al día. Devuelve si cambió algo, para programar la sincronización.
+/// `limpiar` without failing the caller (an error is only reported on stderr) and, if something
+/// changed, with the warnings up to date. Returns whether something changed, to schedule the sync.
 pub fn limpiar_callado(db: &mut Connection) -> bool {
     match limpiar(db) {
-        Ok(l) => {
-            let algo = !(l.estados_a_papelera.is_empty() && l.decisiones_cerradas.is_empty() && l.bloqueantes_rebajadas.is_empty());
-            if algo && let Err(e) = al_dia(db) {
+        Ok(cleanup) => {
+            let changed = !(cleanup.estados_a_papelera.is_empty() && cleanup.decisiones_cerradas.is_empty() && cleanup.bloqueantes_rebajadas.is_empty());
+            if changed && let Err(e) = al_dia(db) {
                 eprintln!("omoikane: review: {e:#}");
             }
-            algo
+            changed
         }
         Err(e) => {
             eprintln!("omoikane: cleanup: {e:#}");
@@ -91,101 +91,101 @@ pub fn limpiar_callado(db: &mut Connection) -> bool {
     }
 }
 
-/// Lo que `limpiar` cambió solo.
+/// What `limpiar` changed by itself.
 #[derive(Debug, Default, Serialize)]
 pub struct Limpieza {
-    /// Estados viejos que se fueron a la papelera (su proyecto ya tiene uno más nuevo).
+    /// Old statuses that went to the trash (their project already has a newer one).
     pub estados_a_papelera: Vec<String>,
-    /// Decisiones abiertas que se cerraron: otra posterior de la misma tarea ya está resuelta.
+    /// Open decisions that were closed: a later one of the same task is already resolved.
     pub decisiones_cerradas: Vec<String>,
-    /// Bloqueantes que pasan a «para después»: en su proyecto ya se resolvió una tarea posterior.
+    /// Blocking ones that become "for later": a later task has already been resolved in their project.
     pub bloqueantes_rebajadas: Vec<String>,
 }
 
-/// Si una memoria está escrita en español (lo que `limpiar` le añade va en su idioma, no en el de quien
-/// la limpia): más palabras sueltas de español que de inglés, o alguna letra que solo tiene el español.
-fn en_espanol(t: &str) -> bool {
+/// Whether a memory is written in Spanish (what `limpiar` adds to it goes in its language, not in that
+/// of whoever cleans it): more standalone Spanish words than English ones, or some letter only Spanish has.
+fn is_spanish(t: &str) -> bool {
     let t = format!(" {} ", t.to_lowercase());
-    let cuenta = |ws: &[&str]| ws.iter().map(|w| t.matches(&format!(" {w} ")).count()).sum::<usize>();
-    let es = cuenta(&["el", "la", "los", "las", "de", "que", "en", "y", "con", "para", "por", "una", "no", "se"]);
-    let en = cuenta(&["the", "of", "and", "to", "in", "is", "for", "with", "that", "it", "not", "on"]);
+    let count = |ws: &[&str]| ws.iter().map(|w| t.matches(&format!(" {w} ")).count()).sum::<usize>();
+    let es = count(&["el", "la", "los", "las", "de", "que", "en", "y", "con", "para", "por", "una", "no", "se"]);
+    let en = count(&["the", "of", "and", "to", "in", "is", "for", "with", "that", "it", "not", "on"]);
     es > en || (es == en && t.contains(['ñ', 'á', 'é', 'í', 'ó', 'ú']))
 }
 
-/// Si la dejó el agente de tareas Kumi: por la etiqueta o por el título («Kumi: …»), que algunas de sus
-/// aprobaciones llevan sin la etiqueta.
-fn de_kumi(m: &Memoria) -> bool {
+/// Whether it was left by the Kumi task agent: by the tag or by the title ("Kumi: …"), since some of its
+/// approvals come without the tag.
+fn from_kumi(m: &Memoria) -> bool {
     m.tags.iter().any(|t| t == "kumi") || m.title.starts_with("Kumi:")
 }
 
-/// Las etiquetas que atan una memoria a una tarea de un agente (`tarea:…`, `trabajo:…`).
-fn de_tarea(m: &Memoria) -> Vec<&str> {
+/// The tags that tie a memory to an agent's task (`tarea:…`, `trabajo:…`).
+fn task_tags(m: &Memoria) -> Vec<&str> {
     m.tags.iter().map(String::as_str).filter(|t| t.starts_with("tarea:") || t.starts_with("trabajo:") || t.starts_with("task:")).collect()
 }
 
-/// Lo que se arregla solo, sin preguntar a nadie, y siempre con vuelta atrás (la papelera o el
-/// historial). Corre al empezar la sesión, al abrir la vista web y en `omoi review` / `omoi decisions`:
+/// What fixes itself, without asking anyone, and always reversibly (the trash or the history). Runs at
+/// session start, when opening the web view and in `omoi review` / `omoi decisions`:
 ///
-/// - Un estado vivo que lleva [`DIAS_ESTADO_A_PAPELERA`] sin tocar, cuando su proyecto ya tiene uno más
-///   nuevo, se va a la papelera: avisaba desde hacía dos semanas y al empezar solo se lee el último.
-/// - Una decisión abierta de una tarea (`tarea:X`) se cierra cuando otra memoria posterior de esa tarea
-///   ya está resuelta: la respuesta dice cuál.
-/// - Una bloqueante de un agente (Kumi: `kumi` + `blocking`) pasa a «para después» cuando en su proyecto
-///   ya se resolvió una decisión de una tarea posterior: el trabajo siguió sin ella.
+/// - A live status untouched for [`DIAS_ESTADO_A_PAPELERA`], when its project already has a newer one,
+///   goes to the trash: it had been warning for two weeks and session start only reads the latest.
+/// - An open decision of a task (`tarea:X`) is closed when a later memory of that task is already
+///   resolved: the answer says which one.
+/// - An agent's blocking decision (Kumi: `kumi` + `blocking`) becomes "for later" when a decision of a
+///   later task has already been resolved in its project: the work went on without it.
 pub fn limpiar(db: &mut Connection) -> Result<Limpieza> {
     use crate::memoria::{self, ABIERTA, BLOQUEANTE, ESTADO, RESUELTA};
     let mut r = Limpieza::default();
-    let ahora = chrono_ahora(db)?;
+    let now = db_now(db)?;
 
-    // Estados: de cada proyecto, el más nuevo se queda; los demás, viejos y vivos, a la papelera.
-    let estados = memoria::con_etiqueta(db, &Ambito::Todos, ESTADO)?;
-    let mut vistos: HashSet<(i64, String)> = HashSet::new();
-    for m in &estados {
+    // Statuses: in each project the newest stays; the others, old and live, go to the trash.
+    let statuses = memoria::con_etiqueta(db, &Ambito::Todos, ESTADO)?;
+    let mut seen: HashSet<(i64, String)> = HashSet::new();
+    for m in &statuses {
         if m.project_id == 0 {
             continue;
         }
-        if !vistos.insert((m.project_id, m.space.clone())) && dias_entre(&m.updated_at, &ahora) > DIAS_ESTADO_A_PAPELERA && !estado_cerrado(m) && !m.pinned {
+        if !seen.insert((m.project_id, m.space.clone())) && days_between(&m.updated_at, &now) > DIAS_ESTADO_A_PAPELERA && !estado_cerrado(m) && !m.pinned {
             memoria::olvidar(db, &m.id)?;
             r.estados_a_papelera.push(m.id.clone());
         }
     }
 
-    // Decisiones abiertas.
-    let abiertas: Vec<Memoria> = memoria::con_etiqueta(db, &Ambito::Todos, ABIERTA)?.into_iter().filter(|m| m.kind == memoria::Tipo::Decision).collect();
-    if abiertas.is_empty() {
+    // Open decisions.
+    let open: Vec<Memoria> = memoria::con_etiqueta(db, &Ambito::Todos, ABIERTA)?.into_iter().filter(|m| m.kind == memoria::Tipo::Decision).collect();
+    if open.is_empty() {
         return Ok(r);
     }
-    let resueltas = memoria::con_etiqueta(db, &Ambito::Todos, RESUELTA)?;
-    for d in &abiertas {
-        let tareas = de_tarea(d);
-        let prueba = resueltas.iter().find(|x| x.id != d.id && x.updated_at > d.updated_at && de_tarea(x).iter().any(|t| tareas.contains(t)));
-        if let Some(x) = prueba {
-            let titulo: String = x.title.chars().take(100).collect();
-            let corto = &x.id[..12.min(x.id.len())];
-            let respuesta = if en_espanol(&d.content) {
-                format!("Cerrada sola: otra memoria posterior de la misma tarea ya está resuelta ({corto} «{titulo}»).")
+    let resolved = memoria::con_etiqueta(db, &Ambito::Todos, RESUELTA)?;
+    for d in &open {
+        let tasks = task_tags(d);
+        let proof = resolved.iter().find(|x| x.id != d.id && x.updated_at > d.updated_at && task_tags(x).iter().any(|t| tasks.contains(t)));
+        if let Some(x) = proof {
+            let title: String = x.title.chars().take(100).collect();
+            let short = &x.id[..12.min(x.id.len())];
+            let answer = if is_spanish(&d.content) {
+                format!("Cerrada sola: otra memoria posterior de la misma tarea ya está resuelta ({short} «{title}»).")
             } else {
-                format!("Closed by itself: a later memory of the same task is already resolved ({corto} «{titulo}»).")
+                format!("Closed by itself: a later memory of the same task is already resolved ({short} «{title}»).")
             };
-            if let Ok(Ok(_)) = memoria::resolver_decision(db, &d.id, &respuesta, Some("closed by Omoikane: same task resolved later".into()), false) {
+            if let Ok(Ok(_)) = memoria::resolver_decision(db, &d.id, &answer, Some("closed by Omoikane: same task resolved later".into()), false) {
                 r.decisiones_cerradas.push(d.id.clone());
             }
             continue;
         }
-        let de_agente = de_kumi(d);
-        if d.bloqueante() && de_agente && d.project_id != 0 {
-            let despues = resueltas.iter().find(|x| {
-                x.project_id == d.project_id && x.kind == memoria::Tipo::Decision && x.created_at > d.created_at && de_kumi(x) && !de_tarea(x).iter().any(|t| tareas.contains(t))
+        let by_agent = from_kumi(d);
+        if d.bloqueante() && by_agent && d.project_id != 0 {
+            let later = resolved.iter().find(|x| {
+                x.project_id == d.project_id && x.kind == memoria::Tipo::Decision && x.created_at > d.created_at && from_kumi(x) && !task_tags(x).iter().any(|t| tasks.contains(t))
             });
-            if let Some(x) = despues {
+            if let Some(x) = later {
                 let tags: Vec<String> = d.tags.iter().filter(|t| *t != BLOQUEANTE).cloned().collect();
-                let corto = &x.id[..12.min(x.id.len())];
-                let nota = if en_espanol(&d.content) {
-                    format!("Ya no bloquea: después se resolvió otra tarea de este proyecto ({corto}). Decídela cuando puedas.")
+                let short = &x.id[..12.min(x.id.len())];
+                let note = if is_spanish(&d.content) {
+                    format!("Ya no bloquea: después se resolvió otra tarea de este proyecto ({short}). Decídela cuando puedas.")
                 } else {
-                    format!("No longer blocking: a later task of this project was resolved after it ({corto}). Decide it when you can.")
+                    format!("No longer blocking: a later task of this project was resolved after it ({short}). Decide it when you can.")
                 };
-                let c = memoria::Cambios { tags: Some(tags), append: Some(nota), reason: Some("no longer blocking: the project moved on".into()), ..Default::default() };
+                let c = memoria::Cambios { tags: Some(tags), append: Some(note), reason: Some("no longer blocking: the project moved on".into()), ..Default::default() };
                 memoria::actualizar(db, &d.id, c, None)?;
                 r.bloqueantes_rebajadas.push(d.id.clone());
             }
@@ -194,19 +194,19 @@ pub fn limpiar(db: &mut Connection) -> Result<Limpieza> {
     Ok(r)
 }
 
-/// Si un estado puede avisar de que se ha quedado atrás: lleva la etiqueta, no cuenta algo cerrado y,
-/// si es global, lleva [`DIAS_ESTADO_GLOBAL`] sin tocar (si no, [`DIAS_ESTADO`]).
-fn estado_que_avisa(m: &Memoria, dias: f64) -> bool {
+/// Whether a status may warn that it has fallen behind: it has the tag, doesn't tell of something
+/// closed and, if global, has been untouched for [`DIAS_ESTADO_GLOBAL`] (otherwise [`DIAS_ESTADO`]).
+fn status_warns(m: &Memoria, days: f64) -> bool {
     let global = m.project_id == 0 && m.space.is_empty();
-    m.tags.iter().any(|t| t == crate::memoria::ESTADO) && dias > if global { DIAS_ESTADO_GLOBAL } else { DIAS_ESTADO } && !estado_cerrado(m)
+    m.tags.iter().any(|t| t == crate::memoria::ESTADO) && days > if global { DIAS_ESTADO_GLOBAL } else { DIAS_ESTADO } && !estado_cerrado(m)
 }
-/// Días desde que se creó sin recordarse nunca.
+/// Days since it was created without ever being recalled.
 pub const DIAS_SIN_USO: f64 = 30.0;
 
-/// Cada cuántos días sin tocar conviene comprobar que una memoria sigue siendo verdad. Una decisión o
-/// una receta se quedan viejas antes que un hecho o una trampa; una preferencia, mientras el usuario
-/// no diga otra cosa, vale siempre, y una `status` ya tiene su propio aviso. «Está bien así» vuelve a
-/// poner el reloj a cero.
+/// Every how many untouched days it is worth checking that a memory is still true. A decision or a
+/// procedure goes stale sooner than a fact or a gotcha; a preference holds forever until the user
+/// says otherwise, and a `status` already has its own warning. "It's fine as it is" resets the
+/// clock to zero.
 pub fn dias_para_revisar(m: &Memoria) -> Option<f64> {
     use crate::memoria::Tipo;
     if m.tags.iter().any(|t| t == crate::memoria::ESTADO) {
@@ -219,33 +219,33 @@ pub fn dias_para_revisar(m: &Memoria) -> Option<f64> {
     }
 }
 
-/// La fecha de revisión de una memoria (la etiqueta `review:AAAA-MM-DD`), si lleva una válida.
+/// A memory's review date (the `review:YYYY-MM-DD` tag), if it has a valid one.
 pub fn fecha_revision(tags: &[String]) -> Option<&str> {
-    tags.iter().filter_map(|t| t.strip_prefix(ETIQUETA_FECHA)).find(|f| es_fecha(f))
+    tags.iter().filter_map(|t| t.strip_prefix(ETIQUETA_FECHA)).find(|f| is_date(f))
 }
 
-/// La fecha de revisión que va escrita en el texto y no en una etiqueta: «[review-after] 10-nov-2026»
-/// (así la dejan algunos agentes). Sin esto, el aviso de fecha no salía nunca.
-pub fn fecha_escrita(texto: &str) -> Option<String> {
-    let i = texto.find("[review-after]")?;
-    let resto: String = texto[i + "[review-after]".len()..].chars().take(40).collect();
-    fechas(&normal(&resto)).into_iter().next()
+/// The review date written in the text rather than in a tag: "[review-after] 10-nov-2026"
+/// (some agents leave it like that). Without this, the date warning never showed up.
+pub fn fecha_escrita(text: &str) -> Option<String> {
+    let i = text.find("[review-after]")?;
+    let rest: String = text[i + "[review-after]".len()..].chars().take(40).collect();
+    dates(&normalize(&rest)).into_iter().next()
 }
 
-/// `AAAA-MM-DD` con un mes y un día posibles (el 31 de cualquier mes vale: basta para comparar).
-fn es_fecha(f: &str) -> bool {
+/// `YYYY-MM-DD` with a possible month and day (the 31st of any month is accepted: enough for comparing).
+fn is_date(f: &str) -> bool {
     let b = f.as_bytes();
-    let cifras = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' || !cifras(0..4) || !cifras(5..7) || !cifras(8..10) {
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' || !digits(0..4) || !digits(5..7) || !digits(8..10) {
         return false;
     }
-    let (mes, dia) = (f[5..7].parse::<u8>().unwrap_or(0), f[8..10].parse::<u8>().unwrap_or(0));
-    (1..=12).contains(&mes) && (1..=31).contains(&dia)
+    let (month, day) = (f[5..7].parse::<u8>().unwrap_or(0), f[8..10].parse::<u8>().unwrap_or(0));
+    (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
-/// Una etiqueta `review:` que no es una fecha no avisaría nunca: mejor decirlo al guardar.
+/// A `review:` tag that isn't a date would never warn: better to say so when saving.
 pub fn comprobar_fecha(tags: &[String]) -> Result<()> {
-    if let Some(t) = tags.iter().find(|t| t.strip_prefix(ETIQUETA_FECHA).is_some_and(|f| !es_fecha(f))) {
+    if let Some(t) = tags.iter().find(|t| t.strip_prefix(ETIQUETA_FECHA).is_some_and(|f| !is_date(f))) {
         anyhow::bail!(crate::tr!(
             "tag «{t}»: a review date goes as review:YYYY-MM-DD (e.g. review:2026-11-25)",
             "etiqueta «{t}»: la fecha de revisión va como review:AAAA-MM-DD (p. ej. review:2026-11-25)"
@@ -254,99 +254,98 @@ pub fn comprobar_fecha(tags: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// La fecha de revisión si ya ha llegado (`hoy`, el día local) y nadie ha tocado la memoria ni la ha
-/// dado por buena desde ese día. Recordarla no cuenta: que el agente la reciba no dice que siga valiendo.
-fn fecha_llegada(m: &Memoria, revisadas: &HashMap<(String, String), String>, hoy: &Hoy) -> Option<String> {
+/// The review date if it has arrived (`today`, the local day) and nobody has touched the memory or
+/// marked it fine since that day. Recalling it doesn't count: the agent receiving it doesn't say it still holds.
+fn date_reached(m: &Memoria, reviewed: &HashMap<(String, String), String>, today: &Today) -> Option<String> {
     let f = fecha_revision(&m.tags).map(str::to_string).or_else(|| fecha_escrita(&m.content))?;
-    // Una decisión ya resuelta no espera a nadie, aunque su texto lleve la fecha.
+    // An already resolved decision waits for nobody, even if its text carries the date.
     if m.tags.iter().any(|t| t == crate::memoria::RESUELTA) {
         return None;
     }
     let f = f.as_str();
-    if f > hoy.dia.as_str() {
+    if f > today.day.as_str() {
         return None;
     }
-    // Las fechas guardadas son UTC y `f` es un día local: «desde ese día» es desde su medianoche local
-    // pasada a UTC. Comparando con `f` a secas, quien la daba por buena entre medianoche y la hora UTC
-    // (al este de Greenwich) dejaba un sello del día anterior y el aviso no se iba nunca.
-    let inicio = inicio_utc(f, hoy.desfase);
-    if m.updated_at.as_str() >= inicio.as_str() {
+    // Stored dates are UTC and `f` is a local day: "since that day" means since its local midnight
+    // converted to UTC. Comparing with plain `f`, whoever marked it fine between midnight and the UTC
+    // hour (east of Greenwich) left a stamp from the previous day and the warning never went away.
+    let start = utc_start(f, today.offset);
+    if m.updated_at.as_str() >= start.as_str() {
         return None;
     }
-    if revisadas.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= inicio.as_str()) {
+    if reviewed.get(&(m.id.clone(), FECHA.to_string())).is_some_and(|at| at.as_str() >= start.as_str()) {
         return None;
     }
     Some(f.to_string())
 }
 
-/// Las memorias de `ambito` a las que les ha llegado la fecha de revisión, con esa fecha, de la más
-/// vieja a la más nueva: van al empezar la sesión con lo que hay que mirar (`review_reason`), junto a
-/// las decisiones abiertas.
-pub fn fechas_llegadas(db: &Connection, ambito: &Ambito) -> Result<Vec<(Memoria, String)>> {
+/// The memories in `scope` whose review date has arrived, with that date, from oldest to newest:
+/// they go at session start with what to check (`review_reason`), along with the open decisions.
+pub fn fechas_llegadas(db: &Connection, scope: &Ambito) -> Result<Vec<(Memoria, String)>> {
     let sql = format!(
         "SELECT {} FROM memory m WHERE {} AND (instr(m.tags, '{ETIQUETA_FECHA}') > 0 OR instr(m.content, '[review-after]') > 0)",
         crate::memoria::COLUMNAS,
-        ambito.sql()
+        scope.sql()
     );
     let mut q = db.prepare(&sql)?;
     let ms: Vec<Memoria> = q.query_map([], crate::memoria::de_fila)?.collect::<rusqlite::Result<_>>()?;
     if ms.is_empty() {
         return Ok(Vec::new());
     }
-    let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, Hoy::de(db)?);
-    let mut r: Vec<(Memoria, String)> = ms.into_iter().filter_map(|m| fecha_llegada(&m, &revisadas, &hoy).map(|f| (m, f))).collect();
+    let (reviewed, today) = (crate::veredictos::oks(db, false)?, Today::load(db)?);
+    let mut r: Vec<(Memoria, String)> = ms.into_iter().filter_map(|m| date_reached(&m, &reviewed, &today).map(|f| (m, f))).collect();
     r.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.id.cmp(&b.0.id)));
     Ok(r)
 }
 
-/// El día local y cuántos segundos va la hora local por delante de UTC.
-struct Hoy {
-    dia: String,
-    desfase: i64,
+/// The local day and how many seconds local time is ahead of UTC.
+struct Today {
+    day: String,
+    offset: i64,
 }
 
-impl Hoy {
-    fn de(db: &Connection) -> Result<Hoy> {
-        let (dia, desfase) = db.query_row(
+impl Today {
+    fn load(db: &Connection) -> Result<Today> {
+        let (day, offset) = db.query_row(
             "SELECT date('now', 'localtime'), CAST(strftime('%s', 'now', 'localtime') AS INTEGER) - CAST(strftime('%s', 'now') AS INTEGER)",
             [],
-            |f| Ok((f.get(0)?, f.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(Hoy { dia, desfase })
+        Ok(Today { day, offset })
     }
 }
 
-/// La medianoche local del día `f` (`AAAA-MM-DD`) en UTC, como `AAAA-MM-DDTHH:MM:SS`, comparable con
-/// las fechas guardadas (`…Z`).
-fn inicio_utc(f: &str, desfase: i64) -> String {
+/// Local midnight of day `f` (`YYYY-MM-DD`) in UTC, as `YYYY-MM-DDTHH:MM:SS`, comparable with the
+/// stored dates (`…Z`).
+fn utc_start(f: &str, offset: i64) -> String {
     let n = |r: std::ops::Range<usize>| f.get(r).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-    let s = dias_desde_1970(n(0..4), n(5..7), n(8..10)) * 86_400 - desfase;
-    let (dias, resto) = (s.div_euclid(86_400), s.rem_euclid(86_400));
-    let (a, m, d) = civil(dias);
-    format!("{a:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", resto / 3600, resto % 3600 / 60, resto % 60)
+    let s = days_since_1970(n(0..4), n(5..7), n(8..10)) * 86_400 - offset;
+    let (days, rest) = (s.div_euclid(86_400), s.rem_euclid(86_400));
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", rest / 3600, rest % 3600 / 60, rest % 60)
 }
 
-/// Días desde 1970-01-01 (calendario gregoriano proléptico; algoritmo de H. Hinnant).
-fn dias_desde_1970(a: i64, m: i64, d: i64) -> i64 {
-    let a = if m <= 2 { a - 1 } else { a };
-    let era = a.div_euclid(400);
-    let ae = a - era * 400;
-    let dy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let de = ae * 365 + ae / 4 - ae / 100 + dy;
-    era * 146_097 + de - 719_468
+/// Days since 1970-01-01 (proleptic Gregorian calendar; H. Hinnant's algorithm).
+fn days_since_1970(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
-/// La fecha de un número de días desde 1970-01-01.
-fn civil(z: i64) -> (i64, i64, i64) {
+/// The date of a number of days since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
-    let de = z - era * 146_097;
-    let ae = (de - de / 1460 + de / 36_524 - de / 146_096) / 365;
-    let da = de - (365 * ae + ae / 4 - ae / 100);
-    let mp = (5 * da + 2) / 153;
-    let d = da - (153 * mp + 2) / 5 + 1;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (ae + era * 400 + i64::from(m <= 2), m, d)
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -355,37 +354,37 @@ pub struct Aviso {
     pub memory_id: String,
     pub title: String,
     pub project: String,
-    /// La otra memoria (la más nueva, en las desfasadas); vacío si no hay.
+    /// The other memory (the newer one, for outdated ones); empty if there is none.
     pub other_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_title: Option<String>,
-    /// Qué se ha visto, en inglés y corto (lo leen el agente y la vista). En un veredicto lleva
-    /// también el motivo y «by <autor>».
+    /// What was seen, in short English (read by the agent and the view). In a verdict it also
+    /// carries the reason and "by <author>".
     pub detail: String,
-    /// En un veredicto (`superseded`, `contradicts`): por qué lo dijo quien lo dijo, y quién.
+    /// In a verdict (`superseded`, `contradicts`): why whoever said it said it, and who.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub reason: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub author: String,
-    /// En una sustituida, cuántos saltos hay hasta `other_id` cuando es el final de una cadena (0 si
-    /// es la sustituta directa).
-    #[serde(skip_serializing_if = "es_cero")]
+    /// In a superseded one, how many hops there are to `other_id` when it is the end of a chain (0 if
+    /// it is the direct replacement).
+    #[serde(skip_serializing_if = "is_zero")]
     pub via: usize,
 }
 
-fn es_cero(n: &usize) -> bool {
+fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// El detalle de un veredicto para el agente y la CLI: qué relación, el motivo y quién lo dijo.
-fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize) -> String {
+/// A verdict's detail for the agent and the CLI: which relation, the reason and who said it.
+fn verdict_detail(base: &str, v: &crate::veredictos::Veredicto, hops: usize) -> String {
     let mut d = base.to_string();
     if !v.reason.is_empty() {
         d.push_str(": ");
         d.push_str(&crate::veredictos::motivo_corto(&v.reason));
     }
-    if saltos > 1 {
-        d.push_str(&format!(" (via {saltos})"));
+    if hops > 1 {
+        d.push_str(&format!(" (via {hops})"));
     }
     if !v.author.is_empty() {
         d.push_str(&format!(" · by {}", v.author));
@@ -393,185 +392,186 @@ fn detalle_veredicto(base: &str, v: &crate::veredictos::Veredicto, saltos: usize
     d
 }
 
-/// Cambia con cualquier escritura: memorias nuevas, cambiadas, movidas u olvidadas. Es
-/// `número|último cambio|sello más alto|proyectos|espacios`; todo menos el sello sale de
-/// `huella_ligera`, así que la de `antes` y la de `al_dia_de` no pueden ir cada una por su lado.
-fn huella(db: &Connection) -> Result<String> {
-    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
-    let sello: String = db.query_row("SELECT COALESCE(max(hlc), '') FROM memory", [], |f| f.get(0))?;
-    // Con la versión: si el detector cambia (1.12.0: la historia de un diario ya no cuenta), lo guardado
-    // con el de antes se recalcula al actualizar, y no espera a que cambie alguna memoria.
-    Ok(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}|{}", env!("CARGO_PKG_VERSION")))
+/// Changes with any write: new, changed, moved or forgotten memories. It is
+/// `count|last change|highest stamp|projects|spaces`; everything but the stamp comes from
+/// `light_fingerprint`, so the one from `antes` and the one from `al_dia_de` can't drift apart.
+fn fingerprint(db: &Connection) -> Result<String> {
+    let (n, last, projects, spaces) = light_fingerprint(db)?;
+    let stamp: String = db.query_row("SELECT COALESCE(max(hlc), '') FROM memory", [], |row| row.get(0))?;
+    // With the version: if the detector changes (1.12.0: a journal's history no longer counts), what was
+    // saved with the previous one is recomputed on upgrade, without waiting for some memory to change.
+    Ok(format!("{n}|{last}|{stamp}|{projects}|{spaces}|{}", env!("CARGO_PKG_VERSION")))
 }
 
-/// Lo guardado del último recálculo entero: cuántas memorias había y las palabras que no eran raras.
-const CLAVE_COMUNES: &str = "revision_comunes";
-/// Cuántas escrituras se han revisado por partes desde el último recálculo entero.
-const CLAVE_PARCIALES: &str = "revision_parciales";
-/// Hilos con los que se miran las memorias en [`avisos`], como mucho, y memorias por hilo, como poco
-/// (con menos, arrancar los hilos cuesta más de lo que ahorran).
-const MAXIMO_HILOS: usize = 8;
-const MINIMO_POR_HILO: usize = 2_000;
-/// Desde cuántas memorias se sueltan en otro hilo al acabar [`avisos`].
-const SOLTAR_APARTE: usize = 10_000;
-/// Por debajo de este número de memorias se recalcula siempre entero: es barato y el tope de las raras
-/// aún se mueve con cada memoria (`tope_raras`).
+/// What the last full recomputation saved: how many memories there were and the words that were not rare.
+const COMMON_WORDS_KEY: &str = "revision_comunes";
+/// How many writes have been reviewed incrementally since the last full recomputation.
+const PARTIAL_COUNT_KEY: &str = "revision_parciales";
+/// Threads used to check the memories in [`avisos`], at most, and memories per thread, at least
+/// (with fewer, starting the threads costs more than they save).
+const MAX_THREADS: usize = 8;
+const MIN_PER_THREAD: usize = 2_000;
+/// From how many memories they are dropped on another thread at the end of [`avisos`].
+const DROP_ELSEWHERE_FROM: usize = 10_000;
+/// Below this number of memories it is always fully recomputed: it's cheap and the rare-word cap
+/// still moves with every memory (`rare_cap`).
 pub const MINIMO_POR_PARTES: usize = 2_000;
-/// Cuánto puede cambiar el número de memorias desde el último recálculo entero antes de rehacerlo:
-/// hasta ahí, qué palabra es rara se toma de entonces.
-const DERIVA: f64 = 0.05;
-/// Más memorias cambiadas de una vez que esto (una importación a mano, un `absorb` enorme) se recalcula entero.
-const MAXIMO_POR_PARTES: usize = 200;
+/// How much the number of memories may change since the last full recomputation before redoing it:
+/// up to there, which word is rare is taken from back then.
+const COUNT_DRIFT: f64 = 0.05;
+/// More memories changed at once than this (a manual import, a huge `absorb`) is fully recomputed.
+const MAX_INCREMENTAL: usize = 200;
 
-/// Recalcula las desfasadas si la base cambió desde la última vez, sin saber qué cambió: todo entero.
-/// Es lo que corre tras la sincronización y la importación, y al leer (`avisos`, el recall) por si
-/// algo escribió sin avisar.
+/// Recomputes the outdated ones if the database changed since last time, without knowing what changed:
+/// all of it. This is what runs after sync and import, and on read (`avisos`, the recall) in case
+/// something wrote without telling.
 pub fn al_dia(db: &Connection) -> Result<()> {
-    let h = huella(db)?;
-    let antes: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
-    if antes.as_deref() == Some(h.as_str()) {
+    let h = fingerprint(db)?;
+    let before: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |row| row.get(0)).optional()?;
+    if before.as_deref() == Some(h.as_str()) {
         return Ok(());
     }
-    rehacer(db, &h)
+    rebuild(db, &h)
 }
 
-/// Si la revisión estaba al día justo antes de escribir. Se toma antes de la escritura y se le pasa
-/// a [`al_dia_de`]: solo así se sabe que lo único nuevo son las memorias que se escriben.
+/// Whether the review was up to date just before writing. Taken before the write and passed to
+/// [`al_dia_de`]: only that way do we know the only new thing is the memories being written.
 pub struct Antes {
-    /// La huella guardada, si lo que se ve de ella sin leer la tabla entera es lo de ahora.
-    huella: Option<String>,
+    /// The saved fingerprint, if what can be seen of it without reading the whole table is the current one.
+    fingerprint: Option<String>,
 }
 
-/// Lo que da la huella sin `max(hlc)`: número de memorias, último cambio, proyectos y espacios, que
-/// salen de los índices `memory_scope` y `memory_space` sin leer la tabla (el `max(hlc)` la lee
-/// entera: 30 ms con 50.000 memorias). Las sumas, como texto de SQLite, igual por los dos caminos.
-fn huella_ligera(db: &Connection) -> Result<(String, String, String, String)> {
-    let (n, ultimo, proyectos) = db.query_row("SELECT count(*), COALESCE(max(updated_at), ''), total(project_id) || '' FROM memory", [], |f| {
-        Ok((f.get::<_, i64>(0)?.to_string(), f.get::<_, String>(1)?, f.get::<_, String>(2)?))
+/// What the fingerprint gives without `max(hlc)`: number of memories, last change, projects and spaces,
+/// which come from the `memory_scope` and `memory_space` indexes without reading the table (`max(hlc)`
+/// reads all of it: 30 ms with 50,000 memories). The sums, as SQLite text, equal on both paths.
+fn light_fingerprint(db: &Connection) -> Result<(String, String, String, String)> {
+    let (n, last, projects) = db.query_row("SELECT count(*), COALESCE(max(updated_at), ''), total(project_id) || '' FROM memory", [], |row| {
+        Ok((row.get::<_, i64>(0)?.to_string(), row.get::<_, String>(1)?, row.get::<_, String>(2)?))
     })?;
-    let espacios: String = db.query_row("SELECT total(space_id) || '' FROM memory WHERE space_id IS NOT NULL", [], |f| f.get(0))?;
-    Ok((n, ultimo, proyectos, espacios))
+    let spaces: String = db.query_row("SELECT total(space_id) || '' FROM memory WHERE space_id IS NOT NULL", [], |row| row.get(0))?;
+    Ok((n, last, projects, spaces))
 }
 
-/// Compara con la huella guardada lo que sale del índice, sin el sello. Lo que solo cambia el sello
-/// llega por la sincronización, que lo recalcula todo al acabar.
+/// Compares the saved fingerprint with what comes from the index, without the stamp. What only changes
+/// the stamp arrives via sync, which recomputes everything when done.
 pub fn antes(db: &Connection) -> Result<Antes> {
-    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
-    let guardada: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?;
-    let huella = guardada.filter(|g| {
+    let (n, last, projects, spaces) = light_fingerprint(db)?;
+    let saved: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |row| row.get(0)).optional()?;
+    let fingerprint = saved.filter(|g| {
         let p: Vec<&str> = g.split('|').collect();
-        p.len() == 6 && p[0] == n && p[1] == ultimo && p[3] == proyectos && p[4] == espacios && p[5] == env!("CARGO_PKG_VERSION")
+        p.len() == 6 && p[0] == n && p[1] == last && p[3] == projects && p[4] == spaces && p[5] == env!("CARGO_PKG_VERSION")
     });
-    Ok(Antes { huella })
+    Ok(Antes { fingerprint })
 }
 
-/// La huella tras escribir `ids` sobre la de `antes`, sin leer la tabla: el sello más alto es el de
-/// antes o el de una de ellas (un cambio aquí siempre lleva un sello más nuevo). `None` si alguna ya
-/// no está (olvidada o absorbida: quizá llevaba el sello más alto) y hay que leerla entera. Si saliera
-/// distinta de la de verdad, la siguiente lectura lo recalcularía todo: más lento, pero bien.
-fn huella_tras(db: &Connection, antes: &str, ids: &BTreeSet<String>) -> Result<Option<String>> {
-    let mut sello = antes.split('|').nth(2).unwrap_or("").to_string();
+/// The fingerprint after writing `ids` on top of the one from `antes`, without reading the table: the
+/// highest stamp is the previous one or one of theirs (a change here always carries a newer stamp).
+/// `None` if one of them is gone (forgotten or absorbed: maybe it had the highest stamp) and the whole
+/// table must be read. If it came out different from the real one, the next read would recompute
+/// everything: slower, but correct.
+fn fingerprint_after(db: &Connection, before: &str, ids: &BTreeSet<String>) -> Result<Option<String>> {
+    let mut stamp = before.split('|').nth(2).unwrap_or("").to_string();
     for id in ids {
-        let Some(s) = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else {
+        let Some(s) = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [id], |row| row.get::<_, String>(0)).optional()? else {
             return Ok(None);
         };
-        sello = sello.max(s);
+        stamp = stamp.max(s);
     }
-    let (n, ultimo, proyectos, espacios) = huella_ligera(db)?;
-    Ok(Some(format!("{n}|{ultimo}|{sello}|{proyectos}|{espacios}|{}", env!("CARGO_PKG_VERSION"))))
+    let (n, last, projects, spaces) = light_fingerprint(db)?;
+    Ok(Some(format!("{n}|{last}|{stamp}|{projects}|{spaces}|{}", env!("CARGO_PKG_VERSION"))))
 }
 
-/// Pone al día la revisión tras escribir `ids` (guardadas, cambiadas, olvidadas o recuperadas), sin
-/// rehacerla entera: solo las parejas en las que entra una de ellas, contra sus candidatas del índice
-/// de búsqueda, y los enlaces que pueden haber cambiado. Qué palabra es rara se toma del último
-/// recálculo entero; se rehace entera si la revisión no estaba al día antes de escribir, si hay
-/// pocas memorias, si su número ha cambiado más de un 5 % desde entonces o si el índice no sabe
-/// buscar alguna palabra.
-pub fn al_dia_de(db: &Connection, antes: &Antes, ids: &[String]) -> Result<()> {
-    let Some(previa) = antes.huella.as_deref() else {
+/// Brings the review up to date after writing `ids` (saved, changed, forgotten or restored), without
+/// redoing it all: only the pairs one of them takes part in, against its candidates from the search
+/// index, and the links that may have changed. Which word is rare is taken from the last full
+/// recomputation; it is fully redone if the review was not up to date before writing, if there are
+/// few memories, if their number has changed by more than 5 % since then or if the index can't
+/// search for some word.
+pub fn al_dia_de(db: &Connection, before: &Antes, ids: &[String]) -> Result<()> {
+    let Some(previous) = before.fingerprint.as_deref() else {
         return al_dia(db);
     };
-    if ids.is_empty() || ids.len() > MAXIMO_POR_PARTES {
+    if ids.is_empty() || ids.len() > MAX_INCREMENTAL {
         return al_dia(db);
     }
     let ids: BTreeSet<String> = ids.iter().cloned().collect();
-    let h = match huella_tras(db, previa, &ids)? {
+    let h = match fingerprint_after(db, previous, &ids)? {
         Some(h) => h,
-        None => huella(db)?,
+        None => fingerprint(db)?,
     };
     let n: usize = h.split('|').next().and_then(|x| x.parse().ok()).unwrap_or(0);
-    let Some(comunes) = comunes_vigentes(db, n)? else {
+    let Some(common) = current_common_words(db, n)? else {
         return al_dia(db);
     };
-    // IMMEDIATE: esta transacción lee y después escribe. Diferida, si otro agente escribía entre la
-    // lectura y la escritura, SQLite daba BUSY_SNAPSHOT al momento, sin esperar (su instantánea ya
-    // no es la última), y la revisión se quedaba sin poner al día.
+    // IMMEDIATE: this transaction reads and then writes. Deferred, if another agent wrote between the
+    // read and the write, SQLite returned BUSY_SNAPSHOT at once, without waiting (its snapshot is no
+    // longer the latest), and the review was left out of date.
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
-    let hecho = desfasadas_de(&tx, &ids, &comunes)? && crate::enlaces::recalcular_de(&tx, &ids)?;
-    if !hecho {
+    let done = outdated_pairs_of(&tx, &ids, &common)? && crate::enlaces::recalcular_de(&tx, &ids)?;
+    if !done {
         drop(tx);
         return al_dia(db);
     }
     tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [&h])?;
     tx.execute(
-        &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_PARCIALES}', COALESCE((SELECT v FROM meta WHERE k = '{CLAVE_PARCIALES}'), 0) + 1)"),
+        &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{PARTIAL_COUNT_KEY}', COALESCE((SELECT v FROM meta WHERE k = '{PARTIAL_COUNT_KEY}'), 0) + 1)"),
         [],
     )?;
     tx.commit()?;
-    // Si tocó una memoria de oficio, sus duplicadas se recalculan aparte (si falla, lo hará el diario).
+    // If it touched a trade memory, its duplicates are recomputed separately (if that fails, the daily job will).
     let _ = duplicadas_al_escribir(db);
     Ok(())
 }
 
-/// Las palabras comunes del último recálculo entero, si aún valen para `n` memorias.
-fn comunes_vigentes(db: &Connection, n: usize) -> Result<Option<HashSet<String>>> {
-    let Some(v) = db.query_row(&format!("SELECT v FROM meta WHERE k = '{CLAVE_COMUNES}'"), [], |f| f.get::<_, String>(0)).optional()? else {
+/// The common words from the last full recomputation, if they still hold for `n` memories.
+fn current_common_words(db: &Connection, n: usize) -> Result<Option<HashSet<String>>> {
+    let Some(v) = db.query_row(&format!("SELECT v FROM meta WHERE k = '{COMMON_WORDS_KEY}'"), [], |row| row.get::<_, String>(0)).optional()? else {
         return Ok(None);
     };
-    let mut lineas = v.split('\n');
-    let Some(n_ref) = lineas.next().and_then(|x| x.parse::<usize>().ok()) else {
+    let mut lines = v.split('\n');
+    let Some(n_ref) = lines.next().and_then(|x| x.parse::<usize>().ok()) else {
         return Ok(None);
     };
-    if n < MINIMO_POR_PARTES || n_ref < MINIMO_POR_PARTES || (n as f64 - n_ref as f64).abs() > n_ref as f64 * DERIVA {
+    if n < MINIMO_POR_PARTES || n_ref < MINIMO_POR_PARTES || (n as f64 - n_ref as f64).abs() > n_ref as f64 * COUNT_DRIFT {
         return Ok(None);
     }
-    Ok(Some(lineas.filter(|l| !l.is_empty()).map(str::to_string).collect()))
+    Ok(Some(lines.filter(|l| !l.is_empty()).map(str::to_string).collect()))
 }
 
-/// El recálculo entero: desfasadas y enlaces de toda la base.
-fn rehacer(db: &Connection, h: &str) -> Result<()> {
-    let (nuevas, n, comunes) = desfasadas(db)?;
-    // IMMEDIATE, como todas las transacciones que escriben (ver `db`).
+/// The full recomputation: outdated pairs and links of the whole database.
+fn rebuild(db: &Connection, h: &str) -> Result<()> {
+    let (found, n, common) = outdated_pairs(db)?;
+    // IMMEDIATE, like every transaction that writes (see `db`).
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
-    // Lo que se dio por bueno está en `verdict` (y viaja con la sincronización); aquí solo lo detectado.
+    // What was marked fine is in `verdict` (and travels with sync); here only what was detected.
     tx.execute("DELETE FROM review WHERE kind IN (?1, ?2)", [DESFASADA, ENLACE_ROTO])?;
-    let rotos = crate::enlaces::recalcular(&tx)?;
-    apuntar_rotos(&tx, rotos)?;
-    for (vieja, nueva, detalle) in nuevas {
-        apuntar_desfasada(&tx, &vieja, &nueva, &detalle)?;
+    let broken = crate::enlaces::recalcular(&tx)?;
+    apuntar_rotos(&tx, broken)?;
+    for (old, new, detail) in found {
+        record_outdated(&tx, &old, &new, &detail)?;
     }
-    let mut guardadas = n.to_string();
-    for w in comunes {
-        guardadas.push('\n');
-        guardadas.push_str(&w);
+    let mut saved = n.to_string();
+    for w in common {
+        saved.push('\n');
+        saved.push_str(&w);
     }
-    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_COMUNES}', ?1)"), [&guardadas])?;
-    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{CLAVE_PARCIALES}', '0')"), [])?;
+    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{COMMON_WORDS_KEY}', ?1)"), [&saved])?;
+    tx.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('{PARTIAL_COUNT_KEY}', '0')"), [])?;
     tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('revision', ?1)", [h])?;
     tx.commit()?;
-    // La base cambió (una sincronización, una importación, algo que escribió sin avisar): si cambió alguna
-    // de oficio, sus duplicadas se recalculan aparte.
+    // The database changed (a sync, an import, something that wrote without telling): if some trade
+    // memory changed, its duplicates are recomputed separately.
     let _ = duplicadas_al_escribir(db);
     Ok(())
 }
 
-/// Los enlaces rotos (memoria, nombre tal como está escrito), uno por memoria con todos sus nombres.
-pub(crate) fn apuntar_rotos(db: &Connection, rotos: Vec<(String, String)>) -> Result<()> {
-    let mut por_memoria: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (m, e) in rotos {
-        por_memoria.entry(m).or_default().push(format!("[[{e}]]"));
+/// The broken links (memory, name as written), one per memory with all its names.
+pub(crate) fn apuntar_rotos(db: &Connection, broken: Vec<(String, String)>) -> Result<()> {
+    let mut by_memory: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (m, e) in broken {
+        by_memory.entry(m).or_default().push(format!("[[{e}]]"));
     }
-    for (m, es) in por_memoria {
+    for (m, es) in by_memory {
         db.execute(
             &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, '', ?3, {AHORA})"),
             params![m, ENLACE_ROTO, format!("links to nothing: {}", es.join(", "))],
@@ -580,36 +580,36 @@ pub(crate) fn apuntar_rotos(db: &Connection, rotos: Vec<(String, String)>) -> Re
     Ok(())
 }
 
-fn apuntar_desfasada(db: &Connection, vieja: &str, nueva: &str, detalle: &str) -> Result<()> {
+fn record_outdated(db: &Connection, old: &str, new: &str, detail: &str) -> Result<()> {
     db.execute(
         &format!("INSERT OR IGNORE INTO review(memory_id, kind, other_id, detail, found_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"),
-        params![vieja, DESFASADA, nueva, detalle],
+        params![old, DESFASADA, new, detail],
     )?;
     Ok(())
 }
 
-// --- Desfasadas ------------------------------------------------------------------------------------
+// --- Outdated --------------------------------------------------------------------------------------
 
-struct Ficha {
+struct Card {
     id: String,
     project: String,
     updated_at: String,
-    /// El sello del último cambio (`reloj`): desempata dos memorias del mismo milisegundo.
+    /// The stamp of the last change (`reloj`): breaks ties between two memories of the same millisecond.
     hlc: String,
-    /// La fecha más reciente que cuenta (o la del último cambio si no menciona ninguna).
-    cuando: String,
-    titulo: BTreeSet<String>,
-    contenido: BTreeSet<String>,
-    texto: String,
-    versiones: BTreeMap<String, BTreeSet<Vec<u64>>>,
-    /// Las versiones que afirma en presente: sin las líneas de historia (con una fecha, «vA → vB» o
-    /// «desde la X»). «19-oct-2026 (v0.6.1 → 0.6.2): …» cuenta lo que pasó y sigue siendo verdad; no
-    /// dice que hoy vaya en la 0.6.2. Es lo que se compara de la vieja con la nueva.
-    vigentes: BTreeMap<String, BTreeSet<Vec<u64>>>,
+    /// The most recent date that counts (or that of the last change if it mentions none).
+    when: String,
+    title: BTreeSet<String>,
+    content: BTreeSet<String>,
+    text: String,
+    versions: BTreeMap<String, BTreeSet<Vec<u64>>>,
+    /// The versions it states in the present: without the history lines (with a date, "vA → vB" or
+    /// "desde la X"). "19-oct-2026 (v0.6.1 → 0.6.2): …" tells what happened and is still true; it
+    /// doesn't say it is on 0.6.2 today. This is what is compared from the old one against the new one.
+    current: BTreeMap<String, BTreeSet<Vec<u64>>>,
 }
 
-/// Lo que no distingue a una memoria de otra.
-const VACIAS: &[&str] = &[
+/// What doesn't tell one memory from another.
+const STOPWORDS: &[&str] = &[
     "para", "pero", "como", "esta", "este", "esto", "estos", "estas", "desde", "hasta", "sobre", "entre", "cuando", "donde", "porque",
     "tiene", "tienen", "hace", "hacer", "solo", "todo", "toda", "todos", "todas", "cada", "otro", "otra", "otros", "otras", "mismo",
     "misma", "algo", "nada", "sino", "tras", "with", "that", "this", "from", "have", "when", "what", "into", "your", "they", "them",
@@ -617,84 +617,84 @@ const VACIAS: &[&str] = &[
     "there", "their", "about", "which", "other", "some", "such", "over", "under", "after", "before", "memoria", "memorias", "usuario",
 ];
 
-fn normal(s: &str) -> String {
+fn normalize(s: &str) -> String {
     crate::buscar::sin_tildes(&s.to_lowercase())
 }
 
-/// Palabras de 4 letras o más (con `.`, `_` y `-` dentro: `centrelaser.es`, `social-publish`).
-fn palabras(s: &str) -> BTreeSet<String> {
+/// Words of 4 letters or more (with `.`, `_` and `-` inside: `centrelaser.es`, `social-publish`).
+fn words(s: &str) -> BTreeSet<String> {
     let mut r = BTreeSet::new();
-    for p in normal(s).split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-')) {
+    for p in normalize(s).split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-')) {
         let p = p.trim_matches(|c: char| c == '.' || c == '-' || c == '_');
-        if p.chars().count() >= 4 && !p.chars().all(|c| c.is_ascii_digit() || c == '.') && !VACIAS.contains(&p) {
+        if p.chars().count() >= 4 && !p.chars().all(|c| c.is_ascii_digit() || c == '.') && !STOPWORDS.contains(&p) {
             r.insert(p.to_string());
         }
     }
     r
 }
 
-const MESES: [&str; 12] = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const SPANISH_MONTHS: [&str; 12] = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
-/// Fechas `29-oct-2026`, `29 oct 2026` y `2026-10-29` del texto, como `AAAA-MM-DD`.
-fn fechas(t: &str) -> Vec<String> {
+/// Dates `29-oct-2026`, `29 oct 2026` and `2026-10-29` in the text, as `YYYY-MM-DD`.
+fn dates(t: &str) -> Vec<String> {
     let mut r = Vec::new();
     let w: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|p| !p.is_empty()).collect();
     for i in 0..w.len() {
-        // AAAA MM DD (las tres seguidas tras partir por los guiones).
+        // YYYY MM DD (the three in a row after splitting on the dashes).
         if i + 2 < w.len()
             && w[i].len() == 4
             && w[i + 1].len() == 2
             && w[i + 2].len() == 2
-            && let (Ok(a), Ok(m), Ok(d)) = (w[i].parse::<u32>(), w[i + 1].parse::<u32>(), w[i + 2].parse::<u32>())
-            && (1990..2200).contains(&a)
+            && let (Ok(y), Ok(m), Ok(d)) = (w[i].parse::<u32>(), w[i + 1].parse::<u32>(), w[i + 2].parse::<u32>())
+            && (1990..2200).contains(&y)
             && (1..=12).contains(&m)
             && (1..=31).contains(&d)
         {
-            r.push(format!("{a:04}-{m:02}-{d:02}"));
+            r.push(format!("{y:04}-{m:02}-{d:02}"));
         }
-        // DD mes AAAA.
+        // DD month YYYY.
         if i + 2 < w.len() && w[i].len() <= 2 && w[i + 2].len() == 4 {
-            let mes = w[i + 1].get(..3).unwrap_or("");
-            let m = MESES.iter().position(|x| *x == mes).or_else(|| MONTHS.iter().position(|x| *x == mes));
-            if let (Ok(d), Some(m), Ok(a)) = (w[i].parse::<u32>(), m, w[i + 2].parse::<u32>())
+            let month = w[i + 1].get(..3).unwrap_or("");
+            let m = SPANISH_MONTHS.iter().position(|x| *x == month).or_else(|| MONTHS.iter().position(|x| *x == month));
+            if let (Ok(d), Some(m), Ok(y)) = (w[i].parse::<u32>(), m, w[i + 2].parse::<u32>())
                 && (1..=31).contains(&d)
-                && (1990..2200).contains(&a)
+                && (1990..2200).contains(&y)
             {
-                r.push(format!("{a:04}-{:02}-{d:02}", m + 1));
+                r.push(format!("{y:04}-{:02}-{d:02}", m + 1));
             }
         }
     }
     r
 }
 
-/// Las palabras que no dicen de qué es una versión: «la 0.9.2», «release v0.10.0».
-const GENERICAS: &[&str] = &["la", "el", "lo", "version", "versiones", "release", "tag", "a", "de", "en", "con", "hasta", "desde", "y", "o", "the", "to", "of", "v"];
+/// The words that don't say what a version belongs to: "la 0.9.2", "release v0.10.0".
+const GENERIC_WORDS: &[&str] = &["la", "el", "lo", "version", "versiones", "release", "tag", "a", "de", "en", "con", "hasta", "desde", "y", "o", "the", "to", "of", "v"];
 
-/// `{cosa: {versiones}}`: las `X.Y.Z` del texto, por la palabra de delante (vacía si es genérica: la
-/// del propio proyecto). Así «rusqlite 0.41.0» no se compara con «omoi 0.9.2».
-fn versiones(t: &str) -> BTreeMap<String, BTreeSet<Vec<u64>>> {
+/// `{thing: {versions}}`: the `X.Y.Z` in the text, by the word in front (empty if it is generic: the
+/// project's own). That way "rusqlite 0.41.0" isn't compared with "omoi 0.9.2".
+fn versions(t: &str) -> BTreeMap<String, BTreeSet<Vec<u64>>> {
     let mut r: BTreeMap<String, BTreeSet<Vec<u64>>> = BTreeMap::new();
-    // La palabra de delante, dentro de la misma frase: un salto de línea o un final de frase la borran.
-    let mut anterior = String::new();
+    // The word in front, within the same sentence: a line break or the end of a sentence clears it.
+    let mut previous = String::new();
     for p in t.split(|c: char| c == ' ' || c == '\t' || "()[]{},;*`\"'«»|".contains(c)).filter(|p| !p.is_empty()) {
         let p = match p.rsplit_once(['\n', '\r']) {
-            Some((_, resto)) => {
-                anterior.clear();
-                resto
+            Some((_, rest)) => {
+                previous.clear();
+                rest
             }
             None => p,
         };
         if p.is_empty() {
             continue;
         }
-        let limpio = p.trim_end_matches(['.', ')']).trim_start_matches('v');
-        let partes: Vec<&str> = limpio.split('.').collect();
-        if partes.len() == 3 && partes.iter().all(|x| !x.is_empty() && x.len() <= 4 && x.chars().all(|c| c.is_ascii_digit())) {
-            let clave = if GENERICAS.contains(&anterior.as_str()) { String::new() } else { anterior.clone() };
-            r.entry(clave).or_default().insert(partes.iter().map(|x| x.parse().unwrap_or(0)).collect());
+        let clean = p.trim_end_matches(['.', ')']).trim_start_matches('v');
+        let parts: Vec<&str> = clean.split('.').collect();
+        if parts.len() == 3 && parts.iter().all(|x| !x.is_empty() && x.len() <= 4 && x.chars().all(|c| c.is_ascii_digit())) {
+            let key = if GENERIC_WORDS.contains(&previous.as_str()) { String::new() } else { previous.clone() };
+            r.entry(key).or_default().insert(parts.iter().map(|x| x.parse().unwrap_or(0)).collect());
         }
-        anterior = if p.ends_with(['.', ':', '!', '?']) && !p.chars().any(|c| c.is_ascii_digit()) {
+        previous = if p.ends_with(['.', ':', '!', '?']) && !p.chars().any(|c| c.is_ascii_digit()) {
             String::new()
         } else {
             p.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').to_lowercase()
@@ -703,37 +703,37 @@ fn versiones(t: &str) -> BTreeMap<String, BTreeSet<Vec<u64>>> {
     r
 }
 
-fn ficha(m: &Memoria, hlc: String) -> Ficha {
-    let contenido: String = m.content.chars().take(LARGO_PARA_RECALL).collect();
-    let texto = normal(&contenido);
-    let todo = format!("{} {texto}", normal(&m.title));
-    Ficha {
+fn card(m: &Memoria, hlc: String) -> Card {
+    let content: String = m.content.chars().take(LARGO_PARA_RECALL).collect();
+    let text = normalize(&content);
+    let all = format!("{} {text}", normalize(&m.title));
+    Card {
         id: m.id.clone(),
-        // Las de espacio se comparan entre ellas, no con las globales.
+        // Space-level ones are compared among themselves, not with the global ones.
         project: if m.de_espacio() { format!("space:{}", m.space) } else { m.project.clone() },
         updated_at: m.updated_at.clone(),
         hlc,
-        cuando: fechas(&todo).into_iter().max().unwrap_or_else(|| m.updated_at.get(..10).unwrap_or("").to_string()),
-        titulo: palabras(&m.title),
-        contenido: palabras(&contenido),
-        versiones: versiones(&todo),
-        vigentes: versiones(&format!("{}\n{}", normal(&m.title), sin_historia(&texto))),
-        texto,
+        when: dates(&all).into_iter().max().unwrap_or_else(|| m.updated_at.get(..10).unwrap_or("").to_string()),
+        title: words(&m.title),
+        content: words(&content),
+        versions: versions(&all),
+        current: versions(&format!("{}\n{}", normalize(&m.title), without_history(&text))),
+        text,
     }
 }
 
-/// El texto sin sus líneas de historia: las que empiezan por una fecha (la entrada de un diario,
-/// «**19-oct-2026 (v0.6.1 → 0.6.2):** …»), las que cuentan un cambio de versión («0.6.1 → 0.6.2») y las
-/// de «desde la X». Por líneas y no por frases: en una entrada fechada, las frases de después de la
-/// fecha también son de ese día. Una fecha en medio («la v0.2.0, publicada el 28-oct-2026») no la
-/// hace historia: dice dónde está el proyecto.
-fn sin_historia(t: &str) -> String {
-    let empieza_por_fecha = |l: &str| {
-        let inicio: String = l.trim_start_matches(|c: char| !c.is_alphanumeric()).chars().take(14).collect();
-        !fechas(&inicio).is_empty()
+/// The text without its history lines: those starting with a date (a journal entry,
+/// "**19-oct-2026 (v0.6.1 → 0.6.2):** …"), those telling of a version change ("0.6.1 → 0.6.2") and the
+/// "desde la X" ones. By lines and not by sentences: in a dated entry, the sentences after the date are
+/// also from that day. A date in the middle ("la v0.2.0, publicada el 28-oct-2026") doesn't make it
+/// history: it says where the project is.
+fn without_history(t: &str) -> String {
+    let starts_with_date = |l: &str| {
+        let start: String = l.trim_start_matches(|c: char| !c.is_alphanumeric()).chars().take(14).collect();
+        !dates(&start).is_empty()
     };
-    // «desde la 0.4.0», «desde v0.4.0», «since 0.4.0»: la palabra y, detrás, una versión o su artículo.
-    let desde = |l: &str| {
+    // "desde la 0.4.0", "desde v0.4.0", "since 0.4.0": the word and, after it, a version or its article.
+    let since = |l: &str| {
         let ws: Vec<&str> = l.split_whitespace().map(|w| w.trim_start_matches(|c: char| !c.is_alphanumeric())).collect();
         ws.windows(2).any(|p| {
             matches!(p[0], "desde" | "since")
@@ -741,188 +741,188 @@ fn sin_historia(t: &str) -> String {
         })
     };
     t.lines()
-        .filter(|l| !empieza_por_fecha(l) && !l.contains('→') && !l.contains("->") && !desde(l))
+        .filter(|l| !starts_with_date(l) && !l.contains('→') && !l.contains("->") && !since(l))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Frases (por puntuación de final o salto de línea).
-fn frases(t: &str) -> Vec<&str> {
+/// Sentences (by end punctuation or line break).
+fn sentences(t: &str) -> Vec<&str> {
     let mut r = Vec::new();
-    let mut ini = 0;
+    let mut start = 0;
     let b = t.as_bytes();
     for (i, c) in t.char_indices() {
-        let corta = c == '\n' || (".;:!?".contains(c) && b.get(i + 1).is_none_or(|x| x.is_ascii_whitespace()));
-        if corta {
-            if t[ini..i].trim().len() > 1 {
-                r.push(&t[ini..i]);
+        let cut = c == '\n' || (".;:!?".contains(c) && b.get(i + 1).is_none_or(|x| x.is_ascii_whitespace()));
+        if cut {
+            if t[start..i].trim().len() > 1 {
+                r.push(&t[start..i]);
             }
-            ini = i + c.len_utf8();
+            start = i + c.len_utf8();
         }
     }
-    if t[ini..].trim().len() > 1 {
-        r.push(&t[ini..]);
+    if t[start..].trim().len() > 1 {
+        r.push(&t[start..]);
     }
     r
 }
 
-fn contiene_palabra(frase: &str, ws: &[&str]) -> bool {
+fn contains_word(sentence: &str, ws: &[&str]) -> bool {
     ws.iter().any(|w| {
-        frase.match_indices(w).any(|(i, _)| {
-            let antes = frase[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
-            let despues = frase[i + w.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric());
-            antes && despues
+        sentence.match_indices(w).any(|(i, _)| {
+            let before = sentence[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+            let after = sentence[i + w.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+            before && after
         })
     })
 }
 
-const PENDIENTE: &[&str] = &["pendiente", "falta", "faltan", "por hacer", "sin hacer", "sin publicar", "todavia no", "aun no", "siguiente", "not yet", "pending"];
-const HECHO: &[&str] = &["hecho", "hecha", "publicado", "publicada", "publicados", "publicadas", "ya esta", "resuelto", "terminado", "terminada", "instalado", "instalada", "done", "published", "shipped"];
+const PENDING: &[&str] = &["pendiente", "falta", "faltan", "por hacer", "sin hacer", "sin publicar", "todavia no", "aun no", "siguiente", "not yet", "pending"];
+const DONE: &[&str] = &["hecho", "hecha", "publicado", "publicada", "publicados", "publicadas", "ya esta", "resuelto", "terminado", "terminada", "instalado", "instalada", "done", "published", "shipped"];
 
-fn texto_version(v: &[u64]) -> String {
+fn version_text(v: &[u64]) -> String {
     v.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
 }
 
-/// Por qué la vieja parece superada por la nueva, o nada. `mismo_tema`: comparten palabras; sin eso,
-/// una versión a secas no dice nada (en un proyecto casi todo nombra versiones suyas: el eslogan
-/// «desde la 0.14.1» no contradice a la firma «desde la 0.14.0»). Una versión con nombre
-/// («rusqlite 0.41.0») sí, porque el nombre ya las ata.
-fn motivos(vieja: &Ficha, nueva: &Ficha, mismo_tema: bool, raras: &dyn Fn(&BTreeSet<String>) -> BTreeSet<String>) -> Vec<String> {
+/// Why the old one looks superseded by the new one, or nothing. `same_topic`: they share words; without
+/// that, a bare version says nothing (in a project almost everything names its own versions: the slogan
+/// "desde la 0.14.1" doesn't contradict the signature "desde la 0.14.0"). A named version
+/// ("rusqlite 0.41.0") does, because the name already ties them.
+fn reasons(old: &Card, new: &Card, same_topic: bool, rare: &dyn Fn(&BTreeSet<String>) -> BTreeSet<String>) -> Vec<String> {
     let mut r = Vec::new();
-    for (cosa, va) in &vieja.vigentes {
-        if let Some(vb) = nueva.versiones.get(cosa)
+    for (thing, va) in &old.current {
+        if let Some(vb) = new.versions.get(thing)
             && let (Some(a), Some(b)) = (va.last(), vb.last())
             && b > a
-            && (mismo_tema || !cosa.is_empty())
+            && (same_topic || !thing.is_empty())
         {
-            let nombre = if cosa.is_empty() { "version".to_string() } else { cosa.clone() };
-            r.push(format!("{nombre} {} → {}", texto_version(a), texto_version(b)));
+            let name = if thing.is_empty() { "version".to_string() } else { thing.clone() };
+            r.push(format!("{name} {} → {}", version_text(a), version_text(b)));
         }
     }
-    // Una frase de la vieja dice que algo está pendiente y otra de la nueva que está hecho, y hablan
-    // de lo mismo (al menos dos palabras raras en común).
-    let pendientes: Vec<BTreeSet<String>> = frases(&vieja.texto).into_iter().filter(|f| contiene_palabra(f, PENDIENTE)).map(|f| raras(&palabras(f))).collect();
-    if !pendientes.is_empty() {
-        let hechas: Vec<BTreeSet<String>> = frases(&nueva.texto).into_iter().filter(|f| contiene_palabra(f, HECHO)).map(|f| raras(&palabras(f))).collect();
-        let mejor = pendientes.iter().flat_map(|p| hechas.iter().map(move |h| p.intersection(h).count())).max().unwrap_or(0);
-        if mejor >= 2 {
+    // A sentence of the old one says something is pending and another of the new one that it is done,
+    // and they talk about the same thing (at least two rare words in common).
+    let pending: Vec<BTreeSet<String>> = sentences(&old.text).into_iter().filter(|f| contains_word(f, PENDING)).map(|f| rare(&words(f))).collect();
+    if !pending.is_empty() {
+        let done: Vec<BTreeSet<String>> = sentences(&new.text).into_iter().filter(|f| contains_word(f, DONE)).map(|f| rare(&words(f))).collect();
+        let best = pending.iter().flat_map(|p| done.iter().map(move |h| p.intersection(h).count())).max().unwrap_or(0);
+        if best >= 2 {
             r.push("pending → done".to_string());
         }
     }
     r
 }
 
-/// Las palabras raras de una memoria, del título y del contenido.
-struct Raras {
-    titulo: BTreeSet<String>,
-    contenido: BTreeSet<String>,
+/// A memory's rare words, from the title and from the content.
+struct RareWords {
+    title: BTreeSet<String>,
+    content: BTreeSet<String>,
 }
 
-fn raras_de(f: &Ficha, es_rara: &dyn Fn(&str) -> bool) -> Raras {
-    let filtra = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
-    Raras { titulo: filtra(&f.titulo), contenido: filtra(&f.contenido) }
+fn rare_words_of(f: &Card, is_rare: &dyn Fn(&str) -> bool) -> RareWords {
+    let filter = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| is_rare(w)).cloned().collect() };
+    RareWords { title: filter(&f.title), content: filter(&f.content) }
 }
 
-/// Rara: en el 5 % de las memorias como mucho; a partir de 2.000 memorias, en 100. Una palabra que
-/// sale en cientos de memorias no dice que dos hablen de lo mismo.
-fn tope_raras(n: usize) -> usize {
+/// Rare: in 5 % of the memories at most; from 2,000 memories on, in 100. A word that appears in
+/// hundreds of memories doesn't say two of them talk about the same thing.
+fn rare_cap(n: usize) -> usize {
     2usize.max(n / 20).min(100)
 }
 
-/// Lo que comparten dos memorias para ser candidatas: una palabra rara o la versión de la misma cosa.
-fn comparten(a: &Ficha, ra: &Raras, b: &Ficha, rb: &Raras) -> bool {
-    let de_a: BTreeSet<&String> = ra.titulo.union(&ra.contenido).collect();
-    rb.titulo.iter().chain(&rb.contenido).any(|w| de_a.contains(w)) || a.versiones.keys().any(|c| !c.is_empty() && b.versiones.contains_key(c))
+/// What two memories must share to be candidates: a rare word or the version of the same thing.
+fn share_something(a: &Card, ra: &RareWords, b: &Card, rb: &RareWords) -> bool {
+    let of_a: BTreeSet<&String> = ra.title.union(&ra.content).collect();
+    rb.title.iter().chain(&rb.content).any(|w| of_a.contains(w)) || a.versions.keys().any(|c| !c.is_empty() && b.versions.contains_key(c))
 }
 
-/// (vieja, nueva, detalle).
-type Desfasada = (String, String, String);
+/// (old, new, detail).
+type Outdated = (String, String, String);
 
-/// Si una de las dos deja anticuada a la otra.
-fn juzgar(a: &Ficha, ra: &Raras, b: &Ficha, rb: &Raras, es_rara: &dyn Fn(&str) -> bool) -> Option<Desfasada> {
-    // La más nueva: por la fecha que menciona, luego por su último cambio y, en el mismo
-    // milisegundo (varias guardadas seguidas, una importación), por el sello del reloj.
-    fn orden(f: &Ficha) -> (&str, &str, &str, &str) {
-        (&f.cuando, &f.updated_at, &f.hlc, &f.id)
+/// Whether one of the two makes the other obsolete.
+fn judge(a: &Card, ra: &RareWords, b: &Card, rb: &RareWords, is_rare: &dyn Fn(&str) -> bool) -> Option<Outdated> {
+    // The newer one: by the date it mentions, then by its last change and, in the same
+    // millisecond (several saved in a row, an import), by the clock stamp.
+    fn order_key(f: &Card) -> (&str, &str, &str, &str) {
+        (&f.when, &f.updated_at, &f.hlc, &f.id)
     }
-    let ((vieja, rv), (nueva, rn)) = if orden(a) < orden(b) { ((a, ra), (b, rb)) } else { ((b, rb), (a, ra)) };
-    let comunes_t = rv.titulo.intersection(&rn.titulo).count();
-    let union = rv.contenido.union(&rn.contenido).count().max(1);
-    let jaccard = rv.contenido.intersection(&rn.contenido).count() as f64 / union as f64;
-    let mismo_tema = comunes_t >= 2 || (comunes_t >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
-    // Lo que no comparte palabras solo puede contradecirse por una versión con nombre.
-    if !mismo_tema && vieja.versiones.keys().all(|c| c.is_empty()) {
+    let ((old, r_old), (new, r_new)) = if order_key(a) < order_key(b) { ((a, ra), (b, rb)) } else { ((b, rb), (a, ra)) };
+    let common_title = r_old.title.intersection(&r_new.title).count();
+    let union = r_old.content.union(&r_new.content).count().max(1);
+    let jaccard = r_old.content.intersection(&r_new.content).count() as f64 / union as f64;
+    let same_topic = common_title >= 2 || (common_title >= 1 && jaccard >= 0.12) || jaccard >= 0.22;
+    // What shares no words can only contradict itself through a named version.
+    if !same_topic && old.versions.keys().all(|c| c.is_empty()) {
         return None;
     }
-    let raras = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| es_rara(w)).cloned().collect() };
-    let m = motivos(vieja, nueva, mismo_tema, &raras);
-    (!m.is_empty()).then(|| (vieja.id.clone(), nueva.id.clone(), m.join("; ")))
+    let rare = |ws: &BTreeSet<String>| -> BTreeSet<String> { ws.iter().filter(|w| is_rare(w)).cloned().collect() };
+    let m = reasons(old, new, same_topic, &rare);
+    (!m.is_empty()).then(|| (old.id.clone(), new.id.clone(), m.join("; ")))
 }
 
-/// Parejas (vieja, nueva, detalle) del mismo proyecto que hablan de lo mismo y se contradicen, de toda
-/// la base. Devuelve también cuántas memorias había y las palabras que no eran raras, que es lo que
-/// necesita la revisión por partes (`al_dia_de`) hasta el siguiente recálculo entero.
-fn desfasadas(db: &Connection) -> Result<(Vec<Desfasada>, usize, Vec<String>)> {
-    let todas = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
-    let sellos: HashMap<String, String> = {
+/// Pairs (old, new, detail) of the same project that talk about the same thing and contradict each
+/// other, across the whole database. Also returns how many memories there were and the words that were
+/// not rare, which is what the incremental review (`al_dia_de`) needs until the next full recomputation.
+fn outdated_pairs(db: &Connection) -> Result<(Vec<Outdated>, usize, Vec<String>)> {
+    let all = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
+    let stamps: HashMap<String, String> = {
         let mut q = db.prepare("SELECT id, hlc FROM memory")?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let fichas: Vec<Ficha> = todas.iter().map(|m| ficha(m, sellos.get(&m.id).cloned().unwrap_or_default())).collect();
-    let n = fichas.len().max(1);
+    let cards: Vec<Card> = all.iter().map(|m| card(m, stamps.get(&m.id).cloned().unwrap_or_default())).collect();
+    let n = cards.len().max(1);
     let mut df: HashMap<&str, usize> = HashMap::new();
-    for f in &fichas {
-        for w in f.titulo.union(&f.contenido) {
+    for f in &cards {
+        for w in f.title.union(&f.content) {
             *df.entry(w.as_str()).or_default() += 1;
         }
     }
-    let tope = tope_raras(n);
-    let es_rara = |w: &str| df.get(w).is_some_and(|d| *d <= tope);
-    let raras: Vec<Raras> = fichas.iter().map(|f| raras_de(f, &es_rara)).collect();
+    let cap = rare_cap(n);
+    let is_rare = |w: &str| df.get(w).is_some_and(|d| *d <= cap);
+    let rare: Vec<RareWords> = cards.iter().map(|f| rare_words_of(f, &is_rare)).collect();
 
-    // Candidatas: parejas del mismo proyecto (las globales cuentan como uno) que comparten una palabra
-    // rara o nombran la versión de la misma cosa («rusqlite 0.41.0»). Es exacto: cualquier motivo de
-    // `motivos` exige una de las dos cosas. Comparar todas las parejas de un proyecto era cuadrático:
-    // con 50.000 memorias, 31 millones de parejas, 108 s y 1,2 GB en cada escritura.
-    let mut parejas: BTreeSet<(usize, usize)> = BTreeSet::new();
-    let mut indice: HashMap<(&str, String), Vec<usize>> = HashMap::new();
-    for (i, f) in fichas.iter().enumerate() {
-        for w in raras[i].titulo.union(&raras[i].contenido) {
-            indice.entry((f.project.as_str(), w.clone())).or_default().push(i);
+    // Candidates: pairs of the same project (the global ones count as one) that share a rare word or
+    // name the version of the same thing ("rusqlite 0.41.0"). It is exact: every reason in `reasons`
+    // requires one of the two. Comparing every pair of a project was quadratic: with 50,000 memories,
+    // 31 million pairs, 108 s and 1.2 GB on every write.
+    let mut pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut index: HashMap<(&str, String), Vec<usize>> = HashMap::new();
+    for (i, f) in cards.iter().enumerate() {
+        for w in rare[i].title.union(&rare[i].content) {
+            index.entry((f.project.as_str(), w.clone())).or_default().push(i);
         }
-        for cosa in f.versiones.keys().filter(|c| !c.is_empty()) {
-            indice.entry((f.project.as_str(), format!("ver:{cosa}"))).or_default().push(i);
+        for thing in f.versions.keys().filter(|c| !c.is_empty()) {
+            index.entry((f.project.as_str(), format!("ver:{thing}"))).or_default().push(i);
         }
     }
-    for l in indice.values() {
+    for l in index.values() {
         for (a, &i) in l.iter().enumerate() {
             for &j in &l[a + 1..] {
-                parejas.insert((i.min(j), i.max(j)));
+                pairs.insert((i.min(j), i.max(j)));
             }
         }
     }
 
-    let r = parejas.into_iter().filter_map(|(i, j)| juzgar(&fichas[i], &raras[i], &fichas[j], &raras[j], &es_rara)).collect();
-    let mut comunes: Vec<String> = df.iter().filter(|(_, d)| **d > tope).map(|(w, _)| w.to_string()).collect();
-    comunes.sort();
-    Ok((r, fichas.len(), comunes))
+    let r = pairs.into_iter().filter_map(|(i, j)| judge(&cards[i], &rare[i], &cards[j], &rare[j], &is_rare)).collect();
+    let mut common: Vec<String> = df.iter().filter(|(_, d)| **d > cap).map(|(w, _)| w.to_string()).collect();
+    common.sort();
+    Ok((r, cards.len(), common))
 }
 
-/// La frase con la que el índice de texto (`memory_fts`, unicode61 sin tildes) encuentra una palabra
-/// de las fichas: sus trozos alfanuméricos seguidos («centrelaser.es» → `"centrelaser es"`). Con
-/// `prefijo`, el último trozo vale como principio de palabra: la ficha corta el contenido en
-/// `LARGO_PARA_RECALL` y puede quedarse con media palabra. `None` si no tiene nada que buscar.
-pub(crate) fn frase_fts(palabra: &str, prefijo: bool) -> Option<String> {
-    let trozos: Vec<&str> = palabra.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect();
-    let ultimo = trozos.last()?;
-    let estrella = if prefijo && ultimo.chars().count() >= 3 { " *" } else { "" };
-    Some(format!("\"{}\"{estrella}", trozos.join(" ")))
+/// The phrase with which the text index (`memory_fts`, unicode61 without accents) finds a word from the
+/// cards: its alphanumeric pieces in a row ("centrelaser.es" → `"centrelaser es"`). With `prefix`, the
+/// last piece counts as the start of a word: the card cuts the content at `LARGO_PARA_RECALL` and may
+/// keep half a word. `None` if there is nothing to search for.
+pub(crate) fn frase_fts(word: &str, prefix: bool) -> Option<String> {
+    let pieces: Vec<&str> = word.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect();
+    let last = pieces.last()?;
+    let star = if prefix && last.chars().count() >= 3 { " *" } else { "" };
+    Some(format!("\"{}\"{star}", pieces.join(" ")))
 }
 
-/// Las memorias (con su sello) que da una consulta FTS entre las que se comparan con `m`: las de su
-/// proyecto, las de su espacio si es de nivel espacio, o las globales (lo mismo que agrupa `ficha`).
-fn fichas_por_fts(db: &Connection, consulta: &str, m: &Memoria) -> Result<Vec<Ficha>> {
-    let (filtro, valor): (&str, rusqlite::types::Value) = if m.project_id != 0 {
+/// The memories (with their stamp) an FTS query returns among those compared with `m`: those of its
+/// project, those of its space if it is space-level, or the global ones (the same grouping as `card`).
+fn cards_by_fts(db: &Connection, query: &str, m: &Memoria) -> Result<Vec<Card>> {
+    let (filter, value): (&str, rusqlite::types::Value) = if m.project_id != 0 {
         ("m.project_id = ?2", m.project_id.into())
     } else if m.de_espacio() {
         ("m.project_id = 0 AND m.space_id = (SELECT id FROM space WHERE key = ?2)", m.space.clone().into())
@@ -930,77 +930,77 @@ fn fichas_por_fts(db: &Connection, consulta: &str, m: &Memoria) -> Result<Vec<Fi
         ("m.project_id = 0 AND m.space_id IS NULL AND ?2 IS NULL", rusqlite::types::Value::Null)
     };
     let mut q = db.prepare_cached(&format!(
-        "SELECT {}, m.hlc FROM memory m WHERE {filtro} AND m.n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)",
+        "SELECT {}, m.hlc FROM memory m WHERE {filter} AND m.n IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?1)",
         crate::memoria::COLUMNAS
     ))?;
     let v = q
-        .query_map(params![consulta, valor], |f| Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(crate::memoria::NCOL)?)))?
+        .query_map(params![query, value], |row| Ok((crate::memoria::de_fila(row)?, row.get::<_, String>(crate::memoria::NCOL)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(v.into_iter().map(|(m, hlc)| ficha(&m, hlc)).collect())
+    Ok(v.into_iter().map(|(m, hlc)| card(&m, hlc)).collect())
 }
 
-/// Las desfasadas en las que entra alguna de `ids`, con la idea de rara del último recálculo entero:
-/// borra las que había y apunta las de ahora. Sus candidatas salen del índice de texto (cualquier
-/// memoria que comparta una palabra rara o una cosa con versión la nombra) y se comprueban igual que
-/// en el recálculo entero. `false` si una palabra no tiene nada que buscar en el índice.
-fn desfasadas_de(db: &Connection, ids: &BTreeSet<String>, comunes: &HashSet<String>) -> Result<bool> {
-    let es_rara = |w: &str| !comunes.contains(w);
-    let mut cambiadas = Vec::new();
+/// The outdated pairs one of `ids` takes part in, with the notion of rare from the last full
+/// recomputation: deletes the existing ones and records the current ones. Their candidates come from the
+/// text index (any memory that shares a rare word or a versioned thing names it) and are checked the same
+/// way as in the full recomputation. `false` if a word has nothing to search for in the index.
+fn outdated_pairs_of(db: &Connection, ids: &BTreeSet<String>, common: &HashSet<String>) -> Result<bool> {
+    let is_rare = |w: &str| !common.contains(w);
+    let mut changed = Vec::new();
     for id in ids {
         db.execute("DELETE FROM review WHERE kind = ?1 AND (memory_id = ?2 OR other_id = ?2)", params![DESFASADA, id])?;
-        let fila = db
-            .query_row(&format!("SELECT {}, m.hlc FROM memory m WHERE m.id = ?1", crate::memoria::COLUMNAS), [id], |f| {
-                Ok((crate::memoria::de_fila(f)?, f.get::<_, String>(crate::memoria::NCOL)?))
+        let loaded = db
+            .query_row(&format!("SELECT {}, m.hlc FROM memory m WHERE m.id = ?1", crate::memoria::COLUMNAS), [id], |row| {
+                Ok((crate::memoria::de_fila(row)?, row.get::<_, String>(crate::memoria::NCOL)?))
             })
             .optional()?;
-        if let Some((m, hlc)) = fila {
-            cambiadas.push((ficha(&m, hlc), m));
+        if let Some((m, hlc)) = loaded {
+            changed.push((card(&m, hlc), m));
         }
     }
-    let mut nuevas: BTreeMap<(String, String), String> = BTreeMap::new();
-    for (c, m) in &cambiadas {
-        let rc = raras_de(c, &es_rara);
-        let mut frases = Vec::new();
-        for w in rc.titulo.union(&rc.contenido) {
+    let mut found: BTreeMap<(String, String), String> = BTreeMap::new();
+    for (c, m) in &changed {
+        let rc = rare_words_of(c, &is_rare);
+        let mut phrases = Vec::new();
+        for w in rc.title.union(&rc.content) {
             let Some(f) = frase_fts(w, true) else { return Ok(false) };
-            frases.push(f);
+            phrases.push(f);
         }
-        for cosa in c.versiones.keys().filter(|c| !c.is_empty()) {
-            let Some(f) = frase_fts(cosa, false) else { return Ok(false) };
-            frases.push(f);
+        for thing in c.versions.keys().filter(|c| !c.is_empty()) {
+            let Some(f) = frase_fts(thing, false) else { return Ok(false) };
+            phrases.push(f);
         }
-        if frases.is_empty() {
+        if phrases.is_empty() {
             continue;
         }
-        let consulta = format!("{{title content}} : ({})", frases.join(" OR "));
-        for b in fichas_por_fts(db, &consulta, m)? {
+        let query = format!("{{title content}} : ({})", phrases.join(" OR "));
+        for b in cards_by_fts(db, &query, m)? {
             if b.id == c.id {
                 continue;
             }
-            let rb = raras_de(&b, &es_rara);
-            if !comparten(c, &rc, &b, &rb) {
+            let rb = rare_words_of(&b, &is_rare);
+            if !share_something(c, &rc, &b, &rb) {
                 continue;
             }
-            if let Some((vieja, nueva, detalle)) = juzgar(c, &rc, &b, &rb, &es_rara) {
-                nuevas.insert((vieja, nueva), detalle);
+            if let Some((old, new, detail)) = judge(c, &rc, &b, &rb, &is_rare) {
+                found.insert((old, new), detail);
             }
         }
     }
-    for ((vieja, nueva), detalle) in nuevas {
-        apuntar_desfasada(db, &vieja, &nueva, &detalle)?;
+    for ((old, new), detail) in found {
+        record_outdated(db, &old, &new, &detail)?;
     }
     Ok(true)
 }
 
-// --- Lectura ---------------------------------------------------------------------------------------
+// --- Reading ---------------------------------------------------------------------------------------
 
-/// Si se dijo «está bien así» y la memoria no ha cambiado desde entonces.
-/// Los avisos que un veredicto vigente quita: (memoria, aviso, otra). Una pareja con veredicto ya no
-/// sale como desfasada: o vale (`compatible`) o tiene su propio aviso (`superseded`, `contradicts`).
-fn descartados(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
+/// Whether "it's fine as it is" was said and the memory hasn't changed since.
+/// The warnings a current verdict removes: (memory, warning, other). A pair with a verdict no longer
+/// shows as outdated: either it holds (`compatible`) or it has its own warning (`superseded`, `contradicts`).
+fn dismissed(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
     let mut r = BTreeSet::new();
-    for ((id, aviso), _) in crate::veredictos::oks(db, true)? {
-        r.insert((id, aviso, String::new()));
+    for ((id, kind), _) in crate::veredictos::oks(db, true)? {
+        r.insert((id, kind, String::new()));
     }
     for (a, b) in crate::veredictos::parejas(db)?.into_keys() {
         r.insert((a.clone(), DESFASADA.to_string(), b.clone()));
@@ -1009,64 +1009,64 @@ fn descartados(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
     Ok(r)
 }
 
-/// Dónde está una ruta de una memoria en este equipo, si se puede saber (relativa a su proyecto).
-fn ruta_en_disco(m: &Memoria, ruta: &str) -> Option<std::path::PathBuf> {
-    // Una ruta de red no se mira nunca (abriría una conexión SMB: ver `proyecto::ruta_de_red`).
-    if crate::proyecto::ruta_de_red(ruta) || de_otro_sistema(ruta) {
+/// Where a memory's path is on this machine, if it can be known (relative to its project).
+fn path_on_disk(m: &Memoria, path: &str) -> Option<std::path::PathBuf> {
+    // A network path is never checked (it would open an SMB connection: see `proyecto::ruta_de_red`).
+    if crate::proyecto::ruta_de_red(path) || from_other_os(path) {
         return None;
     }
-    let p = std::path::Path::new(ruta.trim_start_matches("~/"));
-    let d = if ruta.starts_with("~/") {
-        dirs_casa().map(|c| c.join(p))?
+    let p = std::path::Path::new(path.trim_start_matches("~/"));
+    let d = if path.starts_with("~/") {
+        home_dir().map(|h| h.join(p))?
     } else if p.is_absolute() {
         p.to_path_buf()
     } else {
-        let raiz = std::path::Path::new(&m.project);
-        if m.project.is_empty() || !crate::proyecto::ruta_local(raiz) || !raiz.is_dir() {
+        let root = std::path::Path::new(&m.project);
+        if m.project.is_empty() || !crate::proyecto::ruta_local(root) || !root.is_dir() {
             return None;
         }
-        raiz.join(p)
+        root.join(p)
     };
     crate::proyecto::ruta_local(&d).then_some(d)
 }
 
-/// Una ruta de Windows (`D:/…`, `C:\\…`) vista desde macOS o Linux, o una de Unix (`/Users/…`) vista
-/// desde Windows: es del otro equipo de la persona (llega por la sincronización), no una ruta rota.
-fn de_otro_sistema(ruta: &str) -> bool {
-    let b = ruta.as_bytes();
-    let de_windows = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\');
-    if cfg!(windows) { ruta.starts_with('/') } else { de_windows }
+/// A Windows path (`D:/…`, `C:\\…`) seen from macOS or Linux, or a Unix one (`/Users/…`) seen from
+/// Windows: it belongs to the person's other machine (it arrives via sync), not a broken path.
+fn from_other_os(path: &str) -> bool {
+    let b = path.as_bytes();
+    let windows_path = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\');
+    if cfg!(windows) { path.starts_with('/') } else { windows_path }
 }
 
-fn dirs_casa() -> Option<std::path::PathBuf> {
+fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(std::path::PathBuf::from)
 }
 
-/// Todo lo que conviene revisar en el ámbito, de lo más a lo menos importante.
-pub fn avisos(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
-    avisos_con(db, ambito, true)
+/// Everything worth reviewing in the scope, from most to least important.
+pub fn avisos(db: &Connection, scope: &Ambito) -> Result<Vec<Aviso>> {
+    notices_with(db, scope, true)
 }
 
-/// Como [`avisos`], para la herramienta `context` (al empezar una sesión, con el agente esperando): la
-/// deriva por código no se calcula aquí la primera vez (con git, puede tardar segundos), se lanza
-/// aparte y sale en la siguiente (`deriva::de_sin_esperar`).
-pub fn avisos_sin_esperar(db: &Connection, ambito: &Ambito) -> Result<Vec<Aviso>> {
-    avisos_con(db, ambito, false)
+/// Like [`avisos`], for the `context` tool (at session start, with the agent waiting): code drift is
+/// not computed here the first time (with git, it can take seconds), it is launched separately and
+/// shows up next time (`deriva::de_sin_esperar`).
+pub fn avisos_sin_esperar(db: &Connection, scope: &Ambito) -> Result<Vec<Aviso>> {
+    notices_with(db, scope, false)
 }
 
-fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Aviso>> {
+fn notices_with(db: &Connection, scope: &Ambito, wait: bool) -> Result<Vec<Aviso>> {
     al_dia(db)?;
-    let fuera = descartados(db)?;
-    let todas = crate::memoria::recientes(db, ambito, None, usize::MAX >> 1)?;
-    let por_id: HashMap<&str, &Memoria> = todas.iter().map(|m| (m.id.as_str(), m)).collect();
+    let excluded = dismissed(db)?;
+    let all = crate::memoria::recientes(db, scope, None, usize::MAX >> 1)?;
+    let by_id: HashMap<&str, &Memoria> = all.iter().map(|m| (m.id.as_str(), m)).collect();
     let mut r = Vec::new();
-    let aviso = |m: &Memoria, kind: &str, otra: Option<&Memoria>, detail: String| Aviso {
+    let make_notice = |m: &Memoria, kind: &str, other: Option<&Memoria>, detail: String| Aviso {
         kind: kind.into(),
         memory_id: m.id.clone(),
         title: m.title.clone(),
         project: m.project.clone(),
-        other_id: otra.map(|o| o.id.clone()).unwrap_or_default(),
-        other_title: otra.map(|o| o.title.clone()),
+        other_id: other.map(|o| o.id.clone()).unwrap_or_default(),
+        other_title: other.map(|o| o.title.clone()),
         detail,
         reason: String::new(),
         author: String::new(),
@@ -1074,12 +1074,12 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
     };
     {
         let mut q = db.prepare("SELECT memory_id, other_id, detail FROM review WHERE kind = ?1 ORDER BY found_at, memory_id")?;
-        let filas: Vec<(String, String, String)> = q.query_map([DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (vieja, nueva, detalle) in filas {
-            if let (Some(v), Some(n)) = (por_id.get(vieja.as_str()), por_id.get(nueva.as_str()))
-                && !fuera.contains(&(vieja.clone(), DESFASADA.to_string(), nueva.clone()))
+        let rows: Vec<(String, String, String)> = q.query_map([DESFASADA], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (old, new, detail) in rows {
+            if let (Some(o), Some(n)) = (by_id.get(old.as_str()), by_id.get(new.as_str()))
+                && !excluded.contains(&(old.clone(), DESFASADA.to_string(), new.clone()))
             {
-                r.push(aviso(v, DESFASADA, Some(n), detalle));
+                r.push(make_notice(o, DESFASADA, Some(n), detail));
             }
         }
     }
@@ -1087,436 +1087,435 @@ fn avisos_con(db: &Connection, ambito: &Ambito, esperar: bool) -> Result<Vec<Avi
         if v.relation == crate::veredictos::COMPATIBLE {
             continue;
         }
-        // Una sustituida apunta al final de su cadena: si B sustituye a A y C a B, A lleva a C, con el
-        // motivo del último eslabón.
-        let mut saltos = 0;
+        // A superseded one points to the end of its chain: if B supersedes A and C supersedes B, A leads
+        // to C, with the reason of the last link.
+        let mut hops = 0;
         if v.relation == SUSTITUIDA
-            && let Some(fin) = crate::veredictos::cadena(db, &v.memory_id)?
-            && fin.saltos > 1
+            && let Some(end) = crate::veredictos::cadena(db, &v.memory_id)?
+            && end.saltos > 1
         {
-            saltos = fin.saltos;
-            v.other_id = fin.id;
-            v.reason = fin.reason;
-            v.author = fin.author;
+            hops = end.saltos;
+            v.other_id = end.id;
+            v.reason = end.reason;
+            v.author = end.author;
         }
-        if let (Some(m), Some(o)) = (por_id.get(v.memory_id.as_str()), por_id.get(v.other_id.as_str())) {
+        if let (Some(m), Some(o)) = (by_id.get(v.memory_id.as_str()), by_id.get(v.other_id.as_str())) {
             let base = if v.relation == SUSTITUIDA { "replaced by the other one" } else { "they disagree and neither has won yet" };
-            let mut a = aviso(m, &v.relation, Some(o), detalle_veredicto(base, &v, saltos));
+            let mut a = make_notice(m, &v.relation, Some(o), verdict_detail(base, &v, hops));
             a.reason = v.reason;
             a.author = v.author;
-            a.via = saltos;
+            a.via = hops;
             r.push(a);
         }
     }
-    // Comparar las de oficio entre sí lleva su tiempo: aquí solo se lee lo que calculó el proceso de
-    // fondo (ver `duplicadas_de_oficio_guardadas`).
-    for (nueva, vieja, detalle) in duplicadas_de_oficio_guardadas(db, ambito)? {
-        if let (Some(n), Some(v)) = (por_id.get(nueva.as_str()), por_id.get(vieja.as_str())) {
-            // Como una desfasada: la vieja, y la otra es la nueva (la vista web junta la vieja en la nueva).
-            r.push(aviso(v, DUPLICADA_OFICIO, Some(n), detalle));
+    // Comparing trade memories with each other takes time: here we only read what the background
+    // process computed (see `duplicadas_de_oficio_guardadas`).
+    for (new, old, detail) in duplicadas_de_oficio_guardadas(db, scope)? {
+        if let (Some(n), Some(o)) = (by_id.get(new.as_str()), by_id.get(old.as_str())) {
+            // Like an outdated one: the old one, and the other is the new one (the web view merges the old into the new).
+            r.push(make_notice(o, DUPLICADA_OFICIO, Some(n), detail));
         }
     }
     {
         let mut q = db.prepare("SELECT memory_id, detail FROM review WHERE kind = ?1 ORDER BY memory_id")?;
-        let filas: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (id, detalle) in filas {
-            if let Some(m) = por_id.get(id.as_str())
-                && !fuera.contains(&(id.clone(), ENLACE_ROTO.to_string(), String::new()))
+        let rows: Vec<(String, String)> = q.query_map([ENLACE_ROTO], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (id, detail) in rows {
+            if let Some(m) = by_id.get(id.as_str())
+                && !excluded.contains(&(id.clone(), ENLACE_ROTO.to_string(), String::new()))
             {
-                r.push(aviso(m, ENLACE_ROTO, None, detalle));
+                r.push(make_notice(m, ENLACE_ROTO, None, detail));
             }
         }
     }
-    let ahora = chrono_ahora(db)?;
-    let dias = |desde: &str| -> f64 { dias_entre(desde, &ahora) };
-    let revisadas = crate::veredictos::oks(db, false)?;
-    let hoy = Hoy::de(db)?;
-    // Opcional, como el aviso: si git o el disco fallan, solo se pierde este.
-    let deriva = if esperar { crate::deriva::de(db, &todas) } else { crate::deriva::de_sin_esperar(db, &todas) }.unwrap_or_default();
-    // Lo de cada memoria no depende de las demás (salvo leerlas, en `stale_status`): se reparte por
-    // trozos seguidos entre los núcleos y se junta en el mismo orden, así que sale lo mismo que de una
-    // en una. Con 50.000 memorias, solo los secretos eran medio segundo.
-    let de_una = |m: &Memoria, r: &mut Vec<Aviso>| {
-        if let Some(d) = deriva.get(&m.id) {
-            r.push(aviso(m, DERIVA_CODIGO, None, d.clone()));
+    let now = db_now(db)?;
+    let days = |since: &str| -> f64 { days_between(since, &now) };
+    let reviewed = crate::veredictos::oks(db, false)?;
+    let today = Today::load(db)?;
+    // Optional, like the warning: if git or the disk fail, only this one is lost.
+    let drift = if wait { crate::deriva::de(db, &all) } else { crate::deriva::de_sin_esperar(db, &all) }.unwrap_or_default();
+    // What concerns each memory doesn't depend on the others (except reading them, in `stale_status`):
+    // it is split into contiguous chunks across the cores and joined in the same order, so the result is
+    // the same as one by one. With 50,000 memories, the secrets alone took half a second.
+    let check_one = |m: &Memoria, r: &mut Vec<Aviso>| {
+        if let Some(d) = drift.get(&m.id) {
+            r.push(make_notice(m, DERIVA_CODIGO, None, d.clone()));
         }
-        if let Some(f) = fecha_llegada(m, &revisadas, &hoy) {
-            r.push(aviso(m, FECHA, None, format!("review date {f} reached: is it still true?")));
+        if let Some(f) = date_reached(m, &reviewed, &today) {
+            r.push(make_notice(m, FECHA, None, format!("review date {f} reached: is it still true?")));
         }
-        if let Some(n) = sin_revisar(m, &revisadas, &ahora) {
-            r.push(aviso(m, POR_REVISAR, None, format!("untouched for {n} days: is it still true?")));
+        if let Some(n) = days_unreviewed(m, &reviewed, &now) {
+            r.push(make_notice(m, POR_REVISAR, None, format!("untouched for {n} days: is it still true?")));
         }
-        let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
-        if estado_que_avisa(m, dias(&m.updated_at)) && !descartado(ESTADO_VIEJO) {
-            let despues = todas.iter().filter(|x| x.project_id == m.project_id && x.space == m.space && x.id != m.id && x.updated_at > m.updated_at).count();
-            if despues > 0 {
-                r.push(aviso(m, ESTADO_VIEJO, None, format!("{despues} memories of this project changed after it; untouched for {} days", dias(&m.updated_at) as i64)));
+        let is_dismissed = |k: &str| excluded.contains(&(m.id.clone(), k.to_string(), String::new()));
+        if status_warns(m, days(&m.updated_at)) && !is_dismissed(ESTADO_VIEJO) {
+            let later = all.iter().filter(|x| x.project_id == m.project_id && x.space == m.space && x.id != m.id && x.updated_at > m.updated_at).count();
+            if later > 0 {
+                r.push(make_notice(m, ESTADO_VIEJO, None, format!("{later} memories of this project changed after it; untouched for {} days", days(&m.updated_at) as i64)));
             }
         }
-        if !descartado(RUTA_ROTA) {
-            let rotas: Vec<&str> = m.paths.iter().filter(|p| ruta_en_disco(m, p).is_some_and(|d| !d.exists())).map(String::as_str).collect();
-            if !rotas.is_empty() {
-                r.push(aviso(m, RUTA_ROTA, None, format!("no longer exists: {}", rotas.join(", "))));
+        if !is_dismissed(RUTA_ROTA) {
+            let broken: Vec<&str> = m.paths.iter().filter(|p| path_on_disk(m, p).is_some_and(|d| !d.exists())).map(String::as_str).collect();
+            if !broken.is_empty() {
+                r.push(make_notice(m, RUTA_ROTA, None, format!("no longer exists: {}", broken.join(", "))));
             }
         }
-        if m.recall_count == 0 && m.recalled_at.is_none() && dias(&m.created_at) > DIAS_SIN_USO && !descartado(SIN_USO) {
-            r.push(aviso(m, SIN_USO, None, format!("never recalled in {} days", dias(&m.created_at) as i64)));
+        if m.recall_count == 0 && m.recalled_at.is_none() && days(&m.created_at) > DIAS_SIN_USO && !is_dismissed(SIN_USO) {
+            r.push(make_notice(m, SIN_USO, None, format!("never recalled in {} days", days(&m.created_at) as i64)));
         }
-        // Se mira al leer, como `unused`: unos µs por memoria, y así vale también para lo que llega por la
-        // sincronización o una copia. Nunca enseña el secreto, solo qué parece.
-        if !descartado(SECRETO) {
+        // Checked on read, like `unused`: a few µs per memory, and that way it also covers what arrives via
+        // sync or a backup. It never shows the secret, only what it looks like.
+        if !is_dismissed(SECRETO) {
             let hs = secretos_de(m);
             if !hs.is_empty() {
-                r.push(aviso(m, SECRETO, None, format!("looks like a secret: {}; redact it", crate::secretos::resumen(&hs))));
+                r.push(make_notice(m, SECRETO, None, format!("looks like a secret: {}; redact it", crate::secretos::resumen(&hs))));
             }
         }
-        let largo = m.content.chars().count();
-        if largo > LARGO_PARA_RECALL && !descartado(LARGA) {
-            r.push(aviso(m, LARGA, None, format!("{largo} characters; recall only reads the first {LARGO_PARA_RECALL}: consider splitting it")));
+        let len = m.content.chars().count();
+        if len > LARGO_PARA_RECALL && !is_dismissed(LARGA) {
+            r.push(make_notice(m, LARGA, None, format!("{len} characters; recall only reads the first {LARGO_PARA_RECALL}: consider splitting it")));
         }
     };
-    let hilos = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAXIMO_HILOS);
-    let trozo = todas.len().div_ceil(hilos).max(MINIMO_POR_HILO);
-    if todas.len() <= trozo {
-        for m in &todas {
-            de_una(m, &mut r);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS);
+    let chunk = all.len().div_ceil(threads).max(MIN_PER_THREAD);
+    if all.len() <= chunk {
+        for m in &all {
+            check_one(m, &mut r);
         }
     } else {
-        let partes: Vec<Vec<Aviso>> = std::thread::scope(|s| {
-            let hechos: Vec<_> = todas
-                .chunks(trozo)
+        let parts: Vec<Vec<Aviso>> = std::thread::scope(|s| {
+            let handles: Vec<_> = all
+                .chunks(chunk)
                 .map(|ms| {
-                    let de_una = &de_una;
+                    let check_one = &check_one;
                     s.spawn(move || {
                         let mut v = Vec::new();
                         for m in ms {
-                            de_una(m, &mut v);
+                            check_one(m, &mut v);
                         }
                         v
                     })
                 })
                 .collect();
-            hechos.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
         });
-        r.extend(partes.into_iter().flatten());
+        r.extend(parts.into_iter().flatten());
     }
-    let orden = |k: &str| TIPOS.iter().position(|x| *x == k).unwrap_or(TIPOS.len());
-    // Dentro de cada tipo de aviso, primero lo que más se equivoca si nadie lo mira: las decisiones y
-    // las trampas que escribió un agente y no ha verificado ninguna persona; lo verificado, al final.
-    let prioridad = |id: &str| match por_id.get(id) {
+    let order = |k: &str| KINDS.iter().position(|x| *x == k).unwrap_or(KINDS.len());
+    // Within each kind of warning, first what is most wrong if nobody looks at it: decisions and
+    // gotchas written by an agent and not verified by any person; verified ones last.
+    let priority = |id: &str| match by_id.get(id) {
         Some(m) if m.verified.is_some() => 2,
         Some(m) if matches!(m.kind, crate::memoria::Tipo::Decision | crate::memoria::Tipo::Gotcha) => 0,
         _ => 1,
     };
-    // Con la clave de cada aviso calculada una vez (con 50.000 memorias, calcularla en cada comparación
-    // eran más de 100 ms); estable, como `sort_by_key`.
-    r.sort_by_cached_key(|a| (orden(&a.kind), prioridad(&a.memory_id)));
-    // Soltar muchas memorias es liberar memoria que nadie espera (con 50.000, 40 ms): en otro hilo.
-    drop(por_id);
-    if todas.len() > SOLTAR_APARTE {
-        std::thread::spawn(move || drop(todas));
+    // With each warning's key computed once (with 50,000 memories, computing it on every comparison
+    // took more than 100 ms); stable, like `sort_by_key`.
+    r.sort_by_cached_key(|a| (order(&a.kind), priority(&a.memory_id)));
+    // Dropping many memories is freeing memory nobody waits for (with 50,000, 40 ms): on another thread.
+    drop(by_id);
+    if all.len() > DROP_ELSEWHERE_FROM {
+        std::thread::spawn(move || drop(all));
     }
     Ok(r)
 }
 
-/// Lo último calculado de las duplicadas de oficio: `huella_oficio` \t JSON de [`Calculadas`]. Local.
-const CLAVE_DUPLICADAS_OFICIO: &str = "revision_duplicadas_oficio";
-/// La huella para la que ya se lanzó el cálculo en segundo plano y cuándo (`huella \t segundos`).
-const CLAVE_DUPLICADAS_LANZADO: &str = "revision_duplicadas_oficio_lanzado";
-/// Segundos entre dos lanzamientos del cálculo, aunque la huella cambie (una ráfaga de escrituras).
-const ENTRE_LANZAMIENTOS: u64 = 10;
-/// Tras lanzar el cálculo para una huella, cuánto se espera a que lo guarde antes de darlo por muerto y
-/// volver a lanzarlo (segundos).
-const MISMA_HUELLA: u64 = 600;
+/// The last computed trade duplicates: `trade_fingerprint` \t JSON of [`ComputedDuplicates`]. Local.
+const TRADE_DUPLICATES_KEY: &str = "revision_duplicadas_oficio";
+/// The fingerprint for which the background computation was already launched, and when (`fingerprint \t seconds`).
+const TRADE_DUPLICATES_LAUNCHED_KEY: &str = "revision_duplicadas_oficio_lanzado";
+/// Seconds between two launches of the computation, even if the fingerprint changes (a burst of writes).
+const BETWEEN_LAUNCHES: u64 = 10;
+/// After launching the computation for a fingerprint, how long to wait for it to save before declaring
+/// it dead and launching it again (seconds).
+const SAME_FINGERPRINT: u64 = 600;
 
-/// Una pareja de duplicadas de oficio: (la más nueva, la más vieja, detalle).
-type Pareja = (String, String, String);
+/// A pair of trade duplicates: (the newer, the older, detail).
+type Pair = (String, String, String);
 
-/// Lo que guarda el cálculo de las duplicadas de oficio.
+/// What the trade duplicates computation saves.
 #[derive(Default, Serialize, serde::Deserialize)]
-struct Calculadas {
-    /// El modelo de los vectores con el que se calculó: con otro, todo de nuevo.
+struct ComputedDuplicates {
+    /// The vector model it was computed with: with another one, everything from scratch.
     modelo: String,
-    /// Cómo estaba cada memoria de oficio (`updated_at|tiene vector`): la siguiente vez solo se
-    /// comparan las que cambiaron.
+    /// How each trade memory was (`updated_at|has vector`): next time only the ones that changed are
+    /// compared.
     memorias: BTreeMap<String, String>,
-    parejas: Vec<Calculada>,
+    parejas: Vec<ComputedPair>,
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
-struct Calculada {
+struct ComputedPair {
     nueva: String,
     vieja: String,
     detalle: String,
-    /// El `updated_at` de cada una cuando se calculó: si ya no es el de ahora, la pareja no se enseña.
+    /// Each one's `updated_at` when it was computed: if it is no longer the current one, the pair isn't shown.
     cambio_nueva: String,
     cambio_vieja: String,
 }
 
-/// Las memorias de oficio y cómo está cada una (`updated_at|tiene vector`), ordenadas por id.
-const SQL_OFICIO: &str = "SELECT m.id, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
+/// The trade memories and how each one is (`updated_at|has vector`), ordered by id.
+const TRADE_SQL: &str = "SELECT m.id, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
      WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 ORDER BY m.id";
 
-fn modelo_de_vectores(db: &Connection) -> Result<String> {
-    Ok(db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |f| f.get(0)).optional()?.unwrap_or_default())
+fn vector_model(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?.unwrap_or_default())
 }
 
-/// Lo que cambia el resultado de las duplicadas de oficio: cada memoria de oficio (id, último cambio y
-/// si tiene vector) y el modelo de los vectores. Lo que cambie en las demás solo mueve un poco el IDF,
-/// y eso espera a que cambie una de oficio. Una consulta sobre columnas pequeñas de las globales.
-fn huella_oficio(db: &Connection) -> Result<String> {
+/// What changes the trade duplicates result: each trade memory (id, last change and whether it has a
+/// vector) and the vector model. What changes in the others only moves the IDF a little, and that waits
+/// until a trade one changes. A query over small columns of the global ones.
+fn trade_fingerprint(db: &Connection) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    let mut q = db.prepare(SQL_OFICIO)?;
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        h.update(format!("{}|{}\n", f.get::<_, String>(0)?, f.get::<_, String>(1)?));
+    let mut q = db.prepare(TRADE_SQL)?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        h.update(format!("{}|{}\n", row.get::<_, String>(0)?, row.get::<_, String>(1)?));
     }
-    h.update(modelo_de_vectores(db)?);
+    h.update(vector_model(db)?);
     Ok(h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect())
 }
 
-/// Lo guardado: (huella, lo calculado). Vacío si no hay nada o no se entiende.
-fn leer_calculadas(db: &Connection) -> Result<(String, Calculadas)> {
-    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DUPLICADAS_OFICIO], |f| f.get(0)).optional()?;
-    Ok(match guardado.as_deref().and_then(|v| v.split_once('\t')) {
-        Some((h, json)) => match serde_json::from_str::<Calculadas>(json) {
+/// What is saved: (fingerprint, what was computed). Empty if there is nothing or it can't be parsed.
+fn read_computed(db: &Connection) -> Result<(String, ComputedDuplicates)> {
+    let saved: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [TRADE_DUPLICATES_KEY], |row| row.get(0)).optional()?;
+    Ok(match saved.as_deref().and_then(|v| v.split_once('\t')) {
+        Some((h, json)) => match serde_json::from_str::<ComputedDuplicates>(json) {
             Ok(c) => (h.to_string(), c),
-            Err(_) => (String::new(), Calculadas::default()),
+            Err(_) => (String::new(), ComputedDuplicates::default()),
         },
-        None => (String::new(), Calculadas::default()),
+        None => (String::new(), ComputedDuplicates::default()),
     })
 }
 
-/// La huella de lo guardado (vacía si no hay nada), sin leer las parejas.
-fn huella_duplicadas_guardadas(db: &Connection) -> Result<String> {
+/// The fingerprint of what is saved (empty if there is nothing), without reading the pairs.
+fn saved_duplicates_fingerprint(db: &Connection) -> Result<String> {
     let h: Option<String> =
-        db.query_row("SELECT substr(v, 1, instr(v, char(9)) - 1) FROM meta WHERE k = ?1 AND instr(v, char(9)) > 0", [CLAVE_DUPLICADAS_OFICIO], |f| f.get(0)).optional()?;
+        db.query_row("SELECT substr(v, 1, instr(v, char(9)) - 1) FROM meta WHERE k = ?1 AND instr(v, char(9)) > 0", [TRADE_DUPLICATES_KEY], |row| row.get(0)).optional()?;
     Ok(h.unwrap_or_default())
 }
 
-/// Calcula las duplicadas de oficio y las deja en `meta` (local): lo que hace el proceso de fondo
-/// (`omoi review --refresh-trade-duplicates` tras una escritura, y el diario de `--refresh-drift`).
-/// Incremental: solo se comparan las memorias que cambiaron desde el último cálculo (o nuevas) con las
-/// de sus oficios; las parejas entre las que no cambiaron se quedan como estaban. Con otro modelo de
-/// vectores, todo de nuevo. Devuelve las parejas que se ven desde `ambito`, como
-/// [`duplicadas_de_oficio_guardadas`]. Nadie que atienda una petición lo llama.
-pub fn duplicadas_de_oficio(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
-    duplicadas_de_oficio_con(db, ambito, false)
+/// Computes the trade duplicates and leaves them in `meta` (local): what the background process does
+/// (`omoi review --refresh-trade-duplicates` after a write, and the daily `--refresh-drift`).
+/// Incremental: only the memories that changed since the last computation (or new ones) are compared
+/// with those of their trades; the pairs among the unchanged ones stay as they were. With another vector
+/// model, everything from scratch. Returns the pairs visible from `scope`, like
+/// [`duplicadas_de_oficio_guardadas`]. Nothing serving a request calls it.
+pub fn duplicadas_de_oficio(db: &Connection, scope: &Ambito) -> Result<Vec<Pair>> {
+    trade_duplicates_with(db, scope, false)
 }
 
-/// [`duplicadas_de_oficio`]; `desde_cero` compara todas las parejas otra vez (el diario: con el tiempo
-/// se mueven los pesos de las palabras y la media de los vectores, y una pareja que no llegaba por poco
-/// puede llegar sin que cambie ninguna de las dos).
-fn duplicadas_de_oficio_con(db: &Connection, ambito: &Ambito, desde_cero: bool) -> Result<Vec<Pareja>> {
-    let huella = huella_oficio(db)?;
-    let modelo = modelo_de_vectores(db)?;
-    let (_, antes) = leer_calculadas(db)?;
-    let antes = if antes.modelo == modelo && !desde_cero { antes } else { Calculadas::default() };
+/// [`duplicadas_de_oficio`]; `from_scratch` compares every pair again (the daily job: over time the word
+/// weights and the vector mean move, and a pair that fell just short may make it without either of the
+/// two changing).
+fn trade_duplicates_with(db: &Connection, scope: &Ambito, from_scratch: bool) -> Result<Vec<Pair>> {
+    let fingerprint = trade_fingerprint(db)?;
+    let model = vector_model(db)?;
+    let (_, before) = read_computed(db)?;
+    let before = if before.modelo == model && !from_scratch { before } else { ComputedDuplicates::default() };
     let mut q = db.prepare(&format!(
         "SELECT {}, m.updated_at || '|' || EXISTS(SELECT 1 FROM memory_vec v WHERE v.n = m.n) FROM memory m
          WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 ORDER BY m.id",
         crate::memoria::COLUMNAS
     ))?;
-    let columnas = q.column_count();
-    let filas: Vec<(Memoria, String)> = q.query_map([], |f| Ok((crate::memoria::de_fila(f)?, f.get(columnas - 1)?)))?.collect::<rusqlite::Result<_>>()?;
-    let todas: Vec<Memoria> = filas.iter().map(|(m, _)| m.clone()).collect();
-    let memorias: BTreeMap<String, String> = filas.into_iter().map(|(m, e)| (m.id, e)).collect();
-    // Las que cambiaron desde el último cálculo (o no estaban).
-    let cambiadas: HashSet<usize> = todas.iter().enumerate().filter(|(_, m)| antes.memorias.get(&m.id) != memorias.get(&m.id)).map(|(i, _)| i).collect();
-    let sin_cambios = |id: &str| memorias.get(id).is_some_and(|e| antes.memorias.get(id) == Some(e));
-    // Lo de antes entre dos que no cambiaron sigue valiendo.
-    let mut parejas: Vec<Calculada> = antes.parejas.into_iter().filter(|p| sin_cambios(&p.nueva) && sin_cambios(&p.vieja)).collect();
-    let mut por_oficio: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, m) in todas.iter().enumerate() {
+    let columns = q.column_count();
+    let rows: Vec<(Memoria, String)> = q.query_map([], |row| Ok((crate::memoria::de_fila(row)?, row.get(columns - 1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let all: Vec<Memoria> = rows.iter().map(|(m, _)| m.clone()).collect();
+    let memories: BTreeMap<String, String> = rows.into_iter().map(|(m, e)| (m.id, e)).collect();
+    // The ones that changed since the last computation (or weren't there).
+    let changed: HashSet<usize> = all.iter().enumerate().filter(|(_, m)| before.memorias.get(&m.id) != memories.get(&m.id)).map(|(i, _)| i).collect();
+    let unchanged = |id: &str| memories.get(id).is_some_and(|e| before.memorias.get(id) == Some(e));
+    // What there was between two that didn't change still holds.
+    let mut pairs: Vec<ComputedPair> = before.parejas.into_iter().filter(|p| unchanged(&p.nueva) && unchanged(&p.vieja)).collect();
+    let mut by_trade: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, m) in all.iter().enumerate() {
         for o in crate::oficios::de_etiquetas(&m.tags) {
-            por_oficio.entry(o).or_default().push(i);
+            by_trade.entry(o).or_default().push(i);
         }
     }
-    let refs: Vec<&Memoria> = todas.iter().collect();
-    let oficios: Vec<&String> = por_oficio.keys().collect();
-    let grupos: Vec<Vec<usize>> = por_oficio.values().cloned().collect();
-    if !cambiadas.is_empty() {
-        for (i, j, sim) in crate::vectores::duplicadas_entre(db, &refs, &grupos, Some(&cambiadas))? {
-            let (a, b) = (&todas[i], &todas[j]);
-            // El primer oficio que comparten, para el detalle.
-            let oficio = grupos.iter().position(|g| g.contains(&i) && g.contains(&j)).map(|k| oficios[k].as_str()).unwrap_or_default();
-            let (nueva, vieja) = if (a.created_at.as_str(), a.id.as_str()) >= (b.created_at.as_str(), b.id.as_str()) { (a, b) } else { (b, a) };
-            parejas.push(Calculada {
-                nueva: nueva.id.clone(),
-                vieja: vieja.id.clone(),
-                detalle: format!("says the same as the other one (trade:{oficio}, similarity {sim:.2}): merge them"),
-                cambio_nueva: nueva.updated_at.clone(),
-                cambio_vieja: vieja.updated_at.clone(),
+    let refs: Vec<&Memoria> = all.iter().collect();
+    let trades: Vec<&String> = by_trade.keys().collect();
+    let groups: Vec<Vec<usize>> = by_trade.values().cloned().collect();
+    if !changed.is_empty() {
+        for (i, j, sim) in crate::vectores::duplicadas_entre(db, &refs, &groups, Some(&changed))? {
+            let (a, b) = (&all[i], &all[j]);
+            // The first trade they share, for the detail.
+            let trade = groups.iter().position(|g| g.contains(&i) && g.contains(&j)).map(|k| trades[k].as_str()).unwrap_or_default();
+            let (new, old) = if (a.created_at.as_str(), a.id.as_str()) >= (b.created_at.as_str(), b.id.as_str()) { (a, b) } else { (b, a) };
+            pairs.push(ComputedPair {
+                nueva: new.id.clone(),
+                vieja: old.id.clone(),
+                detalle: format!("says the same as the other one (trade:{trade}, similarity {sim:.2}): merge them"),
+                cambio_nueva: new.updated_at.clone(),
+                cambio_vieja: old.updated_at.clone(),
             });
         }
     }
-    parejas.sort_by(|a, b| (&a.vieja, &a.nueva).cmp(&(&b.vieja, &b.nueva)));
-    let c = Calculadas { modelo, memorias, parejas };
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_DUPLICADAS_OFICIO, &format!("{huella}\t{}", serde_json::to_string(&c)?)])?;
-    filtrar_duplicadas(db, ambito, c.parejas)
+    pairs.sort_by(|a, b| (&a.vieja, &a.nueva).cmp(&(&b.vieja, &b.nueva)));
+    let c = ComputedDuplicates { modelo: model, memorias: memories, parejas: pairs };
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [TRADE_DUPLICATES_KEY, &format!("{fingerprint}\t{}", serde_json::to_string(&c)?)])?;
+    filter_duplicates(db, scope, c.parejas)
 }
 
-/// Lo mismo, de lo guardado y sin calcular nada nunca, ni la primera vez: es lo que leen el arranque de
-/// la sesión (`pendientes`), `context`, `omoi review` y la vista web. Si las de oficio cambiaron desde el
-/// último cálculo (o no lo hay), lanza el cálculo en segundo plano (sale en la siguiente). Lo guardado
-/// puede ir por detrás: una pareja solo sale si sus dos memorias siguen vivas, de oficio, visibles
-/// desde `ambito`, sin veredicto y sin cambios desde que se calculó.
-pub fn duplicadas_de_oficio_guardadas(db: &Connection, ambito: &Ambito) -> Result<Vec<Pareja>> {
-    let (huella_guardada, c) = leer_calculadas(db)?;
-    // Lanzarlo es solo para que lo guardado se ponga al día: si falla (la base ocupada por un sync
-    // largo), la lectura sigue con lo que hay.
-    let _ = recalcular_si_cambio(db, &huella_guardada);
-    filtrar_duplicadas(db, ambito, c.parejas)
+/// The same, from what is saved and never computing anything, not even the first time: it is what
+/// session start (`pendientes`), `context`, `omoi review` and the web view read. If the trade ones
+/// changed since the last computation (or there is none), it launches the computation in the background
+/// (it shows up next time). What is saved may lag behind: a pair only shows if both its memories are
+/// still alive, trade ones, visible from `scope`, without a verdict and unchanged since it was computed.
+pub fn duplicadas_de_oficio_guardadas(db: &Connection, scope: &Ambito) -> Result<Vec<Pair>> {
+    let (saved_fingerprint, c) = read_computed(db)?;
+    // Launching it is only so that what is saved catches up: if it fails (the database busy with a long
+    // sync), the read goes on with what there is.
+    let _ = recompute_if_changed(db, &saved_fingerprint);
+    filter_duplicates(db, scope, c.parejas)
 }
 
-/// Tras una escritura que puede tocar memorias de oficio (`remember`, `update`, `forget`, una
-/// sincronización, una importación): si cambiaron desde el último cálculo, lo lanza en segundo plano.
-/// Nunca lo espera.
+/// After a write that may touch trade memories (`remember`, `update`, `forget`, a sync, an import): if
+/// they changed since the last computation, launches it in the background. Never waits for it.
 pub fn duplicadas_al_escribir(db: &Connection) -> Result<()> {
-    recalcular_si_cambio(db, &huella_duplicadas_guardadas(db)?)
+    recompute_if_changed(db, &saved_duplicates_fingerprint(db)?)
 }
 
-fn recalcular_si_cambio(db: &Connection, huella_guardada: &str) -> Result<()> {
-    let huella = huella_oficio(db)?;
-    if huella != huella_guardada {
-        recalcular_aparte(db, &huella)?;
+fn recompute_if_changed(db: &Connection, saved_fingerprint: &str) -> Result<()> {
+    let fingerprint = trade_fingerprint(db)?;
+    if fingerprint != saved_fingerprint {
+        recompute_in_background(db, &fingerprint)?;
     }
     Ok(())
 }
 
-/// El fichero de bloqueo del cálculo de las duplicadas de oficio, junto a la base.
-fn cerrojo_duplicadas(ruta_db: &std::path::Path) -> std::path::PathBuf {
-    ruta_db.with_extension("trade-duplicates.lock")
+/// The lock file of the trade duplicates computation, next to the database.
+fn duplicates_lock(db_path: &std::path::Path) -> std::path::PathBuf {
+    db_path.with_extension("trade-duplicates.lock")
 }
 
-/// Lanza `omoi review --refresh-trade-duplicates` aparte (un proceso suelto que nadie espera; no hay
-/// demonio): no si ya hay uno en marcha (tiene el bloqueo, y repite mientras las de oficio sigan
-/// cambiando), ni si ya se lanzó para esta `huella` hace menos de `MISMA_HUELLA`, ni si se lanzó otro hace
-/// menos de `ENTRE_LANZAMIENTOS`. Si el proceso murió sin guardar, pasada esa ventana la siguiente
-/// lectura o escritura lo vuelve a lanzar. Solo si quien corre es `omoi`
-/// (como `deriva`: desde un test el ejecutable es el de las pruebas).
-fn recalcular_aparte(db: &Connection, huella: &str) -> Result<()> {
-    let Some(ruta) = db.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else { return Ok(()) };
-    let es_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
-    if !es_omoi || crate::sync::Cerrojo::ocupado(&cerrojo_duplicadas(&ruta)) {
+/// Launches `omoi review --refresh-trade-duplicates` separately (a detached process nobody waits for;
+/// there is no daemon): not if one is already running (it holds the lock, and repeats while the trade ones
+/// keep changing), nor if it was already launched for this `fingerprint` less than `SAME_FINGERPRINT` ago,
+/// nor if another was launched less than `BETWEEN_LAUNCHES` ago. If the process died without saving,
+/// after that window the next read or write launches it again. Only if the running binary is `omoi`
+/// (like `deriva`: from a test the executable is the test one).
+fn recompute_in_background(db: &Connection, fingerprint: &str) -> Result<()> {
+    let Some(path) = db.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else { return Ok(()) };
+    let is_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
+    if !is_omoi || crate::sync::Cerrojo::ocupado(&duplicates_lock(&path)) {
         return Ok(());
     }
-    let ahora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let lanzado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DUPLICADAS_LANZADO], |f| f.get(0)).optional()?;
-    if let Some((h, cuando)) = lanzado.as_deref().and_then(|v| v.split_once('\t'))
-        && let Ok(t) = cuando.parse::<u64>()
-        && (ahora.saturating_sub(t) < ENTRE_LANZAMIENTOS || (h == huella && ahora.saturating_sub(t) < MISMA_HUELLA))
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let launched: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [TRADE_DUPLICATES_LAUNCHED_KEY], |row| row.get(0)).optional()?;
+    if let Some((h, when)) = launched.as_deref().and_then(|v| v.split_once('\t'))
+        && let Ok(t) = when.parse::<u64>()
+        && (now.saturating_sub(t) < BETWEEN_LAUNCHES || (h == fingerprint && now.saturating_sub(t) < SAME_FINGERPRINT))
     {
         return Ok(());
     }
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_DUPLICADAS_LANZADO, &format!("{huella}\t{ahora}")])?;
-    crate::sync::lanzar(&["review", "--refresh-trade-duplicates"], Some(&ruta));
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [TRADE_DUPLICATES_LAUNCHED_KEY, &format!("{fingerprint}\t{now}")])?;
+    crate::sync::lanzar(&["review", "--refresh-trade-duplicates"], Some(&path));
     Ok(())
 }
 
-/// Calcula las duplicadas de oficio y las deja en `meta`: el proceso de fondo. Con el bloqueo, para que
-/// no haya dos a la vez (si ya hay uno, no hace nada: `None`), y otra vez si las de oficio cambiaron
-/// mientras (una ráfaga de `remember`), hasta 5 veces. `desde_cero`: la primera vuelta compara todas las
-/// parejas (el diario). Cuántas parejas.
-pub fn refrescar_duplicadas_de_oficio(db: &Connection, desde_cero: bool) -> Result<Option<usize>> {
-    let _cerrojo = match db.path().filter(|p| !p.is_empty()) {
-        Some(ruta) => match crate::sync::Cerrojo::tomar_en(cerrojo_duplicadas(std::path::Path::new(ruta))) {
+/// Computes the trade duplicates and leaves them in `meta`: the background process. With the lock, so
+/// there are never two at once (if there already is one, it does nothing: `None`), and again if the trade
+/// ones changed meanwhile (a burst of `remember`), up to 5 times. `from_scratch`: the first round compares
+/// every pair (the daily job). How many pairs.
+pub fn refrescar_duplicadas_de_oficio(db: &Connection, from_scratch: bool) -> Result<Option<usize>> {
+    let _lock = match db.path().filter(|p| !p.is_empty()) {
+        Some(path) => match crate::sync::Cerrojo::tomar_en(duplicates_lock(std::path::Path::new(path))) {
             Some(c) => Some(c),
             None => return Ok(None),
         },
         None => None,
     };
     let mut n = 0;
-    for vuelta in 0..5 {
-        n = duplicadas_de_oficio_con(db, &Ambito::Todos, desde_cero && vuelta == 0)?.len();
-        if huella_duplicadas_guardadas(db)? == huella_oficio(db)? {
+    for round in 0..5 {
+        n = trade_duplicates_with(db, &Ambito::Todos, from_scratch && round == 0)?.len();
+        if saved_duplicates_fingerprint(db)? == trade_fingerprint(db)? {
             break;
         }
     }
     Ok(Some(n))
 }
 
-/// De las parejas calculadas, las que valen ahora: las dos memorias vivas, aún de oficio, visibles desde
-/// `ambito` y sin cambios desde el cálculo (su `updated_at`), y la pareja sin veredicto.
-fn filtrar_duplicadas(db: &Connection, ambito: &Ambito, parejas: Vec<Calculada>) -> Result<Vec<Pareja>> {
-    if parejas.is_empty() {
+/// Of the computed pairs, the ones that hold now: both memories alive, still trade ones, visible from
+/// `scope` and unchanged since the computation (their `updated_at`), and the pair without a verdict.
+fn filter_duplicates(db: &Connection, scope: &Ambito, pairs: Vec<ComputedPair>) -> Result<Vec<Pair>> {
+    if pairs.is_empty() {
         return Ok(Vec::new());
     }
-    let visibles: HashMap<String, String> = {
+    let visible: HashMap<String, String> = {
         let mut q = db.prepare(&format!(
             "SELECT m.id, m.updated_at FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL AND instr(m.tags, '\"trade:') > 0 AND {}",
-            ambito.sql()
+            scope.sql()
         ))?;
-        q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let juzgadas = crate::veredictos::parejas(db)?;
-    Ok(parejas
+    let judged = crate::veredictos::parejas(db)?;
+    Ok(pairs
         .into_iter()
         .filter(|p| {
-            visibles.get(&p.nueva) == Some(&p.cambio_nueva)
-                && visibles.get(&p.vieja) == Some(&p.cambio_vieja)
-                && !juzgadas.contains_key(&crate::veredictos::pareja(&p.nueva, &p.vieja))
+            visible.get(&p.nueva) == Some(&p.cambio_nueva)
+                && visible.get(&p.vieja) == Some(&p.cambio_vieja)
+                && !judged.contains_key(&crate::veredictos::pareja(&p.nueva, &p.vieja))
         })
         .map(|p| (p.nueva, p.vieja, p.detalle))
         .collect())
 }
 
-/// Los tipos de lo que parece un secreto en el título y el contenido de una memoria, uno por hallazgo.
+/// The kinds of what looks like a secret in a memory's title and content, one per finding.
 pub fn secretos_de(m: &Memoria) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = crate::secretos::hallazgos(&m.title).iter().map(|h| h.tipo).collect();
     v.extend(crate::secretos::hallazgos(&m.content).iter().map(|h| h.tipo));
     v
 }
 
-fn chrono_ahora(db: &Connection) -> Result<String> {
-    Ok(db.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?)
+fn db_now(db: &Connection) -> Result<String> {
+    Ok(db.query_row(&format!("SELECT {AHORA}"), [], |row| row.get(0))?)
 }
 
-/// Días entre dos fechas ISO (las que guarda la base). Sin dependencias: días civiles a mano.
-fn dias_entre(desde: &str, hasta: &str) -> f64 {
-    fn dia(s: &str) -> Option<f64> {
-        let (a, m, d) = (s.get(0..4)?.parse::<i64>().ok()?, s.get(5..7)?.parse::<i64>().ok()?, s.get(8..10)?.parse::<i64>().ok()?);
+/// Days between two ISO dates (the ones the database stores). No dependencies: civil days by hand.
+fn days_between(since: &str, until: &str) -> f64 {
+    fn day_number(s: &str) -> Option<f64> {
+        let (y, m, d) = (s.get(0..4)?.parse::<i64>().ok()?, s.get(5..7)?.parse::<i64>().ok()?, s.get(8..10)?.parse::<i64>().ok()?);
         let (h, mi) = (s.get(11..13).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0), s.get(14..16).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0));
-        // Días desde 1970-01-01 (algoritmo de Howard Hinnant).
-        let y = if m <= 2 { a - 1 } else { a };
+        // Days since 1970-01-01 (Howard Hinnant's algorithm).
+        let y = if m <= 2 { y - 1 } else { y };
         let era = y.div_euclid(400);
         let yoe = y - era * 400;
         let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
         Some((era * 146097 + doe - 719468) as f64 + (h * 60 + mi) as f64 / 1440.0)
     }
-    match (dia(desde), dia(hasta)) {
+    match (day_number(since), day_number(until)) {
         (Some(a), Some(b)) => b - a,
         _ => 0.0,
     }
 }
 
-/// Días sin revisar, si ya le toca: desde su último cambio, el último «está bien así» o la última vez
-/// que el agente la recibió, lo más nuevo. Una memoria que se recuerda cada semana y nadie corrige
-/// está repasada; la que lleva 120 días sin que nadie la vea ni la toque, no (repetición espaciada).
-fn sin_revisar(m: &Memoria, revisadas: &HashMap<(String, String), String>, ahora: &str) -> Option<i64> {
-    let plazo = dias_para_revisar(m)?;
-    let mut desde = m.updated_at.as_str();
-    if let Some(at) = revisadas.get(&(m.id.clone(), POR_REVISAR.to_string()))
-        && at.as_str() > desde
+/// Days without review, if it is due: since its last change, the last "it's fine as it is" or the last
+/// time the agent received it, whichever is newest. A memory recalled every week that nobody corrects
+/// is reviewed; one that has gone 120 days without anyone seeing or touching it is not (spaced repetition).
+fn days_unreviewed(m: &Memoria, reviewed: &HashMap<(String, String), String>, now: &str) -> Option<i64> {
+    let period = dias_para_revisar(m)?;
+    let mut since = m.updated_at.as_str();
+    if let Some(at) = reviewed.get(&(m.id.clone(), POR_REVISAR.to_string()))
+        && at.as_str() > since
     {
-        desde = at;
+        since = at;
     }
     if let Some(r) = m.recalled_at.as_deref()
-        && r > desde
+        && r > since
     {
-        desde = r;
+        since = r;
     }
-    let n = dias_entre(desde, ahora);
-    (n > plazo).then_some(n as i64)
+    let n = days_between(since, now);
+    (n > period).then_some(n as i64)
 }
 
-/// «Está bien así»: no vuelve a avisar de esto hasta que la memoria cambie. En una pareja, las dos
-/// valen (`compatible`); en una memoria sola, `ok:<aviso>`. Es un veredicto, así que viaja, firmado
-/// por `user` (viene de la vista web o de la CLI, no del agente).
+/// "It's fine as it is": doesn't warn about this again until the memory changes. In a pair, both hold
+/// (`compatible`); in a single memory, `ok:<kind>`. It is a verdict, so it travels, signed by `user`
+/// (it comes from the web view or the CLI, not from the agent).
 pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -> Result<()> {
-    anyhow::ensure!(TIPOS.contains(&kind), "unknown review kind «{kind}»");
+    anyhow::ensure!(KINDS.contains(&kind), "unknown review kind «{kind}»");
     if other_id.is_empty() {
         crate::veredictos::poner(db, memory_id, "", &format!("ok:{kind}"), "", crate::veredictos::USUARIO)
     } else {
@@ -1524,125 +1523,124 @@ pub fn descartar(db: &Connection, memory_id: &str, kind: &str, other_id: &str) -
     }
 }
 
-/// Las memorias que la recién guardada deja anticuadas: (id, título, por qué).
+/// The memories the just-saved one makes obsolete: (id, title, why).
 pub fn superadas_por(db: &Connection, id: &str) -> Result<Vec<(String, String, String)>> {
     let mut q = db.prepare(
         "SELECT r.memory_id, m.title, r.detail FROM review r JOIN memory m ON m.id = r.memory_id
          WHERE r.other_id = ?1 AND r.kind = ?2",
     )?;
-    let v = q.query_map(params![id, DESFASADA], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map(params![id, DESFASADA], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-/// Para el recall: una nota corta por memoria que conviene tomar con cuidado (sustituida,
-/// contradicha, desfasada o estado viejo).
-/// Las notas nombran la otra memoria (su id, su título, el motivo del veredicto) solo si se ve desde
-/// `ambito`: una memoria de oficio que se ve en dos clientes puede tener un veredicto con una de uno de
-/// ellos.
-pub fn notas(db: &Connection, ambito: &Ambito, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
-    notas_con(db, ambito, memorias, false)
+/// For recall: a short note per memory that should be taken with care (superseded, contradicted,
+/// outdated or stale status).
+/// The notes name the other memory (its id, its title, the verdict's reason) only if it is visible from
+/// `scope`: a trade memory visible in two clients may have a verdict with one from one of them.
+pub fn notas(db: &Connection, scope: &Ambito, memories: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notes_with(db, scope, memories, false)
 }
 
-/// Para `search`: lo mismo y, además, las que ya toca revisar. En el recall no, para no meter ruido:
-/// ahí solo va lo que dice que la memoria puede estar mal.
-pub fn notas_busqueda(db: &Connection, ambito: &Ambito, memorias: &[&Memoria]) -> Result<HashMap<String, String>> {
-    notas_con(db, ambito, memorias, true)
+/// For `search`: the same and, in addition, the ones already due for review. Not in recall, to avoid
+/// noise: there only what says the memory may be wrong goes.
+pub fn notas_busqueda(db: &Connection, scope: &Ambito, memories: &[&Memoria]) -> Result<HashMap<String, String>> {
+    notes_with(db, scope, memories, true)
 }
 
-fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revision: bool) -> Result<HashMap<String, String>> {
+fn notes_with(db: &Connection, scope: &Ambito, memories: &[&Memoria], with_review: bool) -> Result<HashMap<String, String>> {
     let mut r = HashMap::new();
-    if memorias.is_empty() {
+    if memories.is_empty() {
         return Ok(r);
     }
-    // Lo que se ve desde el espacio del ámbito (las otras memorias de su espacio, sí).
-    let vista = ambito.amplio();
-    let se_ve = |id: &str| -> Result<bool> { if matches!(vista, Ambito::Todos) { Ok(true) } else { vista.ve(db, id) } };
-    let corto = |id: &str| -> Result<String> {
-        let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
+    // What is visible from the scope's space (the other memories of its space, yes).
+    let view = scope.amplio();
+    let visible = |id: &str| -> Result<bool> { if matches!(view, Ambito::Todos) { Ok(true) } else { view.ve(db, id) } };
+    let short_ref = |id: &str| -> Result<String> {
+        let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [id], |row| row.get(0))?;
         Ok(format!("{} «{}»", id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()))
     };
-    // El motivo del veredicto, o lo que hay que hacer si no lo trae.
-    let motivo = |reason: &str, si_no: &str| -> String { if reason.trim().is_empty() { si_no.into() } else { crate::veredictos::motivo_corto(reason) } };
+    // The verdict's reason, or what to do if it doesn't carry one.
+    let reason_or = |reason: &str, otherwise: &str| -> String { if reason.trim().is_empty() { otherwise.into() } else { crate::veredictos::motivo_corto(reason) } };
     for v in crate::veredictos::parejas(db)?.into_values() {
-        for (esta, otra) in [(&v.memory_id, &v.other_id), (&v.other_id, &v.memory_id)] {
-            if r.contains_key(esta.as_str()) || !memorias.iter().any(|m| &m.id == esta) {
+        for (this, other) in [(&v.memory_id, &v.other_id), (&v.other_id, &v.memory_id)] {
+            if r.contains_key(this.as_str()) || !memories.iter().any(|m| &m.id == this) {
                 continue;
             }
-            let nota = match v.relation.as_str() {
-                SUSTITUIDA if esta == &v.memory_id => {
-                    // Si la sustituta está a su vez sustituida, la nota lleva al final de la cadena.
-                    let (ultima, saltos, reason) = match crate::veredictos::cadena(db, esta)? {
-                        Some(fin) if fin.saltos > 1 => (fin.id, fin.saltos, fin.reason),
-                        _ => (otra.clone(), 1, v.reason.clone()),
+            let note = match v.relation.as_str() {
+                SUSTITUIDA if this == &v.memory_id => {
+                    // If the replacement is in turn superseded, the note leads to the end of the chain.
+                    let (last, hops, reason) = match crate::veredictos::cadena(db, this)? {
+                        Some(end) if end.saltos > 1 => (end.id, end.saltos, end.reason),
+                        _ => (other.clone(), 1, v.reason.clone()),
                     };
-                    let via = if saltos > 1 { format!(" (via {saltos})") } else { String::new() };
-                    if se_ve(&ultima)? {
-                        format!("superseded by {}{via}: {}", corto(&ultima)?, motivo(&reason, "use that one"))
+                    let via = if hops > 1 { format!(" (via {hops})") } else { String::new() };
+                    if visible(&last)? {
+                        format!("superseded by {}{via}: {}", short_ref(&last)?, reason_or(&reason, "use that one"))
                     } else {
-                        // Ni su título ni el motivo (que puede ser el título de la otra).
+                        // Neither its title nor the reason (which may be the other one's title).
                         "superseded by a newer memory that is not in this scope".to_string()
                     }
                 }
-                // La contradicha (`other_id`) espera a la persona (`veredictos::en_espera`).
-                CONTRADICE if se_ve(otra)? && esta == &v.other_id => format!(
+                // The contradicted one (`other_id`) waits for the person (`veredictos::en_espera`).
+                CONTRADICE if visible(other)? && this == &v.other_id => format!(
                     "ON HOLD: {} contradicts it ({}); ask the user which holds and save the answer with `decisions` (contradiction, keep, answer)",
-                    corto(otra)?,
-                    motivo(&v.reason, "no reason given")
+                    short_ref(other)?,
+                    reason_or(&v.reason, "no reason given")
                 ),
-                CONTRADICE if se_ve(otra)? => format!("contradicts {} (on hold until the user says which holds): {}", corto(otra)?, motivo(&v.reason, "ask the user which holds")),
+                CONTRADICE if visible(other)? => format!("contradicts {} (on hold until the user says which holds): {}", short_ref(other)?, reason_or(&v.reason, "ask the user which holds")),
                 _ => continue,
             };
-            r.insert(esta.clone(), nota);
+            r.insert(this.clone(), note);
         }
     }
-    // Sin `al_dia`: recalcular cuesta unos 50 ms y el recall tiene que quedarse por debajo de 30.
-    // Las escrituras (MCP, CLI, sync, la vista) ya lo dejan al día.
-    let fuera = descartados(db)?;
+    // Without `al_dia`: recomputing costs about 50 ms and recall must stay below 30.
+    // Writes (MCP, CLI, sync, the view) already leave it up to date.
+    let excluded = dismissed(db)?;
     let mut q = db.prepare(
         "SELECT r.other_id, r.detail, m.title FROM review r JOIN memory m ON m.id = r.other_id
          WHERE r.memory_id = ?1 AND r.kind = ?2 LIMIT 1",
     )?;
-    let ahora = chrono_ahora(db)?;
-    // La fecha de revisión va también en el recall: dice que la memoria puede haber dejado de valer
-    // (el token caducó, la oferta acabó). Los veredictos solo se leen si alguna lleva fecha.
-    if memorias.iter().any(|m| fecha_revision(&m.tags).is_some()) {
-        let (revisadas, hoy) = (crate::veredictos::oks(db, false)?, Hoy::de(db)?);
-        for m in memorias {
+    let now = db_now(db)?;
+    // The review date also goes in recall: it says the memory may have stopped holding (the token
+    // expired, the offer ended). Verdicts are only read if some memory carries a date.
+    if memories.iter().any(|m| fecha_revision(&m.tags).is_some()) {
+        let (reviewed, today) = (crate::veredictos::oks(db, false)?, Today::load(db)?);
+        for m in memories {
             if !r.contains_key(&m.id)
-                && let Some(f) = fecha_llegada(m, &revisadas, &hoy)
+                && let Some(f) = date_reached(m, &reviewed, &today)
             {
-                let por = m.review_reason.as_deref().map(|x| format!(" (why: {x})")).unwrap_or_default();
-                r.insert(m.id.clone(), format!("review date {f} reached{por}: check it still holds"));
+                let why = m.review_reason.as_deref().map(|x| format!(" (why: {x})")).unwrap_or_default();
+                r.insert(m.id.clone(), format!("review date {f} reached{why}: check it still holds"));
             }
         }
     }
-    for m in memorias {
+    for m in memories {
         if r.contains_key(&m.id) {
             continue;
         }
-        if let Some((otra, detalle, titulo)) =
-            q.query_row(params![m.id, DESFASADA], |f| Ok((f.get::<_, String>(0)?, f.get::<_, String>(1)?, f.get::<_, String>(2)?))).optional()?
-            && !fuera.contains(&(m.id.clone(), DESFASADA.to_string(), otra.clone()))
-            && se_ve(&otra)?
+        if let Some((other, detail, title)) =
+            q.query_row(params![m.id, DESFASADA], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).optional()?
+            && !excluded.contains(&(m.id.clone(), DESFASADA.to_string(), other.clone()))
+            && visible(&other)?
         {
-            let corto: String = titulo.chars().take(80).collect();
-            r.insert(m.id.clone(), format!("may be outdated: newer {} «{corto}» ({detalle})", otra.chars().take(12).collect::<String>()));
-        } else if estado_que_avisa(m, dias_entre(&m.updated_at, &ahora)) {
-            let despues: i64 = db.query_row(
+            let short: String = title.chars().take(80).collect();
+            r.insert(m.id.clone(), format!("may be outdated: newer {} «{short}» ({detail})", other.chars().take(12).collect::<String>()));
+        } else if status_warns(m, days_between(&m.updated_at, &now)) {
+            let later: i64 = db.query_row(
                 "SELECT count(*) FROM memory WHERE project_id = ?1 AND id != ?2 AND updated_at > ?3",
                 params![m.project_id, m.id, m.updated_at],
-                |f| f.get(0),
+                |row| row.get(0),
             )?;
-            if despues > 0 && !fuera.contains(&(m.id.clone(), ESTADO_VIEJO.to_string(), String::new())) {
-                r.insert(m.id.clone(), format!("may be stale: {despues} memories of this project changed after it"));
+            if later > 0 && !excluded.contains(&(m.id.clone(), ESTADO_VIEJO.to_string(), String::new())) {
+                r.insert(m.id.clone(), format!("may be stale: {later} memories of this project changed after it"));
             }
         }
     }
-    if con_revision {
-        let revisadas = crate::veredictos::oks(db, false)?;
-        for m in memorias {
+    if with_review {
+        let reviewed = crate::veredictos::oks(db, false)?;
+        for m in memories {
             if !r.contains_key(&m.id)
-                && let Some(n) = sin_revisar(m, &revisadas, &ahora)
+                && let Some(n) = days_unreviewed(m, &reviewed, &now)
             {
                 r.insert(m.id.clone(), format!("not reviewed in {n} days: check it still holds"));
             }
@@ -1652,106 +1650,107 @@ fn notas_con(db: &Connection, ambito: &Ambito, memorias: &[&Memoria], con_revisi
 
 }
 
-// --- El aviso al empezar la sesión ------------------------------------------------------------------
+// --- The warning at session start ------------------------------------------------------------------
 //
-// La revisión solo sirve si alguien la abre. Cuando se acumula, el agente recibe al empezar un párrafo
-// corto con las cifras y la instrucción de proponer qué hacer: decide él con el usuario, Omoikane no
-// lleva modelo de lenguaje. Una vez al día por base, o de nuevo el mismo día si la cifra crece bastante.
+// The review is only useful if someone opens it. When it piles up, the agent receives at start a short
+// paragraph with the numbers and the instruction to propose what to do: it decides with the user,
+// Omoikane carries no language model. Once a day per database, or again the same day if the number
+// grows enough.
 //
-// Calibrado con la memoria real de Marc del 4-nov-2026 (178 memorias): desde la carpeta personal salen
-// 33 sin contar las rutas (21 demasiado largas, 9 enlaces rotos, 3 desfasadas), casi una de cada cinco
-// memorias: avisa. Desde D:\Omoikane, 15 de 135 (9 largas, 4 enlaces, 2 desfasadas): no. Con 10.000
-// memorias de un equipo, las que nadie ha recordado en 30 días ya son cientos: un número fijo avisaría
-// siempre, así que el umbral es también una proporción.
+// Calibrated with Marc's real memory of 4-nov-2026 (178 memories): from the home folder there are
+// 33 without counting paths (21 too long, 9 broken links, 3 outdated), almost one in five memories:
+// it warns. From D:\Omoikane, 15 of 135 (9 long, 4 links, 2 outdated): it doesn't. With 10,000
+// memories of a team, the ones nobody has recalled in 30 days are already hundreds: a fixed number
+// would always warn, so the threshold is also a proportion.
 //
-// Contar con `avisos` cuesta medio segundo con 10.000 memorias (leerlas enteras y buscar secretos en
-// cada una), así que al empezar se cuenta con `pendientes`: lo guardado en `review`, los veredictos y
-// las columnas pequeñas de `memory`, sin el contenido ni el disco. Las rutas rotas y los secretos solo
-// salen en la revisión entera (`omoi review`, la herramienta `context`).
+// Counting with `avisos` costs half a second with 10,000 memories (reading them whole and searching
+// for secrets in each one), so at start it counts with `pendientes`: what is saved in `review`, the
+// verdicts and the small columns of `memory`, without the content or the disk. Broken paths and secrets
+// only show in the full review (`omoi review`, the `context` tool).
 
-/// Pendientes a partir de las que se avisa, con pocas memorias.
+/// Pending items from which it warns, with few memories.
 pub const AVISO_MINIMO: usize = 20;
-/// La parte de las memorias del ámbito que tiene que estar pendiente, con muchas (un 10 %).
+/// The share of the scope's memories that has to be pending, with many (10 %).
 pub const AVISO_PROPORCION: f64 = 0.10;
-/// Dónde se apunta el último aviso: `día|cuántas`.
-const CLAVE_AVISO: &str = "revision_aviso";
+/// Where the last warning is recorded: `day|count`.
+const NOTICE_KEY: &str = "revision_aviso";
 
-/// El umbral para un ámbito con `memorias` memorias.
-pub fn umbral_aviso(memorias: usize) -> usize {
-    AVISO_MINIMO.max((memorias as f64 * AVISO_PROPORCION).ceil() as usize)
+/// The threshold for a scope with `memories` memories.
+pub fn umbral_aviso(memories: usize) -> usize {
+    AVISO_MINIMO.max((memories as f64 * AVISO_PROPORCION).ceil() as usize)
 }
 
-/// Cuánto tiene que crecer la cifra para repetir el aviso el mismo día: 5, o un 10 % si es más.
-fn crecio(antes: usize, ahora: usize) -> bool {
-    ahora >= antes + 5.max(antes / 10)
+/// How much the number has to grow to repeat the warning the same day: 5, or 10 % if that is more.
+fn grew(before: usize, now: usize) -> bool {
+    now >= before + 5.max(before / 10)
 }
 
-/// Dónde se guardan las últimas cifras de `pendientes`: `clave\tJSON`.
-const CLAVE_CIFRAS: &str = "revision_aviso_cifras";
+/// Where the last counts of `pendientes` are saved: `key\tJSON`.
+const COUNTS_KEY: &str = "revision_aviso_cifras";
 
-/// El día de quien lo lee, no el UTC.
-fn hoy(db: &Connection) -> Result<String> {
-    Ok(db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0))?)
+/// The reader's day, not the UTC one.
+fn today(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))?)
 }
 
-/// Cuántas hay de cada tipo en el ámbito, lo mismo que contaría `avisos` salvo las rutas rotas y los
-/// secretos, sin leer el contenido de las memorias. Se guardan en `meta` por día, ámbito, huella de
-/// `memory` y veredictos: hasta que algo se escriba, las siguientes sesiones del día no cuentan. Lo
-/// que cambia solo con recordar (sin uso, por revisar) solo baja, y espera a mañana.
-pub fn pendientes(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
+/// How many there are of each kind in the scope, the same that `avisos` would count except broken paths
+/// and secrets, without reading the memories' content. Saved in `meta` by day, scope, `memory`
+/// fingerprint and verdicts: until something is written, the day's next sessions don't count. What
+/// changes just by recalling (unused, due) only goes down, and waits until tomorrow.
+pub fn pendientes(db: &Connection, scope: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
     al_dia(db)?;
-    let huella: String = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |f| f.get(0)).optional()?.unwrap_or_default();
-    let (n, sello): (i64, String) = db.query_row("SELECT count(*), COALESCE(max(hlc), '') FROM verdict", [], |f| Ok((f.get(0)?, f.get(1)?)))?;
-    let clave = format!("{}|{huella}|{n}|{sello}|{}|{}", hoy(db)?, ambito.sql(), huella_duplicadas_guardadas(db)?);
-    let guardado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_CIFRAS], |f| f.get(0)).optional()?;
-    if let Some((k, json)) = guardado.as_deref().and_then(|v| v.split_once('\t'))
-        && k == clave
+    let fingerprint: String = db.query_row("SELECT v FROM meta WHERE k = 'revision'", [], |row| row.get(0)).optional()?.unwrap_or_default();
+    let (n, stamp): (i64, String) = db.query_row("SELECT count(*), COALESCE(max(hlc), '') FROM verdict", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let key = format!("{}|{fingerprint}|{n}|{stamp}|{}|{}", today(db)?, scope.sql(), saved_duplicates_fingerprint(db)?);
+    let saved: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [COUNTS_KEY], |row| row.get(0)).optional()?;
+    if let Some((k, json)) = saved.as_deref().and_then(|v| v.split_once('\t'))
+        && k == key
         && let Ok(m) = serde_json::from_str::<BTreeMap<String, usize>>(json)
     {
-        return Ok(m.into_iter().filter_map(|(k, n)| TIPOS.iter().find(|t| **t == k).map(|t| (*t, n))).collect());
+        return Ok(m.into_iter().filter_map(|(k, n)| KINDS.iter().find(|t| **t == k).map(|t| (*t, n))).collect());
     }
-    let r = contar(db, ambito)?;
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_CIFRAS, &format!("{clave}\t{}", serde_json::to_string(&r)?)])?;
+    let r = count_pending(db, scope)?;
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [COUNTS_KEY, &format!("{key}\t{}", serde_json::to_string(&r)?)])?;
     Ok(r)
 }
 
-fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
-    let fuera = descartados(db)?;
-    // Solo las columnas pequeñas, y el largo solo de las que pasan de bytes (un carácter es al menos
-    // un byte): `octet_length` no recorre el texto. El espacio va por su número, no por su clave.
+fn count_pending(db: &Connection, scope: &Ambito) -> Result<BTreeMap<&'static str, usize>> {
+    let excluded = dismissed(db)?;
+    // Only the small columns, and the length only of those that exceed it in bytes (a character is at
+    // least one byte): `octet_length` doesn't walk the text. The space goes by its number, not its key.
     let mut q = db.prepare(&format!(
         "SELECT m.id, m.kind, m.tags, m.created_at, m.updated_at, m.recalled_at, m.recall_count, m.project_id,
                 COALESCE(m.space_id, (SELECT space_id FROM project WHERE id = m.project_id), 0),
                 CASE WHEN octet_length(m.content) > {LARGO_PARA_RECALL} THEN length(m.content) ELSE 0 END
          FROM memory m WHERE {}",
-        ambito.sql()
+        scope.sql()
     ))?;
-    let todas: Vec<(Memoria, usize)> = q
-        .query_map([], |f| {
+    let all: Vec<(Memoria, usize)> = q
+        .query_map([], |row| {
             let m = Memoria {
-                id: f.get(0)?,
-                kind: f.get::<_, String>(1)?.parse().unwrap_or(crate::memoria::Tipo::Fact),
-                tags: serde_json::from_str(&f.get::<_, String>(2)?).unwrap_or_default(),
-                created_at: f.get(3)?,
-                updated_at: f.get(4)?,
-                recalled_at: f.get(5)?,
-                recall_count: f.get(6)?,
-                project_id: f.get(7)?,
-                space: f.get::<_, i64>(8)?.to_string(),
+                id: row.get(0)?,
+                kind: row.get::<_, String>(1)?.parse().unwrap_or(crate::memoria::Tipo::Fact),
+                tags: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default(),
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                recalled_at: row.get(5)?,
+                recall_count: row.get(6)?,
+                project_id: row.get(7)?,
+                space: row.get::<_, i64>(8)?.to_string(),
                 ..Default::default()
             };
-            Ok((m, f.get::<_, i64>(9)? as usize))
+            Ok((m, row.get::<_, i64>(9)? as usize))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let en_ambito: HashSet<&str> = todas.iter().map(|(m, _)| m.id.as_str()).collect();
+    let in_scope: HashSet<&str> = all.iter().map(|(m, _)| m.id.as_str()).collect();
     let mut r: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut sumar = |k: &'static str| *r.entry(k).or_insert(0) += 1;
+    let mut add = |k: &'static str| *r.entry(k).or_insert(0) += 1;
     {
         let mut q = db.prepare("SELECT memory_id, other_id FROM review WHERE kind = ?1")?;
-        let filas: Vec<(String, String)> = q.query_map([DESFASADA], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-        for (vieja, nueva) in filas {
-            if en_ambito.contains(vieja.as_str()) && en_ambito.contains(nueva.as_str()) && !fuera.contains(&(vieja, DESFASADA.to_string(), nueva)) {
-                sumar(DESFASADA);
+        let rows: Vec<(String, String)> = q.query_map([DESFASADA], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (old, new) in rows {
+            if in_scope.contains(old.as_str()) && in_scope.contains(new.as_str()) && !excluded.contains(&(old, DESFASADA.to_string(), new)) {
+                add(DESFASADA);
             }
         }
     }
@@ -1759,119 +1758,120 @@ fn contar(db: &Connection, ambito: &Ambito) -> Result<BTreeMap<&'static str, usi
         if v.relation == crate::veredictos::COMPATIBLE {
             continue;
         }
-        let mut otra = v.other_id.clone();
+        let mut other = v.other_id.clone();
         if v.relation == SUSTITUIDA
-            && let Some(fin) = crate::veredictos::cadena(db, &v.memory_id)?
-            && fin.saltos > 1
+            && let Some(end) = crate::veredictos::cadena(db, &v.memory_id)?
+            && end.saltos > 1
         {
-            otra = fin.id;
+            other = end.id;
         }
-        if en_ambito.contains(v.memory_id.as_str()) && en_ambito.contains(otra.as_str()) {
-            sumar(if v.relation == SUSTITUIDA { SUSTITUIDA } else { CONTRADICE });
+        if in_scope.contains(v.memory_id.as_str()) && in_scope.contains(other.as_str()) {
+            add(if v.relation == SUSTITUIDA { SUSTITUIDA } else { CONTRADICE });
         }
     }
-    // Al empezar la sesión no se comparan las de oficio: lo que calculó el proceso de fondo.
-    for (nueva, vieja, _) in duplicadas_de_oficio_guardadas(db, ambito)? {
-        if en_ambito.contains(nueva.as_str()) && en_ambito.contains(vieja.as_str()) {
-            sumar(DUPLICADA_OFICIO);
+    // At session start trade memories are not compared: what the background process computed.
+    for (new, old, _) in duplicadas_de_oficio_guardadas(db, scope)? {
+        if in_scope.contains(new.as_str()) && in_scope.contains(old.as_str()) {
+            add(DUPLICADA_OFICIO);
         }
     }
     {
         let mut q = db.prepare("SELECT memory_id FROM review WHERE kind = ?1")?;
-        let filas: Vec<String> = q.query_map([ENLACE_ROTO], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-        for id in filas {
-            if en_ambito.contains(id.as_str()) && !fuera.contains(&(id, ENLACE_ROTO.to_string(), String::new())) {
-                sumar(ENLACE_ROTO);
+        let rows: Vec<String> = q.query_map([ENLACE_ROTO], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for id in rows {
+            if in_scope.contains(id.as_str()) && !excluded.contains(&(id, ENLACE_ROTO.to_string(), String::new())) {
+                add(ENLACE_ROTO);
             }
         }
     }
-    let ahora = chrono_ahora(db)?;
-    let revisadas = crate::veredictos::oks(db, false)?;
-    // El último cambio de cada proyecto (y espacio): un estado se ha quedado atrás si hay otro después.
-    let mut ultimo: HashMap<(i64, &str), &str> = HashMap::new();
-    for (m, _) in &todas {
-        let u = ultimo.entry((m.project_id, m.space.as_str())).or_insert(m.updated_at.as_str());
+    let now = db_now(db)?;
+    let reviewed = crate::veredictos::oks(db, false)?;
+    // The last change of each project (and space): a status has fallen behind if there is another one after it.
+    let mut last: HashMap<(i64, &str), &str> = HashMap::new();
+    for (m, _) in &all {
+        let u = last.entry((m.project_id, m.space.as_str())).or_insert(m.updated_at.as_str());
         if m.updated_at.as_str() > *u {
             *u = m.updated_at.as_str();
         }
     }
-    let hoy = Hoy::de(db)?;
-    // Solo lo ya calculado: al empezar no se lanza git (`deriva::de_ambito`).
-    for _ in 0..crate::deriva::de_ambito(db, ambito).map(|d| d.len()).unwrap_or(0) {
-        sumar(DERIVA_CODIGO);
+    let today = Today::load(db)?;
+    // Only what is already computed: at start git is not launched (`deriva::de_ambito`).
+    for _ in 0..crate::deriva::de_ambito(db, scope).map(|d| d.len()).unwrap_or(0) {
+        add(DERIVA_CODIGO);
     }
-    for (m, largo) in &todas {
-        let descartado = |k: &str| fuera.contains(&(m.id.clone(), k.to_string(), String::new()));
-        if fecha_llegada(m, &revisadas, &hoy).is_some() {
-            sumar(FECHA);
+    for (m, len) in &all {
+        let is_dismissed = |k: &str| excluded.contains(&(m.id.clone(), k.to_string(), String::new()));
+        if date_reached(m, &reviewed, &today).is_some() {
+            add(FECHA);
         }
-        if sin_revisar(m, &revisadas, &ahora).is_some() {
-            sumar(POR_REVISAR);
+        if days_unreviewed(m, &reviewed, &now).is_some() {
+            add(POR_REVISAR);
         }
-        if estado_que_avisa(m, dias_entre(&m.updated_at, &ahora))
-            && !descartado(ESTADO_VIEJO)
-            && ultimo.get(&(m.project_id, m.space.as_str())).is_some_and(|u| *u > m.updated_at.as_str())
+        if status_warns(m, days_between(&m.updated_at, &now))
+            && !is_dismissed(ESTADO_VIEJO)
+            && last.get(&(m.project_id, m.space.as_str())).is_some_and(|u| *u > m.updated_at.as_str())
         {
-            sumar(ESTADO_VIEJO);
+            add(ESTADO_VIEJO);
         }
-        if m.recall_count == 0 && m.recalled_at.is_none() && dias_entre(&m.created_at, &ahora) > DIAS_SIN_USO && !descartado(SIN_USO) {
-            sumar(SIN_USO);
+        if m.recall_count == 0 && m.recalled_at.is_none() && days_between(&m.created_at, &now) > DIAS_SIN_USO && !is_dismissed(SIN_USO) {
+            add(SIN_USO);
         }
-        if *largo > LARGO_PARA_RECALL && !descartado(LARGA) {
-            sumar(LARGA);
+        if *len > LARGO_PARA_RECALL && !is_dismissed(LARGA) {
+            add(LARGA);
         }
     }
     Ok(r)
 }
 
-/// Las cifras de una revisión ya hecha (la de `avisos`), por tipo.
-pub fn cifras(avisos: &[Aviso]) -> BTreeMap<&'static str, usize> {
+/// The counts of an already done review (that of `avisos`), by kind.
+pub fn cifras(notices: &[Aviso]) -> BTreeMap<&'static str, usize> {
     let mut r = BTreeMap::new();
-    for a in avisos {
-        if let Some(k) = TIPOS.iter().find(|k| **k == a.kind) {
+    for a in notices {
+        if let Some(k) = KINDS.iter().find(|k| **k == a.kind) {
             *r.entry(*k).or_insert(0) += 1;
         }
     }
     r
 }
 
-/// Al empezar la sesión (el recall): el aviso, si toca.
-pub fn aviso_al_empezar(db: &Connection, ambito: &Ambito, memorias: usize) -> Result<Option<String>> {
-    let memorias = aviso(db, &pendientes(db, ambito)?, memorias)?;
-    // Y los proyectos duplicados o que no lo son (`nombres`), una vez al día: si falla, solo se pierde ese.
-    let proyectos = crate::nombres::aviso_al_empezar(db, ambito).ok().flatten();
-    Ok(match (memorias, proyectos) {
+/// At session start (the recall): the warning, if due.
+pub fn aviso_al_empezar(db: &Connection, scope: &Ambito, memories: usize) -> Result<Option<String>> {
+    let memories = aviso(db, &pendientes(db, scope)?, memories)?;
+    // And duplicated projects or ones that aren't (`nombres`), once a day: if it fails, only that one is lost.
+    let projects = crate::nombres::aviso_al_empezar(db, scope).ok().flatten();
+    Ok(match (memories, projects) {
         (Some(a), Some(b)) => Some(format!("{a}
 {b}")),
         (a, b) => a.or(b),
     })
 }
 
-/// El aviso para estas cifras en un ámbito de `memorias` memorias, si llegan al umbral y no se dio ya
-/// hoy (o han crecido desde entonces). Si sale, lo apunta en `meta`: es de este equipo, no viaja.
-pub fn aviso(db: &Connection, cifras: &BTreeMap<&'static str, usize>, memorias: usize) -> Result<Option<String>> {
-    // Los posibles secretos no cuentan en el total que se compara y se guarda: el inicio de sesión no
-    // los cuenta, y `context` volvería a avisar en la misma sesión. Pero uno avisa siempre: viaja con
-    // la sincronización y las copias.
-    let total: usize = cifras.iter().filter(|(k, _)| **k != SECRETO).map(|(_, n)| n).sum();
-    // Una fecha de revisión que llega también avisa siempre: alguien la puso para enterarse ese día.
-    let siempre = [SECRETO, FECHA].iter().any(|k| cifras.get(k).is_some_and(|n| *n > 0));
-    if total < umbral_aviso(memorias) && !siempre {
+/// The warning for these counts in a scope of `memories` memories, if they reach the threshold and it
+/// wasn't already given today (or they have grown since). If it goes out, it is recorded in `meta`: it
+/// belongs to this machine, it doesn't travel.
+pub fn aviso(db: &Connection, counts: &BTreeMap<&'static str, usize>, memories: usize) -> Result<Option<String>> {
+    // Possible secrets don't count in the total that is compared and saved: session start doesn't count
+    // them, and `context` would warn again in the same session. But one always warns: it travels with
+    // sync and backups.
+    let total: usize = counts.iter().filter(|(k, _)| **k != SECRETO).map(|(_, n)| n).sum();
+    // A review date that arrives also always warns: someone set it to find out that day.
+    let always = [SECRETO, FECHA].iter().any(|k| counts.get(k).is_some_and(|n| *n > 0));
+    if total < umbral_aviso(memories) && !always {
         return Ok(None);
     }
-    let hoy = hoy(db)?;
-    let antes: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_AVISO], |f| f.get(0)).optional()?;
-    if let Some(n) = antes.as_deref().and_then(|v| v.split_once('|')).filter(|(d, _)| *d == hoy).and_then(|(_, n)| n.parse::<usize>().ok())
-        && !crecio(n, total)
+    let today = today(db)?;
+    let before: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [NOTICE_KEY], |row| row.get(0)).optional()?;
+    if let Some(n) = before.as_deref().and_then(|v| v.split_once('|')).filter(|(d, _)| *d == today).and_then(|(_, n)| n.parse::<usize>().ok())
+        && !grew(n, total)
     {
         return Ok(None);
     }
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_AVISO, &format!("{hoy}|{total}")])?;
-    Ok(Some(texto_aviso(cifras)))
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [NOTICE_KEY, &format!("{today}|{total}")])?;
+    Ok(Some(texto_aviso(counts)))
 }
 
-/// Cómo se llama cada tipo en el aviso.
-fn nombre_aviso(kind: &str) -> &'static str {
+/// What each kind is called in the warning.
+fn notice_name(kind: &str) -> &'static str {
     match kind {
         SECRETO => "possible secrets",
         FECHA => "review dates reached",
@@ -1890,14 +1890,14 @@ fn nombre_aviso(kind: &str) -> &'static str {
     }
 }
 
-/// El párrafo para el agente, en inglés como el resto del recall: las cifras de los tipos que hay, en
-/// el orden de la revisión, y qué hacer con ellas.
-pub fn texto_aviso(cifras: &BTreeMap<&'static str, usize>) -> String {
-    let partes: Vec<String> = TIPOS.iter().filter_map(|k| cifras.get(k).filter(|n| **n > 0).map(|n| format!("{n} {}", nombre_aviso(k)))).collect();
+/// The paragraph for the agent, in English like the rest of the recall: the counts of the kinds present,
+/// in review order, and what to do with them.
+pub fn texto_aviso(counts: &BTreeMap<&'static str, usize>) -> String {
+    let parts: Vec<String> = KINDS.iter().filter_map(|k| counts.get(k).filter(|n| **n > 0).map(|n| format!("{n} {}", notice_name(k)))).collect();
     format!(
         "Memory review: {} items pending ({}). Look at them (`omoi review`, or `review` in the `context` tool) and propose concrete actions to the user: update, merge with `absorb`, `forget`, mark `supersedes`/`compatible`, fix the links. Change nothing without the user's OK.",
-        cifras.values().sum::<usize>(),
-        partes.join(", ")
+        counts.values().sum::<usize>(),
+        parts.join(", ")
     )
 }
 
@@ -1906,71 +1906,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn la_fecha_escrita_en_el_texto_cuenta_como_fecha_de_revision() {
+    fn a_date_written_in_the_text_counts_as_review_date() {
         assert_eq!(fecha_escrita("[review-after] 10-nov-2026. Para el servidor"), Some("2026-11-10".into()));
         assert_eq!(fecha_escrita("[review-after] 2026-12-01"), Some("2026-12-01".into()));
         assert_eq!(fecha_escrita("sin fecha de revisión, solo 10-nov-2026"), None);
     }
 
     #[test]
-    fn la_historia_de_un_diario_no_cuenta_como_version_vigente() {
-        let d = normal("Desde v0.4.0 también Bluesky\nVa en la 0.7.4 ya");
-        assert!(!versiones(&sin_historia(&d)).values().flatten().any(|x| x == &vec![0, 4, 0]));
-        let t = normal("Plugin social-publish v0.3.0 en marcha\n**19-oct-2026 (v0.6.1 → 0.6.2):** herramienta humanizar\nVa en la 0.7.4 desde ayer");
-        let v = versiones(&sin_historia(&t));
-        assert!(v.values().flatten().any(|x| x == &vec![0, 3, 0]), "{v:?} {:?}", sin_historia(&t));
+    fn journal_history_does_not_count_as_current_version() {
+        let d = normalize("Desde v0.4.0 también Bluesky\nVa en la 0.7.4 ya");
+        assert!(!versions(&without_history(&d)).values().flatten().any(|x| x == &vec![0, 4, 0]));
+        let t = normalize("Plugin social-publish v0.3.0 en marcha\n**19-oct-2026 (v0.6.1 → 0.6.2):** herramienta humanizar\nVa en la 0.7.4 desde ayer");
+        let v = versions(&without_history(&t));
+        assert!(v.values().flatten().any(|x| x == &vec![0, 3, 0]), "{v:?} {:?}", without_history(&t));
         assert!(!v.values().flatten().any(|x| x == &vec![0, 6, 2]), "{v:?}");
     }
 
     #[test]
-    fn lo_que_anade_la_limpieza_va_en_el_idioma_de_la_memoria() {
-        assert!(en_espanol("[blocking] android: YA EXISTÍA, no lo trae esta tarea: con letra 1,5 la pantalla"));
-        assert!(!en_espanol("The release is blocked until the tests pass on Windows and the tag is pushed"));
+    fn what_cleanup_adds_goes_in_the_memory_language() {
+        assert!(is_spanish("[blocking] android: YA EXISTÍA, no lo trae esta tarea: con letra 1,5 la pantalla"));
+        assert!(!is_spanish("The release is blocked until the tests pass on Windows and the tag is pushed"));
     }
 
     #[test]
-    fn rutas_del_otro_sistema_no_estan_rotas() {
-        assert_eq!(de_otro_sistema("D:/Omoikane/src/okf.rs"), !cfg!(windows));
-        assert_eq!(de_otro_sistema("C:\\Users\\marcm\\x.md"), !cfg!(windows));
-        assert_eq!(de_otro_sistema("/Users/marc/x.md"), cfg!(windows));
-        assert!(!de_otro_sistema("src/okf.rs"));
+    fn paths_from_the_other_os_are_not_broken() {
+        assert_eq!(from_other_os("D:/Omoikane/src/okf.rs"), !cfg!(windows));
+        assert_eq!(from_other_os("C:\\Users\\marcm\\x.md"), !cfg!(windows));
+        assert_eq!(from_other_os("/Users/marc/x.md"), cfg!(windows));
+        assert!(!from_other_os("src/okf.rs"));
     }
 
     #[test]
-    fn fechas_y_versiones() {
-        assert_eq!(fechas("hecho el 29-oct-2026 y el 2026-11-02"), vec!["2026-10-29", "2026-11-02"]);
-        assert_eq!(fechas("3 de mayo"), Vec::<String>::new());
-        let v = versiones("la 0.9.2 usa rusqlite 0.41.0 y la v0.10.0");
-        assert_eq!(v[""].iter().map(|x| texto_version(x)).collect::<Vec<_>>(), vec!["0.9.2", "0.10.0"]);
+    fn dates_and_versions() {
+        assert_eq!(dates("hecho el 29-oct-2026 y el 2026-11-02"), vec!["2026-10-29", "2026-11-02"]);
+        assert_eq!(dates("3 de mayo"), Vec::<String>::new());
+        let v = versions("la 0.9.2 usa rusqlite 0.41.0 y la v0.10.0");
+        assert_eq!(v[""].iter().map(|x| version_text(x)).collect::<Vec<_>>(), vec!["0.9.2", "0.10.0"]);
         assert_eq!(v["rusqlite"].len(), 1);
-        // La palabra de otra línea o de otra frase no cuenta.
-        let v = versiones("otras máquinas\n**v0.2.0 publicada. La v0.3.0");
-        assert_eq!(v[""].iter().map(|x| texto_version(x)).collect::<Vec<_>>(), vec!["0.2.0", "0.3.0"]);
+        // A word from another line or another sentence doesn't count.
+        let v = versions("otras máquinas\n**v0.2.0 publicada. La v0.3.0");
+        assert_eq!(v[""].iter().map(|x| version_text(x)).collect::<Vec<_>>(), vec!["0.2.0", "0.3.0"]);
     }
 
     #[test]
-    fn dias() {
-        assert_eq!(dias_entre("2026-10-29T00:00:00Z", "2026-11-05T00:00:00Z"), 7.0);
-        assert_eq!(dias_entre("2024-02-28", "2024-03-01"), 2.0);
+    fn days() {
+        assert_eq!(days_between("2026-10-29T00:00:00Z", "2026-11-05T00:00:00Z"), 7.0);
+        assert_eq!(days_between("2024-02-28", "2024-03-01"), 2.0);
     }
 
     #[test]
-    fn frases_partidas() {
-        assert_eq!(frases("uno. dos: tres\ncuatro v0.9.2 cinco"), vec!["uno", " dos", " tres", "cuatro v0.9.2 cinco"]);
+    fn split_sentences() {
+        assert_eq!(sentences("uno. dos: tres\ncuatro v0.9.2 cinco"), vec!["uno", " dos", " tres", "cuatro v0.9.2 cinco"]);
     }
 
     #[test]
-    fn medianoche_local_en_utc() {
-        // Madrid en invierno (+1 h): el día 10 empieza el 9 a las 23:00 UTC.
-        assert_eq!(inicio_utc("2026-11-10", 3600), "2026-11-09T23:00:00");
-        assert_eq!(inicio_utc("2026-01-01", 3600), "2025-12-31T23:00:00");
-        assert_eq!(inicio_utc("2024-03-01", 7200), "2024-02-29T22:00:00");
-        // Al oeste de UTC, el mismo día.
-        assert_eq!(inicio_utc("2026-11-10", -5 * 3600), "2026-11-10T05:00:00");
-        assert_eq!(inicio_utc("2026-11-10", 0), "2026-11-10T00:00:00");
-        for dias in [-1, 0, 59, 10_000, 20_402] {
-            let (a, m, d) = civil(dias);
-            assert_eq!(dias_desde_1970(a, m, d), dias);
+    fn local_midnight_in_utc() {
+        // Madrid in winter (+1 h): day 10 starts on the 9th at 23:00 UTC.
+        assert_eq!(utc_start("2026-11-10", 3600), "2026-11-09T23:00:00");
+        assert_eq!(utc_start("2026-01-01", 3600), "2025-12-31T23:00:00");
+        assert_eq!(utc_start("2024-03-01", 7200), "2024-02-29T22:00:00");
+        // West of UTC, the same day.
+        assert_eq!(utc_start("2026-11-10", -5 * 3600), "2026-11-10T05:00:00");
+        assert_eq!(utc_start("2026-11-10", 0), "2026-11-10T00:00:00");
+        for days in [-1, 0, 59, 10_000, 20_402] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(days_since_1970(y, m, d), days);
         }
     }
 }

@@ -1,24 +1,24 @@
-//! La carpeta temporal de los tests (`comun::Temporal`) se borra aunque algo tarde en soltar sus ficheros.
-//! Solo en Windows: en los demás sistemas un fichero abierto se borra igual.
+//! The tests' temporary folder (`comun::Temporal`) is deleted even if something is slow to release its files.
+//! Windows only: on other systems an open file is deleted anyway.
 #![cfg(windows)]
 
 mod comun;
 
-/// En Windows un fichero abierto sin compartir el borrado no se puede borrar: si otro proceso (git, el
-/// antivirus) lo suelta unos segundos tarde, la carpeta se borra igual en cuanto lo suelta. Con 5 s de
-/// margen, una batería de `sync` con la máquina cargada dejaba carpetas en `%TEMP%`.
+/// On Windows an open file that does not share deletion cannot be deleted: if another process (git, the
+/// antivirus) releases it a few seconds late, the folder is still deleted as soon as it is released. With a 5 s
+/// margin, a batch of `sync` runs on a loaded machine left folders behind in `%TEMP%`.
 #[test]
-fn se_borra_aunque_un_fichero_tarde_en_soltarse() {
+fn deleted_even_if_a_file_is_released_late() {
     use std::os::windows::fs::OpenOptionsExt;
     let t = comun::Temporal::nueva("temporal-tarde");
-    let ruta = t.to_path_buf();
-    // Sin `FILE_SHARE_DELETE` (el `File::create` de Rust sí lo comparte y se podría borrar abierto).
-    let fichero = std::fs::OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(ruta.join("abierto")).unwrap();
-    let soltar = std::thread::spawn(move || {
+    let path = t.to_path_buf();
+    // Without `FILE_SHARE_DELETE` (Rust's `File::create` does share it, so it could be deleted while open).
+    let file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).share_mode(0).open(path.join("abierto")).unwrap();
+    let release = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(7));
-        drop(fichero);
+        drop(file);
     });
     drop(t);
-    soltar.join().unwrap();
-    assert!(!ruta.exists(), "quedó {}", ruta.display());
+    release.join().unwrap();
+    assert!(!path.exists(), "quedó {}", path.display());
 }

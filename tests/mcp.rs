@@ -1,5 +1,5 @@
-//! Fase 3: `omoi mcp` de punta a punta, con un cliente MCP de verdad (el de rmcp) que lo arranca
-//! como proceso hijo, igual que Claude Code.
+//! Phase 3: `omoi mcp` end to end, with a real MCP client (rmcp's) that starts it as a child
+//! process, just like Claude Code.
 
 mod comun;
 
@@ -10,24 +10,24 @@ use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-fn modelo_int8() -> Option<PathBuf> {
+fn int8_model() -> Option<PathBuf> {
     let dir = std::env::var_os("OMOI_MODELO_INT8")
         .map(PathBuf::from)
         .or_else(|| std::env::home_dir().map(|h| h.join(".omoikane/models/potion-multilingual-128M-int8")))?;
     dir.join("model.safetensors").exists().then_some(dir)
 }
 
-struct Prueba {
+struct Fixture {
     dir: comun::Temporal,
 }
 
-impl Prueba {
-    fn nueva(nombre: &str, con_modelo: bool) -> Option<Prueba> {
-        let dir = comun::Temporal::nueva(&format!("mcp-{nombre}"));
+impl Fixture {
+    fn new(name: &str, with_model: bool) -> Option<Fixture> {
+        let dir = comun::Temporal::nueva(&format!("mcp-{name}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
-        let p = Prueba { dir };
-        if con_modelo {
-            let int8 = modelo_int8()?;
+        let p = Fixture { dir };
+        if with_model {
+            let int8 = int8_model()?;
             let o = std::process::Command::new(env!("CARGO_BIN_EXE_omoi"))
                 .args(["model", "install", "--from"])
                 .arg(int8)
@@ -40,39 +40,39 @@ impl Prueba {
         Some(p)
     }
 
-    async fn cliente(&self) -> RunningService<RoleClient, ()> {
-        let (db, modelos, repo) = (self.dir.join("o.db"), self.dir.join("models"), self.dir.join("repo"));
+    async fn client(&self) -> RunningService<RoleClient, ()> {
+        let (db, models, repo) = (self.dir.join("o.db"), self.dir.join("models"), self.dir.join("repo"));
         let cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_omoi")).configure(|c| {
-            c.arg("mcp").current_dir(repo).env("OMOIKANE_DB", db).env("OMOIKANE_MODELS", modelos).env_remove("OMOIKANE_LANG");
+            c.arg("mcp").current_dir(repo).env("OMOIKANE_DB", db).env("OMOIKANE_MODELS", models).env_remove("OMOIKANE_LANG");
         });
         ().serve(TokioChildProcess::new(cmd).unwrap()).await.unwrap()
     }
 }
 
-/// Llama a una herramienta y devuelve (¿error?, el JSON de su texto).
-async fn llamar(c: &RunningService<RoleClient, ()>, nombre: &'static str, args: Value) -> (bool, Value) {
+/// Calls a tool and returns (error?, the JSON of its text).
+async fn call(c: &RunningService<RoleClient, ()>, name: &'static str, args: Value) -> (bool, Value) {
     let r = c
-        .call_tool(CallToolRequestParams::new(nombre).with_arguments(args.as_object().unwrap().clone()))
+        .call_tool(CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone()))
         .await
         .unwrap();
-    let texto = r.content.first().and_then(|b| b.as_text()).map(|t| t.text.clone()).unwrap_or_default();
-    let v = serde_json::from_str(&texto).unwrap_or(Value::String(texto));
+    let text = r.content.first().and_then(|b| b.as_text()).map(|t| t.text.clone()).unwrap_or_default();
+    let v = serde_json::from_str(&text).unwrap_or(Value::String(text));
     (r.is_error.unwrap_or(false), v)
 }
 
 #[tokio::test]
-async fn las_herramientas_de_punta_a_punta() {
-    let p = Prueba::nueva("todo", false).unwrap();
-    let c = p.cliente().await;
+async fn the_tools_end_to_end() {
+    let p = Fixture::new("todo", false).unwrap();
+    let c = p.client().await;
 
     let info = c.peer_info().unwrap();
     assert_eq!(info.server_info.as_ref().unwrap().name, "omoikane");
     assert!(info.instructions.as_deref().unwrap().contains("remember"));
-    let mut nombres: Vec<String> = c.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
-    nombres.sort();
-    assert_eq!(nombres, ["context", "decisions", "forget", "get", "history", "recent", "remember", "search", "skill", "update"]);
+    let mut names: Vec<String> = c.list_all_tools().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
+    names.sort();
+    assert_eq!(names, ["context", "decisions", "forget", "get", "history", "recent", "remember", "search", "skill", "update"]);
 
-    let (err, r) = llamar(
+    let (err, r) = call(
         &c,
         "remember",
         json!({"title": "Bug en auth: el token caduca antes de tiempo", "content": "El middleware compara la hora local con la caducidad en UTC.", "kind": "gotcha", "paths": ["src/auth.rs"]}),
@@ -81,103 +81,103 @@ async fn las_herramientas_de_punta_a_punta() {
     assert!(!err, "{r}");
     assert_eq!(r["saved"], true);
     let id = r["id"].as_str().unwrap().to_string();
-    // El origen dice qué cliente MCP la guardó (el de los tests se presenta como «rmcp»).
-    let (_, entera) = llamar(&c, "get", json!({"id": id})).await;
-    assert_eq!(entera["source"], "mcp:rmcp", "{entera}");
+    // The source says which MCP client saved it (the tests' client introduces itself as «rmcp»).
+    let (_, whole) = call(&c, "get", json!({"id": id})).await;
+    assert_eq!(whole["source"], "mcp:rmcp", "{whole}");
 
-    // Un tipo mal escrito vuelve como error de la herramienta, legible para el agente.
-    let (err, r) = llamar(&c, "remember", json!({"title": "X", "content": "y", "kind": "bugfix"})).await;
+    // A misspelled kind comes back as a tool error, readable by the agent.
+    let (err, r) = call(&c, "remember", json!({"title": "X", "content": "y", "kind": "bugfix"})).await;
     assert!(err);
     assert!(r.as_str().unwrap().contains("fact, decision, gotcha, preference or procedure"));
 
-    // Buscar por palabras y por la ruta.
-    let (_, r) = llamar(&c, "search", json!({"query": "token caduca"})).await;
+    // Search by words and by path.
+    let (_, r) = call(&c, "search", json!({"query": "token caduca"})).await;
     assert_eq!(r[0]["id"], id.as_str());
     assert_eq!(r[0]["paths"][0], "src/auth.rs");
-    let (_, r) = llamar(&c, "search", json!({"query": "auth.rs"})).await;
+    let (_, r) = call(&c, "search", json!({"query": "auth.rs"})).await;
     assert_eq!(r[0]["id"], id.as_str());
 
-    // get acepta el principio del id.
-    let (_, r) = llamar(&c, "get", json!({"id": &id[..12]})).await;
+    // get accepts the start of the id.
+    let (_, r) = call(&c, "get", json!({"id": &id[..12]})).await;
     assert!(r["content"].as_str().unwrap().contains("UTC"));
 
-    let (err, _) = llamar(&c, "update", json!({"id": id, "content": "Arreglado: todo va en UTC.", "reason": "ya está corregido"})).await;
+    let (err, _) = call(&c, "update", json!({"id": id, "content": "Arreglado: todo va en UTC.", "reason": "ya está corregido"})).await;
     assert!(!err);
-    let (_, r) = llamar(&c, "history", json!({"id": id})).await;
+    let (_, r) = call(&c, "history", json!({"id": id})).await;
     assert_eq!(r[0]["reason"], "ya está corregido");
 
-    // Una preferencia global sale en context y en recent.
-    llamar(&c, "remember", json!({"title": "Commits en inglés", "content": "Una línea, en imperativo.", "kind": "preference", "global": true})).await;
-    let (_, r) = llamar(&c, "context", json!({})).await;
+    // A global preference shows up in context and in recent.
+    call(&c, "remember", json!({"title": "Commits en inglés", "content": "Una línea, en imperativo.", "kind": "preference", "global": true})).await;
+    let (_, r) = call(&c, "context", json!({})).await;
     assert_eq!(r["memories"].as_array().unwrap().len(), 1);
     assert_eq!(r["memories"][0]["global"], true);
-    // Y lo que conviene revisar: la trampa apunta a `src/auth.rs`, que no existe en este repositorio.
+    // And what is worth reviewing: the gotcha points to `src/auth.rs`, which doesn't exist in this repository.
     assert_eq!(r["review"][0]["kind"], "broken_path", "{r}");
     assert!(r["review"][0]["detail"].as_str().unwrap().contains("src/auth.rs"), "{r}");
-    let (_, r) = llamar(&c, "recent", json!({})).await;
+    let (_, r) = call(&c, "recent", json!({})).await;
     assert_eq!(r.as_array().unwrap().len(), 2);
 
-    // forget no pregunta: el agente ya lo ha decidido.
-    let (err, r) = llamar(&c, "forget", json!({"id": id})).await;
+    // forget doesn't ask: the agent has already decided.
+    let (err, r) = call(&c, "forget", json!({"id": id})).await;
     assert!(!err, "{r}");
-    let (err, _) = llamar(&c, "get", json!({"id": id})).await;
+    let (err, _) = call(&c, "get", json!({"id": id})).await;
     assert!(err);
     c.cancel().await.unwrap();
 }
 
 #[tokio::test]
-async fn con_modelo_avisa_de_duplicados() {
-    let Some(p) = Prueba::nueva("duplicados", true) else {
+async fn with_model_warns_about_duplicates() {
+    let Some(p) = Fixture::new("duplicados", true) else {
         eprintln!("SALTADO: no está el modelo int8");
         return;
     };
-    let c = p.cliente().await;
-    let (_, r) = llamar(
+    let c = p.client().await;
+    let (_, r) = call(
         &c,
         "remember",
         json!({"title": "Bug en auth: el token caduca antes de tiempo", "content": "El middleware compara la hora local con la caducidad del token, que va en UTC.", "kind": "gotcha"}),
     )
     .await;
     let id = r["id"].as_str().unwrap().to_string();
-    let parecida = json!({"title": "El token de auth caduca demasiado pronto", "content": "El middleware compara la hora local con la caducidad del token en UTC.", "kind": "gotcha"});
-    let (err, r) = llamar(&c, "remember", parecida.clone()).await;
+    let similar = json!({"title": "El token de auth caduca demasiado pronto", "content": "El middleware compara la hora local con la caducidad del token en UTC.", "kind": "gotcha"});
+    let (err, r) = call(&c, "remember", similar.clone()).await;
     assert!(!err);
     assert_eq!(r["saved"], false);
     assert_eq!(r["duplicate_of"]["id"], id.as_str());
     assert!(r["hint"].as_str().unwrap().contains("force"));
-    // El agente decide: con force se guarda.
-    let mut forzada = parecida;
-    forzada["force"] = json!(true);
-    let (_, r) = llamar(&c, "remember", forzada).await;
+    // The agent decides: with force it is saved.
+    let mut forced = similar;
+    forced["force"] = json!(true);
+    let (_, r) = call(&c, "remember", forced).await;
     assert_eq!(r["saved"], true);
-    let (_, r) = llamar(&c, "search", json!({"query": "token caduca"})).await;
+    let (_, r) = call(&c, "search", json!({"query": "token caduca"})).await;
     assert!(r[0]["similarity"].is_number());
     c.cancel().await.unwrap();
 }
 
 #[tokio::test]
-async fn guardar_y_mover_a_otro_proyecto() {
-    let p = Prueba::nueva("proyecto", false).unwrap();
-    let otro = p.dir.join("otro");
-    std::fs::create_dir_all(otro.join(".git")).unwrap();
-    let c = p.cliente().await;
-    let (err, r) = llamar(
+async fn save_and_move_to_another_project() {
+    let p = Fixture::new("proyecto", false).unwrap();
+    let other = p.dir.join("otro");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    let c = p.client().await;
+    let (err, r) = call(
         &c,
         "remember",
-        json!({"title": "La otra web usa Astro", "content": "Astro 5.", "kind": "fact", "project": otro.to_str().unwrap()}),
+        json!({"title": "La otra web usa Astro", "content": "Astro 5.", "kind": "fact", "project": other.to_str().unwrap()}),
     )
     .await;
     assert!(!err, "{r}");
     assert!(r["project"].as_str().unwrap().ends_with("otro"), "{r}");
     let id = r["id"].as_str().unwrap().to_string();
-    // Desde este repo no se ve; al moverla aquí, sí.
-    let (_, s) = llamar(&c, "search", json!({"query": "astro"})).await;
+    // From this repo it isn't visible; after moving it here, it is.
+    let (_, s) = call(&c, "search", json!({"query": "astro"})).await;
     assert!(s.as_array().unwrap().is_empty(), "{s}");
-    let (err, _) = llamar(&c, "update", json!({"id": id, "project": p.dir.join("repo").to_str().unwrap()})).await;
+    let (err, _) = call(&c, "update", json!({"id": id, "project": p.dir.join("repo").to_str().unwrap()})).await;
     assert!(!err);
-    let (_, s) = llamar(&c, "search", json!({"query": "astro"})).await;
+    let (_, s) = call(&c, "search", json!({"query": "astro"})).await;
     assert_eq!(s.as_array().unwrap().len(), 1, "{s}");
-    let (_, g) = llamar(&c, "update", json!({"id": id, "project": ""})).await;
+    let (_, g) = call(&c, "update", json!({"id": id, "project": ""})).await;
     assert_eq!(g["global"], true, "{g}");
     c.cancel().await.unwrap();
 }

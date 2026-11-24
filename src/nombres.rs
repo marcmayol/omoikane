@@ -1,12 +1,12 @@
-//! Nombres de proyecto que se parecen: la misma comparación para quien escribe un nombre
-//! (`proyecto::buscar`), para la revisión (proyectos duplicados) y para el recall (un nombre mal
-//! dictado en el mensaje).
+//! Project names that look alike: the same comparison for whoever types a name
+//! (`proyecto::buscar`), for the review (duplicate projects) and for recall (a name misheard
+//! in dictation in the message).
 //!
-//! Dos niveles. **Igual**: el mismo nombre sin mayúsculas, acentos, guiones, guiones bajos, espacios
-//! ni puntos (`social-publish` = `Social_Publish` = `social publish`, `Crónicas` = `cronicas`).
-//! **A una letra**: una letra cambiada, de más o de menos, con `LETRAS_MIN` letras o más
-//! (`Omoikane`/`Omoikae`). El segundo es menos seguro: la revisión solo lo usa junto a otra señal, y
-//! nunca un parecido a secas (`Tokimichi` y `tokimichi-web` son proyectos distintos).
+//! Two levels. **Equal**: the same name ignoring case, accents, hyphens, underscores, spaces
+//! and dots (`social-publish` = `Social_Publish` = `social publish`, `Crónicas` = `cronicas`).
+//! **One letter apart**: one letter changed, added or missing, with `LETRAS_MIN` letters or more
+//! (`Omoikane`/`Omoikae`). The second is less certain: the review only uses it together with another signal, and
+//! never a bare resemblance (`Tokimichi` and `tokimichi-web` are different projects).
 
 use crate::memoria::Ambito;
 use crate::proyecto::{self, Proyecto};
@@ -16,34 +16,34 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 
-/// Desde cuántas letras (del nombre más corto, normalizado) cuenta el parecido a una letra.
+/// From how many letters (of the shorter name, normalized) the one-letter resemblance counts.
 pub const LETRAS_MIN: usize = 6;
 
-/// En el recall, una palabra que no está en ninguna memoria puede ser un nombre mal dictado desde 6
-/// letras (la palabra y el nombre): que no exista ya es la otra señal. Con 5, palabras normales que no
-/// salían en ninguna memoria se volvían proyectos («tropa» → Troba, «rodeo» y «rodes» → Rodet, «balsa»
-/// → Balua): mirado con `examples/eval.rs` sobre `tests/recall_casos.tsv`.
+/// In recall, a word that is in no memory can be a misdictated name from 6
+/// letters (the word and the name): not existing already is the other signal. With 5, normal words that did not
+/// appear in any memory became projects («tropa» → Troba, «rodeo» and «rodes» → Rodet, «balsa»
+/// → Balua): checked with `examples/eval.rs` on `tests/recall_casos.tsv`.
 pub const LETRAS_MIN_RECALL: usize = 6;
 
-/// Desde cuántas letras se busca, en la revisión, el nombre de una carpeta que ya no existe en las
-/// memorias de otro proyecto (`Narrador` → `Aloud`).
-const LETRAS_MIN_CONTINUA: usize = 5;
+/// From how many letters the review looks for the name of a folder that no longer exists in the
+/// memories of another project (`Narrador` → `Aloud`).
+const MIN_LETTERS_CONTINUED: usize = 5;
 
-/// Terminaciones de flexión (plural, infinitivo, participio…) en castellano e inglés: una palabra que
-/// solo se aparta de un nombre en sus dos últimas letras y acaba así es una palabra normal con su
-/// terminación, no un nombre mal dictado («faltas» no es Faltis; «tokimicho» sí es Tokimichi).
-const FLEXIONES: &[&str] = &["s", "ar", "er", "ir", "an", "en", "ed"];
+/// Inflection endings (plural, infinitive, participle…) in Spanish and English: a word that
+/// only differs from a name in its last two letters and ends like this is a normal word with its
+/// ending, not a misdictated name («faltas» is not Faltis; «tokimicho» is Tokimichi).
+const INFLECTIONS: &[&str] = &["s", "ar", "er", "ir", "an", "en", "ed"];
 
-/// Si `t` (normalizado) se aparta de `n` solo en sus dos últimas letras y acaba en una flexión.
-fn es_flexion(t: &str, n: &str) -> bool {
-    let comun = t.chars().zip(n.chars()).take_while(|(a, b)| a == b).count();
-    comun + 2 >= t.chars().count() && FLEXIONES.iter().any(|f| t.ends_with(f))
+/// Whether `t` (normalized) differs from `n` only in its last two letters and ends in an inflection.
+fn is_inflection(t: &str, n: &str) -> bool {
+    let common = t.chars().zip(n.chars()).take_while(|(a, b)| a == b).count();
+    common + 2 >= t.chars().count() && INFLECTIONS.iter().any(|f| t.ends_with(f))
 }
 
-/// La condición SQL sobre `p` (un proyecto) de los proyectos que se ven desde un ámbito: desde un
-/// proyecto o un espacio, los de su espacio (o los que no tienen); desde una carpeta general, todos.
-fn proyectos_visibles(ambito: &Ambito) -> String {
-    match ambito {
+/// The SQL condition on `p` (a project) for the projects visible from a scope: from a
+/// project or a space, those of its space (or those without one); from a general folder, all.
+fn visible_projects(scope: &Ambito) -> String {
+    match scope {
         Ambito::Todos => "1".to_string(),
         a => match a.espacio() {
             Some(s) => format!("p.space_id = {s}"),
@@ -52,17 +52,17 @@ fn proyectos_visibles(ambito: &Ambito) -> String {
     }
 }
 
-/// Cómo se parecen dos nombres.
+/// How two names resemble each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Parecido {
-    /// El mismo nombre, normalizado.
+    /// The same name, normalized.
     Igual,
-    /// A una letra (cambiada, de más o de menos).
+    /// One letter apart (changed, added or missing).
     UnaLetra,
 }
 
-/// Una letra sin su acento (en minúscula).
-fn sin_acento(c: char) -> char {
+/// A letter without its accent (lowercase).
+fn strip_accent(c: char) -> char {
     match c {
         'á' | 'à' | 'ä' | 'â' | 'ã' | 'å' => 'a',
         'é' | 'è' | 'ë' | 'ê' => 'e',
@@ -75,34 +75,34 @@ fn sin_acento(c: char) -> char {
     }
 }
 
-/// Un texto sin acentos (letra a letra, como [`normal`] pero sin quitar separadores): para buscar un
-/// nombre como palabra en un texto.
-pub fn sin_acentos(texto: &str) -> String {
-    texto.chars().map(|c| c.to_lowercase().next().map_or(c, sin_acento)).collect()
+/// A text without accents (letter by letter, like [`normal`] but without removing separators): to look for a
+/// name as a word in a text.
+pub fn sin_acentos(text: &str) -> String {
+    text.chars().map(|c| c.to_lowercase().next().map_or(c, strip_accent)).collect()
 }
 
-/// El nombre para comparar: minúsculas, sin acentos y sin `-`, `_`, espacios ni puntos.
-pub fn normal(nombre: &str) -> String {
-    nombre.trim().to_lowercase().chars().filter(|c| !matches!(c, '-' | '_' | '.') && !c.is_whitespace()).map(sin_acento).collect()
+/// The name for comparing: lowercase, without accents and without `-`, `_`, spaces or dots.
+pub fn normal(name: &str) -> String {
+    name.trim().to_lowercase().chars().filter(|c| !matches!(c, '-' | '_' | '.') && !c.is_whitespace()).map(strip_accent).collect()
 }
 
-/// Si dos textos (ya normalizados) están exactamente a una letra: una cambiada, una de más o una de
-/// menos. Iguales no cuentan.
+/// Whether two texts (already normalized) are exactly one letter apart: one changed, one added or one
+/// missing. Equal ones don't count.
 pub fn a_una_letra_normal(a: &str, b: &str) -> bool {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let (corto, largo) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
-    match largo.len() - corto.len() {
-        0 => corto.iter().zip(largo.iter()).filter(|(x, y)| x != y).count() == 1,
+    let (shorter, longer) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    match longer.len() - shorter.len() {
+        0 => shorter.iter().zip(longer.iter()).filter(|(x, y)| x != y).count() == 1,
         1 => {
-            // La primera diferencia es la letra de más: el resto tiene que coincidir.
-            let i = corto.iter().zip(largo.iter()).position(|(x, y)| x != y).unwrap_or(corto.len());
-            corto[i..] == largo[i + 1..]
+            // The first difference is the extra letter: the rest has to match.
+            let i = shorter.iter().zip(longer.iter()).position(|(x, y)| x != y).unwrap_or(shorter.len());
+            shorter[i..] == longer[i + 1..]
         }
         _ => false,
     }
 }
 
-/// Cómo se parecen dos nombres de proyecto (`None`: nada).
+/// How two project names resemble each other (`None`: not at all).
 pub fn parecido(a: &str, b: &str) -> Option<Parecido> {
     let (na, nb) = (normal(a), normal(b));
     if na.is_empty() || nb.is_empty() {
@@ -114,26 +114,26 @@ pub fn parecido(a: &str, b: &str) -> Option<Parecido> {
     (na.chars().count().min(nb.chars().count()) >= LETRAS_MIN && a_una_letra_normal(&na, &nb)).then_some(Parecido::UnaLetra)
 }
 
-// --- El recall ----------------------------------------------------------------------------------
+// --- Recall ----------------------------------------------------------------------------------
 
-/// Los nombres de los proyectos con memorias que se ven desde `ambito`, normalizados, con las palabras
-/// de cada uno (en minúsculas y sin acentos, como los términos del recall).
-fn nombres_con_memorias(db: &Connection, ambito: &Ambito) -> Result<Vec<(String, Vec<String>)>> {
+/// The names of the projects with memories visible from `scope`, normalized, with the words
+/// of each one (lowercase and without accents, like the recall terms).
+fn names_with_memories(db: &Connection, scope: &Ambito) -> Result<Vec<(String, Vec<String>)>> {
     let mut q = db.prepare(&format!(
         "SELECT name FROM project p WHERE p.id != 0 AND {} AND EXISTS (SELECT 1 FROM memory m WHERE m.project_id = p.id)",
-        proyectos_visibles(ambito)
+        visible_projects(scope)
     ))?;
-    let nombres: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
-    let mut v: Vec<(String, Vec<String>)> = nombres
+    let names: Vec<String> = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut v: Vec<(String, Vec<String>)> = names
         .iter()
         .map(|n| {
-            let partes = n
+            let parts = n
                 .to_lowercase()
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|p| !p.is_empty())
-                .map(|p| p.chars().map(sin_acento).collect())
+                .map(|p| p.chars().map(strip_accent).collect())
                 .collect();
-            (normal(n), partes)
+            (normal(n), parts)
         })
         .filter(|(n, _)| !n.is_empty())
         .collect();
@@ -142,85 +142,85 @@ fn nombres_con_memorias(db: &Connection, ambito: &Ambito) -> Result<Vec<(String,
     Ok(v)
 }
 
-/// Un término del mensaje que es un nombre de proyecto mal escrito: las palabras del nombre bueno.
-/// Solo se miran los términos que no están en ninguna memoria (`en_ninguna[i]`), de `LETRAS_MIN_RECALL`
-/// letras o más, a una letra de un único proyecto de también `LETRAS_MIN_RECALL` letras que se vea desde
-/// `ambito` (nunca el de otro cliente), sin ser una flexión ([`es_flexion`]); o iguales normalizados a
-/// uno que se escribe con separadores («socialpublish» → «social publish»). Devuelve (índice del
-/// término, palabras).
-pub fn mal_escritos(db: &Connection, ambito: &Ambito, terminos: &[String], en_ninguna: &[bool]) -> Result<Vec<(usize, Vec<String>)>> {
-    let dudosos: Vec<usize> = (0..terminos.len()).filter(|&i| en_ninguna.get(i).copied().unwrap_or(false) && terminos[i].chars().count() >= LETRAS_MIN_RECALL).collect();
-    if dudosos.is_empty() {
+/// A term in the message that is a misspelled project name: the words of the right name.
+/// Only terms that are in no memory are looked at (`in_none[i]`), of `LETRAS_MIN_RECALL`
+/// letters or more, one letter apart from a single project of also `LETRAS_MIN_RECALL` letters visible from
+/// `scope` (never another client's), without being an inflection ([`is_inflection`]); or equal when normalized to
+/// one written with separators («socialpublish» → «social publish»). Returns (index of the
+/// term, words).
+pub fn mal_escritos(db: &Connection, scope: &Ambito, terms: &[String], in_none: &[bool]) -> Result<Vec<(usize, Vec<String>)>> {
+    let doubtful: Vec<usize> = (0..terms.len()).filter(|&i| in_none.get(i).copied().unwrap_or(false) && terms[i].chars().count() >= LETRAS_MIN_RECALL).collect();
+    if doubtful.is_empty() {
         return Ok(Vec::new());
     }
-    let nombres = nombres_con_memorias(db, ambito)?;
+    let names = names_with_memories(db, scope)?;
     let mut r = Vec::new();
-    for i in dudosos {
-        let t = normal(&terminos[i]);
-        let encajan: Vec<&(String, Vec<String>)> = nombres
+    for i in doubtful {
+        let t = normal(&terms[i]);
+        let matching: Vec<&(String, Vec<String>)> = names
             .iter()
-            .filter(|(n, partes)| {
-                (*n == t && partes.len() > 1) || (n.chars().count() >= LETRAS_MIN_RECALL && a_una_letra_normal(n, &t) && !es_flexion(&t, n))
+            .filter(|(n, parts)| {
+                (*n == t && parts.len() > 1) || (n.chars().count() >= LETRAS_MIN_RECALL && a_una_letra_normal(n, &t) && !is_inflection(&t, n))
             })
             .collect();
-        if let [(_, partes)] = encajan.as_slice() {
-            r.push((i, partes.clone()));
+        if let [(_, parts)] = matching.as_slice() {
+            r.push((i, parts.clone()));
         }
     }
     Ok(r)
 }
 
-// --- La revisión: proyectos duplicados ----------------------------------------------------------
+// --- Review: duplicate projects ----------------------------------------------------------
 
-/// El mismo nombre normalizado.
+/// The same normalized name.
 pub const MISMO_NOMBRE: &str = "same_name";
-/// A una letra, con otra señal.
+/// One letter apart, with another signal.
 pub const UNA_LETRA: &str = "one_letter";
-/// Una carpeta que ya no existe y otro proyecto que la continúa.
+/// A folder that no longer exists and another project that continues it.
 pub const CONTINUA: &str = "continued";
-/// Un «proyecto» en una carpeta temporal o de subidas.
+/// A «project» in a temporary or uploads folder.
 pub const TEMPORAL: &str = "temp_folder";
 
-/// Un proyecto que tiene «muy pocas» memorias.
-const POCAS: i64 = 3;
+/// A project that has «very few» memories.
+const FEW: i64 = 3;
 
-/// Una propuesta de la revisión sobre los proyectos: juntar dos, o sacar las memorias de una carpeta
-/// que no es un proyecto. Nunca se hace sola: el agente la propone con la orden ya escrita.
+/// A review proposal about projects: merge two, or take the memories out of a folder
+/// that is not a project. It is never done on its own: the agent proposes it with the command already written.
 #[derive(Clone, Debug, Serialize)]
 pub struct Propuesta {
     pub kind: &'static str,
-    /// El proyecto que desaparecería al juntar (o el de la carpeta temporal).
+    /// The project that would disappear when merging (or the one in the temporary folder).
     pub project: String,
     pub path: String,
     pub memories: i64,
-    /// El que se quedaría (vacío en una carpeta temporal).
+    /// The one that would remain (empty for a temporary folder).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub other: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub other_path: String,
-    /// Por qué, en inglés y corto.
+    /// Why, in English and short.
     pub detail: String,
-    /// La orden que lo haría (si el usuario dice que sí).
+    /// The command that would do it (if the user says yes).
     pub command: String,
-    /// La orden para que no vuelva a proponerlo.
+    /// The command so it is not proposed again.
     pub dismiss: String,
 }
 
-/// Dónde se apuntan las parejas que el usuario dijo que son distintas (`omoi projects distinct`):
-/// un JSON con «claveA|claveB» (ordenadas; claveB vacía: la carpeta temporal es un proyecto de verdad).
-const CLAVE_DISTINTOS: &str = "proyectos_distintos";
+/// Where the pairs the user said are different are recorded (`omoi projects distinct`):
+/// a JSON with «keyA|keyB» (sorted; keyB empty: the temporary folder is a real project).
+const DISTINCT_KEY: &str = "proyectos_distintos";
 
-fn pareja(a: &str, b: &str) -> String {
+fn pair_key(a: &str, b: &str) -> String {
     if b.is_empty() || a <= b { format!("{a}|{b}") } else { format!("{b}|{a}") }
 }
 
-fn distintos(db: &Connection) -> Result<BTreeSet<String>> {
-    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_DISTINTOS], |f| f.get(0)).optional()?;
+fn distinct_pairs(db: &Connection) -> Result<BTreeSet<String>> {
+    let v: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [DISTINCT_KEY], |f| f.get(0)).optional()?;
     Ok(v.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default())
 }
 
-/// `omoi projects distinct A [B]`: la revisión deja de proponer juntar A y B (o, sin B, de tratar la
-/// carpeta temporal de A como si no fuera un proyecto). Es de este equipo: no viaja.
+/// `omoi projects distinct A [B]`: the review stops proposing to merge A and B (or, without B, treating
+/// A's temporary folder as if it were not a project). It belongs to this computer: it does not travel.
 pub fn marcar_distintos(db: &Connection, a: i64, b: Option<i64>) -> Result<()> {
     let ka = proyecto::clave_de(db, a)?;
     anyhow::ensure!(!ka.is_empty(), tr!("global memories are not a project", "las memorias globales no son un proyecto"));
@@ -231,42 +231,42 @@ pub fn marcar_distintos(db: &Connection, a: i64, b: Option<i64>) -> Result<()> {
         }
         None => String::new(),
     };
-    let mut v = distintos(db)?;
-    v.insert(pareja(&ka, &kb));
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![CLAVE_DISTINTOS, serde_json::to_string(&v)?])?;
+    let mut v = distinct_pairs(db)?;
+    v.insert(pair_key(&ka, &kb));
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![DISTINCT_KEY, serde_json::to_string(&v)?])?;
     Ok(())
 }
 
-/// Si la carpeta es temporal o de subidas: `.claude/uploads/<…>`, la carpeta temporal del sistema
-/// (`%TEMP%`, `$TMPDIR`), `AppData\Local\Temp` o `/tmp`.
-pub fn es_temporal(ruta: &str) -> bool {
-    if ruta.is_empty() || ruta.starts_with('[') {
+/// Whether the folder is temporary or an uploads folder: `.claude/uploads/<…>`, the system temp folder
+/// (`%TEMP%`, `$TMPDIR`), `AppData\Local\Temp` or `/tmp`.
+pub fn es_temporal(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('[') {
         return false;
     }
-    let r = ruta.replace('\\', "/").to_lowercase();
+    let r = path.replace('\\', "/").to_lowercase();
     if r.contains("/.claude/uploads/") || r.contains("/appdata/local/temp/") || r.starts_with("/tmp/") || r.starts_with("/var/tmp/") {
         return true;
     }
-    // La carpeta temporal tal cual y en forma canónica (con `TEMP` en nombre corto, `CLAUDE~1`, las
-    // rutas de los proyectos llegan en el largo).
+    // The temp folder as is and in canonical form (with `TEMP` as a short name, `CLAUDE~1`, project
+    // paths arrive in the long form).
     let tmp = std::env::temp_dir();
-    let canonica = proyecto::canonica(&tmp).map(|p| proyecto::texto(&p)).unwrap_or_default();
-    [tmp.to_string_lossy().into_owned(), canonica].iter().any(|t| {
+    let canonical = proyecto::canonica(&tmp).map(|p| proyecto::texto(&p)).unwrap_or_default();
+    [tmp.to_string_lossy().into_owned(), canonical].iter().any(|t| {
         let t = t.replace('\\', "/").to_lowercase();
         let t = t.trim_end_matches('/');
         !t.is_empty() && r.starts_with(&format!("{t}/"))
     })
 }
 
-/// Cómo se nombra un proyecto en una orden: su nombre si `proyecto::buscar` lo encuentra solo a él,
-/// y si no, su carpeta (entre comillas si lleva espacios).
-fn en_orden(db: &Connection, p: &Proyecto) -> String {
+/// How a project is named in a command: its name if `proyecto::buscar` finds only it,
+/// and otherwise its folder (in quotes if it has spaces).
+fn in_command(db: &Connection, p: &Proyecto) -> String {
     let t = if proyecto::buscar(db, &p.name).ok() == Some(p.id) { p.name.clone() } else { p.path.clone() };
     if t.contains([' ', '\'']) || t.is_empty() { format!("\"{t}\"") } else { t }
 }
 
-/// El `origin` de git de un proyecto: el de su clave `git:`, o el de alguna de sus carpetas de aquí.
-fn origen_de(db: &Connection, p: &Proyecto) -> Result<String> {
+/// A project's git `origin`: the one in its `git:` key, or the one of any of its local folders.
+fn origin_of(db: &Connection, p: &Proyecto) -> Result<String> {
     if let Some(o) = p.key.strip_prefix("git:") {
         return Ok(o.to_string());
     }
@@ -276,139 +276,139 @@ fn origen_de(db: &Connection, p: &Proyecto) -> Result<String> {
         .unwrap_or_default())
 }
 
-/// Cuándo se creó cada proyecto.
-fn creados(db: &Connection) -> Result<HashMap<i64, String>> {
+/// When each project was created.
+fn creation_dates(db: &Connection) -> Result<HashMap<i64, String>> {
     let mut q = db.prepare("SELECT id, created_at FROM project WHERE id != 0")?;
     Ok(q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Cuántas memorias de cada proyecto nombran la palabra (por el índice de texto).
-fn mencionan(db: &Connection, palabra: &str) -> Result<HashMap<i64, i64>> {
+/// How many memories of each project mention the word (via the text index).
+fn mentions(db: &Connection, word: &str) -> Result<HashMap<i64, i64>> {
     let mut q = db.prepare("SELECT m.project_id, count(*) FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid WHERE memory_fts MATCH ?1 GROUP BY m.project_id")?;
-    let consulta = format!("\"{}\"", palabra.replace('"', ""));
-    Ok(q.query_map([consulta], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>().unwrap_or_default())
+    let query = format!("\"{}\"", word.replace('"', ""));
+    Ok(q.query_map([query], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>().unwrap_or_default())
 }
 
-/// Lo que la revisión propone sobre los proyectos que se ven desde un ámbito (los de su espacio; desde
-/// una carpeta general, todos): juntar los duplicados y sacar las memorias de las carpetas temporales.
-/// Señales, de más a menos segura:
-/// - el mismo nombre normalizado, siempre (en el mismo espacio);
-/// - a una letra, solo con otra: una de las carpetas ya no existe, uno tiene muy pocas memorias y es
-///   más nuevo, o los dos tienen el mismo `origin` de git;
-/// - una carpeta que ya no existe y otro proyecto, más nuevo, cuyas memorias la nombran (`Narrador` →
+/// What the review proposes about the projects visible from a scope (those of its space; from
+/// a general folder, all): merge duplicates and take memories out of temporary folders.
+/// Signals, from most to least certain:
+/// - the same normalized name, always (in the same space);
+/// - one letter apart, only with another one: one of the folders no longer exists, one has very few memories and is
+///   newer, or both have the same git `origin`;
+/// - a folder that no longer exists and another, newer project whose memories name it (`Narrador` →
 ///   `Aloud`);
-/// - un «proyecto» en una carpeta temporal o de subidas (`.claude\uploads\<uuid>`, `%TEMP%`).
+/// - a «project» in a temporary or uploads folder (`.claude\uploads\<uuid>`, `%TEMP%`).
 ///
-/// Nada de parecidos por nombre a secas. Solo proyectos con memorias; como temporales, solo los que
-/// no tienen `origin` (una clave `git:` es un repositorio de verdad, esté donde esté).
-pub fn propuestas(db: &Connection, ambito: &Ambito) -> Result<Vec<Propuesta>> {
-    propuestas_con(db, ambito, &es_temporal)
+/// No bare name resemblances. Only projects with memories; as temporary, only those that
+/// have no `origin` (a `git:` key is a real repository, wherever it is).
+pub fn propuestas(db: &Connection, scope: &Ambito) -> Result<Vec<Propuesta>> {
+    propuestas_con(db, scope, &es_temporal)
 }
 
-/// `propuestas` con los proyectos que ya tiene quien llama: `proyecto::lista(db, None, filtro_de(ambito),
-/// usize::MAX)` (`omoi review` los lista antes, y cada lista recorre la tabla de memorias).
-pub fn propuestas_de(db: &Connection, todos: &[Proyecto]) -> Result<Vec<Propuesta>> {
-    propuestas_entre(db, todos, &es_temporal)
+/// `propuestas` with the projects the caller already has: `proyecto::lista(db, None, filtro_de(scope),
+/// usize::MAX)` (`omoi review` lists them first, and each list walks the memory table).
+pub fn propuestas_de(db: &Connection, all: &[Proyecto]) -> Result<Vec<Propuesta>> {
+    proposals_among(db, all, &es_temporal)
 }
 
-/// El filtro de espacio con el que `propuestas` lista los proyectos de `ambito`.
-pub fn filtro_de(ambito: &Ambito) -> Option<Option<i64>> {
-    if matches!(ambito, Ambito::Todos) { None } else { Some(ambito.espacio()) }
+/// The space filter with which `propuestas` lists the projects of `scope`.
+pub fn filtro_de(scope: &Ambito) -> Option<Option<i64>> {
+    if matches!(scope, Ambito::Todos) { None } else { Some(scope.espacio()) }
 }
 
-/// `propuestas`, con otra forma de decir qué carpeta es temporal (los tests viven en `%TEMP%`).
-pub fn propuestas_con(db: &Connection, ambito: &Ambito, es_temporal: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
-    propuestas_entre(db, &proyecto::lista(db, None, filtro_de(ambito), usize::MAX)?, es_temporal)
+/// `propuestas`, with another way of telling which folder is temporary (tests live in `%TEMP%`).
+pub fn propuestas_con(db: &Connection, scope: &Ambito, is_temp: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
+    proposals_among(db, &proyecto::lista(db, None, filtro_de(scope), usize::MAX)?, is_temp)
 }
 
-fn propuestas_entre(db: &Connection, todos: &[Proyecto], es_temporal: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
-    let fuera = distintos(db)?;
-    let creado = creados(db)?;
-    let espacio: HashMap<i64, Option<i64>> = todos.iter().map(|p| Ok((p.id, proyecto::espacio_de(db, p.id)?))).collect::<Result<_>>()?;
+fn proposals_among(db: &Connection, all: &[Proyecto], is_temp: &dyn Fn(&str) -> bool) -> Result<Vec<Propuesta>> {
+    let dismissed = distinct_pairs(db)?;
+    let created = creation_dates(db)?;
+    let space: HashMap<i64, Option<i64>> = all.iter().map(|p| Ok((p.id, proyecto::espacio_de(db, p.id)?))).collect::<Result<_>>()?;
     let mut r: Vec<Propuesta> = Vec::new();
-    let mut ya: BTreeSet<(i64, i64)> = BTreeSet::new();
-    let temporales: BTreeSet<i64> = todos.iter().filter(|p| p.key.starts_with("dir:") && es_temporal(&p.path)).map(|p| p.id).collect();
-    let mut proponer = |db: &Connection, kind: &'static str, de: &Proyecto, en: &Proyecto, detalle: String, r: &mut Vec<Propuesta>| {
-        let par = (de.id.min(en.id), de.id.max(en.id));
-        if !ya.insert(par) || fuera.contains(&pareja(&de.key, &en.key)) {
+    let mut seen: BTreeSet<(i64, i64)> = BTreeSet::new();
+    let temporary: BTreeSet<i64> = all.iter().filter(|p| p.key.starts_with("dir:") && is_temp(&p.path)).map(|p| p.id).collect();
+    let mut propose = |db: &Connection, kind: &'static str, from: &Proyecto, into: &Proyecto, detail: String, r: &mut Vec<Propuesta>| {
+        let pair = (from.id.min(into.id), from.id.max(into.id));
+        if !seen.insert(pair) || dismissed.contains(&pair_key(&from.key, &into.key)) {
             return;
         }
-        let (a, b) = (en_orden(db, de), en_orden(db, en));
+        let (a, b) = (in_command(db, from), in_command(db, into));
         r.push(Propuesta {
             kind,
-            project: de.name.clone(),
-            path: de.path.clone(),
-            memories: de.memories,
-            other: en.name.clone(),
-            other_path: en.path.clone(),
-            detail: detalle,
+            project: from.name.clone(),
+            path: from.path.clone(),
+            memories: from.memories,
+            other: into.name.clone(),
+            other_path: into.path.clone(),
+            detail,
             command: format!("omoi projects merge {a} {b}"),
             dismiss: format!("omoi projects distinct {a} {b}"),
         });
     };
-    // Cuál desaparece al juntar: el que ya no está, si no el de menos memorias, si no el más nuevo.
-    let orden = |a: &Proyecto, b: &Proyecto| -> bool {
-        let clave = |p: &Proyecto| (!p.gone, p.memories, std::cmp::Reverse(creado.get(&p.id).cloned().unwrap_or_default()));
-        clave(a) < clave(b)
+    // Which one disappears when merging: the one that is gone, otherwise the one with fewer memories, otherwise the newer one.
+    let order = |a: &Proyecto, b: &Proyecto| -> bool {
+        let key = |p: &Proyecto| (!p.gone, p.memories, std::cmp::Reverse(created.get(&p.id).cloned().unwrap_or_default()));
+        key(a) < key(b)
     };
-    for (i, a) in todos.iter().enumerate() {
-        for b in &todos[i + 1..] {
-            if temporales.contains(&a.id) || temporales.contains(&b.id) || espacio.get(&a.id) != espacio.get(&b.id) {
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            if temporary.contains(&a.id) || temporary.contains(&b.id) || space.get(&a.id) != space.get(&b.id) {
                 continue;
             }
-            let (de, en) = if orden(a, b) { (a, b) } else { (b, a) };
+            let (from, into) = if order(a, b) { (a, b) } else { (b, a) };
             match parecido(&a.name, &b.name) {
                 Some(Parecido::Igual) => {
-                    proponer(db, MISMO_NOMBRE, de, en, "same name (ignoring case, accents and separators)".into(), &mut r);
+                    propose(db, MISMO_NOMBRE, from, into, "same name (ignoring case, accents and separators)".into(), &mut r);
                 }
                 Some(Parecido::UnaLetra) => {
-                    let (oa, ob) = (origen_de(db, a)?, origen_de(db, b)?);
-                    let nuevo_y_pequeno = |x: &Proyecto, y: &Proyecto| x.memories <= POCAS && x.memories < y.memories && creado.get(&x.id) > creado.get(&y.id);
-                    let senal = if a.gone || b.gone {
+                    let (oa, ob) = (origin_of(db, a)?, origin_of(db, b)?);
+                    let new_and_small = |x: &Proyecto, y: &Proyecto| x.memories <= FEW && x.memories < y.memories && created.get(&x.id) > created.get(&y.id);
+                    let signal = if a.gone || b.gone {
                         Some("one letter apart, and one folder no longer exists".to_string())
                     } else if !oa.is_empty() && oa == ob {
                         Some(format!("one letter apart, and the same git origin ({oa})"))
-                    } else if nuevo_y_pequeno(a, b) || nuevo_y_pequeno(b, a) {
+                    } else if new_and_small(a, b) || new_and_small(b, a) {
                         Some("one letter apart, and the newer one has very few memories".to_string())
                     } else {
                         None
                     };
-                    if let Some(s) = senal {
-                        proponer(db, UNA_LETRA, de, en, s, &mut r);
+                    if let Some(s) = signal {
+                        propose(db, UNA_LETRA, from, into, s, &mut r);
                     }
                 }
                 None => {}
             }
         }
     }
-    // Una carpeta que ya no existe, continuada por otro proyecto más nuevo que la nombra.
-    for viejo in todos.iter().filter(|p| p.gone && !temporales.contains(&p.id)) {
-        let palabra = normal(&viejo.name);
-        if palabra.chars().count() < LETRAS_MIN_CONTINUA || !palabra.chars().all(char::is_alphanumeric) {
+    // A folder that no longer exists, continued by another, newer project that names it.
+    for old in all.iter().filter(|p| p.gone && !temporary.contains(&p.id)) {
+        let word = normal(&old.name);
+        if word.chars().count() < MIN_LETTERS_CONTINUED || !word.chars().all(char::is_alphanumeric) {
             continue;
         }
-        let nombran = mencionan(db, &palabra)?;
-        let candidatos: Vec<&Proyecto> = todos
+        let naming = mentions(db, &word)?;
+        let candidates: Vec<&Proyecto> = all
             .iter()
             .filter(|p| {
-                p.id != viejo.id
+                p.id != old.id
                     && !p.gone
-                    && !temporales.contains(&p.id)
-                    && espacio.get(&p.id) == espacio.get(&viejo.id)
-                    && nombran.get(&p.id).copied().unwrap_or(0) > 0
-                    && creado.get(&p.id) > creado.get(&viejo.id)
+                    && !temporary.contains(&p.id)
+                    && space.get(&p.id) == space.get(&old.id)
+                    && naming.get(&p.id).copied().unwrap_or(0) > 0
+                    && created.get(&p.id) > created.get(&old.id)
             })
             .collect();
-        if let [nuevo] = candidatos.as_slice() {
-            proponer(db, CONTINUA, viejo, nuevo, format!("its folder no longer exists, and {} (newer) mentions it", nuevo.name), &mut r);
+        if let [new] = candidates.as_slice() {
+            propose(db, CONTINUA, old, new, format!("its folder no longer exists, and {} (newer) mentions it", new.name), &mut r);
         }
     }
-    // Las carpetas temporales o de subidas.
-    for p in todos.iter().filter(|p| temporales.contains(&p.id)) {
-        if fuera.contains(&pareja(&p.key, "")) {
+    // Temporary or uploads folders.
+    for p in all.iter().filter(|p| temporary.contains(&p.id)) {
+        if dismissed.contains(&pair_key(&p.key, "")) {
             continue;
         }
-        let a = en_orden(db, p);
+        let a = in_command(db, p);
         r.push(Propuesta {
             kind: TEMPORAL,
             project: p.name.clone(),
@@ -427,38 +427,38 @@ fn propuestas_entre(db: &Connection, todos: &[Proyecto], es_temporal: &dyn Fn(&s
     Ok(r)
 }
 
-/// Dónde se apunta el último aviso de proyectos de cada ámbito: `día`.
-fn clave_aviso(ambito: &Ambito) -> String {
-    let e = match ambito {
+/// Where the last projects notice of each scope is recorded: `day`.
+fn notice_key(scope: &Ambito) -> String {
+    let e = match scope {
         Ambito::Todos => "all".to_string(),
         a => format!("{:?}", a.espacio()),
     };
     format!("revision_proyectos:{e}")
 }
 
-/// Al empezar la sesión, una vez al día por ámbito: el párrafo para el agente con lo que se propone
-/// sobre los proyectos (`None` si no hay nada o ya salió hoy). Se calcula solo una vez al día.
-pub fn aviso_al_empezar(db: &Connection, ambito: &Ambito) -> Result<Option<String>> {
-    let hoy: String = db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0))?;
-    let k = clave_aviso(ambito);
-    let antes: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&k], |f| f.get(0)).optional()?;
-    if antes.as_deref() == Some(hoy.as_str()) {
+/// At session start, once a day per scope: the paragraph for the agent with what is proposed
+/// about projects (`None` if there is nothing or it already came out today). It is computed only once a day.
+pub fn aviso_al_empezar(db: &Connection, scope: &Ambito) -> Result<Option<String>> {
+    let today: String = db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0))?;
+    let k = notice_key(scope);
+    let before: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [&k], |f| f.get(0)).optional()?;
+    if before.as_deref() == Some(today.as_str()) {
         return Ok(None);
     }
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![k, hoy])?;
-    let v = propuestas(db, ambito)?;
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![k, today])?;
+    let v = propuestas(db, scope)?;
     Ok((!v.is_empty()).then(|| texto_aviso(&v)))
 }
 
-/// El párrafo para el agente, en inglés como el resto del recall.
+/// The paragraph for the agent, in English like the rest of recall.
 pub fn texto_aviso(v: &[Propuesta]) -> String {
     let mut s = String::from(
         "Projects review: these look like duplicates or not real projects. Ask the user, one by one, with the command already written; run it only if they say yes (a merge reaches every synced computer). If they say no, run the dismiss command.\n",
     );
     for p in v {
-        let quien = if p.other.is_empty() { format!("{} ({})", p.project, p.path) } else { format!("{} ({}) → {} ({})", p.project, p.path, p.other, p.other_path) };
-        let (si, no) = if p.other.is_empty() { ("its memories", "if it is a real project") } else { ("merge", "if not") };
-        s.push_str(&format!("- {quien}: {}. {si}: `{}` · {no}: `{}`\n", p.detail, p.command, p.dismiss));
+        let who = if p.other.is_empty() { format!("{} ({})", p.project, p.path) } else { format!("{} ({}) → {} ({})", p.project, p.path, p.other, p.other_path) };
+        let (yes, no) = if p.other.is_empty() { ("its memories", "if it is a real project") } else { ("merge", "if not") };
+        s.push_str(&format!("- {who}: {}. {yes}: `{}` · {no}: `{}`\n", p.detail, p.command, p.dismiss));
     }
     s.pop();
     s
@@ -469,7 +469,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nombres_iguales_normalizados() {
+    fn equal_normalized_names() {
         assert_eq!(normal("Social Publish"), "socialpublish");
         assert_eq!(parecido("social-publish", "Social_Publish"), Some(Parecido::Igual));
         assert_eq!(parecido("Crónicas", "cronicas"), Some(Parecido::Igual));
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn a_una_letra() {
+    fn one_letter_apart() {
         assert_eq!(parecido("Omoikane", "Omoikae"), Some(Parecido::UnaLetra), "una de menos");
         assert_eq!(parecido("Omoikane", "Onmoikane"), Some(Parecido::UnaLetra), "una de más");
         assert_eq!(parecido("Tokimichi", "tokimicho"), Some(Parecido::UnaLetra), "una cambiada");
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn carpetas_temporales() {
+    fn temporary_folders() {
         assert!(es_temporal(r"C:\Users\x\.claude\uploads\d35c0488-7e14-4d1e-ac3b-b60a8d6d8f39"));
         assert!(es_temporal(r"C:\Users\x\AppData\Local\Temp\tmp.abc"));
         assert!(es_temporal("/tmp/x"));
@@ -499,7 +499,7 @@ mod tests {
         assert!(!es_temporal(""));
         let t = std::env::temp_dir().join("algo");
         assert!(es_temporal(&t.to_string_lossy()));
-        // Y como llega la ruta de un proyecto: canónica (en Windows, con el nombre largo).
+        // And as a project's path arrives: canonical (on Windows, with the long name).
         let d = crate::comun::Temporal::nueva("temporal");
         assert!(es_temporal(&proyecto::de(&d).unwrap()));
     }

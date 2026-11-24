@@ -1,7 +1,7 @@
-//! 1.7.0: la vista web (`omoi serve`) respeta el aislamiento de espacios como la CLI y el MCP. Lo que
-//! enseña lo decide la carpeta en la que arrancó: desde un proyecto de un cliente, solo ese cliente (y lo
-//! global); desde un proyecto sin espacio, solo lo que no tiene espacio; desde la carpeta del usuario,
-//! todo. Tampoco se puede escribir fuera, y `?dir=` solo restringe.
+//! 1.7.0: the web view (`omoi serve`) respects space isolation like the CLI and the MCP. What it
+//! shows is decided by the folder it started in: from a client's project, only that client (and the
+//! global ones); from a project without a space, only what has no space; from the user's folder,
+//! everything. Nor can it write outside, and `?dir=` only narrows.
 
 mod comun;
 
@@ -9,373 +9,373 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-struct Prueba {
+struct Fixture {
     dir: comun::Temporal,
 }
 
-impl Prueba {
-    fn casa(&self) -> PathBuf {
+impl Fixture {
+    fn home(&self) -> PathBuf {
         self.dir.join("casa")
     }
 
-    fn proyecto(&self, nombre: &str) -> PathBuf {
-        self.casa().join(nombre)
+    fn project(&self, name: &str) -> PathBuf {
+        self.home().join(name)
     }
 
-    fn orden(&self, carpeta: &Path) -> Command {
+    fn command(&self, folder: &Path) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_omoi"));
-        let casa = self.casa();
-        c.current_dir(carpeta)
+        let home = self.home();
+        c.current_dir(folder)
             .env("OMOIKANE_DB", self.dir.join("o.db"))
             .env("OMOIKANE_MODELS", self.dir.join("models"))
             .env("OMOIKANE_HOME", self.dir.join("home-omoikane"))
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_SYNC_AUTO", "0")
-            .env("USERPROFILE", &casa)
-            .env("HOME", &casa)
+            .env("USERPROFILE", &home)
+            .env("HOME", &home)
             .env_remove("OMOIKANE_LANG");
         c
     }
 
-    fn ok(&self, carpeta: &Path, args: &[&str]) {
-        let o = self.orden(carpeta).args(args).stdin(Stdio::null()).output().unwrap();
+    fn ok(&self, folder: &Path, args: &[&str]) {
+        let o = self.command(folder).args(args).stdin(Stdio::null()).output().unwrap();
         assert!(o.status.success(), "omoi {args:?}: {}", String::from_utf8_lossy(&o.stderr));
     }
 
-    fn base(&self) -> rusqlite::Connection {
+    fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.dir.join("o.db")).unwrap()
     }
 
-    fn id(&self, titulo: &str) -> String {
-        self.base().query_row("SELECT id FROM memory WHERE title = ?1", [titulo], |f| f.get(0)).unwrap()
+    fn id(&self, title: &str) -> String {
+        self.db().query_row("SELECT id FROM memory WHERE title = ?1", [title], |f| f.get(0)).unwrap()
     }
 
-    fn cuenta(&self, consulta: &str, p: &str) -> i64 {
-        self.base().query_row(consulta, [p], |f| f.get(0)).unwrap()
+    fn count(&self, query: &str, p: &str) -> i64 {
+        self.db().query_row(query, [p], |f| f.get(0)).unwrap()
     }
 }
 
-/// El servidor se cierra aunque el test falle: uno huérfano deja bloqueado el binario en Windows. Lo
-/// que escribe por stderr queda en un fichero, para decir por qué no contestó.
-struct Servidor(std::process::Child, u16, PathBuf);
+/// The server is shut down even if the test fails: an orphaned one keeps the binary locked on Windows. What
+/// it writes to stderr goes to a file, to say why it didn't answer.
+struct Server(std::process::Child, u16, PathBuf);
 
-impl Drop for Servidor {
+impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
-impl Servidor {
-    /// (estado, cuerpo) de una petición con el token.
-    fn pedir(&self, metodo: &str, ruta: &str, cuerpo: &str) -> (u16, String) {
-        let peticion = format!(
-            "{metodo} {ruta} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer secreto\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cuerpo}",
+impl Server {
+    /// (status, body) of a request with the token.
+    fn request(&self, method: &str, path: &str, body: &str) -> (u16, String) {
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer secreto\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             self.1,
-            cuerpo.len()
+            body.len()
         );
         for _ in 0..100 {
             if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", self.1)) {
-                s.write_all(peticion.as_bytes()).unwrap();
+                s.write_all(req.as_bytes()).unwrap();
                 let mut v = Vec::new();
                 s.read_to_end(&mut v).unwrap();
                 let r = String::from_utf8_lossy(&v).into_owned();
-                let estado = r.get(9..12).and_then(|e| e.parse().ok()).unwrap_or(0);
-                let cuerpo = r.find("\r\n\r\n").map(|i| r[i + 4..].to_string()).unwrap_or_default();
-                return (estado, cuerpo);
+                let status = r.get(9..12).and_then(|e| e.parse().ok()).unwrap_or(0);
+                let body = r.find("\r\n\r\n").map(|i| r[i + 4..].to_string()).unwrap_or_default();
+                return (status, body);
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         panic!("el servidor no arrancó");
     }
 
-    fn get(&self, ruta: &str) -> String {
-        let (e, c) = self.pedir("GET", ruta, "");
-        assert_eq!(e, 200, "GET {ruta}: {c}
+    fn get(&self, path: &str) -> String {
+        let (e, c) = self.request("GET", path, "");
+        assert_eq!(e, 200, "GET {path}: {c}
 stderr del servidor: {}", std::fs::read_to_string(&self.2).unwrap_or_default());
         c
     }
 
-    fn post(&self, ruta: &str, cuerpo: serde_json::Value) -> (u16, String) {
-        self.pedir("POST", ruta, &cuerpo.to_string())
+    fn post(&self, path: &str, body: serde_json::Value) -> (u16, String) {
+        self.request("POST", path, &body.to_string())
     }
 }
 
-fn servir(p: &Prueba, carpeta: &Path) -> Servidor {
-    let puerto = comun::puerto_libre();
-    let log = p.dir.join(format!("serve-{puerto}.log"));
-    let hijo = p
-        .orden(carpeta)
-        .args(["serve", "--port", &puerto.to_string()])
+fn serve(p: &Fixture, folder: &Path) -> Server {
+    let port = comun::puerto_libre();
+    let log = p.dir.join(format!("serve-{port}.log"));
+    let child = p
+        .command(folder)
+        .args(["serve", "--port", &port.to_string()])
         .env("OMOIKANE_HTTP_TOKEN", "secreto")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
         .unwrap();
-    Servidor(hijo, puerto, log)
+    Server(child, port, log)
 }
 
-/// `?dir=` con la carpeta escapada para la URL.
-fn con_dir(ruta: &str, carpeta: &Path) -> String {
-    let d: String = carpeta
+/// `?dir=` with the folder escaped for the URL.
+fn with_dir(path: &str, folder: &Path) -> String {
+    let d: String = folder
         .to_string_lossy()
         .bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-_.".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect();
-    format!("{ruta}{}dir={d}", if ruta.contains('?') { '&' } else { '?' })
+    format!("{path}{}dir={d}", if path.contains('?') { '&' } else { '?' })
 }
 
-/// Lo que no debe salir desde acme: nada de globex ni de lo personal sin espacio.
-fn sin_otros(que: &str, texto: &str) {
+/// What must not show from acme: nothing from globex nor the personal stuff without a space.
+fn no_others(what: &str, text: &str) {
     for x in ["Globex", "globex", "Idea de blog", "notas"] {
-        assert!(!texto.contains(x), "{que} enseña «{x}» desde acme: {texto}");
+        assert!(!text.contains(x), "{what} enseña «{x}» desde acme: {text}");
     }
 }
 
 #[test]
-fn la_web_solo_ensena_lo_del_espacio_donde_arranco() {
-    let p = Prueba { dir: comun::Temporal::nueva("aislweb") };
+fn web_only_shows_the_space_it_started_in() {
+    let p = Fixture { dir: comun::Temporal::nueva("aislweb") };
     for n in ["acme-api", "acme-web", "globex", "notas"] {
-        std::fs::create_dir_all(p.proyecto(n).join(".git")).unwrap();
+        std::fs::create_dir_all(p.project(n).join(".git")).unwrap();
     }
-    let casa = p.casa();
-    let guardar = |proyecto: &str, args: &[&str]| {
+    let home = p.home();
+    let save = |project: &str, args: &[&str]| {
         let mut a = vec!["remember", "-f"];
         a.extend_from_slice(args);
-        p.ok(&p.proyecto(proyecto), &a);
+        p.ok(&p.project(project), &a);
     };
-    p.ok(&casa, &["remember", "-k", "preference", "-t", "Respuestas cortas", "--global", "Prefiero respuestas cortas."]);
-    p.ok(&casa, &["space", "add", "Acme"]);
-    p.ok(&casa, &["space", "add", "globex"]);
-    guardar("acme-api", &["-k", "fact", "-t", "Acme usa Postgres", "Postgres 16 en RDS."]);
-    guardar("acme-api", &["-k", "fact", "-t", "Acme API: despliegue", "La v0.2.0 publicada el 28-oct-2026 en staging.\nFalta publicar en producción."]);
-    guardar("acme-api", &["-k", "fact", "-t", "Acme API: estado", "--tag", "status", "La 0.9.2 está publicada en producción."]);
-    guardar("acme-web", &["-k", "fact", "-t", "Acme web en Astro", "Astro 5."]);
-    guardar("acme-web", &["-k", "fact", "-t", "Acme web: tirar", "Se olvida."]);
-    guardar("globex", &["-k", "fact", "-t", "Globex es Flutter", "App en Flutter 3.24 con token sk-test."]);
-    // Textos distintos de los de acme: repetidos, sus palabras dejarían de ser raras y Revisar no vería nada.
-    guardar("globex", &["-k", "fact", "-t", "Globex: tienda", "Pendiente de la revisión de Apple."]);
-    guardar("globex", &["-k", "fact", "-t", "Globex: estado", "--tag", "status", "Esperando a Google Play."]);
-    guardar("globex", &["-k", "fact", "-t", "Globex: tirar", "Se olvida."]);
-    guardar("notas", &["-k", "fact", "-t", "Idea de blog", "Escribir sobre memoria."]);
+    p.ok(&home, &["remember", "-k", "preference", "-t", "Respuestas cortas", "--global", "Prefiero respuestas cortas."]);
+    p.ok(&home, &["space", "add", "Acme"]);
+    p.ok(&home, &["space", "add", "globex"]);
+    save("acme-api", &["-k", "fact", "-t", "Acme usa Postgres", "Postgres 16 en RDS."]);
+    save("acme-api", &["-k", "fact", "-t", "Acme API: despliegue", "La v0.2.0 publicada el 28-oct-2026 en staging.\nFalta publicar en producción."]);
+    save("acme-api", &["-k", "fact", "-t", "Acme API: estado", "--tag", "status", "La 0.9.2 está publicada en producción."]);
+    save("acme-web", &["-k", "fact", "-t", "Acme web en Astro", "Astro 5."]);
+    save("acme-web", &["-k", "fact", "-t", "Acme web: tirar", "Se olvida."]);
+    save("globex", &["-k", "fact", "-t", "Globex es Flutter", "App en Flutter 3.24 con token sk-test."]);
+    // Texts different from acme's: if repeated, their words would stop being rare and Review would see nothing.
+    save("globex", &["-k", "fact", "-t", "Globex: tienda", "Pendiente de la revisión de Apple."]);
+    save("globex", &["-k", "fact", "-t", "Globex: estado", "--tag", "status", "Esperando a Google Play."]);
+    save("globex", &["-k", "fact", "-t", "Globex: tirar", "Se olvida."]);
+    save("notas", &["-k", "fact", "-t", "Idea de blog", "Escribir sobre memoria."]);
     for (e, n) in [("acme", "acme-api"), ("acme", "acme-web"), ("globex", "globex")] {
-        let ruta = p.proyecto(n);
-        p.ok(&casa, &["space", "assign", e, ruta.to_str().unwrap()]);
+        let path = p.project(n);
+        p.ok(&home, &["space", "assign", e, path.to_str().unwrap()]);
     }
-    let tirada_acme = p.id("Acme web: tirar");
-    let tirada_globex = p.id("Globex: tirar");
-    p.ok(&casa, &["forget", &tirada_acme, "--yes"]);
-    p.ok(&casa, &["forget", &tirada_globex, "--yes"]);
-    // Lo apartado de dos sesiones, una en cada cliente (la carpeta del proyecto, como la guarda el hook).
+    let forgotten_acme = p.id("Acme web: tirar");
+    let forgotten_globex = p.id("Globex: tirar");
+    p.ok(&home, &["forget", &forgotten_acme, "--yes"]);
+    p.ok(&home, &["forget", &forgotten_globex, "--yes"]);
+    // What was set aside from two sessions, one in each client (the project folder, as the hook stores it).
     {
-        let db = p.base();
-        for (n, texto) in [("acme-api", "prefiero tabs en acme"), ("globex", "prefiero spaces en globex")] {
-            let ruta: String = db.query_row("SELECT path FROM project WHERE name = ?1", [n], |f| f.get(0)).unwrap();
+        let db = p.db();
+        for (n, text) in [("acme-api", "prefiero tabs en acme"), ("globex", "prefiero spaces en globex")] {
+            let path: String = db.query_row("SELECT path FROM project WHERE name = ?1", [n], |f| f.get(0)).unwrap();
             db.execute(
                 "INSERT INTO candidate(project, session, kind, text, created_at) VALUES (?1, 's', 'preference', ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                [&ruta, &texto.to_string()],
+                [&path, &text.to_string()],
             )
             .unwrap();
         }
     }
     let globex = p.id("Globex es Flutter");
-    let globex_vieja = p.id("Globex: tienda");
-    let globex_nueva = p.id("Globex: estado");
-    let cand_globex: i64 = p.base().query_row("SELECT id FROM candidate WHERE text LIKE '%globex%'", [], |f| f.get(0)).unwrap();
+    let globex_old = p.id("Globex: tienda");
+    let globex_new = p.id("Globex: estado");
+    let cand_globex: i64 = p.db().query_row("SELECT id FROM candidate WHERE text LIKE '%globex%'", [], |f| f.get(0)).unwrap();
 
-    // Desde un proyecto de acme: solo acme (los dos proyectos) y lo global, en cada vista.
-    let s = servir(&p, &p.proyecto("acme-api"));
-    let memorias = s.get("/api/memories");
-    assert!(memorias.contains("Acme usa Postgres") && memorias.contains("Acme web en Astro"), "todo el espacio: {memorias}");
-    assert!(memorias.contains("Respuestas cortas"), "y lo global: {memorias}");
-    sin_otros("/api/memories", &memorias);
-    let proyectos: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
-    assert_eq!(proyectos["scope"]["scope"], "space", "{proyectos}");
-    assert_eq!(proyectos["scope"]["space"], "acme", "{proyectos}");
-    assert_eq!(proyectos["scope"]["name"], "Acme", "{proyectos}");
-    let nombres: Vec<&str> = proyectos["projects"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
-    assert_eq!(nombres.len(), 2, "{proyectos}");
-    assert!(nombres.iter().all(|n| n.starts_with("acme")), "{proyectos}");
-    sin_otros("/api/projects", &proyectos.to_string());
-    let revisar = s.get("/api/review");
-    assert!(revisar.contains("Acme API: despliegue"), "lo de acme sí: {revisar}");
-    sin_otros("/api/review", &revisar);
-    let papelera = s.get("/api/trash");
-    assert!(papelera.contains(&tirada_acme), "{papelera}");
-    assert!(!papelera.contains(&tirada_globex), "{papelera}");
-    sin_otros("/api/trash", &papelera);
-    let candidatas = s.get("/api/candidates");
-    assert!(candidatas.contains("tabs en acme"), "{candidatas}");
-    sin_otros("/api/candidates", &candidatas);
-    sin_otros("/api/overview", &s.get("/api/overview"));
-    sin_otros("/search", &s.get("/search?q=Flutter"));
+    // From an acme project: only acme (both projects) and the global ones, in every view.
+    let s = serve(&p, &p.project("acme-api"));
+    let memories = s.get("/api/memories");
+    assert!(memories.contains("Acme usa Postgres") && memories.contains("Acme web en Astro"), "todo el espacio: {memories}");
+    assert!(memories.contains("Respuestas cortas"), "y lo global: {memories}");
+    no_others("/api/memories", &memories);
+    let projects: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
+    assert_eq!(projects["scope"]["scope"], "space", "{projects}");
+    assert_eq!(projects["scope"]["space"], "acme", "{projects}");
+    assert_eq!(projects["scope"]["name"], "Acme", "{projects}");
+    let names: Vec<&str> = projects["projects"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), 2, "{projects}");
+    assert!(names.iter().all(|n| n.starts_with("acme")), "{projects}");
+    no_others("/api/projects", &projects.to_string());
+    let review = s.get("/api/review");
+    assert!(review.contains("Acme API: despliegue"), "lo de acme sí: {review}");
+    no_others("/api/review", &review);
+    let trash = s.get("/api/trash");
+    assert!(trash.contains(&forgotten_acme), "{trash}");
+    assert!(!trash.contains(&forgotten_globex), "{trash}");
+    no_others("/api/trash", &trash);
+    let candidates = s.get("/api/candidates");
+    assert!(candidates.contains("tabs en acme"), "{candidates}");
+    no_others("/api/candidates", &candidates);
+    no_others("/api/overview", &s.get("/api/overview"));
+    no_others("/search", &s.get("/search?q=Flutter"));
     let (e, c) = s.post("/tools/search", serde_json::json!({ "query": "Flutter", "all_projects": true }));
     assert!(e == 200 || e == 400, "{c}");
-    sin_otros("/tools/search", &c);
+    no_others("/tools/search", &c);
     let (e, c) = s.post("/tools/recent", serde_json::json!({ "all_projects": true, "limit": 50 }));
     assert_eq!(e, 200, "{c}");
-    sin_otros("/tools/recent", &c);
+    no_others("/tools/recent", &c);
     let (e, c) = s.post("/tools/get", serde_json::json!({ "id": globex }));
     assert_eq!(e, 400, "get de otro cliente: {c}");
-    sin_otros("/tools/get", &c);
+    no_others("/tools/get", &c);
 
-    // Escribir fuera: nada cambia.
-    for (ruta, cuerpo) in [
+    // Writing outside: nothing changes.
+    for (path, body) in [
         ("/tools/forget", serde_json::json!({ "id": globex })),
         ("/tools/update", serde_json::json!({ "id": globex, "pinned": true, "reason": "x" })),
         ("/tools/update", serde_json::json!({ "id": globex, "content": "cambiado", "reason": "x" })),
     ] {
-        let (e, c) = s.post(ruta, cuerpo);
-        assert_eq!(e, 400, "{ruta}: {c}");
+        let (e, c) = s.post(path, body);
+        assert_eq!(e, 400, "{path}: {c}");
     }
-    for (ruta, cuerpo) in [
+    for (path, body) in [
         ("/api/redact", serde_json::json!({ "id": globex })),
-        ("/api/restore", serde_json::json!({ "id": tirada_globex })),
-        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_vieja, "kind": "outdated", "other_id": globex_nueva })),
+        ("/api/restore", serde_json::json!({ "id": forgotten_globex })),
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_old, "kind": "outdated", "other_id": globex_new })),
         ("/api/candidates/dismiss", serde_json::json!({ "id": cand_globex })),
-        // El id en minúsculas, o solo su principio, es el mismo id: tampoco (antes `ve` no la
-        // encontraba tal cual, la daba por visible y `descartar` sí la encontraba).
-        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_vieja.to_lowercase(), "kind": "outdated", "other_id": globex_nueva.to_lowercase() })),
-        ("/api/review/dismiss", serde_json::json!({ "memory_id": &globex_vieja[..20], "kind": "outdated", "other_id": &globex_nueva[..20] })),
+        // The id in lowercase, or just its prefix, is the same id: not allowed either (before, `ve` didn't
+        // find it as is, treated it as visible, and `descartar` did find it).
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_old.to_lowercase(), "kind": "outdated", "other_id": globex_new.to_lowercase() })),
+        ("/api/review/dismiss", serde_json::json!({ "memory_id": &globex_old[..20], "kind": "outdated", "other_id": &globex_new[..20] })),
         ("/api/review/dismiss", serde_json::json!({ "memory_id": globex.to_lowercase(), "kind": "secret" })),
     ] {
-        let (e, c) = s.post(ruta, cuerpo);
-        assert_eq!(e, 403, "{ruta}: {c}");
+        let (e, c) = s.post(path, body);
+        assert_eq!(e, 403, "{path}: {c}");
     }
-    // `?dir=` con una ruta de red: no se mira (cualquier web la puede pedir con un `<img>`; mirarla
-    // abría una conexión SMB, tardaba ~21 s y bloqueaba el servidor).
+    // `?dir=` with a network path: not looked at (any website can request it with an `<img>`; looking at it
+    // opened an SMB connection, took ~21 s and blocked the server).
     for d in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\??\UNC\10.255.255.1\x", r"\\?\UNC\10.255.255.1\x"] {
         let t = std::time::Instant::now();
-        let (e, c) = s.pedir("GET", &con_dir("/api/memories", Path::new(d)), "");
+        let (e, c) = s.request("GET", &with_dir("/api/memories", Path::new(d)), "");
         assert_eq!(e, 400, "{d}: {c}");
         assert!(t.elapsed() < std::time::Duration::from_secs(3), "{d}: {:?}", t.elapsed());
     }
-    assert_eq!(p.cuenta("SELECT count(*) FROM memory WHERE id = ?1 AND pinned = 0 AND content LIKE '%sk-test%'", &globex), 1, "globex sigue igual");
-    assert_eq!(p.cuenta("SELECT count(*) FROM forgotten WHERE id = ?1", &tirada_globex), 1, "sigue en la papelera");
-    assert_eq!(p.cuenta("SELECT count(*) FROM verdict WHERE memory_id = ?1 OR other_id = ?1", &globex_vieja), 0, "sin veredicto");
-    assert_eq!(p.cuenta("SELECT count(*) FROM candidate WHERE text LIKE ?1", "%globex%"), 1, "la candidata sigue");
-    // Dentro sí.
-    let (e, c) = s.post("/api/restore", serde_json::json!({ "id": tirada_acme }));
+    assert_eq!(p.count("SELECT count(*) FROM memory WHERE id = ?1 AND pinned = 0 AND content LIKE '%sk-test%'", &globex), 1, "globex sigue igual");
+    assert_eq!(p.count("SELECT count(*) FROM forgotten WHERE id = ?1", &forgotten_globex), 1, "sigue en la papelera");
+    assert_eq!(p.count("SELECT count(*) FROM verdict WHERE memory_id = ?1 OR other_id = ?1", &globex_old), 0, "sin veredicto");
+    assert_eq!(p.count("SELECT count(*) FROM candidate WHERE text LIKE ?1", "%globex%"), 1, "la candidata sigue");
+    // Inside, yes.
+    let (e, c) = s.post("/api/restore", serde_json::json!({ "id": forgotten_acme }));
     assert_eq!(e, 200, "{c}");
     let (e, c) = s.post("/tools/update", serde_json::json!({ "id": p.id("Acme usa Postgres"), "pinned": true, "reason": "x" }));
     assert_eq!(e, 200, "{c}");
 
-    // `?dir=` no amplía: ni a la carpeta del usuario, ni a otro cliente, ni a lo que no tiene espacio.
-    for d in [casa.clone(), p.proyecto("globex"), p.proyecto("notas")] {
-        for ruta in ["/api/memories", "/api/projects", "/api/overview", "/search?q=Flutter", "/tools"] {
-            let (e, c) = s.pedir("GET", &con_dir(ruta, &d), "");
-            assert_eq!(e, 403, "{ruta} con dir={}: {c}", d.display());
+    // `?dir=` doesn't widen: not to the user's folder, nor to another client, nor to what has no space.
+    for d in [home.clone(), p.project("globex"), p.project("notas")] {
+        for path in ["/api/memories", "/api/projects", "/api/overview", "/search?q=Flutter", "/tools"] {
+            let (e, c) = s.request("GET", &with_dir(path, &d), "");
+            assert_eq!(e, 403, "{path} con dir={}: {c}", d.display());
         }
-        let (e, c) = s.pedir("POST", &con_dir("/tools/forget", &d), &serde_json::json!({ "id": globex }).to_string());
+        let (e, c) = s.request("POST", &with_dir("/tools/forget", &d), &serde_json::json!({ "id": globex }).to_string());
         assert_eq!(e, 403, "{c}");
     }
-    // Pero sí elige otro proyecto del mismo espacio.
-    let otro = s.get(&con_dir("/api/memories", &p.proyecto("acme-web")));
-    assert!(otro.contains("Acme usa Postgres"), "{otro}");
-    sin_otros("?dir=acme-web", &otro);
+    // But it does pick another project in the same space.
+    let other = s.get(&with_dir("/api/memories", &p.project("acme-web")));
+    assert!(other.contains("Acme usa Postgres"), "{other}");
+    no_others("?dir=acme-web", &other);
     drop(s);
 
-    // Desde un proyecto sin espacio: lo que no tiene espacio y lo global, nada de los clientes.
-    let s = servir(&p, &p.proyecto("notas"));
-    let memorias = s.get("/api/memories");
-    assert!(memorias.contains("Idea de blog") && memorias.contains("Respuestas cortas"), "{memorias}");
-    assert!(!memorias.contains("Acme") && !memorias.contains("Globex"), "{memorias}");
-    let proyectos: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
-    assert_eq!(proyectos["scope"]["scope"], "space", "{proyectos}");
-    assert_eq!(proyectos["scope"]["space"], "", "{proyectos}");
-    assert_eq!(proyectos["spaces"].as_array().unwrap().len(), 0, "{proyectos}");
-    let texto = proyectos.to_string();
-    assert!(!texto.contains("acme") && !texto.contains("globex"), "{texto}");
-    for ruta in ["/api/review", "/api/trash", "/api/candidates", "/api/overview", "/search?q=Flutter"] {
-        let c = s.get(ruta);
-        assert!(!c.contains("Acme") && !c.contains("Globex") && !c.contains("acme") && !c.contains("globex"), "{ruta}: {c}");
+    // From a project without a space: what has no space and the global ones, nothing from the clients.
+    let s = serve(&p, &p.project("notas"));
+    let memories = s.get("/api/memories");
+    assert!(memories.contains("Idea de blog") && memories.contains("Respuestas cortas"), "{memories}");
+    assert!(!memories.contains("Acme") && !memories.contains("Globex"), "{memories}");
+    let projects: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
+    assert_eq!(projects["scope"]["scope"], "space", "{projects}");
+    assert_eq!(projects["scope"]["space"], "", "{projects}");
+    assert_eq!(projects["spaces"].as_array().unwrap().len(), 0, "{projects}");
+    let text = projects.to_string();
+    assert!(!text.contains("acme") && !text.contains("globex"), "{text}");
+    for path in ["/api/review", "/api/trash", "/api/candidates", "/api/overview", "/search?q=Flutter"] {
+        let c = s.get(path);
+        assert!(!c.contains("Acme") && !c.contains("Globex") && !c.contains("acme") && !c.contains("globex"), "{path}: {c}");
     }
     let (e, c) = s.post("/api/redact", serde_json::json!({ "id": globex }));
     assert_eq!(e, 403, "{c}");
-    let (e, c) = s.pedir("GET", &con_dir("/api/memories", &casa), "");
+    let (e, c) = s.request("GET", &with_dir("/api/memories", &home), "");
     assert_eq!(e, 403, "{c}");
-    let (e, c) = s.pedir("GET", &con_dir("/api/memories", &p.proyecto("acme-api")), "");
+    let (e, c) = s.request("GET", &with_dir("/api/memories", &p.project("acme-api")), "");
     assert_eq!(e, 403, "{c}");
     drop(s);
 
-    // Desde la carpeta del usuario: todo, y `?dir=` restringe a un cliente.
-    let s = servir(&p, &casa);
-    let memorias = s.get("/api/memories");
+    // From the user's folder: everything, and `?dir=` narrows to one client.
+    let s = serve(&p, &home);
+    let memories = s.get("/api/memories");
     for t in ["Acme usa Postgres", "Globex es Flutter", "Idea de blog", "Respuestas cortas"] {
-        assert!(memorias.contains(t), "{t}: {memorias}");
+        assert!(memories.contains(t), "{t}: {memories}");
     }
-    let proyectos: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
-    assert_eq!(proyectos["scope"]["scope"], "all", "{proyectos}");
-    assert_eq!(proyectos["projects"].as_array().unwrap().len(), 4, "{proyectos}");
-    assert!(s.get("/api/trash").contains(&tirada_globex));
+    let projects: serde_json::Value = serde_json::from_str(&s.get("/api/projects")).unwrap();
+    assert_eq!(projects["scope"]["scope"], "all", "{projects}");
+    assert_eq!(projects["projects"].as_array().unwrap().len(), 4, "{projects}");
+    assert!(s.get("/api/trash").contains(&forgotten_globex));
     assert!(s.get("/api/candidates").contains("globex"));
-    let solo_acme = s.get(&con_dir("/api/memories", &p.proyecto("acme-api")));
-    assert!(solo_acme.contains("Acme usa Postgres"), "{solo_acme}");
-    sin_otros("?dir=acme-api desde casa", &solo_acme);
+    let only_acme = s.get(&with_dir("/api/memories", &p.project("acme-api")));
+    assert!(only_acme.contains("Acme usa Postgres"), "{only_acme}");
+    no_others("?dir=acme-api desde casa", &only_acme);
     let (e, c) = s.post("/api/redact", serde_json::json!({ "id": globex }));
     assert_eq!(e, 200, "desde casa sí: {c}");
 }
 
-/// 1.7.1: `/api/sync` desde un cliente solo enseña el repositorio de ese espacio, nunca la URL ni el
-/// autor del general (el personal) ni los de otro cliente.
+/// 1.7.1: `/api/sync` from a client only shows that space's repository, never the URL or the
+/// author of the general one (the personal one) nor those of another client.
 #[test]
-fn la_sincronizacion_de_la_web_solo_ensena_el_repositorio_del_espacio() {
-    let p = Prueba { dir: comun::Temporal::nueva("aislweb-sync") };
+fn web_sync_only_shows_the_space_repository() {
+    let p = Fixture { dir: comun::Temporal::nueva("aislweb-sync") };
     for n in ["acme-api", "globex", "notas"] {
-        std::fs::create_dir_all(p.proyecto(n).join(".git")).unwrap();
+        std::fs::create_dir_all(p.project(n).join(".git")).unwrap();
     }
-    let casa = p.casa();
-    p.ok(&casa, &["space", "add", "Acme"]);
-    p.ok(&casa, &["space", "add", "globex"]);
+    let home = p.home();
+    p.ok(&home, &["space", "add", "Acme"]);
+    p.ok(&home, &["space", "add", "globex"]);
     for n in ["acme-api", "globex", "notas"] {
-        p.ok(&p.proyecto(n), &["remember", "-f", "-k", "fact", "-t", &format!("Nota de {n}"), "Algo."]);
+        p.ok(&p.project(n), &["remember", "-f", "-k", "fact", "-t", &format!("Nota de {n}"), "Algo."]);
     }
     for (e, n) in [("acme", "acme-api"), ("globex", "globex")] {
-        let ruta = p.proyecto(n);
-        p.ok(&casa, &["space", "assign", e, ruta.to_str().unwrap()]);
+        let path = p.project(n);
+        p.ok(&home, &["space", "assign", e, path.to_str().unwrap()]);
     }
-    // Las configuraciones tal como las deja `sync init`: la general junto a la base (`o.sync.json`) y
-    // una por espacio en `o.sync-spaces/<espacio>/`.
-    let config = |ruta: PathBuf, url: &str, autor: &str, espacio: Option<&str>| {
-        std::fs::create_dir_all(ruta.parent().unwrap()).unwrap();
-        let mut c = serde_json::json!({ "url": url, "kinds": ["fact"], "global": true, "author": autor, "person": "p" });
-        if let Some(e) = espacio {
+    // The configurations as `sync init` leaves them: the general one next to the database (`o.sync.json`) and
+    // one per space in `o.sync-spaces/<space>/`.
+    let config = |path: PathBuf, url: &str, author: &str, space: Option<&str>| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut c = serde_json::json!({ "url": url, "kinds": ["fact"], "global": true, "author": author, "person": "p" });
+        if let Some(e) = space {
             c["space"] = e.into();
         }
-        std::fs::write(ruta, c.to_string()).unwrap();
+        std::fs::write(path, c.to_string()).unwrap();
     };
     config(p.dir.join("o.sync.json"), "https://git.example/marc/personal.git", "Marc Personal", None);
-    let espacios = p.dir.join("o.sync-spaces");
-    config(espacios.join("acme").join("sync.json"), "https://git.example/acme/memoria.git", "Marc en Acme", Some("acme"));
-    config(espacios.join("globex").join("sync.json"), "https://git.example/globex/memoria.git", "Marc en Globex", Some("globex"));
-    let sync = |s: &Servidor| -> serde_json::Value { serde_json::from_str(&s.get("/api/sync")).unwrap() };
+    let spaces = p.dir.join("o.sync-spaces");
+    config(spaces.join("acme").join("sync.json"), "https://git.example/acme/memoria.git", "Marc en Acme", Some("acme"));
+    config(spaces.join("globex").join("sync.json"), "https://git.example/globex/memoria.git", "Marc en Globex", Some("globex"));
+    let sync = |s: &Server| -> serde_json::Value { serde_json::from_str(&s.get("/api/sync")).unwrap() };
 
-    // Desde acme: su repositorio y su autor, nada del general ni de globex.
-    let s = servir(&p, &p.proyecto("acme-api"));
+    // From acme: its repository and its author, nothing from the general one or globex.
+    let s = serve(&p, &p.project("acme-api"));
     let v = sync(&s);
     assert_eq!(v["configured"], true, "{v}");
     assert_eq!(v["url"], "https://git.example/acme/memoria.git", "{v}");
     assert_eq!(v["author"], "Marc en Acme", "{v}");
-    let texto = v.to_string();
+    let text = v.to_string();
     for x in ["personal", "Personal", "globex", "Globex"] {
-        assert!(!texto.contains(x), "desde acme enseña «{x}»: {texto}");
+        assert!(!text.contains(x), "desde acme enseña «{x}»: {text}");
     }
     drop(s);
 
-    // Desde un proyecto sin espacio, y desde la carpeta del usuario: el general.
-    for carpeta in [p.proyecto("notas"), casa.clone()].iter() {
-        let s = servir(&p, carpeta);
+    // From a project without a space, and from the user's folder: the general one.
+    for folder in [p.project("notas"), home.clone()].iter() {
+        let s = serve(&p, folder);
         let v = sync(&s);
         assert_eq!(v["url"], "https://git.example/marc/personal.git", "{v}");
         assert_eq!(v["author"], "Marc Personal", "{v}");
-        let texto = v.to_string();
-        assert!(!texto.contains("acme") && !texto.contains("globex"), "{texto}");
+        let text = v.to_string();
+        assert!(!text.contains("acme") && !text.contains("globex"), "{text}");
     }
 
-    // Un cliente sin repositorio propio no cae al general: no hay nada que enseñar.
-    std::fs::remove_dir_all(espacios.join("acme")).unwrap();
-    let s = servir(&p, &p.proyecto("acme-api"));
+    // A client without its own repository doesn't fall back to the general one: there's nothing to show.
+    std::fs::remove_dir_all(spaces.join("acme")).unwrap();
+    let s = serve(&p, &p.project("acme-api"));
     let v = sync(&s);
     assert_eq!(v["configured"], false, "{v}");
     assert!(v["url"].is_null() && v["author"].is_null(), "{v}");

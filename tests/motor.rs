@@ -1,37 +1,37 @@
-//! El motor de EmbeddingGemma: el tokenizer compilado da los mismos ids que `tokenizers`, y el
-//! motor rápido (con AVX2 y por el camino genérico, el de las CPU sin AVX2 y ARM) el mismo vector que
-//! candle, también por lotes.
+//! The EmbeddingGemma engine: the compiled tokenizer gives the same ids as `tokenizers`, and the
+//! fast engine (with AVX2 and through the generic path, the one for CPUs without AVX2 and ARM) the same vector as
+//! candle, also in batches.
 //!
-//! Necesita EmbeddingGemma en `OMOIKANE_SEMANTIC_MODEL` (la carpeta de sentence-transformers o la del
-//! formato compacto); sin ella se salta.
+//! Needs EmbeddingGemma in `OMOIKANE_SEMANTIC_MODEL` (the sentence-transformers folder or the
+//! compact-format one); without it, it is skipped.
 
 mod comun;
 
 use omoikane::gemma::{Gemma, Tipo};
 use std::path::PathBuf;
 
-fn coseno(a: &[f32], b: &[f32]) -> f32 {
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let p: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     p / (a.iter().map(|x| x * x).sum::<f32>().sqrt() * b.iter().map(|x| x * x).sum::<f32>().sqrt())
 }
 
-/// La carpeta del formato compacto (convertida a un temporal si lo que hay es sentence-transformers).
-fn compacto(dir: &std::path::Path) -> Option<PathBuf> {
-    let modelo = PathBuf::from(std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty())?);
+/// The compact-format folder (converted into a temporary one if what is there is sentence-transformers).
+fn compact(dir: &std::path::Path) -> Option<PathBuf> {
+    let model = PathBuf::from(std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty())?);
     std::fs::create_dir_all(dir).unwrap();
-    let destino = dir.join("compacto");
-    if omoikane::gemma::es_compacto(&modelo) {
-        std::fs::create_dir_all(&destino).unwrap();
+    let dest = dir.join("compacto");
+    if omoikane::gemma::es_compacto(&model) {
+        std::fs::create_dir_all(&dest).unwrap();
         for f in omoikane::gemma::FICHEROS_COMPACTO {
-            std::fs::copy(modelo.join(f), destino.join(f)).unwrap();
+            std::fs::copy(model.join(f), dest.join(f)).unwrap();
         }
     } else {
-        omoikane::gemma::compactar(&modelo, &destino).unwrap();
+        omoikane::gemma::compactar(&model, &dest).unwrap();
     }
-    Some(destino)
+    Some(dest)
 }
 
-const TEXTOS: [&str; 12] = [
+const TEXTS: [&str; 12] = [
     "How do I undo a cargo yank?",
     "Two Gradle daemons at once corrupt the build cache.",
     "",
@@ -47,54 +47,54 @@ const TEXTOS: [&str; 12] = [
 ];
 
 #[test]
-fn motor_y_tokenizer() {
+fn engine_and_tokenizer() {
     let dir = comun::Temporal::nueva("motor");
-    let Some(m) = compacto(&dir) else {
+    let Some(m) = compact(&dir) else {
         eprintln!("motor: falta OMOIKANE_SEMANTIC_MODEL (EmbeddingGemma); se salta");
         return;
     };
-    let largo = "La memoria de un agente tiene que crecer sin volverse lenta. ".repeat(80); // ~900 tokens
-    let enorme = "x".repeat(9000); // pasa de 2.048 tokens: se recorta
-    let mut textos: Vec<&str> = TEXTOS.to_vec();
-    textos.push(&largo);
-    textos.push(&enorme);
+    let long = "La memoria de un agente tiene que crecer sin volverse lenta. ".repeat(80); // ~900 tokens
+    let huge = "x".repeat(9000); // over 2,048 tokens: gets truncated
+    let mut texts: Vec<&str> = TEXTS.to_vec();
+    texts.push(&long);
+    texts.push(&huge);
 
-    // Tokenizer compilado = tokenizers (con los prompts, y recortando a 2.048).
+    // Compiled tokenizer = tokenizers (with the prompts, and truncating to 2,048).
     let json = m.join("tokenizer.json");
     let mut hf = tokenizers::Tokenizer::from_file(&json).unwrap();
     hf.with_truncation(Some(tokenizers::TruncationParams { max_length: omoikane::gemma::MAX_TOKENS, ..Default::default() })).unwrap();
     omoikane::bpe::compile(&json, &m.join(omoikane::bpe::FILE)).unwrap();
     let bpe = omoikane::bpe::Bpe::open(&json, &m.join(omoikane::bpe::FILE)).unwrap();
-    for t in &textos {
+    for t in &texts {
         for p in ["task: search result | query: ", "title: none | text: ", ""] {
             let s = format!("{p}{t}");
             assert_eq!(bpe.encode(&s, omoikane::gemma::MAX_TOKENS), hf.encode(s.as_str(), true).unwrap().get_ids(), "{s:?}");
         }
     }
 
-    // Los tres motores, el mismo vector.
+    // The three engines, the same vector.
     let candle = Gemma::cargar_candle(&m).unwrap();
-    let rapido = Gemma::cargar_rapido(&m, 4, omoikane::engine::simd_available()).unwrap();
-    let generico = Gemma::cargar_rapido(&m, 4, false).unwrap();
-    assert!(rapido.tokenizer_compilado() && rapido.es_rapido() && !candle.es_rapido());
-    let tipos = [Tipo::Pregunta, Tipo::Documento];
-    let mut solos = Vec::new();
-    for (i, t) in textos.iter().enumerate() {
-        let tipo = tipos[i % 2];
-        let (c, r, g) = (candle.vector(t, tipo).unwrap(), rapido.vector(t, tipo).unwrap(), generico.vector(t, tipo).unwrap());
+    let fast = Gemma::cargar_rapido(&m, 4, omoikane::engine::simd_available()).unwrap();
+    let generic = Gemma::cargar_rapido(&m, 4, false).unwrap();
+    assert!(fast.tokenizer_compilado() && fast.es_rapido() && !candle.es_rapido());
+    let kinds = [Tipo::Pregunta, Tipo::Documento];
+    let mut singles = Vec::new();
+    for (i, t) in texts.iter().enumerate() {
+        let kind = kinds[i % 2];
+        let (c, r, g) = (candle.vector(t, kind).unwrap(), fast.vector(t, kind).unwrap(), generic.vector(t, kind).unwrap());
         assert_eq!(r.len(), omoikane::gemma::DIM);
-        assert!(coseno(&c, &r) > 0.9999, "rápido {t:?}: {}", coseno(&c, &r));
-        assert!(coseno(&c, &g) > 0.9999, "genérico {t:?}: {}", coseno(&c, &g));
-        solos.push(r);
+        assert!(cosine(&c, &r) > 0.9999, "rápido {t:?}: {}", cosine(&c, &r));
+        assert!(cosine(&c, &g) > 0.9999, "genérico {t:?}: {}", cosine(&c, &g));
+        singles.push(r);
     }
-    // Por lotes, lo mismo que de uno en uno (bit a bit con el mismo camino).
-    let docs: Vec<&str> = textos.iter().step_by(2).copied().collect();
-    let lote = rapido.vectores(&docs, Tipo::Pregunta).unwrap();
-    for (l, s) in lote.iter().zip(solos.iter().step_by(2)) {
+    // In batches, the same as one at a time (bit for bit on the same path).
+    let docs: Vec<&str> = texts.iter().step_by(2).copied().collect();
+    let batch = fast.vectores(&docs, Tipo::Pregunta).unwrap();
+    for (l, s) in batch.iter().zip(singles.iter().step_by(2)) {
         assert_eq!(l, s);
     }
-    let lote_generico = generico.vectores(&docs, Tipo::Pregunta).unwrap();
-    for (l, s) in lote_generico.iter().zip(solos.iter().step_by(2)) {
-        assert!(coseno(l, s) > 0.9999);
+    let generic_batch = generic.vectores(&docs, Tipo::Pregunta).unwrap();
+    for (l, s) in generic_batch.iter().zip(singles.iter().step_by(2)) {
+        assert!(cosine(l, s) > 0.9999);
     }
 }

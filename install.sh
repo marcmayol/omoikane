@@ -31,24 +31,24 @@ esac
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-paquete="omoi-$target.tar.gz"
-echo "Downloading $paquete..."
-curl -fsSL "$base/$paquete" -o "$tmp/$paquete"
+package="omoi-$target.tar.gz"
+echo "Downloading $package..."
+curl -fsSL "$base/$package" -o "$tmp/$package"
 curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
 
 # The checksum must match before anything is installed.
-esperada="$(grep " $paquete\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
+expected="$(grep " $package\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
 if command -v sha256sum >/dev/null 2>&1; then
-  real="$(sha256sum "$tmp/$paquete" | cut -d' ' -f1)"
+  real="$(sha256sum "$tmp/$package" | cut -d' ' -f1)"
 else
-  real="$(shasum -a 256 "$tmp/$paquete" | cut -d' ' -f1)"
+  real="$(shasum -a 256 "$tmp/$package" | cut -d' ' -f1)"
 fi
-if [ -z "$esperada" ] || [ "$esperada" != "$real" ]; then
-  echo "omoikane: the SHA-256 checksum of $paquete doesn't match; nothing was installed." >&2
+if [ -z "$expected" ] || [ "$expected" != "$real" ]; then
+  echo "omoikane: the SHA-256 checksum of $package doesn't match; nothing was installed." >&2
   exit 1
 fi
 
-tar -xzf "$tmp/$paquete" -C "$tmp"
+tar -xzf "$tmp/$package" -C "$tmp"
 mkdir -p "$dir"
 mv "$tmp/omoi" "$dir/omoi"
 chmod +x "$dir/omoi"
@@ -66,6 +66,6 @@ if [ -z "${OMOIKANE_NO_MODEL:-}" ]; then
   "$dir/omoi" model install || echo "omoikane: couldn't install the model; try again with: omoi model install" >&2
 fi
 if [ -z "${OMOIKANE_NO_SETUP:-}" ]; then
-  if [ -n "${OMOIKANE_NO_AUTO_UPDATE:-}" ]; then sin="--no-auto-update"; else sin=""; fi
-  "$dir/omoi" setup claude --yes $sin || echo "omoikane: Claude Code isn't set up yet; once you have it, run: omoi setup claude" >&2
+  if [ -n "${OMOIKANE_NO_AUTO_UPDATE:-}" ]; then auto_update_flag="--no-auto-update"; else auto_update_flag=""; fi
+  "$dir/omoi" setup claude --yes $auto_update_flag || echo "omoikane: Claude Code isn't set up yet; once you have it, run: omoi setup claude" >&2
 fi

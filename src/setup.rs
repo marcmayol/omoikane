@@ -1,6 +1,6 @@
-//! `omoi setup claude`: deja Omoikane listo en Claude Code con su propia CLI (`claude plugin …`):
-//! añade el marketplace y instala el plugin, que trae el servidor MCP y los hooks del recall. Si ya
-//! está hecho, no toca nada.
+//! `omoi setup claude`: gets Omoikane ready in Claude Code with its own CLI (`claude plugin …`):
+//! adds the marketplace and installs the plugin, which brings the MCP server and the recall hooks. If it's
+//! already done, it touches nothing.
 
 use crate::tr;
 use anyhow::{Context, Result, bail};
@@ -10,7 +10,7 @@ pub const MARKETPLACE_REPO: &str = "marcmayol/drac-plugins";
 pub const MARKETPLACE: &str = "drac";
 pub const PLUGIN: &str = "omoikane";
 
-/// `claude` puede ser un .exe o, instalado con npm en Windows, un .cmd que no se lanza directamente.
+/// `claude` can be an .exe or, installed with npm on Windows, a .cmd that can't be launched directly.
 fn claude(args: &[&str]) -> Result<Output> {
     let mut c = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -22,17 +22,17 @@ fn claude(args: &[&str]) -> Result<Output> {
     c.args(args).output().context(tr!("can't run `claude`", "no se puede ejecutar `claude`"))
 }
 
-fn texto(o: &Output) -> String {
+fn output_text(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
-/// Un paso de la instalación: qué hace y con qué orden.
+/// One installation step: what it does and with which command.
 pub struct Paso {
     pub que: String,
     pub args: Vec<String>,
 }
 
-/// Qué falta por hacer en este equipo (vacío si ya está todo).
+/// What is left to do on this machine (empty if everything is done).
 pub fn plan() -> Result<Vec<Paso>> {
     let version = claude(&["--version"]);
     if !version.as_ref().is_ok_and(|o| o.status.success()) {
@@ -41,26 +41,26 @@ pub fn plan() -> Result<Vec<Paso>> {
             "Claude Code (`claude`) no está instalado o no está en el PATH. Instálalo primero: https://code.claude.com"
         ));
     }
-    let mut pasos = Vec::new();
-    let marketplaces = texto(&claude(&["plugin", "marketplace", "list"])?);
-    // Cada marketplace sale como «❯ nombre»; vale cualquier origen (GitHub o una carpeta local).
-    let tiene_marketplace = marketplaces.lines().any(|l| l.trim().trim_start_matches('❯').trim() == MARKETPLACE);
-    if !tiene_marketplace {
-        pasos.push(Paso {
+    let mut steps = Vec::new();
+    let marketplaces = output_text(&claude(&["plugin", "marketplace", "list"])?);
+    // Each marketplace shows up as «❯ name»; any source is fine (GitHub or a local folder).
+    let has_marketplace = marketplaces.lines().any(|l| l.trim().trim_start_matches('❯').trim() == MARKETPLACE);
+    if !has_marketplace {
+        steps.push(Paso {
             que: tr!("add the marketplace {MARKETPLACE_REPO}", "añadir el marketplace {MARKETPLACE_REPO}"),
             args: ["plugin", "marketplace", "add", MARKETPLACE_REPO].map(String::from).to_vec(),
         });
     }
-    let plugins = texto(&claude(&["plugin", "list"])?);
+    let plugins = output_text(&claude(&["plugin", "list"])?);
     if !plugins.contains(&format!("{PLUGIN}@")) {
-        if tiene_marketplace {
-            // Un marketplace `drac` ya añadido puede ser una copia de antes de que existiera el plugin.
-            pasos.push(Paso {
+        if has_marketplace {
+            // A `drac` marketplace added earlier can be a copy from before the plugin existed.
+            steps.push(Paso {
                 que: tr!("update the marketplace {MARKETPLACE}", "actualizar el marketplace {MARKETPLACE}"),
                 args: ["plugin", "marketplace", "update", MARKETPLACE].map(String::from).to_vec(),
             });
         }
-        pasos.push(Paso {
+        steps.push(Paso {
             que: tr!(
                 "install the plugin {PLUGIN}@{MARKETPLACE} for your user (memory tools + automatic recall)",
                 "instalar el plugin {PLUGIN}@{MARKETPLACE} para tu usuario (herramientas de memoria + recall automático)"
@@ -68,22 +68,22 @@ pub fn plan() -> Result<Vec<Paso>> {
             args: ["plugin", "install", &format!("{PLUGIN}@{MARKETPLACE}"), "--scope", "user"].map(String::from).to_vec(),
         });
     }
-    Ok(pasos)
+    Ok(steps)
 }
 
-/// `~/.claude/settings.json` (o `CLAUDE_CONFIG_DIR`).
-fn ajustes_claude() -> Option<std::path::PathBuf> {
+/// `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR`).
+fn claude_settings() -> Option<std::path::PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).or_else(|| std::env::home_dir().map(|h| h.join(".claude")))?;
     Some(dir.join("settings.json"))
 }
 
-/// Enciende o apaga la actualización automática del marketplace en Claude Code: `autoUpdate` en su
-/// entrada de `extraKnownMarketplaces` (Claude Code la deja apagada por defecto para los marketplaces
-/// que no son de Anthropic). Si no está la entrada, la crea con el repositorio de GitHub.
+/// Turns the marketplace's automatic update in Claude Code on or off: `autoUpdate` in its
+/// `extraKnownMarketplaces` entry (Claude Code leaves it off by default for marketplaces
+/// that aren't Anthropic's). If the entry isn't there, it creates it with the GitHub repository.
 pub fn auto_update(on: bool) -> Result<bool> {
-    let Some(f) = ajustes_claude() else { return Ok(false) };
-    let texto = std::fs::read_to_string(&f).unwrap_or_else(|_| "{}".into());
-    let mut j: serde_json::Value = serde_json::from_str(texto.trim_start_matches('\u{feff}')).with_context(|| f.display().to_string())?;
+    let Some(f) = claude_settings() else { return Ok(false) };
+    let text = std::fs::read_to_string(&f).unwrap_or_else(|_| "{}".into());
+    let mut j: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).with_context(|| f.display().to_string())?;
     if !j["extraKnownMarketplaces"].is_object() {
         j["extraKnownMarketplaces"] = serde_json::json!({});
     }
@@ -95,9 +95,9 @@ pub fn auto_update(on: bool) -> Result<bool> {
         return Ok(false);
     }
     m["autoUpdate"] = serde_json::json!(on);
-    let copia = f.with_file_name("settings.json.antes-de-omoikane");
-    if f.exists() && !copia.exists() {
-        std::fs::copy(&f, &copia)?;
+    let backup = f.with_file_name("settings.json.antes-de-omoikane");
+    if f.exists() && !backup.exists() {
+        std::fs::copy(&f, &backup)?;
     }
     if let Some(d) = f.parent() {
         std::fs::create_dir_all(d)?;
@@ -106,17 +106,17 @@ pub fn auto_update(on: bool) -> Result<bool> {
     Ok(true)
 }
 
-/// Si el plugin de Omoikane está instalado en Claude Code.
+/// Whether the Omoikane plugin is installed in Claude Code.
 pub fn instalado() -> bool {
-    claude(&["plugin", "list"]).is_ok_and(|o| texto(&o).contains(&format!("{PLUGIN}@")))
+    claude(&["plugin", "list"]).is_ok_and(|o| output_text(&o).contains(&format!("{PLUGIN}@")))
 }
 
-pub fn ejecutar(pasos: &[Paso]) -> Result<()> {
-    for p in pasos {
+pub fn ejecutar(steps: &[Paso]) -> Result<()> {
+    for p in steps {
         let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
         let o = claude(&args)?;
         if !o.status.success() {
-            bail!(tr!("`claude {}` failed: {}", "`claude {}` falló: {}", args.join(" "), texto(&o).trim()));
+            bail!(tr!("`claude {}` failed: {}", "`claude {}` falló: {}", args.join(" "), output_text(&o).trim()));
         }
     }
     Ok(())

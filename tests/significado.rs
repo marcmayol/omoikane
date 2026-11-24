@@ -1,10 +1,10 @@
-//! El servicio que mantiene abierto EmbeddingGemma (`significado`): que quien pide no espere nunca a
-//! que cargue, que el vector sea el de sentence-transformers, que `--off` lo cierre y que se cierre
-//! solo sin uso.
+//! The service that keeps EmbeddingGemma open (`significado`): the caller never waits for it to
+//! load, the vector is the sentence-transformers one, `--off` shuts it down and it shuts itself down
+//! when unused.
 //!
-//! La parte con el modelo necesita EmbeddingGemma en `OMOIKANE_SEMANTIC_MODEL` (la carpeta de
-//! sentence-transformers de `google/embeddinggemma-300m`, ~1,2 GB); sin ella se salta. Todo va en
-//! un solo test porque cambia variables de entorno del proceso.
+//! The part with the model needs EmbeddingGemma in `OMOIKANE_SEMANTIC_MODEL` (the
+//! sentence-transformers folder of `google/embeddinggemma-300m`, ~1.2 GB); without it, it is skipped. Everything
+//! is in a single test because it changes the process's environment variables.
 
 mod comun;
 
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-fn esperar(max: Duration, mut f: impl FnMut() -> bool) -> bool {
+fn wait_until(max: Duration, mut f: impl FnMut() -> bool) -> bool {
     let t = Instant::now();
     while t.elapsed() < max {
         if f() {
@@ -25,15 +25,15 @@ fn esperar(max: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
-fn coseno(a: &[f32], b: &[f32]) -> f32 {
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 #[test]
-fn servicio_de_significado() {
-    let modelo = std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty()).map(PathBuf::from);
+fn semantic_service() {
+    let model = std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty()).map(PathBuf::from);
     let dir = comun::Temporal::nueva("significado");
-    // SAFETY: es el único test de este fichero (un proceso aparte) y nadie más lee el entorno a la vez.
+    // SAFETY: it is the only test in this file (a separate process) and nobody else reads the environment at the same time.
     unsafe {
         std::env::set_var("OMOIKANE_HOME", &dir);
         std::env::set_var("OMOIKANE_MODELS", dir.join("models"));
@@ -41,79 +41,79 @@ fn servicio_de_significado() {
         std::env::set_var("OMOIKANE_SEMANTIC_MODEL", dir.join("no-hay"));
     }
 
-    // Sin modelo: no hay vector, no espera y no lanza nada.
+    // No model: no vector, no waiting and nothing launched.
     let t = Instant::now();
     assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
     assert!(t.elapsed() < Duration::from_millis(200));
     assert!(!dir.join("significado.arrancando").exists());
 
-    let Some(modelo) = modelo else {
+    let Some(model) = model else {
         eprintln!("significado: falta OMOIKANE_SEMANTIC_MODEL (EmbeddingGemma); se salta la parte con el modelo");
         return;
     };
     unsafe {
-        std::env::set_var("OMOIKANE_SEMANTIC_MODEL", &modelo);
+        std::env::set_var("OMOIKANE_SEMANTIC_MODEL", &model);
         std::env::set_var("OMOIKANE_SEMANTIC_IDLE", "4");
     }
 
-    // Apagado: tampoco hay vector, aunque el modelo esté.
+    // Off: no vector either, even though the model is there.
     s::fijar(Some(false)).unwrap();
     assert!(!s::permitido());
     assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
     s::fijar(Some(true)).unwrap();
     assert!(s::permitido());
 
-    // Encendido y sin servicio: quien pide no espera a que cargue (2 s); el servicio lo arranca el
-    // binario (en los tests `current_exe` es el test, así que se lanza a mano como haría `arrancar`).
+    // On and no service: the caller does not wait for it to load (2 s); the service is started by the
+    // binary (in tests `current_exe` is the test, so it is launched by hand as `arrancar` would).
     let t = Instant::now();
     assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
     assert!(t.elapsed() < Duration::from_millis(200), "no debe esperar a que cargue el modelo");
     assert!(dir.join("significado.arrancando").exists(), "deja el servicio arrancando");
-    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
-    assert!(esperar(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()), "el servicio no arrancó");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()), "el servicio no arrancó");
     assert!(!dir.join("significado.arrancando").exists());
 
-    // Un segundo servicio ve al primero y sale sin cargar nada.
-    let segundo = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).status().unwrap();
-    assert!(segundo.success());
+    // A second service sees the first one and exits without loading anything.
+    let second = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).status().unwrap();
+    assert!(second.success());
 
-    // El vector es el de sentence-transformers: coseno pregunta-documento 0,6904 (calculado con
+    // The vector is the sentence-transformers one: query-document cosine 0.6904 (computed with
     // `SentenceTransformer("google/embeddinggemma-300m")`, encode_query / encode_document).
     let q = s::vectores(&["How do I undo a cargo yank?"], Tipo::Pregunta, Duration::from_secs(5)).expect("vector de la pregunta");
     let d = s::vectores(&["Cargo yank --undo restores a yanked version so it can be used again."], Tipo::Documento, Duration::from_secs(5)).expect("vector del documento");
     assert_eq!(q[0].len(), omoikane::gemma::DIM);
-    let c = coseno(&q[0], &d[0]);
+    let c = cosine(&q[0], &d[0]);
     assert!((c - 0.6904).abs() < 0.002, "coseno {c}");
 
-    // El servicio calcula en segundo plano los vectores de la base de quien le pide algo.
+    // The service computes in the background the vectors of the database of whoever asks it something.
     use omoikane::memoria::{self, Ambito, Nueva, Tipo as Kind};
-    let ruta = dir.join("o.db");
+    let path = dir.join("o.db");
     {
-        let mut db = omoikane::db::abrir(&ruta).unwrap();
+        let mut db = omoikane::db::abrir(&path).unwrap();
         for (t, c) in [("Cargo yank", "Cargo yank --undo restores a yanked version so it can be used again."), ("Gradle", "Two Gradle daemons at once corrupt the build cache.")] {
             memoria::guardar(&mut db, Nueva { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
         }
     }
-    let _ = s::vector_consulta(&ruta, "hola", Duration::from_secs(5));
+    let _ = s::vector_consulta(&path, "hola", Duration::from_secs(5));
     assert!(
-        esperar(Duration::from_secs(120), || s::cobertura(&omoikane::db::abrir(&ruta).unwrap()).unwrap() == (2, 2)),
+        wait_until(Duration::from_secs(120), || s::cobertura(&omoikane::db::abrir(&path).unwrap()).unwrap() == (2, 2)),
         "el servicio no calculó los vectores de la base"
     );
 
-    // Y la búsqueda encuentra lo que se pregunta con otras palabras, que por palabras no sale.
-    let mut db = omoikane::db::abrir(&ruta).unwrap();
+    // And search finds what is asked in other words, which a word search does not find.
+    let mut db = omoikane::db::abrir(&path).unwrap();
     let o = omoikane::buscar::Opciones { ambito: Ambito::de(&db, "/p").unwrap(), kind: None, tags: vec![], limite: 5 };
-    let pregunta = "how do I bring back a release I pulled from the registry?";
-    let r = omoikane::buscar::buscar(&mut db, pregunta, &o, None).unwrap();
+    let question = "how do I bring back a release I pulled from the registry?";
+    let r = omoikane::buscar::buscar(&mut db, question, &o, None).unwrap();
     assert_eq!(r.first().map(|x| x.memoria.title.as_str()), Some("Cargo yank"), "{r:?}");
     assert!(r[0].similarity.is_some());
-    // Apagado, como en la 1.1: solo palabras, y por palabras no hay nada.
+    // Off, as in 1.1: words only, and by words there is nothing.
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC", "0") };
-    assert!(omoikane::buscar::buscar(&mut db, pregunta, &o, None).unwrap().iter().all(|x| x.memoria.title != "Cargo yank" || x.similarity.is_none()));
+    assert!(omoikane::buscar::buscar(&mut db, question, &o, None).unwrap().iter().all(|x| x.memoria.title != "Cargo yank" || x.similarity.is_none()));
     unsafe { std::env::remove_var("OMOIKANE_SEMANTIC") };
     drop(db);
 
-    // Un token equivocado no recibe vectores.
+    // A wrong token gets no vectors.
     let r = s::registro().unwrap();
     let mut tcp = std::net::TcpStream::connect(("127.0.0.1", r.puerto)).unwrap();
     use std::io::{BufRead, Write};
@@ -122,23 +122,23 @@ fn servicio_de_significado() {
     std::io::BufReader::new(&tcp).read_line(&mut l).unwrap();
     assert!(l.contains("bad token"), "{l}");
 
-    // `--off` lo cierra.
+    // `--off` shuts it down.
     s::fijar(Some(false)).unwrap();
-    assert!(esperar(Duration::from_secs(5), || hijo.try_wait().unwrap().is_some()), "--off no cerró el servicio");
+    assert!(wait_until(Duration::from_secs(5), || child.try_wait().unwrap().is_some()), "--off no cerró el servicio");
     s::fijar(Some(true)).unwrap();
 
-    // Y sin uso se cierra solo (aquí, a los 4 s) y borra su registro.
-    let mut hijo = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
-    assert!(esperar(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()));
-    assert!(esperar(Duration::from_secs(15), || hijo.try_wait().unwrap().is_some()), "no se cerró sin uso");
+    // And when unused it shuts itself down (here, after 4 s) and deletes its registration.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
+    assert!(wait_until(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()));
+    assert!(wait_until(Duration::from_secs(15), || child.try_wait().unwrap().is_some()), "no se cerró sin uso");
     assert!(s::registro().is_none());
-    // El formato compacto (el que se instala) da el mismo vector que el de sentence-transformers.
-    let compacto = dir.join("compacto");
-    omoikane::gemma::compactar(&modelo, &compacto).unwrap();
-    assert!(omoikane::gemma::es_compacto(&compacto));
-    let (g1, g2) = (omoikane::gemma::Gemma::cargar(&modelo).unwrap(), omoikane::gemma::Gemma::cargar(&compacto).unwrap());
-    for (t, tipo) in [("How do I undo a cargo yank?", Tipo::Pregunta), ("Two Gradle daemons at once corrupt the build cache.", Tipo::Documento)] {
-        let c = coseno(&g1.vector(t, tipo).unwrap(), &g2.vector(t, tipo).unwrap());
+    // The compact format (the one that gets installed) gives the same vector as the sentence-transformers one.
+    let compact = dir.join("compacto");
+    omoikane::gemma::compactar(&model, &compact).unwrap();
+    assert!(omoikane::gemma::es_compacto(&compact));
+    let (g1, g2) = (omoikane::gemma::Gemma::cargar(&model).unwrap(), omoikane::gemma::Gemma::cargar(&compact).unwrap());
+    for (t, kind) in [("How do I undo a cargo yank?", Tipo::Pregunta), ("Two Gradle daemons at once corrupt the build cache.", Tipo::Documento)] {
+        let c = cosine(&g1.vector(t, kind).unwrap(), &g2.vector(t, kind).unwrap());
         assert!(c > 0.9999, "compacto: coseno {c}");
     }
 }

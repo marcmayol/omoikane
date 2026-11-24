@@ -1,38 +1,38 @@
-//! Deriva por código (1.8.5, la idea de `validate --drift` de OKF Agent Memory): una memoria que habla
-//! de unos ficheros (sus `paths` y los que nombra en el texto con su carpeta, `src/sync.rs`) puede
-//! quedarse vieja cuando esos ficheros cambian mucho después de escribirla. La revisión lo propone
-//! como `code_drift`; nunca cambia la memoria sola. «Está bien así» la da por revisada hoy: vuelve a
-//! avisar solo si los ficheros cambian otra vez lo bastante.
+//! Code drift (1.8.5, the idea of `validate --drift` from OKF Agent Memory): a memory that talks
+//! about some files (its `paths` and the ones it names in the text with their folder, `src/sync.rs`) can
+//! go stale when those files change a lot after it was written. The review proposes it
+//! as `code_drift`; it never changes the memory on its own. «It's fine as is» marks it reviewed today: it warns
+//! again only if the files change enough again.
 //!
-//! Qué cuenta como cambio, de lo más barato a lo más caro:
-//! 1. La fecha de modificación del fichero: si ninguno ha cambiado desde que se escribió o se revisó
-//!    la memoria, no hay nada que mirar (un `stat` por fichero). Sola no basta: el mismo día se toca
-//!    el fichero del que se acaba de hablar, y eso no es deriva.
-//! 2. El historial de git, si el fichero está en un repositorio: una orden `git log --numstat` por
-//!    repositorio, solo con los ficheros que han cambiado, y en paralelo. Deriva: las líneas cambiadas
-//!    desde entonces son al menos la mitad de lo que miden hoy (`PARTE_MIN`) y al menos `LINEAS_MIN`.
-//! 3. Fuera de git, el diario de sesiones (`diario`): deriva si se editaron en `SESIONES_MIN`
-//!    sesiones distintas después (sin contar la que guardó la memoria).
+//! What counts as a change, from cheapest to most expensive:
+//! 1. The file's modification date: if none has changed since the memory was written or reviewed,
+//!    there is nothing to look at (one `stat` per file). On its own it is not enough: on the same day the file
+//!    that was just talked about gets touched, and that is not drift.
+//! 2. The git history, if the file is in a repository: one `git log --numstat` command per
+//!    repository, only with the files that changed, and in parallel. Drift: the lines changed
+//!    since then are at least half of what they measure today (`PARTE_MIN`) and at least `LINEAS_MIN`.
+//! 3. Outside git, the session diary (`diario`): drift if they were edited in `SESIONES_MIN`
+//!    different sessions afterwards (not counting the one that saved the memory).
 //!
-//! Lo que cambia en las `GRACIA` horas después de escribirla no cuenta: lo normal es guardar la memoria
-//! y después confirmar el trabajo del que habla. Un fichero que ya no existe ya lo avisa la revisión
-//! (`broken_path`); aquí solo se mira lo que sigue en el disco.
+//! What changes in the `GRACIA` hours after writing it does not count: the normal thing is to save the memory
+//! and then commit the work it talks about. A file that no longer exists is already reported by the review
+//! (`broken_path`); here only what is still on disk is looked at.
 //!
-//! Calibrado con una copia de la memoria real de Marc del 8-nov-2026 (225 memorias; 66 con ficheros
-//! que existen, 23 por sus `paths`). Contar commits no separa: con 5 o más salían 9, casi todas por
-//! retoques (7 commits y 27 líneas sobre 535; un catálogo que se regenera en cada versión). La parte
-//! cambiada sí: sale una sola, la nota que decía que el detector de desfasadas «sigue sin ser
-//! incremental» (56 %; desde entonces lo es); detrás, la historia de las fases de Omoikane (42 %) y una
-//! decisión sobre un experimento (38 %), que siguen valiendo, y el resto por debajo del 22 %. El
-//! diario aún es corto (una semana) y no marcó ninguna: las sesiones de ese equipo trabajan en otras
-//! carpetas, y queda para quien no usa git.
+//! Calibrated with a copy of Marc's real memory from 8-Nov-2026 (225 memories; 66 with files
+//! that exist, 23 through their `paths`). Counting commits does not separate them: with 5 or more, 9 came out, almost all from
+//! touch-ups (7 commits and 27 lines out of 535; a catalogue regenerated in every version). The changed
+//! share does: only one comes out, the note saying the stale-memory detector «is still not
+//! incremental» (56 %; it has been since); behind it, the history of Omoikane's phases (42 %) and a
+//! decision about an experiment (38 %), which still hold, and the rest below 22 %. The
+//! diary is still short (one week) and flagged none: that computer's sessions work in other
+//! folders, and it stays for those who don't use git.
 //!
-//! Coste: nunca en el recall de cada mensaje. Lo calculado se guarda en `meta` (`id`, desde cuándo se
-//! mira y el resultado) y vale mientras la memoria no cambie: con eso, la revisión entera (`omoi
-//! review`, la herramienta `context`, la pestaña Revisar) tarda un milisegundo más, y el aviso al
-//! empezar la sesión solo lee lo guardado, sin git ni disco. Lo calcula de nuevo una vez al día un
-//! proceso aparte (`omoi review --refresh-drift`): con 225 memorias, unos 0,6-0,9 s, casi todo el
-//! arranque de git en ocho repositorios. Es local: no viaja con la sincronización.
+//! Cost: never in the per-message recall. What is computed is stored in `meta` (`id`, since when it is
+//! looked at and the result) and is valid while the memory does not change: with that, the whole review (`omoi
+//! review`, the `context` tool, the Review tab) takes one millisecond more, and the notice at
+//! session start only reads what is stored, without git or disk. It is recomputed once a day by a
+//! separate process (`omoi review --refresh-drift`): with 225 memories, about 0.6-0.9 s, almost all of it
+//! git start-up in eight repositories. It is local: it does not travel with sync.
 
 use crate::memoria::{Ambito, Memoria};
 use anyhow::Result;
@@ -40,35 +40,35 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-/// El tipo de aviso en la revisión.
+/// The kind of notice in the review.
 pub const DERIVA: &str = "code_drift";
-/// La parte de lo que miden hoy sus ficheros que tiene que haber cambiado (líneas añadidas más quitadas).
+/// The share of what its files measure today that must have changed (lines added plus removed).
 pub const PARTE_MIN: f64 = 0.5;
-/// Y al menos tantas líneas: en un fichero de diez, cinco líneas no dicen nada.
+/// And at least this many lines: in a ten-line file, five lines say nothing.
 pub const LINEAS_MIN: usize = 20;
-/// Fuera de git: sesiones del diario que editaron sus ficheros después.
+/// Outside git: diary sessions that edited its files afterwards.
 pub const SESIONES_MIN: usize = 5;
-/// Horas después de escribirla (o revisarla) en las que lo que cambia aún es el trabajo de esa sesión.
+/// Hours after writing (or reviewing) it during which what changes is still that session's work.
 pub const GRACIA: i64 = 6;
-/// Cuántos ficheros de una memoria se miran (los suyos primero, luego los que nombra).
-const MAX_FICHEROS: usize = 20;
-/// Ficheros más grandes no se cuentan por líneas (un modelo, un binario).
+/// How many files of a memory are looked at (its own first, then the ones it names).
+const MAX_FILES: usize = 20;
+/// Larger files are not counted by lines (a model, a binary).
 const MAX_BYTES: u64 = 4 << 20;
-/// Cuántas órdenes de git a la vez.
-const HILOS: usize = 8;
-/// Lo más que se espera a un `git log`: si tarda más, sus ficheros se miran como si no fueran de git.
-const ESPERA_GIT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Dónde se guarda lo calculado hoy: `día` y una línea `id\tdesde\tdetalle` por memoria.
-const CLAVE: &str = "deriva_codigo";
-/// El día en que se lanzó el cálculo en segundo plano desde el aviso al empezar.
-const CLAVE_LANZADO: &str = "deriva_codigo_lanzado";
+/// How many git commands at once.
+const THREADS: usize = 8;
+/// The longest a `git log` is waited for: if it takes longer, its files are looked at as if they were not in git.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Where today's computation is stored: `day` and one `id\tsince\tdetail` line per memory.
+const CACHE_KEY: &str = "deriva_codigo";
+/// The day the background computation was launched from the session-start notice.
+const LAUNCHED_KEY: &str = "deriva_codigo_lanzado";
 
-/// Segundos desde 1970 de una fecha ISO (`2026-10-30T18:45:00.570Z`), en UTC.
-fn segundos(s: &str) -> Option<i64> {
+/// Seconds since 1970 of an ISO date (`2026-10-30T18:45:00.570Z`), in UTC.
+fn seconds(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r).and_then(|x| x.parse::<i64>().ok());
     let (a, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
     let (h, mi, se) = (n(11..13).unwrap_or(0), n(14..16).unwrap_or(0), n(17..19).unwrap_or(0));
-    // Días desde 1970-01-01 (Howard Hinnant).
+    // Days since 1970-01-01 (Howard Hinnant).
     let y = if m <= 2 { a - 1 } else { a };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
@@ -77,43 +77,43 @@ fn segundos(s: &str) -> Option<i64> {
     Some((era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + se)
 }
 
-/// Si una ruta es absoluta en cualquier sistema (`C:/…`, `C:\…`, `/…`).
-fn absoluta(r: &str) -> bool {
+/// Whether a path is absolute on any system (`C:/…`, `C:\…`, `/…`).
+fn is_absolute(r: &str) -> bool {
     let b = r.as_bytes();
     r.starts_with('/') || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\'))
 }
 
-/// Dónde está en este equipo una ruta de la memoria: absoluta, `~/…` o relativa a su proyecto. Nunca una
-/// de red (`\\servidor\…`, `//cdn…`): mirarla abriría una conexión (ver `proyecto::ruta_de_red`).
-fn en_disco(m: &Memoria, ruta: &str) -> Option<PathBuf> {
-    if crate::proyecto::ruta_de_red(ruta) {
+/// Where a memory's path is on this computer: absolute, `~/…` or relative to its project. Never a
+/// network one (`\\server\…`, `//cdn…`): looking at it would open a connection (see `proyecto::ruta_de_red`).
+fn on_disk(m: &Memoria, path: &str) -> Option<PathBuf> {
+    if crate::proyecto::ruta_de_red(path) {
         return None;
     }
-    let d = if let Some(r) = ruta.strip_prefix("~/") {
+    let d = if let Some(r) = path.strip_prefix("~/") {
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|c| PathBuf::from(c).join(r))?
-    } else if absoluta(ruta) {
-        PathBuf::from(ruta)
+    } else if is_absolute(path) {
+        PathBuf::from(path)
     } else if !m.project.is_empty() && !m.project.starts_with('[') {
-        Path::new(&m.project).join(ruta)
+        Path::new(&m.project).join(path)
     } else {
         return None;
     };
     crate::proyecto::ruta_local(&d).then_some(d)
 }
 
-/// Las rutas de fichero que nombra un texto: palabras con una barra y una extensión al final
-/// (`src/sync.rs`, `D:\repo\a.py`), sin las direcciones web. Las que no tienen carpeta (`sync.rs`) no:
-/// en un repositorio hay muchos `main.rs`.
-pub fn nombrados(texto: &str) -> Vec<String> {
+/// The file paths a text names: words with a slash and an extension at the end
+/// (`src/sync.rs`, `D:\repo\a.py`), without web addresses. Those without a folder (`sync.rs`) don't count:
+/// a repository has many `main.rs`.
+pub fn nombrados(text: &str) -> Vec<String> {
     let mut r: Vec<String> = Vec::new();
-    for p in texto.split(|c: char| c.is_whitespace() || "`'\"«»()[]{}<>,;|*".contains(c)) {
+    for p in text.split(|c: char| c.is_whitespace() || "`'\"«»()[]{}<>,;|*".contains(c)) {
         let p = p.trim_end_matches(['.', ':', '!', '?']);
-        // Ni direcciones web ni rutas de red (`//cdn.example.com/x.js`, `\\servidor\recurso\a.py`).
+        // Neither web addresses nor network paths (`//cdn.example.com/x.js`, `\\server\share\a.py`).
         if crate::proyecto::ruta_de_red(p) || p.contains("://") || p.starts_with("www.") || !(p.contains('/') || p.contains('\\')) || p.ends_with(['/', '\\']) {
             continue;
         }
-        let nombre = p.rsplit(['/', '\\']).next().unwrap_or("");
-        let Some((base, ext)) = nombre.rsplit_once('.') else { continue };
+        let name = p.rsplit(['/', '\\']).next().unwrap_or("");
+        let Some((base, ext)) = name.rsplit_once('.') else { continue };
         let ext_ok = (1..=6).contains(&ext.len()) && ext.starts_with(|c: char| c.is_ascii_alphabetic()) && ext.chars().all(|c| c.is_ascii_alphanumeric());
         if !base.is_empty() && ext_ok && !r.iter().any(|x| x == p) {
             r.push(p.to_string());
@@ -122,77 +122,77 @@ pub fn nombrados(texto: &str) -> Vec<String> {
     r
 }
 
-/// Los ficheros de una memoria que existen en este equipo: sus rutas y las que nombra, sin repetir.
-/// (lo que muestra, ruta en el disco)
-fn ficheros(m: &Memoria) -> Vec<(String, PathBuf)> {
+/// A memory's files that exist on this computer: its paths and the ones it names, without repeats.
+/// (what it shows, path on disk)
+fn files(m: &Memoria) -> Vec<(String, PathBuf)> {
     let mut r: Vec<(String, PathBuf)> = Vec::new();
-    let mut vistos = BTreeSet::new();
-    let nombrados = nombrados(&m.content);
-    for ruta in m.paths.iter().chain(&nombrados) {
-        if r.len() >= MAX_FICHEROS {
+    let mut seen = BTreeSet::new();
+    let named = nombrados(&m.content);
+    for path in m.paths.iter().chain(&named) {
+        if r.len() >= MAX_FILES {
             break;
         }
-        if let Some(d) = en_disco(m, ruta)
+        if let Some(d) = on_disk(m, path)
             && d.is_file()
-            && vistos.insert(crate::proyecto::comparable(&d.to_string_lossy().replace('\\', "/")))
+            && seen.insert(crate::proyecto::comparable(&d.to_string_lossy().replace('\\', "/")))
         {
-            r.push((ruta.replace('\\', "/"), d));
+            r.push((path.replace('\\', "/"), d));
         }
     }
     r
 }
 
-fn modificado(p: &Path) -> Option<i64> {
+fn modified(p: &Path) -> Option<i64> {
     let t = std::fs::metadata(p).ok()?.modified().ok()?;
     Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64)
 }
 
-/// La carpeta del repositorio de git que contiene `p` (la que tiene `.git`, carpeta o fichero de un
-/// worktree), mirando cada carpeta una vez.
-fn repo_de(p: &Path, cache: &mut HashMap<PathBuf, Option<PathBuf>>) -> Option<PathBuf> {
-    let mut camino = Vec::new();
+/// The folder of the git repository that contains `p` (the one with `.git`, a folder or a worktree's
+/// file), looking at each folder once.
+fn repo_of(p: &Path, cache: &mut HashMap<PathBuf, Option<PathBuf>>) -> Option<PathBuf> {
+    let mut walked = Vec::new();
     let mut d = p.parent();
-    let mut hallado = None;
+    let mut found = None;
     while let Some(x) = d {
         if let Some(r) = cache.get(x) {
-            hallado = r.clone();
+            found = r.clone();
             break;
         }
-        camino.push(x.to_path_buf());
+        walked.push(x.to_path_buf());
         if x.join(".git").exists() {
-            hallado = Some(x.to_path_buf());
+            found = Some(x.to_path_buf());
             break;
         }
         d = x.parent();
     }
-    for c in camino {
-        cache.insert(c, hallado.clone());
+    for c in walked {
+        cache.insert(c, found.clone());
     }
-    hallado
+    found
 }
 
-/// Un cambio de git en un fichero: (commit, cuándo, líneas añadidas más quitadas).
-type Cambio = (String, i64, usize);
-/// Los cambios de un repositorio por fichero (ruta comparable).
-type Log = HashMap<String, Vec<Cambio>>;
-/// Lo guardado: `id -> (desde, detalle)`.
-type Guardado = HashMap<String, (String, String)>;
-/// Del diario, por fichero: (sesión, último momento, ids guardados en ella).
-type PorFichero = HashMap<String, Vec<(String, String, Vec<String>)>>;
+/// A git change to a file: (commit, when, lines added plus removed).
+type Change = (String, i64, usize);
+/// A repository's changes per file (comparable path).
+type Log = HashMap<String, Vec<Change>>;
+/// What is stored: `id -> (since, detail)`.
+type Saved = HashMap<String, (String, String)>;
+/// From the diary, per file: (session, last moment, ids saved in it).
+type ByFile = HashMap<String, Vec<(String, String, Vec<String>)>>;
 
-/// Los cambios de `rel` (rutas relativas al repositorio, con `/`) desde `desde` (segundos), por ruta
-/// comparable. `None` si git no está o falla: entonces esos ficheros se miran como si no fueran de git.
-fn git_log(repo: &Path, desde: i64, rel: &[String]) -> Option<Log> {
+/// The changes of `rel` (paths relative to the repository, with `/`) since `since` (seconds), by comparable
+/// path. `None` if git is not there or fails: then those files are looked at as if they were not in git.
+fn git_log(repo: &Path, since: i64, rel: &[String]) -> Option<Log> {
     let mut c = std::process::Command::new("git");
-    // Un día de margen en `--since` (que entiende fechas a su manera); el corte exacto va después.
+    // One day of margin in `--since` (which interprets dates its own way); the exact cut comes later.
     c.args(["-c", "core.quotepath=off", "-C"])
         .arg(repo)
         .args(["log", "--no-renames", "--no-merges", "--format=%x00%H %ct", "--numstat"])
-        .arg(format!("--since={}", desde - 86400))
+        .arg(format!("--since={}", since - 86400))
         .arg("--");
-    let magia = if cfg!(any(windows, target_os = "macos")) { ":(literal,icase)" } else { ":(literal)" };
+    let magic = if cfg!(any(windows, target_os = "macos")) { ":(literal,icase)" } else { ":(literal)" };
     for r in rel {
-        c.arg(format!("{magia}{r}"));
+        c.arg(format!("{magic}{r}"));
     }
     c.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -204,66 +204,66 @@ fn git_log(repo: &Path, desde: i64, rel: &[String]) -> Option<Log> {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000);
     }
-    let salida = con_tope(c, ESPERA_GIT)?;
+    let output = with_timeout(c, GIT_TIMEOUT)?;
     let mut r: Log = HashMap::new();
-    for bloque in String::from_utf8_lossy(&salida).split('\0').skip(1) {
-        let mut lineas = bloque.lines();
-        let Some((hash, cuando)) = lineas.next().and_then(|l| l.split_once(' ')) else { continue };
-        let Ok(cuando) = cuando.trim().parse::<i64>() else { continue };
-        for l in lineas {
+    for block in String::from_utf8_lossy(&output).split('\0').skip(1) {
+        let mut lines = block.lines();
+        let Some((hash, when)) = lines.next().and_then(|l| l.split_once(' ')) else { continue };
+        let Ok(when) = when.trim().parse::<i64>() else { continue };
+        for l in lines {
             let mut p = l.splitn(3, '\t');
-            let (Some(a), Some(q), Some(ruta)) = (p.next(), p.next(), p.next()) else { continue };
+            let (Some(a), Some(q), Some(path)) = (p.next(), p.next(), p.next()) else { continue };
             let n = a.parse::<usize>().unwrap_or(0) + q.parse::<usize>().unwrap_or(0);
-            r.entry(crate::proyecto::comparable(ruta)).or_default().push((hash.to_string(), cuando, n));
+            r.entry(crate::proyecto::comparable(path)).or_default().push((hash.to_string(), when, n));
         }
     }
     Some(r)
 }
 
-/// Lo que escribe una orden (con la salida ya redirigida a una tubería) si acaba bien antes de `tope`;
-/// si tarda más, se para (ese proceso, el nuestro, por su handle) y `None`: un repositorio enorme, un
-/// disco de red o un `git` colgado no dejan esperando la revisión.
-fn con_tope(mut c: std::process::Command, tope: std::time::Duration) -> Option<Vec<u8>> {
+/// What a command writes (with its output already redirected to a pipe) if it finishes successfully before `limit`;
+/// if it takes longer, it is stopped (that process, ours, through its handle) and `None`: a huge repository, a
+/// network drive or a hung `git` do not leave the review waiting.
+fn with_timeout(mut c: std::process::Command, limit: std::time::Duration) -> Option<Vec<u8>> {
     use std::io::Read;
-    let mut hijo = c.spawn().ok()?;
-    let mut tubo = hijo.stdout.take()?;
-    // La salida se lee aparte: si nadie la lee, git se queda esperando con la tubería llena.
-    let lector = std::thread::spawn(move || {
+    let mut child = c.spawn().ok()?;
+    let mut pipe = child.stdout.take()?;
+    // The output is read separately: if nobody reads it, git keeps waiting with the pipe full.
+    let reader = std::thread::spawn(move || {
         let mut v = Vec::new();
-        let _ = tubo.read_to_end(&mut v);
+        let _ = pipe.read_to_end(&mut v);
         v
     });
-    let fin = std::time::Instant::now() + tope;
-    let estado = loop {
-        match hijo.try_wait() {
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
             Ok(Some(e)) => break Some(e),
-            Ok(None) if std::time::Instant::now() < fin => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
             _ => {
-                let _ = hijo.kill();
-                let _ = hijo.wait();
+                let _ = child.kill();
+                let _ = child.wait();
                 break None;
             }
         }
     };
-    // Sin éxito a tiempo, el hilo lector se suelta sin esperarlo: un nieto que heredó la tubería (el
-    // `git` de verdad bajo el lanzador de Git para Windows) la tiene abierta hasta que acaba, y
-    // `join` esperaba a ese nieto aunque al hijo ya se le hubiera parado (15 s con un tope de 0,5).
-    // El hilo acaba solo cuando el nieto cierra la tubería.
-    if !estado.is_some_and(|e| e.success()) {
+    // Without success in time, the reader thread is let go without waiting for it: a grandchild that inherited the pipe (the
+    // real `git` under Git for Windows' launcher) keeps it open until it finishes, and
+    // `join` waited for that grandchild even though the child had already been stopped (15 s with a 0.5 limit).
+    // The thread ends on its own when the grandchild closes the pipe.
+    if !status.is_some_and(|e| e.success()) {
         return None;
     }
-    // Y aunque el hijo acabe bien, la salida se espera solo hasta el tope, por lo mismo.
-    while !lector.is_finished() {
-        if std::time::Instant::now() >= fin {
+    // And even if the child finishes successfully, the output is only waited for up to the limit, for the same reason.
+    while !reader.is_finished() {
+        if std::time::Instant::now() >= deadline {
             return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    lector.join().ok()
+    reader.join().ok()
 }
 
-/// Cuántas líneas tiene hoy un fichero (0 si es muy grande o no se puede leer).
-fn lineas(p: &Path) -> usize {
+/// How many lines a file has today (0 if it is very large or cannot be read).
+fn line_count(p: &Path) -> usize {
     if std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX) > MAX_BYTES {
         return 0;
     }
@@ -273,40 +273,40 @@ fn lineas(p: &Path) -> usize {
     }
 }
 
-/// Lo que se necesita de una memoria: su id, desde cuándo se mira y, si hay que calcularla, ella.
-struct Pendiente {
+/// What is needed from a memory: its id, since when it is looked at and, if it has to be computed, the memory itself.
+struct Pending {
     id: String,
-    desde: String,
+    since: String,
     m: Memoria,
-    archivos: Vec<(String, PathBuf)>,
+    files: Vec<(String, PathBuf)>,
 }
 
-/// La memoria cuyas rutas se miran y desde cuándo: su último cambio o el último «está bien así» de este
-/// aviso, lo más nuevo.
-fn desde(m_updated: &str, ok: Option<&String>) -> String {
+/// The memory whose paths are looked at and since when: its last change or the last «it's fine as is» of this
+/// notice, whichever is newer.
+fn since(m_updated: &str, ok: Option<&String>) -> String {
     match ok {
         Some(at) if at.as_str() > m_updated => at.clone(),
         _ => m_updated.to_string(),
     }
 }
 
-/// Lo guardado (`crudo`) como el día y `id → (desde, detalle)`.
-fn de_texto(v: Option<&str>) -> (String, Guardado) {
+/// What is stored (`raw`) as the day and `id → (since, detail)`.
+fn parse_saved(v: Option<&str>) -> (String, Saved) {
     let mut r = HashMap::new();
     let Some(v) = v else { return (String::new(), r) };
     let mut ls = v.lines();
-    let dia = ls.next().unwrap_or("").to_string();
+    let day = ls.next().unwrap_or("").to_string();
     for l in ls {
         let mut p = l.splitn(3, '\t');
         if let (Some(id), Some(d), Some(det)) = (p.next(), p.next(), p.next()) {
             r.insert(id.to_string(), (d.to_string(), det.to_string()));
         }
     }
-    (dia, r)
+    (day, r)
 }
 
-fn guardar_cache(db: &Connection, hoy: &str, c: &Guardado) -> Result<()> {
-    let mut v = hoy.to_string();
+fn save_cache(db: &Connection, today: &str, c: &Saved) -> Result<()> {
+    let mut v = today.to_string();
     let mut ids: Vec<&String> = c.keys().collect();
     ids.sort();
     for id in ids {
@@ -314,41 +314,41 @@ fn guardar_cache(db: &Connection, hoy: &str, c: &Guardado) -> Result<()> {
         v.push('\n');
         v.push_str(&format!("{id}\t{d}\t{}", det.replace(['\n', '\t'], " ")));
     }
-    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE, &v])?;
+    db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CACHE_KEY, &v])?;
     Ok(())
 }
 
-fn hoy(db: &Connection) -> Result<String> {
+fn today(db: &Connection) -> Result<String> {
     Ok(db.query_row("SELECT date('now', 'localtime')", [], |f| f.get(0))?)
 }
 
-/// Para el aviso al empezar la sesión, que tiene que ser rápido: solo lo ya calculado para las memorias
-/// que no han cambiado desde entonces (sin leer su contenido, sin git ni disco). Si lo guardado es de
-/// otro día, se recalcula todo en segundo plano y lo verá la siguiente sesión. Si nunca se ha calculado,
-/// nada: la primera revisión (`omoi review`, `context`, la pestaña Revisar) lo calcula.
-pub fn de_ambito(db: &Connection, ambito: &Ambito) -> Result<HashMap<String, String>> {
-    let mut q = db.prepare(&format!("SELECT m.id, m.updated_at FROM memory m WHERE {}", ambito.sql()))?;
-    let filas: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-    let (r, dia) = de_lo_guardado(db, crudo(db)?.as_deref(), filas.iter().map(|(id, u)| (id.as_str(), u.as_str())), |_| {})?;
-    refrescar_aparte(db, &dia)?;
+/// For the session-start notice, which has to be fast: only what is already computed for the memories
+/// that have not changed since then (without reading their content, without git or disk). If what is stored is from
+/// another day, everything is recomputed in the background and the next session will see it. If it has never been computed,
+/// nothing: the first review (`omoi review`, `context`, the Review tab) computes it.
+pub fn de_ambito(db: &Connection, scope: &Ambito) -> Result<HashMap<String, String>> {
+    let mut q = db.prepare(&format!("SELECT m.id, m.updated_at FROM memory m WHERE {}", scope.sql()))?;
+    let rows: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let (r, day) = from_saved(db, raw(db)?.as_deref(), rows.iter().map(|(id, u)| (id.as_str(), u.as_str())), |_| {})?;
+    refresh_in_background(db, &day)?;
     Ok(r)
 }
 
-/// Lo guardado (`guardado`, lo de [`crudo`]) para `filas` (`id`, último cambio) cuyo «desde» no ha
-/// cambiado, y de qué día es. Las que no tienen nada guardado van a `falta`. Sin copiar nada de lo que
-/// no se devuelve: con 50.000 memorias, copiar cada id y cada fecha para buscarlos era casi todo el tiempo.
-fn de_lo_guardado<'a>(
+/// What is stored (`saved`, from [`raw`]) for `rows` (`id`, last change) whose «since» has not
+/// changed, and which day it is from. Those with nothing stored go to `missing`. Without copying anything that
+/// is not returned: with 50,000 memories, copying each id and each date to look them up was almost all the time.
+fn from_saved<'a>(
     db: &Connection,
-    guardado: Option<&str>,
-    filas: impl Iterator<Item = (&'a str, &'a str)>,
-    mut falta: impl FnMut(&'a str),
+    saved: Option<&str>,
+    rows: impl Iterator<Item = (&'a str, &'a str)>,
+    mut missing: impl FnMut(&'a str),
 ) -> Result<(HashMap<String, String>, String)> {
-    let (dia, cache) = de_texto_prestado(guardado);
+    let (day, cache) = parse_saved_borrowed(saved);
     let oks = crate::veredictos::oks(db, false)?;
-    // El «está bien así» de este aviso de cada memoria (lo que mira `desde`).
-    let ok: HashMap<&str, &str> = oks.iter().filter(|((_, aviso), _)| aviso == DERIVA).map(|((id, _), at)| (id.as_str(), at.as_str())).collect();
+    // The «it's fine as is» of this notice for each memory (what `since` looks at).
+    let ok: HashMap<&str, &str> = oks.iter().filter(|((_, notice), _)| notice == DERIVA).map(|((id, _), at)| (id.as_str(), at.as_str())).collect();
     let mut r = HashMap::new();
-    for (id, updated) in filas {
+    for (id, updated) in rows {
         let d = match ok.get(id) {
             Some(at) if *at > updated => *at,
             _ => updated,
@@ -359,261 +359,261 @@ fn de_lo_guardado<'a>(
                     r.insert(id.to_string(), det.to_string());
                 }
             }
-            _ => falta(id),
+            _ => missing(id),
         }
     }
-    Ok((r, dia))
+    Ok((r, day))
 }
 
-/// [`de_texto`] sin copiar: `id → (desde, detalle)` prestados de `v`.
-fn de_texto_prestado(v: Option<&str>) -> (String, HashMap<&str, (&str, &str)>) {
+/// [`parse_saved`] without copying: `id → (since, detail)` borrowed from `v`.
+fn parse_saved_borrowed(v: Option<&str>) -> (String, HashMap<&str, (&str, &str)>) {
     let mut r = HashMap::new();
     let Some(v) = v else { return (String::new(), r) };
     let mut ls = v.lines();
-    let dia = ls.next().unwrap_or("").to_string();
+    let day = ls.next().unwrap_or("").to_string();
     for l in ls {
         let mut p = l.splitn(3, '\t');
         if let (Some(id), Some(d), Some(det)) = (p.next(), p.next(), p.next()) {
             r.insert(id, (d, det));
         }
     }
-    (dia, r)
+    (day, r)
 }
 
-/// Si lo guardado es de otro día (`dia`), lanza `omoi review --refresh-drift` sobre esta base, una vez
-/// al día y solo si quien corre es `omoi` (desde un test, el ejecutable es el de las pruebas y
-/// entendería otra cosa).
-fn refrescar_aparte(db: &Connection, dia: &str) -> Result<()> {
-    let hoy = hoy(db)?;
-    if dia.is_empty() || dia == hoy {
+/// If what is stored is from another day (`day`), launches `omoi review --refresh-drift` on this database, once
+/// a day and only if the running program is `omoi` (from a test, the executable is the test one and
+/// would understand something else).
+fn refresh_in_background(db: &Connection, day: &str) -> Result<()> {
+    let today = today(db)?;
+    if day.is_empty() || day == today {
         return Ok(());
     }
-    lanzar_hoy(db, &hoy)
+    launch_today(db, &today)
 }
 
-/// Lanza `omoi review --refresh-drift` aparte, si no se ha lanzado ya hoy.
-fn lanzar_hoy(db: &Connection, hoy: &str) -> Result<()> {
-    let lanzado: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE_LANZADO], |f| f.get(0)).optional()?;
-    if lanzado.as_deref() == Some(hoy) {
+/// Launches `omoi review --refresh-drift` separately, if it has not already been launched today.
+fn launch_today(db: &Connection, today: &str) -> Result<()> {
+    let launched: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [LAUNCHED_KEY], |f| f.get(0)).optional()?;
+    if launched.as_deref() == Some(today) {
         return Ok(());
     }
-    let es_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
-    if let (true, Some(ruta)) = (es_omoi, db.path().filter(|p| !p.is_empty())) {
-        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [CLAVE_LANZADO, hoy])?;
-        crate::sync::lanzar(&["review", "--refresh-drift"], Some(Path::new(ruta)));
+    let is_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
+    if let (true, Some(path)) = (is_omoi, db.path().filter(|p| !p.is_empty())) {
+        db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [LAUNCHED_KEY, today])?;
+        crate::sync::lanzar(&["review", "--refresh-drift"], Some(Path::new(path)));
     }
     Ok(())
 }
 
-/// Calcula de nuevo la deriva de todas las memorias y la guarda para hoy (lo que corre en segundo plano).
+/// Recomputes the drift of every memory and stores it for today (what runs in the background).
 pub fn refrescar(db: &Connection) -> Result<usize> {
-    let todas = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
+    let all = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
     let oks = crate::veredictos::oks(db, false)?;
-    let r = calcular(db, todas.iter().map(|m| Pendiente::de(m, &oks)).collect())?;
-    guardar_cache(db, &hoy(db)?, &r)?;
+    let r = compute(db, all.iter().map(|m| Pending::new(m, &oks)).collect())?;
+    save_cache(db, &today(db)?, &r)?;
     Ok(r.values().filter(|(_, det)| !det.is_empty()).count())
 }
 
-/// Las memorias con deriva por código entre `memorias`: `id → detalle`. Es lo que usa la revisión
-/// entera. Lo guardado vale mientras la memoria no cambie, aunque sea de otro día: entonces se deja
-/// recalculando en segundo plano. Solo lo que no tiene nada guardado (memorias nuevas, cambiadas o
-/// dadas por buenas, o todas la primera vez) se calcula aquí, y casi siempre basta con la fecha de sus
-/// ficheros.
-pub fn de(db: &Connection, memorias: &[Memoria]) -> Result<HashMap<String, String>> {
-    let por_id: HashMap<&str, &Memoria> = memorias.iter().map(|m| (m.id.as_str(), m)).collect();
-    let mut faltan = Vec::new();
-    // Lo guardado tal cual se lee: se escribe encima solo si nadie lo ha cambiado mientras (ver abajo).
-    let crudo_antes = crudo(db)?;
-    let (mut r, dia) = de_lo_guardado(db, crudo_antes.as_deref(), memorias.iter().map(|m| (m.id.as_str(), m.updated_at.as_str())), |id| faltan.push(id.to_string()))?;
-    refrescar_aparte(db, &dia)?;
-    if faltan.is_empty() {
+/// The memories with code drift among `memories`: `id → detail`. It is what the whole review
+/// uses. What is stored is valid while the memory does not change, even if it is from another day: then it is left
+/// recomputing in the background. Only what has nothing stored (new memories, changed ones or
+/// ones marked as fine, or all of them the first time) is computed here, and almost always the date of their
+/// files is enough.
+pub fn de(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, String>> {
+    let by_id: HashMap<&str, &Memoria> = memories.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut missing = Vec::new();
+    // What is stored, exactly as read: it is overwritten only if nobody has changed it meanwhile (see below).
+    let raw_before = raw(db)?;
+    let (mut r, day) = from_saved(db, raw_before.as_deref(), memories.iter().map(|m| (m.id.as_str(), m.updated_at.as_str())), |id| missing.push(id.to_string()))?;
+    refresh_in_background(db, &day)?;
+    if missing.is_empty() {
         return Ok(r);
     }
     let oks = crate::veredictos::oks(db, false)?;
-    let pendientes = faltan.iter().filter_map(|id| por_id.get(id.as_str())).map(|m| Pendiente::de(m, &oks)).collect();
-    let nuevos = calcular(db, pendientes)?;
-    let (_, mut cache) = de_texto(crudo_antes.as_deref());
-    for (id, (d, det)) in nuevos {
+    let pending = missing.iter().filter_map(|id| by_id.get(id.as_str())).map(|m| Pending::new(m, &oks)).collect();
+    let fresh = compute(db, pending)?;
+    let (_, mut cache) = parse_saved(raw_before.as_deref());
+    for (id, (d, det)) in fresh {
         if !det.is_empty() {
             r.insert(id.clone(), det.clone());
         }
         cache.insert(id, (d, det));
     }
-    // Lo nuevo se apunta con el día de lo que había (o hoy, si no había nada): así lo viejo sigue
-    // contando como viejo hasta que se recalcule entero.
-    // Compare-and-set: mientras se calculaba, `refrescar` (en otro proceso) puede haber guardado un
-    // resultado entero más nuevo; pisarlo con lo de antes más esto lo perdería. Si lo guardado ya no es
-    // lo que se leyó, no se escribe (lo calculado vale para esta respuesta, y la siguiente lo
-    // recalculará si hace falta). Es una caché: si no se puede escribir, no pasa nada.
-    let hoy = hoy(db)?;
-    let _ = guardar_si_no_cambio(db, crudo_antes.as_deref(), if dia.is_empty() { &hoy } else { &dia }, &cache);
+    // The new results are recorded with the day of what was there (or today, if there was nothing): that way the old ones keep
+    // counting as old until everything is recomputed.
+    // Compare-and-set: while computing, `refrescar` (in another process) may have stored a newer full
+    // result; overwriting it with the old one plus this would lose it. If what is stored is no longer
+    // what was read, nothing is written (what was computed is valid for this response, and the next one will
+    // recompute it if needed). It is a cache: if it cannot be written, nothing happens.
+    let today = today(db)?;
+    let _ = save_if_unchanged(db, raw_before.as_deref(), if day.is_empty() { &today } else { &day }, &cache);
     Ok(r)
 }
 
-/// Como [`de`], para quien no puede esperar (la herramienta `context`, al empezar una sesión): si aún
-/// no se ha calculado nunca (lo de todas, con git, puede tardar segundos), no se calcula aquí: se lanza
-/// aparte y lo verá la siguiente. Si ya hay algo guardado, lo que falte (memorias nuevas o cambiadas,
-/// casi siempre solo la fecha de sus ficheros), como [`de`].
-pub fn de_sin_esperar(db: &Connection, memorias: &[Memoria]) -> Result<HashMap<String, String>> {
-    if crudo(db)?.is_none() {
-        lanzar_hoy(db, &hoy(db)?)?;
+/// Like [`de`], for whoever cannot wait (the `context` tool, at session start): if it has
+/// never been computed yet (all of it, with git, can take seconds), it is not computed here: it is launched
+/// separately and the next one will see it. If something is already stored, whatever is missing (new or changed memories,
+/// almost always just the date of their files), like [`de`].
+pub fn de_sin_esperar(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, String>> {
+    if raw(db)?.is_none() {
+        launch_today(db, &today(db)?)?;
         return Ok(HashMap::new());
     }
-    de(db, memorias)
+    de(db, memories)
 }
 
-/// Lo guardado en `meta`, tal cual.
-fn crudo(db: &Connection) -> Result<Option<String>> {
-    Ok(db.query_row("SELECT v FROM meta WHERE k = ?1", [CLAVE], |f| f.get(0)).optional()?)
+/// What is stored in `meta`, as is.
+fn raw(db: &Connection) -> Result<Option<String>> {
+    Ok(db.query_row("SELECT v FROM meta WHERE k = ?1", [CACHE_KEY], |f| f.get(0)).optional()?)
 }
 
-/// Guarda la caché solo si lo guardado sigue siendo `antes`, en una transacción `IMMEDIATE` (nadie
-/// escribe entre mirarlo y escribirlo). `false` si había cambiado.
-fn guardar_si_no_cambio(db: &Connection, antes: Option<&str>, dia: &str, c: &Guardado) -> Result<bool> {
+/// Saves the cache only if what is stored is still `before`, in an `IMMEDIATE` transaction (nobody
+/// writes between checking and writing). `false` if it had changed.
+fn save_if_unchanged(db: &Connection, before: Option<&str>, day: &str, c: &Saved) -> Result<bool> {
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
-    if crudo(&tx)?.as_deref() != antes {
+    if raw(&tx)?.as_deref() != before {
         return Ok(false);
     }
-    guardar_cache(&tx, dia, c)?;
+    save_cache(&tx, day, c)?;
     tx.commit()?;
     Ok(true)
 }
 
-impl Pendiente {
-    fn de(m: &Memoria, oks: &HashMap<(String, String), String>) -> Pendiente {
-        Pendiente { id: m.id.clone(), desde: desde(&m.updated_at, oks.get(&(m.id.clone(), DERIVA.to_string()))), m: m.clone(), archivos: Vec::new() }
+impl Pending {
+    fn new(m: &Memoria, oks: &HashMap<(String, String), String>) -> Pending {
+        Pending { id: m.id.clone(), since: since(&m.updated_at, oks.get(&(m.id.clone(), DERIVA.to_string()))), m: m.clone(), files: Vec::new() }
     }
 }
 
-/// `id → (desde, detalle)` de cada pendiente (detalle vacío si no deriva).
-fn calcular(db: &Connection, mut pendientes: Vec<Pendiente>) -> Result<Guardado> {
-    let detalles = if pendientes.is_empty() { HashMap::new() } else { calcular_pendientes(db, &mut pendientes)? };
-    Ok(pendientes.into_iter().map(|p| (p.id.clone(), (p.desde, detalles.get(&p.id).cloned().unwrap_or_default()))).collect())
+/// `id → (since, detail)` for each pending one (empty detail if it does not drift).
+fn compute(db: &Connection, mut pending: Vec<Pending>) -> Result<Saved> {
+    let details = if pending.is_empty() { HashMap::new() } else { compute_pending(db, &mut pending)? };
+    Ok(pending.into_iter().map(|p| (p.id.clone(), (p.since, details.get(&p.id).cloned().unwrap_or_default()))).collect())
 }
 
-/// El detalle de las que derivan entre `pendientes`.
-fn calcular_pendientes(db: &Connection, pendientes: &mut [Pendiente]) -> Result<HashMap<String, String>> {
-    // Las que tienen algún fichero cambiado desde entonces (más la gracia); las demás no tienen nada.
+/// The detail of the ones that drift among `pending`.
+fn compute_pending(db: &Connection, pending: &mut [Pending]) -> Result<HashMap<String, String>> {
+    // The ones with some file changed since then (plus the grace period); the others have nothing.
     let mut repos: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
-    // repo → (desde más antiguo, rutas relativas)
-    let mut por_repo: HashMap<PathBuf, (i64, BTreeSet<String>)> = HashMap::new();
-    let mut fuera_de_git = false;
-    let mut vivas: Vec<usize> = Vec::new();
-    for (i, p) in pendientes.iter_mut().enumerate() {
-        let Some(corte) = segundos(&p.desde) else { continue };
-        let corte = corte + GRACIA * 3600;
-        p.archivos = ficheros(&p.m);
-        let cambiados: Vec<&PathBuf> = p.archivos.iter().map(|(_, d)| d).filter(|d| modificado(d).is_some_and(|t| t > corte)).collect();
-        if cambiados.is_empty() {
+    // repo → (oldest since, relative paths)
+    let mut by_repo: HashMap<PathBuf, (i64, BTreeSet<String>)> = HashMap::new();
+    let mut outside_git = false;
+    let mut alive: Vec<usize> = Vec::new();
+    for (i, p) in pending.iter_mut().enumerate() {
+        let Some(cutoff) = seconds(&p.since) else { continue };
+        let cutoff = cutoff + GRACIA * 3600;
+        p.files = files(&p.m);
+        let changed: Vec<&PathBuf> = p.files.iter().map(|(_, d)| d).filter(|d| modified(d).is_some_and(|t| t > cutoff)).collect();
+        if changed.is_empty() {
             continue;
         }
-        vivas.push(i);
-        for d in cambiados {
-            match repo_de(d, &mut repos) {
+        alive.push(i);
+        for d in changed {
+            match repo_of(d, &mut repos) {
                 Some(repo) => {
                     let rel = d.strip_prefix(&repo).map(|x| x.to_string_lossy().replace('\\', "/")).unwrap_or_default();
                     if !rel.is_empty() {
-                        let e = por_repo.entry(repo).or_insert((corte, BTreeSet::new()));
-                        e.0 = e.0.min(corte);
+                        let e = by_repo.entry(repo).or_insert((cutoff, BTreeSet::new()));
+                        e.0 = e.0.min(cutoff);
                         e.1.insert(rel);
                     }
                 }
-                None => fuera_de_git = true,
+                None => outside_git = true,
             }
         }
     }
-    if vivas.is_empty() {
+    if alive.is_empty() {
         return Ok(HashMap::new());
     }
-    // Una orden por repositorio, en paralelo.
-    let trabajos: Vec<(PathBuf, i64, Vec<String>)> = por_repo.into_iter().map(|(r, (d, rel))| (r, d, rel.into_iter().collect())).collect();
+    // One command per repository, in parallel.
+    let jobs: Vec<(PathBuf, i64, Vec<String>)> = by_repo.into_iter().map(|(r, (d, rel))| (r, d, rel.into_iter().collect())).collect();
     let mut logs: HashMap<PathBuf, Option<Log>> = HashMap::new();
-    for tanda in trabajos.chunks(HILOS) {
-        let hechos: Vec<(PathBuf, Option<Log>)> = std::thread::scope(|s| {
-            let hs: Vec<_> = tanda.iter().map(|(r, d, rel)| s.spawn(move || (r.clone(), git_log(r, *d, rel)))).collect();
+    for batch in jobs.chunks(THREADS) {
+        let done: Vec<(PathBuf, Option<Log>)> = std::thread::scope(|s| {
+            let hs: Vec<_> = batch.iter().map(|(r, d, rel)| s.spawn(move || (r.clone(), git_log(r, *d, rel)))).collect();
             hs.into_iter().filter_map(|h| h.join().ok()).collect()
         });
-        logs.extend(hechos);
+        logs.extend(done);
     }
-    // El diario, solo si algún fichero cambiado no es de git (o git no respondió).
-    let fuera_de_git = fuera_de_git || logs.values().any(Option::is_none);
-    let diario = if fuera_de_git { sesiones(db)? } else { HashMap::new() };
+    // The diary, only if some changed file is not in git (or git did not respond).
+    let outside_git = outside_git || logs.values().any(Option::is_none);
+    let diary = if outside_git { sessions(db)? } else { HashMap::new() };
 
     let mut r = HashMap::new();
-    for i in vivas {
-        let p = &pendientes[i];
-        let corte = segundos(&p.desde).unwrap_or(0) + GRACIA * 3600;
-        let (mut commits, mut cambiadas, mut total) = (BTreeSet::new(), 0usize, 0usize);
-        let mut sesiones_de: BTreeSet<&str> = BTreeSet::new();
-        let mut nombres: Vec<&str> = Vec::new();
-        for (mostrado, d) in &p.archivos {
-            // `Some(Some(..))`: su repositorio respondió; `Some(None)`: git falló; `None`: o no es de git
-            // o en su repositorio no cambió nada que mirar.
-            let repo = repo_de(d, &mut repos);
+    for i in alive {
+        let p = &pending[i];
+        let cutoff = seconds(&p.since).unwrap_or(0) + GRACIA * 3600;
+        let (mut commits, mut changed, mut total) = (BTreeSet::new(), 0usize, 0usize);
+        let mut its_sessions: BTreeSet<&str> = BTreeSet::new();
+        let mut names: Vec<&str> = Vec::new();
+        for (shown, d) in &p.files {
+            // `Some(Some(..))`: its repository responded; `Some(None)`: git failed; `None`: either it is not in git
+            // or nothing worth looking at changed in its repository.
+            let repo = repo_of(d, &mut repos);
             let log = repo.as_ref().and_then(|repo| {
                 let rel = d.strip_prefix(repo).ok()?.to_string_lossy().replace('\\', "/");
                 logs.get(repo).map(|l| l.as_ref().map(|l| l.get(&crate::proyecto::comparable(&rel)).cloned().unwrap_or_default()))
             });
             match log {
-                Some(Some(cambios)) => {
-                    total += lineas(d);
-                    let mut suyo = false;
-                    for (h, _, n) in cambios.iter().filter(|(_, t, _)| *t > corte) {
+                Some(Some(changes)) => {
+                    total += line_count(d);
+                    let mut its_own = false;
+                    for (h, _, n) in changes.iter().filter(|(_, t, _)| *t > cutoff) {
                         commits.insert(h.clone());
-                        cambiadas += n;
-                        suyo = true;
+                        changed += n;
+                        its_own = true;
                     }
-                    if suyo {
-                        nombres.push(mostrado);
+                    if its_own {
+                        names.push(shown);
                     }
                 }
-                // De git pero sin cambios desde entonces (no estaba entre los cambiados): mide igual.
-                None if repo.is_some() => total += lineas(d),
+                // In git but without changes since then (it was not among the changed ones): it still counts towards the size.
+                None if repo.is_some() => total += line_count(d),
                 _ => {
-                    let clave = crate::proyecto::comparable(&d.to_string_lossy().replace('\\', "/"));
-                    let mut suyo = false;
-                    for (sesion, ultima, guardadas) in diario.get(&clave).map(Vec::as_slice).unwrap_or_default() {
-                        if segundos(ultima).is_some_and(|t| t > corte) && !guardadas.contains(&p.id) {
-                            sesiones_de.insert(sesion);
-                            suyo = true;
+                    let key = crate::proyecto::comparable(&d.to_string_lossy().replace('\\', "/"));
+                    let mut its_own = false;
+                    for (session, last, saved) in diary.get(&key).map(Vec::as_slice).unwrap_or_default() {
+                        if seconds(last).is_some_and(|t| t > cutoff) && !saved.contains(&p.id) {
+                            its_sessions.insert(session);
+                            its_own = true;
                         }
                     }
-                    if suyo {
-                        nombres.push(mostrado);
+                    if its_own {
+                        names.push(shown);
                     }
                 }
             }
         }
-        let parte = cambiadas as f64 / total.max(1) as f64;
-        let por_git = cambiadas >= LINEAS_MIN && parte >= PARTE_MIN;
-        let por_diario = sesiones_de.len() >= SESIONES_MIN;
-        if !(por_git || por_diario) {
+        let share = changed as f64 / total.max(1) as f64;
+        let by_git = changed >= LINEAS_MIN && share >= PARTE_MIN;
+        let by_diary = its_sessions.len() >= SESIONES_MIN;
+        if !(by_git || by_diary) {
             continue;
         }
-        let lista = match nombres.as_slice() {
+        let list = match names.as_slice() {
             [] => String::new(),
             [a] => format!("`{a}`"),
             [a, b] => format!("`{a}` and `{b}`"),
-            [a, b, resto @ ..] => format!("`{a}`, `{b}` and {} more", resto.len()),
+            [a, b, rest @ ..] => format!("`{a}`, `{b}` and {} more", rest.len()),
         };
-        let dia = p.desde.get(..10).unwrap_or("");
-        let mut cifras = Vec::new();
-        if por_git {
+        let day = p.since.get(..10).unwrap_or("");
+        let mut figures = Vec::new();
+        if by_git {
             let n = commits.len();
-            cifras.push(format!("{n} commit{}, {cambiadas} lines changed, {:.0}% of their size", if n == 1 { "" } else { "s" }, parte * 100.0));
+            figures.push(format!("{n} commit{}, {changed} lines changed, {:.0}% of their size", if n == 1 { "" } else { "s" }, share * 100.0));
         }
-        if por_diario || !sesiones_de.is_empty() {
-            cifras.push(format!("edited in {} sessions", sesiones_de.len()));
+        if by_diary || !its_sessions.is_empty() {
+            figures.push(format!("edited in {} sessions", its_sessions.len()));
         }
-        r.insert(p.id.clone(), format!("{lista} changed a lot since {dia} ({}): is it still true?", cifras.join("; ")));
+        r.insert(p.id.clone(), format!("{list} changed a lot since {day} ({}): is it still true?", figures.join("; ")));
     }
     Ok(r)
 }
 
-/// Las sesiones del diario por fichero (ruta absoluta comparable): (sesión, último momento, ids
-/// guardados en ella). Los ficheros relativos lo son a la carpeta del proyecto de la línea.
-fn sesiones(db: &Connection) -> Result<PorFichero> {
-    let mut r: PorFichero = HashMap::new();
+/// The diary sessions per file (comparable absolute path): (session, last moment, ids
+/// saved in it). Relative files are relative to the project folder of the line.
+fn sessions(db: &Connection) -> Result<ByFile> {
+    let mut r: ByFile = HashMap::new();
     if !crate::diario::hay_tabla(db)? {
         return Ok(r);
     }
@@ -621,14 +621,14 @@ fn sesiones(db: &Connection) -> Result<PorFichero> {
         "SELECT d.session, COALESCE(NULLIF((SELECT path FROM project WHERE id = d.project_id), ''), d.folder), d.last_at, d.files, d.saved
          FROM diary d WHERE d.files <> '[]'",
     )?;
-    let mut filas = q.query([])?;
-    while let Some(f) = filas.next()? {
-        let (sesion, carpeta, ultima): (String, String, String) = (f.get(0)?, f.get(1)?, f.get(2)?);
+    let mut rows = q.query([])?;
+    while let Some(f) = rows.next()? {
+        let (session, folder, last): (String, String, String) = (f.get(0)?, f.get(1)?, f.get(2)?);
         let files: Vec<String> = serde_json::from_str(&f.get::<_, String>(3)?).unwrap_or_default();
         let saved: Vec<String> = serde_json::from_str(&f.get::<_, String>(4)?).unwrap_or_default();
         for x in files {
-            let abs = if absoluta(&x) { x.replace('\\', "/") } else { format!("{}/{}", carpeta.replace('\\', "/").trim_end_matches('/'), x.replace('\\', "/")) };
-            r.entry(crate::proyecto::comparable(&abs)).or_default().push((sesion.clone(), ultima.clone(), saved.clone()));
+            let abs = if is_absolute(&x) { x.replace('\\', "/") } else { format!("{}/{}", folder.replace('\\', "/").trim_end_matches('/'), x.replace('\\', "/")) };
+            r.entry(crate::proyecto::comparable(&abs)).or_default().push((session.clone(), last.clone(), saved.clone()));
         }
     }
     Ok(r)
@@ -639,30 +639,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rutas_nombradas() {
+    fn named_paths() {
         let t = "Está en `src/sync.rs` y en D:\\repo\\a.py, no en main.rs ni en https://x.com/a.html ni en src/; también (tests/x.rs).";
         assert_eq!(nombrados(t), vec!["src/sync.rs", "D:\\repo\\a.py", "tests/x.rs"]);
     }
 
-    /// Las rutas de red no se toman por ficheros ni se miran en el disco (en Windows, mirarlas abre una
-    /// conexión SMB: un cuelgue y el hash NTLM al servidor que diga la memoria).
+    /// Network paths are not taken as files nor looked at on disk (on Windows, looking at them opens an
+    /// SMB connection: a hang and the NTLM hash sent to whatever server the memory says).
     #[test]
-    fn nunca_rutas_de_red() {
+    fn never_network_paths() {
         let t = "Carga //cdn.example.com/x.js y \\\\host\\share\\a.py, o \\\\?\\C:\\x\\b.rs y \\\\.\\pipe\\c.rs; pero sí src/d.rs.";
         assert_eq!(nombrados(t), vec!["src/d.rs"]);
         let m = Memoria { project: "/p".into(), ..Default::default() };
         for r in ["//cdn.example.com/x.js", "\\\\host\\share\\a.py", "\\\\?\\C:\\x\\b.rs", "\\\\.\\pipe\\c.rs", "/\\host\\x.rs"] {
-            assert_eq!(en_disco(&m, r), None, "{r}");
+            assert_eq!(on_disk(&m, r), None, "{r}");
         }
-        // Relativa a un proyecto que está en un recurso de red: tampoco.
-        let remota = Memoria { project: "\\\\host\\share\\repo".into(), ..Default::default() };
-        assert_eq!(en_disco(&remota, "src/a.rs"), None);
-        assert!(en_disco(&m, "src/a.rs").is_some());
+        // Relative to a project that is on a network share: not either.
+        let remote = Memoria { project: "\\\\host\\share\\repo".into(), ..Default::default() };
+        assert_eq!(on_disk(&remote, "src/a.rs"), None);
+        assert!(on_disk(&m, "src/a.rs").is_some());
     }
 
-    /// Un `git log` que no acaba se para al llegar al tope, sin esperar a que termine.
+    /// A `git log` that does not finish is stopped when it reaches the limit, without waiting for it to end.
     #[test]
-    fn git_con_tope() {
+    fn git_with_timeout() {
         let mut c = if cfg!(windows) {
             let mut c = std::process::Command::new("powershell");
             c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 20"]);
@@ -674,17 +674,17 @@ mod tests {
         };
         c.stdout(std::process::Stdio::piped()).stdin(std::process::Stdio::null());
         let t = std::time::Instant::now();
-        assert_eq!(con_tope(c, std::time::Duration::from_millis(300)), None);
+        assert_eq!(with_timeout(c, std::time::Duration::from_millis(300)), None);
         assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
     }
 
-    /// Un hijo que deja un nieto con la tubería abierta (como el lanzador de Git para Windows, cuyo `git`
-    /// de verdad la hereda) no hace esperar a ese nieto: ni si el hijo pasa del tope y se para, ni si
-    /// acaba enseguida.
+    /// A child that leaves a grandchild with the pipe open (like Git for Windows' launcher, whose real `git`
+    /// inherits it) does not make us wait for that grandchild: neither if the child goes over the limit and is stopped, nor if
+    /// it finishes right away.
     #[test]
-    fn el_nieto_no_hace_esperar() {
-        // (con qué se queda colgado, cuánto tarda el hijo en irse)
-        let ordenes: Vec<Vec<&str>> = if cfg!(windows) {
+    fn the_grandchild_does_not_make_us_wait() {
+        // (what it hangs on, how long the child takes to exit)
+        let commands: Vec<Vec<&str>> = if cfg!(windows) {
             vec![
                 vec!["cmd", "/C", "start /b powershell -NoProfile -Command Start-Sleep -Seconds 15 & powershell -NoProfile -Command Start-Sleep -Seconds 20"],
                 vec!["cmd", "/C", "start /b powershell -NoProfile -Command Start-Sleep -Seconds 15 & exit 0"],
@@ -692,42 +692,42 @@ mod tests {
         } else {
             vec![vec!["sh", "-c", "sleep 15 & sleep 20"], vec!["sh", "-c", "sleep 15 & exit 0"]]
         };
-        for o in ordenes {
+        for o in commands {
             let mut c = std::process::Command::new(o[0]);
             c.args(&o[1..]).stdout(std::process::Stdio::piped()).stdin(std::process::Stdio::null());
             let t = std::time::Instant::now();
-            assert_eq!(con_tope(c, std::time::Duration::from_millis(2500)), None, "{o:?}");
+            assert_eq!(with_timeout(c, std::time::Duration::from_millis(2500)), None, "{o:?}");
             assert!(t.elapsed() < std::time::Duration::from_secs(8), "{o:?}: {:?}", t.elapsed());
         }
     }
 
-    /// Lo calculado no pisa lo que otro proceso guardó mientras (`refrescar`): solo se escribe si lo
-    /// guardado sigue siendo lo que se leyó.
+    /// What is computed does not overwrite what another process stored meanwhile (`refrescar`): it is only written if what is
+    /// stored is still what was read.
     #[test]
-    fn la_cache_no_pisa_lo_mas_nuevo() {
+    fn the_cache_does_not_overwrite_newer_data() {
         let t = crate::comun::Temporal::nueva("deriva-cache");
         let db = crate::db::abrir(&t.join("o.db")).unwrap();
-        let mut viejo = Guardado::new();
-        viejo.insert("A".into(), ("2026-01-01".into(), String::new()));
-        guardar_cache(&db, "2026-11-01", &viejo).unwrap();
-        let leido = crudo(&db).unwrap();
-        // Mientras, `refrescar` guarda el de hoy.
-        let mut nuevo = Guardado::new();
-        nuevo.insert("A".into(), ("2026-01-01".into(), "cambió mucho".into()));
-        guardar_cache(&db, "2026-11-08", &nuevo).unwrap();
-        let ahora = crudo(&db).unwrap();
-        assert!(!guardar_si_no_cambio(&db, leido.as_deref(), "2026-11-01", &viejo).unwrap());
-        assert_eq!(crudo(&db).unwrap(), ahora, "lo más nuevo se queda");
-        assert!(guardar_si_no_cambio(&db, ahora.as_deref(), "2026-11-08", &viejo).unwrap());
-        // Y `context` no lo calcula la primera vez: sin nada guardado, no espera.
-        let vacia = crate::db::abrir(&t.join("v.db")).unwrap();
-        assert!(de_sin_esperar(&vacia, &[]).unwrap().is_empty());
-        assert_eq!(crudo(&vacia).unwrap(), None);
+        let mut old = Saved::new();
+        old.insert("A".into(), ("2026-01-01".into(), String::new()));
+        save_cache(&db, "2026-11-01", &old).unwrap();
+        let read = raw(&db).unwrap();
+        // Meanwhile, `refrescar` stores today's.
+        let mut new = Saved::new();
+        new.insert("A".into(), ("2026-01-01".into(), "cambió mucho".into()));
+        save_cache(&db, "2026-11-08", &new).unwrap();
+        let now = raw(&db).unwrap();
+        assert!(!save_if_unchanged(&db, read.as_deref(), "2026-11-01", &old).unwrap());
+        assert_eq!(raw(&db).unwrap(), now, "lo más nuevo se queda");
+        assert!(save_if_unchanged(&db, now.as_deref(), "2026-11-08", &old).unwrap());
+        // And `context` does not compute it the first time: with nothing stored, it does not wait.
+        let empty = crate::db::abrir(&t.join("v.db")).unwrap();
+        assert!(de_sin_esperar(&empty, &[]).unwrap().is_empty());
+        assert_eq!(raw(&empty).unwrap(), None);
     }
 
     #[test]
-    fn fechas_en_segundos() {
-        assert_eq!(segundos("1970-01-02T00:00:00Z"), Some(86400));
-        assert_eq!(segundos("2026-10-30T18:45:00.570Z").unwrap() - segundos("2026-10-30T12:45:00Z").unwrap(), 6 * 3600);
+    fn dates_in_seconds() {
+        assert_eq!(seconds("1970-01-02T00:00:00Z"), Some(86400));
+        assert_eq!(seconds("2026-10-30T18:45:00.570Z").unwrap() - seconds("2026-10-30T12:45:00Z").unwrap(), 6 * 3600);
     }
 }

@@ -1,25 +1,25 @@
-//! Compatibilidad con la 1.0.0 (Fase 9, §9.1): un `omoi` 1.0.0 fijo y el de este commit comparten un
-//! repositorio git desnudo local, una base y las copias de `omoi export`, y se tienen que entender en
-//! los dos sentidos. Es lo que promete la 1.0: la base, la línea de sync y el
-//! export no cambian de forma incompatible en la 1.x; una 1.0 guarda y reenvía lo que no entiende
-//! (`extra`), cuenta aparte las líneas de un tipo nuevo, se aparta de un repositorio que pide un lector
-//! más nuevo (`omoikane.format`) y abre una base que solo añade (`lector_minimo`).
+//! Compatibility with 1.0.0 (Phase 9, §9.1): a pinned `omoi` 1.0.0 and the one from this commit share a
+//! local bare git repository, a database and the `omoi export` backups, and must understand each other in
+//! both directions. This is what 1.0 promises: the database, the sync line and the
+//! export do not change incompatibly within 1.x; a 1.0 keeps and forwards what it does not understand
+//! (`extra`), counts lines of a new type separately, steps away from a repository that asks for a newer
+//! reader (`omoikane.format`) and opens a database that only adds (`lector_minimo`).
 //!
-//! El 1.0.0 va en `OMOIKANE_COMPAT_BIN` (la ruta a su `omoi`); sin ella, cada test se salta con un
-//! aviso. La CI (`.github/workflows/compat.yml`) lo baja de la Release v1.0.0, comprueba su SHA-256 y
-//! corre `cargo test --test compat` en Windows, Linux y macOS.
+//! The 1.0.0 goes in `OMOIKANE_COMPAT_BIN` (the path to its `omoi`); without it, each test is skipped with a
+//! warning. CI (`.github/workflows/compat.yml`) downloads it from the v1.0.0 Release, checks its SHA-256 and
+//! runs `cargo test --test compat` on Windows, Linux and macOS.
 
 mod comun;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// El `omoi` de este commit.
-const NUEVO: &str = env!("CARGO_BIN_EXE_omoi");
+/// The `omoi` from this commit.
+const NEW: &str = env!("CARGO_BIN_EXE_omoi");
 
-/// El `omoi` 1.0.0 de `OMOIKANE_COMPAT_BIN`, o `None` (y un aviso) si no está. Si está, tiene que ser
-/// la 1.0.0: con otro binario la prueba no diría nada.
-fn binario_10() -> Option<PathBuf> {
+/// The `omoi` 1.0.0 from `OMOIKANE_COMPAT_BIN`, or `None` (and a warning) if it is not there. If it is, it must be
+/// 1.0.0: with another binary the test would prove nothing.
+fn binary_10() -> Option<PathBuf> {
     let Some(r) = std::env::var_os("OMOIKANE_COMPAT_BIN").filter(|r| !r.is_empty()) else {
         eprintln!("compat: falta OMOIKANE_COMPAT_BIN (la ruta a un omoi 1.0.0); se salta");
         return None;
@@ -31,16 +31,16 @@ fn binario_10() -> Option<PathBuf> {
     Some(r)
 }
 
-struct Prueba {
+struct Harness {
     dir: comun::Temporal,
 }
 
-impl Prueba {
-    fn nueva(nombre: &str) -> Prueba {
-        let dir = comun::Temporal::nueva(&format!("compat-{nombre}"));
+impl Harness {
+    fn new(name: &str) -> Harness {
+        let dir = comun::Temporal::nueva(&format!("compat-{name}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
-        let p = Prueba { dir };
-        p.otro_repo("compartida");
+        let p = Harness { dir };
+        p.another_repo("compartida");
         p
     }
 
@@ -48,9 +48,9 @@ impl Prueba {
         self.dir.join("compartida.git").to_string_lossy().replace('\\', "/")
     }
 
-    fn git(&self, en: &Path, args: &[&str]) -> Output {
+    fn git(&self, cwd: &Path, args: &[&str]) -> Output {
         Command::new("git")
-            .current_dir(en)
+            .current_dir(cwd)
             .args(args)
             .env("GIT_CONFIG_GLOBAL", self.dir.join("gitconfig-vacio"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -58,43 +58,43 @@ impl Prueba {
             .unwrap()
     }
 
-    /// Un repositorio desnudo (el general o el de un espacio). Devuelve su URL.
-    fn otro_repo(&self, nombre: &str) -> String {
-        let o = self.git(&self.dir, &["init", "--quiet", "--bare", &format!("{nombre}.git")]);
+    /// A bare repository (the general one or a space's). Returns its URL.
+    fn another_repo(&self, name: &str) -> String {
+        let o = self.git(&self.dir, &["init", "--quiet", "--bare", &format!("{name}.git")]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        self.dir.join(format!("{nombre}.git")).to_string_lossy().replace('\\', "/")
+        self.dir.join(format!("{name}.git")).to_string_lossy().replace('\\', "/")
     }
 
     fn commits(&self) -> String {
         String::from_utf8_lossy(&self.git(&self.dir.join("compartida.git"), &["rev-list", "--count", "--all"]).stdout).trim().to_string()
     }
 
-    /// Un equipo con su base, con el `omoi` que se le dé y `OMOIKANE_EQUIPO` = `nombre`.
-    fn equipo(&self, nombre: &str, bin: &Path) -> Equipo {
-        self.equipo_en(nombre, nombre, bin)
+    /// A machine with its database, with the given `omoi` and `OMOIKANE_EQUIPO` = `name`.
+    fn machine(&self, name: &str, bin: &Path) -> Machine {
+        self.machine_in(name, name, bin)
     }
 
-    /// Lo mismo, con la carpeta (y la base) aparte del nombre: dos binarios sobre la misma base, o
-    /// dos bases con el mismo nombre de equipo.
-    fn equipo_en(&self, carpeta: &str, nombre: &str, bin: &Path) -> Equipo {
-        let dir = self.dir.join(carpeta);
+    /// The same, with the folder (and the database) separate from the name: two binaries on the same database, or
+    /// two databases with the same machine name.
+    fn machine_in(&self, folder: &str, name: &str, bin: &Path) -> Machine {
+        let dir = self.dir.join(folder);
         std::fs::create_dir_all(&dir).unwrap();
-        Equipo { dir, nombre: nombre.into(), raiz: self.dir.clone(), bin: bin.to_path_buf() }
+        Machine { dir, name: name.into(), root: self.dir.clone(), bin: bin.to_path_buf() }
     }
 
-    /// Un clon nuevo de un repositorio, para mirar.
-    fn clon_de(&self, url: &str) -> PathBuf {
-        let clon = self.dir.join(format!("mirar-{}", ulid::Ulid::generate()));
-        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", url, clon.to_str().unwrap()]);
+    /// A fresh clone of a repository, to look at.
+    fn clone_of(&self, url: &str) -> PathBuf {
+        let clone = self.dir.join(format!("mirar-{}", ulid::Ulid::generate()));
+        let o = self.git(&self.dir, &["clone", "--quiet", "--branch", "main", url, clone.to_str().unwrap()]);
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        clon
+        clone
     }
 
-    /// Las líneas de los ficheros de memorias de un repositorio.
-    fn lineas_de(&self, url: &str) -> Vec<String> {
-        let clon = self.clon_de(url);
+    /// The lines of a repository's memory files.
+    fn lines_of(&self, url: &str) -> Vec<String> {
+        let clone = self.clone_of(url);
         let mut v = Vec::new();
-        for e in std::fs::read_dir(&clon).unwrap().flatten() {
+        for e in std::fs::read_dir(&clone).unwrap().flatten() {
             if e.file_name().to_string_lossy().starts_with('.') || !e.path().is_dir() {
                 continue;
             }
@@ -105,57 +105,57 @@ impl Prueba {
         v
     }
 
-    /// Sube al repositorio general un fichero escrito a mano (lo que escribiría una 1.x más nueva).
-    fn subir_a_mano(&self, ruta: &str, texto: &str) {
-        let clon = self.clon_de(&self.url());
-        let f = clon.join(ruta);
+    /// Pushes a hand-written file to the general repository (what a newer 1.x would write).
+    fn push_by_hand(&self, path: &str, text: &str) {
+        let clone = self.clone_of(&self.url());
+        let f = clone.join(path);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-        std::fs::write(&f, texto).unwrap();
+        std::fs::write(&f, text).unwrap();
         for args in [vec!["add", "-A"], vec!["-c", "user.name=x", "-c", "user.email=x@x", "commit", "--quiet", "-m", "a mano"], vec!["push", "--quiet", "origin", "HEAD:main"]] {
-            let o = self.git(&clon, &args);
+            let o = self.git(&clone, &args);
             assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
         }
     }
 }
 
-struct Equipo {
+struct Machine {
     dir: PathBuf,
-    nombre: String,
-    raiz: PathBuf,
+    name: String,
+    root: PathBuf,
     bin: PathBuf,
 }
 
-impl Equipo {
-    fn es_el_commit(&self) -> bool {
-        self.bin == Path::new(NUEVO)
+impl Machine {
+    fn is_the_commit(&self) -> bool {
+        self.bin == Path::new(NEW)
     }
 
-    /// Quién es, para los mensajes: el nombre y si es la 1.0.0 o el commit.
-    fn quien(&self) -> String {
-        format!("{} ({})", self.nombre, if self.es_el_commit() { "commit" } else { "1.0.0" })
+    /// Who it is, for messages: the name and whether it is 1.0.0 or the commit.
+    fn who(&self) -> String {
+        format!("{} ({})", self.name, if self.is_the_commit() { "commit" } else { "1.0.0" })
     }
 
-    /// Una carpeta de proyecto con un remoto `origin`.
-    fn proyecto(&self, carpeta: &str, remoto: &str) -> PathBuf {
-        let p = self.dir.join(carpeta);
+    /// A project folder with an `origin` remote.
+    fn project(&self, folder: &str, remote: &str) -> PathBuf {
+        let p = self.dir.join(folder);
         std::fs::create_dir_all(p.join(".git")).unwrap();
-        std::fs::write(p.join(".git").join("config"), format!("[core]\n\tbare = false\n[remote \"origin\"]\n\turl = {remoto}\n")).unwrap();
+        std::fs::write(p.join(".git").join("config"), format!("[core]\n\tbare = false\n[remote \"origin\"]\n\turl = {remote}\n")).unwrap();
         p
     }
 
-    /// `omoi` de este equipo, sin nada de la máquina: ni actualizarse solo, ni copias diarias, ni
-    /// sincronizar en segundo plano.
-    fn comando(&self, en: &Path) -> Command {
+    /// This machine's `omoi`, with nothing from the host: no self-update, no daily backups, no
+    /// background sync.
+    fn command(&self, cwd: &Path) -> Command {
         let mut c = Command::new(&self.bin);
-        c.current_dir(en)
+        c.current_dir(cwd)
             .env("OMOIKANE_DB", self.dir.join("o.db"))
             .env("OMOIKANE_MODELS", self.dir.join("models"))
             .env("OMOIKANE_HOME", self.dir.join("home-omoikane"))
-            .env("OMOIKANE_EQUIPO", &self.nombre)
+            .env("OMOIKANE_EQUIPO", &self.name)
             .env("OMOIKANE_SYNC_AUTO", "0")
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_BACKUPS", "0")
-            .env("GIT_CONFIG_GLOBAL", self.raiz.join("gitconfig-vacio"))
+            .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig-vacio"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
             .env_remove("OMOIKANE_SOURCE");
@@ -163,50 +163,50 @@ impl Equipo {
         c
     }
 
-    fn omoi_en(&self, en: &Path, args: &[&str]) -> Output {
-        self.comando(en).args(args).stdin(Stdio::null()).output().unwrap()
+    fn omoi_in(&self, cwd: &Path, args: &[&str]) -> Output {
+        self.command(cwd).args(args).stdin(Stdio::null()).output().unwrap()
     }
 
-    fn ok_en(&self, en: &Path, args: &[&str]) -> String {
-        let o = self.omoi_en(en, args);
-        assert!(o.status.success(), "{} omoi {args:?}: {}{}", self.quien(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    fn ok_in(&self, cwd: &Path, args: &[&str]) -> String {
+        let o = self.omoi_in(cwd, args);
+        assert!(o.status.success(), "{} omoi {args:?}: {}{}", self.who(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         String::from_utf8(o.stdout).unwrap()
     }
 
     fn ok(&self, args: &[&str]) -> String {
-        self.ok_en(&self.dir, args)
+        self.ok_in(&self.dir, args)
     }
 
-    fn json_en(&self, en: &Path, args: &[&str]) -> serde_json::Value {
+    fn json_in(&self, cwd: &Path, args: &[&str]) -> serde_json::Value {
         let mut a = vec!["--json"];
         a.extend_from_slice(args);
-        serde_json::from_str(&self.ok_en(en, &a)).unwrap()
+        serde_json::from_str(&self.ok_in(cwd, &a)).unwrap()
     }
 
-    fn guardar(&self, en: &Path, kind: &str, titulo: &str, texto: &str, extra: &[&str]) -> String {
-        let mut a = vec!["remember", "-k", kind, "-t", titulo];
+    fn save(&self, cwd: &Path, kind: &str, title: &str, text: &str, extra: &[&str]) -> String {
+        let mut a = vec!["remember", "-k", kind, "-t", title];
         a.extend_from_slice(extra);
-        a.push(texto);
-        self.json_en(en, &a)["id"].as_str().unwrap().to_string()
+        a.push(text);
+        self.json_in(cwd, &a)["id"].as_str().unwrap().to_string()
     }
 
-    /// `omoi sync`; entre las dos versiones no puede quedar nada ilegible.
+    /// `omoi sync`; between the two versions nothing may be left unreadable.
     fn sync(&self) -> serde_json::Value {
-        self.sync_en(&self.dir)
+        self.sync_in(&self.dir)
     }
 
-    /// Lo mismo desde una carpeta (la de un proyecto: así este equipo la conoce).
-    fn sync_en(&self, en: &Path) -> serde_json::Value {
-        let r = self.json_en(en, &["sync"]);
-        assert_eq!(r["ilegibles"].as_u64(), Some(0), "{}: nada ilegible entre versiones: {r}", self.quien());
+    /// The same from a folder (a project's: that way this machine knows it).
+    fn sync_in(&self, cwd: &Path) -> serde_json::Value {
+        let r = self.json_in(cwd, &["sync"]);
+        assert_eq!(r["ilegibles"].as_u64(), Some(0), "{}: nada ilegible entre versiones: {r}", self.who());
         r
     }
 
-    /// Una herramienta MCP (`omoi tool <nombre>`) con sus argumentos JSON.
-    fn tool_en(&self, en: &Path, nombre: &str, args: &str) -> serde_json::Value {
-        let mut hijo = self
-            .comando(en)
-            .args(["tool", nombre])
+    /// An MCP tool (`omoi tool <name>`) with its JSON arguments.
+    fn tool_in(&self, cwd: &Path, name: &str, args: &str) -> serde_json::Value {
+        let mut child = self
+            .command(cwd)
+            .args(["tool", name])
             .env("OMOIKANE_SOURCE", "mcp:claude-code")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -215,362 +215,362 @@ impl Equipo {
             .unwrap();
         {
             use std::io::Write;
-            hijo.stdin.take().unwrap().write_all(args.as_bytes()).unwrap();
+            child.stdin.take().unwrap().write_all(args.as_bytes()).unwrap();
         }
-        let o = hijo.wait_with_output().unwrap();
-        assert!(o.status.success(), "{} omoi tool {nombre}: {}{}", self.quien(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        let o = child.wait_with_output().unwrap();
+        assert!(o.status.success(), "{} omoi tool {name}: {}{}", self.who(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         serde_json::from_slice(&o.stdout).unwrap()
     }
 
     fn get(&self, id: &str) -> Option<serde_json::Value> {
-        let o = self.omoi_en(&self.dir, &["--json", "get", id]);
+        let o = self.omoi_in(&self.dir, &["--json", "get", id]);
         o.status.success().then(|| serde_json::from_slice(&o.stdout).unwrap())
     }
 
-    fn base(&self) -> rusqlite::Connection {
+    fn db(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.dir.join("o.db")).unwrap()
     }
 }
 
-/// A configura el repositorio general y B se une con el código, cada uno con su persona.
-fn dos(p: &Prueba, bin_a: &Path, bin_b: &Path) -> (Equipo, Equipo) {
-    let a = p.equipo("pc-a", bin_a);
-    let b = p.equipo("pc-b", bin_b);
+/// A sets up the general repository and B joins with the code, each with its own person.
+fn two(p: &Harness, bin_a: &Path, bin_b: &Path) -> (Machine, Machine) {
+    let a = p.machine("pc-a", bin_a);
+    let b = p.machine("pc-b", bin_b);
     a.ok(&["sync", "init", &p.url(), "--yes", "--author", "Ana"]);
-    let codigo = a.ok(&["sync", "code"]).trim().to_string();
-    b.ok(&["sync", "join", &codigo, "--yes", "--author", "Marc"]);
+    let code = a.ok(&["sync", "code"]).trim().to_string();
+    b.ok(&["sync", "join", &code, "--yes", "--author", "Marc"]);
     (a, b)
 }
 
-/// La persona de la sync de cada equipo de `dos`.
-fn persona(e: &Equipo) -> &'static str {
-    if e.nombre == "pc-a" { "Ana" } else { "Marc" }
+/// The sync person of each machine from `two`.
+fn person(e: &Machine) -> &'static str {
+    if e.name == "pc-a" { "Ana" } else { "Marc" }
 }
 
-// --- Cifrado, como lo hace Omoikane ------------------------------------------------------------------
+// --- Encryption, the way Omoikane does it -----------------------------------------------------------
 
-/// La clave de un código de `omoi sync code`.
-fn clave_del_codigo(codigo: &str) -> Vec<u8> {
+/// The key of a code from `omoi sync code`.
+fn key_from_code(code: &str) -> Vec<u8> {
     use base64::Engine;
-    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(codigo.trim().strip_prefix("omoi1.").unwrap()).unwrap();
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(code.trim().strip_prefix("omoi1.").unwrap()).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     let h = v["key"].as_str().unwrap();
     (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
 }
 
-/// Una línea cifrada con la clave 1 (sin prefijo), con lo que se quiera dentro.
-fn cifrar_linea(clave: &[u8], json: &serde_json::Value) -> String {
+/// A line encrypted with key 1 (no prefix), with whatever you want inside.
+fn encrypt_line(key: &[u8], json: &serde_json::Value) -> String {
     use aes_siv::KeyInit;
     use base64::Engine;
-    let c = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().encrypt([b"omoikane-sync-v1".as_slice()], json.to_string().as_bytes()).unwrap();
+    let c = aes_siv::siv::Aes256Siv::new_from_slice(key).unwrap().encrypt([b"omoikane-sync-v1".as_slice()], json.to_string().as_bytes()).unwrap();
     base64::engine::general_purpose::STANDARD_NO_PAD.encode(c)
 }
 
-/// Lo que lleva dentro una línea cifrada con la clave 1, o `None` si no es de esa clave (otra
-/// etiqueta, otra clave).
-fn descifrar_linea(clave: &[u8], linea: &str) -> Option<serde_json::Value> {
+/// What a line encrypted with key 1 carries inside, or `None` if it is not from that key (another
+/// label, another key).
+fn decrypt_line(key: &[u8], line: &str) -> Option<serde_json::Value> {
     use aes_siv::KeyInit;
     use base64::Engine;
-    let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(linea.trim()).ok()?;
-    let t = aes_siv::siv::Aes256Siv::new_from_slice(clave).unwrap().decrypt([b"omoikane-sync-v1".as_slice()], &c).ok()?;
+    let c = base64::engine::general_purpose::STANDARD_NO_PAD.decode(line.trim()).ok()?;
+    let t = aes_siv::siv::Aes256Siv::new_from_slice(key).unwrap().decrypt([b"omoikane-sync-v1".as_slice()], &c).ok()?;
     serde_json::from_slice(&t).ok()
 }
 
-/// El `min_reader` de `omoikane.format` del repositorio general (1 si aún no está).
-fn min_reader(p: &Prueba, clave: &[u8]) -> u64 {
-    std::fs::read_to_string(p.clon_de(&p.url()).join("omoikane.format"))
+/// The `min_reader` from the general repository's `omoikane.format` (1 if it is not there yet).
+fn min_reader(p: &Harness, key: &[u8]) -> u64 {
+    std::fs::read_to_string(p.clone_of(&p.url()).join("omoikane.format"))
         .ok()
-        .and_then(|t| descifrar_linea(clave, &t))
+        .and_then(|t| decrypt_line(key, &t))
         .and_then(|v| v["min_reader"].as_u64())
         .unwrap_or(1)
 }
 
-/// Si el commit ha subido el `min_reader` del repositorio, la 1.0 no puede escribir en él (y es lo
-/// que se espera): se comprueba que se aparta con un mensaje claro y sin tocar nada, y la prueba de
-/// ese repositorio acaba ahí. Devuelve `true` si es el caso.
-fn la_10_se_aparta(p: &Prueba, viejo: &Equipo, clave: &[u8]) -> bool {
-    let m = min_reader(p, clave);
+/// If the commit has raised the repository's `min_reader`, 1.0 cannot write to it (and that is
+/// expected): it checks that it steps away with a clear message and without touching anything, and the test of
+/// that repository ends there. Returns `true` if that is the case.
+fn v10_steps_away(p: &Harness, old: &Machine, key: &[u8]) -> bool {
+    let m = min_reader(p, key);
     if m <= 1 {
         return false;
     }
     eprintln!("compat: el commit pide min_reader {m}: la 1.0 no debe tocar el repositorio");
     let commits = p.commits();
-    viejo.guardar(&viejo.dir, "fact", "No debe subir", "Nada.", &["--global"]);
-    let o = viejo.omoi_en(&viejo.dir, &["sync"]);
+    old.save(&old.dir, "fact", "No debe subir", "Nada.", &["--global"]);
+    let o = old.omoi_in(&old.dir, &["sync"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("needs a newer version of omoi"), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(p.commits(), commits, "no escribe nada en él");
     true
 }
 
-// --- Sincronizar por el mismo repositorio ------------------------------------------------------------
+// --- Syncing through the same repository -------------------------------------------------------------
 
-/// `de` escribe (memorias con historial, un veredicto con motivo, un olvido) y `a` lo recibe todo; lo
-/// que `a` saca de la papelera vuelve a `de`.
-fn de_un_equipo_a_otro(de: &Equipo, a: &Equipo) {
-    let remoto = "git@github.com:marc/tienda.git";
-    let (pd, pa) = (de.proyecto("tienda", remoto), a.proyecto("tienda", remoto));
-    let q = de.quien();
-    let cookie = de.guardar(&pd, "decision", &format!("Sesiones por cookie, de {q}"), "La autenticación usa una cookie de sesión.", &[]);
-    de.ok_en(&pd, &["update", &cookie, "-c", "La autenticación usaba una cookie de sesión; ver JWT.", "-r", "aclarado"]);
-    let jwt = de.guardar(&pd, "decision", &format!("Autenticación con JWT, de {q}"), "Se pasó a JWT en la cabecera Authorization.", &[]);
-    de.tool_en(&pd, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
-    let olvidada = de.guardar(&de.dir, "fact", &format!("El puerto de pagos, de {q}"), "Escucha en el 8080.", &["--global"]);
-    de.sync_en(&pd);
-    a.sync_en(&pa);
-    assert!(a.get(&olvidada).is_some(), "{}: llega de {q}", a.quien());
-    de.ok(&["forget", &olvidada, "--yes"]);
-    de.sync_en(&pd);
-    a.sync_en(&pa);
+/// `from` writes (memories with history, a verdict with a reason, a forget) and `to` receives it all; what
+/// `to` takes out of the trash comes back to `from`.
+fn from_one_machine_to_another(from: &Machine, to: &Machine) {
+    let remote = "git@github.com:marc/tienda.git";
+    let (pd, pa) = (from.project("tienda", remote), to.project("tienda", remote));
+    let q = from.who();
+    let cookie = from.save(&pd, "decision", &format!("Sesiones por cookie, de {q}"), "La autenticación usa una cookie de sesión.", &[]);
+    from.ok_in(&pd, &["update", &cookie, "-c", "La autenticación usaba una cookie de sesión; ver JWT.", "-r", "aclarado"]);
+    let jwt = from.save(&pd, "decision", &format!("Autenticación con JWT, de {q}"), "Se pasó a JWT en la cabecera Authorization.", &[]);
+    from.tool_in(&pd, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
+    let forgotten = from.save(&from.dir, "fact", &format!("El puerto de pagos, de {q}"), "Escucha en el 8080.", &["--global"]);
+    from.sync_in(&pd);
+    to.sync_in(&pa);
+    assert!(to.get(&forgotten).is_some(), "{}: llega de {q}", to.who());
+    from.ok(&["forget", &forgotten, "--yes"]);
+    from.sync_in(&pd);
+    to.sync_in(&pa);
 
-    // Las memorias, en la carpeta del proyecto de este equipo y con su historial.
-    let m = a.get(&cookie).unwrap_or_else(|| panic!("{}: falta la memoria de {q}", a.quien()));
+    // The memories, in this machine's project folder and with their history.
+    let m = to.get(&cookie).unwrap_or_else(|| panic!("{}: falta la memoria de {q}", to.who()));
     assert_eq!(m["content"], "La autenticación usaba una cookie de sesión; ver JWT.");
-    let ruta_a = pa.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\").to_string();
-    assert_eq!(m["project"].as_str(), Some(ruta_a.as_str()), "en la carpeta de {}: {m}", a.quien());
-    let h = a.json_en(&pa, &["history", &cookie]);
-    assert_eq!(h.as_array().unwrap().len(), 1, "{}: el historial viaja: {h}", a.quien());
-    // El veredicto, con su motivo y su autor.
-    let rev = a.json_en(&pa, &["review", "--all"]);
+    let path_a = pa.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    assert_eq!(m["project"].as_str(), Some(path_a.as_str()), "en la carpeta de {}: {m}", to.who());
+    let h = to.json_in(&pa, &["history", &cookie]);
+    assert_eq!(h.as_array().unwrap().len(), 1, "{}: el historial viaja: {h}", to.who());
+    // The verdict, with its reason and its author.
+    let rev = to.json_in(&pa, &["review", "--all"]);
     let av = rev
         .as_array()
         .unwrap()
         .iter()
         .find(|x| x["kind"] == "superseded" && x["memory_id"] == cookie.as_str())
-        .unwrap_or_else(|| panic!("{}: falta el veredicto de {q}: {rev}", a.quien()));
-    assert_eq!((av["other_id"].as_str(), av["reason"].as_str(), av["author"].as_str()), (Some(jwt.as_str()), Some("JWT replaced the cookie"), Some(persona(de))), "{av}");
-    // El olvido llega; lo olvidado se recupera desde el otro equipo y vuelve.
-    assert!(a.get(&olvidada).is_none(), "{}: el olvido de {q} llega", a.quien());
-    assert!(a.ok(&["sync", "restore"]).contains("El puerto de pagos"), "{}: en la papelera de la sync", a.quien());
-    a.ok(&["sync", "restore", &olvidada]);
-    assert_eq!(a.get(&olvidada).unwrap()["content"], "Escucha en el 8080.");
-    a.sync_en(&pa);
-    de.sync_en(&pd);
-    assert!(de.get(&olvidada).is_some(), "{q}: la recuperada en {} vuelve", a.quien());
-    assert!(!de.ok(&["trash"]).contains("El puerto de pagos"), "{q}: y sale de su papelera");
+        .unwrap_or_else(|| panic!("{}: falta el veredicto de {q}: {rev}", to.who()));
+    assert_eq!((av["other_id"].as_str(), av["reason"].as_str(), av["author"].as_str()), (Some(jwt.as_str()), Some("JWT replaced the cookie"), Some(person(from))), "{av}");
+    // The forget arrives; what was forgotten is recovered from the other machine and comes back.
+    assert!(to.get(&forgotten).is_none(), "{}: el olvido de {q} llega", to.who());
+    assert!(to.ok(&["sync", "restore"]).contains("El puerto de pagos"), "{}: en la papelera de la sync", to.who());
+    to.ok(&["sync", "restore", &forgotten]);
+    assert_eq!(to.get(&forgotten).unwrap()["content"], "Escucha en el 8080.");
+    to.sync_in(&pa);
+    from.sync_in(&pd);
+    assert!(from.get(&forgotten).is_some(), "{q}: la recuperada en {} vuelve", to.who());
+    assert!(!from.ok(&["trash"]).contains("El puerto de pagos"), "{q}: y sale de su papelera");
 }
 
-fn ida_y_vuelta(bin_a: &Path, bin_b: &Path, nombre: &str) {
-    let p = Prueba::nueva(nombre);
-    let (a, b) = dos(&p, bin_a, bin_b);
-    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
-    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+fn round_trip(bin_a: &Path, bin_b: &Path, name: &str) {
+    let p = Harness::new(name);
+    let (a, b) = two(&p, bin_a, bin_b);
+    let key = key_from_code(&a.ok(&["sync", "code"]));
+    a.save(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
     a.sync();
-    let viejo = if a.es_el_commit() { &b } else { &a };
-    if la_10_se_aparta(&p, viejo, &clave) {
+    let old = if a.is_the_commit() { &b } else { &a };
+    if v10_steps_away(&p, old, &key) {
         return;
     }
-    de_un_equipo_a_otro(&a, &b);
-    de_un_equipo_a_otro(&b, &a);
+    from_one_machine_to_another(&a, &b);
+    from_one_machine_to_another(&b, &a);
 }
 
 #[test]
-fn el_commit_configura_y_la_10_se_une() {
-    let Some(v10) = binario_10() else { return };
-    ida_y_vuelta(Path::new(NUEVO), &v10, "commit-10");
+fn the_commit_sets_up_and_10_joins() {
+    let Some(v10) = binary_10() else { return };
+    round_trip(Path::new(NEW), &v10, "commit-10");
 }
 
 #[test]
-fn la_10_configura_y_el_commit_se_une() {
-    let Some(v10) = binario_10() else { return };
-    ida_y_vuelta(&v10, Path::new(NUEVO), "10-commit");
+fn v10_sets_up_and_the_commit_joins() {
+    let Some(v10) = binary_10() else { return };
+    round_trip(&v10, Path::new(NEW), "10-commit");
 }
 
-/// Un repositorio para un espacio (con su clave) y la rotación de claves, con cada binario a un lado.
-fn espacios_y_rotacion(bin_a: &Path, bin_b: &Path, nombre: &str) {
-    let p = Prueba::nueva(nombre);
-    let (a, b) = dos(&p, bin_a, bin_b);
-    let acme = p.otro_repo("acme");
+/// A repository for a space (with its key) and key rotation, with each binary on one side.
+fn spaces_and_rotation(bin_a: &Path, bin_b: &Path, name: &str) {
+    let p = Harness::new(name);
+    let (a, b) = two(&p, bin_a, bin_b);
+    let acme = p.another_repo("acme");
     a.ok(&["sync", "init", "--space", "acme", &acme, "--yes"]);
-    let codigo = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
-    b.ok(&["sync", "join", &codigo, "--yes"]);
+    let code = a.ok(&["sync", "code", "--space", "acme"]).trim().to_string();
+    b.ok(&["sync", "join", &code, "--yes"]);
     a.ok(&["space", "add", "acme"]);
-    let web = a.proyecto("acme-web", "git@github.com:acme/web.git");
-    a.ok_en(&web, &["space", "assign", "acme"]);
-    let de_acme = a.guardar(&web, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
-    let del_proyecto = a.guardar(&web, "fact", "El staging de Acme está en Frankfurt", "Región eu-central-1.", &[]);
-    let general = a.guardar(&a.dir, "fact", "Mi editor es Helix", "Con el tema por defecto.", &["--global"]);
+    let web = a.project("acme-web", "git@github.com:acme/web.git");
+    a.ok_in(&web, &["space", "assign", "acme"]);
+    let acme_one = a.save(&web, "decision", "Acme factura en euros", "Siempre con IVA.", &["--space=acme"]);
+    let project_one = a.save(&web, "fact", "El staging de Acme está en Frankfurt", "Región eu-central-1.", &[]);
+    let general = a.save(&a.dir, "fact", "Mi editor es Helix", "Con el tema por defecto.", &["--global"]);
     a.sync();
     b.sync();
-    assert_eq!(b.get(&de_acme).unwrap_or_else(|| panic!("{}: falta la de acme", b.quien()))["space"], "acme");
-    assert_eq!(b.get(&del_proyecto).unwrap_or_else(|| panic!("{}: falta la del proyecto de acme", b.quien()))["space"], "acme");
+    assert_eq!(b.get(&acme_one).unwrap_or_else(|| panic!("{}: falta la de acme", b.who()))["space"], "acme");
+    assert_eq!(b.get(&project_one).unwrap_or_else(|| panic!("{}: falta la del proyecto de acme", b.who()))["space"], "acme");
     assert!(b.get(&general).is_some());
-    // En el repositorio de acme, solo lo de acme.
-    let clave_acme = clave_del_codigo(&codigo);
-    let lineas = p.lineas_de(&acme);
-    assert!(!lineas.is_empty());
-    for l in lineas {
-        let j = descifrar_linea(&clave_acme, &l).unwrap_or_else(|| panic!("una línea de acme que no abre su clave: {l}"));
+    // In acme's repository, only acme's stuff.
+    let acme_key = key_from_code(&code);
+    let lines = p.lines_of(&acme);
+    assert!(!lines.is_empty());
+    for l in lines {
+        let j = decrypt_line(&acme_key, &l).unwrap_or_else(|| panic!("una línea de acme que no abre su clave: {l}"));
         assert_eq!(j["space_key"], "acme", "{j}");
     }
-    // Lo que B escribe en acme vuelve a A por el de acme.
-    let de_b = b.guardar(&b.dir, "gotcha", "La VPN de Acme corta a la hora", "Volver a entrar.", &["--space=acme"]);
+    // What B writes in acme comes back to A through acme's.
+    let from_b = b.save(&b.dir, "gotcha", "La VPN de Acme corta a la hora", "Volver a entrar.", &["--space=acme"]);
     b.sync();
     a.sync();
-    assert_eq!(a.get(&de_b).unwrap_or_else(|| panic!("{}: falta la de {}", a.quien(), b.quien()))["space"], "acme");
+    assert_eq!(a.get(&from_b).unwrap_or_else(|| panic!("{}: falta la de {}", a.who(), b.who()))["space"], "acme");
 
-    // A rota la clave del general: B, con la vieja, no lee lo nuevo hasta unirse con el código nuevo.
-    let r = a.json_en(&a.dir, &["sync", "rotate", "--yes"]);
+    // A rotates the general key: B, with the old one, does not read the new stuff until it joins with the new code.
+    let r = a.json_in(&a.dir, &["sync", "rotate", "--yes"]);
     assert_eq!(r["key"], 2, "{r}");
-    let nuevo = a.ok(&["sync", "code"]).trim().to_string();
-    let tras_rotar = a.guardar(&a.dir, "decision", "Las copias van a Atlas", "Cada noche a las tres.", &["--global"]);
+    let new_code = a.ok(&["sync", "code"]).trim().to_string();
+    let after_rotating = a.save(&a.dir, "decision", "Las copias van a Atlas", "Cada noche a las tres.", &["--global"]);
     a.sync();
-    let r = b.json_en(&b.dir, &["sync"]);
-    assert!(b.get(&tras_rotar).is_none() && r["ilegibles"].as_u64().unwrap() > 0, "{}: {r}", b.quien());
+    let r = b.json_in(&b.dir, &["sync"]);
+    assert!(b.get(&after_rotating).is_none() && r["ilegibles"].as_u64().unwrap() > 0, "{}: {r}", b.who());
     assert!(b.ok(&["sync", "status"]).contains("key has changed"));
-    b.ok(&["sync", "join", &nuevo, "--yes"]);
-    assert!(b.get(&tras_rotar).is_some(), "{}: con la clave nueva", b.quien());
-    let de_b = b.guardar(&b.dir, "fact", "Atlas se duerme a los 20 minutos", "Wake-on-lan.", &["--global"]);
+    b.ok(&["sync", "join", &new_code, "--yes"]);
+    assert!(b.get(&after_rotating).is_some(), "{}: con la clave nueva", b.who());
+    let from_b = b.save(&b.dir, "fact", "Atlas se duerme a los 20 minutos", "Wake-on-lan.", &["--global"]);
     b.sync();
     a.sync();
-    assert!(a.get(&de_b).is_some(), "{}: lo de {} tras rotar", a.quien(), b.quien());
+    assert!(a.get(&from_b).is_some(), "{}: lo de {} tras rotar", a.who(), b.who());
 
-    // B rota la de acme, y A hace lo que hizo B.
-    let r = b.json_en(&b.dir, &["sync", "rotate", "--space", "acme", "--yes"]);
+    // B rotates acme's, and A does what B did.
+    let r = b.json_in(&b.dir, &["sync", "rotate", "--space", "acme", "--yes"]);
     assert_eq!(r["key"], 2, "{r}");
-    let nuevo_acme = r["code"].as_str().unwrap().to_string();
-    let tras_rotar = b.guardar(&b.dir, "fact", "Acme cierra en agosto", "Todo el mes.", &["--space=acme"]);
+    let new_acme_code = r["code"].as_str().unwrap().to_string();
+    let after_rotating = b.save(&b.dir, "fact", "Acme cierra en agosto", "Todo el mes.", &["--space=acme"]);
     b.sync();
-    let r = a.json_en(&a.dir, &["sync"]);
-    assert!(a.get(&tras_rotar).is_none(), "{}: {r}", a.quien());
-    a.ok(&["sync", "join", &nuevo_acme, "--yes"]);
-    assert_eq!(a.get(&tras_rotar).unwrap_or_else(|| panic!("{}: con la clave nueva de acme", a.quien()))["space"], "acme");
+    let r = a.json_in(&a.dir, &["sync"]);
+    assert!(a.get(&after_rotating).is_none(), "{}: {r}", a.who());
+    a.ok(&["sync", "join", &new_acme_code, "--yes"]);
+    assert_eq!(a.get(&after_rotating).unwrap_or_else(|| panic!("{}: con la clave nueva de acme", a.who()))["space"], "acme");
     a.sync();
     b.sync();
 }
 
 #[test]
-fn espacios_y_rotacion_el_commit_configura() {
-    let Some(v10) = binario_10() else { return };
-    espacios_y_rotacion(Path::new(NUEVO), &v10, "esp-commit-10");
+fn spaces_and_rotation_the_commit_sets_up() {
+    let Some(v10) = binary_10() else { return };
+    spaces_and_rotation(Path::new(NEW), &v10, "esp-commit-10");
 }
 
 #[test]
-fn espacios_y_rotacion_la_10_configura() {
-    let Some(v10) = binario_10() else { return };
-    espacios_y_rotacion(&v10, Path::new(NUEVO), "esp-10-commit");
+fn spaces_and_rotation_10_sets_up() {
+    let Some(v10) = binary_10() else { return };
+    spaces_and_rotation(&v10, Path::new(NEW), "esp-10-commit");
 }
 
-const HLC_FUTURO: &str = "1761696000000-0000000000-pc-futuro";
+const HLC_FUTURE: &str = "1761696000000-0000000000-pc-futuro";
 
-/// Una 1.x más nueva escribe en el repositorio una memoria, un veredicto y un olvido con un campo que
-/// la 1.0 no conoce, y líneas de un tipo nuevo. La 1.0 las cuenta aparte (no como ilegibles), cambia
-/// la memoria y la vuelve a subir con el campo, y no toca el fichero de la otra; el commit la recibe
-/// con el campo.
+/// A newer 1.x writes to the repository a memory, a verdict and a forget with a field that
+/// 1.0 does not know, and lines of a new type. 1.0 counts them separately (not as unreadable), changes
+/// the memory and pushes it again with the field, and does not touch the other one's file; the commit receives it
+/// with the field.
 #[test]
-fn lo_que_escribe_una_1x_pasa_por_la_10_sin_perderse() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("futuro");
-    let (a, viejo) = dos(&p, Path::new(NUEVO), &v10);
-    let c = p.equipo("pc-c", Path::new(NUEVO));
+fn what_a_1x_writes_passes_through_10_without_loss() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("futuro");
+    let (a, old) = two(&p, Path::new(NEW), &v10);
+    let c = p.machine("pc-c", Path::new(NEW));
     c.ok(&["sync", "join", a.ok(&["sync", "code"]).trim(), "--yes", "--author", "Ana"]);
-    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
-    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+    let key = key_from_code(&a.ok(&["sync", "code"]));
+    a.save(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
     a.sync();
-    if la_10_se_aparta(&p, &viejo, &clave) {
+    if v10_steps_away(&p, &old, &key) {
         return;
     }
     let id = "01M62EWVHRXM0000000000FUT1";
-    let olvidada = "01M62EWVHRXM0000000000FUT2";
-    let futuro = serde_json::json!({ "x": 1, "y": ["dos"] });
-    let lineas = [
+    let forgotten = "01M62EWVHRXM0000000000FUT2";
+    let future = serde_json::json!({ "x": 1, "y": ["dos"] });
+    let lines = [
         serde_json::json!({
             "type": "memory", "id": id, "project_key": "", "project_path": "", "kind": "fact",
             "title": "Una memoria de una 1.x", "content": "Con un campo que la 1.0 no conoce.",
             "created_at": "2026-10-29T00:00:00.000Z", "updated_at": "2026-10-29T00:00:00.000Z",
-            "hlc": HLC_FUTURO, "machine": "pc-futuro", "futuro": futuro
+            "hlc": HLC_FUTURE, "machine": "pc-futuro", "futuro": future
         }),
         serde_json::json!({
             "type": "verdict", "memory_id": id, "relation": "ok:unused", "at": "2026-10-29T00:00:00.000Z",
-            "hlc": "1761696000001-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": futuro
+            "hlc": "1761696000001-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": future
         }),
         serde_json::json!({
-            "type": "tombstone", "id": olvidada, "deleted_at": "2026-10-29T00:00:00.000Z",
-            "hlc": "1761696000002-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": futuro
+            "type": "tombstone", "id": forgotten, "deleted_at": "2026-10-29T00:00:00.000Z",
+            "hlc": "1761696000002-0000000000-pc-futuro", "machine": "pc-futuro", "futuro": future
         }),
     ];
-    let comentario = serde_json::json!({ "type": "comment", "memory_id": id, "text": "una línea de un tipo nuevo", "hlc": HLC_FUTURO });
-    let mut texto: Vec<String> = lineas.iter().map(|l| cifrar_linea(&clave, l)).collect();
-    texto.push(cifrar_linea(&clave, &comentario));
-    texto.push(format!("z2:{}", cifrar_linea(&clave, &comentario)));
-    let fichero = texto.join("\n") + "\n";
-    p.subir_a_mano("global/m-futuro.jsonl", &fichero);
+    let comment = serde_json::json!({ "type": "comment", "memory_id": id, "text": "una línea de un tipo nuevo", "hlc": HLC_FUTURE });
+    let mut text: Vec<String> = lines.iter().map(|l| encrypt_line(&key, l)).collect();
+    text.push(encrypt_line(&key, &comment));
+    text.push(format!("z2:{}", encrypt_line(&key, &comment)));
+    let file = text.join("\n") + "\n";
+    p.push_by_hand("global/m-futuro.jsonl", &file);
 
-    let r = viejo.sync();
+    let r = old.sync();
     assert_eq!((r["nuevas"].as_u64(), r["de_version_nueva"].as_u64()), (Some(2), Some(2)), "la de la 1.x y la de A: {r}");
-    assert!(viejo.get(id).is_some());
-    let equipo_viejo = r["equipo"].as_str().unwrap().to_string();
-    assert!(viejo.ok(&["sync", "status"]).contains("from a newer version"));
-    let guardado: String = viejo.base().query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&guardado).unwrap(), serde_json::json!({ "futuro": futuro }));
+    assert!(old.get(id).is_some());
+    let old_machine = r["equipo"].as_str().unwrap().to_string();
+    assert!(old.ok(&["sync", "status"]).contains("from a newer version"));
+    let stored: String = old.db().query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap(), serde_json::json!({ "futuro": future }));
 
-    // La 1.0 la cambia y la vuelve a subir: el campo va con la memoria, el veredicto y el olvido.
-    viejo.ok(&["update", id, "-c", "Cambiada por la 1.0.", "-r", "aquí"]);
-    viejo.ok(&["update", id, "--pin"]);
-    viejo.sync();
-    let del_viejo: Vec<serde_json::Value> = p.lineas_de(&p.url()).iter().filter_map(|l| descifrar_linea(&clave, l)).filter(|l| l["machine"] == equipo_viejo.as_str()).collect();
-    let memoria = del_viejo.iter().find(|l| l["type"] == "memory" && l["id"] == id).unwrap_or_else(|| panic!("{del_viejo:?}"));
-    assert_eq!((&memoria["content"], &memoria["pinned"], &memoria["futuro"]), (&serde_json::json!("Cambiada por la 1.0."), &serde_json::json!(true), &futuro), "{memoria}");
-    assert_ne!(memoria["hlc"], HLC_FUTURO);
-    for tipo in ["verdict", "tombstone"] {
-        let l = del_viejo.iter().find(|l| l["type"] == tipo).unwrap_or_else(|| panic!("{tipo}: {del_viejo:?}"));
-        assert_eq!(l["futuro"], futuro, "{l}");
+    // 1.0 changes it and pushes it again: the field goes with the memory, the verdict and the forget.
+    old.ok(&["update", id, "-c", "Cambiada por la 1.0.", "-r", "aquí"]);
+    old.ok(&["update", id, "--pin"]);
+    old.sync();
+    let from_old: Vec<serde_json::Value> = p.lines_of(&p.url()).iter().filter_map(|l| decrypt_line(&key, l)).filter(|l| l["machine"] == old_machine.as_str()).collect();
+    let memory = from_old.iter().find(|l| l["type"] == "memory" && l["id"] == id).unwrap_or_else(|| panic!("{from_old:?}"));
+    assert_eq!((&memory["content"], &memory["pinned"], &memory["futuro"]), (&serde_json::json!("Cambiada por la 1.0."), &serde_json::json!(true), &future), "{memory}");
+    assert_ne!(memory["hlc"], HLC_FUTURE);
+    for kind in ["verdict", "tombstone"] {
+        let l = from_old.iter().find(|l| l["type"] == kind).unwrap_or_else(|| panic!("{kind}: {from_old:?}"));
+        assert_eq!(l["futuro"], future, "{l}");
     }
-    // El fichero de la 1.x sigue tal cual, con las líneas que la 1.0 no entiende.
-    let en_repo = std::fs::read_to_string(p.clon_de(&p.url()).join("global").join("m-futuro.jsonl")).unwrap();
-    assert_eq!(en_repo, fichero);
+    // The 1.x file stays as it was, with the lines 1.0 does not understand.
+    let in_repo = std::fs::read_to_string(p.clone_of(&p.url()).join("global").join("m-futuro.jsonl")).unwrap();
+    assert_eq!(in_repo, file);
 
-    // El commit la recibe cambiada y con el campo.
+    // The commit receives it changed and with the field.
     c.sync();
     assert_eq!(c.get(id).expect("llega al commit")["content"], "Cambiada por la 1.0.");
-    let guardado: String = c.base().query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&guardado).unwrap()["futuro"], futuro);
+    let stored: String = c.db().query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap()["futuro"], future);
 }
 
-/// 1.8: los datos estructurados de una memoria (`--data`) viajan como un campo `data` de la línea que
-/// la 1.0 no conoce: los guarda, la cambia y los reenvía sin perderlos.
+/// 1.8: a memory's structured data (`--data`) travels as a `data` field of the line that
+/// 1.0 does not know: it keeps it, changes the memory and forwards it without losing it.
 #[test]
-fn los_datos_pasan_por_la_10_sin_perderse() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("datos");
-    let (a, viejo) = dos(&p, Path::new(NUEVO), &v10);
-    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
-    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+fn data_passes_through_10_without_loss() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("datos");
+    let (a, old) = two(&p, Path::new(NEW), &v10);
+    let key = key_from_code(&a.ok(&["sync", "code"]));
+    a.save(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
     a.sync();
-    if la_10_se_aparta(&p, &viejo, &clave) {
+    if v10_steps_away(&p, &old, &key) {
         return;
     }
-    let datos = serde_json::json!({ "ruta": ["web", "seo-geo"], "prod_tests": true });
-    let id = a.guardar(&a.dir, "decision", "Kumi: perfil del proyecto", "Lo que decidió Marc.", &["--global", "--data", &datos.to_string()]);
+    let data = serde_json::json!({ "ruta": ["web", "seo-geo"], "prod_tests": true });
+    let id = a.save(&a.dir, "decision", "Kumi: perfil del proyecto", "Lo que decidió Marc.", &["--global", "--data", &data.to_string()]);
     a.sync();
-    viejo.sync();
-    let guardado: String = viejo.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&guardado).unwrap()["data"], datos);
-    viejo.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
-    viejo.sync();
+    old.sync();
+    let stored: String = old.db().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&stored).unwrap()["data"], data);
+    old.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
+    old.sync();
     a.sync();
     let m = a.get(&id).unwrap();
-    assert_eq!((&m["content"], &m["data"]), (&serde_json::json!("Cambiado por la 1.0."), &datos), "{m}");
+    assert_eq!((&m["content"], &m["data"]), (&serde_json::json!("Cambiado por la 1.0."), &data), "{m}");
 }
 
-/// 1.8.5: la verificación de una persona (`verified`) y la procedencia (`provenance`) viajan como
-/// campos de la línea que la 1.0 no conoce: los guarda y los reenvía. Si la 1.0 solo la fija, la
-/// verificación sigue valiendo; si cambia el texto, deja de valer (su huella ya no coincide), y la
-/// procedencia se queda.
+/// 1.8.5: a person's verification (`verified`) and the provenance (`provenance`) travel as
+/// fields of the line that 1.0 does not know: it keeps and forwards them. If 1.0 only pins it, the
+/// verification still holds; if it changes the text, it no longer holds (its fingerprint no longer matches), and the
+/// provenance stays.
 #[test]
-fn la_verificacion_y_la_procedencia_pasan_por_la_10() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("verificada");
-    let (a, viejo) = dos(&p, Path::new(NUEVO), &v10);
-    let clave = clave_del_codigo(&a.ok(&["sync", "code"]));
-    a.guardar(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
+fn verification_and_provenance_pass_through_10() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("verificada");
+    let (a, old) = two(&p, Path::new(NEW), &v10);
+    let key = key_from_code(&a.ok(&["sync", "code"]));
+    a.save(&a.dir, "fact", "Para que se escriba el formato", "Algo.", &["--global"]);
     a.sync();
-    if la_10_se_aparta(&p, &viejo, &clave) {
+    if v10_steps_away(&p, &old, &key) {
         return;
     }
-    // Sin las variables de la shell de un agente (si los tests corren dentro de una, `verify` se niega).
-    let sin_agente = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
-        let mut c = a.comando(&a.dir);
+    // Without an agent shell's variables (if the tests run inside one, `verify` refuses).
+    let without_agent = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
+        let mut c = a.command(&a.dir);
         for v in omoikane::verificado::DE_AGENTE {
             c.env_remove(v);
         }
@@ -581,23 +581,23 @@ fn la_verificacion_y_la_procedencia_pasan_por_la_10() {
         assert!(o.status.success(), "omoi {args:?}: {}", String::from_utf8_lossy(&o.stderr));
         serde_json::from_slice(&o.stdout).unwrap()
     };
-    let id = sin_agente(&["remember", "-k", "decision", "-t", "Verificada por Marc", "--global", "Lo decidió Marc."], &[("OMOIKANE_SESSION", "s-compat")])["id"]
+    let id = without_agent(&["remember", "-k", "decision", "-t", "Verificada por Marc", "--global", "Lo decidió Marc."], &[("OMOIKANE_SESSION", "s-compat")])["id"]
         .as_str()
         .unwrap()
         .to_string();
-    sin_agente(&["verify", &id, "--by", "Marc", "--yes"], &[]);
+    without_agent(&["verify", &id, "--by", "Marc", "--yes"], &[]);
     a.sync();
-    viejo.sync();
-    let guardado: String = viejo.base().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
-    let guardado: serde_json::Value = serde_json::from_str(&guardado).unwrap();
-    assert_eq!((&guardado["verified"]["by"], &guardado["provenance"]["session"]), (&serde_json::json!("Marc"), &serde_json::json!("s-compat")), "{guardado}");
-    viejo.ok(&["update", &id, "--pin"]);
-    viejo.sync();
+    old.sync();
+    let stored: String = old.db().query_row("SELECT extra FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!((&stored["verified"]["by"], &stored["provenance"]["session"]), (&serde_json::json!("Marc"), &serde_json::json!("s-compat")), "{stored}");
+    old.ok(&["update", &id, "--pin"]);
+    old.sync();
     a.sync();
     let m = a.get(&id).unwrap();
     assert_eq!((&m["pinned"], &m["verified"]["by"], &m["provenance"]["session"]), (&serde_json::json!(true), &serde_json::json!("Marc"), &serde_json::json!("s-compat")), "{m}");
-    viejo.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
-    viejo.sync();
+    old.ok(&["update", &id, "-c", "Cambiado por la 1.0.", "-r", "aquí"]);
+    old.sync();
     a.sync();
     let m = a.get(&id).unwrap();
     assert_eq!(m["content"], "Cambiado por la 1.0.");
@@ -605,136 +605,135 @@ fn la_verificacion_y_la_procedencia_pasan_por_la_10() {
     assert_eq!(m["provenance"]["session"], "s-compat", "{m}");
 }
 
-// --- La base ------------------------------------------------------------------------------------------
+// --- The database -------------------------------------------------------------------------------------
 
-/// Los ficheros de una base (`o.db`, `o.db-wal`…) con su contenido, para ver que nadie los toca.
-fn ficheros_de_la_base(dir: &Path, base: &str) -> Vec<(String, Vec<u8>)> {
+/// The files of a database (`o.db`, `o.db-wal`…) with their contents, to see that nobody touches them.
+fn db_files(dir: &Path, db: &str) -> Vec<(String, Vec<u8>)> {
     let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
         .unwrap()
         .flatten()
-        .filter(|f| f.file_name().to_string_lossy().starts_with(base))
+        .filter(|f| f.file_name().to_string_lossy().starts_with(db))
         .map(|f| (f.file_name().to_string_lossy().into_owned(), std::fs::read(f.path()).unwrap()))
         .collect();
     v.sort();
     v
 }
 
-fn version_de(db: &rusqlite::Connection) -> i64 {
+fn version_of(db: &rusqlite::Connection) -> i64 {
     db.query_row("PRAGMA user_version", [], |f| f.get(0)).unwrap()
 }
 
-/// La 1.0 abre una base del commit, la usa, y el commit sigue viendo lo que escribió la 1.0; o, si el
-/// commit ha subido `lector_minimo` por encima del esquema 10, se niega con un mensaje claro y sin
-/// tocarla. Además, contra la 1.0 de verdad: una base de un esquema futuro que solo añade se abre, y
-/// una que pide un lector más nuevo no se toca.
+/// 1.0 opens a database from the commit, uses it, and the commit still sees what 1.0 wrote; or, if the
+/// commit has raised `lector_minimo` above schema 10, it refuses with a clear message and without
+/// touching it. Also, against the real 1.0: a database from a future schema that only adds is opened, and
+/// one that asks for a newer reader is not touched.
 #[test]
-fn la_10_abre_la_base_del_commit() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("base");
-    let nuevo = p.equipo("pc", Path::new(NUEVO));
-    let viejo = p.equipo("pc", &v10);
-    let proyecto = nuevo.proyecto("tienda", "git@github.com:marc/tienda.git");
-    let id = nuevo.guardar(&proyecto, "decision", "Los precios van en céntimos", "Todos los importes en enteros.", &[]);
-    nuevo.ok_en(&proyecto, &["update", &id, "-c", "Todos los importes en enteros de céntimos.", "-r", "más claro"]);
-    let global = nuevo.guardar(&nuevo.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
-    let olvidada = nuevo.guardar(&nuevo.dir, "fact", "Una que sobra", "Nada.", &["--global"]);
-    nuevo.ok(&["forget", &olvidada, "--yes"]);
+fn v10_opens_the_commits_database() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("base");
+    let new = p.machine("pc", Path::new(NEW));
+    let old = p.machine("pc", &v10);
+    let project = new.project("tienda", "git@github.com:marc/tienda.git");
+    let id = new.save(&project, "decision", "Los precios van en céntimos", "Todos los importes en enteros.", &[]);
+    new.ok_in(&project, &["update", &id, "-c", "Todos los importes en enteros de céntimos.", "-r", "más claro"]);
+    let global = new.save(&new.dir, "preference", "Respuestas cortas", "Sin rodeos.", &["--global"]);
+    let forgotten = new.save(&new.dir, "fact", "Una que sobra", "Nada.", &["--global"]);
+    new.ok(&["forget", &forgotten, "--yes"]);
 
-    let (version, lector) = {
-        let db = nuevo.base();
-        let v = version_de(&db);
+    let (version, reader) = {
+        let db = new.db();
+        let v = version_of(&db);
         let l: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'lector_minimo'", [], |f| f.get(0)).ok();
         (v, l.and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(v))
     };
-    if lector > 10 {
-        eprintln!("compat: el commit pide lector_minimo {lector}: la 1.0 no debe abrir la base");
-        let antes = ficheros_de_la_base(&nuevo.dir, "o.db");
-        let o = viejo.omoi_en(&viejo.dir, &["get", &id]);
+    if reader > 10 {
+        eprintln!("compat: el commit pide lector_minimo {reader}: la 1.0 no debe abrir la base");
+        let before = db_files(&new.dir, "o.db");
+        let o = old.omoi_in(&old.dir, &["get", &id]);
         assert!(!o.status.success());
         assert!(String::from_utf8_lossy(&o.stderr).contains("newer omoi"), "{}", String::from_utf8_lossy(&o.stderr));
-        assert_eq!(ficheros_de_la_base(&nuevo.dir, "o.db"), antes, "sin tocarla");
+        assert_eq!(db_files(&new.dir, "o.db"), before, "sin tocarla");
     } else {
-        let m = viejo.get(&id).expect("la 1.0 la lee");
+        let m = old.get(&id).expect("la 1.0 la lee");
         assert_eq!(m["content"], "Todos los importes en enteros de céntimos.");
-        assert_eq!(viejo.json_en(&proyecto, &["history", &id]).as_array().unwrap().len(), 1);
-        let s = viejo.json_en(&proyecto, &["search", "céntimos"]);
+        assert_eq!(old.json_in(&project, &["history", &id]).as_array().unwrap().len(), 1);
+        let s = old.json_in(&project, &["search", "céntimos"]);
         assert_eq!(s[0]["id"], id.as_str(), "{s}");
-        assert!(viejo.get(&global).is_some());
-        assert!(viejo.ok(&["trash"]).contains("Una que sobra"));
-        let de_10 = viejo.guardar(&proyecto, "fact", "Escrita por la 1.0", "En la base del commit.", &[]);
-        viejo.ok_en(&proyecto, &["update", &id, "--pin"]);
-        // 1.9.0: el historial tiene `extra` (columna con valor por defecto): la 1.0 escribe en él
-        // nombrando sus columnas, y el commit lo lee.
-        viejo.ok_en(&proyecto, &["update", &id, "-c", "Todos los importes en enteros de céntimos, sin decimales.", "-r", "1.0"]);
-        assert_eq!(nuevo.json_en(&proyecto, &["history", &id]).as_array().unwrap().len(), 2);
+        assert!(old.get(&global).is_some());
+        assert!(old.ok(&["trash"]).contains("Una que sobra"));
+        let from_10 = old.save(&project, "fact", "Escrita por la 1.0", "En la base del commit.", &[]);
+        old.ok_in(&project, &["update", &id, "--pin"]);
+        // 1.9.0: the history has `extra` (a column with a default value): 1.0 writes to it
+        // naming its columns, and the commit reads it.
+        old.ok_in(&project, &["update", &id, "-c", "Todos los importes en enteros de céntimos, sin decimales.", "-r", "1.0"]);
+        assert_eq!(new.json_in(&project, &["history", &id]).as_array().unwrap().len(), 2);
         let extras: Vec<String> = {
-            let db = nuevo.base();
+            let db = new.db();
             let mut q = db.prepare("SELECT extra FROM memory_version WHERE memory_id = ?1").unwrap();
             q.query_map([&id], |f| f.get(0)).unwrap().map(Result::unwrap).collect()
         };
         assert_eq!(extras, vec!["{}".to_string(), "{}".to_string()]);
-        assert_eq!(version_de(&nuevo.base()), version, "la 1.0 no le baja el esquema");
-        // Y el commit sigue con ella.
-        assert_eq!(nuevo.get(&de_10).expect("el commit ve lo de la 1.0")["content"], "En la base del commit.");
-        assert_eq!(nuevo.get(&id).unwrap()["pinned"], true);
-        nuevo.ok(&["restore", &olvidada]);
+        assert_eq!(version_of(&new.db()), version, "la 1.0 no le baja el esquema");
+        // And the commit keeps working with it.
+        assert_eq!(new.get(&from_10).expect("el commit ve lo de la 1.0")["content"], "En la base del commit.");
+        assert_eq!(new.get(&id).unwrap()["pinned"], true);
+        new.ok(&["restore", &forgotten]);
     }
 
-    // Una base de un esquema futuro que solo añade (una tabla y una columna con valor por defecto,
-    // legible desde el 10): la 1.0 la abre, escribe en ella y no la baja.
-    let futura = p.dir.join("pc").join("futura.db");
-    nuevo.base().execute("VACUUM INTO ?1", [futura.to_str().unwrap()]).unwrap();
-    let esquema_futuro = version.max(10) + 1;
+    // A database from a future schema that only adds (a table and a column with a default value,
+    // readable from 10): 1.0 opens it, writes to it and does not downgrade it.
+    let future = p.dir.join("pc").join("futura.db");
+    new.db().execute("VACUUM INTO ?1", [future.to_str().unwrap()]).unwrap();
+    let future_schema = version.max(10) + 1;
     {
-        let db = rusqlite::Connection::open(&futura).unwrap();
+        let db = rusqlite::Connection::open(&future).unwrap();
         db.execute_batch(&format!(
-            "PRAGMA user_version = {esquema_futuro}; CREATE TABLE futura (x); INSERT INTO futura VALUES (1);
+            "PRAGMA user_version = {future_schema}; CREATE TABLE futura (x); INSERT INTO futura VALUES (1);
              ALTER TABLE memory ADD COLUMN futura TEXT NOT NULL DEFAULT 'x';
              INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', '10');"
         ))
         .unwrap();
     }
-    let con_futura = |args: &[&str]| viejo.comando(&viejo.dir).env("OMOIKANE_DB", &futura).args(args).stdin(Stdio::null()).output().unwrap();
-    let o = con_futura(&["--json", "remember", "-k", "fact", "-t", "En una base futura", "--global", "La 1.0 escribe en ella."]);
+    let with_future = |args: &[&str]| old.command(&old.dir).env("OMOIKANE_DB", &future).args(args).stdin(Stdio::null()).output().unwrap();
+    let o = with_future(&["--json", "remember", "-k", "fact", "-t", "En una base futura", "--global", "La 1.0 escribe en ella."]);
     assert!(o.status.success(), "la 1.0 abre una base que solo añade: {}", String::from_utf8_lossy(&o.stderr));
-    let o = con_futura(&["--json", "get", &global]);
+    let o = with_future(&["--json", "get", &global]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     {
-        let db = rusqlite::Connection::open(&futura).unwrap();
-        assert_eq!(version_de(&db), esquema_futuro, "no le baja el esquema");
+        let db = rusqlite::Connection::open(&future).unwrap();
+        assert_eq!(version_of(&db), future_schema, "no le baja el esquema");
         assert_eq!(db.query_row("SELECT count(*) FROM futura", [], |f| f.get::<_, i64>(0)).unwrap(), 1);
-        let (todas, con_valor): (i64, i64) = db.query_row("SELECT count(*), count(*) FILTER (WHERE futura = 'x') FROM memory", [], |f| Ok((f.get(0)?, f.get(1)?))).unwrap();
-        assert_eq!(todas, con_valor, "la columna nueva sigue, con su valor por defecto");
-        // Y otra que rompe: legible solo desde un esquema que la 1.0 no conoce.
-        db.execute_batch(&format!("PRAGMA user_version = {0}; UPDATE meta SET v = '{0}' WHERE k = 'lector_minimo';", esquema_futuro + 1)).unwrap();
+        let (all, with_value): (i64, i64) = db.query_row("SELECT count(*), count(*) FILTER (WHERE futura = 'x') FROM memory", [], |f| Ok((f.get(0)?, f.get(1)?))).unwrap();
+        assert_eq!(all, with_value, "la columna nueva sigue, con su valor por defecto");
+        // And another that breaks: readable only from a schema 1.0 does not know.
+        db.execute_batch(&format!("PRAGMA user_version = {0}; UPDATE meta SET v = '{0}' WHERE k = 'lector_minimo';", future_schema + 1)).unwrap();
     }
-    let antes = ficheros_de_la_base(&p.dir.join("pc"), "futura.db");
-    let o = con_futura(&["get", &global]);
+    let before = db_files(&p.dir.join("pc"), "futura.db");
+    let o = with_future(&["get", &global]);
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("newer omoi") && err.contains("update omoi"), "{err}");
-    assert_eq!(ficheros_de_la_base(&p.dir.join("pc"), "futura.db"), antes, "sin tocarla");
+    assert_eq!(db_files(&p.dir.join("pc"), "futura.db"), before, "sin tocarla");
 }
 
 // --- omoi export / omoi import ------------------------------------------------------------------------
 
-/// Una base con de todo: historial, un veredicto con motivo y la papelera.
-fn llenar(e: &Equipo, en: &Path, quien: &str) {
-    let cookie = e.guardar(en, "decision", &format!("Sesiones por cookie ({quien})"), "La autenticación usa una cookie de sesión.", &[]);
-    e.ok_en(en, &["update", &cookie, "-c", "La autenticación usaba una cookie de sesión; ver JWT.", "-r", "aclarado"]);
-    let jwt = e.guardar(en, "decision", &format!("Autenticación con JWT ({quien})"), "Se pasó a JWT en la cabecera Authorization.", &[]);
-    e.tool_en(en, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
-    e.guardar(en, "preference", &format!("Respuestas cortas ({quien})"), "Sin rodeos.", &["--global"]);
-    let sobra = e.guardar(en, "fact", &format!("Una que sobra ({quien})"), "Nada.", &["--global"]);
-    e.ok_en(en, &["update", &sobra, "-c", "Nada de nada.", "-r", "más claro"]);
-    e.ok_en(en, &["forget", &sobra, "--yes"]);
+/// A database with a bit of everything: history, a verdict with a reason and the trash.
+fn fill(e: &Machine, cwd: &Path, who: &str) {
+    let cookie = e.save(cwd, "decision", &format!("Sesiones por cookie ({who})"), "La autenticación usa una cookie de sesión.", &[]);
+    e.ok_in(cwd, &["update", &cookie, "-c", "La autenticación usaba una cookie de sesión; ver JWT.", "-r", "aclarado"]);
+    let jwt = e.save(cwd, "decision", &format!("Autenticación con JWT ({who})"), "Se pasó a JWT en la cabecera Authorization.", &[]);
+    e.tool_in(cwd, "update", &format!("{{\"id\":\"{jwt}\",\"supersedes\":[\"{cookie}\"],\"reason\":\"JWT replaced the cookie\"}}"));
+    e.save(cwd, "preference", &format!("Respuestas cortas ({who})"), "Sin rodeos.", &["--global"]);
+    let spare = e.save(cwd, "fact", &format!("Una que sobra ({who})"), "Nada.", &["--global"]);
+    e.ok_in(cwd, &["update", &spare, "-c", "Nada de nada.", "-r", "más claro"]);
+    e.ok_in(cwd, &["forget", &spare, "--yes"]);
 }
 
-/// Las líneas de una copia, sin la cabecera (lleva la hora) ni el cierre, y sin lo que depende del
-/// equipo que exporta (`machine`).
-fn cuerpo(texto: &str) -> Vec<serde_json::Value> {
-    texto
-        .lines()
+/// The lines of a backup, without the header (it carries the time) or the end line, and without what depends on the
+/// exporting machine (`machine`).
+fn body(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
         .map(|l| {
             let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
             if let Some(o) = v.as_object_mut() {
@@ -746,85 +745,85 @@ fn cuerpo(texto: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// `a` está dentro de `b`: todo lo que dice `a` lo dice `b` igual (en los objetos, `b` puede tener
-/// más campos).
-fn contenido(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+/// `a` is contained in `b`: everything `a` says, `b` says the same (in objects, `b` may have
+/// more fields).
+fn contained(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
-        (serde_json::Value::Object(x), serde_json::Value::Object(y)) => x.iter().all(|(k, v)| y.get(k).is_some_and(|w| contenido(v, w))),
-        (serde_json::Value::Array(x), serde_json::Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| contenido(v, w)),
+        (serde_json::Value::Object(x), serde_json::Value::Object(y)) => x.iter().all(|(k, v)| y.get(k).is_some_and(|w| contained(v, w))),
+        (serde_json::Value::Array(x), serde_json::Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| contained(v, w)),
         _ => a == b,
     }
 }
 
-/// Exporta desde `de`, importa en `a` (una base vacía) y vuelve a exportar desde `a`: no se pierde
-/// nada de lo que llevaba la copia de `de`, y repetir el import no cambia nada.
-fn copia_de_uno_a_otro(p: &Prueba, de: &Equipo, a: &Equipo, en: &Path) {
-    let o = de.omoi_en(en, &["export", "--all"]);
+/// Exports from `from`, imports into `to` (an empty database) and exports again from `to`: nothing
+/// carried by `from`'s backup is lost, and repeating the import changes nothing.
+fn backup_from_one_to_another(p: &Harness, from: &Machine, to: &Machine, cwd: &Path) {
+    let o = from.omoi_in(cwd, &["export", "--all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let texto = String::from_utf8(o.stdout).unwrap();
-    let fichero = p.dir.join(format!("copia-{}.jsonl", ulid::Ulid::generate()));
-    std::fs::write(&fichero, &texto).unwrap();
-    let cabecera: serde_json::Value = serde_json::from_str(texto.lines().next().unwrap()).unwrap();
-    let version = cabecera["version"].as_u64().unwrap();
-    if version > 2 && !a.es_el_commit() {
-        // El commit ha subido el formato: la 1.0 tiene que negarse y no meter nada.
+    let text = String::from_utf8(o.stdout).unwrap();
+    let file = p.dir.join(format!("copia-{}.jsonl", ulid::Ulid::generate()));
+    std::fs::write(&file, &text).unwrap();
+    let header: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    let version = header["version"].as_u64().unwrap();
+    if version > 2 && !to.is_the_commit() {
+        // The commit has raised the format: 1.0 must refuse and import nothing.
         eprintln!("compat: el commit exporta el formato {version}: la 1.0 no debe importarlo");
-        let o = a.omoi_en(en, &["import", fichero.to_str().unwrap()]);
+        let o = to.omoi_in(cwd, &["import", file.to_str().unwrap()]);
         assert!(!o.status.success());
         assert!(String::from_utf8_lossy(&o.stderr).contains("comes from a newer omoi"), "{}", String::from_utf8_lossy(&o.stderr));
-        assert!(cuerpo(&a.ok_en(en, &["export", "--all"])).is_empty(), "{}: no mete nada", a.quien());
+        assert!(body(&to.ok_in(cwd, &["export", "--all"])).is_empty(), "{}: no mete nada", to.who());
         return;
     }
-    let r = a.json_en(en, &["import", fichero.to_str().unwrap()]);
-    assert_eq!((r["skipped_lines"].as_u64(), r["updated"].as_u64()), (Some(0), Some(0)), "{}: {r}", a.quien());
-    let o = a.omoi_en(en, &["export", "--all"]);
+    let r = to.json_in(cwd, &["import", file.to_str().unwrap()]);
+    assert_eq!((r["skipped_lines"].as_u64(), r["updated"].as_u64()), (Some(0), Some(0)), "{}: {r}", to.who());
+    let o = to.omoi_in(cwd, &["export", "--all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let (antes, despues) = (cuerpo(&texto), cuerpo(&String::from_utf8(o.stdout).unwrap()));
-    assert_eq!(antes.len(), despues.len(), "{} → {}: {antes:#?}\n{despues:#?}", de.quien(), a.quien());
-    for l in &antes {
-        assert!(despues.iter().any(|d| contenido(l, d)), "{} → {}: se pierde {l:#}\nen {despues:#?}", de.quien(), a.quien());
+    let (before, after) = (body(&text), body(&String::from_utf8(o.stdout).unwrap()));
+    assert_eq!(before.len(), after.len(), "{} → {}: {before:#?}\n{after:#?}", from.who(), to.who());
+    for l in &before {
+        assert!(after.iter().any(|d| contained(l, d)), "{} → {}: se pierde {l:#}\nen {after:#?}", from.who(), to.who());
     }
-    let r = a.json_en(en, &["import", fichero.to_str().unwrap()]);
-    assert_eq!((r["new"].as_u64(), r["updated"].as_u64(), r["forgotten"].as_u64()), (Some(0), Some(0), Some(0)), "{}: {r}", a.quien());
+    let r = to.json_in(cwd, &["import", file.to_str().unwrap()]);
+    assert_eq!((r["new"].as_u64(), r["updated"].as_u64(), r["forgotten"].as_u64()), (Some(0), Some(0), Some(0)), "{}: {r}", to.who());
 }
 
 #[test]
-fn export_del_commit_lo_importa_la_10_y_al_reves() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("export");
-    // El mismo nombre de equipo y la misma carpeta de proyecto en las cuatro bases.
-    let nuevo = p.equipo_en("nuevo", "pc-pruebas", Path::new(NUEVO));
-    let viejo = p.equipo_en("viejo", "pc-pruebas", &v10);
-    let proyecto = nuevo.proyecto("tienda", "git@github.com:marc/tienda.git");
-    llenar(&nuevo, &proyecto, "commit");
-    copia_de_uno_a_otro(&p, &nuevo, &viejo, &proyecto);
-    let nuevo2 = p.equipo_en("nuevo2", "pc-pruebas", Path::new(NUEVO));
-    let viejo2 = p.equipo_en("viejo2", "pc-pruebas", &v10);
-    llenar(&viejo2, &proyecto, "1.0");
-    copia_de_uno_a_otro(&p, &viejo2, &nuevo2, &proyecto);
+fn commit_export_is_imported_by_10_and_vice_versa() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("export");
+    // The same machine name and the same project folder in all four databases.
+    let new = p.machine_in("nuevo", "pc-pruebas", Path::new(NEW));
+    let old = p.machine_in("viejo", "pc-pruebas", &v10);
+    let project = new.project("tienda", "git@github.com:marc/tienda.git");
+    fill(&new, &project, "commit");
+    backup_from_one_to_another(&p, &new, &old, &project);
+    let new2 = p.machine_in("nuevo2", "pc-pruebas", Path::new(NEW));
+    let old2 = p.machine_in("viejo2", "pc-pruebas", &v10);
+    fill(&old2, &project, "1.0");
+    backup_from_one_to_another(&p, &old2, &new2, &project);
 }
 
-/// 1.4: el diario de sesiones es una tabla local nueva. Una 1.0 abre la base que la tiene, guarda y
-/// busca como siempre, y la línea sigue ahí para el commit.
+/// 1.4: the session diary is a new local table. A 1.0 opens the database that has it, saves and
+/// searches as always, and the row is still there for the commit.
 #[test]
-fn la_10_abre_una_base_con_diario() {
-    let Some(v10) = binario_10() else { return };
-    let p = Prueba::nueva("diario");
-    let nuevo = p.equipo_en("base", "pc-pruebas", Path::new(NUEVO));
-    let viejo = p.equipo_en("base", "pc-pruebas", &v10);
-    let proyecto = nuevo.proyecto("tienda", "git@github.com:marc/tienda.git");
-    nuevo.guardar(&proyecto, "fact", "Puerto", "Escucha en el 8010", &[]);
-    let conv = nuevo.dir.join("sesion.jsonl");
-    let linea = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": proyecto.join("src").join("main.rs")}}]}});
-    std::fs::write(&conv, linea.to_string()).unwrap();
-    let entrada = serde_json::json!({"session_id": "s1", "transcript_path": conv, "cwd": proyecto}).to_string();
-    let mut hijo = nuevo.comando(&proyecto).args(["recall", "--session-end"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    std::io::Write::write_all(&mut hijo.stdin.take().unwrap(), entrada.as_bytes()).unwrap();
-    assert!(hijo.wait_with_output().unwrap().status.success());
-    assert_eq!(nuevo.json_en(&proyecto, &["diary"])[0]["files"][0], "src/main.rs");
-    // La 1.0, sobre la misma base.
-    viejo.guardar(&proyecto, "fact", "Otra", "Guardada por la 1.0", &[]);
-    assert_eq!(viejo.json_en(&proyecto, &["recent"]).as_array().map(Vec::len), Some(2));
-    assert!(viejo.ok_en(&proyecto, &["search", "8010"]).contains("Puerto"));
-    assert_eq!(nuevo.json_en(&proyecto, &["diary"])[0]["files"][0], "src/main.rs");
+fn v10_opens_a_database_with_a_diary() {
+    let Some(v10) = binary_10() else { return };
+    let p = Harness::new("diario");
+    let new = p.machine_in("base", "pc-pruebas", Path::new(NEW));
+    let old = p.machine_in("base", "pc-pruebas", &v10);
+    let project = new.project("tienda", "git@github.com:marc/tienda.git");
+    new.save(&project, "fact", "Puerto", "Escucha en el 8010", &[]);
+    let transcript = new.dir.join("sesion.jsonl");
+    let line = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": project.join("src").join("main.rs")}}]}});
+    std::fs::write(&transcript, line.to_string()).unwrap();
+    let input = serde_json::json!({"session_id": "s1", "transcript_path": transcript, "cwd": project}).to_string();
+    let mut child = new.command(&project).args(["recall", "--session-end"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    assert_eq!(new.json_in(&project, &["diary"])[0]["files"][0], "src/main.rs");
+    // 1.0, on the same database.
+    old.save(&project, "fact", "Otra", "Guardada por la 1.0", &[]);
+    assert_eq!(old.json_in(&project, &["recent"]).as_array().map(Vec::len), Some(2));
+    assert!(old.ok_in(&project, &["search", "8010"]).contains("Puerto"));
+    assert_eq!(new.json_in(&project, &["diary"])[0]["files"][0], "src/main.rs");
 }

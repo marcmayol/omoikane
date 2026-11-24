@@ -1,10 +1,10 @@
-//! La vista de responsable (1.7.0): quien lleva un cliente, o la factory entera, ve por espacio qué
-//! hay (proyectos con su último `status`, lo fijado y las decisiones abiertas), quién lo escribió
-//! (memorias y actividad por autor y por agente) y qué está desfasado o en pausa (lo que dice
-//! `revisar`, los proyectos en pausa de la sincronización y lo que nadie toca desde hace meses).
+//! The lead's view (1.7.0): whoever runs a client, or the whole factory, sees per space what is
+//! there (projects with their latest `status`, what is pinned and the open decisions), who wrote it
+//! (memories and activity per author and per agent) and what is stale or paused (what `revisar`
+//! says, projects paused by sync and what nobody has touched for months).
 //!
-//! Solo lee, y solo lo que se ve desde donde se mira (`Ambito`): desde un proyecto, su espacio; desde
-//! la carpeta del usuario, todos. Lo global no es de ningún cliente y no sale aquí.
+//! Read-only, and only what is visible from where you look (`Ambito`): from a project, its space; from
+//! the user's folder, all of them. Global memories belong to no client and don't show up here.
 
 use crate::memoria::{self, Ambito, Memoria};
 use crate::{proyecto, revisar};
@@ -14,34 +14,34 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-/// Los meses sin tocar a partir de los que una memoria sale como olvidada, si no se pide otra cosa.
+/// Months untouched after which a memory shows up as forgotten, unless asked otherwise.
 pub const MESES: u32 = 6;
-/// Cuántas filas se mandan de cada lista (las cuentas van enteras).
-const POR_LISTA: usize = 12;
-/// Los días que cuentan como actividad reciente de cada autor.
-const DIAS_RECIENTES: u32 = 30;
+/// How many rows are sent from each list (the counts are complete).
+const PER_LIST: usize = 12;
+/// Days that count as recent activity for each author.
+const RECENT_DAYS: u32 = 30;
 
-/// Un grupo de la vista: un espacio, o los proyectos sin espacio (clave vacía).
+/// A group in the view: a space, or the projects without a space (empty key).
 #[derive(Default)]
-struct Grupo<'a> {
-    memorias: Vec<&'a Memoria>,
-    proyectos: Vec<Value>,
-    pausas: Vec<Value>,
-    avisos: Vec<&'a revisar::Aviso>,
+struct Group<'a> {
+    memories: Vec<&'a Memoria>,
+    projects: Vec<Value>,
+    pauses: Vec<Value>,
+    warnings: Vec<&'a revisar::Aviso>,
 }
 
-/// Lo de un autor dentro de un grupo.
+/// An author's figures within a group.
 #[derive(Default)]
-struct Autor<'a> {
-    memorias: usize,
-    ultima: &'a str,
-    recientes: usize,
-    /// Por agente (`source`), cuántas.
-    fuentes: BTreeMap<&'a str, usize>,
+struct Author<'a> {
+    memories: usize,
+    last: &'a str,
+    recent: usize,
+    /// Per agent (`source`), how many.
+    sources: BTreeMap<&'a str, usize>,
 }
 
-/// La memoria en pocas palabras, para las listas.
-fn breve(m: &Memoria) -> Value {
+/// The memory in a few words, for lists.
+fn brief(m: &Memoria) -> Value {
     json!({
         "id": m.id,
         "title": m.title,
@@ -54,88 +54,88 @@ fn breve(m: &Memoria) -> Value {
     })
 }
 
-/// Una fecha de la base menos `cuanto` (p. ej. `-6 months`), en el mismo formato que `updated_at`, para
-/// comparar como texto.
-fn hace(db: &Connection, cuanto: &str) -> Result<String> {
-    Ok(db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now',?1)", [cuanto], |f| f.get(0))?)
+/// A database date minus `offset` (e.g. `-6 months`), in the same format as `updated_at`, to
+/// compare as text.
+fn ago(db: &Connection, offset: &str) -> Result<String> {
+    Ok(db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now',?1)", [offset], |f| f.get(0))?)
 }
 
-/// Lo que ve el responsable desde `base`, agrupado por espacio. `meses`: desde cuándo una memoria sin
-/// tocar cuenta como olvidada.
-pub fn panorama(db: &Connection, ruta_db: &Path, base: &Ambito, meses: u32) -> Result<Value> {
-    let meses = meses.clamp(1, 120);
-    // Desde un proyecto, todo su espacio (los demás proyectos del cliente también), no solo lo suyo.
+/// What the lead sees from `base`, grouped by space. `months`: since when an untouched memory
+/// counts as forgotten.
+pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> Result<Value> {
+    let months = months.clamp(1, 120);
+    // From a project, its whole space (the client's other projects too), not just its own.
     let base = &base.amplio();
-    let todas = memoria::recientes(db, base, None, usize::MAX >> 1)?;
-    let avisos = revisar::avisos(db, base)?;
-    // El espacio desde el que se mira (su clave; vacía: ninguno) y si se ve todo.
-    let todo = matches!(base, Ambito::Todos);
-    let propio = proyecto::clave_espacio(db, base.espacio())?;
-    let se_ve = |clave: &str| todo || clave == propio;
-    let corte = hace(db, &format!("-{meses} months"))?;
-    let reciente = hace(db, &format!("-{DIAS_RECIENTES} days"))?;
+    let all = memoria::recientes(db, base, None, usize::MAX >> 1)?;
+    let warnings = revisar::avisos(db, base)?;
+    // The space being looked from (its key; empty: none) and whether everything is visible.
+    let everything = matches!(base, Ambito::Todos);
+    let own = proyecto::clave_espacio(db, base.espacio())?;
+    let visible = |key: &str| everything || key == own;
+    let cutoff = ago(db, &format!("-{months} months"))?;
+    let recent_cutoff = ago(db, &format!("-{RECENT_DAYS} days"))?;
 
-    let mut grupos: BTreeMap<String, Grupo> = BTreeMap::new();
-    if !todo {
-        grupos.entry(propio.clone()).or_default();
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    if !everything {
+        groups.entry(own.clone()).or_default();
     }
     for e in proyecto::espacios(db)? {
-        if se_ve(&e.key) {
-            grupos.entry(e.key).or_default();
+        if visible(&e.key) {
+            groups.entry(e.key).or_default();
         }
     }
-    let mut globales = 0usize;
-    for m in &todas {
+    let mut globals = 0usize;
+    for m in &all {
         if m.project_id == 0 && m.space.is_empty() {
-            globales += 1;
-        } else if se_ve(&m.space) {
-            grupos.entry(m.space.clone()).or_default().memorias.push(m);
+            globals += 1;
+        } else if visible(&m.space) {
+            groups.entry(m.space.clone()).or_default().memories.push(m);
         }
     }
-    let por_id: HashMap<&str, &Memoria> = todas.iter().map(|m| (m.id.as_str(), m)).collect();
-    for a in &avisos {
-        if let Some(m) = por_id.get(a.memory_id.as_str())
+    let by_id: HashMap<&str, &Memoria> = all.iter().map(|m| (m.id.as_str(), m)).collect();
+    for a in &warnings {
+        if let Some(m) = by_id.get(a.memory_id.as_str())
             && !(m.project_id == 0 && m.space.is_empty())
-            && let Some(g) = grupos.get_mut(&m.space)
+            && let Some(g) = groups.get_mut(&m.space)
         {
-            g.avisos.push(a);
+            g.warnings.push(a);
         }
     }
-    // Los proyectos en pausa, por su clave: salen en su ficha y en la lista de su espacio.
-    let pausas: HashMap<String, Value> = proyecto::en_pausa(db)?
+    // Paused projects, by key: they show in their card and in their space's list.
+    let pauses: HashMap<String, Value> = proyecto::en_pausa(db)?
         .iter()
-        .filter(|p| se_ve(&p.here))
+        .filter(|p| visible(&p.here))
         .map(|p| {
             let v = json!({
                 "name": p.name,
                 "key": p.key,
                 "machine": p.pausa.machine,
                 "space": p.pausa.space,
-                "text": crate::sync::texto_pausa(ruta_db, p),
+                "text": crate::sync::texto_pausa(db_path, p),
                 "keep": crate::sync::orden_quedarse(p),
                 "accept": crate::sync::orden_aceptar(p),
             });
-            if let Some(g) = grupos.get_mut(&p.here) {
-                g.pausas.push(v.clone());
+            if let Some(g) = groups.get_mut(&p.here) {
+                g.pauses.push(v.clone());
             }
             (p.key.clone(), v)
         })
         .collect();
-    // El último `status` de cada proyecto (la lista va de la más nueva a la más vieja).
-    let mut estados: HashMap<i64, &Memoria> = HashMap::new();
-    for m in &todas {
+    // Each project's latest `status` (the list goes from newest to oldest).
+    let mut statuses: HashMap<i64, &Memoria> = HashMap::new();
+    for m in &all {
         if m.project_id != 0 && m.tags.iter().any(|t| t == memoria::ESTADO) {
-            estados.entry(m.project_id).or_insert(m);
+            statuses.entry(m.project_id).or_insert(m);
         }
     }
     for p in proyecto::lista(db, None, None, usize::MAX)? {
-        if !se_ve(&p.space) {
+        if !visible(&p.space) {
             continue;
         }
-        let estado = estados.get(&p.id).map(|m| {
+        let status = statuses.get(&p.id).map(|m| {
             json!({ "id": m.id, "title": m.title, "content": m.content, "updated_at": m.updated_at, "author": m.author })
         });
-        let pinned = todas.iter().filter(|m| m.project_id == p.id && m.pinned).count();
+        let pinned = all.iter().filter(|m| m.project_id == p.id && m.pinned).count();
         let v = json!({
             "name": p.name,
             "path": p.path,
@@ -143,88 +143,88 @@ pub fn panorama(db: &Connection, ruta_db: &Path, base: &Ambito, meses: u32) -> R
             "memories": p.memories,
             "last_update": p.last_update,
             "pinned": pinned,
-            "status": estado,
+            "status": status,
             "gone": p.gone,
-            "paused": pausas.contains_key(&p.key),
+            "paused": pauses.contains_key(&p.key),
         });
-        grupos.entry(p.space.clone()).or_default().proyectos.push(v);
+        groups.entry(p.space.clone()).or_default().projects.push(v);
     }
-    let nombres: HashMap<String, String> = proyecto::espacios(db)?.into_iter().map(|e| (e.key, e.name)).collect();
+    let names: HashMap<String, String> = proyecto::espacios(db)?.into_iter().map(|e| (e.key, e.name)).collect();
 
-    // Los espacios por nombre y, al final, los proyectos sin espacio.
-    let mut grupos: Vec<(String, Grupo)> = grupos.into_iter().collect();
-    grupos.sort_by_cached_key(|(k, _)| (k.is_empty(), nombres.get(k).map(|n| n.to_lowercase()).unwrap_or_default(), k.clone()));
-    let espacios: Vec<Value> = grupos
+    // Spaces by name and, at the end, the projects without a space.
+    let mut groups: Vec<(String, Group)> = groups.into_iter().collect();
+    groups.sort_by_cached_key(|(k, _)| (k.is_empty(), names.get(k).map(|n| n.to_lowercase()).unwrap_or_default(), k.clone()));
+    let spaces: Vec<Value> = groups
         .into_iter()
-        // Sin espacio y sin nada, el grupo no dice nada.
-        .filter(|(k, g)| !k.is_empty() || !g.memorias.is_empty() || !g.proyectos.is_empty() || !g.pausas.is_empty())
-        .map(|(clave, g)| {
-            let ms = &g.memorias;
-            // Por autor: cuántas, la última, cuántas en los últimos días y con qué agentes.
-            let mut autores: BTreeMap<&str, Autor> = BTreeMap::new();
+        // With no space and nothing in it, the group says nothing.
+        .filter(|(k, g)| !k.is_empty() || !g.memories.is_empty() || !g.projects.is_empty() || !g.pauses.is_empty())
+        .map(|(key, g)| {
+            let ms = &g.memories;
+            // Per author: how many, the latest, how many in recent days and with which agents.
+            let mut authors: BTreeMap<&str, Author> = BTreeMap::new();
             for m in ms {
-                let a = autores.entry(m.author.as_str()).or_default();
-                a.memorias += 1;
-                if m.updated_at.as_str() > a.ultima {
-                    a.ultima = m.updated_at.as_str();
+                let a = authors.entry(m.author.as_str()).or_default();
+                a.memories += 1;
+                if m.updated_at.as_str() > a.last {
+                    a.last = m.updated_at.as_str();
                 }
-                if m.updated_at >= reciente {
-                    a.recientes += 1;
+                if m.updated_at >= recent_cutoff {
+                    a.recent += 1;
                 }
-                *a.fuentes.entry(m.source.as_str()).or_default() += 1;
+                *a.sources.entry(m.source.as_str()).or_default() += 1;
             }
-            let mut autores: Vec<Value> = autores
+            let mut authors: Vec<Value> = authors
                 .into_iter()
-                .map(|(nombre, a)| {
-                    let mut fuentes: Vec<(&str, usize)> = a.fuentes.into_iter().collect();
-                    fuentes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+                .map(|(name, a)| {
+                    let mut sources: Vec<(&str, usize)> = a.sources.into_iter().collect();
+                    sources.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
                     json!({
-                        "author": nombre,
-                        "memories": a.memorias,
-                        "last": a.ultima,
-                        "recent": a.recientes,
-                        "sources": fuentes.iter().map(|(s, n)| json!({ "source": s, "memories": n })).collect::<Vec<_>>(),
+                        "author": name,
+                        "memories": a.memories,
+                        "last": a.last,
+                        "recent": a.recent,
+                        "sources": sources.iter().map(|(s, n)| json!({ "source": s, "memories": n })).collect::<Vec<_>>(),
                     })
                 })
                 .collect();
-            autores.sort_by(|a, b| b["last"].as_str().cmp(&a["last"].as_str()));
-            let mut abiertas: Vec<&&Memoria> =
+            authors.sort_by(|a, b| b["last"].as_str().cmp(&a["last"].as_str()));
+            let mut open: Vec<&&Memoria> =
                 ms.iter().filter(|m| m.kind == memoria::Tipo::Decision && m.tags.iter().any(|t| t == memoria::ABIERTA)).collect();
-            // Las bloqueantes primero, como al empezar la sesión.
-            abiertas.sort_by_key(|m| !m.bloqueante());
-            let bloqueantes = abiertas.iter().filter(|m| m.bloqueante()).count();
-            let fijadas: Vec<&&Memoria> = ms.iter().filter(|m| m.pinned).collect();
-            // Las que nadie toca desde el corte, de la más vieja a la más nueva.
-            let mut olvidadas: Vec<&&Memoria> = ms.iter().filter(|m| m.updated_at < corte).collect();
-            olvidadas.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-            let mut por_tipo: BTreeMap<&str, usize> = BTreeMap::new();
-            for a in &g.avisos {
-                *por_tipo.entry(a.kind.as_str()).or_default() += 1;
+            // Blocking ones first, as at session start.
+            open.sort_by_key(|m| !m.bloqueante());
+            let blocking = open.iter().filter(|m| m.bloqueante()).count();
+            let pinned_mems: Vec<&&Memoria> = ms.iter().filter(|m| m.pinned).collect();
+            // Those nobody has touched since the cutoff, oldest to newest.
+            let mut untouched: Vec<&&Memoria> = ms.iter().filter(|m| m.updated_at < cutoff).collect();
+            untouched.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+            let mut by_kind: BTreeMap<&str, usize> = BTreeMap::new();
+            for a in &g.warnings {
+                *by_kind.entry(a.kind.as_str()).or_default() += 1;
             }
-            let lista = |v: &[&&Memoria]| v.iter().take(POR_LISTA).map(|m| breve(m)).collect::<Vec<_>>();
+            let list = |v: &[&&Memoria]| v.iter().take(PER_LIST).map(|m| brief(m)).collect::<Vec<_>>();
             json!({
-                "key": clave,
-                "name": nombres.get(&clave).cloned().unwrap_or_default(),
+                "key": key,
+                "name": names.get(&key).cloned().unwrap_or_default(),
                 "memories": ms.len(),
-                // Las del propio espacio, sin proyecto.
+                // The space's own, without a project.
                 "space_memories": ms.iter().filter(|m| m.project_id == 0).count(),
-                "projects": g.proyectos,
-                "pinned": { "count": fijadas.len(), "items": lista(&fijadas) },
+                "projects": g.projects,
+                "pinned": { "count": pinned_mems.len(), "items": list(&pinned_mems) },
                 "open_decisions": {
-                    "count": abiertas.len(),
-                    "blocking": bloqueantes,
-                    "items": abiertas.iter().take(POR_LISTA).map(|m| {
-                        let mut b = breve(m);
+                    "count": open.len(),
+                    "blocking": blocking,
+                    "items": open.iter().take(PER_LIST).map(|m| {
+                        let mut b = brief(m);
                         b["blocking"] = json!(m.bloqueante());
                         b
                     }).collect::<Vec<_>>(),
                 },
-                "authors": autores,
-                "recent": ms.iter().take(POR_LISTA).map(|m| breve(m)).collect::<Vec<_>>(),
+                "authors": authors,
+                "recent": ms.iter().take(PER_LIST).map(|m| brief(m)).collect::<Vec<_>>(),
                 "review": {
-                    "count": g.avisos.len(),
-                    "kinds": por_tipo,
-                    "items": g.avisos.iter().take(POR_LISTA * 2).map(|a| json!({
+                    "count": g.warnings.len(),
+                    "kinds": by_kind,
+                    "items": g.warnings.iter().take(PER_LIST * 2).map(|a| json!({
                         "kind": a.kind,
                         "memory_id": a.memory_id,
                         "title": a.title,
@@ -234,18 +234,18 @@ pub fn panorama(db: &Connection, ruta_db: &Path, base: &Ambito, meses: u32) -> R
                         "detail": a.detail,
                     })).collect::<Vec<_>>(),
                 },
-                "paused": g.pausas,
-                "untouched": { "count": olvidadas.len(), "items": lista(&olvidadas) },
+                "paused": g.pauses,
+                "untouched": { "count": untouched.len(), "items": list(&untouched) },
             })
         })
         .collect();
     Ok(json!({
-        // Desde dónde se mira: todo (la carpeta del usuario) o un espacio (vacío: los proyectos sin espacio).
-        "scope": if todo { "all" } else { "space" },
-        "space": if todo { Value::Null } else { propio.into() },
-        "months": meses,
-        "recent_days": DIAS_RECIENTES,
-        "global_memories": globales,
-        "spaces": espacios,
+        // Where it's looked from: everything (the user's folder) or a space (empty: projects without a space).
+        "scope": if everything { "all" } else { "space" },
+        "space": if everything { Value::Null } else { own.into() },
+        "months": months,
+        "recent_days": RECENT_DAYS,
+        "global_memories": globals,
+        "spaces": spaces,
     }))
 }

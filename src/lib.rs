@@ -1,4 +1,4 @@
-//! Omoikane: memoria local para agentes de IA.
+//! Omoikane: local memory for AI agents.
 
 pub mod actualizar;
 pub mod agentes;
@@ -46,7 +46,7 @@ pub mod vectores;
 pub mod verificado;
 pub mod veredictos;
 
-/// La carpeta temporal que se borra sola, la misma de los tests de `tests/`.
+/// The temporary folder that deletes itself, the same one the tests in `tests/` use.
 #[cfg(test)]
 #[path = "../tests/comun/mod.rs"]
 pub(crate) mod comun;

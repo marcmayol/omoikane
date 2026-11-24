@@ -1,35 +1,35 @@
-//! Guardia de rendimiento: el recall y la búsqueda de este `omoi` contra los de la última Release, en
-//! la misma máquina y con la misma base. Falla (sale con 1) si alguno va claramente más lento.
+//! Performance guard: recall and search of this `omoi` against those of the latest Release, on
+//! the same machine and with the same database. Fails (exits with 1) if any is clearly slower.
 //!
-//!   cargo build --release && cargo run --release --example rendimiento -- [opciones]
+//!   cargo build --release && cargo run --release --example rendimiento -- [options]
 //!
-//! Opciones:
-//!   --contra <versión>   la Release con la que se compara (por defecto, la última publicada); se baja
-//!                        de GitHub y se comprueba como al actualizarse: firma de `SHA256SUMS` con la
-//!                        clave de Omoikane y SHA-256 del paquete
-//!   --a-bin <omoi>       en vez de bajarla, este binario como el de antes
-//!   --b-bin <omoi>       el nuevo (por defecto, el de `target/release`)
-//!   --memorias <n>       tamaño de la base sintética (por defecto 10.000)
-//!   --rondas <n>         medidas por prueba y binario (por defecto 30)
-//!   --margen <x>         cuánto más lento se tolera, en proporción de la mediana (por defecto 0,25)
-//!   --minimo-ms <ms>     y en milisegundos: por debajo no cuenta como más lento (por defecto 5)
+//! Options:
+//!   --contra <version>   the Release to compare against (default: the latest published); it is downloaded
+//!                        from GitHub and checked as on an update: signature of `SHA256SUMS` with the
+//!                        Omoikane key and SHA-256 of the package
+//!   --a-bin <omoi>       instead of downloading it, this binary as the old one
+//!   --b-bin <omoi>       the new one (default: the one in `target/release`)
+//!   --memorias <n>       size of the synthetic database (default 10,000)
+//!   --rondas <n>         measurements per test and binary (default 30)
+//!   --margen <x>         how much slower is tolerated, as a proportion of the median (default 0.25)
+//!   --minimo-ms <ms>     and in milliseconds: below this it doesn't count as slower (default 5)
 //!
-//! Cómo evita los falsos positivos de una máquina ruidosa (los runners de GitHub lo son):
-//! - Los dos binarios se miden en la misma máquina, en el mismo momento y sobre copias de la misma
-//!   base, intercalados (A,B en una ronda, B,A en la siguiente): lo que la máquina tenga de lenta, lo
-//!   tiene para los dos. Nunca contra un número guardado de otra máquina.
-//! - Cuenta la mediana, no la media ni el P95: un proceso que se cruza con otro no la mueve.
-//! - Más lento es pasar a la vez el margen relativo y el absoluto.
-//! - Una prueba que sale más lenta se vuelve a medir entera; solo falla si lo es las dos veces.
+//! How it avoids the false positives of a noisy machine (GitHub runners are):
+//! - Both binaries are measured on the same machine, at the same moment and on copies of the same
+//!   database, interleaved (A,B in one round, B,A in the next): whatever slowness the machine has, it
+//!   has for both. Never against a stored number from another machine.
+//! - The median counts, not the mean nor the P95: a process that collides with another doesn't move it.
+//! - Slower means exceeding both the relative and the absolute margin at once.
+//! - A test that comes out slower is measured again in full; it only fails if it is slower both times.
 //!
-//! Cada llamada es un proceso nuevo, como lo lanzan el hook y el agente: el arranque cuenta. Cada
-//! binario tiene su propia copia de la base y su propia carpeta de Omoikane, sin modelos, sin
-//! sincronización y sin actualizaciones; las variables `OMOIKANE_*` de quien lo lanza no llegan.
-//! Todo va a una carpeta temporal que se borra al terminar.
+//! Each call is a new process, as the hook and the agent launch it: startup counts. Each
+//! binary has its own copy of the database and its own Omoikane folder, with no models, no
+//! sync and no updates; the `OMOIKANE_*` variables of whoever launches it don't get through.
+//! Everything goes to a temp folder that is deleted at the end.
 //!
-//! La base es sintética y determinista: las memorias de `tests/busquedas.tsv` más relleno con las
-//! palabras de `tests/busquedas.tsv` y `tests/recall_casos.tsv` y palabras inventadas, repartido en 8
-//! proyectos y las globales. Las consultas son las de `tests/busquedas.tsv`.
+//! The database is synthetic and deterministic: the memories of `tests/busquedas.tsv` plus filler with the
+//! words of `tests/busquedas.tsv` and `tests/recall_casos.tsv` and made-up words, spread over 8
+//! projects and the global ones. The queries are those of `tests/busquedas.tsv`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use omoikane::memoria::{self, Nueva, Tipo};
@@ -38,15 +38,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-const BUSQUEDAS: &str = include_str!("../tests/busquedas.tsv");
+const SEARCHES: &str = include_str!("../tests/busquedas.tsv");
 const RECALL: &str = include_str!("../tests/recall_casos.tsv");
-const PROYECTOS: usize = 8;
+const PROJECTS: usize = 8;
 
-/// SplitMix64: la misma base en todas las máquinas, sin depender de nada.
-struct Azar(u64);
+/// SplitMix64: the same database on every machine, depending on nothing.
+struct Rng(u64);
 
-impl Azar {
-    fn siguiente(&mut self) -> u64 {
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -54,22 +54,22 @@ impl Azar {
         z ^ (z >> 31)
     }
 
-    /// Entre 0 y 1.
+    /// Between 0 and 1.
     fn real(&mut self) -> f64 {
-        (self.siguiente() >> 11) as f64 / (1u64 << 53) as f64
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    fn hasta(&mut self, n: usize) -> usize {
-        (self.siguiente() % n as u64) as usize
+    fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
     }
 }
 
-/// Las palabras de los ficheros de casos (las que buscan las consultas) y, detrás, palabras inventadas.
-/// Se eligen con sesgo hacia el principio, como en un texto real: unas pocas salen en muchas memorias
-/// y la mayoría en pocas.
-fn vocabulario() -> Vec<String> {
+/// The words of the case files (the ones the queries look for) and, after them, made-up words.
+/// They are picked with a bias towards the start, as in real text: a few show up in many memories
+/// and most in few.
+fn vocabulary() -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
-    for l in BUSQUEDAS.lines().chain(RECALL.lines()).filter(|l| !l.starts_with('#')) {
+    for l in SEARCHES.lines().chain(RECALL.lines()).filter(|l| !l.starts_with('#')) {
         for p in l.split(|c: char| !c.is_alphanumeric()).filter(|p| p.chars().count() > 1) {
             let p = p.to_lowercase();
             if !v.contains(&p) {
@@ -77,11 +77,11 @@ fn vocabulario() -> Vec<String> {
             }
         }
     }
-    let silabas = ["ka", "to", "ri", "mu", "sen", "lo", "ve", "da", "pi", "nor", "gu", "fe", "ras", "zo", "te", "bil"];
-    for a in silabas {
-        for b in silabas {
+    let syllables = ["ka", "to", "ri", "mu", "sen", "lo", "ve", "da", "pi", "nor", "gu", "fe", "ras", "zo", "te", "bil"];
+    for a in syllables {
+        for b in syllables {
             v.push(format!("{a}{b}"));
-            for c in silabas {
+            for c in syllables {
                 v.push(format!("{a}{b}{c}"));
             }
         }
@@ -89,57 +89,57 @@ fn vocabulario() -> Vec<String> {
     v
 }
 
-fn frase(azar: &mut Azar, voc: &[String], palabras: usize) -> String {
-    (0..palabras).map(|_| voc[((azar.real().powf(2.5)) * voc.len() as f64) as usize].as_str()).collect::<Vec<_>>().join(" ")
+fn sentence(rng: &mut Rng, voc: &[String], words: usize) -> String {
+    (0..words).map(|_| voc[((rng.real().powf(2.5)) * voc.len() as f64) as usize].as_str()).collect::<Vec<_>>().join(" ")
 }
 
-/// Crea la base en `db` con `n` memorias; devuelve la carpeta del primer proyecto (la de las consultas).
-fn crear_base(db: &Path, carpetas: &Path, n: usize) -> Result<PathBuf> {
+/// Creates the database in `db` with `n` memories; returns the folder of the first project (the one for the queries).
+fn create_db(db: &Path, folders: &Path, n: usize) -> Result<PathBuf> {
     let mut c = omoikane::db::abrir(db)?;
-    // Una base de usar y tirar: sin esperar al disco en cada memoria (en un disco duro, minutos).
+    // A throwaway database: no waiting for the disk on every memory (on a hard disk, minutes).
     c.execute_batch("PRAGMA synchronous=OFF;")?;
-    let mut claves = Vec::new();
-    for p in 0..PROYECTOS {
-        let d = carpetas.join(format!("p{p}"));
+    let mut keys = Vec::new();
+    for p in 0..PROJECTS {
+        let d = folders.join(format!("p{p}"));
         std::fs::create_dir_all(&d)?;
-        claves.push(omoikane::proyecto::de(&d)?);
+        keys.push(omoikane::proyecto::de(&d)?);
     }
-    let tipos = [Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Fact, Tipo::Preference, Tipo::Fact];
-    let guardar = |c: &mut rusqlite::Connection, project: String, kind: Tipo, title: String, content: String| -> Result<()> {
+    let kinds = [Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Fact, Tipo::Preference, Tipo::Fact];
+    let save = |c: &mut rusqlite::Connection, project: String, kind: Tipo, title: String, content: String| -> Result<()> {
         memoria::guardar(c, Nueva { project, kind: Some(kind), title, content, source: "rendimiento".into(), ..Default::default() }, None)?;
         Ok(())
     };
-    // Las de verdad, para que las consultas encuentren lo suyo entre el relleno.
-    for l in BUSQUEDAS.lines().filter(|l| l.starts_with("m\t")) {
+    // The real ones, so the queries find theirs among the filler.
+    for l in SEARCHES.lines().filter(|l| l.starts_with("m\t")) {
         let c4: Vec<&str> = l.split('\t').collect();
-        if let [_, _, titulo, contenido, ..] = c4.as_slice() {
-            guardar(&mut c, claves[0].clone(), Tipo::Fact, titulo.to_string(), contenido.to_string())?;
+        if let [_, _, title, content, ..] = c4.as_slice() {
+            save(&mut c, keys[0].clone(), Tipo::Fact, title.to_string(), content.to_string())?;
         }
     }
-    let voc = vocabulario();
-    let mut azar = Azar(20261109);
+    let voc = vocabulary();
+    let mut rng = Rng(20261109);
     for i in 0..n {
-        let project = if i % 10 == 0 { String::new() } else { claves[i % PROYECTOS].clone() };
-        let (largo_titulo, largo_contenido) = (4 + azar.hasta(6), 25 + azar.hasta(65));
-        let titulo = frase(&mut azar, &voc, largo_titulo);
-        let contenido = frase(&mut azar, &voc, largo_contenido);
-        guardar(&mut c, project, tipos[i % tipos.len()], titulo, contenido)?;
+        let project = if i % 10 == 0 { String::new() } else { keys[i % PROJECTS].clone() };
+        let (title_len, content_len) = (4 + rng.below(6), 25 + rng.below(65));
+        let title = sentence(&mut rng, &voc, title_len);
+        let content = sentence(&mut rng, &voc, content_len);
+        save(&mut c, project, kinds[i % kinds.len()], title, content)?;
     }
     c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-    Ok(carpetas.join("p0"))
+    Ok(folders.join("p0"))
 }
 
-struct Lado {
-    nombre: String,
+struct Side {
+    name: String,
     bin: PathBuf,
-    casa: PathBuf,
+    home: PathBuf,
     db: PathBuf,
-    sin_modelos: PathBuf,
+    no_models: PathBuf,
 }
 
-impl Lado {
-    /// Corre `omoi <args>` con `entrada` por stdin; devuelve (ms, stdout).
-    fn correr(&self, args: &[&str], cwd: &Path, entrada: Option<&str>) -> Result<(f64, String)> {
+impl Side {
+    /// Runs `omoi <args>` with `input` on stdin; returns (ms, stdout).
+    fn run(&self, args: &[&str], cwd: &Path, input: Option<&str>) -> Result<(f64, String)> {
         let mut cmd = Command::new(&self.bin);
         cmd.args(args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         for (k, _) in std::env::vars() {
@@ -147,61 +147,61 @@ impl Lado {
                 cmd.env_remove(k);
             }
         }
-        cmd.env("OMOIKANE_HOME", &self.casa)
+        cmd.env("OMOIKANE_HOME", &self.home)
             .env("OMOIKANE_DB", &self.db)
-            .env("OMOIKANE_MODELS", &self.sin_modelos)
+            .env("OMOIKANE_MODELS", &self.no_models)
             .env("OMOIKANE_SEMANTIC", "0")
             .env("OMOIKANE_SYNC_AUTO", "0")
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_BACKUPS", "0")
             .env("OMOIKANE_LANG", "en");
         let t = Instant::now();
-        let mut hijo = cmd.spawn().with_context(|| self.bin.display().to_string())?;
-        let mut stdin = hijo.stdin.take().context("stdin")?;
-        if let Some(e) = entrada {
+        let mut child = cmd.spawn().with_context(|| self.bin.display().to_string())?;
+        let mut stdin = child.stdin.take().context("stdin")?;
+        if let Some(e) = input {
             stdin.write_all(e.as_bytes())?;
         }
         drop(stdin);
-        let out = hijo.wait_with_output()?;
+        let out = child.wait_with_output()?;
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if !out.status.success() {
-            bail!("{} {}: {}", self.nombre, args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+            bail!("{} {}: {}", self.name, args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok((ms, String::from_utf8_lossy(&out.stdout).into_owned()))
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Prueba {
+enum Test {
     Recall,
-    BuscarProyecto,
-    BuscarTodo,
+    SearchProject,
+    SearchAll,
 }
 
-impl Prueba {
-    fn nombre(self) -> &'static str {
+impl Test {
+    fn name(self) -> &'static str {
         match self {
-            Prueba::Recall => "recall",
-            Prueba::BuscarProyecto => "search (project)",
-            Prueba::BuscarTodo => "search --all",
+            Test::Recall => "recall",
+            Test::SearchProject => "search (project)",
+            Test::SearchAll => "search --all",
         }
     }
 
-    /// Una llamada; devuelve (ms, ids que devolvió, en orden).
-    fn medir(self, l: &Lado, cwd: &Path, consulta: &str, sesion: &str) -> Result<(f64, Vec<String>)> {
+    /// One call; returns (ms, ids it returned, in order).
+    fn measure(self, l: &Side, cwd: &Path, query: &str, session: &str) -> Result<(f64, Vec<String>)> {
         Ok(match self {
-            Prueba::Recall => {
-                let e = serde_json::json!({ "session_id": sesion, "cwd": cwd, "prompt": consulta, "hook_event_name": "UserPromptSubmit" });
-                let (ms, out) = l.correr(&["recall"], cwd, Some(&e.to_string()))?;
-                (ms, ids_recall(&out))
+            Test::Recall => {
+                let e = serde_json::json!({ "session_id": session, "cwd": cwd, "prompt": query, "hook_event_name": "UserPromptSubmit" });
+                let (ms, out) = l.run(&["recall"], cwd, Some(&e.to_string()))?;
+                (ms, recall_ids(&out))
             }
-            Prueba::BuscarProyecto | Prueba::BuscarTodo => {
+            Test::SearchProject | Test::SearchAll => {
                 let mut args = vec!["--json", "search"];
-                if self == Prueba::BuscarTodo {
+                if self == Test::SearchAll {
                     args.push("--all");
                 }
-                args.push(consulta);
-                let (ms, out) = l.correr(&args, cwd, None)?;
+                args.push(query);
+                let (ms, out) = l.run(&args, cwd, None)?;
                 let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_default();
                 (ms, v.as_array().map(|a| a.iter().filter_map(|r| r["id"].as_str().map(str::to_string)).collect()).unwrap_or_default())
             }
@@ -209,49 +209,49 @@ impl Prueba {
     }
 }
 
-/// Lo que inyecta el recall: el principio de cada `(id …)` del bloque.
-fn ids_recall(salida: &str) -> Vec<String> {
-    let Ok(j) = serde_json::from_str::<serde_json::Value>(salida.trim()) else { return Vec::new() };
-    let texto = j["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default();
-    texto.match_indices("(id ").map(|(i, _)| texto[i + 4..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect()).collect()
+/// What the recall injects: the start of each `(id …)` in the block.
+fn recall_ids(output: &str) -> Vec<String> {
+    let Ok(j) = serde_json::from_str::<serde_json::Value>(output.trim()) else { return Vec::new() };
+    let text = j["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default();
+    text.match_indices("(id ").map(|(i, _)| text[i + 4..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect()).collect()
 }
 
-fn percentil(v: &[f64], p: f64) -> f64 {
+fn percentile(v: &[f64], p: f64) -> f64 {
     let mut v = v.to_vec();
     v.sort_by(|a, b| a.total_cmp(b));
     v.get(((v.len().max(1) - 1) as f64 * p).round() as usize).copied().unwrap_or(0.0)
 }
 
-struct Medida {
+struct Measurement {
     a: Vec<f64>,
     b: Vec<f64>,
-    /// Consultas en las que los dos devolvieron lo mismo, de cuántas.
-    iguales: usize,
-    consultas: usize,
+    /// Queries in which both returned the same, out of how many.
+    same: usize,
+    queries: usize,
 }
 
-fn medir(prueba: Prueba, lados: &[Lado; 2], cwd: &Path, consultas: &[String], rondas: usize, pasada: usize) -> Result<Medida> {
-    // Calentar: la primera llamada paga la caché fría del disco y no cuenta.
-    for l in lados {
+fn measure(test: Test, sides: &[Side; 2], cwd: &Path, queries: &[String], rounds: usize, pass: usize) -> Result<Measurement> {
+    // Warm up: the first call pays for the cold disk cache and doesn't count.
+    for l in sides {
         for _ in 0..3 {
-            prueba.medir(l, cwd, &consultas[0], &format!("calentar-{pasada}"))?;
+            test.measure(l, cwd, &queries[0], &format!("calentar-{pass}"))?;
         }
     }
-    let mut m = Medida { a: Vec::new(), b: Vec::new(), iguales: 0, consultas: 0 };
-    for r in 0..rondas {
-        let q = &consultas[r % consultas.len()];
-        // La misma sesión para los dos (cada uno con su base): el recall no repite lo ya inyectado.
-        let sesion = format!("rendimiento-{pasada}-{r}");
-        let orden = if r % 2 == 0 { [0, 1] } else { [1, 0] };
+    let mut m = Measurement { a: Vec::new(), b: Vec::new(), same: 0, queries: 0 };
+    for r in 0..rounds {
+        let q = &queries[r % queries.len()];
+        // The same session for both (each with its own database): the recall doesn't repeat what was already injected.
+        let session = format!("rendimiento-{pass}-{r}");
+        let order = if r % 2 == 0 { [0, 1] } else { [1, 0] };
         let mut ids: [Vec<String>; 2] = Default::default();
-        for k in orden {
-            let (ms, got) = prueba.medir(&lados[k], cwd, q, &sesion)?;
+        for k in order {
+            let (ms, got) = test.measure(&sides[k], cwd, q, &session)?;
             if k == 0 { m.a.push(ms) } else { m.b.push(ms) }
             ids[k] = got;
         }
-        if r < consultas.len() {
-            m.consultas += 1;
-            m.iguales += usize::from(ids[0] == ids[1]);
+        if r < queries.len() {
+            m.queries += 1;
+            m.same += usize::from(ids[0] == ids[1]);
         }
     }
     Ok(m)
@@ -259,45 +259,45 @@ fn medir(prueba: Prueba, lados: &[Lado; 2], cwd: &Path, consultas: &[String], ro
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut contra, mut a_bin, mut b_bin): (Option<String>, Option<PathBuf>, Option<PathBuf>) = (None, None, None);
-    let (mut n, mut rondas, mut margen, mut minimo) = (10_000usize, 30usize, 0.25f64, 5.0f64);
+    let (mut against, mut a_bin, mut b_bin): (Option<String>, Option<PathBuf>, Option<PathBuf>) = (None, None, None);
+    let (mut n, mut rounds, mut margin, mut min_ms) = (10_000usize, 30usize, 0.25f64, 5.0f64);
     let mut i = 0;
     while i < args.len() {
-        let valor = args.get(i + 1).cloned().ok_or_else(|| anyhow!("falta el valor de {}", args[i]))?;
+        let value = args.get(i + 1).cloned().ok_or_else(|| anyhow!("falta el valor de {}", args[i]))?;
         match args[i].as_str() {
-            "--contra" => contra = Some(valor.trim_start_matches('v').to_string()),
-            "--a-bin" => a_bin = Some(valor.into()),
-            "--b-bin" => b_bin = Some(valor.into()),
-            "--memorias" => n = valor.parse()?,
-            "--rondas" => rondas = valor.parse()?,
-            "--margen" => margen = valor.replace(',', ".").parse()?,
-            "--minimo-ms" => minimo = valor.replace(',', ".").parse()?,
+            "--contra" => against = Some(value.trim_start_matches('v').to_string()),
+            "--a-bin" => a_bin = Some(value.into()),
+            "--b-bin" => b_bin = Some(value.into()),
+            "--memorias" => n = value.parse()?,
+            "--rondas" => rounds = value.parse()?,
+            "--margen" => margin = value.replace(',', ".").parse()?,
+            "--minimo-ms" => min_ms = value.replace(',', ".").parse()?,
             x => bail!("opción desconocida: {x} (mira el principio de examples/rendimiento.rs)"),
         }
         i += 2;
     }
-    anyhow::ensure!(rondas >= 5, "al menos 5 rondas");
+    anyhow::ensure!(rounds >= 5, "al menos 5 rondas");
 
     let tmp = std::env::temp_dir().join(format!("omoi-rendimiento-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
     let tmp = tmp.canonicalize()?;
-    if let Some(casa) = std::env::home_dir().map(|h| h.join(".omoikane"))
-        && let Ok(casa) = casa.canonicalize()
-        && tmp.starts_with(&casa)
+    if let Some(home) = std::env::home_dir().map(|h| h.join(".omoikane"))
+        && let Ok(home) = home.canonicalize()
+        && tmp.starts_with(&home)
     {
-        bail!("la carpeta temporal está dentro de {}", casa.display());
+        bail!("la carpeta temporal está dentro de {}", home.display());
     }
-    let limpiar = Limpiar(tmp.clone());
+    let cleanup = Cleanup(tmp.clone());
 
     let release = std::env::current_exe()?.parent().and_then(Path::parent).map(|d| d.join(format!("omoi{}", std::env::consts::EXE_SUFFIX)));
     let b_bin = b_bin.or(release).filter(|b| b.exists()).ok_or_else(|| anyhow!("no está el omoi nuevo: cargo build --release (o --b-bin)"))?;
-    let (a_bin, a_origen) = match a_bin {
+    let (a_bin, a_origin) = match a_bin {
         Some(b) => {
-            let origen = b.display().to_string();
-            (b, origen)
+            let origin = b.display().to_string();
+            (b, origin)
         }
         None => {
-            let v = match contra {
+            let v = match against {
                 Some(v) => v,
                 None => omoikane::actualizar::ultima().context("¿cuál es la última Release? (o --contra <versión>)")?,
             };
@@ -312,73 +312,73 @@ fn main() -> Result<()> {
     eprintln!("creando una base de {n} memorias…");
     let t = Instant::now();
     let base = tmp.join("base.db");
-    let cwd = crear_base(&base, &tmp.join("proyectos"), n)?;
+    let cwd = create_db(&base, &tmp.join("proyectos"), n)?;
     eprintln!("  en {:.1} s", t.elapsed().as_secs_f64());
-    let sin_modelos = tmp.join("sin-modelos");
-    std::fs::create_dir_all(&sin_modelos)?;
-    let lado = |nombre: &str, bin: PathBuf| -> Result<Lado> {
-        let casa = tmp.join(nombre);
-        std::fs::create_dir_all(&casa)?;
-        let db = casa.join("omoikane.db");
+    let no_models = tmp.join("sin-modelos");
+    std::fs::create_dir_all(&no_models)?;
+    let side = |name: &str, bin: PathBuf| -> Result<Side> {
+        let home = tmp.join(name);
+        std::fs::create_dir_all(&home)?;
+        let db = home.join("omoikane.db");
         std::fs::copy(&base, &db)?;
-        Ok(Lado { nombre: nombre.into(), bin, casa, db, sin_modelos: sin_modelos.clone() })
+        Ok(Side { name: name.into(), bin, home, db, no_models: no_models.clone() })
     };
-    let lados = [lado("A", a_bin)?, lado("B", b_bin)?];
-    let consultas: Vec<String> = BUSQUEDAS.lines().filter(|l| l.starts_with("q\t")).filter_map(|l| l.split('\t').nth(2).map(str::to_string)).collect();
+    let sides = [side("A", a_bin)?, side("B", b_bin)?];
+    let queries: Vec<String> = SEARCHES.lines().filter(|l| l.starts_with("q\t")).filter_map(|l| l.split('\t').nth(2).map(str::to_string)).collect();
 
-    let mut informe = format!(
-        "## Recall and search against the last release\n\nA: {} ({a_origen})  \nB: {} ({})  \n{n} memories, {rondas} interleaved rounds per test, one process per call; slower means a median over {:.0} % and {minimo} ms above A, twice in a row.\n\n| | A P50 / P95 (ms) | B P50 / P95 (ms) | B / A | same results | |\n|---|---|---|---|---|---|\n",
-        version(&lados[0].bin),
-        version(&lados[1].bin),
-        lados[1].bin.display(),
-        margen * 100.0
+    let mut report = format!(
+        "## Recall and search against the last release\n\nA: {} ({a_origin})  \nB: {} ({})  \n{n} memories, {rounds} interleaved rounds per test, one process per call; slower means a median over {:.0} % and {min_ms} ms above A, twice in a row.\n\n| | A P50 / P95 (ms) | B P50 / P95 (ms) | B / A | same results | |\n|---|---|---|---|---|---|\n",
+        version(&sides[0].bin),
+        version(&sides[1].bin),
+        sides[1].bin.display(),
+        margin * 100.0
     );
-    let mut mal = Vec::new();
-    for prueba in [Prueba::Recall, Prueba::BuscarProyecto, Prueba::BuscarTodo] {
-        eprintln!("midiendo {}…", prueba.nombre());
-        let lenta = |m: &Medida| {
-            let (a, b) = (percentil(&m.a, 0.5), percentil(&m.b, 0.5));
-            b > a * (1.0 + margen) && b - a > minimo
+    let mut failed = Vec::new();
+    for test in [Test::Recall, Test::SearchProject, Test::SearchAll] {
+        eprintln!("midiendo {}…", test.name());
+        let is_slow = |m: &Measurement| {
+            let (a, b) = (percentile(&m.a, 0.5), percentile(&m.b, 0.5));
+            b > a * (1.0 + margin) && b - a > min_ms
         };
-        let mut m = medir(prueba, &lados, &cwd, &consultas, rondas, 0)?;
-        let mut veredicto = "ok";
-        if lenta(&m) {
+        let mut m = measure(test, &sides, &cwd, &queries, rounds, 0)?;
+        let mut verdict = "ok";
+        if is_slow(&m) {
             eprintln!("  más lenta: se mide otra vez");
-            let otra = medir(prueba, &lados, &cwd, &consultas, rondas, 1)?;
-            veredicto = if lenta(&otra) { "**slower**" } else { "ok (slower once, not twice)" };
-            if lenta(&otra) {
-                mal.push(prueba.nombre());
+            let again = measure(test, &sides, &cwd, &queries, rounds, 1)?;
+            verdict = if is_slow(&again) { "**slower**" } else { "ok (slower once, not twice)" };
+            if is_slow(&again) {
+                failed.push(test.name());
             }
-            m = otra;
+            m = again;
         }
-        let (a50, b50) = (percentil(&m.a, 0.5), percentil(&m.b, 0.5));
-        informe.push_str(&format!(
-            "| {} | {a50:.1} / {:.1} | {b50:.1} / {:.1} | {:.2} | {} of {} | {veredicto} |\n",
-            prueba.nombre(),
-            percentil(&m.a, 0.95),
-            percentil(&m.b, 0.95),
+        let (a50, b50) = (percentile(&m.a, 0.5), percentile(&m.b, 0.5));
+        report.push_str(&format!(
+            "| {} | {a50:.1} / {:.1} | {b50:.1} / {:.1} | {:.2} | {} of {} | {verdict} |\n",
+            test.name(),
+            percentile(&m.a, 0.95),
+            percentile(&m.b, 0.95),
             b50 / a50.max(1e-9),
-            m.iguales,
-            m.consultas
+            m.same,
+            m.queries
         ));
     }
-    println!("{informe}");
-    // En GitHub Actions, también en el resumen de la ejecución.
+    println!("{report}");
+    // On GitHub Actions, also in the run summary.
     if let Some(f) = std::env::var_os("GITHUB_STEP_SUMMARY") {
-        let _ = std::fs::OpenOptions::new().append(true).create(true).open(f).and_then(|mut f| f.write_all(informe.as_bytes()));
+        let _ = std::fs::OpenOptions::new().append(true).create(true).open(f).and_then(|mut f| f.write_all(report.as_bytes()));
     }
-    if !mal.is_empty() {
-        eprintln!("más lento que la versión anterior: {}", mal.join(", "));
-        // `exit` no pasa por los `Drop`: la carpeta temporal se borra antes.
-        drop(limpiar);
+    if !failed.is_empty() {
+        eprintln!("más lento que la versión anterior: {}", failed.join(", "));
+        // `exit` doesn't run the `Drop`s: the temp folder is deleted first.
+        drop(cleanup);
         std::process::exit(1);
     }
     Ok(())
 }
 
-struct Limpiar(PathBuf);
+struct Cleanup(PathBuf);
 
-impl Drop for Limpiar {
+impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
