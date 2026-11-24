@@ -4,14 +4,21 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.15.0 (unreleased)
+## 1.15.0 (2026-11-24)
 
 ### The code reads in English
-- `src/rapido.rs` is now `src/engine.rs`. It (the f16 matmuls with AVX2/FMA/F16C, blocked attention and the `unsafe` around them) and `src/bpe.rs` (the compiled tokenizer) are now in English, names and comments: they are the parts people asked to review, and Spanish made that hard. `rapido::Rapido` is now `rapido::Engine`, `Capa` is `Layer`, `Mat::por` is `Mat::mul`, `bpe::compilar`/`Bpe::abrir`/`codificar` are `compile`/`open`/`encode`, and every `SAFETY` comment says in English why the pointer access holds. The rest of the code base follows in this version.
-- Same vectors and same tokens as before: the `motor` test, run against the real EmbeddingGemma, still matches candle and `tokenizers`.
+- Omoikane was written in Spanish: names and comments. Two readers of the Rust community pointed out that this made it hard to review, so the whole code base (about 63,000 lines: `src/`, `tests/`, `examples/`, the plugin hooks and the web view's script) now uses English for every identifier and every comment.
+- Files follow: `src/rapido.rs` is `src/engine.rs` (the f16 matmuls with AVX2/FMA/F16C, the blocked attention and the `unsafe` around them, with every `SAFETY` comment saying in English why the pointer access holds), `memoria.rs` is `memory.rs`, `buscar.rs` is `search.rs`, `revisar.rs` is `review.rs`, `significado.rs` is `meaning.rs`, `vectores.rs` is `vectors.rs`, and so on for every module, test and example. `src/bpe.rs` keeps its name.
+- For anyone using the crate as a library, the public API changes names accordingly (`memoria::guardar` → `memory::save`, `buscar::buscar` → `search::search`, `recall::al_empezar` → `recall::on_session_start`…). The `omoi` command, its flags and its output don't change.
+
+### What doesn't change
+- Behaviour, and every format: the database schema (10) and its SQL, the sync repository lines, `sync-estado.json`, `significado.json`, exports (`omoi export`, OKF, Obsidian), the HTTP API, the MCP tools and their schemas, the CLI flags and help text (byte for byte, in English and Spanish), environment variables and file names on disk. Where a Rust name changed but it is written somewhere, it keeps its old name on the wire.
+- The Spanish interface stays: `OMOIKANE_LANG=es` and the Spanish web view are product text, not code.
+- Same vectors and same tokens: the engine test, run against the real EmbeddingGemma, still matches candle and `tokenizers`.
+- New guard: the crate denies `non_ascii_idents` (since 1.14.1), so names stay typeable on any keyboard.
 
 ### Compatibility
-- Nothing changes in behaviour, data, the database schema (10) or the `tokenizer.omoi` format: only internal names and comments. 1.15.0 reads and writes exactly what 1.0–1.14.1 do.
+- 1.15.0 reads and writes exactly what 1.0–1.14.1 do, and they read what 1.15.0 writes.
 
 ## 1.14.1 (2026-11-24)
 

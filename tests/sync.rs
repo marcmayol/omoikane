@@ -2,18 +2,18 @@
 //! sharing a local bare git repository. Git without the user's identity or configuration, so the
 //! test doesn't depend on the machine.
 
-mod comun;
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Fixture {
-    dir: comun::Temporal,
+    dir: common::TempDir,
 }
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let dir = comun::Temporal::nueva(&format!("sync-{name}"));
+        let dir = common::TempDir::new(&format!("sync-{name}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
         let p = Fixture { dir };
         let o = p.git(&p.dir, &["init", "--quiet", "--bare", "compartida.git"]);
@@ -97,9 +97,9 @@ impl Machine {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
             .stdin(Stdio::null());
-        comun::sin_la_sesion(&mut c);
+        common::without_session_vars(&mut c);
         // Without the variables of an agent's shell (if the tests run in one, `verify` refuses).
-        for v in omoikane::verificado::AGENT_ENV_VARS {
+        for v in omoikane::verified::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         for (k, v) in env {
@@ -152,7 +152,7 @@ impl Machine {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        comun::sin_la_sesion(&mut c);
+        common::without_session_vars(&mut c);
         let mut child = c.spawn().unwrap();
         {
             use std::io::Write;

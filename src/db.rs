@@ -4,7 +4,7 @@
 //! transactions to write: several agents (each with its own `omoi`) can write at the same time
 //! without a `SQLITE_BUSY` reaching the user. A deferred transaction that reads and then writes would
 //! get `BUSY_SNAPSHOT` without waiting if someone else writes in between: that's why all the ones that
-//! write are `IMMEDIATE`. `tests/concurrencia.rs` checks it, with real `omoi` processes.
+//! write are `IMMEDIATE`. `tests/concurrency.rs` checks it, with real `omoi` processes.
 
 use crate::tr;
 use anyhow::{Context, Result};
@@ -23,14 +23,14 @@ pub const SCHEMA_VERSION: i64 = 10;
 pub const MIN_READER: i64 = 10;
 
 /// `OMOIKANE_DB`, or `omoikane.db` in Omoikane's folder (`OMOIKANE_HOME` or `~/.omoikane`). Without
-/// either, relative as before: the CLI has already refused earlier (`entorno::no_home_error`).
+/// either, relative as before: the CLI has already refused earlier (`environment::no_home_error`).
 pub fn default_path() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_DB").filter(|r| !r.is_empty()) {
         // Absolute, like `--db`: sync uses it from other folders.
         let r = PathBuf::from(r);
         return std::path::absolute(&r).unwrap_or(r);
     }
-    crate::entorno::home().unwrap_or_else(|| PathBuf::from(".omoikane")).join("omoikane.db")
+    crate::environment::home().unwrap_or_else(|| PathBuf::from(".omoikane")).join("omoikane.db")
 }
 
 /// Registers sqlite-vec in every connection opened afterwards. Once per process is enough.
@@ -61,7 +61,7 @@ pub fn waited() -> Duration {
 
 /// The wait when another connection has the database (instead of `busy_timeout`). SQLite's sleeps 1,
 /// 2, 5, 10… up to 100 ms between attempts (and on Windows a `Sleep(1)` can be quite a bit more), so
-/// whoever was waiting arrived late to the gaps. With 20 agents at once (`tests/concurrencia.rs`), the
+/// whoever was waiting arrived late to the gaps. With 20 agents at once (`tests/concurrency.rs`), the
 /// mean wait of a `remember` went down from 200-300 ms to 150, that of each message's recall from
 /// 95-170 to 50, and its P99 from 1.4-2.1 s to 0.8-1.2 s. Here it retries after 0.1-2 ms (with some
 /// randomness, so they don't all wake up at once), up to `MAX_WAIT` from the first attempt.
@@ -140,8 +140,8 @@ fn open_once(path: &Path) -> Result<Connection> {
     migrate(&mut db)?;
     update_on_open(&mut db)?;
     ensure_locals(&mut db)?;
-    crate::significado::create_table(&db)?;
-    crate::oficios::create_table(&db)?;
+    crate::meaning::create_table(&db)?;
+    crate::trades::create_table(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }
@@ -156,12 +156,12 @@ fn open_once(path: &Path) -> Result<Connection> {
 ///   3 ms). Used with `INDEXED BY`: on its own, SQLite goes by the primary key.
 /// - `memory_reciente`: the scope's latest in order, without reading and sorting all of them (at
 ///   session start, with 100,000 memories, 440 ms).
-/// - `memory_hlc`: the latest stamp, without reading the table (the fingerprint of `revisar::refresh`,
+/// - `memory_hlc`: the latest stamp, without reading the table (the fingerprint of `review::refresh`,
 ///   in every session: with 100,000 memories, 90 ms).
 /// - `memory_cuenta`: how many memories there are per project and space, kept up to date by triggers;
 ///   counting a scope's no longer scans the table.
 /// - `vec_cambio`: which vectors have changed since the vector summary was last brought up to date
-///   (`vectores::up_to_date_summary`), with the previous vector. The triggers fill it, whoever writes (also a 1.0
+///   (`vectors::up_to_date_summary`), with the previous vector. The triggers fill it, whoever writes (also a 1.0
 ///   or sync).
 ///
 /// If any of the pieces is missing (a new database, a 1.0 one or one whose `memory` a migration
@@ -244,7 +244,7 @@ fn ensure_locals(db: &mut Connection) -> Result<()> {
             }
         }
         tx.execute_batch(LOCALS)?;
-        crate::vectores::forget_summary(&tx)?;
+        crate::vectors::forget_summary(&tx)?;
     }
     tx.commit()?;
     Ok(())
@@ -318,7 +318,7 @@ fn ensure_person(db: &Connection) -> Result<String> {
         if !has {
             db.execute_batch("ALTER TABLE tombstone ADD COLUMN space_key TEXT NOT NULL DEFAULT ''")?;
         }
-        crate::proyecto::change_person(db, "", &person)?;
+        crate::project::change_person(db, "", &person)?;
     }
     Ok(person)
 }
@@ -633,7 +633,7 @@ fn schema_10(tx: &Connection, person: &str) -> Result<()> {
 }
 
 /// Schema 5's stamps carry the counter with 4 digits (`%013d-0000-`); today's, with 10. They compared
-/// fine with `reloj::compare`, but not as text (`max(hlc)`, `w.hlc > v.hlc`): now they all have the
+/// fine with `clock::compare`, but not as text (`max(hlc)`, `w.hlc > v.hlc`): now they all have the
 /// same width and comparing as text is comparing stamps.
 fn normalize_stamps(tx: &Connection) -> Result<()> {
     // (table, columns that identify the row)
@@ -644,13 +644,13 @@ fn normalize_stamps(tx: &Connection) -> Result<()> {
         };
         let mut u = tx.prepare(&format!("UPDATE {table} SET hlc = ?2 WHERE CAST({key} AS TEXT) = ?1"))?;
         for (k, hlc) in rows {
-            if let Some(new) = crate::reloj::normalized(&hlc) {
+            if let Some(new) = crate::clock::normalized(&hlc) {
                 u.execute(rusqlite::params![k, new])?;
             }
         }
     }
     let last: Option<String> = tx.query_row("SELECT v FROM meta WHERE k = 'hlc'", [], |r| r.get(0)).ok();
-    if let Some(new) = last.as_deref().and_then(crate::reloj::normalized) {
+    if let Some(new) = last.as_deref().and_then(crate::clock::normalized) {
         tx.execute("UPDATE meta SET v = ?1 WHERE k = 'hlc'", [new])?;
     }
     Ok(())
@@ -688,8 +688,8 @@ fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
         let r = match remotes.get(&path) {
             Some(k) => PathInfo { key: k.clone(), foreign: true, exists: false, origin: String::new(), path },
             None => {
-                let exists = crate::proyecto::is_dir(Path::new(&path));
-                PathInfo { key: crate::sync::project_key_for(&path, person), foreign: false, exists, origin: crate::proyecto::origin(&path), path }
+                let exists = crate::project::is_dir(Path::new(&path));
+                PathInfo { key: crate::sync::project_key_for(&path, person), foreign: false, exists, origin: crate::project::origin(&path), path }
             }
         };
         match groups.iter_mut().find(|(k, _)| *k == r.key) {
@@ -720,7 +720,7 @@ fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
         }
         for (k, rs) in projects {
             let main = rs.iter().find(|r| !r.foreign && r.exists).or_else(|| rs.iter().find(|r| !r.foreign)).or(rs.first()).map(|r| r.path.clone()).unwrap_or_default();
-            let name = crate::proyecto::name_of(&main, &k);
+            let name = crate::project::name_of(&main, &k);
             tx.execute(
                 "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![k, name, main, now],
@@ -729,7 +729,7 @@ fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
             for r in rs {
                 tx.execute(
                     "INSERT OR IGNORE INTO project_path(path, path_cmp, project_id, origin, is_foreign, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![r.path, crate::proyecto::comparable(&r.path), id, r.origin, r.foreign, r.exists.then_some(&now)],
+                    rusqlite::params![r.path, crate::project::comparable(&r.path), id, r.origin, r.foreign, r.exists.then_some(&now)],
                 )?;
                 tx.execute("INSERT OR REPLACE INTO mig_proyecto(path, project_id) VALUES (?1, ?2)", rusqlite::params![r.path, id])?;
             }
@@ -763,7 +763,7 @@ ALTER TABLE verdict ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE verdict ADD COLUMN author TEXT NOT NULL DEFAULT '';
 ";
 
-/// Verdicts (0.17.0, `veredictos`): what the agent or the user say about a memory or a pair
+/// Verdicts (0.17.0, `verdicts`): what the agent or the user say about a memory or a pair
 /// (`superseded`, `contradicts`, `compatible`, `ok:<warning>`). They travel through sync, so they
 /// carry their stamp; for a pair the newest wins.
 const SCHEMA_8: &str = "
@@ -787,15 +787,15 @@ fn move_dismissals(tx: &Connection) -> Result<()> {
     };
     for (id, kind, other, at) in rows {
         let relation = if other.is_empty() { format!("ok:{kind}") } else { "compatible".to_string() };
-        let hlc = crate::reloj::stamp(tx)?;
+        let hlc = crate::clock::stamp(tx)?;
         tx.execute("INSERT OR IGNORE INTO verdict(memory_id, other_id, relation, at, hlc) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, other, relation, at, hlc])?;
     }
     tx.execute("DELETE FROM review WHERE dismissed_at IS NOT NULL", [])?;
     Ok(())
 }
 
-/// Candidates drawn from conversations (Phase 7.2, `candidatas`), which the next session's agent
-/// saves or drops; and the `[[name]]` links between memories (Phase 7.4, `enlaces`).
+/// Candidates drawn from conversations (Phase 7.2, `candidates`), which the next session's agent
+/// saves or drops; and the `[[name]]` links between memories (Phase 7.4, `links`).
 const SCHEMA_7: &str = "
 CREATE TABLE candidate (
   id         INTEGER PRIMARY KEY,
@@ -815,7 +815,7 @@ CREATE TABLE memory_link (
 CREATE INDEX memory_link_to ON memory_link(to_id);
 ";
 
-/// Review (Phase 7.1, `revisar`): the memories a newer one contradicts, and what the user accepted
+/// Review (Phase 7.1, `review`): the memories a newer one contradicts, and what the user accepted
 /// ("it's fine as is", `dismissed_at`), which holds until the memory changes again.
 const SCHEMA_6: &str = "
 CREATE TABLE review (
@@ -829,7 +829,7 @@ CREATE TABLE review (
 ) WITHOUT ROWID;
 ";
 
-/// Sync between computers: a hybrid logical clock per memory (`hlc`, see `reloj`), who wrote it
+/// Sync between computers: a hybrid logical clock per memory (`hlc`, see `clock`), who wrote it
 /// (`author`) and the marks of what was forgotten, so another computer doesn't bring it back. The
 /// memories already there take their stamp from `updated_at`, without a computer (so any later change wins).
 const SCHEMA_5: &str = "
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn migrates_from_1_to_2_and_reindexes() {
-        let dir = crate::comun::Temporal::nueva("db-migra");
+        let dir = crate::common::TempDir::new("db-migra");
         let path = dir.join("o.db");
         {
             // A phase 1 database, by hand.
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn without_a_prior_copy_it_does_not_migrate() {
-        let dir = crate::comun::Temporal::nueva("db-sin-copia");
+        let dir = crate::common::TempDir::new("db-sin-copia");
         let path = dir.join("o.db");
         open_at_schema(&path, 9).unwrap();
         let mut db = Connection::open(&path).unwrap();
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn redoes_a_half_written_prior_copy() {
-        let dir = crate::comun::Temporal::nueva("db-copia-medias");
+        let dir = crate::common::TempDir::new("db-copia-medias");
         let path = dir.join("o.db");
         open_at_schema(&path, 9).unwrap().execute_batch("INSERT INTO meta(k, v) VALUES ('marca', 'de la 9')").unwrap();
         // A cut copy (from a version that copied straight to the final name): no tables.
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn creates_and_reopens() {
-        let dir = crate::comun::Temporal::nueva("db");
+        let dir = crate::common::TempDir::new("db");
         let path = dir.join("sub").join("o.db");
         let db = open(&path).unwrap();
         assert_eq!(schema_version(&db).unwrap(), SCHEMA_VERSION);
@@ -1037,7 +1037,7 @@ mod tests {
     /// was written is still there on reopening, even though the WAL wasn't moved.
     #[test]
     fn closing_does_not_checkpoint_the_wal() {
-        let dir = crate::comun::Temporal::nueva("db-wal");
+        let dir = crate::common::TempDir::new("db-wal");
         let path = dir.join("o.db");
         let db = open(&path).unwrap();
         assert!(db.db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE).unwrap());

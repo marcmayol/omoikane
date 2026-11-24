@@ -1,17 +1,17 @@
 //! 0.19.0: correcting with care. Partial edits (`replace` exactly once, `append`) and merging
 //! N memories into one (`absorb`), through the `update` tool and through the CLI.
 
-mod comun;
+mod common;
 
 use std::process::{Command, Output, Stdio};
 
 struct Env {
-    dir: comun::Temporal,
+    dir: common::TempDir,
 }
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = comun::Temporal::nueva(&format!("update-{name}"));
+        let dir = common::TempDir::new(&format!("update-{name}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         Env { dir }
     }

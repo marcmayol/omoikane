@@ -36,23 +36,23 @@ cargo test --release
 ```
 
 - Tests never touch your real `~/.omoikane`: they set `OMOIKANE_DB` and `OMOIKANE_HOME` to a temporary folder. Do the same when you try things by hand, so your own memory stays out of it.
-- `tests/equivalencia.rs` needs the int8 model (about 150 MB). Without `OMOI_MODELO_INT8` pointing to it, it skips itself. CI downloads it.
+- `tests/equivalence.rs` needs the int8 model (about 150 MB). Without `OMOI_MODELO_INT8` pointing to it, it skips itself. CI downloads it.
 - `tests/compat.rs` checks against a real `omoi` 1.0.0. Point `OMOIKANE_COMPAT_BIN` to it (from the [v1.0.0 Release](https://github.com/marcmayol/omoikane/releases/tag/v1.0.0)); without it, it skips itself. CI always runs it, on the three systems.
-- Fake secrets in tests (tokens, keys) must not look real as a whole in the source, or GitHub's push protection blocks the push. Look at `tests/secretos.rs` for how they're split.
+- Fake secrets in tests (tokens, keys) must not look real as a whole in the source, or GitHub's push protection blocks the push. Look at `tests/secrets.rs` for how they're split.
 
 ## Changes to search, recall or ranking
 
 These are judged by numbers, not by examples that happen to work.
 
 - Run the public benchmark ([omoikane-bench](https://github.com/marcmayol/omoikane-bench)) before and after, and put both tables in the pull request.
-- For recall, also run the before/after comparator: `cargo build --release`, then `cargo run --release --example eval -- tests/recall_casos.tsv --a-bin <old omoi> --b-bin <new omoi>` (or one binary and `--a-env`/`--b-env`). It passes the same messages through `omoi recall` with both, interleaved, and lists the cases the change fixes and the ones it breaks. You can point it at a copy of your own database with `--base` and your own cases; the file format is at the top of `examples/eval.rs`.
+- For recall, also run the before/after comparator: `cargo build --release`, then `cargo run --release --example eval -- tests/recall_cases.tsv --a-bin <old omoi> --b-bin <new omoi>` (or one binary and `--a-env`/`--b-env`). It passes the same messages through `omoi recall` with both, interleaved, and lists the cases the change fixes and the ones it breaks. You can point it at a copy of your own database with `--base` and your own cases; the file format is at the top of `examples/eval.rs`.
 - Compare the two versions interleaved (A, B, A, B…) on the same machine, never one block after the other: caches and thermal throttling make the second block look better or worse than it is.
-- Speed has a guard in CI (`perf.yml`, on every push and before every release): it downloads the last release's `omoi`, checks it as an update does (the signature of `SHA256SUMS` and the package's SHA-256), and measures `recall`, `search` from a project and `search --all` with both binaries on the same runner, interleaved, on the same synthetic database of 10,000 memories. It fails when a median is more than 25 % and 5 ms above the release's, twice in a row. Run the same thing locally with `cargo build --release` and then `cargo run --release --example rendimiento` (`--a-bin <omoi>` to compare with a binary you already have, `--memorias`, `--rondas`, `--margen`; see the top of `examples/rendimiento.rs`). If a change is slower on purpose, say why in the pull request.
+- Speed has a guard in CI (`perf.yml`, on every push and before every release): it downloads the last release's `omoi`, checks it as an update does (the signature of `SHA256SUMS` and the package's SHA-256), and measures `recall`, `search` from a project and `search --all` with both binaries on the same runner, interleaved, on the same synthetic database of 10,000 memories. It fails when a median is more than 25 % and 5 ms above the release's, twice in a row. Run the same thing locally with `cargo build --release` and then `cargo run --release --example performance` (`--a-bin <omoi>` to compare with a binary you already have, `--memorias`, `--rondas`, `--margen`; see the top of `examples/performance.rs`). If a change is slower on purpose, say why in the pull request.
 - Report what got worse too. A change that helps paraphrases and adds noise to questions with no answer has to say so.
 
 ## Code style
 
-- The code is written in Spanish: names, comments and test names. Follow the code around yours. If you don't write Spanish, write your comments in English and we'll sort it out in review; don't rename existing code.
+- The code is in English: names, comments and test names (since 1.15.0). Names stay ASCII; the crate denies `non_ascii_idents`. Text the user sees comes in English and Spanish (`tr!`), and anything written to disk or the network keeps its name: a Rust field can be renamed, but its `#[serde(rename)]` / `#[arg(id)]` stays.
 - Comment why, not what, and only when the reason isn't obvious.
 - No new dependency without a reason in the pull request. Versions of crypto and network crates are pinned (`=x.y.z`) on purpose.
 - `cargo clippy -- -D warnings` must pass.

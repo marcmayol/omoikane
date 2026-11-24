@@ -1,19 +1,19 @@
 //! 1.10: from memory to repository skill (`omoi skill`): the two folders, the state (up to date,
 //! outdated, edited, orphan), `refresh`, and that it doesn't overwrite others' files or write secrets.
 
-mod comun;
+mod common;
 
 use omoikane::db;
-use omoikane::memoria::{self, Changes, NewMemory, Kind};
+use omoikane::memory::{self, Changes, NewMemory, Kind};
 use omoikane::skill::{self, Target, State};
 use std::path::Path;
 
-fn setup(name: &str) -> (comun::Temporal, rusqlite::Connection, String) {
-    let d = comun::Temporal::nueva(&format!("skill-{name}"));
+fn setup(name: &str) -> (common::TempDir, rusqlite::Connection, String) {
+    let d = common::TempDir::new(&format!("skill-{name}"));
     std::fs::create_dir_all(d.join("repo").join(".git")).unwrap();
-    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let repo = omoikane::project::of_dir(&d.join("repo")).unwrap();
     let db = db::open(&d.join("o.db")).unwrap();
-    omoikane::proyecto::register(&db, &repo).unwrap();
+    omoikane::project::register(&db, &repo).unwrap();
     (d, db, repo)
 }
 
@@ -25,7 +25,7 @@ fn recipe(db: &mut rusqlite::Connection, repo: &str) -> String {
         content: "1. Subir la versión en Cargo.toml.\n2. Etiquetar y empujar.\n\nwhen: publica, saca versión".into(),
         ..Default::default()
     };
-    memoria::save(db, n, None).unwrap().id
+    memory::save(db, n, None).unwrap().id
 }
 
 fn states(db: &rusqlite::Connection, repo: &str) -> Vec<(String, State)> {
@@ -51,7 +51,7 @@ fn writes_both_and_tracks_their_state() {
     assert!(skill::write(&db, &repo, &id, Target::Both, false, false).unwrap().iter().all(|e| e.action == "unchanged"));
 
     // The memory changes: outdated, and `refresh` brings them up to date (with another title, in the same file).
-    memoria::update(&mut db, &id, Changes { title: Some("Publicar una versión nueva".into()), ..Default::default() }, None).unwrap();
+    memory::update(&mut db, &id, Changes { title: Some("Publicar una versión nueva".into()), ..Default::default() }, None).unwrap();
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == State::Outdated));
     assert_eq!(skill::refresh(&db, &repo, false).unwrap().len(), 2);
     assert!(states(&db, &repo).iter().all(|(p, e)| *e == State::UpToDate && p.contains("/publicar-una-version/")));
@@ -59,7 +59,7 @@ fn writes_both_and_tracks_their_state() {
     // Edited by hand (and with Windows line endings): it is respected, and `refresh` doesn't touch it.
     let by_hand = Path::new(&repo).join(".claude/skills/publicar-una-version/SKILL.md");
     std::fs::write(&by_hand, std::fs::read_to_string(&by_hand).unwrap().replace("Etiquetar", "Etiquetar con -a").replace('\n', "\r\n")).unwrap();
-    memoria::update(&mut db, &id, Changes { append: Some("3. Publicar.".into()), ..Default::default() }, None).unwrap();
+    memory::update(&mut db, &id, Changes { append: Some("3. Publicar.".into()), ..Default::default() }, None).unwrap();
     let e: Vec<State> = states(&db, &repo).into_iter().map(|(_, e)| e).collect();
     assert_eq!(e, [State::Outdated, State::Edited]);
     assert_eq!(skill::refresh(&db, &repo, false).unwrap().len(), 1);
@@ -73,7 +73,7 @@ fn writes_both_and_tracks_their_state() {
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == State::UpToDate));
 
     // Forgotten: orphan.
-    memoria::forget(&mut db, &id).unwrap();
+    memory::forget(&mut db, &id).unwrap();
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == State::Orphan));
 }
 
@@ -100,7 +100,7 @@ fn does_not_overwrite_others_nor_write_secrets() {
         content: "Se despliega con la clave de servicio.".into(),
         ..Default::default()
     };
-    let secret = memoria::save(&mut db, n, None).unwrap().id;
+    let secret = memory::save(&mut db, n, None).unwrap().id;
     // Saving it already strips secrets; here, one that arrived with one (from an old database).
     db.execute("UPDATE memory SET content = 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789' WHERE id = ?1", [&secret]).unwrap();
     let e = skill::write(&db, &repo, &secret, Target::Both, false, false).unwrap_err().to_string();
@@ -118,7 +118,7 @@ fn suggests_and_finds_without_id() {
     let recipe_id = recipe(&mut db, &repo);
     let fact = |db: &mut rusqlite::Connection, title: &str| {
         let n = NewMemory { project: repo.clone(), kind: Some(Kind::Fact), title: title.into(), content: format!("{title}, con detalle."), ..Default::default() };
-        memoria::save(db, n, None).unwrap().id
+        memory::save(db, n, None).unwrap().id
     };
     let used = fact(&mut db, "El smoke test necesita compilar antes");
     let once = fact(&mut db, "El puerto del servidor es el 8010");
@@ -126,12 +126,12 @@ fn suggests_and_finds_without_id() {
     let n = NewMemory { kind: Some(Kind::Procedure), title: "Receta global".into(), content: "1. Algo.
 
 when: global".into(), ..Default::default() };
-    memoria::save(&mut db, n, None).unwrap();
+    memory::save(&mut db, n, None).unwrap();
     for (session, ids) in [("s1", vec![used.clone(), once.clone()]), ("s2", vec![used.clone()])] {
         let conv = d.join(format!("{session}.jsonl"));
         std::fs::write(&conv, "").unwrap();
-        omoikane::diario::record(&db, &repo, session, Some(&conv)).unwrap();
-        omoikane::diario::record_applied(&db, &repo, session, Some(&conv), &ids).unwrap();
+        omoikane::diary::record(&db, &repo, session, Some(&conv)).unwrap();
+        omoikane::diary::record_applied(&db, &repo, session, Some(&conv), &ids).unwrap();
     }
     let ids = |db: &rusqlite::Connection| skill::suggestions(db, &repo).unwrap().into_iter().map(|s| s.id).collect::<Vec<_>>();
     // Most applied first; the one applied only once, not.

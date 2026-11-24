@@ -10,7 +10,7 @@
 //! brings it up to date) or if someone edited the file by hand (**edited**: not overwritten without `force`). Nor is
 //! a skill written whose text looks like it holds a secret, because the file is going to end up in a commit.
 
-use crate::memoria::{Memory, Kind};
+use crate::memory::{Memory, Kind};
 use anyhow::{Result, bail};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -97,7 +97,7 @@ struct Header {
 /// The skill's name: the title without accents, lowercase, with letters, digits and `-`.
 pub fn name(m: &Memory) -> String {
     let mut r = String::new();
-    for c in crate::nombres::fold_accents(&m.title).chars() {
+    for c in crate::names::fold_accents(&m.title).chars() {
         if c.is_ascii_alphanumeric() {
             r.push(c.to_ascii_lowercase());
         } else if !r.is_empty() && !r.ends_with('-') {
@@ -229,7 +229,7 @@ fn read_header(text: &str) -> Option<Header> {
 
 /// The root of the project's repository, or an error if the session isn't in one.
 fn repo_root(project: &str) -> Result<PathBuf> {
-    if project.is_empty() || crate::proyecto::is_general(project) {
+    if project.is_empty() || crate::project::is_general(project) {
         bail!(crate::tr!(
             "skills go in a repository: run it inside one (or pass --dir)",
             "las skills van en un repositorio: lánzalo dentro de uno (o pasa --dir)"
@@ -259,7 +259,7 @@ fn generated_in(root: &Path, folder: &str) -> Vec<(PathBuf, Header)> {
 }
 
 fn state_of(db: &Connection, c: &Header) -> (State, Option<Memory>) {
-    let Some(m) = c.id.as_deref().and_then(|id| crate::memoria::get(db, id).ok()) else { return (State::Orphan, None) };
+    let Some(m) = c.id.as_deref().and_then(|id| crate::memory::get(db, id).ok()) else { return (State::Orphan, None) };
     if c.hash.as_deref() != Some(fingerprint(&c.description, &c.body).as_str()) {
         return (State::Edited, Some(m));
     }
@@ -289,19 +289,19 @@ pub const MAX_SUGGESTIONS: usize = 5;
 /// look like they hold a secret. This is what gets them used: without it, you have to go and look up the id.
 pub fn suggestions(db: &Connection, project: &str) -> Result<Vec<Suggestion>> {
     repo_root(project)?;
-    let Some((pid, _)) = crate::proyecto::resolve(db, project)? else { return Ok(Vec::new()) };
+    let Some((pid, _)) = crate::project::resolve(db, project)? else { return Ok(Vec::new()) };
     if pid == 0 {
         return Ok(Vec::new());
     }
     let already: std::collections::BTreeSet<String> = list(db, project)?.into_iter().map(|s| s.memory_id).collect();
-    let all = crate::memoria::recent(db, &crate::memoria::Scope::from_project(db, project)?, None, usize::MAX >> 1)?;
+    let all = crate::memory::recent(db, &crate::memory::Scope::from_project(db, project)?, None, usize::MAX >> 1)?;
     let mut r: Vec<Suggestion> = Vec::new();
     for m in all.into_iter().filter(|m| m.project_id == pid && !already.contains(&m.id)) {
-        let (applied, _) = crate::diario::applied(db, &m.id)?;
+        let (applied, _) = crate::diary::applied(db, &m.id)?;
         if m.kind != Kind::Procedure && applied < MIN_APPLIED {
             continue;
         }
-        if !crate::secretos::findings(&format!("{}\n{}", m.title, m.content)).is_empty() {
+        if !crate::secrets::findings(&format!("{}\n{}", m.title, m.content)).is_empty() {
             continue;
         }
         r.push(Suggestion { id: m.id, title: m.title, kind: m.kind, applied_sessions: applied, recall_count: m.recall_count });
@@ -318,17 +318,17 @@ pub fn suggestions(db: &Connection, project: &str) -> Result<Vec<Suggestion>> {
 pub fn resolve(db: &mut Connection, project: &str, requested: &str) -> Result<String> {
     let p = requested.trim();
     if !p.contains(char::is_whitespace)
-        && let Ok(id) = crate::memoria::resolve_id(db, p)
+        && let Ok(id) = crate::memory::resolve_id(db, p)
     {
         return Ok(id);
     }
-    let o = crate::buscar::SearchOptions { scope: crate::memoria::Scope::from_project(db, project)?, kind: None, tags: Vec::new(), limit: 5 };
-    let mut rs = crate::buscar::search_without_recording(db, p, &o)?;
+    let o = crate::search::SearchOptions { scope: crate::memory::Scope::from_project(db, project)?, kind: None, tags: Vec::new(), limit: 5 };
+    let mut rs = crate::search::search_without_recording(db, p, &o)?;
     // The search scores those sharing words almost the same; whoever asks for a skill names its
     // title. They are sorted by how many of the query's words are in the title (without accents), and on a
     // tie the search order stays.
     let words = |t: &str| -> std::collections::BTreeSet<String> {
-        crate::nombres::fold_accents(t).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(str::to_string).collect()
+        crate::names::fold_accents(t).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(str::to_string).collect()
     };
     let query = words(p);
     let in_title = |m: &Memory| words(&m.title).intersection(&query).count();
@@ -366,14 +366,14 @@ pub fn list(db: &Connection, project: &str) -> Result<Vec<Skill>> {
 /// Omoikane's, and doesn't write a memory that looks like it holds a secret.
 pub fn write(db: &Connection, project: &str, id: &str, target: Target, force: bool, dry_run: bool) -> Result<Vec<Written>> {
     let root = repo_root(project)?;
-    let m = crate::memoria::get(db, id)?;
-    crate::memoria::in_scope(db, &crate::memoria::Scope::from_project(db, project)?, &m.id)?;
-    let secrets = crate::secretos::kinds(&crate::secretos::findings(&format!("{}\n{}", m.title, m.content)));
+    let m = crate::memory::get(db, id)?;
+    crate::memory::in_scope(db, &crate::memory::Scope::from_project(db, project)?, &m.id)?;
+    let secrets = crate::secrets::kinds(&crate::secrets::findings(&format!("{}\n{}", m.title, m.content)));
     if !secrets.is_empty() && !force {
         bail!(crate::tr!(
             "the memory looks like it holds a secret ({}): a skill ends up in a commit. Fix the memory, or pass force if it is a false alarm",
             "la memoria parece llevar un secreto ({}): una skill acaba en un commit. Corrige la memoria, o pasa force si es una falsa alarma",
-            crate::secretos::summary(&secrets)
+            crate::secrets::summary(&secrets)
         ));
     }
     let mut r = Vec::new();

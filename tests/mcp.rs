@@ -1,7 +1,7 @@
 //! Phase 3: `omoi mcp` end to end, with a real MCP client (rmcp's) that starts it as a child
 //! process, just like Claude Code.
 
-mod comun;
+mod common;
 
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
@@ -18,12 +18,12 @@ fn int8_model() -> Option<PathBuf> {
 }
 
 struct Fixture {
-    dir: comun::Temporal,
+    dir: common::TempDir,
 }
 
 impl Fixture {
     fn new(name: &str, with_model: bool) -> Option<Fixture> {
-        let dir = comun::Temporal::nueva(&format!("mcp-{name}"));
+        let dir = common::TempDir::new(&format!("mcp-{name}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         let p = Fixture { dir };
         if with_model {

@@ -904,7 +904,7 @@ function goTo(id) {
   const target = projectLink(scopeOf(x));
   if (location.hash === target) { panelMemory = id; render(); } else { pendingGoTo = id; location.hash = target; }
 }
-// Based only on what an agent inferred (`evidencia`): nobody said or tested it.
+// Based only on what an agent inferred (`evidence`): nobody said or tested it.
 const isInferred = m => !m.verified && (m.evidence || []).length > 0 && m.evidence.every(e => e.kind === 'inferred');
 function detailHTML(m, vertical) {
   const projs = [...new Set(memories.map(x => x.project).filter(Boolean))].sort((a, b) => displayName(a).localeCompare(displayName(b)));
@@ -956,7 +956,7 @@ async function wireDetail(el, m) {
   for (const b of el.querySelectorAll('[data-ir]')) b.onclick = () => goTo(b.dataset.ir);
   for (const b of el.querySelectorAll('[data-tag]')) b.onclick = () => { filters.tema = b.dataset.tag; filters.proyecto = '*'; page = 1; location.hash = '#/'; render(); };
   q('fijar').onclick = () => action(() => tool('update', { id: m.id, pinned: !m.pinned }));
-  // Verifying isn't an agent tool: it goes through its own route (see `verificado`).
+  // Verifying isn't an agent tool: it goes through its own route (see `verified`).
   q('verificar').onclick = () => action(async () => {
     // With the token `omoi serve` puts in this page when serving it: a POST that hasn't loaded it doesn't have it.
     const viewToken = document.querySelector('meta[name="omoikane-view"]')?.content || '';

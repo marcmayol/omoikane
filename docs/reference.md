@@ -15,7 +15,7 @@ omoi --help
 
 Memories belong to the git repository you run `omoi` in (`--global` makes one apply everywhere; more in [sync-and-spaces.md](sync-and-spaces.md#projects)). The database lives in `~/.omoikane/omoikane.db` (`OMOIKANE_DB` to change it, or `OMOIKANE_HOME` to move the whole `~/.omoikane` folder; for CI and servers, see [unattended.md](unattended.md)). Every command takes `--json`. Messages are in English; `OMOIKANE_LANG=es` switches them to Spanish.
 
-Many agents can share one database at once (subagents, several sessions, CI jobs): each `omoi` waits its turn to write, up to 5 s, and a brand-new database created by several processes at the same moment comes out as one. `tests/concurrencia.rs` checks it with real `omoi` processes; `cargo test --release --test concurrencia -- --ignored --nocapture` runs the full measurement (20 agents for 30 s).
+Many agents can share one database at once (subagents, several sessions, CI jobs): each `omoi` waits its turn to write, up to 5 s, and a brand-new database created by several processes at the same moment comes out as one. `tests/concurrency.rs` checks it with real `omoi` processes; `cargo test --release --test concurrency -- --ignored --nocapture` runs the full measurement (20 agents for 30 s).
 
 ## See it and tidy it up
 

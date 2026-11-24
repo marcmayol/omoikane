@@ -1,18 +1,18 @@
 //! The CLI end to end, as a person or a hook will use it: the real `omoi` binary, with
 //! its own database and inside a test repository.
 
-mod comun;
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct TestEnv {
-    dir: comun::Temporal,
+    dir: common::TempDir,
 }
 
 impl TestEnv {
     fn new(name: &str) -> TestEnv {
-        let dir = comun::Temporal::nueva(&format!("cli-{name}"));
+        let dir = common::TempDir::new(&format!("cli-{name}"));
         std::fs::create_dir_all(dir.join("repo").join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("repo").join("src")).unwrap();
         TestEnv { dir }
@@ -597,7 +597,7 @@ fn setup_for_other_agents() {
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     std::fs::write(home.join(".gemini/settings.json"), r#"{"theme":"dark","mcpServers":{"otro":{"command":"x"}}}"#).unwrap();
     let h = home.to_str().unwrap();
-    for a in omoikane::agentes::AGENTS {
+    for a in omoikane::agents::AGENTS {
         let o = e.omoi_with(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
         assert!(o.status.success(), "{a}: {}", String::from_utf8_lossy(&o.stderr));
         let o = e.omoi_with(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
@@ -872,7 +872,7 @@ fn http_server() {
     use std::io::{Read, Write};
     let e = TestEnv::new("http");
     e.ok(&["remember", "-k", "fact", "-t", "Puerto del servidor", "Escucha en el 8010"]);
-    let port = comun::puerto_libre();
+    let port = common::free_port();
     // The server is closed even if the test fails: an orphaned one keeps the binary locked on Windows.
     struct KillOnDrop(std::process::Child);
     impl Drop for KillOnDrop {
@@ -1080,7 +1080,7 @@ fn extended_drive_path_is_local() {
 /// commit in the provenance and no `last_seen`, and the hook with that `cwd` failed. What comes from outside
 /// (`project` over MCP) is still not opened. It is simulated with `\\localhost\C$\…` (the administrative share
 /// of the temp folder's drive); if this machine does not allow opening it, the test says so and checks
-/// nothing (the logic is covered by `proyecto::tests::el_recurso_de_trabajo_es_de_confianza`).
+/// nothing (the logic is covered by `project::tests::el_recurso_de_trabajo_es_de_confianza`).
 #[cfg(windows)]
 #[test]
 fn working_folder_can_be_on_the_network() {

@@ -9,7 +9,7 @@
 //! warning. CI (`.github/workflows/compat.yml`) downloads it from the v1.0.0 Release, checks its SHA-256 and
 //! runs `cargo test --test compat` on Windows, Linux and macOS.
 
-mod comun;
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -32,12 +32,12 @@ fn binary_10() -> Option<PathBuf> {
 }
 
 struct Harness {
-    dir: comun::Temporal,
+    dir: common::TempDir,
 }
 
 impl Harness {
     fn new(name: &str) -> Harness {
-        let dir = comun::Temporal::nueva(&format!("compat-{name}"));
+        let dir = common::TempDir::new(&format!("compat-{name}"));
         std::fs::write(dir.join("gitconfig-vacio"), "").unwrap();
         let p = Harness { dir };
         p.another_repo("compartida");
@@ -159,7 +159,7 @@ impl Machine {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("OMOIKANE_LANG")
             .env_remove("OMOIKANE_SOURCE");
-        comun::sin_la_sesion(&mut c);
+        common::without_session_vars(&mut c);
         c
     }
 
@@ -571,7 +571,7 @@ fn verification_and_provenance_pass_through_10() {
     // Without an agent shell's variables (if the tests run inside one, `verify` refuses).
     let without_agent = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
         let mut c = a.command(&a.dir);
-        for v in omoikane::verificado::AGENT_ENV_VARS {
+        for v in omoikane::verified::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         for (k, x) in env {

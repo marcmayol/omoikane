@@ -2,18 +2,18 @@
 //! priority (`omoi decisions`, the `decisions` tool) and per-file history for its risk gate
 //! (`omoi file-history`).
 
-mod comun;
+mod common;
 
-use omoikane::memoria::{self, Scope, NewMemory, Kind};
+use omoikane::memory::{self, Scope, NewMemory, Kind};
 use omoikane::recall::{self, HookInput};
-use omoikane::{db, diario, proyecto, riesgo};
+use omoikane::{db, diary, project, risk};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn repo(dir: &Path) -> String {
     std::fs::create_dir_all(dir.join(".git")).unwrap();
-    proyecto::of_dir(dir).unwrap()
+    project::of_dir(dir).unwrap()
 }
 
 fn decision(db: &mut Connection, project: &str, space_id: Option<i64>, title: &str, tags: &[&str]) -> String {
@@ -26,7 +26,7 @@ fn decision(db: &mut Connection, project: &str, space_id: Option<i64>, title: &s
         tags: tags.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    let id = memoria::save(db, n, None).unwrap().id;
+    let id = memory::save(db, n, None).unwrap().id;
     // Different dates: the date ordering shows.
     std::thread::sleep(std::time::Duration::from_millis(5));
     id
@@ -64,21 +64,21 @@ fn titles(v: &serde_json::Value) -> Vec<String> {
 
 /// Two clients (Acme and Globex) with open decisions, blocking and for later.
 struct Factory {
-    dir: comun::Temporal,
+    dir: common::TempDir,
     acme: String,
     globex: String,
 }
 
 fn factory(name: &str) -> Factory {
-    let dir = comun::Temporal::nueva(&format!("kumi-{name}"));
+    let dir = common::TempDir::new(&format!("kumi-{name}"));
     let acme = repo(&dir.join("acme-web"));
     let globex = repo(&dir.join("globex-web"));
     let mut db = db::open(&dir.join("o.db")).unwrap();
-    let acme_space = proyecto::create_space(&db, "Acme").unwrap();
-    let globex_space = proyecto::create_space(&db, "Globex").unwrap();
+    let acme_space = project::create_space(&db, "Acme").unwrap();
+    let globex_space = project::create_space(&db, "Globex").unwrap();
     for (p, s) in [(&acme, acme_space), (&globex, globex_space)] {
-        let id = proyecto::register(&db, p).unwrap();
-        proyecto::assign_space(&db, id, Some(s)).unwrap();
+        let id = project::register(&db, p).unwrap();
+        project::assign_space(&db, id, Some(s)).unwrap();
     }
     decision(&mut db, &acme, None, "Acme: precio del plan Pro", &["open"]);
     decision(&mut db, &acme, None, "Acme: borrar cuentas inactivas", &["open", "blocking"]);
@@ -95,7 +95,7 @@ fn blocking_first_and_without_leaving_the_space() {
     let f = factory("orden");
     let db = db::open(&f.dir.join("o.db")).unwrap();
     let scope = Scope::from_project(&db, &f.acme).unwrap();
-    let v = memoria::decisions(&db, &scope, false, &[], 50).unwrap();
+    let v = memory::decisions(&db, &scope, false, &[], 50).unwrap();
     let t: Vec<(&str, &str)> = v.iter().map(|d| (d.title.as_str(), d.priority)).collect();
     // Blocking first (newest to oldest), then the later ones; no Globex and not the one that's no
     // longer open.
@@ -108,11 +108,11 @@ fn blocking_first_and_without_leaving_the_space() {
     ]);
     assert!(v[0].project.is_empty() && v[0].space == "acme" && !v[0].global);
     assert!(v[2].global);
-    let blocking_only = memoria::decisions(&db, &scope, true, &[], 50).unwrap();
+    let blocking_only = memory::decisions(&db, &scope, true, &[], 50).unwrap();
     assert_eq!(blocking_only.len(), 2);
-    assert_eq!(memoria::decisions(&db, &scope, false, &[], 1).unwrap().len(), 1);
+    assert_eq!(memory::decisions(&db, &scope, false, &[], 1).unwrap().len(), 1);
     // From the general folder, everyone's.
-    assert_eq!(memoria::decisions(&db, &Scope::All, true, &[], 50).unwrap().len(), 3);
+    assert_eq!(memory::decisions(&db, &Scope::All, true, &[], 50).unwrap().len(), 3);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn cli_and_tool_give_the_same_json() {
     assert!(t.lines().next().unwrap().contains("BLOCKING"), "{t}");
 
     // The MCP tool: the same, and it doesn't leave the space either.
-    let call = |args: serde_json::Value| omoikane::mcp::herramienta(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("decisions"), &args.to_string(), "test").unwrap();
+    let call = |args: serde_json::Value| omoikane::mcp::run_tool(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("decisions"), &args.to_string(), "test").unwrap();
     let (t, error) = call(serde_json::json!({ "blocking": true }));
     assert!(!error, "{t}");
     let m: serde_json::Value = serde_json::from_str(&t).unwrap();
@@ -180,7 +180,7 @@ fn cli_and_tool_give_the_same_json() {
 // --- file-history ---------------------------------------------------------------------------------
 
 fn session(db: &Connection, name: &str, project_id: i64, folder: &str, day: &str, files: &[&str]) {
-    diario::create_table(db).unwrap();
+    diary::create_table(db).unwrap();
     db.execute(
         "INSERT INTO diary(session, project_id, folder, first_at, last_at, files) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         rusqlite::params![name, project_id, folder, format!("{day}T10:00:00.000Z"), serde_json::to_string(files).unwrap()],
@@ -197,19 +197,19 @@ fn gotcha(db: &mut Connection, project: &str, title: &str, paths: &[&str]) -> St
         paths: paths.iter().map(|r| r.to_string()).collect(),
         ..Default::default()
     };
-    memoria::save(db, n, None).unwrap().id
+    memory::save(db, n, None).unwrap().id
 }
 
 /// A repository with 5 sessions on `src/sync.rs` (4 with `tests/sync.rs`, 2 with `CHANGELOG.md`), and
 /// another project that also touches `src/sync.rs`; and a session from the user's folder with
 /// absolute paths into the repository.
-fn with_diary(name: &str) -> (comun::Temporal, String, Vec<String>) {
-    let d = comun::Temporal::nueva(&format!("kumi-{name}"));
+fn with_diary(name: &str) -> (common::TempDir, String, Vec<String>) {
+    let d = common::TempDir::new(&format!("kumi-{name}"));
     let r = repo(&d.join("repo"));
     let other = repo(&d.join("otro"));
     let mut db = db::open(&d.join("o.db")).unwrap();
-    let id = proyecto::register(&db, &r).unwrap();
-    let id2 = proyecto::register(&db, &other).unwrap();
+    let id = project::register(&db, &r).unwrap();
+    let id2 = project::register(&db, &other).unwrap();
     session(&db, "a", id, &r, "2026-10-01", &["src/sync.rs", "tests/sync.rs", "CHANGELOG.md"]);
     session(&db, "b", id, &r, "2026-10-08", &["src/sync.rs", "tests/sync.rs"]);
     session(&db, "c", id, &r, "2026-10-15", &["src/sync.rs", "tests/sync.rs", "CHANGELOG.md"]);
@@ -237,7 +237,7 @@ fn history_of_the_diff_files() {
     let db = db::open(&d.join("o.db")).unwrap();
     let requested: Vec<String> =
         ["src/sync.rs", "./src/sync.rs", &format!("{r}/src/sync.rs"), r"tests\sync.rs", "nuevo.rs", ""].iter().map(|s| s.to_string()).collect();
-    let i = riesgo::for_files(&db, &r, &requested).unwrap();
+    let i = risk::for_files(&db, &r, &requested).unwrap();
     assert_eq!(i.sessions, 7);
     // No repeats: relative, with `./`, absolute and with `\` are the same file.
     let names: Vec<&str> = i.files.iter().map(|f| f.file.as_str()).collect();
@@ -245,7 +245,7 @@ fn history_of_the_diff_files() {
     let s = &i.files[0];
     // Only this project's sessions, not the other's.
     assert_eq!((s.sessions, s.last.as_deref()), (6, Some("2026-11-06")));
-    assert_eq!(s.changes_with, [riesgo::CoChange { file: "tests/sync.rs".into(), sessions: 5 }, riesgo::CoChange { file: "CHANGELOG.md".into(), sessions: 2 }]);
+    assert_eq!(s.changes_with, [risk::CoChange { file: "tests/sync.rs".into(), sessions: 5 }, risk::CoChange { file: "CHANGELOG.md".into(), sessions: 2 }]);
     let mut expected = gotchas.clone();
     expected.sort();
     assert_eq!((s.gotchas, &s.gotcha_ids), (2, &expected));
@@ -255,10 +255,10 @@ fn history_of_the_diff_files() {
     assert_eq!((n.sessions, n.last.as_deref(), n.changes_with.len(), n.gotchas), (0, None, 0, 0));
 
     // Without a diary: everything at zero, no error.
-    let d2 = comun::Temporal::nueva("kumi-sin-diario");
+    let d2 = common::TempDir::new("kumi-sin-diario");
     let r2 = repo(&d2.join("repo"));
     let db2 = db::open(&d2.join("o.db")).unwrap();
-    let i = riesgo::for_files(&db2, &r2, &["src/a.rs".to_string()]).unwrap();
+    let i = risk::for_files(&db2, &r2, &["src/a.rs".to_string()]).unwrap();
     assert_eq!((i.sessions, i.files[0].sessions), (0, 0));
 }
 
@@ -325,7 +325,7 @@ fn list_by_tag_with_data() {
     // `get` gives the data; the `recent` tool with `tags`, same as `list`.
     let g = json(omoi(&f.dir, root, &["get", &id, "--json"], None));
     assert_eq!(g["data"], profile);
-    let (t, error) = omoikane::mcp::herramienta(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("recent"), r#"{"tags":["kumi-perfil"]}"#, "test").unwrap();
+    let (t, error) = omoikane::mcp::run_tool(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("recent"), r#"{"tags":["kumi-perfil"]}"#, "test").unwrap();
     assert!(!error, "{t}");
     let r: serde_json::Value = serde_json::from_str(&t).unwrap();
     assert_eq!((r.as_array().unwrap().len(), &r[0]["data"]), (1, &profile), "{r}");
@@ -348,7 +348,7 @@ fn data_is_not_searched_and_changes_on_its_own() {
     let r = recall::on_prompt(&mut db, &f.acme, &e, None).unwrap().unwrap_or_default();
     assert!(!r.contains("xilofonorara"), "{r}");
     // What looks like a secret is redacted in the data too.
-    let data = memoria::data_of(&db, &[id.as_str()]).unwrap();
+    let data = memory::data_of(&db, &[id.as_str()]).unwrap();
     assert!(data[&id]["clave"].as_str().unwrap().starts_with("[redacted:"), "{data:?}");
     drop(db);
     // Only the data: no version in the history, and the stamp changes (sync carries it).
@@ -359,7 +359,7 @@ fn data_is_not_searched_and_changes_on_its_own() {
     assert!(json(omoi(&f.dir, root, &["history", &id, "--json"], None)).as_array().unwrap().is_empty());
     assert_ne!(hlc(&db::open(&f.dir.join("o.db")).unwrap()), before);
     // Through MCP: `data: null` removes it; without `data`, it's left alone.
-    let call = |args: serde_json::Value| omoikane::mcp::herramienta(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("update"), &args.to_string(), "test").unwrap();
+    let call = |args: serde_json::Value| omoikane::mcp::run_tool(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("update"), &args.to_string(), "test").unwrap();
     call(serde_json::json!({ "id": id, "title": "Perfil con datos, retitulado" }));
     assert_eq!(json(omoi(&f.dir, root, &["get", &id, "--json"], None))["data"]["fase"], "beta");
     call(serde_json::json!({ "id": id, "data": null }));
@@ -372,15 +372,15 @@ fn data_is_not_searched_and_changes_on_its_own() {
     let text = String::from_utf8_lossy(&o.stdout).to_string();
     let line: serde_json::Value = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|l| l["id"] == id.as_str()).expect("la línea");
     assert_eq!(line["data"]["fase"], "alpha", "{line}");
-    let other_dir = comun::Temporal::nueva("kumi-datos-import");
+    let other_dir = common::TempDir::new("kumi-datos-import");
     let copy = other_dir.join("copia.jsonl");
     std::fs::write(&copy, &text).unwrap();
     json(omoi(&other_dir, root, &["import", copy.to_str().unwrap(), "--json"], None));
     let db2 = db::open(&other_dir.join("o.db")).unwrap();
-    assert_eq!(memoria::data_of(&db2, &[id.as_str()]).unwrap()[&id]["fase"], "alpha");
+    assert_eq!(memory::data_of(&db2, &[id.as_str()]).unwrap()[&id]["fase"], "alpha");
     // The import launches `omoi review --refresh-trade-duplicates` separately on this database. If the
     // test deletes the folder before that process opens it, it recreates it and it stays in temp: wait
-    // until it saves its computation (then, if it still has it open, `Temporal` retries).
+    // until it saves its computation (then, if it still has it open, `TempDir` retries).
     let computed = || db2.query_row("SELECT 1 FROM meta WHERE k = 'revision_duplicadas_oficio'", [], |_| Ok(())).is_ok();
     let start = std::time::Instant::now();
     while !computed() && start.elapsed() < std::time::Duration::from_secs(20) {
@@ -409,12 +409,12 @@ fn blocking_task_decision_then_resolved() {
     // Without an answer, no; one that isn't a decision, no; another client's, neither.
     assert!(!omoi(&f.dir, root, &["decisions", "--resolve", &id], None).status.success());
     let db = db::open(&f.dir.join("o.db")).unwrap();
-    let globex_id = memoria::decisions(&db, &Scope::All, true, &["".to_string()], 50).unwrap().into_iter().find(|d| d.title.starts_with("Globex")).unwrap().id;
+    let globex_id = memory::decisions(&db, &Scope::All, true, &["".to_string()], 50).unwrap().into_iter().find(|d| d.title.starts_with("Globex")).unwrap().id;
     drop(db);
     let o = omoi(&f.dir, root, &["decisions", "--resolve", &globex_id, "--answer", "sí"], None);
     assert!(!o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
     // Through MCP: the same, and it doesn't cross spaces either.
-    let call = |args: serde_json::Value| omoikane::mcp::herramienta(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("decisions"), &args.to_string(), "test").unwrap();
+    let call = |args: serde_json::Value| omoikane::mcp::run_tool(f.dir.join("o.db"), Some(PathBuf::from(&f.acme)), Some("decisions"), &args.to_string(), "test").unwrap();
     let (t, error) = call(serde_json::json!({ "resolve": globex_id, "answer": "sí" }));
     assert!(error, "{t}");
     let other = json(omoi(&f.dir, root, &["decisions", "--blocking", "--tag", "tarea:t7", "--json"], None))[0]["id"].as_str().unwrap().to_string();

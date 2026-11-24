@@ -1,35 +1,35 @@
 //! Phase 4: the recall the hooks inject.
 
-mod comun;
+mod common;
 
 use omoikane::db;
-use omoikane::memoria::{self, NewMemory, Kind};
+use omoikane::memory::{self, NewMemory, Kind};
 use omoikane::recall::{self, HookInput};
 use rusqlite::Connection;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-fn base(name: &str) -> (comun::Temporal, Connection) {
-    let dir = comun::Temporal::nueva(&format!("recall-{name}"));
+fn base(name: &str) -> (common::TempDir, Connection) {
+    let dir = common::TempDir::new(&format!("recall-{name}"));
     let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
-/// The memories of tests/busquedas.tsv in project `/p`, plus a preference and a pinned one.
+/// The memories of tests/searches.tsv in project `/p`, plus a preference and a pinned one.
 fn with_memories(db: &mut Connection) {
-    for l in include_str!("busquedas.tsv").lines().filter(|l| l.starts_with("m\t")) {
+    for l in include_str!("searches.tsv").lines().filter(|l| l.starts_with("m\t")) {
         let c: Vec<&str> = l.split('\t').collect();
         let mut n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: c[2].into(), content: c[3].into(), ..Default::default() };
         if c[1] == "auth" {
             n.kind = Some(Kind::Gotcha);
             n.paths = vec!["src/middleware/auth.rs".into()];
         }
-        memoria::save(db, n, None).unwrap();
+        memory::save(db, n, None).unwrap();
     }
     let pref = NewMemory { project: String::new(), kind: Some(Kind::Preference), title: "Respuestas en español".into(), content: "El usuario quiere las respuestas en español y sin rodeos.".into(), ..Default::default() };
-    memoria::save(db, pref, None).unwrap();
+    memory::save(db, pref, None).unwrap();
     let pinned_mem = NewMemory { project: "/p".into(), kind: Some(Kind::Decision), title: "Base de datos única".into(), content: "Todo va en un solo fichero SQLite.".into(), pinned: true, ..Default::default() };
-    memoria::save(db, pinned_mem, None).unwrap();
+    memory::save(db, pinned_mem, None).unwrap();
 }
 
 fn entry(session: &str, prompt: &str) -> HookInput {
@@ -68,11 +68,11 @@ fn session_start_says_where_each_project_was_left() {
         tags: vec!["Status".into()],
         ..Default::default()
     };
-    memoria::save(&mut db, status("/p", "Estado viejo de p", "Fase 1 a medias."), None).unwrap();
+    memory::save(&mut db, status("/p", "Estado viejo de p", "Fase 1 a medias."), None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
     let long = format!("Fase 2 hecha; siguiente: la web. {}", "detalle ".repeat(100));
-    let newest = memoria::save(&mut db, status("/p", "Estado de p", &long), None).unwrap();
-    memoria::save(&mut db, status("/otro", "Estado de otro", "No debería salir desde /p."), None).unwrap();
+    let newest = memory::save(&mut db, status("/p", "Estado de p", &long), None).unwrap();
+    memory::save(&mut db, status("/otro", "Estado de otro", "No debería salir desde /p."), None).unwrap();
     let t = recall::on_session_start(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
     let (_, statuses) = t.split_once("Where work was left").expect("sección de estado");
     let lines: Vec<&str> = statuses.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
@@ -109,13 +109,13 @@ fn session_start_recalls_open_decisions() {
         tags: tags.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    let old = memoria::save(&mut db, decision("/p", "Precio del plan Pro", Kind::Decision, &["Open", "precios"]), None).unwrap();
+    let old = memory::save(&mut db, decision("/p", "Precio del plan Pro", Kind::Decision, &["Open", "precios"]), None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
-    memoria::save(&mut db, decision("", "Licencia de las plantillas", Kind::Decision, &["open"]), None).unwrap();
+    memory::save(&mut db, decision("", "Licencia de las plantillas", Kind::Decision, &["open"]), None).unwrap();
     // Not a fact with the tag, nor a decision without it, nor another project's.
-    memoria::save(&mut db, decision("/p", "Hecho etiquetado open", Kind::Fact, &["open"]), None).unwrap();
-    memoria::save(&mut db, decision("/p", "Decisión ya tomada", Kind::Decision, &[]), None).unwrap();
-    memoria::save(&mut db, decision("/otro", "Decisión de otro proyecto", Kind::Decision, &["open"]), None).unwrap();
+    memory::save(&mut db, decision("/p", "Hecho etiquetado open", Kind::Fact, &["open"]), None).unwrap();
+    memory::save(&mut db, decision("/p", "Decisión ya tomada", Kind::Decision, &[]), None).unwrap();
+    memory::save(&mut db, decision("/otro", "Decisión de otro proyecto", Kind::Decision, &["open"]), None).unwrap();
 
     let t = recall::on_session_start(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
     let l = open_lines(&t);
@@ -134,18 +134,18 @@ fn session_start_recalls_open_decisions() {
     assert_eq!(recall::injected_count(&db, "s1").unwrap(), 2);
 
     // When the person decides: the answer is appended and the tag removed, and it stops showing.
-    let c = memoria::Changes { append: Some("Decidido: por usuario.".into()), tags: Some(vec!["precios".into()]), ..Default::default() };
-    memoria::update(&mut db, &old.id, c, None).unwrap();
+    let c = memory::Changes { append: Some("Decidido: por usuario.".into()), tags: Some(vec!["precios".into()]), ..Default::default() };
+    memory::update(&mut db, &old.id, c, None).unwrap();
     let t = recall::on_session_start(&mut db, "/p", &entry("s2", "")).unwrap().unwrap();
     let l = open_lines(&t);
     assert_eq!(l.len(), 1, "{t}");
     assert!(l[0].contains("Licencia de las plantillas"), "{t}");
 
     // With none open, there's no section.
-    let remaining = memoria::open_decisions(&db, &memoria::Scope::All, 10).unwrap();
+    let remaining = memory::open_decisions(&db, &memory::Scope::All, 10).unwrap();
     assert_eq!(remaining.len(), 2, "la global y la de /otro");
     for m in remaining {
-        memoria::update(&mut db, &m.id, memoria::Changes { tags: Some(Vec::new()), ..Default::default() }, None).unwrap();
+        memory::update(&mut db, &m.id, memory::Changes { tags: Some(Vec::new()), ..Default::default() }, None).unwrap();
     }
     let t = recall::on_session_start(&mut db, "/p", &entry("s3", "")).unwrap().unwrap();
     assert!(!t.contains("Decisions waiting for the user"), "{t}");
@@ -164,7 +164,7 @@ fn session_start_counts_open_decisions_that_dont_fit() {
             tags: vec!["open".into()],
             ..Default::default()
         };
-        memoria::save(&mut db, n, None).unwrap();
+        memory::save(&mut db, n, None).unwrap();
     }
     let t = recall::on_session_start(&mut db, "/p", &entry("s1", "")).unwrap().unwrap();
     let l = open_lines(&t);
@@ -204,7 +204,7 @@ fn small_base_and_words_that_are_not_there() {
         (Kind::Gotcha, "El cobro con tarjeta redondea mal los céntimos", "En src/pago.rs el importe va en f32 y pierde céntimos.", "/p"),
         (Kind::Decision, "Pasarela de pago: Redsys", "Se eligió Redsys y no Stripe porque el banco lo exige y la comisión es menor.", "/p"),
     ] {
-        memoria::save(&mut db, NewMemory { project: p.into(), kind: Some(k), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+        memory::save(&mut db, NewMemory { project: p.into(), kind: Some(k), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
     }
     let t = recall::on_prompt(&mut db, "/p", &entry("s", "Estoy pensando en cambiar la pasarela de pago a Stripe"), None).unwrap();
     assert!(t.expect("debería traer la decisión").contains("Redsys"));
@@ -230,7 +230,7 @@ fn save_reminder() {
     assert!(chat(&mut db).is_none(), "solo una vez cada 30 minutos");
     // With something saved during the session, no longer.
     db.execute("UPDATE session SET reminded_at = NULL", []).unwrap();
-    memoria::save(&mut db, NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: "Nueva".into(), content: "algo aprendido".into(), ..Default::default() }, None).unwrap();
+    memory::save(&mut db, NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: "Nueva".into(), content: "algo aprendido".into(), ..Default::default() }, None).unwrap();
     assert!(chat(&mut db).is_none());
     // Compacting doesn't reset the clock; a new session does.
     let before: String = db.query_row("SELECT started_at FROM session WHERE session = 's'", [], |f| f.get(0)).unwrap();
@@ -278,7 +278,7 @@ fn hook(dir: &std::path::Path, args: &[&str], json: &str) -> (bool, String, Stri
 
 #[test]
 fn the_claude_code_hook() {
-    let dir = comun::Temporal::nueva("recall-hook");
+    let dir = common::TempDir::new("recall-hook");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     let cwd = repo.to_string_lossy().replace('\\', "\\\\");
@@ -320,7 +320,7 @@ fn opening_a_file_brings_its_memories() {
     let (_dir, mut db) = base("abrir");
     let save = |db: &mut Connection, kind: Kind, title: &str, paths: &[&str]| {
         let n = NewMemory { project: "/p".into(), kind: Some(kind), title: title.into(), content: format!("{title}."), paths: paths.iter().map(|r| r.to_string()).collect(), ..Default::default() };
-        memoria::save(db, n, None).unwrap().id
+        memory::save(db, n, None).unwrap().id
     };
     let fact = save(&mut db, Kind::Fact, "Cómo se firma el bundle", &["src/okf.rs"]);
     let trap = save(&mut db, Kind::Gotcha, "El YAML entrecomilla distinto", &["/p/src/okf.rs", "tests/okf.rs"]);
@@ -351,9 +351,9 @@ fn recall_file_open_through_the_cli() {
     let (dir, mut db) = base("abrir-cli");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let root = omoikane::proyecto::of_dir(&repo).unwrap();
+    let root = omoikane::project::of_dir(&repo).unwrap();
     let n = NewMemory { project: root.clone(), kind: Some(Kind::Gotcha), title: "Cuidado con el lector".into(), content: "Lee en NFC.".into(), paths: vec!["src/lector.rs".into()], ..Default::default() };
-    memoria::save(&mut db, n, None).unwrap();
+    memory::save(&mut db, n, None).unwrap();
     drop(db);
     let mut child = Command::new(env!("CARGO_BIN_EXE_omoi"))
         .args(["--dir", root.as_str(), "recall", "--file-open"])

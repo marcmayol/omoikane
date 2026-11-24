@@ -10,13 +10,13 @@
 //!
 //! - When opening a file (1.11, `omoi recall --file-open`, the `PreToolUse` hook of Read, Edit and
 //!   Write): the memories tied to that file by their paths, even if the message doesn't name it, plus its
-//!   history from the journal (`riesgo`). No model, and only with `memory_path`.
+//!   history from the journal (`risk`). No model, and only with `memory_path`.
 //!
 //! Each memory is injected once per session (`recall_log` table), except after compacting.
 
-use crate::buscar::{self, SearchOptions};
-use crate::embeber::Model;
-use crate::memoria::{self, Scope, Memory};
+use crate::search::{self, SearchOptions};
+use crate::embed::Model;
+use crate::memory::{self, Scope, Memory};
 use anyhow::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Deserialize;
@@ -47,7 +47,7 @@ pub const RELATIVE_TO_BEST: f64 = 0.85;
 pub const RECALL_SIMILARITY: f32 = 0.35;
 pub const COVERAGE_WITH_VECTOR: f64 = 0.25;
 pub const MAX_LEN_WITH_VECTOR: usize = 500;
-/// With EmbeddingGemma (`significado`), in the messages that look at meaning (`checks_meaning`):
+/// With EmbeddingGemma (`meaning`), in the messages that look at meaning (`checks_meaning`):
 /// what the words or the light model bring is left out if it isn't among the `VETO_RANK` most
 /// similar to the message, and the most similar gets in if it reaches `GEMMA_ADD` and leads the second
 /// by `GEMMA_LEAD`. Both relative: by rank and by lead, not by a fixed cosine, which changes with
@@ -67,7 +67,7 @@ pub const GEMMA_LEAD: f32 = 0.03;
 /// shown by `omoi doctor` and the trace (`OMOIKANE_TRAZA`).
 const GEMMA_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 /// Policy D (`omoi-revision-12/2-cuando.md`): the big model is only asked in order to **veto** what
-/// the words already brought, in messages of more than `buscar::SHORT_QUERY_WORDS` words and of up to
+/// the words already brought, in messages of more than `search::SHORT_QUERY_WORDS` words and of up to
 /// `MAX_LEN_GEMMA` characters. With Marc's 300 real messages, from 237 queries to 20 with the
 /// same 6 changes; in the benchmark (3,000) the same noise (7.5 %), in exchange for the rescue of
 /// paraphrases in recall (0.29 → 0.09), which stays in search. Above ~300 characters the
@@ -176,8 +176,8 @@ pub fn file_of(e: &HookInput) -> Option<String> {
 /// so opening a file with no memories costs one read of the distinct paths.
 pub fn on_file_open(db: &mut Connection, project: &str, e: &HookInput) -> Result<Option<String>> {
     let Some(file) = file_of(e) else { return Ok(None) };
-    let rel = crate::diario::relative(&file, project);
-    let matches = |path: &str| crate::riesgo::same_file(&crate::diario::relative(path, project), &rel);
+    let rel = crate::diary::relative(&file, project);
+    let matches = |path: &str| crate::risk::same_file(&crate::diary::relative(path, project), &rel);
     let mut all_paths = db.prepare("SELECT DISTINCT path FROM memory_path")?;
     let any_match = all_paths.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|r| matches(r));
     drop(all_paths);
@@ -194,13 +194,13 @@ pub fn on_file_open(db: &mut Connection, project: &str, e: &HookInput) -> Result
             }
         }
         for id in &ids {
-            chosen.push(memoria::get(db, id)?);
+            chosen.push(memory::get(db, id)?);
         }
-        let rank = |m: &Memory| (m.kind != memoria::Kind::Gotcha, !m.pinned);
+        let rank = |m: &Memory| (m.kind != memory::Kind::Gotcha, !m.pinned);
         chosen.sort_by(|a, b| rank(a).cmp(&rank(b)).then(b.updated_at.cmp(&a.updated_at)));
         chosen.truncate(MAX_ON_FILE_OPEN);
     }
-    let history = crate::riesgo::on_prompt(db, project, &e.session_id, &rel).unwrap_or_else(|x| {
+    let history = crate::risk::on_prompt(db, project, &e.session_id, &rel).unwrap_or_else(|x| {
         eprintln!("omoikane: history: {x:#}");
         None
     });
@@ -211,7 +211,7 @@ pub fn on_file_open(db: &mut Connection, project: &str, e: &HookInput) -> Result
     let own = own_author(db, current);
     let mut s = String::from("<omoikane>\n");
     if !chosen.is_empty() {
-        let notes = crate::revisar::notes(db, &Scope::from_project(db, project)?, &chosen.iter().collect::<Vec<_>>())?;
+        let notes = crate::review::notes(db, &Scope::from_project(db, project)?, &chosen.iter().collect::<Vec<_>>())?;
         s.push_str(&format!("Memories about `{rel}`, the file you are opening (`get` an id for the whole memory):\n"));
         for m in &chosen {
             s.push_str(&line(m, current, own.as_deref()));
@@ -262,7 +262,7 @@ fn strip_accents(s: &str) -> String {
 /// The words of the message that say what it is about: no stop words or fillers, no lone numbers and with
 /// at least 3 letters.
 pub fn useful_terms(text: &str) -> Vec<String> {
-    buscar::terms(text)
+    search::terms(text)
         .iter()
         .map(|t| strip_accents(t))
         .filter(|t| t.chars().count() >= 3 && !t.chars().all(|c| c.is_ascii_digit()) && !CHATTER.contains(&t.as_str()))
@@ -313,14 +313,14 @@ pub(crate) struct Frequencies<'a> {
 
 impl<'a> Frequencies<'a> {
     pub fn new(db: &'a Connection, scope: &Scope) -> Result<Frequencies<'a>> {
-        let n = memoria::count(db, scope)? as f64;
-        let q = if memoria::sees_all(db, scope) {
+        let n = memory::count(db, scope)? as f64;
+        let q = if memory::sees_all(db, scope) {
             db.prepare("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1")?
         } else {
             db.prepare(&format!(
                 "SELECT count(*) FROM memory_fts JOIN memory m {} ON m.n = memory_fts.rowid
                  WHERE memory_fts MATCH ?1 AND {}",
-                memoria::scope_index_hint(db),
+                memory::scope_index_hint(db),
                 scope.sql()
             ))?
         };
@@ -425,7 +425,7 @@ fn relevant_with(db: &mut Connection, project: &str, terms: &[String], (n, df): 
     }
     let rare_df = (RARE_FRACTION * n).max(1.0);
     trace("terminos", || serde_json::json!({"n": n, "terminos": terms, "df": df, "idf": idf, "raros_msg": df.iter().filter(|d| **d <= rare_df).count()}));
-    // Only for calibrating (`examples/fase4.rs`): without these variables the constants apply.
+    // Only for calibrating (`examples/phase4.rs`): without these variables the constants apply.
     let read_env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
     let min_coverage = read_env("OMOIKANE_CALIBRAR_COBERTURA").unwrap_or(MIN_COVERAGE);
     let min_rare = read_env("OMOIKANE_CALIBRAR_RAROS").map_or(MIN_RARE, |v| v as usize);
@@ -438,7 +438,7 @@ fn relevant_with(db: &mut Connection, project: &str, terms: &[String], (n, df): 
     let opts = SearchOptions { scope: Scope::from_project(db, project)?, kind: None, tags: vec![], limit: 30 };
     // Words only: the vector didn't improve search measurably and here noise
     // costs more. This way the hook doesn't open the model either.
-    let candidates = buscar::search_without_recording(db, &terms.join(" "), &opts)?;
+    let candidates = search::search_without_recording(db, &terms.join(" "), &opts)?;
     let mut trace_c: Vec<serde_json::Value> = Vec::new();
     let mut v: Vec<(Memory, f64, usize)> = candidates
         .into_iter()
@@ -491,7 +491,7 @@ fn by_meaning_with(db: &Connection, project: &str, prompt: &str, model: &Model, 
     let read_env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
     let min_sim = read_env("OMOIKANE_CALIBRAR_SIM_RECALL").map_or(RECALL_SIMILARITY, |v| v as f32);
     let min_cov = read_env("OMOIKANE_CALIBRAR_COB_VECTOR").unwrap_or(COVERAGE_WITH_VECTOR);
-    let v = crate::vectores::similar_in(db, model, prompt, &Scope::from_project(db, project)?, None, min_sim, MAX_PER_PROMPT)?;
+    let v = crate::vectors::similar_in(db, model, prompt, &Scope::from_project(db, project)?, None, min_sim, MAX_PER_PROMPT)?;
     if v.is_empty() {
         return Ok(Vec::new());
     }
@@ -530,7 +530,7 @@ pub fn by_paths(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Memo
             ids.push(id);
         }
     }
-    ids.iter().take(MAX_PER_PROMPT).map(|id| memoria::get(db, id)).collect()
+    ids.iter().take(MAX_PER_PROMPT).map(|id| memory::get(db, id)).collect()
 }
 
 fn already_injected(db: &Connection, session: &str) -> Result<BTreeSet<String>> {
@@ -548,11 +548,11 @@ fn record_injected(db: &mut Connection, session: &str, ids: &[String], project_i
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for id in ids {
         tx.execute(
-            &format!("INSERT OR IGNORE INTO recall_log(session, memory_id, at, project_id) VALUES (?1, ?2, {}, ?3)", memoria::NOW),
+            &format!("INSERT OR IGNORE INTO recall_log(session, memory_id, at, project_id) VALUES (?1, ?2, {}, ?3)", memory::NOW),
             params![session, id, project_id],
         )?;
     }
-    buscar::record_recalled_in(&tx, &ids.iter().map(String::as_str).collect::<Vec<_>>(), None)?;
+    search::record_recalled_in(&tx, &ids.iter().map(String::as_str).collect::<Vec<_>>(), None)?;
     tx.commit()?;
     Ok(())
 }
@@ -560,16 +560,16 @@ fn record_injected(db: &mut Connection, session: &str, ids: &[String], project_i
 /// Where a memory lives, if it isn't from the session's project (`current`): `[global]`, `[space x]` or
 /// `[project x]` (seen from a general folder or from another project of the space).
 fn location(m: &Memory, current: i64) -> String {
-    let trades = crate::oficios::of_memory(m);
+    let trades = crate::trades::of_memory(m);
     if !trades.is_empty() {
-        let for_projects = crate::oficios::for_whom_of(&m.tags).map(|p| format!(", {p} projects")).unwrap_or_default();
+        let for_projects = crate::trades::for_whom_of(&m.tags).map(|p| format!(", {p} projects")).unwrap_or_default();
         format!(" [trade {}{for_projects}]", trades.join(", "))
     } else if m.global() {
         " [global]".to_string()
     } else if m.space_only() {
         format!(" [space {}]", m.space)
     } else if m.project_id != current {
-        format!(" [project {}]", crate::proyecto::name_of(&m.project, &m.project_key))
+        format!(" [project {}]", crate::project::name_of(&m.project, &m.project_key))
     } else {
         String::new()
     }
@@ -577,7 +577,7 @@ fn location(m: &Memory, current: i64) -> String {
 
 /// The id of the session's project (-1 if it has nothing yet; never 0: global is not a session).
 fn current_project(db: &Connection, project: &str) -> i64 {
-    match crate::proyecto::resolve(db, project) {
+    match crate::project::resolve(db, project) {
         Ok(Some((id, _))) if !project.is_empty() => id,
         _ => -1,
     }
@@ -599,19 +599,19 @@ fn line(m: &Memory, current: i64, own: Option<&str>) -> String {
     format!("- [{}{}]{place}{by}{paths} {}: {snippet} (id {})", m.kind, mark(m), m.title, m.id.chars().take(12).collect::<String>())
 }
 
-/// The mark after the kind: `[decision, verified]` if a person verified it (`verificado`), or
-/// `[fact, inferred]` if an agent only inferred it (`evidencia`): to be checked before relying on it.
+/// The mark after the kind: `[decision, verified]` if a person verified it (`verified`), or
+/// `[fact, inferred]` if an agent only inferred it (`evidence`): to be checked before relying on it.
 fn mark(m: &Memory) -> &'static str {
     if m.verified.is_some() {
         ", verified"
-    } else if crate::evidencia::only_inferred(&m.evidence) {
+    } else if crate::evidence::only_inferred(&m.evidence) {
         ", inferred"
     } else {
         ""
     }
 }
 
-/// The `revisar` warning about a memory, for the end of its line (or nothing).
+/// The `review` warning about a memory, for the end of its line (or nothing).
 fn note(notes: &std::collections::HashMap<String, String>, m: &Memory) -> String {
     notes.get(&m.id).map(|n| format!(" ⚠ {n}")).unwrap_or_default()
 }
@@ -632,7 +632,7 @@ fn snippet(text: &str, n: usize) -> String {
 /// machine signs with in that space.
 fn own_author(db: &Connection, current: i64) -> Option<String> {
     // The one recorded in each memory saved here (that of its space's repository or the general one).
-    let author = if current > 0 { memoria::author_of(db, current, None) } else { memoria::author_in(db, "") };
+    let author = if current > 0 { memory::author_of(db, current, None) } else { memory::author_in(db, "") };
     if let Some(a) = author.ok().filter(|a| !a.is_empty()) {
         return Some(a);
     }
@@ -643,17 +643,17 @@ fn own_author(db: &Connection, current: i64) -> Option<String> {
 pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Result<Option<String>> {
     // Once per session: what fixes itself (old statuses with a newer one, decisions already
     // resolved by their task) and then the warnings and links up to date (after updating, or what sync brought).
-    crate::revisar::cleanup_quietly(db);
-    crate::revisar::refresh(db)?;
-    let update_notice = crate::actualizar::notice();
+    crate::review::cleanup_quietly(db);
+    crate::review::refresh(db)?;
+    let update_notice = crate::update::notice();
     // The session's project gets recorded (with its key, computed once) and its `origin` up to date. If
     // it is the new folder of a project that moved (same `origin`), it is said once.
-    let moved = if crate::proyecto::is_general(project) { None } else { crate::proyecto::register_reporting(db, project)?.1 };
+    let moved = if crate::project::is_general(project) { None } else { crate::project::register_reporting(db, project)?.1 };
     let scope = Scope::from_project(db, project)?;
     // Its trades, looking at its files (root and one level down): with them come the trade memories.
     // Optional: if it fails, the session starts without them.
     let trades = match scope.project() {
-        Some(id) => crate::oficios::refresh(db, id, project).unwrap_or_else(|x| {
+        Some(id) => crate::trades::refresh(db, id, project).unwrap_or_else(|x| {
             eprintln!("omoikane: trades: {x:#}");
             Vec::new()
         }),
@@ -678,14 +678,14 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
         tx.commit()?;
     }
     // File history is optional: if it fails, the session starts anyway.
-    if let Err(x) = crate::riesgo::on_session_start(db, &e.session_id) {
+    if let Err(x) = crate::risk::on_session_start(db, &e.session_id) {
         eprintln!("omoikane: history: {x:#}");
     }
-    let total = memoria::count(db, &scope)?;
-    let context = memoria::context(db, &scope, 30)?;
+    let total = memory::count(db, &scope)?;
+    let context = memory::context(db, &scope, 30)?;
     // The first session here in a project of a space: what the team has (before recording the
     // session, which is what says whether it is the first). Optional: an error only leaves the session without it.
-    let welcome = crate::llegada::welcome(db, &scope, &e.session_id, own.as_deref()).unwrap_or_else(|x| {
+    let welcome = crate::onboarding::welcome(db, &scope, &e.session_id, own.as_deref()).unwrap_or_else(|x| {
         eprintln!("omoikane: welcome: {x:#}");
         None
     });
@@ -697,7 +697,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
                started_at = CASE WHEN ?3 = 'compact' THEN session.started_at ELSE excluded.started_at END,
                prompts = CASE WHEN ?3 = 'compact' THEN session.prompts ELSE 0 END,
                reminded_at = CASE WHEN ?3 = 'compact' THEN session.reminded_at ELSE NULL END",
-            now = memoria::NOW
+            now = memory::NOW
         ),
         params![e.session_id, project, e.source],
     )?;
@@ -710,7 +710,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     if let Some(old) = &moved {
         s.push_str(&format!("This project used to be in {old}, which no longer exists: its memories follow this folder now (same git origin). Tell the user once.\n"));
     }
-    if crate::proyecto::is_general(project) {
+    if crate::project::is_general(project) {
         s.push_str(&format!(
             "Long-term memory (Omoikane) holds {total} memories across all projects. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\nThis folder is not a project, so search covers every project. When a memory is about one project, pass its folder as `project` (or put its absolute paths in `paths`); otherwise it is saved as global.\n"
         ));
@@ -731,7 +731,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
         s.push_str(l);
     }
     if !context.is_empty() {
-        let notes = crate::revisar::notes(db, &scope, &context.iter().collect::<Vec<_>>())?;
+        let notes = crate::review::notes(db, &scope, &context.iter().collect::<Vec<_>>())?;
         s.push_str("The user's preferences and the pinned memories:\n");
         for m in &context {
             s.push_str(&line(m, current, own.as_deref()));
@@ -741,12 +741,12 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     }
     // Where each project was left (the latest `status` memory of each one), with a good
     // chunk of the content: «sigamos con X» is answered without searching. These don't count as injected either.
-    let statuses: Vec<Memory> = memoria::statuses(db, &scope, MAX_STATUSES)?
+    let statuses: Vec<Memory> = memory::statuses(db, &scope, MAX_STATUSES)?
         .into_iter()
         .filter(|m| !context.iter().any(|c| c.id == m.id))
         .collect();
     if !statuses.is_empty() {
-        let notes = crate::revisar::notes(db, &scope, &statuses.iter().collect::<Vec<_>>())?;
+        let notes = crate::review::notes(db, &scope, &statuses.iter().collect::<Vec<_>>())?;
         s.push_str("Where work was left (the latest `status` memory of each project, newest first):\n");
         for m in &statuses {
             let line = short_line(m, current, own.as_deref());
@@ -756,7 +756,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     // The decisions waiting for the person (tag `open`): they show up in every session until they decide.
     // They don't count as injected either: recall can still bring them whole when relevant.
     // Optional like the history: an error only leaves the session without the list.
-    let open: Vec<Memory> = memoria::open_decisions(db, &scope, usize::MAX)
+    let open: Vec<Memory> = memory::open_decisions(db, &scope, usize::MAX)
         .unwrap_or_else(|x| {
             eprintln!("omoikane: open decisions: {x:#}");
             Vec::new()
@@ -765,7 +765,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
         .filter(|m| !context.iter().any(|c| c.id == m.id))
         .collect();
     if !open.is_empty() {
-        // Blocking ones go first (`memoria::open_decisions`) and marked: the work that depends on them
+        // Blocking ones go first (`memory::open_decisions`) and marked: the work that depends on them
         // waits for the person; the rest are for reviewing later.
         let blocking = open.iter().filter(|m| m.is_blocking()).count();
         if blocking > 0 {
@@ -792,7 +792,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
         s.push_str("Contradictions waiting for the user (two memories disagree and nobody has said which holds; the one ON HOLD doesn't come up in automatic recall until then. Ask the user at a natural moment, or now if your work depends on it, and save their answer with `decisions`: contradiction [both ids], keep (the id that holds, or \"both\") and answer (their words). If you can check it yourself, still ask before deciding):\n");
         for (a, b, reason) in pairs.iter().take(MAX_OPEN_DECISIONS) {
             let short = |m: &Memory| format!("«{}» (id {})", m.title, m.id.chars().take(12).collect::<String>());
-            let because = if reason.trim().is_empty() { String::new() } else { format!(": {}", crate::veredictos::short_reason(reason)) };
+            let because = if reason.trim().is_empty() { String::new() } else { format!(": {}", crate::verdicts::short_reason(reason)) };
             s.push_str(&quoted(&format!("- {} vs ON HOLD {}{because}\n", short(a), short(b))));
         }
         if pairs.len() > MAX_OPEN_DECISIONS {
@@ -801,7 +801,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     }
     // The review dates that have arrived, with what to check (1.14): someone set it to
     // find out that day.
-    let dates = crate::revisar::reached_review_dates(db, &scope).unwrap_or_else(|x| {
+    let dates = crate::review::reached_review_dates(db, &scope).unwrap_or_else(|x| {
         eprintln!("omoikane: review dates: {x:#}");
         Vec::new()
     });
@@ -819,15 +819,15 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     // The last things worked on: titles only, so that «sigamos con lo de X» doesn't force the
     // agent to explore. They aren't recorded as injected: their content can still arrive with recall.
     // A status that is no longer the latest of its project doesn't show up either: it would lead to resuming from the old one.
-    let latest: Vec<Memory> = memoria::recent(db, &scope, None, 50)?
+    let latest: Vec<Memory> = memory::recent(db, &scope, None, 50)?
         .into_iter()
-        .filter(|m| !context.iter().any(|c| c.id == m.id) && !m.tags.iter().any(|t| t == memoria::STATUS))
+        .filter(|m| !context.iter().any(|c| c.id == m.id) && !m.tags.iter().any(|t| t == memory::STATUS))
         .filter(|m| !open.iter().any(|a| a.id == m.id))
         .take(MAX_RECENT)
         .collect();
     if !latest.is_empty() {
         s.push_str("Last worked on (newest first; `get` an id for the whole memory):\n");
-        let notes = crate::revisar::notes(db, &scope, &latest.iter().collect::<Vec<_>>())?;
+        let notes = crate::review::notes(db, &scope, &latest.iter().collect::<Vec<_>>())?;
         for m in &latest {
             s.push_str(&short_line(m, current, own.as_deref()));
             s.push_str(&note(&notes, m));
@@ -835,7 +835,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
         }
     }
     // What was maybe worth saving from previous sessions (7.2): the agent decides.
-    let cs = crate::candidatas::for_session_start(db, project, &e.session_id)?;
+    let cs = crate::candidates::for_session_start(db, project, &e.session_id)?;
     if !cs.is_empty() {
         s.push_str("From your previous sessions here, possibly worth keeping (Omoikane picked them without understanding them: save the ones that are worth it with `remember`, in the user's own words and language, merging into existing memories where they fit; ask the user if unsure; ignore the rest, they won't come back):\n");
         for c in &cs {
@@ -844,7 +844,7 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     }
     // The review, if it has piled up (once a day): the agent proposes, the user decides. It is
     // optional: if it fails (the database busy with a long sync), only the warning is lost, not the block.
-    if let Some(a) = crate::revisar::start_notice(db, &scope, total as usize).ok().flatten() {
+    if let Some(a) = crate::review::start_notice(db, &scope, total as usize).ok().flatten() {
         s.push_str(&a);
         s.push('\n');
     }
@@ -854,13 +854,13 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     }
     // The meaning model, if the memory already needs it: it downloads it or leaves it indexing, and the
     // first time it turns on by itself it says so.
-    if let Some(a) = crate::significado::on_session_start(db) {
+    if let Some(a) = crate::meaning::on_session_start(db) {
         s.push_str(&a);
         s.push('\n');
     }
     s.push_str(CONTINUE_HINT);
     s.push_str("</omoikane>");
-    crate::documentos::on_session_start(db, project, &e.session_id);
+    crate::documents::on_session_start(db, project, &e.session_id);
     let ids: Vec<String> = context.iter().map(|m| m.id.clone()).collect();
     record_injected(db, &e.session_id, &ids, scope.project().unwrap_or(0))?;
     Ok(Some(s))
@@ -870,9 +870,9 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
 /// the contradicted one, the reason), from newest to oldest.
 fn contradictions_in(db: &Connection, scope: &Scope) -> Result<Vec<(Memory, Memory, String)>> {
     let mut out = Vec::new();
-    for v in crate::veredictos::contradictions(db)? {
+    for v in crate::verdicts::contradictions(db)? {
         if scope.sees(db, &v.memory_id)? && scope.sees(db, &v.other_id)? {
-            out.push((memoria::get(db, &v.memory_id)?, memoria::get(db, &v.other_id)?, v.reason));
+            out.push((memory::get(db, &v.memory_id)?, memory::get(db, &v.other_id)?, v.reason));
         }
     }
     Ok(out)
@@ -958,7 +958,7 @@ fn matching_procedure(db: &Connection, project: &str, prompt: &str) -> Result<Op
             norm[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric()) && norm[i + w.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric())
         })
     };
-    let procedures = memoria::recent(db, &Scope::from_project(db, project)?, Some(memoria::Kind::Procedure), 200)?;
+    let procedures = memory::recent(db, &Scope::from_project(db, project)?, Some(memory::Kind::Procedure), 200)?;
     if procedures.is_empty() {
         return Ok(None);
     }
@@ -979,7 +979,7 @@ fn matching_procedure(db: &Connection, project: &str, prompt: &str) -> Result<Op
         let roots: BTreeSet<String> = triggers.iter().filter(|w| !w.contains(' ')).map(|w| root(w)).collect();
         let is_trigger = |p: &str| roots.iter().any(|r| p.starts_with(r.as_str()));
         let about: BTreeSet<String> = {
-            let name = if m.project_id > 0 { crate::proyecto::name_of(&m.project, &m.project_key) } else { String::new() };
+            let name = if m.project_id > 0 { crate::project::name_of(&m.project, &m.project_key) } else { String::new() };
             let only_name = Memory { content: name, paths: vec![], ..m.clone() };
             words_of(&only_name).into_iter().filter(|p| !is_trigger(p)).collect()
         };
@@ -996,7 +996,7 @@ const SIMILAR_FOR_RECALL: usize = 40;
 fn skip_gemma_reason(prompt: &str, chosen: &[Memory], from_paths: &BTreeSet<String>) -> Option<&'static str> {
     if prompt.chars().count() > MAX_LEN_GEMMA {
         Some("long")
-    } else if prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= buscar::SHORT_QUERY_WORDS {
+    } else if prompt.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).count() <= search::SHORT_QUERY_WORDS {
         // A short message is keywords: there meaning falls short and the veto removed the
         // right note (from 94 % to 88 % in the benchmark) without removing noise.
         Some("short")
@@ -1012,15 +1012,15 @@ fn skip_gemma_reason(prompt: &str, chosen: &[Memory], from_paths: &BTreeSet<Stri
 /// en creality»): in Marc's real messages, 22-27 % of the vetoed preferences were useful,
 /// versus 6-7 % of the facts (`4-valor.md`).
 fn vetoable(m: &Memory, from_paths: &BTreeSet<String>) -> bool {
-    !from_paths.contains(&m.id) && m.kind != memoria::Kind::Preference
+    !from_paths.contains(&m.id) && m.kind != memory::Kind::Preference
 }
 
-type GemmaReply = std::result::Result<crate::significado::Cosines, crate::significado::Failure>;
+type GemmaReply = std::result::Result<crate::meaning::Cosines, crate::meaning::Failure>;
 
 /// Asks the meaning service for the memories in scope most similar to the message (and the cosine of
 /// `ids`), within `GEMMA_BUDGET`.
 fn ask_gemma(db: &Connection, project: &str, prompt: &str, ids: &[String]) -> Result<GemmaReply> {
-    use crate::significado as s;
+    use crate::meaning as s;
     let Some(path) = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from) else { return Ok(Err(s::Failure::Off)) };
     let scope = Scope::from_project(db, project)?;
     Ok(s::similar_or_failure(&path, prompt, &scope, None, SIMILAR_FOR_RECALL, ids, GEMMA_BUDGET).map(|p| {
@@ -1037,13 +1037,13 @@ fn ask_gemma(db: &Connection, project: &str, prompt: &str, ids: &[String]) -> Re
 /// Records in the database (`meta`, local) each recall query to the model and those that got no
 /// answer, with the last one and its reason, so that `omoi doctor` shows it: without an answer in time the
 /// recall goes by words only, and that must not happen silently. Recall never fails because of this.
-fn record_model_query(db: &Connection, failure: Option<crate::significado::Failure>) {
+fn record_model_query(db: &Connection, failure: Option<crate::meaning::Failure>) {
     let increment = "INSERT INTO meta(k, v) VALUES (?1, '1') ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1";
     let _ = db.execute(increment, ["sig_recall_consultas"]);
     if let Some(f) = failure {
         let _ = db.execute(increment, ["sig_recall_sin_respuesta"]);
         let _ = db.execute(
-            &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('sig_recall_ultimo_fallo', {} || ' ' || ?1)", memoria::NOW),
+            &format!("INSERT OR REPLACE INTO meta(k, v) VALUES ('sig_recall_ultimo_fallo', {} || ' ' || ?1)", memory::NOW),
             [f.as_str()],
         );
     }
@@ -1072,9 +1072,9 @@ pub fn on_prompt_opening<'m>(
     let current = current_project(db, project);
     let own = own_author(db, current);
     let seen = already_injected(db, &e.session_id)?;
-    // Contradicted ones wait for the person to say which holds (`veredictos::on_hold`): they don't come
+    // Contradicted ones wait for the person to say which holds (`verdicts::on_hold`): they don't come
     // on their own; the one contradicting them does, with its note.
-    let on_hold = crate::veredictos::on_hold(db)?;
+    let on_hold = crate::verdicts::on_hold(db)?;
     let mut chosen: Vec<Memory> = Vec::new();
     let procedure = matching_procedure(db, project, &e.prompt)?.filter(|m| !seen.contains(&m.id) && !on_hold.contains(&m.id));
     let choose = |m: Memory, chosen: &mut Vec<Memory>| {
@@ -1086,14 +1086,14 @@ pub fn on_prompt_opening<'m>(
     let mut terms = useful_terms(&e.prompt);
     let mut freqs = if terms.len() >= MIN_TERMS { Some(frequencies(db, project, &terms)?) } else { None };
     // A misdictated project name («trova» for Troba) is in no memory: search by the
-    // right name (`nombres::misspelled`). Names are only checked if there are words that are
+    // right name (`names::misspelled`). Names are only checked if there are words that are
     // in no memory.
     if let Some((_, df)) = &freqs
         && df.contains(&0.0)
     {
         let in_none: Vec<bool> = df.iter().map(|d| *d == 0.0).collect();
         // Only the projects visible from here: another client's name never gets into the message.
-        let fixes = crate::nombres::misspelled(db, &Scope::from_project(db, project)?, &terms, &in_none)?;
+        let fixes = crate::names::misspelled(db, &Scope::from_project(db, project)?, &terms, &in_none)?;
         if !fixes.is_empty() {
             trace("nombres", || serde_json::json!(fixes.iter().map(|(i, p)| (terms[*i].clone(), p.join(" "))).collect::<Vec<_>>()));
             for (i, parts) in fixes.iter().rev() {
@@ -1130,10 +1130,10 @@ pub fn on_prompt_opening<'m>(
             trace("gemma", || serde_json::json!({"asked": false, "why": reason}));
             None
         }
-        None if !crate::significado::in_use(db) => {
+        None if !crate::meaning::in_use(db) => {
             trace("gemma", || {
-                let state = crate::significado::status(db);
-                serde_json::json!({"asked": false, "why": "not_in_use", "state": state, "installed": crate::significado::model_dir().is_some()})
+                let state = crate::meaning::status(db);
+                serde_json::json!({"asked": false, "why": "not_in_use", "state": state, "installed": crate::meaning::model_dir().is_some()})
             });
             None
         }
@@ -1186,20 +1186,20 @@ pub fn on_prompt_opening<'m>(
                     chosen.remove(i);
                 }
             }
-            choose(memoria::get(db, id)?, &mut chosen);
+            choose(memory::get(db, id)?, &mut chosen);
         }
     }
     trace("final", || serde_json::json!(chosen.iter().map(|m| m.id.clone()).collect::<Vec<_>>()));
     // A memory linked with the chosen ones, if it is a trap or a preference and is related (7.4).
-    let neighbour = if chosen.is_empty() { None } else { crate::enlaces::neighbour_for(db, project, &e.prompt, &chosen, &seen, LINKED_BAR, NEIGHBOUR_BAR)? };
+    let neighbour = if chosen.is_empty() { None } else { crate::links::neighbour_for(db, project, &e.prompt, &chosen, &seen, LINKED_BAR, NEIGHBOUR_BAR)? };
     let remind = reminder_due(db, project, &e.session_id)?;
-    // The history of the files the message names, taken from the journal (`riesgo`).
+    // The history of the files the message names, taken from the journal (`risk`).
     // Optional, like the documentation: if it fails, recall goes on without it.
-    let history = crate::riesgo::on_prompt(db, project, &e.session_id, &e.prompt).unwrap_or_else(|x| {
+    let history = crate::risk::on_prompt(db, project, &e.session_id, &e.prompt).unwrap_or_else(|x| {
         eprintln!("omoikane: history: {x:#}");
         None
     });
-    let docs = crate::documentos::on_prompt(db, project, &e.session_id, &e.prompt);
+    let docs = crate::documents::on_prompt(db, project, &e.session_id, &e.prompt);
     if chosen.is_empty() && !remind && procedure.is_none() && history.is_none() && docs.is_none() {
         return Ok(None);
     }
@@ -1213,7 +1213,7 @@ pub fn on_prompt_opening<'m>(
         ));
     }
     if !chosen.is_empty() {
-        let notes = crate::revisar::notes(db, &Scope::from_project(db, project)?, &chosen.iter().collect::<Vec<_>>())?;
+        let notes = crate::review::notes(db, &Scope::from_project(db, project)?, &chosen.iter().collect::<Vec<_>>())?;
         s.push_str("Memories from previous sessions that may be relevant (`get` an id for the whole memory):\n");
         for m in &chosen {
             s.push_str(&line(m, current, own.as_deref()));
@@ -1251,7 +1251,7 @@ fn reminder_due(db: &Connection, project: &str, session: &str) -> Result<bool> {
     if session.is_empty() {
         return Ok(false);
     }
-    let now = memoria::NOW;
+    let now = memory::NOW;
     db.execute(
         &format!(
             "INSERT INTO session(session, project, started_at, prompts) VALUES (?1, ?2, {now}, 1)

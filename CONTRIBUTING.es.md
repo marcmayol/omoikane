@@ -36,23 +36,23 @@ cargo test --release
 ```
 
 - Los tests nunca tocan tu `~/.omoikane`: ponen `OMOIKANE_DB` y `OMOIKANE_HOME` en una carpeta temporal. Haz lo mismo cuando pruebes a mano, para que tu propia memoria quede fuera.
-- `tests/equivalencia.rs` necesita el modelo int8 (unos 150 MB). Si `OMOI_MODELO_INT8` no apunta a él, se salta. La CI lo descarga.
+- `tests/equivalence.rs` necesita el modelo int8 (unos 150 MB). Si `OMOI_MODELO_INT8` no apunta a él, se salta. La CI lo descarga.
 - `tests/compat.rs` comprueba contra un `omoi` 1.0.0 de verdad. Apunta `OMOIKANE_COMPAT_BIN` a él (de la [Release v1.0.0](https://github.com/marcmayol/omoikane/releases/tag/v1.0.0)); sin eso, se salta. La CI lo pasa siempre, en los tres sistemas.
-- Los secretos de mentira de los tests (tokens, claves) no pueden parecer reales enteros en el código, o la protección de GitHub bloquea el push. En `tests/secretos.rs` está cómo se parten.
+- Los secretos de mentira de los tests (tokens, claves) no pueden parecer reales enteros en el código, o la protección de GitHub bloquea el push. En `tests/secrets.rs` está cómo se parten.
 
 ## Cambios en la búsqueda, el recuerdo o el orden de resultados
 
 Se juzgan con números, no con ejemplos que salen bien.
 
 - Pasa el benchmark público ([omoikane-bench](https://github.com/marcmayol/omoikane-bench)) antes y después, y pon las dos tablas en el pull request.
-- En el recall, pasa también el comparador de antes y después: `cargo build --release` y luego `cargo run --release --example eval -- tests/recall_casos.tsv --a-bin <omoi viejo> --b-bin <omoi nuevo>` (o un solo binario con `--a-env`/`--b-env`). Pasa los mismos mensajes por `omoi recall` con los dos, intercalados, y lista los casos que el cambio arregla y los que rompe. Puedes darle una copia de tu propia base con `--base` y tus propios casos; el formato del fichero está al principio de `examples/eval.rs`.
+- En el recall, pasa también el comparador de antes y después: `cargo build --release` y luego `cargo run --release --example eval -- tests/recall_cases.tsv --a-bin <omoi viejo> --b-bin <omoi nuevo>` (o un solo binario con `--a-env`/`--b-env`). Pasa los mismos mensajes por `omoi recall` con los dos, intercalados, y lista los casos que el cambio arregla y los que rompe. Puedes darle una copia de tu propia base con `--base` y tus propios casos; el formato del fichero está al principio de `examples/eval.rs`.
 - Compara las dos versiones intercaladas (A, B, A, B…) en la misma máquina, nunca un bloque detrás de otro: las cachés y la temperatura hacen que el segundo bloque parezca mejor o peor de lo que es.
-- La velocidad tiene una guardia en la CI (`perf.yml`, en cada push y antes de cada Release): baja el `omoi` de la última Release, lo comprueba como una actualización (la firma de `SHA256SUMS` y el SHA-256 del paquete) y mide `recall`, `search` desde un proyecto y `search --all` con los dos binarios en el mismo runner, intercalados, sobre la misma base sintética de 10.000 memorias. Falla si una mediana pasa a la vez un 25 % y 5 ms por encima de la de la Release, dos veces seguidas. Lo mismo en local: `cargo build --release` y luego `cargo run --release --example rendimiento` (`--a-bin <omoi>` para comparar con un binario que ya tengas, `--memorias`, `--rondas`, `--margen`; mira el principio de `examples/rendimiento.rs`). Si un cambio es más lento a propósito, di por qué en el pull request.
+- La velocidad tiene una guardia en la CI (`perf.yml`, en cada push y antes de cada Release): baja el `omoi` de la última Release, lo comprueba como una actualización (la firma de `SHA256SUMS` y el SHA-256 del paquete) y mide `recall`, `search` desde un proyecto y `search --all` con los dos binarios en el mismo runner, intercalados, sobre la misma base sintética de 10.000 memorias. Falla si una mediana pasa a la vez un 25 % y 5 ms por encima de la de la Release, dos veces seguidas. Lo mismo en local: `cargo build --release` y luego `cargo run --release --example performance` (`--a-bin <omoi>` para comparar con un binario que ya tengas, `--memorias`, `--rondas`, `--margen`; mira el principio de `examples/performance.rs`). Si un cambio es más lento a propósito, di por qué en el pull request.
 - Cuenta también lo que empeora. Un cambio que ayuda con las paráfrasis y mete ruido en las preguntas sin respuesta tiene que decirlo.
 
 ## Estilo del código
 
-- El código está en español: nombres, comentarios y nombres de tests. Sigue el código que tienes alrededor. Si no escribes en español, pon los comentarios en inglés y lo resolvemos en la revisión; no renombres lo que ya existe.
+- El código está en inglés: nombres, comentarios y nombres de tests (desde la 1.15.0). Los nombres, solo en ASCII; el crate rechaza `non_ascii_idents`. Lo que ve el usuario va en inglés y en español (`tr!`), y lo que se escribe en disco o viaja por red conserva su nombre: un campo de Rust se puede renombrar, pero su `#[serde(rename)]` / `#[arg(id)]` se queda.
 - Comenta el porqué, no el qué, y solo cuando el motivo no es evidente.
 - Ninguna dependencia nueva sin explicar por qué en el pull request. Las versiones de los crates de cifrado y red van fijadas (`=x.y.z`) a propósito.
 - `cargo clippy -- -D warnings` tiene que pasar.

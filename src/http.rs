@@ -5,28 +5,28 @@
 //!   `/fuentes/*.woff2`, which the page loads from the binary)
 //! - `GET /api/memories` → the visible memories (see «Who sees what»), whole, newest to oldest, with
 //!   `versions` (how many previous versions its history keeps) and `links` (the ones it links with `[[…]]`)
-//! - `GET /api/projects` → the projects (`proyecto::list`: key, space, folder and whether it is gone)
-//!   and the spaces (`proyecto::spaces`, with their name), to group and filter by space
-//! - `GET /api/overview?months=…` → the owner view (`responsable::panorama`): per space, its
+//! - `GET /api/projects` → the projects (`project::list`: key, space, folder and whether it is gone)
+//!   and the spaces (`project::spaces`, with their name), to group and filter by space
+//! - `GET /api/overview?months=…` → the owner view (`owner_view::panorama`): per space, its
 //!   projects with their latest `status`, the pinned ones, the open decisions, who wrote what, what
-//!   `revisar` says, what is paused and what nobody has touched for `months` months (6). Only what
+//!   `review` says, what is paused and what nobody has touched for `months` months (6). Only what
 //!   is visible from the request's project (its space); from the user's folder, everything
-//! - `GET /api/review` → what is worth reviewing (`revisar::notices`), and `POST /api/review/dismiss` with
+//! - `GET /api/review` → what is worth reviewing (`review::notices`), and `POST /api/review/dismiss` with
 //!   `{memory_id, kind, other_id}` for «fine as is»
 //! - `POST /api/contradiction` with `{a, b, keep, reason}` → which of two contradicting ones holds (1.14):
 //!   `keep` is the id of the one that holds (the other becomes superseded) or `both`
-//! - `GET /api/candidates` → what was set aside from conversations (`candidatas::all`), and
+//! - `GET /api/candidates` → what was set aside from conversations (`candidates::all`), and
 //!   `POST /api/candidates/dismiss` with `{id}` to drop it
-//! - `GET /api/trash` → the trash (`memoria::trash`), and `POST /api/restore` with `{id}` to
+//! - `GET /api/trash` → the trash (`memory::trash`), and `POST /api/restore` with `{id}` to
 //!   bring a memory back
 //! - `POST /api/run` with `{command}` → Review's «Run» button: one of the commands the view itself
 //!   proposes (merge or separate projects, pause one where it is…), from a closed list
-//!   (`orden_permitida`). Runs the same binary on the same database, never a shell; asks for the view
+//!   (`allowed_command`). Runs the same binary on the same database, never a shell; asks for the view
 //!   token, like «Verify»
 //! - `POST /api/split` with `{id, parts: [{title, content}], reason}` → Review's «Split» button:
 //!   the first part stays in the memory and the rest are new memories in its same project or
-//!   space (`memoria::split`)
-//! - `POST /api/redact` with `{id}` → the memory without whatever looks like a secret (`memoria::redact`), with
+//!   space (`memory::split`)
+//! - `POST /api/redact` with `{id}` → the memory without whatever looks like a secret (`memory::redact`), with
 //!   the reason «redacted» in its history
 //! - `GET /health` → `{"ok": true, "version": …}`
 //! - `GET /tools` → names, descriptions and schemas of the tools
@@ -49,13 +49,13 @@
 //! picks the project for that request, but only within what is already visible (from a project, another in its
 //! same space; from the user's folder, any): it never widens anything (403).
 
-use crate::memoria::{self, Scope};
+use crate::memory::{self, Scope};
 use crate::{db, mcp, tr};
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 use tiny_http::{Header, Method, Response, Server};
 
-pub const PUERTO: u16 = 7438;
+pub const PORT: u16 = 7438;
 
 fn json(status: u16, body: String) -> Response<std::io::Cursor<Vec<u8>>> {
     let header = Header::from_bytes("Content-Type", "application/json; charset=utf-8").expect("cabecera");
@@ -106,7 +106,7 @@ fn html(view_token: &str) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 /// Opens the view in the system browser.
-pub fn abrir_navegador(url: &str) {
+pub fn open_browser(url: &str) {
     #[cfg(windows)]
     let r = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
     #[cfg(target_os = "macos")]
@@ -180,7 +180,7 @@ fn parse_params(query: &str) -> Vec<(String, String)> {
 /// Where a request looks from: the project (for the tools) and what is visible from it. The TUI
 /// (`omoi tui`) looks with the same one, so it shows exactly what the web shows.
 #[derive(Clone)]
-pub(crate) struct Mirador {
+pub(crate) struct Viewpoint {
     /// The folder passed to the tools (`?dir=` or the server's).
     dir: Option<PathBuf>,
     /// The project, as the database stores it.
@@ -188,91 +188,91 @@ pub(crate) struct Mirador {
     /// What is visible from the project (for the owner view, which widens it itself).
     pub(crate) base: Scope,
     /// «All projects» from here: its whole space, those without a space, or everything.
-    pub(crate) vista: Scope,
+    pub(crate) view: Scope,
     /// Whether everything is visible (user's folder).
-    pub(crate) todo: bool,
+    pub(crate) sees_all: bool,
     /// The key of the space it looks from (empty: none, or everything).
-    pub(crate) espacio: String,
+    pub(crate) space: String,
 }
 
-impl Mirador {
+impl Viewpoint {
     /// Whether this space's memories are visible (its key; empty: no space), or a global memory.
-    pub(crate) fn ve_espacio(&self, key: &str, global: bool) -> bool {
-        self.todo || global || key == self.espacio
+    pub(crate) fn sees_space(&self, key: &str, global: bool) -> bool {
+        self.sees_all || global || key == self.space
     }
 
     /// Whether memory `id` is visible, live or in the trash. One that doesn't exist, yes: whoever looks it up will say so.
-    pub(crate) fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
+    pub(crate) fn sees(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
         // A trade memory, only if some visible project has that trade.
-        Ok(self.todo
-            || (memoria::memory_placement(db, id)?.is_none_or(|(global, key)| self.ve_espacio(&key, global)) && !crate::oficios::is_hidden(db, &self.vista, id)?))
+        Ok(self.sees_all
+            || (memory::memory_placement(db, id)?.is_none_or(|(global, key)| self.sees_space(&key, global)) && !crate::trades::is_hidden(db, &self.view, id)?))
     }
 
     /// Whether a requested scope is visible: from everything, any; otherwise, one that isn't everything and is in its same space.
-    pub(crate) fn abarca(&self, other: &Scope) -> bool {
-        self.todo || (!matches!(other, Scope::All) && self.base.space() == other.space())
+    pub(crate) fn covers(&self, other: &Scope) -> bool {
+        self.sees_all || (!matches!(other, Scope::All) && self.base.space() == other.space())
     }
 }
 
 /// Where the request looks from: the folder the server started in or, with `?dir=`, another one within
 /// what is already visible from it. `Err` with the response if `?dir=` is not valid.
-fn mirar(
+fn look_from(
     db: &rusqlite::Connection,
-    server: &Mirador,
+    server: &Viewpoint,
     requested: Option<String>,
-) -> Result<std::result::Result<Mirador, Response<std::io::Cursor<Vec<u8>>>>> {
+) -> Result<std::result::Result<Viewpoint, Response<std::io::Cursor<Vec<u8>>>>> {
     let Some(d) = requested.filter(|d| !d.trim().is_empty()) else {
         return Ok(Ok(server.clone()));
     };
-    // A network path is never looked at (`proyecto::of_dir` rejects it before touching the disk): any website
+    // A network path is never looked at (`project::of_dir` rejects it before touching the disk): any website
     // can request this URL with an `<img>`, and looking at it would open an SMB connection with the person's
     // NTLM hash.
-    if !crate::proyecto::is_local_path(std::path::Path::new(&d)) {
+    if !crate::project::is_local_path(std::path::Path::new(&d)) {
         return Ok(Err(error(400, "dir: not a folder on this computer (network paths are never opened)")));
     }
-    let Ok(project) = crate::proyecto::of_dir(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
+    let Ok(project) = crate::project::of_dir(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
     let base = Scope::from_project(db, &project)?;
-    if !server.abarca(&base) {
+    if !server.covers(&base) {
         return Ok(Err(error(
             403,
             "dir is outside what this server shows: it can only narrow the view to a project of the same space; start `omoi serve` in that project, or in the home folder",
         )));
     }
-    Ok(Ok(Mirador::nuevo(db, Some(PathBuf::from(d)), project)?))
+    Ok(Ok(Viewpoint::new(db, Some(PathBuf::from(d)), project)?))
 }
 
 /// The trash as seen from project `project` (`""` or the user's folder: everything), with the same
 /// criterion as the web and the TUI: from a client, its space and the global ones; never another client's.
 /// For `omoi trash` and `omoi restore`.
-pub fn papelera_desde(db: &rusqlite::Connection, project: &str) -> Result<(Vec<memoria::Forgotten>, bool)> {
-    let m = Mirador::nuevo(db, None, project.to_string())?;
+pub fn trash_from(db: &rusqlite::Connection, project: &str) -> Result<(Vec<memory::Forgotten>, bool)> {
+    let m = Viewpoint::new(db, None, project.to_string())?;
     let mut v = Vec::new();
-    for o in memoria::trash(db)? {
-        if m.ve(db, &o.id)? {
+    for o in memory::trash(db)? {
+        if m.sees(db, &o.id)? {
             v.push(o);
         }
     }
-    Ok((v, m.todo))
+    Ok((v, m.sees_all))
 }
 
-impl Mirador {
-    pub(crate) fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, project: String) -> Result<Mirador> {
+impl Viewpoint {
+    pub(crate) fn new(db: &rusqlite::Connection, dir: Option<PathBuf>, project: String) -> Result<Viewpoint> {
         let base = Scope::from_project(db, &project)?;
-        let todo = matches!(base, Scope::All);
-        let espacio = crate::proyecto::space_key(db, base.space())?;
-        Ok(Mirador { dir, project, base, vista: base.widen(), todo, espacio })
+        let sees_all = matches!(base, Scope::All);
+        let space = crate::project::space_key(db, base.space())?;
+        Ok(Viewpoint { dir, project, base, view: base.widen(), sees_all, space })
     }
 
     /// Where it looks from, for the view: everything, or a space (empty: the projects without a space).
     fn json(&self, db: &rusqlite::Connection) -> Result<serde_json::Value> {
-        let name = if self.espacio.is_empty() {
+        let name = if self.space.is_empty() {
             String::new()
         } else {
-            db.query_row("SELECT name FROM space WHERE key = ?1", [&self.espacio], |f| f.get(0)).unwrap_or_default()
+            db.query_row("SELECT name FROM space WHERE key = ?1", [&self.space], |f| f.get(0)).unwrap_or_default()
         };
         Ok(serde_json::json!({
-            "scope": if self.todo { "all" } else { "space" },
-            "space": if self.todo { serde_json::Value::Null } else { self.espacio.clone().into() },
+            "scope": if self.sees_all { "all" } else { "space" },
+            "space": if self.sees_all { serde_json::Value::Null } else { self.space.clone().into() },
             "name": name,
             "project": self.project,
         }))
@@ -280,7 +280,7 @@ impl Mirador {
 }
 
 /// The JSON body of a POST.
-fn cuerpo_json(request: &mut tiny_http::Request) -> Result<serde_json::Value> {
+fn json_body(request: &mut tiny_http::Request) -> Result<serde_json::Value> {
     let mut body = String::new();
     request.as_reader().read_to_string(&mut body)?;
     Ok(serde_json::from_str(&body)?)
@@ -309,7 +309,7 @@ fn spawn_periodic_pull(path: PathBuf) {
 /// The view's address: with the `OMOIKANE_HTTP_TOKEN` token (`#token=…`, which the page stores and
 /// removes) and, with `memory`, the link to that memory (`#/memoria/<id>`, or `&to=/memoria/<id>` after the
 /// token).
-pub fn url_vista(port: u16, token: Option<&str>, memory: Option<&str>) -> String {
+pub fn view_url(port: u16, token: Option<&str>, memory: Option<&str>) -> String {
     let base = format!("http://127.0.0.1:{port}/");
     match (token, memory) {
         (Some(t), Some(id)) => format!("{base}#token={t}&to=/memoria/{id}"),
@@ -322,9 +322,9 @@ pub fn url_vista(port: u16, token: Option<&str>, memory: Option<&str>) -> String
 /// The full id of the memory `omoi serve --memory` asks for (its prefix is enough, as in the other
 /// commands), if visible from `project` (the folder the server starts in): otherwise the view wouldn't
 /// have it and the link would open nothing.
-pub fn memoria_del_enlace(db: &rusqlite::Connection, project: &str, id: &str) -> Result<String> {
-    let id = memoria::resolve_id(db, id)?;
-    memoria::in_scope(db, &Scope::from_project(db, project)?, &id).map_err(|e| {
+pub fn linked_memory_id(db: &rusqlite::Connection, project: &str, id: &str) -> Result<String> {
+    let id = memory::resolve_id(db, id)?;
+    memory::in_scope(db, &Scope::from_project(db, project)?, &id).map_err(|e| {
         anyhow!(tr!(
             "--memory {id}: the web view started from this folder doesn't show it ({e}); run `omoi serve` in that memory's project or in your home folder",
             "--memory {id}: la vista que arranca desde esta carpeta no la enseña ({e}); lanza `omoi serve` en el proyecto de esa memoria o en tu carpeta personal"
@@ -334,19 +334,19 @@ pub fn memoria_del_enlace(db: &rusqlite::Connection, project: &str, id: &str) ->
 }
 
 /// Serves requests until the process exits. With `open`, opens the view in the browser (on
-/// memory `memory`, if given: its full id, see [`memoria_del_enlace`]); if there is already a server on that
+/// memory `memory`, if given: its full id, see [`linked_memory_id`]); if there is already a server on that
 /// port, it only opens it.
-pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: Option<String>) -> Result<()> {
+pub fn serve(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: Option<String>) -> Result<()> {
     let token = std::env::var("OMOIKANE_HTTP_TOKEN").ok().filter(|t| !t.is_empty());
-    let url = url_vista(port, token.as_deref(), memory.as_deref());
+    let url = view_url(port, token.as_deref(), memory.as_deref());
     if let Some(id) = &memory {
         // The link without the token: the one that can be sent in a notice (the page asks for the token separately).
-        eprintln!("{}", tr!("omoikane: memory {id}: {}", "omoikane: memoria {id}: {}", url_vista(port, None, Some(id))));
+        eprintln!("{}", tr!("omoikane: memory {id}: {}", "omoikane: memoria {id}: {}", view_url(port, None, Some(id))));
     }
     let server = match Server::http(("127.0.0.1", port)) {
         Ok(s) => s,
         Err(_) if open && already_serving(port) => {
-            abrir_navegador(&url);
+            open_browser(&url);
             eprintln!("{}", tr!("omoikane: already running on http://127.0.0.1:{port}", "omoikane: ya está en marcha en http://127.0.0.1:{port}"));
             return Ok(());
         }
@@ -354,13 +354,13 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
     };
     eprintln!("{}", tr!("omoikane: listening on http://127.0.0.1:{port}", "omoikane: escuchando en http://127.0.0.1:{port}"));
     if open {
-        abrir_navegador(&url);
+        open_browser(&url);
     }
     spawn_periodic_pull(db.clone());
     // The project it started in: what each request sees depends on it (see «Who sees what»).
     let server_project = match &dir {
-        Some(d) => crate::proyecto::of_dir(d)?,
-        None => crate::proyecto::current()?,
+        Some(d) => crate::project::of_dir(d)?,
+        None => crate::project::current()?,
     };
     let view_token = new_view_token()?;
     let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
@@ -404,24 +404,24 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
             // space while the server is running.
             let db_path = db.clone();
             let mut base = db::open(&db)?;
-            let server = Mirador::nuevo(&base, dir.clone(), server_project.clone())?;
-            let m = match mirar(&base, &server, param("dir"))? {
+            let server = Viewpoint::new(&base, dir.clone(), server_project.clone())?;
+            let m = match look_from(&base, &server, param("dir"))? {
                 Ok(m) => m,
                 Err(r) => return Ok(r),
             };
             match (method, path) {
                 (Method::Get, "/api/memories") => {
                     // The view asks for this first: what fixes itself, before showing anything.
-                    if crate::revisar::cleanup_quietly(&mut base) {
+                    if crate::review::cleanup_quietly(&mut base) {
                         crate::sync::schedule(&db_path);
                     }
-                    let v = memoria::recent(&base, &m.vista, None, usize::MAX >> 1)?;
+                    let v = memory::recent(&base, &m.view, None, usize::MAX >> 1)?;
                     // How many previous versions each one has, for the view's timeline.
                     let mut q = base.prepare("SELECT memory_id, count(*) FROM memory_version GROUP BY memory_id")?;
                     let versions: std::collections::HashMap<String, i64> =
                         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-                    crate::revisar::refresh(&base)?;
-                    let all_links = crate::enlaces::all(&base)?;
+                    crate::review::refresh(&base)?;
+                    let all_links = crate::links::all(&base)?;
                     // Links only to the ones also visible: the id of another client's one doesn't come out either.
                     let visible_ids: std::collections::HashSet<&str> = v.iter().map(|m| m.id.as_str()).collect();
                     let v: Vec<serde_json::Value> = v
@@ -439,17 +439,17 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Get, "/api/projects") => {
-                    let space = if m.todo { None } else { Some(m.vista.space()) };
+                    let space = if m.sees_all { None } else { Some(m.view.space()) };
                     let body = serde_json::json!({
                         // Where it looks from, so the view can say so.
                         "scope": m.json(&base)?,
-                        "projects": crate::proyecto::list(&base, None, space, usize::MAX)?,
+                        "projects": crate::project::list(&base, None, space, usize::MAX)?,
                         // Duplicates or in temp folders: they are proposed, never merged on their own.
-                        "duplicates": crate::nombres::proposals(&base, &m.vista)?,
-                        "spaces": crate::proyecto::spaces(&base)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect::<Vec<_>>(),
+                        "duplicates": crate::names::proposals(&base, &m.view)?,
+                        "spaces": crate::project::spaces(&base)?.into_iter().filter(|e| m.sees_space(&e.key, false)).collect::<Vec<_>>(),
                         // The projects another machine has in another space, with what
                         // `sync status` says and the command that fixes it (only those that here belong to what is visible).
-                        "space_conflicts": crate::sync::clashes(&db_path).iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
+                        "space_conflicts": crate::sync::clashes(&db_path).iter().filter(|x| m.sees_space(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
                             v["text"] = x.text().into();
                             v["command"] = x.command().into();
@@ -458,7 +458,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         // The paused ones (a `project` line says another space, or a local folder
                         // joined a space only because its repository says so), with the two
                         // commands that decide it.
-                        "paused": crate::proyecto::paused_projects(&base)?.iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
+                        "paused": crate::project::paused_projects(&base)?.iter().filter(|x| m.sees_space(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
                             v["text"] = crate::sync::pause_text(&db_path, x).into();
                             v["accept"] = crate::sync::accept_command(x).into();
@@ -471,31 +471,31 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                 (Method::Get, "/api/overview") => {
                     // The owner view, only with what is visible from the request's project
                     // (its space) or, from the user's folder, everything.
-                    let months = param("months").and_then(|n| n.parse().ok()).unwrap_or(crate::responsable::MESES);
-                    Ok(json(200, crate::responsable::panorama(&base, &db_path, &m.base, months)?.to_string()))
+                    let months = param("months").and_then(|n| n.parse().ok()).unwrap_or(crate::owner_view::MONTHS);
+                    Ok(json(200, crate::owner_view::overview(&base, &db_path, &m.base, months)?.to_string()))
                 }
-                (Method::Get, "/api/review") => Ok(json(200, serde_json::to_string(&crate::revisar::notices(&base, &m.vista)?)?)),
+                (Method::Get, "/api/review") => Ok(json(200, serde_json::to_string(&crate::review::notices(&base, &m.view)?)?)),
                 (Method::Post, "/api/review/dismiss") => {
-                    let v = cuerpo_json(&mut request)?;
+                    let v = json_body(&mut request)?;
                     let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
                     // The full ids in their canonical form (`resolve_id`) before checking visibility: a lowercase
                     // one or a prefix is not in the database as is, `Scope::sees` took it as visible and
-                    // `revisar::dismiss` did find it (another client's included).
+                    // `review::dismiss` did find it (another client's included).
                     let resolved = |k: &str| -> Result<std::result::Result<String, String>> {
                         let t = field(k);
                         if t.trim().is_empty() {
                             return Ok(Ok(String::new()));
                         }
-                        Ok(memoria::resolve_id(&base, &t).map_err(|e| format!("{e:#}")))
+                        Ok(memory::resolve_id(&base, &t).map_err(|e| format!("{e:#}")))
                     };
                     let (one, other_id) = match (resolved("memory_id")?, resolved("other_id")?) {
                         (Ok(u), Ok(o)) => (u, o),
                         (Err(e), _) | (_, Err(e)) => return Ok(error(404, &e)),
                     };
-                    if !m.ve(&base, &one)? || (!other_id.is_empty() && !m.ve(&base, &other_id)?) {
+                    if !m.sees(&base, &one)? || (!other_id.is_empty() && !m.sees(&base, &other_id)?) {
                         return Ok(out_of_scope());
                     }
-                    match crate::revisar::dismiss(&base, &one, &field("kind"), &other_id) {
+                    match crate::review::dismiss(&base, &one, &field("kind"), &other_id) {
                         Ok(()) => Ok(json(200, serde_json::json!({ "dismissed": true }).to_string())),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
@@ -503,23 +503,23 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                 (Method::Post, "/api/contradiction") => {
                     // Which of two contradicting memories holds (1.14): «This one holds» (`keep`, its id) or
                     // «Both hold» (`keep: "both"`), with whatever the person wants to say in `reason`.
-                    let v = cuerpo_json(&mut request)?;
+                    let v = json_body(&mut request)?;
                     let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                    let (a, b) = match (memoria::resolve_id(&base, &field("a")), memoria::resolve_id(&base, &field("b"))) {
+                    let (a, b) = match (memory::resolve_id(&base, &field("a")), memory::resolve_id(&base, &field("b"))) {
                         (Ok(a), Ok(b)) => (a, b),
                         (Err(e), _) | (_, Err(e)) => return Ok(error(404, &format!("{e:#}"))),
                     };
-                    if !m.ve(&base, &a)? || !m.ve(&base, &b)? {
+                    if !m.sees(&base, &a)? || !m.sees(&base, &b)? {
                         return Ok(out_of_scope());
                     }
-                    let keep = match crate::veredictos::Keep::parse(&base, &field("keep")) {
+                    let keep = match crate::verdicts::Keep::parse(&base, &field("keep")) {
                         Ok(q) => q,
                         Err(e) => return Ok(error(400, &format!("{e:#}"))),
                     };
-                    let before = crate::revisar::before(&base)?;
-                    match crate::veredictos::resolve(&base, &a, &b, &keep, &field("reason"), crate::veredictos::USER) {
+                    let before = crate::review::before(&base)?;
+                    match crate::verdicts::resolve(&base, &a, &b, &keep, &field("reason"), crate::verdicts::USER) {
                         Ok(superseded) => {
-                            crate::revisar::refresh_for(&base, &before, &[])?;
+                            crate::review::refresh_for(&base, &before, &[])?;
                             crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::json!({ "resolved": true, "superseded": superseded }).to_string()))
                         }
@@ -528,31 +528,31 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                 }
                 (Method::Get, "/api/trash") => {
                     let mut v = Vec::new();
-                    for o in memoria::trash(&base)? {
-                        if m.ve(&base, &o.id)? {
+                    for o in memory::trash(&base)? {
+                        if m.sees(&base, &o.id)? {
                             v.push(o);
                         }
                     }
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Post, "/api/restore") => {
-                    let v = cuerpo_json(&mut request)?;
+                    let v = json_body(&mut request)?;
                     let id = v["id"].as_str().unwrap_or_default().trim().to_uppercase();
-                    // By its prefix, like `memoria::restore`: if it matches a single one, that is the one checked.
+                    // By its prefix, like `memory::restore`: if it matches a single one, that is the one checked.
                     let ids: Vec<String> = base
                         .prepare("SELECT id FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?
                         .query_map([&id], |f| f.get(0))?
                         .collect::<rusqlite::Result<_>>()?;
                     if let [one] = ids.as_slice()
                         && !id.is_empty()
-                        && !m.ve(&base, one)?
+                        && !m.sees(&base, one)?
                     {
                         return Ok(out_of_scope());
                     }
-                    let before = crate::revisar::before(&base)?;
-                    match memoria::restore(&mut base, &id, None) {
+                    let before = crate::review::before(&base)?;
+                    match memory::restore(&mut base, &id, None) {
                         Ok(r) => {
-                            crate::revisar::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
+                            crate::review::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
                             crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::to_string(&r)?))
                         }
@@ -560,24 +560,24 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     }
                 }
                 (Method::Post, "/api/split") => {
-                    let v = cuerpo_json(&mut request)?;
-                    let id = match memoria::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
+                    let v = json_body(&mut request)?;
+                    let id = match memory::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
                         Ok(id) => id,
                         Err(e) => return Ok(error(404, &format!("{e:#}"))),
                     };
-                    if !m.ve(&base, &id)? {
+                    if !m.sees(&base, &id)? {
                         return Ok(out_of_scope());
                     }
                     let parts: Vec<(String, String)> = v["parts"]
                         .as_array()
                         .map(|a| a.iter().map(|p| (p["title"].as_str().unwrap_or_default().to_string(), p["content"].as_str().unwrap_or_default().to_string())).collect())
                         .unwrap_or_default();
-                    let before = crate::revisar::before(&base)?;
+                    let before = crate::review::before(&base)?;
                     let reason = v["reason"].as_str().unwrap_or("split in the web view");
-                    match memoria::split(&mut base, &id, &parts, reason) {
+                    match memory::split(&mut base, &id, &parts, reason) {
                         Ok(r) => {
                             let ids: Vec<String> = r.iter().map(|x| x.id.clone()).collect();
-                            crate::revisar::refresh_for(&base, &before, &ids)?;
+                            crate::review::refresh_for(&base, &before, &ids)?;
                             crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::to_string(&r)?))
                         }
@@ -585,19 +585,19 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     }
                 }
                 (Method::Post, "/api/redact") => {
-                    let v = cuerpo_json(&mut request)?;
-                    let id = match memoria::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
+                    let v = json_body(&mut request)?;
+                    let id = match memory::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
                         Ok(id) => id,
                         Err(e) => return Ok(error(404, &format!("{e:#}"))),
                     };
-                    if !m.ve(&base, &id)? {
+                    if !m.sees(&base, &id)? {
                         return Ok(out_of_scope());
                     }
-                    let before = crate::revisar::before(&base)?;
-                    match memoria::redact(&mut base, &id, None) {
+                    let before = crate::review::before(&base)?;
+                    match memory::redact(&mut base, &id, None) {
                         Ok(r) => {
                             if !r.redacted.is_empty() {
-                                crate::revisar::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
+                                crate::review::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
                                 crate::sync::schedule(&db_path);
                             }
                             let mut j = serde_json::to_value(&r)?;
@@ -607,7 +607,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
                 }
-                // The view's «Verify» button: a person's mark (`verificado`). It is not a
+                // The view's «Verify» button: a person's mark (`verified`). It is not a
                 // tool (`/tools/`, what agents use over HTTP), and it asks for what this view's page
                 // sends: `Origin` (from here: other websites were already cut off above) and the token that
                 // lives inside the page (`new_view_token`); a `curl` with a made-up `Origin` is not enough.
@@ -615,8 +615,8 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if header("Origin").is_none() || !header(VIEW_HEADER).is_some_and(|t| same_secret(&t, &view_token)) {
                         return Ok(error(403, "this runs from the button in the web view only"));
                     }
-                    let v = cuerpo_json(&mut request)?;
-                    let args = match orden_permitida(v["command"].as_str().unwrap_or_default()) {
+                    let v = json_body(&mut request)?;
+                    let args = match allowed_command(v["command"].as_str().unwrap_or_default()) {
                         Ok(a) => a,
                         Err(e) => return Ok(error(400, &e)),
                     };
@@ -640,16 +640,16 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if header("Origin").is_none() || !header(VIEW_HEADER).is_some_and(|t| same_secret(&t, &view_token)) {
                         return Ok(error(403, "this runs from the button in the web view only (agents: the `skill` tool)"));
                     }
-                    let v = cuerpo_json(&mut request)?;
-                    let id = match memoria::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
+                    let v = json_body(&mut request)?;
+                    let id = match memory::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
                         Ok(id) => id,
                         Err(e) => return Ok(error(404, &format!("{e:#}"))),
                     };
-                    if !m.ve(&base, &id)? {
+                    if !m.sees(&base, &id)? {
                         return Ok(out_of_scope());
                     }
-                    let mem = memoria::get(&base, &id)?;
-                    if mem.project.is_empty() || !crate::oficios::of_memory(&mem).is_empty() {
+                    let mem = memory::get(&base, &id)?;
+                    if mem.project.is_empty() || !crate::trades::of_memory(&mem).is_empty() {
                         return Ok(error(400, "a skill belongs to a repository: only a project's memories become skills"));
                     }
                     match crate::skill::write(&base, &mem.project, &id, crate::skill::Target::Both, v["force"].as_bool().unwrap_or(false), false) {
@@ -661,24 +661,24 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if header("Origin").is_none() || !header(VIEW_HEADER).is_some_and(|t| same_secret(&t, &view_token)) {
                         return Ok(error(403, "verifying is for a person: use the button in the web view, or `omoi verify` in a terminal"));
                     }
-                    let v = cuerpo_json(&mut request)?;
-                    let id = match memoria::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
+                    let v = json_body(&mut request)?;
+                    let id = match memory::resolve_id(&base, v["id"].as_str().unwrap_or_default()) {
                         Ok(id) => id,
                         Err(e) => return Ok(error(404, &format!("{e:#}"))),
                     };
-                    if !m.ve(&base, &id)? {
+                    if !m.sees(&base, &id)? {
                         return Ok(out_of_scope());
                     }
                     let r = if v["unverify"].as_bool().unwrap_or(false) {
-                        crate::verificado::unverify(&mut base, &id)?;
-                        memoria::get(&base, &id)?
+                        crate::verified::unverify(&mut base, &id)?;
+                        memory::get(&base, &id)?
                     } else {
-                        let current = memoria::get(&base, &id)?;
+                        let current = memory::get(&base, &id)?;
                         let by = match v["by"].as_str().map(str::trim).filter(|b| !b.is_empty()) {
                             Some(b) => b.to_string(),
-                            None => crate::verificado::default_verifier(&base, &current)?,
+                            None => crate::verified::default_verifier(&base, &current)?,
                         };
-                        match crate::verificado::verify(&mut base, &id, &by) {
+                        match crate::verified::verify(&mut base, &id, &by) {
                             Ok(r) => r,
                             Err(e) => return Ok(error(400, &format!("{e:#}"))),
                         }
@@ -690,11 +690,11 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     // What was set aside carries its session's folder: only those of visible projects.
                     let mut scopes: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
                     let mut v = Vec::new();
-                    for c in crate::candidatas::all(&base)? {
+                    for c in crate::candidates::all(&base)? {
                         let shown = match scopes.get(&c.project) {
                             Some(s) => *s,
                             None => {
-                                let s = m.abarca(&Scope::from_project(&base, &c.project)?);
+                                let s = m.covers(&Scope::from_project(&base, &c.project)?);
                                 scopes.insert(c.project.clone(), s);
                                 s
                             }
@@ -706,24 +706,24 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     Ok(json(200, serde_json::to_string(&v)?))
                 }
                 (Method::Post, "/api/candidates/dismiss") => {
-                    let v = cuerpo_json(&mut request)?;
+                    let v = json_body(&mut request)?;
                     let id = v["id"].as_i64().unwrap_or_default();
                     let project: Option<String> = rusqlite::OptionalExtension::optional(base.query_row("SELECT project FROM candidate WHERE id = ?1", [id], |f| f.get(0)))?;
                     let Some(project) = project else { return Ok(error(404, "no such candidate")) };
-                    if !m.abarca(&Scope::from_project(&base, &project)?) {
+                    if !m.covers(&Scope::from_project(&base, &project)?) {
                         return Ok(error(403, "that candidate is from a project outside this scope"));
                     }
-                    crate::candidatas::dismiss(&base, id)?;
+                    crate::candidates::dismiss(&base, id)?;
                     Ok(json(200, serde_json::json!({ "dismissed": true }).to_string()))
                 }
                 (Method::Get, "/api/sync") => {
                     // From a client (space), only that space's repository: neither the URL nor the
                     // author of the general one (the personal one) nor those of other spaces. From the user's
                     // folder or a project without a space, the general one.
-                    let repo = if m.todo || m.espacio.is_empty() {
+                    let repo = if m.sees_all || m.space.is_empty() {
                         Some(crate::sync::paths(&db_path))
                     } else {
-                        crate::sync::space_repo(&db_path, &m.espacio)
+                        crate::sync::space_repo(&db_path, &m.space)
                     };
                     let config = match &repo {
                         Some(r) => crate::sync::read_config_from(r)?,
@@ -748,7 +748,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                 // as over MCP (`search`, `get`, `update`, `forget`… don't leave the space).
                 (Method::Get, "/tools") => {
                     drop(base);
-                    let (text, _) = mcp::herramienta(db_path, m.dir, None, "", "http")?;
+                    let (text, _) = mcp::run_tool(db_path, m.dir, None, "", "http")?;
                     Ok(json(200, text))
                 }
                 (Method::Get, "/search") => {
@@ -758,7 +758,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if let Some(n) = param("limit").and_then(|n| n.parse::<u64>().ok()) {
                         args["limit"] = n.into();
                     }
-                    let (text, is_error) = mcp::herramienta(db_path, m.dir, Some("search"), &args.to_string(), "http")?;
+                    let (text, is_error) = mcp::run_tool(db_path, m.dir, Some("search"), &args.to_string(), "http")?;
                     Ok(json(if is_error { 400 } else { 200 }, text))
                 }
                 (Method::Post, r) if r.starts_with("/tools/") => {
@@ -766,7 +766,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     let name = &r["/tools/".len()..];
                     let mut body = String::new();
                     request.as_reader().read_to_string(&mut body)?;
-                    match mcp::herramienta(db_path, m.dir, Some(name), &body, "http") {
+                    match mcp::run_tool(db_path, m.dir, Some(name), &body, "http") {
                         Ok((text, is_error)) => Ok(json(if is_error { 400 } else { 200 }, text)),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
@@ -784,7 +784,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
 /// Review, and no others. Returns their arguments without the leading `omoi` (with `"…"` or
 /// `'…'` quotes for names with spaces, as the view writes them), or why it can't. No
 /// placeholders to fill in (`<carpeta>`) nor options that change the database (`--db`, `--dir`).
-pub(crate) fn orden_permitida(command: &str) -> std::result::Result<Vec<String>, String> {
+pub(crate) fn allowed_command(command: &str) -> std::result::Result<Vec<String>, String> {
     let mut args: Vec<String> = Vec::new();
     let (mut current, mut quote, mut pending) = (String::new(), None::<char>, false);
     for c in command.trim().chars() {
@@ -832,7 +832,7 @@ pub(crate) fn orden_permitida(command: &str) -> std::result::Result<Vec<String>,
 mod tests {
     #[test]
     fn run_button_only_runs_what_the_view_proposes() {
-        use super::orden_permitida as o;
+        use super::allowed_command as o;
         assert_eq!(o("omoi projects merge tokimichi Tokimichi").unwrap(), ["projects", "merge", "tokimichi", "Tokimichi"]);
         assert_eq!(o(r#"omoi projects distinct "Mi app" 'otra cosa'"#).unwrap(), ["projects", "distinct", "Mi app", "otra cosa"]);
         assert_eq!(o("omoi projects move kumi --space acme --force").unwrap(), ["projects", "move", "kumi", "--space", "acme", "--force"]);
@@ -849,16 +849,16 @@ mod tests {
         assert!(o(r#"omoi projects merge "a b"#).is_err());
     }
 
-    use super::url_vista;
+    use super::view_url;
 
     /// The link to a memory, with and without the `OMOIKANE_HTTP_TOKEN` token (which the page removes from the
     /// address and replaces with `#/memoria/<id>`).
     #[test]
-    fn view_url() {
-        assert_eq!(url_vista(7438, None, None), "http://127.0.0.1:7438/");
-        assert_eq!(url_vista(7438, None, Some("01ABC")), "http://127.0.0.1:7438/#/memoria/01ABC");
-        assert_eq!(url_vista(1, Some("t"), None), "http://127.0.0.1:1/#token=t");
-        assert_eq!(url_vista(1, Some("t"), Some("01ABC")), "http://127.0.0.1:1/#token=t&to=/memoria/01ABC");
+    fn view_url_with_and_without_token() {
+        assert_eq!(view_url(7438, None, None), "http://127.0.0.1:7438/");
+        assert_eq!(view_url(7438, None, Some("01ABC")), "http://127.0.0.1:7438/#/memoria/01ABC");
+        assert_eq!(view_url(1, Some("t"), None), "http://127.0.0.1:1/#token=t");
+        assert_eq!(view_url(1, Some("t"), Some("01ABC")), "http://127.0.0.1:1/#token=t&to=/memoria/01ABC");
     }
 
     /// 1.8.6: an unescaped apostrophe in a single-quoted string («It's fine as it is») gave a
@@ -870,7 +870,7 @@ mod tests {
             eprintln!("sin node: no se comprueba el JavaScript de la vista");
             return;
         }
-        let dir = crate::comun::Temporal::nueva("webjs");
+        let dir = crate::common::TempDir::new("webjs");
         let mut rest = super::PAGE;
         let mut n = 0;
         while let Some(i) = rest.find("<script") {

@@ -4,7 +4,7 @@ name: perf
 # SHA256SUMS con la clave de Omoikane y SHA-256 del paquete, como al actualizarse) y lo mide contra el
 # de este commit en el mismo runner, intercalados, sobre la misma base sintética de 10.000 memorias.
 # Falla si la mediana de alguno pasa a la vez un 25 % y 5 ms por encima, dos veces seguidas. Lo mismo
-# en local: `cargo run --release --example rendimiento` (ver CONTRIBUTING.md).
+# en local: `cargo run --release --example performance` (ver CONTRIBUTING.md).
 on:
   push:
     branches: ["**"]
@@ -32,4 +32,4 @@ jobs:
         run: |
           # La versión, por gh (con el token del job; la API sin él tiene un límite por IP compartido).
           v=$(gh release view --repo marcmayol/omoikane --json tagName --jq .tagName)
-          cargo run --release --locked --example rendimiento -- --contra "${v#v}"
+          cargo run --release --locked --example performance -- --contra "${v#v}"

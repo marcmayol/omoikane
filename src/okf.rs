@@ -12,7 +12,7 @@
 //! - `omoi import --okf <folder>`: each concept, a memory saved by key (`remember --key`):
 //!   the one the concept carries if it came from Omoikane, `okf:<its id>` if not. Importing twice doesn't
 //!   duplicate. It goes to the folder's project (or `--dir`; this database's global, to the global), with
-//!   `--space` to that space and with `--global` to the global. Only what this database signed (`firma`)
+//!   `--space` to that space and with `--global` to the global. Only what this database signed (`signature`)
 //!   comes in global, pinned or verified; what was forgotten here doesn't come back. Title, content and data go through secret redaction, like any `remember`.
 //!
 //! How the fields map (both ways):
@@ -24,12 +24,12 @@
 //! | `tags` | `tags` |
 //! | `paths` | `code_refs` |
 //! | `review:YYYY-MM-DD` | `stale_after: YYYY-MM-DDT00:00:00Z` |
-//! | verified by a person (the stamp of `omoi verify`, `verificado`) | `verified: [{ by: human:<who>, at }]`, with the fingerprint of the text in `omoikane.verified_sha` (on import, a person's `verified` sets the stamp with its date if the concept carries this database's signature and the text is the verified one, or with `--trust-verified`; never inside an agent's shell; a `verified` tag is just another tag) |
+//! | verified by a person (the stamp of `omoi verify`, `verified`) | `verified: [{ by: human:<who>, at }]`, with the fingerprint of the text in `omoikane.verified_sha` (on import, a person's `verified` sets the stamp with its date if the concept carries this database's signature and the text is the verified one, or with `--trust-verified`; never inside an agent's shell; a `verified` tag is just another tag) |
 //! | superseded by another (current verdict) | `status: deprecated` and the link to the one replacing it; on import, the verdict comes back |
 //! | tags `draft` and `deprecated` | `status: draft` / `status: deprecated` |
 //! | `source` | `generated.by` (`<agent>/omoikane`), with `generated.at` = its last change |
 //! | the provenance (commit, branch, session, trace) | `sources` (1.10.1, ids `omoikane-*`, rebuilt on every export) and exact in `omoikane.provenance` |
-//! | what it is based on (`evidencia`, 1.13) | `omoikane.evidence` |
+//! | what it is based on (`evidence`, 1.13) | `omoikane.evidence` |
 //! | what to check when the review date arrives (1.14) | `omoikane.review_reason` |
 //! | the rest (id, key, pinned, dates, author, data) | `omoikane:` (one more key, which OKF says to keep) |
 //!
@@ -37,10 +37,10 @@
 //! process `verified` entries, `governance`…) is kept in the memory's data (`data.okf`) and comes
 //! out the same on export.
 
-use crate::embeber::Model;
-use crate::memoria::{self, Scope, Changes, Memory, NewMemory, Kind};
-use crate::obsidian::{Que, corto};
-use crate::{tr, veredictos};
+use crate::embed::Model;
+use crate::memory::{self, Scope, Changes, Memory, NewMemory, Kind};
+use crate::obsidian::{ExportScope, short_id};
+use crate::{tr, verdicts};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value, json};
@@ -66,7 +66,7 @@ const MAPPED_KEYS: [&str; 8] = ["type", "title", "description", "tags", "status"
 
 /// What an export did (counting only concepts; the indexes and the log are separate).
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Cuenta {
+pub struct ExportCount {
     pub memories: usize,
     pub created: usize,
     pub updated: usize,
@@ -91,8 +91,8 @@ struct Group {
 }
 
 /// Exports to the bundle `dir` and returns what changed.
-pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
-    crate::proyecto::require_local(dir)?;
+pub fn export(db: &Connection, dir: &Path, what: ExportScope) -> Result<ExportCount> {
+    crate::project::require_local(dir)?;
     for f in ["index.md", "log.md"] {
         let p = dir.join(f);
         if p.exists() && !is_our_index(&p) {
@@ -104,24 +104,24 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
         }
     }
     let scope = match what {
-        Que::Personal => Scope::Space(None),
-        Que::Espacio(s) => Scope::Space(Some(s)),
+        ExportScope::Personal => Scope::Space(None),
+        ExportScope::Space(s) => Scope::Space(Some(s)),
     };
-    let mut all_memories = memoria::recent(db, &scope, None, usize::MAX >> 1)?;
-    if matches!(what, Que::Espacio(_)) {
+    let mut all_memories = memory::recent(db, &scope, None, usize::MAX >> 1)?;
+    if matches!(what, ExportScope::Space(_)) {
         all_memories.retain(|m| !m.global());
     }
     all_memories.sort_by(|a, b| a.id.cmp(&b.id));
     std::fs::create_dir_all(dir).with_context(|| tr!("could not create {}", "no se pudo crear {}", dir.display()))?;
-    let data = memoria::data_of(db, &all_memories.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
-    // This database's signature: when imported here, what was signed is recognised as our own (see `firma`).
-    let key = firma::clave(db, true)?;
+    let data = memory::data_of(db, &all_memories.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    // This database's signature: when imported here, what was signed is recognised as our own (see `signature`).
+    let key = signature::key(db, true)?;
 
     // Each memory's group, as in the Obsidian export.
     let mut names: HashMap<String, BTreeSet<String>> = HashMap::new();
     for m in &all_memories {
         if m.project_id != 0 {
-            names.entry(crate::proyecto::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
+            names.entry(crate::project::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
     let group_of = |m: &Memory| -> Group {
@@ -132,10 +132,10 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
                 Group { folder: format!("_{}", slug(&m.space, 40)), title: m.space.clone() }
             };
         }
-        let name = crate::proyecto::name_of(&m.project, &m.project_key);
+        let name = crate::project::name_of(&m.project, &m.project_key);
         let mut s = slug(&name, 40);
         if names.get(&name).is_some_and(|k| k.len() > 1) {
-            s = format!("{s}-{}", corto(&m.project_key));
+            s = format!("{s}-{}", short_id(&m.project_key));
         }
         Group { folder: s, title: name }
     };
@@ -151,11 +151,11 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     let mut path: HashMap<String, String> = HashMap::new();
     for m in &all_memories {
         let g = group_of(m);
-        let sub = memoria::key_of(m).and_then(path_from_key).unwrap_or_else(|| format!("{}/{}", slug(m.kind_str(), 30), slug(&m.title, 60)));
+        let sub = memory::key_of(m).and_then(path_from_key).unwrap_or_else(|| format!("{}/{}", slug(m.kind_str(), 30), slug(&m.title, 60)));
         let mut r = format!("{}/{sub}", g.folder);
         let last = r.rsplit('/').next().unwrap_or("").to_string();
         if taken.contains(&r.to_lowercase()) || matches!(last.as_str(), "index" | "log") || is_reserved(&last) {
-            r = format!("{r}-{}", corto(&m.id));
+            r = format!("{r}-{}", short_id(&m.id));
         }
         taken.insert(r.to_lowercase());
         path.insert(m.id.clone(), r);
@@ -165,14 +165,14 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     let mut superseded_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut supersedes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut contradicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for v in veredictos::pairs(db)?.into_values() {
+    for v in verdicts::pairs(db)?.into_values() {
         if !path.contains_key(&v.memory_id) || !path.contains_key(&v.other_id) {
             continue;
         }
-        if v.relation == veredictos::SUPERSEDED {
+        if v.relation == verdicts::SUPERSEDED {
             superseded_by.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             supersedes.entry(v.other_id).or_default().push(v.memory_id);
-        } else if v.relation == veredictos::CONTRADICTS {
+        } else if v.relation == verdicts::CONTRADICTS {
             contradicts.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             contradicts.entry(v.other_id).or_default().push(v.memory_id);
         }
@@ -185,7 +185,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     }
 
     let title_of: HashMap<&str, &str> = all_memories.iter().map(|m| (m.id.as_str(), m.title.as_str())).collect();
-    let mut c = Cuenta { memories: all_memories.len(), ..Cuenta::default() };
+    let mut c = ExportCount { memories: all_memories.len(), ..ExportCount::default() };
     let mut written: BTreeSet<PathBuf> = BTreeSet::new();
     // What goes in each index: folder → its subfolders and its concepts.
     let mut folders: BTreeMap<String, FolderIndex> = BTreeMap::new();
@@ -239,7 +239,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
         f.insert("omoikane".into(), json!({ "hub": true }));
         let mut s = String::from("---\n");
         for (k, x) in &f {
-            yaml::bloque(&mut s, k, x, 0);
+            yaml::block(&mut s, k, x, 0);
         }
         s += &format!("---\n\n# {}\n\n", link_text(&title));
         for (r, t, d, _) in v.iter() {
@@ -363,7 +363,7 @@ fn path_from_key(key: &str) -> Option<String> {
 }
 
 /// A memory id coming from outside, in the form the database stores it (`None` if it isn't a ULID).
-pub fn id_normal(s: &str) -> Option<String> {
+pub fn normalize_id(s: &str) -> Option<String> {
     ulid::Ulid::from_string(s.trim()).ok().map(|u| u.to_string())
 }
 
@@ -410,7 +410,7 @@ fn okf_type_name(t: &str) -> String {
 }
 
 /// The Omoikane kind of an OKF `type` (anyone's: there is no closed list).
-pub fn tipo_de_okf(t: &str) -> Kind {
+pub fn kind_from_okf(t: &str) -> Kind {
     let t: String = t.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     let has = |ps: &[&str]| ps.iter().any(|p| t == *p || t.split(' ').any(|w| w == *p));
@@ -526,7 +526,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
         Some(other) => (Map::new(), Some(other.clone())),
         None => (Map::new(), None),
     };
-    let okf_type = okf.get("type").and_then(Value::as_str).filter(|t| tipo_de_okf(t).as_str() == m.kind_str()).map(str::to_string).unwrap_or_else(|| okf_type_name(m.kind_str()));
+    let okf_type = okf.get("type").and_then(Value::as_str).filter(|t| kind_from_okf(t).as_str() == m.kind_str()).map(str::to_string).unwrap_or_else(|| okf_type_name(m.kind_str()));
     let mut f = Map::new();
     f.insert("type".into(), json!(okf_type));
     f.insert("title".into(), json!(m.title));
@@ -535,7 +535,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     let tags: Vec<&String> = m
         .tags
         .iter()
-        .filter(|t| !t.starts_with(crate::revisar::REVIEW_DATE_TAG) && !t.starts_with(memoria::TOPIC_TAG) && !is_status(t))
+        .filter(|t| !t.starts_with(crate::review::REVIEW_DATE_TAG) && !t.starts_with(memory::TOPIC_TAG) && !is_status(t))
         .collect();
     if !tags.is_empty() {
         f.insert("tags".into(), json!(tags));
@@ -550,7 +550,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     if let Some(e) = status {
         f.insert("status".into(), json!(e));
     }
-    if let Some(d) = crate::revisar::review_date_of(&m.tags) {
+    if let Some(d) = crate::review::review_date_of(&m.tags) {
         f.insert("stale_after".into(), json!(format!("{d}T00:00:00Z")));
     }
     // `code_refs` are repository paths: the absolute ones (and those going out with `..`) go separately.
@@ -592,7 +592,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     }
     let mut o = Map::new();
     o.insert("id".into(), json!(m.id));
-    if let Some(k) = memoria::key_of(m) {
+    if let Some(k) = memory::key_of(m) {
         o.insert("key".into(), json!(k));
     }
     o.insert("kind".into(), json!(m.kind_str()));
@@ -622,13 +622,13 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     o.insert("created".into(), json!(m.created_at));
     o.insert("updated".into(), json!(m.updated_at));
     if let Some(p) = &m.provenance {
-        o.insert(crate::procedencia::KEY.into(), json!(p));
+        o.insert(crate::provenance::KEY.into(), json!(p));
     }
     if !m.evidence.is_empty() {
-        o.insert(crate::evidencia::KEY.into(), json!(m.evidence));
+        o.insert(crate::evidence::KEY.into(), json!(m.evidence));
     }
     if let Some(r) = &m.review_reason {
-        o.insert(memoria::REVIEW_REASON_KEY.into(), json!(r));
+        o.insert(memory::REVIEW_REASON_KEY.into(), json!(r));
     }
     for (k, v) in [("superseded_by", &rel.superseded_by), ("supersedes", &rel.supersedes), ("contradicts", &rel.contradicts)] {
         if !v.is_empty() {
@@ -643,7 +643,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     }
     // The fingerprint of the verified text: on import, the stamp only comes back if the text is still that one
     // (re-editing the Markdown doesn't keep the verification).
-    let sha = m.verified.as_ref().map(|_| crate::verificado::fingerprint(m.kind_str(), &m.title, &m.content)).unwrap_or_default();
+    let sha = m.verified.as_ref().map(|_| crate::verified::fingerprint(m.kind_str(), &m.title, &m.content)).unwrap_or_default();
     if !sha.is_empty() {
         o.insert("verified_sha".into(), json!(sha));
     }
@@ -651,7 +651,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     let render = |f: &Map<String, Value>| {
         let mut s = String::from("---\n");
         for (k, v) in f {
-            yaml::bloque(&mut s, k, v, 0);
+            yaml::block(&mut s, k, v, 0);
         }
         s += "---\n\n";
         s += m.content.trim_end();
@@ -662,14 +662,14 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
         s
     };
     let s = render(&f);
-    // The signature, of what the import will extract from this same text (see `firma`): it is read as it will be read
+    // The signature, of what the import will extract from this same text (see `signature`): it is read as it will be read
     // on import and that is signed. If it couldn't be read (doesn't happen), it goes unsigned: it would come in as someone else's.
     if let Some(k) = key
-        && let Some((header, body)) = separar(&s)
-        && let Ok(header) = yaml::leer(header)
-        && let Ok(e) = to_entry(&Concepto { id: concept_id.to_string(), cabecera: header, cuerpo: body.to_string() })
+        && let Some((header, body)) = split_front_matter(&s)
+        && let Ok(header) = yaml::parse(header)
+        && let Ok(e) = to_entry(&Concept { id: concept_id.to_string(), header, body: body.to_string() })
     {
-        o.insert("sig".into(), json!(firma::firmar(k, &signed_text(&e))));
+        o.insert("sig".into(), json!(signature::sign(k, &signed_text(&e))));
         f.insert("omoikane".into(), Value::Object(o));
         return render(&f);
     }
@@ -716,7 +716,7 @@ fn is_relative(p: &str) -> bool {
 }
 
 /// Writes only if it changes (and counts it, if it's a concept).
-fn write_if_changed(path: &Path, text: &str, c: Option<&mut Cuenta>) -> Result<()> {
+fn write_if_changed(path: &Path, text: &str, c: Option<&mut ExportCount>) -> Result<()> {
     let existing = std::fs::read(path).ok();
     if existing.as_deref() == Some(text.as_bytes()) {
         if let Some(c) = c {
@@ -781,7 +781,7 @@ fn is_our_index(p: &Path) -> bool {
 
 fn is_our_concept(p: &Path) -> bool {
     let Ok(t) = std::fs::read_to_string(p) else { return false };
-    let Some((header, _)) = separar(&t) else { return false };
+    let Some((header, _)) = split_front_matter(&t) else { return false };
     header.lines().any(|l| l.starts_with("omoikane:"))
 }
 
@@ -797,7 +797,7 @@ fn is_our_concept(p: &Path) -> bool {
 /// (another person, another database, one written by hand or touched up in any field) can't
 /// compute it: none of that is trusted (the text is imported, like any bundle's, into a new
 /// memory). The ids existing here is not enough: anyone who has seen a bundle of yours has them.
-pub(crate) mod firma {
+pub(crate) mod signature {
     use anyhow::{Result, anyhow};
     use rusqlite::{Connection, OptionalExtension, params};
 
@@ -817,7 +817,7 @@ pub(crate) mod firma {
 
     /// This database's key; with `crear`, it creates it if there is none yet (on export). On import without a key,
     /// nothing is our own.
-    pub fn clave(db: &Connection, create: bool) -> Result<Option<Vec<u8>>> {
+    pub fn key(db: &Connection, create: bool) -> Result<Option<Vec<u8>>> {
         let existing: Option<String> = db.query_row("SELECT v FROM meta WHERE k = ?1", [META], |f| f.get(0)).optional()?;
         if let Some(k) = existing.as_deref().and_then(from_hex).filter(|k| k.len() == 32) {
             return Ok(Some(k));
@@ -831,19 +831,19 @@ pub(crate) mod firma {
         Ok(Some(b.to_vec()))
     }
 
-    pub fn firmar(key: &[u8], text: &str) -> String {
+    pub fn sign(key: &[u8], text: &str) -> String {
         let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
         hex(ring::hmac::sign(&k, text.as_bytes()).as_ref())
     }
 
-    pub fn vale(key: &[u8], text: &str, signature: &str) -> bool {
+    pub fn is_valid(key: &[u8], text: &str, signature: &str) -> bool {
         let Some(f) = from_hex(signature) else { return false };
         let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
         ring::hmac::verify(&k, text.as_bytes(), &f).is_ok()
     }
 }
 
-/// What is signed of a concept: everything the import extracts from it and applies (see `firma`), as
+/// What is signed of a concept: everything the import extracts from it and applies (see `signature`), as
 /// it comes out of [`to_entry`], as JSON (maps in the order they come: another order is another signature).
 /// Except the signature itself and what isn't applied (the links footer, the `description` of our own concept).
 fn signed_text(e: &Entry) -> String {
@@ -887,38 +887,38 @@ fn signed_text(e: &Entry) -> String {
 
 /// A concept that was read: its id (the path without `.md`), its header and its body.
 #[derive(Clone, Debug)]
-pub struct Concepto {
+pub struct Concept {
     pub id: String,
-    pub cabecera: Map<String, Value>,
-    pub cuerpo: String,
+    pub header: Map<String, Value>,
+    pub body: String,
 }
 
 /// A bundle read and checked.
 #[derive(Clone, Debug)]
 pub struct Bundle {
-    pub raiz: PathBuf,
+    pub root: PathBuf,
     /// The `okf_version` of the root `index.md`, if it says it.
     pub version: Option<String>,
-    pub conceptos: Vec<Concepto>,
+    pub concepts: Vec<Concept>,
     /// What was skipped while reading it (symbolic links, files too big), to report it.
-    pub avisos: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 /// A bigger concept isn't read (it's skipped with a warning): a header and a note, not a dump.
-pub const MAX_CONCEPTO: u64 = 1 << 20;
+pub const MAX_CONCEPT: u64 = 1 << 20;
 
 /// A file whose header starts with `---\r\n` was turned into `\r\n` throughout by whoever copied it (git with
 /// `core.autocrlf=true`, the default in Git for Windows; an editor): Omoikane always writes `\n`.
 /// Back to `\n` throughout, so a concept of this database still holds with its signature (it was signed with
 /// `\n`) and doesn't come in as a new one, duplicated and without its verification. Content with real `\r\n`
 /// goes in a file with the header in `\n`, and is left alone.
-pub(crate) fn sin_crlf_de_git(text: String) -> String {
+pub(crate) fn strip_git_crlf(text: String) -> String {
     let t = text.strip_prefix('\u{feff}').unwrap_or(&text);
     if t.starts_with("---\r\n") { text.replace("\r\n", "\n") } else { text }
 }
 
 /// The header and the body of a Markdown file, if it starts with a closed `---` header.
-pub(crate) fn separar(text: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_front_matter(text: &str) -> Option<(&str, &str)> {
     let t = text.strip_prefix('\u{feff}').unwrap_or(text);
     let rest = t.strip_prefix("---\r\n").or_else(|| t.strip_prefix("---\n"))?;
     let mut i = 0;
@@ -939,39 +939,39 @@ pub(crate) fn separar(text: &str) -> Option<(&str, &str)> {
 /// Reads an OKF bundle and checks that it is one (OKF §11): every `.md` other than `index.md` and `log.md`
 /// has a readable YAML header with a non-empty `type`. If the folder has no `index.md` but does have
 /// `knowledge/`, it reads that one (a repository's folder with its bundle).
-pub fn leer(dir: &Path) -> Result<Bundle> {
-    read_with_limits(dir, &Topes::default())
+pub fn read(dir: &Path) -> Result<Bundle> {
+    read_with_limits(dir, &Limits::default())
 }
 
 /// How many entries (files and folders) are walked at most when reading a bundle.
-pub const MAX_FICHEROS: usize = 20_000;
+pub const MAX_FILES: usize = 20_000;
 /// How many bytes of concepts are read at most when reading a bundle. A real bundle is far
 /// less: the one of a real database of 230 memories takes 0.4 MB, and 20,000 concepts of 2 KB are 40 MB.
 pub const MAX_BYTES: u64 = 50 << 20;
 /// The most a concept's YAML header (or `index.md`'s) can measure. A real one doesn't go past a
 /// few KB (the one of a concept exported from Omoikane, with its signature, ~1 KB); the rest goes in the body.
-pub const MAX_CABECERA: usize = 256 << 10;
+pub const MAX_HEADER: usize = 256 << 10;
 /// The most all the headers together can measure: 20,000 concepts of 800 bytes.
-pub const MAX_CABECERAS: usize = 16 << 20;
+pub const MAX_HEADERS: usize = 16 << 20;
 /// How many YAML values (each text, number, list or map) are read at most across all the
 /// headers. Once read, a header takes in memory about 40 times its size if it's all short
 /// lists (`[a, a, a, …]`): 192 MB of such headers were 60 s and 7.5 GB of RAM. With this limit, about
 /// 200 MB at most; a real header has 10 to 40 values.
-pub const MAX_NODOS: usize = 2_000_000;
+pub const MAX_NODES: usize = 2_000_000;
 
 /// The limits when reading a bundle (see the constants; the tests lower them).
 #[derive(Clone, Copy, Debug)]
-pub struct Topes {
-    pub ficheros: usize,
+pub struct Limits {
+    pub files: usize,
     pub bytes: u64,
-    pub cabecera: usize,
-    pub cabeceras: usize,
-    pub nodos: usize,
+    pub header: usize,
+    pub headers: usize,
+    pub nodes: usize,
 }
 
-impl Default for Topes {
-    fn default() -> Topes {
-        Topes { ficheros: MAX_FICHEROS, bytes: MAX_BYTES, cabecera: MAX_CABECERA, cabeceras: MAX_CABECERAS, nodos: MAX_NODOS }
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { files: MAX_FILES, bytes: MAX_BYTES, header: MAX_HEADER, headers: MAX_HEADERS, nodes: MAX_NODES }
     }
 }
 
@@ -994,27 +994,27 @@ fn too_big(root: &Path, what: String) -> anyhow::Error {
 }
 
 /// Whether an entry can be read without following a link: neither a symbolic link nor a Windows junction.
-pub(crate) fn sin_enlace(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink()) && !es_union(p)
+pub(crate) fn not_a_link(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink()) && !is_junction(p)
 }
 
-fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
-    let (max_files, max_bytes) = (limits.ficheros, limits.bytes);
-    crate::proyecto::require_local(dir)?;
+fn read_with_limits(dir: &Path, limits: &Limits) -> Result<Bundle> {
+    let (max_files, max_bytes) = (limits.files, limits.bytes);
+    crate::project::require_local(dir)?;
     if !dir.is_dir() {
         bail!(tr!("{} is not a folder", "{} no es una carpeta", dir.display()));
     }
     let knowledge = dir.join("knowledge");
-    let root = if !dir.join("index.md").exists() && sin_enlace(&knowledge) && knowledge.join("index.md").exists() { knowledge } else { dir.to_path_buf() };
+    let root = if !dir.join("index.md").exists() && not_a_link(&knowledge) && knowledge.join("index.md").exists() { knowledge } else { dir.to_path_buf() };
     let mut version = None;
     let mut warnings = Vec::new();
     let index = root.join("index.md");
     // The `index.md`, with the same limits as a concept: without following links and 1 MB at most.
     let index_ok = index.exists() && {
-        if !sin_enlace(&index) {
+        if !not_a_link(&index) {
             warnings.push(tr!("index.md: a symbolic link, skipped", "index.md: un enlace simbólico, saltado"));
             false
-        } else if std::fs::metadata(&index).is_ok_and(|m| m.len() > MAX_CONCEPTO) {
+        } else if std::fs::metadata(&index).is_ok_and(|m| m.len() > MAX_CONCEPT) {
             warnings.push(tr!("index.md: over 1 MB, skipped", "index.md: de más de 1 MB, saltado"));
             false
         } else {
@@ -1023,14 +1023,14 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
     };
     if index_ok {
         let t = std::fs::read_to_string(&index).with_context(|| index.display().to_string())?;
-        if let Some((header, _)) = separar(&t).filter(|(c, _)| {
-            let fits = c.len() <= limits.cabecera;
+        if let Some((header, _)) = split_front_matter(&t).filter(|(c, _)| {
+            let fits = c.len() <= limits.header;
             if !fits {
-                warnings.push(tr!("index.md: a YAML header over {} KB, skipped", "index.md: una cabecera YAML de más de {} KB, saltado", limits.cabecera >> 10));
+                warnings.push(tr!("index.md: a YAML header over {} KB, skipped", "index.md: una cabecera YAML de más de {} KB, saltado", limits.header >> 10));
             }
             fits
         }) {
-            let c = yaml::leer(header).map_err(|e| anyhow!(tr!("{}: the YAML header can't be read: {e}", "{}: no se puede leer la cabecera YAML: {e}", index.display())))?;
+            let c = yaml::parse(header).map_err(|e| anyhow!(tr!("{}: the YAML header can't be read: {e}", "{}: no se puede leer la cabecera YAML: {e}", index.display())))?;
             version = c.get("okf_version").map(|v| match v {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -1060,7 +1060,7 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
             // junction) can point to a folder above and never end, or take the bundle outside.
             let Ok(t) = e.file_type() else { continue };
             let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-            if t.is_symlink() || es_union(&p) {
+            if t.is_symlink() || is_junction(&p) {
                 warnings.push(tr!("{rel}: a symbolic link, skipped", "{rel}: un enlace simbólico, saltado"));
                 continue;
             }
@@ -1068,7 +1068,7 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
                 pending.push(p);
             } else if t.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md")) && !matches!(name.as_str(), "index.md" | "log.md") {
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                if size > MAX_CONCEPTO {
+                if size > MAX_CONCEPT {
                     warnings.push(tr!("{rel}: over 1 MB, skipped", "{rel}: de más de 1 MB, saltado"));
                     continue;
                 }
@@ -1098,34 +1098,34 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
         // (its path) goes into its key and its signature.
         let id = nfc(rel.strip_suffix(".md").or_else(|| rel.strip_suffix(".MD")).unwrap_or(&rel));
         let text = match std::fs::read_to_string(p) {
-            Ok(t) => sin_crlf_de_git(t),
+            Ok(t) => strip_git_crlf(t),
             Err(e) => {
                 bad.push(format!("{rel}: {e}"));
                 continue;
             }
         };
-        let Some((header, _)) = separar(&text) else {
+        let Some((header, _)) = split_front_matter(&text) else {
             bad.push(tr!("{rel}: no YAML header (--- … ---)", "{rel}: sin cabecera YAML (--- … ---)"));
             continue;
         };
-        if header.len() > limits.cabecera {
+        if header.len() > limits.header {
             bad.push(tr!(
                 "{rel}: a YAML header over {} KB (a concept's header holds a few fields; the rest goes in the body)",
                 "{rel}: una cabecera YAML de más de {} KB (la de un concepto lleva unos pocos campos; lo demás va en el cuerpo)",
-                limits.cabecera >> 10
+                limits.header >> 10
             ));
             continue;
         }
         header_bytes += header.len();
-        if header_bytes > limits.cabeceras {
-            return Err(too_big(&root, tr!("holds over {} MB of YAML headers", "tiene más de {} MB de cabeceras YAML", limits.cabeceras >> 20)));
+        if header_bytes > limits.headers {
+            return Err(too_big(&root, tr!("holds over {} MB of YAML headers", "tiene más de {} MB de cabeceras YAML", limits.headers >> 20)));
         }
         read_files.push((rel, id, text));
     }
     let mut node_total = 0usize;
     for (rel, id, text) in read_files {
-        let Some((header, body)) = separar(&text) else { continue };
-        let c = match yaml::leer(header) {
+        let Some((header, body)) = split_front_matter(&text) else { continue };
+        let c = match yaml::parse(header) {
             Ok(c) => c,
             Err(e) => {
                 bad.push(tr!("{rel}: the YAML header can't be read: {e}", "{rel}: no se puede leer la cabecera YAML: {e}"));
@@ -1133,14 +1133,14 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
             }
         };
         node_total += c.values().map(node_count).sum::<usize>();
-        if node_total > limits.nodos {
-            return Err(too_big(&root, tr!("holds over {} values in its YAML headers", "tiene más de {} valores en sus cabeceras YAML", limits.nodos)));
+        if node_total > limits.nodes {
+            return Err(too_big(&root, tr!("holds over {} values in its YAML headers", "tiene más de {} valores en sus cabeceras YAML", limits.nodes)));
         }
-        if !c.get("type").is_some_and(|t| !escalar_texto(t).trim().is_empty()) {
+        if !c.get("type").is_some_and(|t| !scalar_text(t).trim().is_empty()) {
             bad.push(tr!("{rel}: the header has no `type`", "{rel}: la cabecera no tiene `type`"));
             continue;
         }
-        concepts.push(Concepto { id, cabecera: c, cuerpo: body.to_string() });
+        concepts.push(Concept { id, header: c, body: body.to_string() });
     }
     if !bad.is_empty() {
         let n = bad.len();
@@ -1159,24 +1159,24 @@ fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
             root.display()
         ));
     }
-    Ok(Bundle { raiz: root, version, conceptos: concepts, avisos: warnings })
+    Ok(Bundle { root, version, concepts, warnings })
 }
 
 /// A Windows junction: `file_type` doesn't report it as a symbolic link, but it's a mount
 /// point that can lead to any folder (also one above).
 #[cfg(windows)]
-pub(crate) fn es_union(p: &Path) -> bool {
+pub(crate) fn is_junction(p: &Path) -> bool {
     use std::os::windows::fs::MetadataExt;
     const REPARSE_POINT: u32 = 0x400;
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_attributes() & REPARSE_POINT != 0)
 }
 
 #[cfg(not(windows))]
-pub(crate) fn es_union(_: &Path) -> bool {
+pub(crate) fn is_junction(_: &Path) -> bool {
     false
 }
 
-pub(crate) fn escalar_texto(v: &Value) -> String {
+pub(crate) fn scalar_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -1184,12 +1184,12 @@ pub(crate) fn escalar_texto(v: &Value) -> String {
     }
 }
 
-pub(crate) fn lista_de_textos(v: Option<&Value>) -> Vec<String> {
+pub(crate) fn text_list(v: Option<&Value>) -> Vec<String> {
     match v {
-        Some(Value::Array(a)) => a.iter().map(escalar_texto).filter(|s| !s.trim().is_empty()).collect(),
+        Some(Value::Array(a)) => a.iter().map(scalar_text).filter(|s| !s.trim().is_empty()).collect(),
         Some(Value::String(s)) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
         Some(Value::Null) | None => Vec::new(),
-        Some(other) => vec![escalar_texto(other)],
+        Some(other) => vec![scalar_text(other)],
     }
 }
 
@@ -1197,16 +1197,16 @@ pub(crate) fn lista_de_textos(v: Option<&Value>) -> Vec<String> {
 
 /// Where the imported memories go.
 #[derive(Clone, Debug)]
-pub enum Destino {
+pub enum Destination {
     /// To the project of this folder (empty: to the global); what was exported as global, to the global.
-    Proyecto(String),
+    Project(String),
     /// To this space, without a project.
-    Espacio(i64),
+    Space(i64),
 }
 
 /// What an import did (or would do, dry run).
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Resumen {
+pub struct ImportSummary {
     pub concepts: usize,
     pub created: usize,
     pub updated: usize,
@@ -1228,7 +1228,7 @@ pub struct Resumen {
     pub global: usize,
     /// Those that come in (or would come in) pinned.
     pub pinned: usize,
-    /// The concepts that didn't come from this database (without this database's signature, see `firma`).
+    /// The concepts that didn't come from this database (without this database's signature, see `signature`).
     pub foreign: usize,
     /// Of those, the ones that asked to be global and go to the destination.
     pub ignored_global: usize,
@@ -1266,7 +1266,7 @@ struct Entry {
     generated: Option<String>,
     /// The fingerprint of the text that was verified (`omoikane.verified_sha`), if it came from Omoikane with a stamp.
     verified_sha: Option<String>,
-    /// The signature of the database it came from (`omoikane.sig`, see `firma`).
+    /// The signature of the database it came from (`omoikane.sig`, see `signature`).
     signature: Option<String>,
 }
 
@@ -1275,7 +1275,7 @@ struct Entry {
 /// isn't valid in a key changed to `-`, and with a piece of its hash if it goes past 80).
 fn concept_key(id: &str, om: &Map<String, Value>) -> String {
     if let Some(k) = om.get("key").and_then(Value::as_str)
-        && let Ok(k) = memoria::topic_key(k)
+        && let Ok(k) = memory::topic_key(k)
     {
         return k;
     }
@@ -1307,27 +1307,27 @@ fn day_of(instant: &str) -> Option<String> {
     (ok && (1..=12).contains(&month) && (1..=31).contains(&day)).then(|| d.to_string())
 }
 
-fn to_entry(c: &Concepto) -> Result<Entry> {
-    let f = &c.cabecera;
+fn to_entry(c: &Concept) -> Result<Entry> {
+    let f = &c.header;
     let om = match f.get("omoikane") {
         Some(Value::Object(o)) => o.clone(),
         _ => Map::new(),
     };
     let ours = !om.is_empty();
-    let okf_type = escalar_texto(&f["type"]).trim().to_string();
-    let kind = om.get("kind").and_then(Value::as_str).and_then(|k| k.parse::<Kind>().ok()).unwrap_or_else(|| tipo_de_okf(&okf_type));
-    let title = f.get("title").map(escalar_texto).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
+    let okf_type = scalar_text(&f["type"]).trim().to_string();
+    let kind = om.get("kind").and_then(Value::as_str).and_then(|k| k.parse::<Kind>().ok()).unwrap_or_else(|| kind_from_okf(&okf_type));
+    let title = f.get("title").map(scalar_text).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
         let name = c.id.rsplit('/').next().unwrap_or(&c.id);
         name.replace(['-', '_'], " ")
     });
-    let mut body = c.cuerpo.as_str();
+    let mut body = c.body.as_str();
     if ours && let Some(i) = body.find(FOOTER) {
         body = &body[..i];
     }
     // The body of one of our concepts, as is (the content may carry `\r\n`); someone else's, with
     // Omoikane's line breaks.
     let mut content = if ours { body.trim().to_string() } else { body.replace("\r\n", "\n").trim().to_string() };
-    if let Some(d) = f.get("description").map(escalar_texto).map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
+    if let Some(d) = f.get("description").map(scalar_text).map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
         && !ours
         && !content.contains(&d)
     {
@@ -1342,18 +1342,18 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
         content = title.clone();
     }
 
-    let mut tags: Vec<String> = lista_de_textos(f.get("tags")).into_iter().filter(|t| !t.starts_with(crate::revisar::REVIEW_DATE_TAG)).collect();
-    if let Some(d) = f.get("stale_after").map(escalar_texto).as_deref().and_then(day_of) {
-        tags.push(format!("{}{d}", crate::revisar::REVIEW_DATE_TAG));
+    let mut tags: Vec<String> = text_list(f.get("tags")).into_iter().filter(|t| !t.starts_with(crate::review::REVIEW_DATE_TAG)).collect();
+    if let Some(d) = f.get("stale_after").map(scalar_text).as_deref().and_then(day_of) {
+        tags.push(format!("{}{d}", crate::review::REVIEW_DATE_TAG));
     }
     // A person's verification (the most recent, if there are several): it becomes the stamp when
     // saving it, not data nor a tag.
     let verified = verified_entries(f.get("verified"))
         .iter()
-        .filter_map(|v| Some((person_of(by_of(v))?, v.get("at").map(escalar_texto).filter(|a| !a.trim().is_empty()))))
+        .filter_map(|v| Some((person_of(by_of(v))?, v.get("at").map(scalar_text).filter(|a| !a.trim().is_empty()))))
         .max_by(|a, b| a.1.cmp(&b.1));
-    let superseded_by = lista_de_textos(om.get("superseded_by"));
-    match f.get("status").map(escalar_texto).map(|s| s.trim().to_lowercase()).as_deref() {
+    let superseded_by = text_list(om.get("superseded_by"));
+    match f.get("status").map(scalar_text).map(|s| s.trim().to_lowercase()).as_deref() {
         Some(DEPRECATED) if superseded_by.is_empty() => tags.push(DEPRECATED.into()),
         Some(DRAFT) => tags.push(DRAFT.into()),
         _ => {}
@@ -1363,7 +1363,7 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
     // outside (`okf_keys`); from someone else's, everything that doesn't become a field.
     let mut okf = Map::new();
     if ours {
-        for k in lista_de_textos(om.get("okf_keys")) {
+        for k in text_list(om.get("okf_keys")) {
             if let Some(v) = f.get(&k) {
                 okf.insert(k, v.clone());
             }
@@ -1407,17 +1407,17 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
     };
     // The date of the text: `generated.at`; without it, the most recent verification (the text already existed
     // then, and so it doesn't come out as superseded when exported again).
-    let generated_at = f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).or_else(|| {
-        verified_entries(f.get("verified")).iter().filter_map(|v| v.get("at").map(escalar_texto)).filter(|a| !a.trim().is_empty()).max()
+    let generated_at = f.get("generated").and_then(|g| g.get("at")).map(scalar_text).or_else(|| {
+        verified_entries(f.get("verified")).iter().filter_map(|v| v.get("at").map(scalar_text)).filter(|a| !a.trim().is_empty()).max()
     });
     let text = |k: &str| om.get(k).and_then(Value::as_str).map(str::to_string);
     Ok(Entry {
         concept: c.id.clone(),
         key: concept_key(&c.id, &om),
-        own_key: om.get("key").and_then(Value::as_str).and_then(|k| memoria::topic_key(k).ok()),
+        own_key: om.get("key").and_then(Value::as_str).and_then(|k| memory::topic_key(k).ok()),
         // In its form (uppercase): `Ulid::from_string` also accepts lowercase, and the database stores and
         // compares ids as is (a forget with the id in lowercase didn't match and the memory came back).
-        id: text("id").and_then(|i| id_normal(&i)),
+        id: text("id").and_then(|i| normalize_id(&i)),
         global: text("scope").as_deref() == Some("global"),
         project_key: text("project_key").filter(|k| !k.is_empty()),
         memory: NewMemory {
@@ -1426,26 +1426,26 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
             kind_text: om.get("kind").and_then(Value::as_str).filter(|k| !k.is_empty() && k.parse::<Kind>().is_err()).map(str::to_string),
             title,
             content,
-            paths: lista_de_textos(f.get("code_refs")).into_iter().chain(lista_de_textos(om.get("paths"))).collect(),
+            paths: text_list(f.get("code_refs")).into_iter().chain(text_list(om.get("paths"))).collect(),
             tags,
             pinned: om.get("pinned").and_then(Value::as_bool).unwrap_or(false),
             source: text("source").unwrap_or_else(|| if ours { String::new() } else { "import:okf".into() }),
-            provenance: om.get(crate::procedencia::KEY).and_then(|p| serde_json::from_value::<crate::procedencia::Provenance>(p.clone()).ok()).filter(|p| !p.is_empty()),
+            provenance: om.get(crate::provenance::KEY).and_then(|p| serde_json::from_value::<crate::provenance::Provenance>(p.clone()).ok()).filter(|p| !p.is_empty()),
             evidence: om
-                .get(crate::evidencia::KEY)
-                .and_then(|v| serde_json::from_value::<Vec<crate::evidencia::Evidence>>(v.clone()).ok())
-                .and_then(|v| crate::evidencia::clean(v).ok())
+                .get(crate::evidence::KEY)
+                .and_then(|v| serde_json::from_value::<Vec<crate::evidence::Evidence>>(v.clone()).ok())
+                .and_then(|v| crate::evidence::clean(v).ok())
                 .unwrap_or_default(),
-            review_reason: om.get(memoria::REVIEW_REASON_KEY).and_then(Value::as_str).and_then(memoria::clean_review_reason),
+            review_reason: om.get(memory::REVIEW_REASON_KEY).and_then(Value::as_str).and_then(memory::clean_review_reason),
             ..Default::default()
         },
         data,
         created: text("created").or_else(|| generated_at.clone()),
         updated: text("updated").or(generated_at),
         superseded_by,
-        contradicts: lista_de_textos(om.get("contradicts")),
+        contradicts: text_list(om.get("contradicts")),
         verified,
-        generated: f.get("generated").and_then(|g| g.get("at")).map(escalar_texto).filter(|a| !a.trim().is_empty()),
+        generated: f.get("generated").and_then(|g| g.get("at")).map(scalar_text).filter(|a| !a.trim().is_empty()),
         verified_sha: text("verified_sha").filter(|s| !s.is_empty()),
         signature: text("sig").filter(|s| !s.is_empty()),
     })
@@ -1455,42 +1455,42 @@ fn okf_type_of(t: Kind) -> String {
     okf_type_name(t.as_str())
 }
 
-fn is_overview(c: &Concepto) -> bool {
-    c.cabecera.get("omoikane").and_then(|o| o.get("hub")).and_then(Value::as_bool) == Some(true)
+fn is_overview(c: &Concept) -> bool {
+    c.header.get("omoikane").and_then(|o| o.get("hub")).and_then(Value::as_bool) == Some(true)
 }
 
 /// How many concepts of a bundle came from Omoikane (carry `omoikane:`) outside the space with key
-/// `espacio`: personal memories (without a space) or another client's. Imported with `--space`, they would go to
+/// `space`: personal memories (without a space) or another client's. Imported with `--space`, they would go to
 /// that space's repository, which other people share.
-pub fn de_fuera_del_espacio(b: &Bundle, space: &str) -> usize {
-    b.conceptos
+pub fn outside_space_count(b: &Bundle, space: &str) -> usize {
+    b.concepts
         .iter()
         .filter(|c| !is_overview(c))
-        .filter_map(|c| c.cabecera.get("omoikane").and_then(Value::as_object))
+        .filter_map(|c| c.header.get("omoikane").and_then(Value::as_object))
         .filter(|o| o.get("space").and_then(Value::as_str).unwrap_or("") != space)
         .count()
 }
 
 /// The space of a bundle exported from a space (its concepts' `omoikane.space`).
-pub fn espacio_de(b: &Bundle) -> Option<String> {
-    b.conceptos.iter().find_map(|c| c.cabecera.get("omoikane").and_then(|o| o.get("space")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string))
+pub fn space_of(b: &Bundle) -> Option<String> {
+    b.concepts.iter().find_map(|c| c.header.get("omoikane").and_then(|o| o.get("space")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string))
 }
 
 /// Where an entry lands: (project folder, project id, space) for `NewMemory`. What came
 /// from a project this database also has (the same sync key, in the same space
 /// or without a space) goes back to it; the rest, to the destination.
-fn placement(db: &Connection, destination: &Destino, e: &Entry) -> Result<(String, Option<i64>, Option<i64>)> {
+fn placement(db: &Connection, destination: &Destination, e: &Entry) -> Result<(String, Option<i64>, Option<i64>)> {
     let own_project = |space: Option<i64>| -> Result<Option<i64>> {
         let Some(k) = &e.project_key else { return Ok(None) };
         Ok(db.query_row("SELECT id FROM project WHERE key = ?1 AND space_id IS ?2 AND id != 0 LIMIT 1", params![k, space], |f| f.get(0)).optional()?)
     };
     Ok(match destination {
-        Destino::Espacio(s) => match own_project(Some(*s))? {
+        Destination::Space(s) => match own_project(Some(*s))? {
             Some(p) => (String::new(), Some(p), None),
             None => (String::new(), None, Some(*s)),
         },
-        Destino::Proyecto(_) if e.global => (String::new(), None, None),
-        Destino::Proyecto(p) => match own_project(None)? {
+        Destination::Project(_) if e.global => (String::new(), None, None),
+        Destination::Project(p) => match own_project(None)? {
             Some(id) => (String::new(), Some(id), None),
             None => (p.clone(), None, None),
         },
@@ -1502,7 +1502,7 @@ fn find_by_key(db: &Connection, project: &str, project_id: Option<i64>, space: O
     let project_id = match (space, project_id) {
         (Some(_), _) => 0,
         (None, Some(p)) => p,
-        (None, None) => match crate::proyecto::resolve(db, project)? {
+        (None, None) => match crate::project::resolve(db, project)? {
             Some((id, _)) => id,
             None => return Ok(None),
         },
@@ -1511,7 +1511,7 @@ fn find_by_key(db: &Connection, project: &str, project_id: Option<i64>, space: O
         .query_row(
             "SELECT id, hlc FROM memory WHERE project_id = ?1 AND space_id IS ?2
                AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?3) ORDER BY created_at, id LIMIT 1",
-            params![project_id, space, format!("{}{key}", memoria::TOPIC_TAG)],
+            params![project_id, space, format!("{}{key}", memory::TOPIC_TAG)],
             |f| Ok((f.get(0)?, f.get(1)?)),
         )
         .optional()?)
@@ -1532,38 +1532,38 @@ enum Outcome {
 
 /// How a bundle is imported.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Opciones {
+pub struct ImportOptions {
     /// Only count what it would do, without writing (`created`: what would be new; `updated`: what is already there
     /// and would be brought up to date).
-    pub en_seco: bool,
+    pub dry_run: bool,
     /// Outside an agent's shell: a person's `verified` can set the verified stamp
     /// (importing is the person's action). Without this, those memories come in without a stamp and are counted in
     /// `not_verified`.
-    pub verificar: bool,
+    pub verify: bool,
     /// `--trust-verified`: a person's `verified` from a bundle that didn't come from this database also
-    /// sets the stamp. Without this, only that of what was signed here (see `firma`).
-    pub confiar_verificadas: bool,
+    /// sets the stamp. Without this, only that of what was signed here (see `signature`).
+    pub trust_verified: bool,
 }
 
-/// Imports a bundle already read, without trusting the `verified` of someone else's bundle (see [`importar_con`]).
-pub fn importar(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destino, dry_run: bool, verify: bool) -> Result<Resumen> {
-    importar_con(db, model, b, destination, Opciones { en_seco: dry_run, verificar: verify, confiar_verificadas: false })
+/// Imports a bundle already read, without trusting the `verified` of someone else's bundle (see [`import_with`]).
+pub fn import(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destination, dry_run: bool, verify: bool) -> Result<ImportSummary> {
+    import_with(db, model, b, destination, ImportOptions { dry_run, verify, trust_verified: false })
 }
 
 /// Imports a bundle already read.
 ///
 /// What gives a concept power (`omoikane.scope: global`, `pinned`, a person's `verified`, its
 /// id and its key —which memory here it joins— and its `project_key`) is only trusted if it came from THIS
-/// database: it carries its signature, which also covers its text (see `firma`). From someone else's bundle (or from one
+/// database: it carries its signature, which also covers its text (see `signature`). From someone else's bundle (or from one
 /// of our own touched up, also in the text) it goes to the requested destination as a new memory, by the concept's
-/// key, unpinned and without a stamp (the stamp, with `confiar_verificadas`, yes). What ends up as a
-/// trade memory goes through `oficios::leaks`. And even with the signature, the stamp only comes back if the text is the one that was
+/// key, unpinned and without a stamp (the stamp, with `trust_verified`, yes). What ends up as a
+/// trade memory goes through `trades::leaks`. And even with the signature, the stamp only comes back if the text is the one that was
 /// verified (`omoikane.verified_sha`), the person didn't unverify it here afterwards and the date isn't in the
 /// future. What was forgotten here (in the trash or with its forget mark) doesn't come back: it is skipped and
 /// counted in `skipped_forgotten` (as in sync, where a forget stops the incoming memory;
 /// to bring it back, `omoi restore`).
-pub fn importar_con(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destino, op: Opciones) -> Result<Resumen> {
-    if let (Destino::Proyecto(_), Some(s)) = (destination, espacio_de(b)) {
+pub fn import_with(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destination, op: ImportOptions) -> Result<ImportSummary> {
+    if let (Destination::Project(_), Some(s)) = (destination, space_of(b)) {
         bail!(tr!(
             "this bundle was exported from the space «{s}»: import it with --space <name>, so it doesn't mix with personal memories",
             "este bundle se exportó del espacio «{s}»: impórtalo con --space <nombre>, para que no se mezcle con lo personal"
@@ -1571,19 +1571,19 @@ pub fn importar_con(db: &mut Connection, model: Option<&Model>, b: &Bundle, dest
     }
     // Personal memories exported from Omoikane don't go into a client's project (one in a space); someone
     // else's bundle (the `knowledge/` of their repository) does.
-    if let Destino::Proyecto(p) = destination
-        && b.conceptos.iter().any(|c| c.cabecera.contains_key("omoikane"))
-        && let Some((_, Some(_))) = crate::proyecto::resolve(db, p)?
+    if let Destination::Project(p) = destination
+        && b.concepts.iter().any(|c| c.header.contains_key("omoikane"))
+        && let Some((_, Some(_))) = crate::project::resolve(db, p)?
     {
         bail!(tr!(
             "these are personal memories exported from Omoikane and this folder's project is in a space (a client's): import them from a personal project, or into a space with --space <name>",
             "son memorias personales exportadas de Omoikane y el proyecto de esta carpeta está en un espacio (de un cliente): impórtalas desde un proyecto personal, o a un espacio con --space <nombre>"
         ));
     }
-    let key = firma::clave(db, false)?;
+    let key = signature::key(db, false)?;
     // The group overviews of an Omoikane export aren't memories.
-    let concepts: Vec<&Concepto> = b.conceptos.iter().filter(|c| !is_overview(c)).collect();
-    let mut r = Resumen { concepts: concepts.len(), ..Resumen::default() };
+    let concepts: Vec<&Concept> = b.concepts.iter().filter(|c| !is_overview(c)).collect();
+    let mut r = ImportSummary { concepts: concepts.len(), ..ImportSummary::default() };
     // Concept id (lowercase) → memory id, whether it's from this database and whether it was skipped as older than
     // its memory here (`None`: two concepts with the same path except for case, so it's unknown which one
     // it is), and the relations each one carries.
@@ -1633,19 +1633,19 @@ pub fn importar_con(db: &mut Connection, model: Option<&Model>, b: &Bundle, dest
             }
         }
     }
-    if op.en_seco {
+    if op.dry_run {
         return Ok(r);
     }
     // The verdicts among what was imported: `superseded_by` and `contradicts` point to other concepts of the
     // bundle (`/path.md`). One that already holds isn't set again.
-    let current = veredictos::pairs(db)?;
+    let current = verdicts::pairs(db)?;
     let id_of = |path: &str| -> Option<&(String, bool, bool)> {
         let r = path.trim().trim_start_matches('/');
         let r = r.strip_suffix(".md").unwrap_or(r);
         ids.get(&nfc(r).to_lowercase()).and_then(Option::as_ref)
     };
     for (id, own, superseded_by, contradicts) in &relations {
-        for (relation, others) in [(veredictos::SUPERSEDED, superseded_by), (veredictos::CONTRADICTS, contradicts)] {
+        for (relation, others) in [(verdicts::SUPERSEDED, superseded_by), (verdicts::CONTRADICTS, contradicts)] {
             for (other, other_own, other_older) in others.iter().filter_map(|o| id_of(o)) {
                 // Never between a concept of this database and one without its signature: a foreign one can't mark
                 // a memory from here as superseded (nor contradict it), nor the other way round with what one of our own concepts
@@ -1653,11 +1653,11 @@ pub fn importar_con(db: &mut Connection, model: Option<&Model>, b: &Bundle, dest
                 if other == id || other_own != own || *other_older {
                     continue;
                 }
-                let already = current.get(&veredictos::pair_key(id, other)).is_some_and(|v| v.relation == relation && (relation == veredictos::CONTRADICTS || v.memory_id == *id));
+                let already = current.get(&verdicts::pair_key(id, other)).is_some_and(|v| v.relation == relation && (relation == verdicts::CONTRADICTS || v.memory_id == *id));
                 if already {
                     continue;
                 }
-                match veredictos::set(db, id, other, relation, "okf import", "import:okf") {
+                match verdicts::set(db, id, other, relation, "okf import", "import:okf") {
                     Ok(()) => r.verdicts += 1,
                     Err(err) => eprintln!("omoikane: {id}: {err:#}"),
                 }
@@ -1678,7 +1678,7 @@ enum Stamp {
     Already,
     /// No, from an agent's shell.
     Agent,
-    /// No, from a bundle that isn't from this database (without `confiar_verificadas`).
+    /// No, from a bundle that isn't from this database (without `trust_verified`).
     Foreign,
     /// No, because it no longer holds (another text, unverified afterwards, date in the future).
     Stale,
@@ -1706,7 +1706,7 @@ struct ConceptResult {
 }
 
 /// Error if the entry leaves (or creates) a trade memory —global, with `trade:`— with something from a
-/// project or a client (`oficios::leaks`): in its text, its paths, its tags, its key or its
+/// project or a client (`trades::leaks`): in its text, its paths, its tags, its key or its
 /// data. `global` is whether the memory stays global; `before`, the one being updated (its tags and paths
 /// are merged with the new ones). What that one already had while being a trade memory (saved maybe with `allow_leaks`)
 /// doesn't stop it again: only what's new.
@@ -1715,7 +1715,7 @@ fn check_trade(db: &Connection, e: &Entry, global: bool, before: Option<&str>, k
         return Ok(());
     }
     let old = match before {
-        Some(id) => Some(memoria::get(db, id)?),
+        Some(id) => Some(memory::get(db, id)?),
         None => None,
     };
     let mut tags: Vec<String> = e.memory.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
@@ -1724,17 +1724,17 @@ fn check_trade(db: &Connection, e: &Entry, global: bool, before: Option<&str>, k
         tags.extend(v.tags.iter().cloned());
         paths.extend(v.paths.iter().cloned());
     }
-    if !crate::oficios::has_trade(&tags) {
+    if !crate::trades::has_trade(&tags) {
         return Ok(());
     }
     let joined_paths = paths.join(" ");
-    let fields = crate::oficios::leak_fields(&[("title", &e.memory.title), ("content", &e.memory.content), ("paths", &joined_paths)], &tags, Some(key), e.data.as_ref());
-    let mut leaks = crate::oficios::leaks_in(db, &fields)?;
-    if let Some(v) = old.filter(|v| v.global() && crate::oficios::has_trade(&v.tags)) {
-        let data = memoria::data_of(db, &[v.id.as_str()])?.remove(&v.id);
+    let fields = crate::trades::leak_fields(&[("title", &e.memory.title), ("content", &e.memory.content), ("paths", &joined_paths)], &tags, Some(key), e.data.as_ref());
+    let mut leaks = crate::trades::leaks_in(db, &fields)?;
+    if let Some(v) = old.filter(|v| v.global() && crate::trades::has_trade(&v.tags)) {
+        let data = memory::data_of(db, &[v.id.as_str()])?.remove(&v.id);
         let joined_paths = v.paths.join(" ");
-        let already = crate::oficios::leak_fields(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memoria::key_of(&v), data.as_ref());
-        let already: BTreeSet<String> = crate::oficios::leaks_in(db, &already)?.into_iter().map(|f| f.text.to_lowercase()).collect();
+        let already = crate::trades::leak_fields(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memory::key_of(&v), data.as_ref());
+        let already: BTreeSet<String> = crate::trades::leaks_in(db, &already)?.into_iter().map(|f| f.text.to_lowercase()).collect();
         leaks.retain(|f| !already.contains(&f.text.to_lowercase()));
     }
     if leaks.is_empty() {
@@ -1766,19 +1766,19 @@ fn is_after(db: &Connection, a: &str, b: &str) -> Result<bool> {
 }
 
 /// Imports a concept: what happened and its entry.
-fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destination: &Destino, op: Opciones, key: Option<&[u8]>, touched: &mut BTreeSet<String>) -> Result<(ConceptResult, Entry)> {
+fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concept, destination: &Destination, op: ImportOptions, key: Option<&[u8]>, touched: &mut BTreeSet<String>) -> Result<(ConceptResult, Entry)> {
     let mut e = to_entry(c)?;
-    // Did it come from this database? Its signature covers everything applied from it (see `firma` and `signed_text`):
+    // Did it come from this database? Its signature covers everything applied from it (see `signature` and `signed_text`):
     // a field changed, removed or added leaves it unsigned.
     let own = match (key, &e.signature, &e.id) {
-        (Some(k), Some(f), Some(_)) => firma::vale(k, &signed_text(&e), f),
+        (Some(k), Some(f), Some(_)) => signature::is_valid(k, &signed_text(&e), f),
         _ => false,
     };
     let mut u = ConceptResult { id: None, outcome: Outcome::Same, redacted: false, stamp: Stamp::Absent, foreign: !own, ignored_global: false, ignored_pinned: false, global: false, own, older: false };
     if !own {
         // Someone else's: neither global nor pinned; it goes to the requested destination like any concept.
         if e.global {
-            u.ignored_global = matches!(destination, Destino::Proyecto(p) if !p.is_empty());
+            u.ignored_global = matches!(destination, Destination::Project(p) if !p.is_empty());
             e.global = false;
         }
         if e.memory.pinned {
@@ -1814,7 +1814,7 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     // The data, checked before writing anything: if it isn't valid, the concept fails without leaving a
     // half-written memory.
     if let Some(d) = &e.data {
-        memoria::check_data(d)?;
+        memory::check_data(d)?;
     }
     let (project, project_id, space_id) = placement(db, destination, &e)?;
     e.memory.project = project.clone();
@@ -1826,8 +1826,8 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     // was done here afterwards is newer than the bundle.
     let own_id = match &e.id {
         Some(id) if is_alive(db, id)? => {
-            let (_, space) = memoria::memory_placement(db, id)?.unwrap_or((false, String::new()));
-            let target_space = crate::proyecto::space_key(db, space_id)?;
+            let (_, space) = memory::memory_placement(db, id)?.unwrap_or((false, String::new()));
+            let target_space = crate::project::space_key(db, space_id)?;
             (space == target_space).then(|| id.clone())
         }
         _ => None,
@@ -1835,7 +1835,7 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     // Global: what asks to be (and is trusted), everything if the destination is the global (`--global`), or the one that is already
     // global and gets updated where it is.
     u.global = match &own_id {
-        Some(id) => memoria::memory_placement(db, id)?.is_some_and(|(g, _)| g),
+        Some(id) => memory::memory_placement(db, id)?.is_some_and(|(g, _)| g),
         None => space_id.is_none() && project_id.is_none() && project.is_empty(),
     };
     // How it is saved: updating the same memory; by its key, if there's already one with it where it lands;
@@ -1891,14 +1891,14 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     // Whether a person's `verified` can set the stamp.
     u.stamp = match &e.verified {
         None => Stamp::Absent,
-        Some(_) if !op.verificar => Stamp::Agent,
-        Some(_) if !own && !op.confiar_verificadas => Stamp::Foreign,
+        Some(_) if !op.verify => Stamp::Agent,
+        Some(_) if !own && !op.trust_verified => Stamp::Foreign,
         Some((_, at)) => {
             let kind = e.memory.kind_text.clone().unwrap_or_else(|| e.memory.kind.unwrap_or(Kind::Fact).as_str().to_string());
-            let other_text = e.verified_sha.as_deref().is_some_and(|s| s != crate::verificado::fingerprint(&kind, &e.memory.title, &e.memory.content));
+            let other_text = e.verified_sha.as_deref().is_some_and(|s| s != crate::verified::fingerprint(&kind, &e.memory.title, &e.memory.content));
             // The person unverified it here after that verification (reimporting an old bundle).
             let unverified_later = match (&before, at) {
-                (Some((id, _)), Some(at)) => match crate::verificado::unverified_at(db, id)? {
+                (Some((id, _)), Some(at)) => match crate::verified::unverified_at(db, id)? {
                     Some(d) => is_after(db, &d, at)?,
                     None => false,
                 },
@@ -1911,21 +1911,21 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
             if other_text || unverified_later || future { Stamp::Stale } else { Stamp::Set }
         }
     };
-    // A trade memory created or changed on import goes through `oficios::leaks`, as in
+    // A trade memory created or changed on import goes through `trades::leaks`, as in
     // `remember` and `update` (without `allow_leaks`: whatever it flags is fixed in the bundle or imported into a
     // project). Before writing anything, also in a dry run.
     check_trade(db, &e, u.global, before.as_ref().map(|(id, _)| id.as_str()), by_own_key.as_ref().map_or(e.key.as_str(), |(k, _)| k.as_str()))?;
-    if op.en_seco {
+    if op.dry_run {
         u.outcome = if before.is_some() { Outcome::Changed } else { Outcome::Created };
         u.id = before.map(|(id, _)| id);
         return Ok((u, e));
     }
-    // Whatever looks like a secret is covered by `memoria` when saving (also in the data); here it's only
+    // Whatever looks like a secret is covered by `memory` when saving (also in the data); here it's only
     // noted to report it.
-    let secret = crate::secretos::enabled() && !crate::secretos::findings(&format!("{}\n{}", e.memory.title, e.memory.content)).is_empty();
+    let secret = crate::secrets::enabled() && !crate::secrets::findings(&format!("{}\n{}", e.memory.title, e.memory.content)).is_empty();
     let (id, created, redactions) = match &own_id {
         Some(id) => {
-            let m = memoria::get(db, id)?;
+            let m = memory::get(db, id)?;
             let mut tags = m.tags.clone();
             tags.extend(e.memory.tags.iter().cloned());
             let mut paths = m.paths.clone();
@@ -1940,28 +1940,28 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
                 reason: Some("okf import".into()),
                 ..Default::default()
             };
-            let m = memoria::update(db, id, changes, model)?;
+            let m = memory::update(db, id, changes, model)?;
             let mut redactions = m.redacted.clone();
             if e.data.is_some() {
-                redactions.extend(memoria::set_data(db, id, e.data.clone())?);
+                redactions.extend(memory::set_data(db, id, e.data.clone())?);
             }
             (m.id, false, redactions)
         }
         None if with_own_id.is_some() => {
             let mut memory = e.memory.clone();
             if let Some(k) = &e.own_key {
-                memory.tags.push(format!("{}{k}", memoria::TOPIC_TAG));
+                memory.tags.push(format!("{}{k}", memory::TOPIC_TAG));
             }
-            let m = memoria::save_with_its_id(db, with_own_id.as_deref().unwrap_or_default(), memory, model)?;
+            let m = memory::save_with_its_id(db, with_own_id.as_deref().unwrap_or_default(), memory, model)?;
             let mut redactions = m.redacted.clone();
             if e.data.is_some() {
-                redactions.extend(memoria::set_data(db, &m.id, e.data.clone())?);
+                redactions.extend(memory::set_data(db, &m.id, e.data.clone())?);
             }
             (m.id, true, redactions)
         }
         None => {
             let key = by_own_key.as_ref().map_or(e.key.as_str(), |(k, _)| k.as_str());
-            let p = memoria::save_by_key(db, key, e.memory.clone(), e.data.clone(), model)?;
+            let p = memory::save_by_key(db, key, e.memory.clone(), e.data.clone(), model)?;
             let mut redactions = p.memory.redacted.clone();
             redactions.extend(p.redacted);
             (p.memory.id, p.created, redactions)
@@ -1980,19 +1980,19 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     }
     // The evidence, also on the one that already existed (with its key or its id): it is added to what it had.
     if !e.memory.evidence.is_empty() {
-        memoria::add_evidence(db, &id, &e.memory.evidence)?;
+        memory::add_evidence(db, &id, &e.memory.evidence)?;
     }
     // And what to check when its review date arrives (1.14).
     if let Some(r) = &e.memory.review_reason {
-        memoria::set_review_reason(db, &id, r)?;
+        memory::set_review_reason(db, &id, r)?;
     }
     // The stamp only comes back if the text that was verified (`verified_sha`) is the one the memory has NOW,
     // already written (saving it may have covered a secret, or the memory it went to had another text).
     if u.stamp == Stamp::Set
         && let Some(sha) = &e.verified_sha
     {
-        let m = memoria::get(db, &id)?;
-        if crate::verificado::fingerprint(m.kind_str(), &m.title, &m.content) != *sha {
+        let m = memory::get(db, &id)?;
+        if crate::verified::fingerprint(m.kind_str(), &m.title, &m.content) != *sha {
             u.stamp = Stamp::Stale;
         }
     }
@@ -2001,7 +2001,7 @@ fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destinat
     if u.stamp == Stamp::Set
         && let Some((by, at)) = &e.verified
     {
-        u.stamp = match crate::verificado::verify_at(db, &id, by, at.as_deref()) {
+        u.stamp = match crate::verified::verify_at(db, &id, by, at.as_deref()) {
             Ok((_, true)) => Stamp::Set,
             Ok((_, false)) => Stamp::Already,
             Err(err) => {
@@ -2040,21 +2040,21 @@ pub mod yaml {
         lines: Vec<Line>,
         raw: Vec<String>,
         i: usize,
-        /// How many maps and lists are open (see [`PROFUNDIDAD`]).
+        /// How many maps and lists are open (see [`MAX_DEPTH`]).
         depth: usize,
     }
 
     /// How many nested maps and lists are read at most: a real header doesn't go past three or
     /// four, and without a limit one of `x: [[[[…` (or of ever more indented maps) overflows the stack and
     /// takes the process down.
-    pub const PROFUNDIDAD: usize = 64;
+    pub const MAX_DEPTH: usize = 64;
 
     fn too_deep() -> String {
-        format!("nested deeper than {PROFUNDIDAD} levels")
+        format!("nested deeper than {MAX_DEPTH} levels")
     }
 
     /// Reads a header (what is between the `---`) as a map.
-    pub fn leer(text: &str) -> Result<Map<String, Value>, String> {
+    pub fn parse(text: &str) -> Result<Map<String, Value>, String> {
         let raw: Vec<String> = text.lines().map(|l| l.trim_end_matches('\r').to_string()).collect();
         let mut lines = Vec::new();
         for (n, l) in raw.iter().enumerate() {
@@ -2098,7 +2098,7 @@ pub mod yaml {
         }
 
         fn mapping_inner(&mut self, indent: usize) -> Result<Map<String, Value>, String> {
-            if self.depth > PROFUNDIDAD {
+            if self.depth > MAX_DEPTH {
                 return Err(too_deep());
             }
             let mut m = Map::new();
@@ -2127,7 +2127,7 @@ pub mod yaml {
         }
 
         fn list_inner(&mut self, indent: usize) -> Result<Vec<Value>, String> {
-            if self.depth > PROFUNDIDAD {
+            if self.depth > MAX_DEPTH {
                 return Err(too_deep());
             }
             let mut v = Vec::new();
@@ -2399,7 +2399,7 @@ pub mod yaml {
     struct Flow {
         c: Vec<char>,
         i: usize,
-        /// How many `[` and `{` are open (see [`PROFUNDIDAD`]).
+        /// How many `[` and `{` are open (see [`MAX_DEPTH`]).
         depth: usize,
     }
 
@@ -2412,7 +2412,7 @@ pub mod yaml {
 
         fn value(&mut self) -> Result<Value, String> {
             self.depth += 1;
-            let r = if self.depth > PROFUNDIDAD { Err(too_deep()) } else { self.value_inner() };
+            let r = if self.depth > MAX_DEPTH { Err(too_deep()) } else { self.value_inner() };
             self.depth -= 1;
             r
         }
@@ -2565,7 +2565,7 @@ pub mod yaml {
 
     /// A string as a YAML value: as is if there's no doubt it reads the same, otherwise in double
     /// quotes (with JSON escapes, which YAML understands).
-    pub fn escalar(v: &Value) -> String {
+    pub fn scalar(v: &Value) -> String {
         match v {
             Value::String(s) => {
                 let safe = !s.is_empty()
@@ -2577,18 +2577,18 @@ pub mod yaml {
                     && plain(s) == Value::String(s.clone());
                 if safe { s.clone() } else { serde_json::to_string(s).unwrap_or_default() }
             }
-            Value::Array(_) | Value::Object(_) => flujo(v),
+            Value::Array(_) | Value::Object(_) => flow(v),
             other => other.to_string(),
         }
     }
 
     /// A value on one line: `[a, b]`, `{ by: x, at: y }`.
-    pub fn flujo(v: &Value) -> String {
+    pub fn flow(v: &Value) -> String {
         match v {
-            Value::Array(a) => format!("[{}]", a.iter().map(flujo).collect::<Vec<_>>().join(", ")),
+            Value::Array(a) => format!("[{}]", a.iter().map(flow).collect::<Vec<_>>().join(", ")),
             Value::Object(o) if o.is_empty() => "{}".into(),
-            Value::Object(o) => format!("{{ {} }}", o.iter().map(|(k, v)| format!("{}: {}", yaml_key(k), flujo(v))).collect::<Vec<_>>().join(", ")),
-            other => escalar(other),
+            Value::Object(o) => format!("{{ {} }}", o.iter().map(|(k, v)| format!("{}: {}", yaml_key(k), flow(v))).collect::<Vec<_>>().join(", ")),
+            other => scalar(other),
         }
     }
 
@@ -2602,22 +2602,22 @@ pub mod yaml {
 
     /// `key: value` with the right indentation: maps, below; lists of maps, with `- `; the
     /// rest on the same line.
-    pub fn bloque(s: &mut String, k: &str, v: &Value, indent: usize) {
+    pub fn block(s: &mut String, k: &str, v: &Value, indent: usize) {
         let pre = " ".repeat(indent);
         match v {
             Value::Object(o) if !o.is_empty() => {
                 *s += &format!("{pre}{}:\n", yaml_key(k));
                 for (k2, v2) in o {
-                    bloque(s, k2, v2, indent + 2);
+                    block(s, k2, v2, indent + 2);
                 }
             }
             Value::Array(a) if a.iter().any(|x| x.is_object() || x.is_array()) => {
                 *s += &format!("{pre}{}:\n", yaml_key(k));
                 for x in a {
-                    *s += &format!("{pre}  - {}\n", flujo(x));
+                    *s += &format!("{pre}  - {}\n", flow(x));
                 }
             }
-            other => *s += &format!("{pre}{}: {}\n", yaml_key(k), escalar(other)),
+            other => *s += &format!("{pre}{}: {}\n", yaml_key(k), scalar(other)),
         }
     }
 }
@@ -2632,7 +2632,7 @@ mod tests {
                  generated: { by: reference_agent/gemini-2.5-pro, at: 2026-05-28T14:30:00Z }\nverified:\n  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }\n  - by: process:x\n    at: 2026-06-26T02:00:00Z\n\
                  parameters:\n- { name: year, type: integer, required: true }\nexecutor:\n  resource: references/skills/run-on-bq.md\n  receipt: [job_id,\n    executed_sql]\n\
                  nota: |\n  línea 1\n\n  línea 2\nplegado: >-\n  uno\n  dos\nvacio:\nversion: \"0.2\"\nnumero: 0.2\nsi: true\ncita: 'it''s'\nlargo: una frase\n  que sigue\n";
-        let m = yaml::leer(t).unwrap();
+        let m = yaml::parse(t).unwrap();
         assert_eq!(m["type"], "Attested Computation");
         assert_eq!(m["title"], "Incident: freshness");
         assert_eq!(m["description"], "Steps to triage.");
@@ -2650,10 +2650,10 @@ mod tests {
         assert_eq!(m["si"], true);
         assert_eq!(m["cita"], "it's");
         assert_eq!(m["largo"], "una frase que sigue");
-        assert!(yaml::leer("a: &x 1").is_err());
-        assert!(yaml::leer("solo texto").is_err());
-        assert!(yaml::leer("a: [1, 2").is_err());
-        assert!(yaml::leer("a: 1\n    b: 2").is_err());
+        assert!(yaml::parse("a: &x 1").is_err());
+        assert!(yaml::parse("solo texto").is_err());
+        assert!(yaml::parse("a: [1, 2").is_err());
+        assert!(yaml::parse("a: 1\n    b: 2").is_err());
     }
 
     #[test]
@@ -2670,26 +2670,26 @@ mod tests {
         });
         let mut s = String::new();
         for (k, x) in v.as_object().unwrap() {
-            yaml::bloque(&mut s, k, x, 0);
+            yaml::block(&mut s, k, x, 0);
         }
-        let m = yaml::leer(&s).unwrap();
+        let m = yaml::parse(&s).unwrap();
         assert_eq!(Value::Object(m), v, "{s}");
     }
 
     #[test]
     fn kinds_and_keys() {
-        assert_eq!(tipo_de_okf("Decision"), Kind::Decision);
-        assert_eq!(tipo_de_okf("Architecture Decision Record"), Kind::Decision);
-        assert_eq!(tipo_de_okf("Runbook"), Kind::Procedure);
-        assert_eq!(tipo_de_okf("Convention"), Kind::Preference);
-        assert_eq!(tipo_de_okf("BigQuery Table"), Kind::Fact);
+        assert_eq!(kind_from_okf("Decision"), Kind::Decision);
+        assert_eq!(kind_from_okf("Architecture Decision Record"), Kind::Decision);
+        assert_eq!(kind_from_okf("Runbook"), Kind::Procedure);
+        assert_eq!(kind_from_okf("Convention"), Kind::Preference);
+        assert_eq!(kind_from_okf("BigQuery Table"), Kind::Fact);
         for t in Kind::ALL {
-            assert_eq!(tipo_de_okf(&okf_type_name(t.as_str())), t);
+            assert_eq!(kind_from_okf(&okf_type_name(t.as_str())), t);
         }
         assert_eq!(concept_key("Architecture/Governance Model", &Map::new()), "okf:architecture/governance-model");
         let long_id = "a/".repeat(60);
         let k = concept_key(&long_id, &Map::new());
-        assert!(k.chars().count() <= 80 && memoria::topic_key(&k).is_ok(), "{k}");
+        assert!(k.chars().count() <= 80 && memory::topic_key(&k).is_ok(), "{k}");
         assert_eq!(day_of("2026-09-23T00:00:00Z").as_deref(), Some("2026-09-23"));
         assert_eq!(day_of("mañana"), None);
         assert_eq!(description_of("# Título\n\nPrimera frase. Segunda.", "t"), "Título");
@@ -2712,9 +2712,9 @@ mod tests {
 
     #[test]
     fn split_header() {
-        assert_eq!(separar("---\na: 1\n---\ncuerpo\n"), Some(("a: 1\n", "cuerpo\n")));
-        assert_eq!(separar("\u{feff}---\r\na: 1\r\n---\r\nx"), Some(("a: 1\r\n", "x")));
-        assert_eq!(separar("sin cabecera"), None);
+        assert_eq!(split_front_matter("---\na: 1\n---\ncuerpo\n"), Some(("a: 1\n", "cuerpo\n")));
+        assert_eq!(split_front_matter("\u{feff}---\r\na: 1\r\n---\r\nx"), Some(("a: 1\r\n", "x")));
+        assert_eq!(split_front_matter("sin cabecera"), None);
     }
 
     /// A malicious header doesn't take the process down: neither by nesting endlessly (before, it overflowed the stack and
@@ -2723,23 +2723,23 @@ mod tests {
     fn malicious_yaml_errors_without_crashing() {
         // 200,000 `[` on one line.
         let deep = format!("x: {}{}", "[".repeat(200_000), "]".repeat(200_000));
-        assert!(yaml::leer(&deep).unwrap_err().contains("nested deeper"));
+        assert!(yaml::parse(&deep).unwrap_err().contains("nested deeper"));
         let deep = format!("x: {}1{}", "{a: ".repeat(100_000), "}".repeat(100_000));
-        assert!(yaml::leer(&deep).unwrap_err().contains("nested deeper"));
+        assert!(yaml::parse(&deep).unwrap_err().contains("nested deeper"));
         // Lists nested by indentation (`- - - … x`) and ever more indented maps.
         let lists = format!("x:\n  {}x\n", "- ".repeat(100_000));
-        assert!(yaml::leer(&lists).unwrap_err().contains("nested deeper"));
+        assert!(yaml::parse(&lists).unwrap_err().contains("nested deeper"));
         let mut maps = String::new();
         for i in 0..2_000 {
             maps += &format!("{}k{i}:\n", " ".repeat(i));
         }
-        assert!(yaml::leer(&maps).unwrap_err().contains("nested deeper"));
+        assert!(yaml::parse(&maps).unwrap_err().contains("nested deeper"));
         // The usual still works: 60 levels are fine.
-        assert!(yaml::leer(&format!("x: {}1{}", "[".repeat(60), "]".repeat(60))).is_ok());
+        assert!(yaml::parse(&format!("x: {}1{}", "[".repeat(60), "]".repeat(60))).is_ok());
         // A block with a line of non-ASCII spaces (`\u{a0}`) shorter than its indentation.
-        let m = yaml::leer("nota: |\n   uno\n  \u{a0}\n   dos\n").unwrap();
+        let m = yaml::parse("nota: |\n   uno\n  \u{a0}\n   dos\n").unwrap();
         assert_eq!(m["nota"], "uno\n\ndos\n");
-        let m = yaml::leer("nota: |\n  \u{a0}uno\n  dos\n").unwrap();
+        let m = yaml::parse("nota: |\n  \u{a0}uno\n  dos\n").unwrap();
         assert_eq!(m["nota"], "\u{a0}uno\ndos\n");
     }
 
@@ -2754,11 +2754,11 @@ mod tests {
         t += "  fin ]\n";
         assert!(t.len() > 900_000);
         let start = std::time::Instant::now();
-        let m = yaml::leer(&t).unwrap();
+        let m = yaml::parse(&t).unwrap();
         assert_eq!(m["tags"].as_array().unwrap().len(), 80_001);
         assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
         // What is split in the middle of quotes stays open on the next line.
-        let m = yaml::leer("x: [\"a,\n  b]\", c]\n").unwrap();
+        let m = yaml::parse("x: [\"a,\n  b]\", c]\n").unwrap();
         assert_eq!(m["x"], serde_json::json!(["a, b]", "c"]));
     }
 
@@ -2766,31 +2766,31 @@ mod tests {
     /// (in files or bytes) is rejected entirely with a clear error.
     #[test]
     fn bundle_index_and_limits() {
-        let t = crate::comun::Temporal::nueva("okf-topes");
+        let t = crate::common::TempDir::new("okf-topes");
         let root = t.join("b");
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("index.md"), format!("---\nokf_version: \"0.2\"\nx: [{}]\n---\n", "1, ".repeat(400_000))).unwrap();
         for i in 0..5 {
             std::fs::write(root.join("sub").join(format!("c{i}.md")), "---\ntype: Fact\n---\nA.\n").unwrap();
         }
-        let b = leer(&root).unwrap();
-        assert!(b.version.is_none() && b.avisos.iter().any(|a| a.contains("index.md") && a.contains("1 MB")), "{:?}", b.avisos);
-        assert_eq!(b.conceptos.len(), 5);
-        let e = format!("{}", read_with_limits(&root, &Topes { ficheros: 4, ..Topes::default() }).unwrap_err());
+        let b = read(&root).unwrap();
+        assert!(b.version.is_none() && b.warnings.iter().any(|a| a.contains("index.md") && a.contains("1 MB")), "{:?}", b.warnings);
+        assert_eq!(b.concepts.len(), 5);
+        let e = format!("{}", read_with_limits(&root, &Limits { files: 4, ..Limits::default() }).unwrap_err());
         assert!(e.contains("over 4 files and folders") && e.contains("nothing was imported"), "{e}");
-        let e = format!("{}", read_with_limits(&root, &Topes { bytes: 40, ..Topes::default() }).unwrap_err());
+        let e = format!("{}", read_with_limits(&root, &Limits { bytes: 40, ..Limits::default() }).unwrap_err());
         assert!(e.contains("MB of concepts"), "{e}");
         // The header limits: each one, all together and the values read.
-        let e = format!("{}", read_with_limits(&root, &Topes { cabeceras: 40, ..Topes::default() }).unwrap_err());
+        let e = format!("{}", read_with_limits(&root, &Limits { headers: 40, ..Limits::default() }).unwrap_err());
         assert!(e.contains("MB of YAML headers") && e.contains("nothing was imported"), "{e}");
-        let e = format!("{}", read_with_limits(&root, &Topes { nodos: 3, ..Topes::default() }).unwrap_err());
+        let e = format!("{}", read_with_limits(&root, &Limits { nodes: 3, ..Limits::default() }).unwrap_err());
         assert!(e.contains("values in its YAML headers") && e.contains("nothing was imported"), "{e}");
         assert_eq!(MAX_BYTES, 50 << 20);
-        assert_eq!(MAX_CABECERA, 256 << 10);
+        assert_eq!(MAX_HEADER, 256 << 10);
         // A header over 256 KB (here, a `[…]` list of 300 KB): the bundle isn't valid, without parsing it.
         std::fs::write(root.join("sub").join("enorme.md"), format!("---\ntype: Fact\nx: [{}]\n---\nA.\n", "a, ".repeat(100_000))).unwrap();
         let start = std::time::Instant::now();
-        let e = format!("{:#}", leer(&root).unwrap_err());
+        let e = format!("{:#}", read(&root).unwrap_err());
         assert!(e.contains("sub/enorme.md") && e.contains("over 256 KB"), "{e}");
         assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
         std::fs::remove_file(root.join("sub").join("enorme.md")).unwrap();
@@ -2804,8 +2804,8 @@ mod tests {
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&outside, root.join("index.md")).is_ok();
         if linked {
-            let b = leer(&root).unwrap();
-            assert!(b.version.is_none() && b.avisos.iter().any(|a| a.contains("index.md") && a.contains("symbolic link")), "{:?}", b.avisos);
+            let b = read(&root).unwrap();
+            assert!(b.version.is_none() && b.warnings.iter().any(|a| a.contains("index.md") && a.contains("symbolic link")), "{:?}", b.warnings);
         }
     }
 }

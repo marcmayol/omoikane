@@ -6,17 +6,17 @@
 //! `a` switches between this project and all those visible from here, `e` filters by space, `t` opens the
 //! trash (restore, delete for good, empty) and `q` quits.
 //!
-//! **Who sees what**: the same as the web view (`http::Mirador`), because it looks through it. From a
+//! **Who sees what**: the same as the web view (`http::Viewpoint`), because it looks through it. From a
 //! project in a space, "all" is that whole space plus global; from a project without a space, the
 //! projects without a space plus global; from the user's folder, everything. The trash, the space
 //! filter and what gets restored or deleted for good follow the same rule: another client's memories
 //! don't show up, and aren't touched even if you have their id.
 
-use crate::buscar::{self, SearchOptions};
-use crate::embeber::Model;
-use crate::http::Mirador;
-use crate::memoria::{self, Scope, Changes, Memory, Forgotten, Version};
-use crate::proyecto::Space;
+use crate::search::{self, SearchOptions};
+use crate::embed::Model;
+use crate::http::Viewpoint;
+use crate::memory::{self, Scope, Changes, Memory, Forgotten, Version};
+use crate::project::Space;
 use crate::tr;
 use anyhow::Result;
 use ratatui::Frame;
@@ -32,150 +32,150 @@ const LIMIT: usize = 200;
 const TWO_COLUMN_WIDTH: u16 = 70;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Vista {
-    Lista,
-    Buscando,
-    Entera,
-    Historial,
-    Borrar,
+pub enum View {
+    List,
+    Searching,
+    Full,
+    History,
+    Delete,
     /// The forgotten memories visible from here.
-    Papelera,
+    Trash,
     /// Confirm deleting the selected trash item for good.
-    PapeleraBorrar,
+    TrashDelete,
     /// Confirm emptying the trash (what is visible from here).
-    PapeleraVaciar,
+    TrashEmpty,
 }
 
 /// A memory in the trash and how many days it has been there.
 #[derive(Debug, Clone)]
-pub struct EnPapelera {
-    pub olvidada: Forgotten,
-    pub dias: f64,
+pub struct TrashItem {
+    pub forgotten: Forgotten,
+    pub days: f64,
 }
 
-pub struct Estado {
-    pub proyecto: String,
-    pub todos: bool,
+pub struct State {
+    pub project: String,
+    pub all: bool,
     /// Space filter: `None`, no filter; `Some(None)`, projects without a space; `Some(Some(id))`,
     /// that space. Global memories are always shown, as on the web. Only one visible from here is valid.
-    pub espacio: Option<Option<i64>>,
+    pub space: Option<Option<i64>>,
     /// The spaces visible from here (for the filter and the names).
-    pub espacios: Vec<Space>,
+    pub spaces: Vec<Space>,
     /// Whether it's looking from the user's folder (everything is visible).
-    pub ve_todo: bool,
+    pub sees_all: bool,
     /// The space key of the project being looked from (empty: none, or everything).
-    pub espacio_propio: String,
-    pub consulta: String,
-    pub memorias: Vec<Memory>,
-    pub lista: ListState,
-    pub vista: Vista,
-    pub desplazamiento: u16,
-    pub historial: Vec<Version>,
-    pub papelera: Vec<EnPapelera>,
-    pub lista_papelera: ListState,
-    pub aviso: String,
-    pub salir: bool,
+    pub own_space: String,
+    pub query: String,
+    pub memories: Vec<Memory>,
+    pub list: ListState,
+    pub view: View,
+    pub scroll: u16,
+    pub history: Vec<Version>,
+    pub trash: Vec<TrashItem>,
+    pub trash_list: ListState,
+    pub notice: String,
+    pub quit: bool,
 }
 
-impl Estado {
-    pub fn nuevo(project: String) -> Estado {
-        Estado {
-            proyecto: project,
-            todos: false,
-            espacio: None,
-            espacios: Vec::new(),
-            ve_todo: false,
-            espacio_propio: String::new(),
-            consulta: String::new(),
-            memorias: Vec::new(),
-            lista: ListState::default(),
-            vista: Vista::Lista,
-            desplazamiento: 0,
-            historial: Vec::new(),
-            papelera: Vec::new(),
-            lista_papelera: ListState::default(),
-            aviso: String::new(),
-            salir: false,
+impl State {
+    pub fn new(project: String) -> State {
+        State {
+            project,
+            all: false,
+            space: None,
+            spaces: Vec::new(),
+            sees_all: false,
+            own_space: String::new(),
+            query: String::new(),
+            memories: Vec::new(),
+            list: ListState::default(),
+            view: View::List,
+            scroll: 0,
+            history: Vec::new(),
+            trash: Vec::new(),
+            trash_list: ListState::default(),
+            notice: String::new(),
+            quit: false,
         }
     }
 
     /// Where it's looking from: like the web, worked out each time (a project can change space
     /// while the TUI is open, through sync).
-    fn viewpoint(&self, db: &Connection) -> Result<Mirador> {
-        Mirador::nuevo(db, None, self.proyecto.clone())
+    fn viewpoint(&self, db: &Connection) -> Result<Viewpoint> {
+        Viewpoint::new(db, None, self.project.clone())
     }
 
     /// What the list shows: the space filter if there is one (and it's visible from here), otherwise "all" (the
     /// wide scope from here: its space, never everything from a project) or this project.
-    pub fn ambito(&self, db: &Connection) -> Result<Scope> {
+    pub fn scope(&self, db: &Connection) -> Result<Scope> {
         let m = self.viewpoint(db)?;
-        if let Some(f) = self.espacio {
+        if let Some(f) = self.space {
             let a = Scope::Space(f);
-            if m.abarca(&a) {
+            if m.covers(&a) {
                 return Ok(a);
             }
         }
-        Ok(if self.todos { m.vista } else { m.base })
+        Ok(if self.all { m.view } else { m.base })
     }
 
     /// The space filters that can be picked from here: the visible spaces and, if visible,
     /// the projects without a space.
-    pub fn filtros(&self, db: &Connection) -> Result<Vec<Option<i64>>> {
+    pub fn space_filters(&self, db: &Connection) -> Result<Vec<Option<i64>>> {
         let m = self.viewpoint(db)?;
-        let mut v: Vec<Option<i64>> = self.espacios.iter().map(|e| Some(e.id)).collect();
+        let mut v: Vec<Option<i64>> = self.spaces.iter().map(|e| Some(e.id)).collect();
         v.push(None);
-        Ok(v.into_iter().filter(|f| m.abarca(&Scope::Space(*f))).collect())
+        Ok(v.into_iter().filter(|f| m.covers(&Scope::Space(*f))).collect())
     }
 
-    pub fn elegida(&self) -> Option<&Memory> {
-        self.lista.selected().and_then(|i| self.memorias.get(i))
+    pub fn selected(&self) -> Option<&Memory> {
+        self.list.selected().and_then(|i| self.memories.get(i))
     }
 
-    pub fn elegida_papelera(&self) -> Option<&EnPapelera> {
-        self.lista_papelera.selected().and_then(|i| self.papelera.get(i))
+    pub fn selected_trash(&self) -> Option<&TrashItem> {
+        self.trash_list.selected().and_then(|i| self.trash.get(i))
     }
 
     /// A space's name from its key (the key if unknown).
-    pub fn nombre_espacio(&self, key: &str) -> String {
-        self.espacios.iter().find(|e| e.key == key).map(|e| e.name.clone()).unwrap_or_else(|| key.to_string())
+    pub fn space_name(&self, key: &str) -> String {
+        self.spaces.iter().find(|e| e.key == key).map(|e| e.name.clone()).unwrap_or_else(|| key.to_string())
     }
 
     /// Reloads the list (recent or search) and the trash, keeping the selection if it's still there.
-    pub fn cargar(&mut self, db: &mut Connection, model: Option<&Model>) -> Result<()> {
+    pub fn load(&mut self, db: &mut Connection, model: Option<&Model>) -> Result<()> {
         let m = self.viewpoint(db)?;
-        self.ve_todo = m.todo;
-        self.espacio_propio = m.espacio.clone();
-        self.espacios = crate::proyecto::spaces(db)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect();
-        if let Some(f) = self.espacio
-            && !m.abarca(&Scope::Space(f))
+        self.sees_all = m.sees_all;
+        self.own_space = m.space.clone();
+        self.spaces = crate::project::spaces(db)?.into_iter().filter(|e| m.sees_space(&e.key, false)).collect();
+        if let Some(f) = self.space
+            && !m.covers(&Scope::Space(f))
         {
-            self.espacio = None;
+            self.space = None;
         }
-        let scope = self.ambito(db)?;
-        let before = self.elegida().map(|m| m.id.clone());
-        self.memorias = if self.consulta.trim().is_empty() {
-            memoria::recent(db, &scope, None, LIMIT)?
+        let scope = self.scope(db)?;
+        let before = self.selected().map(|m| m.id.clone());
+        self.memories = if self.query.trim().is_empty() {
+            memory::recent(db, &scope, None, LIMIT)?
         } else {
             let o = SearchOptions { scope, kind: None, tags: vec![], limit: 50 };
-            buscar::search_without_recording_with(db, &self.consulta, &o, model)?.into_iter().map(|r| r.memory).collect()
+            search::search_without_recording_with(db, &self.query, &o, model)?.into_iter().map(|r| r.memory).collect()
         };
-        let i = before.and_then(|id| self.memorias.iter().position(|m| m.id == id)).unwrap_or(0);
-        self.lista.select((!self.memorias.is_empty()).then_some(i));
+        let i = before.and_then(|id| self.memories.iter().position(|m| m.id == id)).unwrap_or(0);
+        self.list.select((!self.memories.is_empty()).then_some(i));
         self.load_trash(db, &m)
     }
 
     /// The trash as the web sees it (`GET /api/trash`): what is visible from here and, with a space
     /// filter, only that space's memories plus global.
-    fn load_trash(&mut self, db: &Connection, m: &Mirador) -> Result<()> {
-        let before = self.elegida_papelera().map(|o| o.olvidada.id.clone());
-        let space_filter = match self.espacio {
-            Some(f) => Some(crate::proyecto::space_key(db, f)?),
+    fn load_trash(&mut self, db: &Connection, m: &Viewpoint) -> Result<()> {
+        let before = self.selected_trash().map(|o| o.forgotten.id.clone());
+        let space_filter = match self.space {
+            Some(f) => Some(crate::project::space_key(db, f)?),
             None => None,
         };
         let mut days_since = db.prepare("SELECT julianday('now') - julianday(?1)")?;
         let mut v = Vec::new();
-        for o in memoria::trash(db)? {
-            if !m.ve(db, &o.id)? {
+        for o in memory::trash(db)? {
+            if !m.sees(db, &o.id)? {
                 continue;
             }
             if let Some(key) = &space_filter {
@@ -185,30 +185,30 @@ impl Estado {
                 }
             }
             let d: Option<f64> = days_since.query_row([&o.deleted_at], |f| f.get(0))?;
-            v.push(EnPapelera { olvidada: o, dias: d.unwrap_or(0.0).max(0.0) });
+            v.push(TrashItem { forgotten: o, days: d.unwrap_or(0.0).max(0.0) });
         }
-        self.papelera = v;
-        let i = before.and_then(|id| self.papelera.iter().position(|o| o.olvidada.id == id)).unwrap_or(0);
-        self.lista_papelera.select((!self.papelera.is_empty()).then_some(i));
+        self.trash = v;
+        let i = before.and_then(|id| self.trash.iter().position(|o| o.forgotten.id == id)).unwrap_or(0);
+        self.trash_list.select((!self.trash.is_empty()).then_some(i));
         Ok(())
     }
 
     /// Restores memory `id` (full) from the trash, if visible from here: the same as
     /// `POST /api/restore` and `omoi restore`. The outcome goes in the notice.
-    pub fn restaurar(&mut self, db: &mut Connection, id: &str, model: Option<&Model>) -> Result<bool> {
-        if !self.viewpoint(db)?.ve(db, id)? {
-            self.aviso = out_of_scope();
+    pub fn restore(&mut self, db: &mut Connection, id: &str, model: Option<&Model>) -> Result<bool> {
+        if !self.viewpoint(db)?.sees(db, id)? {
+            self.notice = out_of_scope();
             return Ok(false);
         }
-        let before = crate::revisar::before(db)?;
-        match memoria::restore(db, id, model) {
+        let before = crate::review::before(db)?;
+        match memory::restore(db, id, model) {
             Ok(r) => {
-                crate::revisar::refresh_for(db, &before, std::slice::from_ref(&r.id))?;
-                self.aviso = tr!("restored: {}", "recuperada: {}", r.title);
+                crate::review::refresh_for(db, &before, std::slice::from_ref(&r.id))?;
+                self.notice = tr!("restored: {}", "recuperada: {}", r.title);
                 Ok(true)
             }
             Err(e) => {
-                self.aviso = format!("{e:#}");
+                self.notice = format!("{e:#}");
                 Ok(false)
             }
         }
@@ -216,164 +216,164 @@ impl Estado {
 
     /// Deletes for good from the trash the memories `ids` (full) that are visible from here; the rest are
     /// left alone. Returns how many.
-    pub fn borrar_de_papelera(&mut self, db: &mut Connection, ids: &[String]) -> Result<usize> {
+    pub fn delete_from_trash(&mut self, db: &mut Connection, ids: &[String]) -> Result<usize> {
         let m = self.viewpoint(db)?;
         let mut visible = Vec::new();
         for id in ids {
-            if m.ve(db, id)? {
+            if m.sees(db, id)? {
                 visible.push(id.clone());
             }
         }
         if visible.len() < ids.len() {
-            self.aviso = out_of_scope();
+            self.notice = out_of_scope();
         }
-        memoria::empty_trash_of(db, &visible)
+        memory::empty_trash_of(db, &visible)
     }
 
     /// Empties the visible part of the trash. From the user's folder and with no filter, the whole trash
     /// (like `omoi trash --empty`); from a project or with a filter, only what it shows.
-    pub fn vaciar_papelera(&mut self, db: &mut Connection) -> Result<usize> {
-        if self.viewpoint(db)?.todo && self.espacio.is_none() {
-            return memoria::empty_trash(db);
+    pub fn empty_trash(&mut self, db: &mut Connection) -> Result<usize> {
+        if self.viewpoint(db)?.sees_all && self.space.is_none() {
+            return memory::empty_trash(db);
         }
-        let ids: Vec<String> = self.papelera.iter().map(|o| o.olvidada.id.clone()).collect();
-        self.borrar_de_papelera(db, &ids)
+        let ids: Vec<String> = self.trash.iter().map(|o| o.forgotten.id.clone()).collect();
+        self.delete_from_trash(db, &ids)
     }
 
     /// One key press. Returns whether the list must be reloaded.
-    pub fn tecla(&mut self, k: KeyEvent, db: &mut Connection, model: Option<&Model>) -> Result<bool> {
+    pub fn key(&mut self, k: KeyEvent, db: &mut Connection, model: Option<&Model>) -> Result<bool> {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-            self.salir = true;
+            self.quit = true;
             return Ok(false);
         }
         let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('s'));
-        match self.vista {
-            Vista::Buscando => match k.code {
+        match self.view {
+            View::Searching => match k.code {
                 KeyCode::Esc => {
-                    self.consulta.clear();
-                    self.vista = Vista::Lista;
+                    self.query.clear();
+                    self.view = View::List;
                     return Ok(true);
                 }
-                KeyCode::Enter | KeyCode::Down => self.vista = Vista::Lista,
+                KeyCode::Enter | KeyCode::Down => self.view = View::List,
                 KeyCode::Backspace => {
-                    self.consulta.pop();
+                    self.query.pop();
                     return Ok(true);
                 }
                 KeyCode::Char(c) => {
-                    self.consulta.push(c);
+                    self.query.push(c);
                     return Ok(true);
                 }
                 _ => {}
             },
-            Vista::Borrar => {
-                if yes && let Some(m) = self.elegida().cloned() {
-                    let before = crate::revisar::before(db)?;
-                    memoria::forget(db, &m.id)?;
-                    crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
-                    self.aviso = tr!("forgotten: {} (t: trash)", "olvidada: {} (t: papelera)", m.title);
-                    self.vista = Vista::Lista;
+            View::Delete => {
+                if yes && let Some(m) = self.selected().cloned() {
+                    let before = crate::review::before(db)?;
+                    memory::forget(db, &m.id)?;
+                    crate::review::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
+                    self.notice = tr!("forgotten: {} (t: trash)", "olvidada: {} (t: papelera)", m.title);
+                    self.view = View::List;
                     return Ok(true);
                 }
-                self.vista = Vista::Lista;
+                self.view = View::List;
             }
-            Vista::PapeleraBorrar => {
-                self.vista = Vista::Papelera;
-                if yes && let Some(o) = self.elegida_papelera().cloned() {
-                    if self.borrar_de_papelera(db, std::slice::from_ref(&o.olvidada.id))? > 0 {
-                        self.aviso = tr!("deleted for good: {}", "borrada del todo: {}", o.olvidada.title);
+            View::TrashDelete => {
+                self.view = View::Trash;
+                if yes && let Some(o) = self.selected_trash().cloned() {
+                    if self.delete_from_trash(db, std::slice::from_ref(&o.forgotten.id))? > 0 {
+                        self.notice = tr!("deleted for good: {}", "borrada del todo: {}", o.forgotten.title);
                     }
                     return Ok(true);
                 }
             }
-            Vista::PapeleraVaciar => {
-                self.vista = Vista::Papelera;
+            View::TrashEmpty => {
+                self.view = View::Trash;
                 if yes {
-                    let n = self.vaciar_papelera(db)?;
-                    self.aviso = tr!("trash emptied: {n} deleted for good", "papelera vaciada: {n} borradas del todo");
+                    let n = self.empty_trash(db)?;
+                    self.notice = tr!("trash emptied: {n} deleted for good", "papelera vaciada: {n} borradas del todo");
                     return Ok(true);
                 }
             }
-            Vista::Papelera => match k.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') | KeyCode::Left => self.vista = Vista::Lista,
-                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.lista_papelera, self.papelera.len(), 1),
-                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.lista_papelera, self.papelera.len(), -1),
-                KeyCode::PageDown => move_selection(&mut self.lista_papelera, self.papelera.len(), 15),
-                KeyCode::PageUp => move_selection(&mut self.lista_papelera, self.papelera.len(), -15),
+            View::Trash => match k.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') | KeyCode::Left => self.view = View::List,
+                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.trash_list, self.trash.len(), 1),
+                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.trash_list, self.trash.len(), -1),
+                KeyCode::PageDown => move_selection(&mut self.trash_list, self.trash.len(), 15),
+                KeyCode::PageUp => move_selection(&mut self.trash_list, self.trash.len(), -15),
                 KeyCode::Enter | KeyCode::Char('r') => {
-                    if let Some(o) = self.elegida_papelera().cloned() {
-                        return self.restaurar(db, &o.olvidada.id, model);
+                    if let Some(o) = self.selected_trash().cloned() {
+                        return self.restore(db, &o.forgotten.id, model);
                     }
                 }
-                KeyCode::Char('x') | KeyCode::Delete if self.elegida_papelera().is_some() => self.vista = Vista::PapeleraBorrar,
-                KeyCode::Char('E') if !self.papelera.is_empty() => self.vista = Vista::PapeleraVaciar,
+                KeyCode::Char('x') | KeyCode::Delete if self.selected_trash().is_some() => self.view = View::TrashDelete,
+                KeyCode::Char('E') if !self.trash.is_empty() => self.view = View::TrashEmpty,
                 _ => {}
             },
-            Vista::Entera | Vista::Historial => match k.code {
+            View::Full | View::History => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Left => {
-                    self.vista = Vista::Lista;
-                    self.desplazamiento = 0;
+                    self.view = View::List;
+                    self.scroll = 0;
                 }
-                KeyCode::Down | KeyCode::Char('j') => self.desplazamiento = self.desplazamiento.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => self.desplazamiento = self.desplazamiento.saturating_sub(1),
-                KeyCode::PageDown => self.desplazamiento = self.desplazamiento.saturating_add(15),
-                KeyCode::PageUp => self.desplazamiento = self.desplazamiento.saturating_sub(15),
+                KeyCode::Down | KeyCode::Char('j') => self.scroll = self.scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
+                KeyCode::PageDown => self.scroll = self.scroll.saturating_add(15),
+                KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(15),
                 _ => {}
             },
-            Vista::Lista => match k.code {
-                KeyCode::Char('q') | KeyCode::Esc => self.salir = true,
-                KeyCode::Char('/') => self.vista = Vista::Buscando,
-                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.lista, self.memorias.len(), 1),
-                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.lista, self.memorias.len(), -1),
-                KeyCode::PageDown => move_selection(&mut self.lista, self.memorias.len(), 15),
-                KeyCode::PageUp => move_selection(&mut self.lista, self.memorias.len(), -15),
+            View::List => match k.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+                KeyCode::Char('/') => self.view = View::Searching,
+                KeyCode::Down | KeyCode::Char('j') => move_selection(&mut self.list, self.memories.len(), 1),
+                KeyCode::Up | KeyCode::Char('k') => move_selection(&mut self.list, self.memories.len(), -1),
+                KeyCode::PageDown => move_selection(&mut self.list, self.memories.len(), 15),
+                KeyCode::PageUp => move_selection(&mut self.list, self.memories.len(), -15),
                 KeyCode::Enter | KeyCode::Right => {
-                    if self.elegida().is_some() {
-                        self.vista = Vista::Entera;
-                        self.desplazamiento = 0;
+                    if self.selected().is_some() {
+                        self.view = View::Full;
+                        self.scroll = 0;
                     }
                 }
                 KeyCode::Char('h') => {
-                    if let Some(m) = self.elegida() {
+                    if let Some(m) = self.selected() {
                         // Like `omoi history`: through the folder's scope, which never shows another client's memories.
-                        self.historial = memoria::history_in(db, &self.viewpoint(db)?.base, &m.id)?;
-                        self.vista = Vista::Historial;
-                        self.desplazamiento = 0;
+                        self.history = memory::history_in(db, &self.viewpoint(db)?.base, &m.id)?;
+                        self.view = View::History;
+                        self.scroll = 0;
                     }
                 }
                 KeyCode::Char('p') => {
-                    if let Some(m) = self.elegida().cloned() {
+                    if let Some(m) = self.selected().cloned() {
                         let c = Changes { pinned: Some(!m.pinned), reason: Some("pinned from omoi tui".into()), ..Default::default() };
-                        let before = crate::revisar::before(db)?;
-                        memoria::update(db, &m.id, c, None)?;
-                        crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
-                        self.aviso = if m.pinned { tr!("unpinned", "soltada") } else { tr!("pinned", "fijada") };
+                        let before = crate::review::before(db)?;
+                        memory::update(db, &m.id, c, None)?;
+                        crate::review::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
+                        self.notice = if m.pinned { tr!("unpinned", "soltada") } else { tr!("pinned", "fijada") };
                         return Ok(true);
                     }
                 }
                 KeyCode::Char('d') => {
-                    if self.elegida().is_some() {
-                        self.vista = Vista::Borrar;
+                    if self.selected().is_some() {
+                        self.view = View::Delete;
                     }
                 }
                 KeyCode::Char('a') => {
-                    self.todos = !self.todos;
-                    self.espacio = None;
+                    self.all = !self.all;
+                    self.space = None;
                     return Ok(true);
                 }
                 KeyCode::Char('e') => {
                     // No filter → each visible space → projects without a space → no filter.
-                    let filters = self.filtros(db)?;
-                    self.espacio = match self.espacio.and_then(|f| filters.iter().position(|x| *x == f)) {
+                    let filters = self.space_filters(db)?;
+                    self.space = match self.space.and_then(|f| filters.iter().position(|x| *x == f)) {
                         None => filters.first().copied(),
                         Some(i) => filters.get(i + 1).copied(),
                     };
-                    if self.espacio.is_none() && filters.is_empty() {
-                        self.aviso = tr!("no spaces to filter by from here", "desde aquí no hay espacios por los que filtrar");
+                    if self.space.is_none() && filters.is_empty() {
+                        self.notice = tr!("no spaces to filter by from here", "desde aquí no hay espacios por los que filtrar");
                     }
                     return Ok(true);
                 }
                 KeyCode::Char('t') => {
-                    self.vista = Vista::Papelera;
+                    self.view = View::Trash;
                     return Ok(true);
                 }
                 _ => {}
@@ -384,22 +384,22 @@ impl Estado {
 
     /// What is shown, in a few words, for the title.
     fn scope_text(&self) -> String {
-        match self.espacio {
+        match self.space {
             Some(Some(id)) => {
-                let name = self.espacios.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_default();
+                let name = self.spaces.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or_default();
                 tr!("space {} + global", "espacio {} + globales", name)
             }
             Some(None) => tr!("projects without a space + global", "proyectos sin espacio + globales"),
-            None if !self.todos => tr!("this project + global", "este proyecto + globales"),
-            None if self.ve_todo => tr!("all projects", "todos los proyectos"),
-            None if self.espacio_propio.is_empty() => tr!("projects without a space + global", "proyectos sin espacio + globales"),
-            None => tr!("space {} + global", "espacio {} + globales", self.nombre_espacio(&self.espacio_propio)),
+            None if !self.all => tr!("this project + global", "este proyecto + globales"),
+            None if self.sees_all => tr!("all projects", "todos los proyectos"),
+            None if self.own_space.is_empty() => tr!("projects without a space + global", "proyectos sin espacio + globales"),
+            None => tr!("space {} + global", "espacio {} + globales", self.space_name(&self.own_space)),
         }
     }
 
     /// Whether the list mixes spaces (or global with a space) and should show each one's space.
     fn mixes_spaces(&self) -> bool {
-        self.todos || self.espacio.is_some()
+        self.all || self.space.is_some()
     }
 
     /// A memory's (or forgotten memory's) space, short, for the list column.
@@ -407,14 +407,14 @@ impl Estado {
         if space.is_empty() {
             return if project.is_empty() { tr!("global", "global") } else { "-".to_string() };
         }
-        let n = self.nombre_espacio(space);
+        let n = self.space_name(space);
         if space_level { format!("◇{n}") } else { n }
     }
 
     /// Says where a memory lives: the project with its space, the space, or global.
     fn location(&self, project: &str, space: &str, space_level: bool) -> String {
         if space_level {
-            return tr!("space {}", "espacio {}", self.nombre_espacio(space));
+            return tr!("space {}", "espacio {}", self.space_name(space));
         }
         if project.is_empty() {
             return tr!("global", "global");
@@ -423,7 +423,7 @@ impl Estado {
         if space.is_empty() {
             tr!("{} · no space", "{} · sin espacio", short)
         } else {
-            tr!("{} · space {}", "{} · espacio {}", short, self.nombre_espacio(space))
+            tr!("{} · space {}", "{} · espacio {}", short, self.space_name(space))
         }
     }
 }
@@ -448,42 +448,42 @@ fn column(text: &str, width: usize) -> String {
     format!("{text:<width$.width$} ")
 }
 
-pub fn dibujar(f: &mut Frame, e: &mut Estado) {
+pub fn draw(f: &mut Frame, e: &mut State) {
     let area = f.area();
     let help = help(e);
-    let line = if e.aviso.is_empty() { help } else { format!("{} · {help}", e.aviso) };
+    let line = if e.notice.is_empty() { help } else { format!("{} · {help}", e.notice) };
     // The help line, in as many rows as it needs (up to 3): it doesn't fit in one at 80 columns.
     let width = area.width.max(1) as usize;
     let footer_rows = (line.chars().count().div_ceil(width) as u16).clamp(1, 3);
     let [top, middle, bottom] = Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(footer_rows)]).areas(area);
 
-    let in_trash = matches!(e.vista, Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar);
+    let in_trash = matches!(e.view, View::Trash | View::TrashDelete | View::TrashEmpty);
     let title = if in_trash {
-        let days = memoria::trash_days();
+        let days = memory::trash_days();
         let kept = if days > 0.0 { tr!("kept {} days", "se guarda {} días", days) } else { tr!("kept until emptied", "se guarda hasta vaciarla") };
-        format!(" {} · {} · {} · {kept} ", tr!("trash", "papelera"), e.scope_text(), e.papelera.len())
+        format!(" {} · {} · {} · {kept} ", tr!("trash", "papelera"), e.scope_text(), e.trash.len())
     } else {
-        format!(" {} · {} · {} ", tr!("search", "buscar"), e.scope_text(), e.memorias.len())
+        format!(" {} · {} · {} ", tr!("search", "buscar"), e.scope_text(), e.memories.len())
     };
-    let cursor = if e.vista == Vista::Buscando { "▏" } else { "" };
-    let search_box = Block::default().borders(Borders::ALL).title(title).border_style(if e.vista == Vista::Buscando {
+    let cursor = if e.view == View::Searching { "▏" } else { "" };
+    let search_box = Block::default().borders(Borders::ALL).title(title).border_style(if e.view == View::Searching {
         Style::default().bold()
     } else {
         Style::default()
     });
-    f.render_widget(Paragraph::new(format!("{}{cursor}", e.consulta)).block(search_box), top);
+    f.render_widget(Paragraph::new(format!("{}{cursor}", e.query)).block(search_box), top);
 
-    match e.vista {
-        Vista::Entera => draw_full(f, e, middle),
-        Vista::Historial => draw_history(f, e, middle),
-        Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar => draw_trash(f, e, middle),
+    match e.view {
+        View::Full => draw_full(f, e, middle),
+        View::History => draw_history(f, e, middle),
+        View::Trash | View::TrashDelete | View::TrashEmpty => draw_trash(f, e, middle),
         _ => {
             let (left, right) = split_area(middle);
             let inner = left.width.saturating_sub(2) as usize;
             let with_kind = inner >= 40;
             let with_space = e.mixes_spaces() && inner >= 30;
             let items: Vec<ListItem> = e
-                .memorias
+                .memories
                 .iter()
                 .map(|m| {
                     let marker = if m.pinned { "* " } else { "  " };
@@ -501,9 +501,9 @@ pub fn dibujar(f: &mut Frame, e: &mut Estado) {
             let list = List::new(items)
                 .block(Block::default().borders(Borders::ALL).title(tr!(" memories ", " memorias ")))
                 .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-            f.render_stateful_widget(list, left, &mut e.lista);
+            f.render_stateful_widget(list, left, &mut e.list);
             if let Some(right) = right {
-                let detail = e.elegida().map(|m| detail_lines(e, m)).unwrap_or_default();
+                let detail = e.selected().map(|m| detail_lines(e, m)).unwrap_or_default();
                 f.render_widget(Paragraph::new(detail).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL)), right);
             }
         }
@@ -526,26 +526,26 @@ fn split_area(area: Rect) -> (Rect, Option<Rect>) {
     }
 }
 
-fn help(e: &Estado) -> String {
-    match e.vista {
-        Vista::Buscando => tr!("type to search · Enter: to the list · Esc: clear", "escribe para buscar · Intro: a la lista · Esc: borrar"),
-        Vista::Borrar => tr!("forget this memory? It goes to the trash with its history · y / n", "¿olvidar esta memoria? Va a la papelera con su historial · s / n"),
-        Vista::Entera | Vista::Historial => tr!("↑↓ PgUp PgDn: scroll · Esc: back", "↑↓ RePág AvPág: desplazar · Esc: volver"),
-        Vista::Lista => tr!(
+fn help(e: &State) -> String {
+    match e.view {
+        View::Searching => tr!("type to search · Enter: to the list · Esc: clear", "escribe para buscar · Intro: a la lista · Esc: borrar"),
+        View::Delete => tr!("forget this memory? It goes to the trash with its history · y / n", "¿olvidar esta memoria? Va a la papelera con su historial · s / n"),
+        View::Full | View::History => tr!("↑↓ PgUp PgDn: scroll · Esc: back", "↑↓ RePág AvPág: desplazar · Esc: volver"),
+        View::List => tr!(
             "/ search · Enter open · h history · p pin · d forget · a all · e space · t trash · q quit",
             "/ buscar · Intro abrir · h historial · p fijar · d olvidar · a todos · e espacio · t papelera · q salir"
         ),
-        Vista::Papelera => tr!(
+        View::Trash => tr!(
             "Enter/r restore · x delete for good · E empty · Esc back",
             "Intro/r recuperar · x borrar del todo · E vaciar · Esc volver"
         ),
-        Vista::PapeleraBorrar => {
-            let t = e.elegida_papelera().map(|o| o.olvidada.title.clone()).unwrap_or_default();
+        View::TrashDelete => {
+            let t = e.selected_trash().map(|o| o.forgotten.title.clone()).unwrap_or_default();
             tr!("delete «{}» for good? It can't be undone · y / n", "¿borrar «{}» del todo? No se puede deshacer · s / n", t)
         }
-        Vista::PapeleraVaciar => {
-            let n = e.papelera.len();
-            if e.ve_todo && e.espacio.is_none() {
+        View::TrashEmpty => {
+            let n = e.trash.len();
+            if e.sees_all && e.space.is_none() {
                 tr!("empty the trash ({n} memories)? It can't be undone · y / n", "¿vaciar la papelera ({n} memorias)? No se puede deshacer · s / n")
             } else {
                 tr!(
@@ -558,7 +558,7 @@ fn help(e: &Estado) -> String {
 }
 
 /// The memory as text: title, metadata and content.
-fn detail_lines(e: &Estado, m: &Memory) -> Vec<Line<'static>> {
+fn detail_lines(e: &State, m: &Memory) -> Vec<Line<'static>> {
     let mut v = vec![Line::from(m.title.clone()).bold(), Line::raw("")];
     let location = e.location(&m.project, &m.space, m.space_only());
     v.push(Line::from(format!("{} · {location} · {}", m.kind.as_str(), &m.updated_at[..m.updated_at.len().min(10)])).dim());
@@ -576,18 +576,18 @@ fn detail_lines(e: &Estado, m: &Memory) -> Vec<Line<'static>> {
     v
 }
 
-fn draw_full(f: &mut Frame, e: &Estado, area: Rect) {
-    let Some(m) = e.elegida() else { return };
-    let p = Paragraph::new(detail_lines(e, m)).wrap(Wrap { trim: false }).scroll((e.desplazamiento, 0)).block(Block::default().borders(Borders::ALL));
+fn draw_full(f: &mut Frame, e: &State, area: Rect) {
+    let Some(m) = e.selected() else { return };
+    let p = Paragraph::new(detail_lines(e, m)).wrap(Wrap { trim: false }).scroll((e.scroll, 0)).block(Block::default().borders(Borders::ALL));
     f.render_widget(p, area);
 }
 
-fn draw_history(f: &mut Frame, e: &Estado, area: Rect) {
+fn draw_history(f: &mut Frame, e: &State, area: Rect) {
     let mut v: Vec<Line> = Vec::new();
-    if e.historial.is_empty() {
+    if e.history.is_empty() {
         v.push(Line::raw(tr!("No previous versions.", "Sin versiones anteriores.")));
     }
-    for h in &e.historial {
+    for h in &e.history {
         v.push(Line::from(format!("v{} · {} · {}", h.version, &h.changed_at[..h.changed_at.len().min(16)], h.reason.clone().unwrap_or_default())).bold());
         v.push(Line::raw(h.title.clone()));
         v.extend(h.content.lines().map(|l| Line::raw(l.to_string())));
@@ -595,21 +595,21 @@ fn draw_history(f: &mut Frame, e: &Estado, area: Rect) {
     }
     let p = Paragraph::new(v)
         .wrap(Wrap { trim: false })
-        .scroll((e.desplazamiento, 0))
+        .scroll((e.scroll, 0))
         .block(Block::default().borders(Borders::ALL).title(tr!(" history ", " historial ")));
     f.render_widget(p, area);
 }
 
-fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
+fn draw_trash(f: &mut Frame, e: &mut State, area: Rect) {
     let (left, right) = split_area(area);
     let inner = left.width.saturating_sub(2) as usize;
     let with_date = inner >= 34;
     let with_space = inner >= 30;
     let items: Vec<ListItem> = e
-        .papelera
+        .trash
         .iter()
         .map(|o| {
-            let o = &o.olvidada;
+            let o = &o.forgotten;
             let mut v = Vec::new();
             if with_date {
                 v.push(Span::styled(column(o.deleted_at.get(..10).unwrap_or(&o.deleted_at), 10), Style::default().add_modifier(Modifier::DIM)));
@@ -626,13 +626,13 @@ fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(tr!(" trash ", " papelera ")))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(list, left, &mut e.lista_papelera);
+    f.render_stateful_widget(list, left, &mut e.trash_list);
     let Some(right) = right else { return };
-    let detail: Vec<Line> = match e.elegida_papelera() {
+    let detail: Vec<Line> = match e.selected_trash() {
         None if empty => vec![Line::raw(tr!("The trash is empty.", "La papelera está vacía."))],
         None => Vec::new(),
         Some(p) => {
-            let o = &p.olvidada;
+            let o = &p.forgotten;
             let space_level = o.project.is_empty() && !o.space.is_empty();
             let mut v = vec![Line::from(o.title.clone()).bold(), Line::raw("")];
             v.push(Line::from(format!("{} · {}", o.kind.as_str(), e.location(&o.project, &o.space, space_level))).dim());
@@ -640,9 +640,9 @@ fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
                 v.push(Line::from(o.project.clone()).dim());
             }
             v.push(Line::from(tr!("forgotten {} on {}", "olvidada el {} en {}", o.deleted_at.get(..10).unwrap_or(&o.deleted_at), o.by)).dim());
-            let total = memoria::trash_days();
+            let total = memory::trash_days();
             if total > 0.0 {
-                let remaining = (total - p.dias).max(0.0).ceil() as i64;
+                let remaining = (total - p.days).max(0.0).ceil() as i64;
                 v.push(Line::from(tr!("deleted for good in {remaining} days", "se borra del todo en {remaining} días")).dim());
             }
             v.push(Line::from(format!("id {}", o.id)).dim());
@@ -653,20 +653,20 @@ fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
 }
 
 /// The terminal loop.
-pub fn ejecutar(db: &mut Connection, model: Option<&Model>, project: String, all: bool) -> Result<()> {
-    let mut e = Estado::nuevo(project);
-    e.todos = all;
-    e.cargar(db, model)?;
+pub fn run(db: &mut Connection, model: Option<&Model>, project: String, all: bool) -> Result<()> {
+    let mut e = State::new(project);
+    e.all = all;
+    e.load(db, model)?;
     let mut terminal = ratatui::init();
     let r = (|| -> Result<()> {
-        while !e.salir {
-            terminal.draw(|f| dibujar(f, &mut e))?;
+        while !e.quit {
+            terminal.draw(|f| draw(f, &mut e))?;
             if let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
             {
-                e.aviso.clear();
-                if e.tecla(k, db, model)? {
-                    e.cargar(db, model)?;
+                e.notice.clear();
+                if e.key(k, db, model)? {
+                    e.load(db, model)?;
                 }
             }
         }

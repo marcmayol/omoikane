@@ -23,7 +23,7 @@
 //!   <name>`), each with its key; `omoi sync` and the background sync go through all of them.
 //!   A space's memories (its projects and its own) go only to its repository; the general one carries what
 //!   belongs to no space (`goes_to_repo`).
-//! - **Who wins:** the highest logical clock stamp (`reloj`). The local version that loses stays
+//! - **Who wins:** the highest logical clock stamp (`clock`). The local version that loses stays
 //!   in the history with the reason `sync: <machine>`. Tombstones are applied before memories, so
 //!   what was forgotten doesn't come back; what another machine forgets is kept here separately (`omoi sync restore`).
 //! - **Projects at different paths:** they are recognized by git's `origin` remote (or, without a remote, by
@@ -43,9 +43,9 @@
 //! (`trabajo.sync.json`, `trabajo.sync-spaces/`…), so that two databases in the same folder don't
 //! share sync.
 
-use crate::embeber::Model;
-use crate::memoria::{self, COLUMNS, Changes, Memory, NCOL, NewMemory, Origin, Kind, from_row};
-use crate::{reloj, tr};
+use crate::embed::Model;
+use crate::memory::{self, COLUMNS, Changes, Memory, NCOL, NewMemory, Origin, Kind, from_row};
+use crate::{clock, tr};
 use aes_siv::KeyInit;
 use aes_siv::siv::Aes256Siv;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -165,7 +165,7 @@ pub fn spaces(db: &Path) -> Vec<String> {
 
 /// The repository of the space with this key on this machine, if it has one.
 pub fn space_repo(db: &Path, key: &str) -> Option<SyncPaths> {
-    spaces(db).into_iter().find(|e| crate::proyecto::space_key_from_name(e) == key).map(|e| paths_for(db, Some(&e)))
+    spaces(db).into_iter().find(|e| crate::project::space_key_from_name(e) == key).map(|e| paths_for(db, Some(&e)))
 }
 
 /// All the repositories configured on this machine: the general one (if it is) and one per space.
@@ -221,7 +221,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
     /// Another person's general repository (`join --another-person`, 1.8.6): that person also has its
-    /// key, so this person's seal key is not derived from it (`verificado::seal_keys`).
+    /// key, so this person's seal key is not derived from it (`verified::seal_keys`).
     /// Older `sync.json` files don't have it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub another_person: bool,
@@ -254,7 +254,7 @@ impl Config {
     fn shares(&self, m: &Memory) -> bool {
         // A trade memory (global with `trade:`) belongs to the person or the factory: it never goes through a
         // client's repository (being global it wouldn't anyway; this makes it explicit).
-        self.admits(m.kind_str(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::of_memory(m).is_empty())
+        self.admits(m.kind_str(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::trades::of_memory(m).is_empty())
     }
 }
 
@@ -266,7 +266,7 @@ impl Config {
 /// bring memories into other spaces or global ones.
 fn goes_to_repo(config: &Config, space: &str) -> bool {
     match &config.space {
-        Some(own) => !space.is_empty() && space == crate::proyecto::space_key_from_name(own),
+        Some(own) => !space.is_empty() && space == crate::project::space_key_from_name(own),
         None => space.is_empty() || config.spaces.as_ref().is_some_and(|s| s.iter().any(|k| k == space)),
     }
 }
@@ -402,7 +402,7 @@ pub(crate) struct Cipher {
 
 impl Cipher {
     /// The keys, from oldest to current (to derive from them the person's seal key:
-    /// `verificado::seal_keys`).
+    /// `verified::seal_keys`).
     pub(crate) fn in_order(&self) -> impl Iterator<Item = &Vec<u8>> {
         self.keys.values()
     }
@@ -707,7 +707,7 @@ pub(crate) struct MemoryBody {
     /// The previous versions (`omoi export` and, since 0.20.0, sync). Older versions
     /// ignore them; whatever already exists with that number stays.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub versions: Vec<crate::memoria::Version>,
+    pub versions: Vec<crate::memory::Version>,
     /// Fields from a newer version (`Extra`).
     #[serde(flatten)]
     pub extra: Extra,
@@ -716,11 +716,11 @@ pub(crate) struct MemoryBody {
 impl MemoryBody {
     /// A database memory as it travels: the project key comes from the `project` table (computed
     /// once), so it is the same through sync and through `omoi export`.
-    pub(crate) fn from_memory(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> MemoryBody {
+    pub(crate) fn from_memory(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memory::Version>, mut extra: Extra) -> MemoryBody {
         // The provenance, only what applies to where it is (a global one doesn't carry a client's branch).
         // (The trash one has no `project_id`: it counts as a project's if it has its key or its folder.)
         let in_project = m.project_id != 0 || !m.project_key.is_empty() || !m.project.is_empty();
-        crate::procedencia::trim_extra(&mut extra, i64::from(in_project), &m.tags);
+        crate::provenance::trim_extra(&mut extra, i64::from(in_project), &m.tags);
         MemoryBody {
             kind: m.kind_str().to_string(),
             id: m.id,
@@ -775,7 +775,7 @@ pub(crate) const TRASH_EXTRA: &str = "extra";
 pub(crate) const TRASH_LINE_EXTRA: &str = "extra_forgotten";
 
 /// The JSON stored in `forgotten.memory`: the usual `Memory` (what the trash and
-/// `restaurar` read) and, if there are any, the unknown fields.
+/// `restore` read) and, if there are any, the unknown fields.
 pub(crate) fn to_trash_json(m: &Memory, extra: &Extra, line_extra: &Extra) -> Result<String> {
     let mut v = serde_json::to_value(m)?;
     if !extra.is_empty() {
@@ -833,7 +833,7 @@ pub(crate) enum Line {
         #[serde(flatten)]
         extra: Extra,
     },
-    /// A verdict (`veredictos`), in the judged memory's folder. Versions before
+    /// A verdict (`verdicts`), in the judged memory's folder. Versions before
     /// 0.17.0 don't understand it and skip it; those before 0.19.0 ignore `reason` and `author`.
     Verdict {
         memory_id: String,
@@ -859,7 +859,7 @@ pub(crate) enum Line {
         #[serde(deserialize_with = "forgotten_body")]
         memory: MemoryBody,
         #[serde(default)]
-        versions: Vec<crate::memoria::Version>,
+        versions: Vec<crate::memory::Version>,
         hlc: String,
         deleted_at: String,
         #[serde(default)]
@@ -875,7 +875,7 @@ pub(crate) enum Line {
     ///
     /// It never changes the space of anything: whoever has a repository's key can write it (the
     /// person and the machine are in plain text). If it says a different space than the local one and is newer than what
-    /// this machine knew about the project, the project is paused (`proyecto::Pause`): nothing of it is pushed or
+    /// this machine knew about the project, the project is paused (`project::Pause`): nothing of it is pushed or
     /// accepted until the person decides here. The worst it can do is pause, never
     /// move a client's memories to another repository.
     Project {
@@ -964,7 +964,7 @@ impl Line {
     }
 
     /// A verdict as it travels, with its unknown fields.
-    pub(crate) fn verdict(v: crate::veredictos::Verdict, machine: &str) -> Line {
+    pub(crate) fn verdict(v: crate::verdicts::Verdict, machine: &str) -> Line {
         Line::Verdict {
             memory_id: v.memory_id,
             other_id: v.other_id,
@@ -981,15 +981,15 @@ impl Line {
     /// A memory in the trash as it goes in `omoi export`: `text` is what `forgotten.memory` stores.
     /// Without its project's key (forgotten before schema 10), it is looked up by its path in the
     /// `project` table. `None` if it isn't understood.
-    pub(crate) fn forgotten(db: &Connection, id: String, text: &str, versions: Vec<crate::memoria::Version>, hlc: String, deleted_at: String, by: String) -> Result<Option<Line>> {
+    pub(crate) fn forgotten(db: &Connection, id: String, text: &str, versions: Vec<crate::memory::Version>, hlc: String, deleted_at: String, by: String) -> Result<Option<Line>> {
         let Some((mut m, extra, line_extra)) = from_trash_json(text) else { return Ok(None) };
         if m.project_key.is_empty()
             && !m.project.is_empty()
-            && let Some((p, _)) = crate::proyecto::resolve(db, &m.project)?
+            && let Some((p, _)) = crate::project::resolve(db, &m.project)?
         {
-            m.project_key = crate::proyecto::key_of(db, p)?;
+            m.project_key = crate::project::key_of(db, p)?;
             if m.space.is_empty() {
-                m.space = crate::proyecto::space_key(db, crate::proyecto::space_of(db, p)?)?;
+                m.space = crate::project::space_key(db, crate::project::space_of(db, p)?)?;
             }
         }
         let content_hlc = if m.content_hlc.is_empty() { hlc.clone() } else { m.content_hlc.clone() };
@@ -1020,15 +1020,15 @@ pub fn project_key_for(project: &str, person: &str) -> String {
     let path = Path::new(project);
     // A worktree without `origin` takes its repository's name, not its folder's (1.8.0): so its
     // worktrees (and other machines') give the same key. Keys already stored don't change.
-    let name = crate::proyecto::worktree_name(path)
+    let name = crate::project::worktree_name(path)
         .unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_else(|| project.to_lowercase()));
     format!("dir:{person}/{name}")
 }
 
 /// The URL of the `origin` remote, reading `.git/config` (fast; in a worktree, the repository's).
 pub(crate) fn git_origin(root: &Path) -> Option<String> {
-    // Local, or on the network share of the folder being worked in (`proyecto::readable`).
-    if !crate::proyecto::readable(root) {
+    // Local, or on the network share of the folder being worked in (`project::readable`).
+    if !crate::project::readable(root) {
         return None;
     }
     let dot_git = root.join(".git");
@@ -1038,9 +1038,9 @@ pub(crate) fn git_origin(root: &Path) -> Option<String> {
         // Worktree: `.git` is a file «gitdir: <repo>/.git/worktrees/<name>» (never on another network
         // share).
         let t = std::fs::read_to_string(&dot_git).ok()?;
-        let gitdir = crate::proyecto::if_readable(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+        let gitdir = crate::project::if_readable(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
         let common_dir = std::fs::read_to_string(gitdir.join("commondir")).ok().map(|c| gitdir.join(c.trim())).unwrap_or(gitdir);
-        crate::proyecto::if_readable(common_dir)?.join("config")
+        crate::project::if_readable(common_dir)?.join("config")
     };
     let text = std::fs::read_to_string(config).ok()?;
     let mut in_origin = false;
@@ -1084,10 +1084,10 @@ pub fn person_slug(name: &str) -> String {
 /// local, without moving them (they go by the project id). Returns how many memories that project had if the
 /// folder wasn't recorded (0 if it already was or it is new).
 pub fn adopt(db: &Connection, project: &str) -> Result<usize> {
-    if project.is_empty() || crate::proyecto::is_general(project) || crate::proyecto::is_registered(db, project)? {
+    if project.is_empty() || crate::project::is_general(project) || crate::project::is_registered(db, project)? {
         return Ok(0);
     }
-    let id = crate::proyecto::register(db, project)?;
+    let id = crate::project::register(db, project)?;
     Ok(db.query_row("SELECT count(*) FROM memory WHERE project_id = ?1", [id], |f| f.get::<_, i64>(0))? as usize)
 }
 
@@ -1393,7 +1393,7 @@ pub(crate) fn all_memories(db: &Connection) -> Result<Vec<(Memory, String, Strin
 }
 
 /// A memory's line, for sync and `omoi export`.
-pub(crate) fn line_of(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Line {
+pub(crate) fn line_of(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memory::Version>, extra: Extra) -> Line {
     Line::Memory(MemoryBody::from_memory(m, hlc, content_hlc, machine, versions, extra))
 }
 
@@ -1422,10 +1422,10 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
     // The folder of each shared memory: its verdicts go with it.
     let mut folders: HashMap<String, String> = HashMap::new();
     // Everyone's history, in one query (one per memory was 50,000 with a large database).
-    let mut histories = crate::memoria::histories(db)?;
+    let mut histories = crate::memory::histories(db)?;
     // What a version before 1.8.0 moved from a client to a trade with its id doesn't carry its
     // history (it was the client's text). Since that now creates a new memory, none is recorded any more.
-    for id in crate::oficios::local_only_histories(db)? {
+    for id in crate::trades::local_only_histories(db)? {
         histories.remove(&id);
     }
     // A paused project's memories go to no repository until the person decides.
@@ -1451,9 +1451,9 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
         // Second layer: what was saved before 0.19.0 (or with `OMOIKANE_REDACT=0` at some other time)
         // doesn't leave the machine with its secret, neither in the memory nor in its versions. Here it stays as
         // it is, with its notice in Review.
-        let (m, versions) = if crate::secretos::enabled() {
-            let redact = |t: &str| crate::secretos::redact(t).0;
-            let versions = versions.into_iter().map(|v| crate::memoria::Version { title: redact(&v.title), content: redact(&v.content), ..v }).collect();
+        let (m, versions) = if crate::secrets::enabled() {
+            let redact = |t: &str| crate::secrets::redact(t).0;
+            let versions = versions.into_iter().map(|v| crate::memory::Version { title: redact(&v.title), content: redact(&v.content), ..v }).collect();
             (Memory { title: redact(&m.title), content: redact(&m.content), ..m }, versions)
         } else {
             (m, versions)
@@ -1462,7 +1462,7 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
         files.entry(folder).or_default().push(cipher.encrypt(&serde_json::to_string(&l)?)?);
         n += 1;
     }
-    for v in crate::veredictos::all(db)? {
+    for v in crate::verdicts::all(db)? {
         // Only if both memories travel: a verdict about something the other machine doesn't have is useless.
         let (Some(folder), true) = (folders.get(&v.memory_id), v.other_id.is_empty() || folders.contains_key(&v.other_id)) else {
             continue;
@@ -1610,7 +1610,7 @@ pub struct SyncSummary {
     /// client gets into another or changes space because of what arrives. They are not applied.
     #[serde(rename = "conflictos_de_espacio")]
     pub space_conflicts: usize,
-    /// Lines of memories of a project paused here (`proyecto::Pause`): they are not applied until the
+    /// Lines of memories of a project paused here (`project::Pause`): they are not applied until the
     /// person decides, and then they are reread.
     #[serde(rename = "en_pausa")]
     pub paused: usize,
@@ -1619,7 +1619,7 @@ pub struct SyncSummary {
     #[serde(rename = "sellos_ajenos")]
     pub foreign_seals: usize,
     /// Memories with a key (`--key`) that another machine also created without seeing it: they become superseded by
-    /// the one that rules (`memoria::resolve_repeated_keys`).
+    /// the one that rules (`memory::resolve_repeated_keys`).
     #[serde(rename = "duplicate_keys")]
     pub duplicate_keys: usize,
     /// Per file read in this pass (path inside the repository), how many bad lines it had.
@@ -1715,7 +1715,7 @@ pub fn dedup_clashes<'a>(clashes: impl IntoIterator<Item = &'a Clash>) -> Vec<Cl
 /// paused it says (always with `--force`: its repository would become that client's), or take it out of its own.
 /// If it isn't known which, with `<space>`. For the pause of a claimed folder (`claimed`), take it out of the
 /// space: it is personal.
-pub fn accept_command(p: &crate::proyecto::PausedProject) -> String {
+pub fn accept_command(p: &crate::project::PausedProject) -> String {
     let n = shell_arg(&p.name);
     match (p.pause.claimed, p.pause.unknown, p.pause.space.is_empty()) {
         (true, _, _) | (false, false, true) => format!("omoi space unassign {n} --force"),
@@ -1725,13 +1725,13 @@ pub fn accept_command(p: &crate::proyecto::PausedProject) -> String {
 }
 
 /// The command that leaves it where it is (`omoi projects keep`): the first one recommended.
-pub fn keep_command(p: &crate::proyecto::PausedProject) -> String {
+pub fn keep_command(p: &crate::project::PausedProject) -> String {
     format!("omoi projects keep {}", shell_arg(&p.name))
 }
 
 /// What is said about a paused project, with the two commands (`omoi sync`, `sync status`, `doctor`,
 /// `review` and Review).
-pub fn pause_text(db_path: &Path, p: &crate::proyecto::PausedProject) -> String {
+pub fn pause_text(db_path: &Path, p: &crate::project::PausedProject) -> String {
     let (n, m, accept, keep) = (&p.name, &p.pause.machine, accept_command(p), keep_command(p));
     let (here_en, here_es) = if p.here.is_empty() { ("in no space".to_string(), "en ninguno".to_string()) } else { (format!("in {}", p.here), format!("en {}", p.here)) };
     let e = &p.pause.space;
@@ -1770,7 +1770,7 @@ pub fn pause_text(db_path: &Path, p: &crate::proyecto::PausedProject) -> String 
 
 /// The notices for this database's paused projects.
 pub fn pause_notices(db: &Connection, db_path: &Path) -> Vec<String> {
-    crate::proyecto::paused_projects(db).unwrap_or_default().iter().map(|p| pause_text(db_path, p)).collect()
+    crate::project::paused_projects(db).unwrap_or_default().iter().map(|p| pause_text(db_path, p)).collect()
 }
 
 /// Whether a project has no memories.
@@ -1782,28 +1782,28 @@ fn has_no_memories(db: &Connection, project: i64) -> Result<bool> {
 /// is one of those from `OMOIKANE_SYNC_CODE`, that is, whether one of the keys this machine has for it
 /// is that of a code in the variable with that space, and the project key is a git remote's
 /// (`git:`; a `dir:` is only a folder name and doesn't say whose it is). The rest that is
-/// needed (that the `origin` of a local folder is that key) is checked by `proyecto::adopts_into`.
+/// needed (that the `origin` of a local folder is that key) is checked by `project::adopts_into`.
 pub(crate) fn adopts_from_env(db: &Connection, key: &str, space: &str) -> bool {
-    if !crate::entorno::unattended() || !key.starts_with("git:") || space.is_empty() {
+    if !crate::environment::unattended() || !key.starts_with("git:") || space.is_empty() {
         return false;
     }
-    let codes = crate::entorno::sync_codes();
+    let codes = crate::environment::sync_codes();
     if codes.is_empty() {
         return false;
     }
     let Some(r) = db.path().filter(|p| !p.is_empty()).and_then(|p| space_repo(Path::new(p), space)) else { return false };
     let Ok(cipher) = read_keys(&r) else { return false };
     codes.iter().filter_map(|k| parse_code(k).ok()).any(|c| {
-        c.space.as_deref().is_some_and(|e| crate::proyecto::space_key_from_name(e) == space) && cipher.keys.get(&c.id).is_some_and(|k| *k == c.key)
+        c.space.as_deref().is_some_and(|e| crate::project::space_key_from_name(e) == space) && cipher.keys.get(&c.id).is_some_and(|k| *k == c.key)
     })
 }
 
 /// For the agent, at session start: one line per paused project, with what it has to do.
 pub fn agent_pause_notice(db: &Connection) -> Option<String> {
-    let v = crate::proyecto::paused_projects(db).ok()?;
+    let v = crate::project::paused_projects(db).ok()?;
     // With nobody at the keyboard there is nobody to ask: it must run neither command (deciding
     // is a person's job) and know that what it saves there doesn't leave this machine.
-    let unattended = crate::entorno::unattended();
+    let unattended = crate::environment::unattended();
     let lines: Vec<String> = v
         .iter()
         .map(|p| {
@@ -1857,24 +1857,24 @@ impl SyncSummary {
 
 /// Whether the line of a memory arriving through a space's repository (shared with other
 /// people) carries a verified seal the local person didn't put. It is decided by the seal's signature
-/// with this person's seal key (`verificado::is_own_seal`; derived from their general repository,
+/// with this person's seal key (`verified::is_own_seal`; derived from their general repository,
 /// which nobody else has), never by its `by`: anyone sharing the space can write
 /// `"by": "<your name>"`. That seal doesn't count here: it is another person's trust. Through the general
 /// repository (the person's, across their machines) seals count, as always. Returns what
-/// identifies that seal (`by` and `at`, for [`crate::verificado::FOREIGN_SEAL_PREFIX`]).
+/// identifies that seal (`by` and `at`, for [`crate::verified::FOREIGN_SEAL_PREFIX`]).
 fn foreign_seal(db: &Connection, c: &Config, id: &str, extra: &Extra) -> Result<Option<String>> {
     if c.space.is_none() {
         return Ok(None);
     }
-    let Some(v) = extra.get(crate::verificado::VERIFIED_KEY) else { return Ok(None) };
+    let Some(v) = extra.get(crate::verified::VERIFIED_KEY) else { return Ok(None) };
     let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
     // One of theirs, but older than when the person removed the verification here: someone else in the space could
     // resend an old seal of the person (it carries their signature) to undo that «no longer».
-    let unverified_after = match crate::verificado::unverified_at(db, id)? {
+    let unverified_after = match crate::verified::unverified_at(db, id)? {
         Some(d) => d > text("at"),
         None => false,
     };
-    if !unverified_after && crate::verificado::is_own_seal(&crate::verificado::seal_keys(db, false)?, id, v) {
+    if !unverified_after && crate::verified::is_own_seal(&crate::verified::seal_keys(db, false)?, id, v) {
         return Ok(None);
     }
     Ok(Some(format!("{}\n{}", text("by"), text("at"))))
@@ -1932,7 +1932,7 @@ pub(crate) fn local_space(db: &Connection, id: &str) -> Result<Option<String>> {
 
 /// `a` is equal to or later than `b`.
 fn not_older(a: &str, b: &str) -> bool {
-    reloj::compare(a, b) != std::cmp::Ordering::Less
+    clock::compare(a, b) != std::cmp::Ordering::Less
 }
 
 /// Applies lines with the sync rules, whether they come from the repository or from an
@@ -1951,8 +1951,8 @@ impl<'a> Applier<'a> {
     /// arrives with its key is already its own.
     pub(crate) fn new(db: &Connection, config: Option<&'a Config>, current: Option<&str>) -> Result<Self> {
         let person = crate::db::person_of(db);
-        if let Some(a) = current.filter(|a| !a.is_empty() && !crate::proyecto::is_general(a)) {
-            crate::proyecto::register(db, a)?;
+        if let Some(a) = current.filter(|a| !a.is_empty() && !crate::project::is_general(a)) {
+            crate::project::register(db, a)?;
         }
         Ok(Applier { config, person, opaque: HashMap::new() })
     }
@@ -1980,7 +1980,7 @@ impl<'a> Applier<'a> {
                 let Some(c) = self.config else { return Ok(()) };
                 // One more than an hour in the future is not applied (it counts as invalid): with that
                 // stamp, keeping the project (`keep`) would make it deaf to real moves.
-                ensure!(!reloj::is_from_future(&hlc), "project: {hlc}");
+                ensure!(!clock::is_from_future(&hlc), "project: {hlc}");
                 // The general one's without a name: the local project with that opaque name (if none, nothing).
                 let key = match moved {
                     true => match self.opaque.get(&key) {
@@ -2006,22 +2006,22 @@ impl<'a> Applier<'a> {
                     if moved || space_key.is_empty() || !goes_to_repo(c, &space_key) {
                         return Ok(());
                     }
-                    let id = crate::proyecto::of_key(db, &key, "", &self.person, false)?;
+                    let id = crate::project::of_key(db, &key, "", &self.person, false)?;
                     if !name.trim().is_empty() {
                         db.execute("UPDATE project SET name = ?2 WHERE id = ?1", params![id, name.trim()])?;
                     }
-                    let s = crate::proyecto::space_of_key(db, &space_key)?;
+                    let s = crate::project::space_of_key(db, &space_key)?;
                     db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
                     save_project_extra(db, &key, &extra)?;
-                    reloj::receive(db, &hlc)?;
+                    clock::receive(db, &hlc)?;
                     return Ok(());
                 };
                 // What this machine already knew about the project: its stamp, or that of the line that paused it. A
                 // line that is not newer changes nothing (unless it says which space the one that was
                 // paused without knowing goes to: the same decision, now with a name).
-                let pause = crate::proyecto::Pause::parse(&pause);
+                let pause = crate::project::Pause::parse(&pause);
                 let known = match &pause {
-                    Some(p) if reloj::is_after(&p.hlc, &stamp) => p.hlc.clone(),
+                    Some(p) if clock::is_after(&p.hlc, &stamp) => p.hlc.clone(),
                     _ => stamp,
                 };
                 let names_space = pause.as_ref().is_some_and(|p| p.unknown && !moved && p.hlc == hlc);
@@ -2040,25 +2040,25 @@ impl<'a> Applier<'a> {
                 }
                 // With nobody at the keyboard and joined to this repository through `OMOIKANE_SYNC_CODE`: a local
                 // folder (the CI's) with the same `origin`, without a space and without memories that could belong to
-                // another repository, joins the space without a pause (`proyecto::adopts_into`).
+                // another repository, joins the space without a pause (`project::adopts_into`).
                 if !moved
                     && here.is_empty()
                     && pause.is_none()
                     && c.space.is_some()
                     && goes_to_repo(c, &space_key)
                     && has_no_memories(db, id)?
-                    && crate::proyecto::adopts_into(db, id, &space_key)?
+                    && crate::project::adopts_into(db, id, &space_key)?
                 {
-                    let s = crate::proyecto::space_of_key(db, &space_key)?;
+                    let s = crate::project::space_of_key(db, &space_key)?;
                     db.execute("UPDATE project SET space_id = ?2, hlc = ?3 WHERE id = ?1", params![id, s, hlc])?;
-                    reloj::receive(db, &hlc)?;
+                    clock::receive(db, &hlc)?;
                     return Ok(());
                 }
                 // Another space: it neither moves nor keeps syncing; paused until it is decided here.
-                let who = reloj::parts(&hlc).2.to_string();
-                let p = crate::proyecto::Pause { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: who, ..Default::default() };
-                crate::proyecto::pause(db, id, &p)?;
-                reloj::receive(db, &p.hlc)?;
+                let who = clock::parts(&hlc).2.to_string();
+                let p = crate::project::Pause { space: if moved { String::new() } else { space_key }, unknown: moved, hlc, machine: who, ..Default::default() };
+                crate::project::pause(db, id, &p)?;
+                clock::receive(db, &p.hlc)?;
                 Ok(())
             }
             Line::Tombstone { id, deleted_at, hlc, space_key, extra, .. } => {
@@ -2068,7 +2068,7 @@ impl<'a> Applier<'a> {
                 // Through a space's repository only that space's tombstones arrive (without `space_key`,
                 // from a version that doesn't send it: the repository's).
                 let space = match (space_key.is_empty(), self.config.and_then(|c| c.space.as_deref())) {
-                    (true, Some(e)) => crate::proyecto::space_key_from_name(e),
+                    (true, Some(e)) => crate::project::space_key_from_name(e),
                     _ => space_key,
                 };
                 // What was forgotten for good here (no copy in the trash) belongs to its tombstone's space.
@@ -2090,18 +2090,18 @@ impl<'a> Applier<'a> {
                 // fields go with it.
                 save_tombstone_extra(db, &id, &extra)?;
                 match hlc_local(db, &id)? {
-                    Some(local) if reloj::is_after(&local, &hlc) => {
+                    Some(local) if clock::is_after(&local, &hlc) => {
                         // It was changed here after it was forgotten there: it stays, and the old tombstone is recorded.
-                        memoria::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
-                        reloj::receive(db, &hlc)?;
+                        memory::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
+                        clock::receive(db, &hlc)?;
                     }
                     Some(_) => {
-                        memoria::forget_with(db, &id, &hlc, &deleted_at, source)?;
+                        memory::forget_with(db, &id, &hlc, &deleted_at, source)?;
                         r.forgotten += 1;
                     }
                     None => {
-                        memoria::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
-                        reloj::receive(db, &hlc)?;
+                        memory::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
+                        clock::receive(db, &hlc)?;
                     }
                 }
                 Ok(())
@@ -2110,7 +2110,7 @@ impl<'a> Applier<'a> {
                 if let Some(c) = self.config {
                     // A client repository doesn't bring trade memories (global with `trade:`): the
                     // projects of that trade across all clients would see them.
-                    if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::oficios::has_trade(&tags) {
+                    if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::trades::has_trade(&tags) {
                         r.space_conflicts += 1;
                         return Ok(());
                     }
@@ -2129,7 +2129,7 @@ impl<'a> Applier<'a> {
                 // A paused project's memories don't come in (from any repository) until it is decided: they are counted,
                 // and the file is reread then.
                 if self.config.is_some() {
-                    let project_paused: bool = if project_key.is_empty() { false } else { crate::proyecto::is_paused(db, &project_key)? };
+                    let project_paused: bool = if project_key.is_empty() { false } else { crate::project::is_paused(db, &project_key)? };
                     let own_paused: bool = db
                         .query_row("SELECT p.paused != '' FROM memory m JOIN project p ON p.id = m.project_id WHERE m.id = ?1", [&id], |f| f.get(0))
                         .optional()?
@@ -2167,12 +2167,12 @@ impl<'a> Applier<'a> {
                 // The project, by its key (if there is none here, with the source path, which is adopted
                 // as soon as a folder with that key shows up here); or the space; or global.
                 let (project_id, space_id) = if !project_key.is_empty() {
-                    let p = crate::proyecto::of_key(db, &project_key, &project_path, &self.person, self.config.is_none())?;
+                    let p = crate::project::of_key(db, &project_key, &project_path, &self.person, self.config.is_none())?;
                     // A new project takes the space the line brings (through sync, one that was already
                     // here in another space was rejected above; in an import, one without a space
                     // takes the one it brings).
-                    if !space_key.is_empty() && crate::proyecto::space_of(db, p)?.is_none() {
-                        let s = crate::proyecto::space_of_key(db, &space_key)?;
+                    if !space_key.is_empty() && crate::project::space_of(db, p)?.is_none() {
+                        let s = crate::project::space_of_key(db, &space_key)?;
                         db.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![p, s])?;
                         // If its folder was already here (the same path, with the same key), it is a local
                         // folder joining a space because its repository says so: paused until
@@ -2180,15 +2180,15 @@ impl<'a> Applier<'a> {
                         // With nobody at the keyboard and joined to this repository through the variable, the CI folder
                         // joins without a pause if it had nothing (whatever it had could belong to another repository).
                         if self.config.is_some()
-                            && crate::proyecto::own_folders(db, p)? > 0
-                            && !(has_no_memories(db, p)? && crate::proyecto::adopts_without_pause(db, p)?)
+                            && crate::project::own_folders(db, p)? > 0
+                            && !(has_no_memories(db, p)? && crate::project::adopts_without_pause(db, p)?)
                         {
-                            crate::proyecto::pause_for_claim(db, p)?;
+                            crate::project::pause_for_claim(db, p)?;
                         }
                     }
                     (Some(p), None)
                 } else if !space_key.is_empty() {
-                    (None, crate::proyecto::space_of_key(db, &space_key)?)
+                    (None, crate::project::space_of_key(db, &space_key)?)
                 } else {
                     (Some(0), None)
                 };
@@ -2196,9 +2196,9 @@ impl<'a> Applier<'a> {
                 let kind_text = if parsed_kind.is_none() { Some(kind.clone()) } else { None };
                 // Another person's verified seal doesn't count here (see `foreign_seal`). It is stored as
                 // is (the line this machine writes again carries it, for the others) and `meta` records
-                // that it doesn't count here: `memoria::COLUMNS` doesn't treat it as verified.
+                // that it doesn't count here: `memory::COLUMNS` doesn't treat it as verified.
                 if let Some(c) = self.config {
-                    let mark = format!("{}{id}", crate::verificado::FOREIGN_SEAL_PREFIX);
+                    let mark = format!("{}{id}", crate::verified::FOREIGN_SEAL_PREFIX);
                     match foreign_seal(db, c, &id, &extra)? {
                         Some(stamp) => {
                             r.foreign_seals += 1;
@@ -2215,9 +2215,9 @@ impl<'a> Applier<'a> {
                 // repository it stays in the line for the others and doesn't count here (`foreign_seal`).
                 let mut extra = extra;
                 if local.is_some()
-                    && let Some(d) = crate::verificado::unverified_at(db, &id)?
+                    && let Some(d) = crate::verified::unverified_at(db, &id)?
                 {
-                    crate::verificado::drop_old_seal(&mut extra, &d, self.config.is_none_or(|c| c.space.is_none()));
+                    crate::verified::drop_old_seal(&mut extra, &d, self.config.is_none_or(|c| c.space.is_none()));
                 }
                 // The fields this version doesn't know are stored with it, to write them back.
                 let extra = extra_to_text(&extra);
@@ -2238,7 +2238,7 @@ impl<'a> Applier<'a> {
                         reason: Some(format!("sync: {source}")),
                         ..Default::default()
                     };
-                    memoria::update_with_origin(db, &id, c, &o, model)?;
+                    memory::update_with_origin(db, &id, c, &o, model)?;
                     r.updated += 1;
                 } else {
                     let new_memory = NewMemory {
@@ -2257,7 +2257,7 @@ impl<'a> Applier<'a> {
                         evidence: Vec::new(),
                         review_reason: None,
                     };
-                    memoria::save_with_id(db, &id, new_memory, &o, model)?;
+                    memory::save_with_id(db, &id, new_memory, &o, model)?;
                     r.created += 1;
                 }
                 // It exists again with a stamp later than its tombstone (another machine restored it): it is no
@@ -2265,7 +2265,7 @@ impl<'a> Applier<'a> {
                 db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
                 // Whatever history comes: what already exists with that number stays.
                 for v in &versions {
-                    memoria::put_version(db, &id, v)?;
+                    memory::put_version(db, &id, v)?;
                 }
                 Ok(())
             }
@@ -2289,7 +2289,7 @@ impl<'a> Applier<'a> {
                     return Ok(());
                 }
                 let extra = extra_to_text(&extra);
-                crate::veredictos::receive(db, &crate::veredictos::Verdict { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
+                crate::verdicts::receive(db, &crate::verdicts::Verdict { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
                 Ok(())
             }
             Line::Forgotten { id, memory, versions, hlc, deleted_at, by, extra } => {
@@ -2305,12 +2305,12 @@ impl<'a> Applier<'a> {
                     params![id, text, serde_json::to_string(&versions)?, hlc, deleted_at, by],
                 )?;
                 // As in a `memory` line: another person's seal arriving in the trash through a
-                // space's repository doesn't count here if restored (`memoria::restore` keeps
+                // space's repository doesn't count here if restored (`memory::restore` keeps
                 // it as is).
                 if n > 0
                     && let Some(c) = self.config
                 {
-                    let mark = format!("{}{id}", crate::verificado::FOREIGN_SEAL_PREFIX);
+                    let mark = format!("{}{id}", crate::verified::FOREIGN_SEAL_PREFIX);
                     match foreign_seal(db, c, &id, &memory.extra)? {
                         Some(stamp) => {
                             r.foreign_seals += 1;
@@ -2388,7 +2388,7 @@ fn import(db: &mut Connection, clone_dir: &Path, files: &[PathBuf], config: &Con
         Line::Project { hlc, .. } => hlc.clone(),
         _ => String::new(),
     };
-    lines.sort_by(|(_, _, x), (_, _, y)| rank(x).cmp(&rank(y)).then_with(|| reloj::compare(&stamp_of(y), &stamp_of(x))));
+    lines.sort_by(|(_, _, x), (_, _, y)| rank(x).cmp(&rank(y)).then_with(|| clock::compare(&stamp_of(y), &stamp_of(x))));
     for (source, file, l) in lines {
         let (before, paused_before) = (r.space_conflicts, r.paused);
         if applier.apply(db, &source, l, model, r).is_err() {
@@ -2424,7 +2424,7 @@ fn not_configured() -> String {
 pub fn sync_all(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Model>) -> Result<SyncSummary> {
     let repos = repos(db_path);
     ensure!(!repos.is_empty(), not_configured());
-    let mut total = SyncSummary { machine: reloj::machine_name(db)?, ..Default::default() };
+    let mut total = SyncSummary { machine: clock::machine_name(db)?, ..Default::default() };
     let mut first_error = None;
     for r in &repos {
         let res = read_config_from(r)
@@ -2460,7 +2460,7 @@ fn sync_repo(db: &mut Connection, r: &SyncPaths, config: &Config, current: Optio
     if let Some(a) = current {
         adopt(db, a)?;
     }
-    let machine = reloj::machine_name(db)?;
+    let machine = clock::machine_name(db)?;
     reread_if_needed(db)?;
     for attempt in 0..4 {
         // The counts, for each attempt: a retry rereads the same files.
@@ -2498,7 +2498,7 @@ fn sync_repo(db: &mut Connection, r: &SyncPaths, config: &Config, current: Optio
         import(db, &r.clone_dir, &files, config, &cipher, current, model, &mut res)?;
         // Two machines that created the same key without seeing each other: one rules and the others become superseded
         // by it, with a verdict that goes out in this same `export`.
-        res.duplicate_keys += crate::memoria::resolve_repeated_keys(db)?;
+        res.duplicate_keys += crate::memory::resolve_repeated_keys(db)?;
         res.notices = dedup_clashes(res.clashes_by_file.values().flatten()).iter().map(Clash::text).collect();
         // If this version skipped new lines and a newer one used the database before (it went back to an
         // old one), that one will have to reread them when it comes back.
@@ -2519,7 +2519,7 @@ fn sync_repo(db: &mut Connection, r: &SyncPaths, config: &Config, current: Optio
                     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![r.commit_key, head.trim()])?;
                 }
                 // What came from other machines may leave local memories outdated (or the other way round).
-                let _ = crate::revisar::refresh(db);
+                let _ = crate::review::refresh(db);
                 return Ok((res, cipher));
             }
             // Another machine pushed in between: its changes are pulled and we try again.
@@ -2572,7 +2572,7 @@ pub fn config_with_person(url: &str, e: &SyncChoice, fixed: Option<&str>, local:
         .or_else(|| Some(person_slug(local)).filter(|p| !p.is_empty()))
         .unwrap_or_else(|| format!("u-{}", ulid::Ulid::generate().to_string()[16..].to_lowercase()));
     let projects = (!e.projects.is_empty()).then(|| e.projects.iter().map(|p| project_key_for(p, &person)).collect());
-    let spaces = (!e.spaces.is_empty()).then(|| e.spaces.iter().map(|s| crate::proyecto::space_key_from_name(s)).collect());
+    let spaces = (!e.spaces.is_empty()).then(|| e.spaces.iter().map(|s| crate::project::space_key_from_name(s)).collect());
     Config { url: url.to_string(), kinds, global: e.global, projects, spaces, author: e.author.clone(), person, space: None, another_person: false }
 }
 
@@ -2588,7 +2588,7 @@ pub fn adopt_person(db: &mut Connection, db_path: &Path, new_person: &str) -> Re
     }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('persona', ?1)", [new_person])?;
-    let n = crate::proyecto::change_person(&tx, &old_person, new_person)?;
+    let n = crate::project::change_person(&tx, &old_person, new_person)?;
     tx.commit()?;
     let (old_prefix, new_prefix) = (format!("dir:{old_person}/"), format!("dir:{new_person}/"));
     for r in repos(db_path) {
@@ -2606,7 +2606,7 @@ pub fn adopt_person(db: &mut Connection, db_path: &Path, new_person: &str) -> Re
 
 /// Whether a project's key is already in the general repository, according to this machine's clone (offline):
 /// this machine or another pushed it. Without a general repository, no. If its keys can't be read, it is taken
-/// as yes (`proyecto::clave_con_espacio` then leaves the key as it was).
+/// as yes (`project::clave_con_espacio` then leaves the key as it was).
 pub(crate) fn in_general_repo(db: &Connection, key: &str) -> bool {
     let Some(path) = db.path().filter(|p| !p.is_empty()) else { return false };
     let r = paths(Path::new(path));
@@ -2617,7 +2617,7 @@ pub(crate) fn in_general_repo(db: &Connection, key: &str) -> bool {
     cipher.keys.values().any(|k| r.clone_dir.join(format!("p-{}", opaque_name(k, &[key.as_bytes()]))).exists())
 }
 
-/// A project's key changed (`proyecto::cambiar_clave`): the `projects` list of the
+/// A project's key changed (`project::cambiar_clave`): the `projects` list of the
 /// repositories that name it switches to the new one.
 pub(crate) fn rename_key_in_configs(db_path: &Path, old_key: &str, new_key: &str) -> Result<()> {
     for r in repos(db_path) {
@@ -2639,7 +2639,7 @@ fn save_config(db: &Connection, r: &SyncPaths, config: &Config, cipher: &Cipher)
     write_private(&r.config, &serde_json::to_string_pretty(config)?)?;
     // The general repository's author signs what belongs to no space (`meta` `autor`); a
     // space repository's, only that space's (`autor:<space>`, empty if joined without an author):
-    // the name someone joins a client with never signs another's (`memoria::author_in`).
+    // the name someone joins a client with never signs another's (`memory::author_in`).
     match &r.space {
         None => match &config.author {
             Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,
@@ -2647,7 +2647,7 @@ fn save_config(db: &Connection, r: &SyncPaths, config: &Config, cipher: &Cipher)
         },
         Some(e) => db.execute(
             "INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)",
-            params![format!("autor:{}", crate::proyecto::space_key_from_name(e)), config.author.as_deref().unwrap_or("")],
+            params![format!("autor:{}", crate::project::space_key_from_name(e)), config.author.as_deref().unwrap_or("")],
         )?,
     };
     db.execute("DELETE FROM meta WHERE k = ?1", [&r.commit_key])?;
@@ -2685,13 +2685,13 @@ pub fn init(db: &mut Connection, db_path: &Path, config: &Config) -> Result<()> 
 
 /// After changing the general repository's keys (`init`, `join`, a new key from a rotation):
 /// the person's verifications keep working with the new seal key
-/// (`verificado::after_key_change`). If it fails, it says so and the sync carries on: the worst is that
+/// (`verified::after_key_change`). If it fails, it says so and the sync carries on: the worst is that
 /// some seal stays as it was.
 fn after_key_change(db: &Connection, r: &SyncPaths) {
     if r.space.is_some() {
         return;
     }
-    if let Err(e) = crate::verificado::after_key_change(db) {
+    if let Err(e) = crate::verified::after_key_change(db) {
         eprintln!("omoikane: {}: {e:#}", tr!("verification keys", "claves de verificación"));
     }
 }
@@ -2756,7 +2756,7 @@ pub fn join(db: &mut Connection, db_path: &Path, config: &Config, id: u32, key: 
     let _c = SyncLock::wait_for(db_path, Duration::from_secs(60)).context(another_running())?;
     clone_repo(&config.url, &r.clone_dir)?;
     let cipher = Cipher::single(id, key.to_vec());
-    let vale = match KeyCheck::read(&r.clone_dir) {
+    let valid = match KeyCheck::read(&r.clone_dir) {
         Some(ch) => ch.lines.get(&id).is_some_and(|l| cipher.opens(id, l)),
         // A repository without a check (or still empty): the first line there is.
         None => std::fs::read_dir(&r.clone_dir)?
@@ -2767,14 +2767,14 @@ pub fn join(db: &mut Connection, db_path: &Path, config: &Config, id: u32, key: 
             .find_map(|f| std::fs::read_to_string(f.path()).ok().and_then(|t| t.lines().next().map(String::from)))
             .is_none_or(|l| cipher.decrypt(&l).is_ok()),
     };
-    if !vale {
+    if !valid {
         let _ = std::fs::remove_dir_all(&r.clone_dir);
         bail!(wrong_key_msg());
     }
     save_config(db, &r, config, &cipher)?;
     // Another person's general one: whatever was recorded from it before (joined without the flag) is forgotten.
     if config.another_person && r.space.is_none() {
-        crate::verificado::forget_general_keys(db)?;
+        crate::verified::forget_general_keys(db)?;
     }
     after_key_change(db, &r);
     Ok(())
@@ -2856,9 +2856,9 @@ pub fn disable(db: &Connection, db_path: &Path, space: Option<&str>) -> Result<(
     let r = paths_for(db_path, space);
     let c = SyncLock::wait_for(db_path, Duration::from_secs(60)).context(another_running())?;
     // Before deleting the general one's key: the seal key derived from it stays recorded here, so
-    // that the person's verifications made with it keep working (`verificado::record_keys`).
+    // that the person's verifications made with it keep working (`verified::record_keys`).
     if r.space.is_none() {
-        crate::verificado::record_keys(db)?;
+        crate::verified::record_keys(db)?;
     }
     for f in [&r.config, &r.key_file, &r.status_file] {
         let _ = std::fs::remove_file(f);
@@ -2871,7 +2871,7 @@ pub fn disable(db: &Connection, db_path: &Path, space: Option<&str>) -> Result<(
             if let Some(d) = r.config.parent() {
                 let _ = std::fs::remove_dir_all(d);
             }
-            db.execute("DELETE FROM meta WHERE k = ?1", [format!("autor:{}", crate::proyecto::space_key_from_name(e))])?;
+            db.execute("DELETE FROM meta WHERE k = ?1", [format!("autor:{}", crate::project::space_key_from_name(e))])?;
         }
         None => {
             db.execute("DELETE FROM meta WHERE k = 'autor'", [])?;
@@ -3078,12 +3078,12 @@ pub fn notice(db_path: &Path) -> Option<String> {
     }
     read_config(db_path).ok().flatten()?;
     let e = read_status(db_path);
-    let desde = seconds(e.failing_since.as_deref()?);
+    let failing_since = seconds(e.failing_since.as_deref()?);
     let now = seconds(&now());
-    (now.saturating_sub(desde) >= 3600).then(|| {
+    (now.saturating_sub(failing_since) >= 3600).then(|| {
         format!(
             "Omoikane sync has been failing for {} h (last error: {}). Tell the user; `omoi sync status` shows more.",
-            (now - desde) / 3600,
+            (now - failing_since) / 3600,
             short_error(e.last_error.as_deref().unwrap_or_default())
         )
     })
@@ -3094,10 +3094,10 @@ pub fn notice(db_path: &Path) -> Option<String> {
 pub fn schedule(db_path: &Path) {
     // What changed also needs its meaning vector (if the model is there): let the
     // service compute it now, in the background.
-    crate::significado::notify_changed(db_path);
+    crate::meaning::notify_changed(db_path);
     let r = paths(db_path);
     // `OMOIKANE_SYNC_AUTO=0` (or nobody at the keyboard without `=1`): only by hand (`omoi sync`).
-    if (!r.config.exists() && spaces(db_path).is_empty()) || !crate::entorno::auto_sync() {
+    if (!r.config.exists() && spaces(db_path).is_empty()) || !crate::environment::auto_sync() {
         return;
     }
     // Each change, a different marker: the background process repeats while the marker is not the one it already
@@ -3137,7 +3137,7 @@ pub fn schedule(db_path: &Path) {
 }
 
 /// Launches `omoi <args>` separately, without a window, without waiting for it and without it holding on to the outputs of
-/// the caller (a hook reads them until the end). Used by the daily update (`actualizar`).
+/// the caller (a hook reads them until the end). Used by the daily update (`update`).
 pub(crate) fn spawn_detached(args: &[&str]) {
     spawn_omoi(args, None);
 }
@@ -3150,7 +3150,7 @@ pub(crate) fn spawn_omoi(args: &[&str], db_path: Option<&Path>) {
         c.env("OMOIKANE_DB", r);
     }
     // The child knows it is a background one: its `--pull` is the cheap one even if nobody is at the keyboard (`pull`).
-    c.env(crate::entorno::BACKGROUND_VAR, "1");
+    c.env(crate::environment::BACKGROUND_VAR, "1");
     c.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
@@ -3412,10 +3412,10 @@ pub fn pull_interval() -> Duration {
     Duration::from_secs(std::env::var("OMOIKANE_SYNC_EVERY").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120))
 }
 
-/// Whether sync is set up and automatic (`entorno::auto_sync`). It only checks whether
+/// Whether sync is set up and automatic (`environment::auto_sync`). It only checks whether
 /// some files exist: without sync it costs nothing.
 pub fn is_automatic(db_path: &Path) -> bool {
-    crate::entorno::auto_sync() && (paths(db_path).config.exists() || !spaces(db_path).is_empty())
+    crate::environment::auto_sync() && (paths(db_path).config.exists() || !spaces(db_path).is_empty())
 }
 
 /// Records that a pull just happened (or that a full sync was launched, at session start).
@@ -3505,7 +3505,7 @@ pub fn pull(db_path: &Path, open_db: impl Fn() -> Result<Connection>) -> Result<
     // the next attempt» won't do: it waits for the running one, syncs fully and, if it fails, exits with an error.
     // The one `omoi` itself launches in the background (with `OMOIKANE_SYNC_AUTO=1` on a server) is still
     // the cheap one: nobody waits for its result.
-    if crate::entorno::unattended() && !crate::entorno::in_background() {
+    if crate::environment::unattended() && !crate::environment::in_background() {
         let _c = SyncLock::wait_for(db_path, Duration::from_secs(60)).context(another_running())?;
         let mut db = open_db()?;
         let r = paths(db_path);

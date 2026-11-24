@@ -19,7 +19,7 @@
 //!
 //! If `tokenizer.json` isn't shaped like this, `compile` refuses and `gemma` uses `tokenizers`.
 //! The equivalence is checked against `tokenizers` (test `bpe_igual_que_tokenizers` and
-//! `examples/bpe_igual.rs`, with thousands of real texts).
+//! `examples/bpe_equal.rs`, with thousands of real texts).
 
 use anyhow::{Context, Result, bail, ensure};
 use memmap2::Mmap;

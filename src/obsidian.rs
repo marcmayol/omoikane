@@ -1,7 +1,7 @@
 //! View the memory in Obsidian (1.3.5): `omoi export --obsidian <vault>` writes one Markdown note per
 //! memory into `<vault>/omoikane/`, to look at it with Obsidian's graph view. The folder is a
 //! mirror rebuilt on every export; since 1.9.0, `omoi import --obsidian <vault>` brings back what was
-//! edited there (see [`importar`]), and until then the export neither overwrites nor deletes an edited
+//! edited there (see [`import`]), and until then the export neither overwrites nor deletes an edited
 //! note (see [`pending`]).
 //!
 //! - One folder per project (`_global` for global memories, `_<space>` for those of a space with no
@@ -9,8 +9,8 @@
 //! - Each note links to its project's note (`proyecto-<name>`; global ones, to none: almost everything is
 //!   global for someone working from their home folder, and a single note for all of it turned it into
 //!   the centre of a star that hid the real links), to the memories it names with
-//!   `[[name]]` (resolved with the rules of `enlaces`, but only among what is exported), to the ones it
-//!   supersedes or contradicts (current verdicts, `veredictos::pairs`) and to one note per file
+//!   `[[name]]` (resolved with the rules of `links`, but only among what is exported), to the ones it
+//!   supersedes or contradicts (current verdicts, `verdicts::pairs`) and to one note per file
 //!   cited by two or more memories (`_ficheros/`).
 //! - Each note is named after its memory's title (that's what Obsidian shows as the title), with the
 //!   end of the id appended only if another would have the same name: retitling a memory renames it, and
@@ -23,7 +23,7 @@
 //!   `sig` (the signature of this database, with the OKF key: `okf::firma`), to tell on the way back whether
 //!   it was edited and whether it really belongs to that memory.
 
-use crate::memoria::{Scope, Changes, Memory, Kind};
+use crate::memory::{Scope, Changes, Memory, Kind};
 use crate::tr;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
@@ -32,11 +32,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// The vault subfolder that belongs to Omoikane.
-pub const CARPETA: &str = "omoikane";
+pub const FOLDER: &str = "omoikane";
 
 /// What an export did.
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Cuenta {
+pub struct ExportCount {
     pub memories: usize,
     pub created: usize,
     pub updated: usize,
@@ -49,26 +49,26 @@ pub struct Cuenta {
 
 /// What gets exported: the personal and global ones, or a space without the global ones.
 #[derive(Clone, Copy, Debug)]
-pub enum Que {
+pub enum ExportScope {
     Personal,
-    Espacio(i64),
+    Space(i64),
 }
 
 /// Exports to the vault and returns what changed.
-pub fn exportar(db: &Connection, vault: &Path, what: Que) -> Result<Cuenta> {
+pub fn export(db: &Connection, vault: &Path, what: ExportScope) -> Result<ExportCount> {
     export_with(db, vault, what, &BTreeSet::new(), &BTreeSet::new())
 }
 
 /// Exports; the notes in `overwrite` are rebuilt even if edited and not imported (`--prefer omoikane`), and
 /// those in `keep` are neither written nor deleted (what the import couldn't bring in: notes without this
 /// database's signature that say something other than their memory, new notes that can't touch theirs).
-fn export_with(db: &Connection, vault: &Path, what: Que, overwrite: &BTreeSet<PathBuf>, keep: &BTreeSet<PathBuf>) -> Result<Cuenta> {
-    // A network folder is not looked at (see `proyecto::is_local_path`); one with a drive letter is.
-    crate::proyecto::require_local(vault)?;
+fn export_with(db: &Connection, vault: &Path, what: ExportScope, overwrite: &BTreeSet<PathBuf>, keep: &BTreeSet<PathBuf>) -> Result<ExportCount> {
+    // A network folder is not looked at (see `project::is_local_path`); one with a drive letter is.
+    crate::project::require_local(vault)?;
     let p = prepare(db, what)?;
-    let root = vault.join(CARPETA);
+    let root = vault.join(FOLDER);
     std::fs::create_dir_all(&root).with_context(|| tr!("could not create {}", "no se pudo crear {}", root.display()))?;
-    let sign_key = crate::okf::firma::clave(db, true)?.context("okf_firma")?;
+    let sign_key = crate::okf::signature::key(db, true)?.context("okf_firma")?;
     let scope = scope_of(db, what)?;
 
     // What was edited in Obsidian and not yet imported is neither overwritten nor deleted (see `pending`).
@@ -82,7 +82,7 @@ fn export_with(db: &Connection, vault: &Path, what: Que, overwrite: &BTreeSet<Pa
     kept.extend(keep.iter().filter(|r| !overwrite.contains(*r)).cloned());
 
     let mut written: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut c = Cuenta { memories: p.notes.len(), kept: kept.len(), ..Cuenta::default() };
+    let mut c = ExportCount { memories: p.notes.len(), kept: kept.len(), ..ExportCount::default() };
     for n in &p.notes {
         let path = root.join(&n.rel);
         if !kept.contains(&path) {
@@ -121,19 +121,19 @@ struct Prepared {
     names: HashMap<String, String>,
 }
 
-fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
+fn prepare(db: &Connection, what: ExportScope) -> Result<Prepared> {
     let scope = match what {
-        Que::Personal => Scope::Space(None),
-        Que::Espacio(s) => Scope::Space(Some(s)),
+        ExportScope::Personal => Scope::Space(None),
+        ExportScope::Space(s) => Scope::Space(Some(s)),
     };
-    let mut all = crate::memoria::recent(db, &scope, None, usize::MAX >> 1)?;
-    if matches!(what, Que::Espacio(_)) {
+    let mut all = crate::memory::recent(db, &scope, None, usize::MAX >> 1)?;
+    if matches!(what, ExportScope::Space(_)) {
         all.retain(|m| !m.global());
     }
     all.sort_by(|a, b| a.id.cmp(&b.id));
     let space = match what {
-        Que::Personal => None,
-        Que::Espacio(s) => Some(s),
+        ExportScope::Personal => None,
+        ExportScope::Space(s) => Some(s),
     };
 
     // Group (folder and project note) of each memory; two projects with the same name are
@@ -141,7 +141,7 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
     let mut names: HashMap<String, BTreeSet<String>> = HashMap::new();
     for m in &all {
         if m.project_id != 0 {
-            names.entry(crate::proyecto::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
+            names.entry(crate::project::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
     let group = |m: &Memory| -> Group {
@@ -153,25 +153,25 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
                 Group { folder: format!("_{s}"), note: format!("espacio-{s}"), title: m.space.clone(), project_id: 0, space_id: space }
             };
         }
-        let name = crate::proyecto::name_of(&m.project, &m.project_key);
+        let name = crate::project::name_of(&m.project, &m.project_key);
         let mut s = slug(&name, 40);
         if names.get(&name).is_some_and(|k| k.len() > 1) {
-            s = format!("{s}-{}", corto(&m.project_key));
+            s = format!("{s}-{}", short_id(&m.project_key));
         }
         Group { folder: s.clone(), note: format!("proyecto-{s}"), title: name, project_id: m.project_id, space_id: None }
     };
 
     let taken: BTreeSet<String> = all.iter().map(|m| group(m).note.to_lowercase()).filter(|n| !n.is_empty()).collect();
     let note_names = note_names_by_id(&all, &taken);
-    // The `[[name]]` links, as in `enlaces::recompute`, but only among what is exported.
+    // The `[[name]]` links, as in `links::recompute`, but only among what is exported.
     let mut by_name: HashMap<String, Vec<&str>> = HashMap::new();
     for m in &all {
         for t in &m.tags {
-            by_name.entry(crate::enlaces::link_name(t)).or_default().push(m.id.as_str());
+            by_name.entry(crate::links::link_name(t)).or_default().push(m.id.as_str());
         }
     }
     let targets = |m: &Memory, e: &str| -> Vec<String> {
-        match by_name.get(&crate::enlaces::link_name(e)) {
+        match by_name.get(&crate::links::link_name(e)) {
             Some(v) => v.iter().filter(|d| **d != m.id).map(|d| d.to_string()).collect(),
             None => {
                 let s = e.trim().to_uppercase();
@@ -185,14 +185,14 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
     let mut superseded_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut supersedes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut contradicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for v in crate::veredictos::pairs(db)?.into_values() {
+    for v in crate::verdicts::pairs(db)?.into_values() {
         if !note_names.contains_key(&v.memory_id) || !note_names.contains_key(&v.other_id) {
             continue;
         }
-        if v.relation == crate::veredictos::SUPERSEDED {
+        if v.relation == crate::verdicts::SUPERSEDED {
             superseded_by.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             supersedes.entry(v.other_id).or_default().push(v.memory_id);
-        } else if v.relation == crate::veredictos::CONTRADICTS {
+        } else if v.relation == crate::verdicts::CONTRADICTS {
             contradicts.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             contradicts.entry(v.other_id).or_default().push(v.memory_id);
         }
@@ -266,7 +266,7 @@ fn note_names_by_id(all: &[Memory], taken: &BTreeSet<String>) -> HashMap<String,
             let t = file_title(&m.title);
             let k = t.to_lowercase();
             let clash = counts[&k] > 1 || taken.contains(&k) || reserved(&k);
-            (m.id.clone(), if clash { format!("{t} ({})", corto(&m.id)) } else { t })
+            (m.id.clone(), if clash { format!("{t} ({})", short_id(&m.id)) } else { t })
         })
         .collect()
 }
@@ -286,7 +286,7 @@ fn reserved(k: &str) -> bool {
     matches!(k, "con" | "prn" | "aux" | "nul") || (k.len() == 4 && (k.starts_with("com") || k.starts_with("lpt")) && k.as_bytes()[3].is_ascii_digit())
 }
 
-pub(crate) fn corto(s: &str) -> String {
+pub(crate) fn short_id(s: &str) -> String {
     let s: Vec<char> = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     s[s.len().saturating_sub(8)..].iter().collect::<String>().to_lowercase()
 }
@@ -463,7 +463,7 @@ fn escape_tags(text: &str) -> String {
 }
 
 /// Writes only if it changes.
-fn write_if_changed(path: &Path, text: &str, c: &mut Cuenta) -> Result<()> {
+fn write_if_changed(path: &Path, text: &str, c: &mut ExportCount) -> Result<()> {
     match std::fs::read(path) {
         Ok(existing) if existing == text.as_bytes() => {
             c.unchanged += 1;
@@ -539,13 +539,13 @@ fn configure_graph(vault: &Path) -> Result<()> {
 }
 
 /// Exports every `interval` while the database changes (the first time, always). Never returns.
-pub fn vigilar(db: &Connection, vault: &Path, what: Que, interval: std::time::Duration, mut notify: impl FnMut(&Cuenta)) -> Result<()> {
+pub fn watch(db: &Connection, vault: &Path, what: ExportScope, interval: std::time::Duration, mut notify: impl FnMut(&ExportCount)) -> Result<()> {
     let mut seen: Option<i64> = None;
     loop {
         // `data_version` changes when another connection writes: if it hasn't changed, there's nothing to look at.
         let v: i64 = db.query_row("PRAGMA data_version", [], |f| f.get(0))?;
         if seen != Some(v) {
-            notify(&exportar(db, vault, what)?);
+            notify(&export(db, vault, what)?);
             seen = Some(v);
         }
         std::thread::sleep(interval);
@@ -572,11 +572,11 @@ struct ReadNote {
 
 impl ReadNote {
     fn field(&self, k: &str) -> Option<String> {
-        self.header.get(k).map(crate::okf::escalar_texto).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        self.header.get(k).map(crate::okf::scalar_text).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
     fn list(&self, k: &str) -> Vec<String> {
-        crate::okf::lista_de_textos(self.header.get(k)).into_iter().map(|s| s.trim().to_string()).collect()
+        crate::okf::text_list(self.header.get(k)).into_iter().map(|s| s.trim().to_string()).collect()
     }
 
     /// The id of its memory, if it's the note of a memory exported by Omoikane.
@@ -595,9 +595,9 @@ fn stem_of(rel: &Path) -> String {
 
 /// Reads a note: its YAML header (if it has one; `None` if it can't be read) and its text.
 fn parse_note(stem: &str, text: &str) -> Option<ReadNote> {
-    let text = crate::okf::sin_crlf_de_git(text.to_string());
-    let (header, rest) = match crate::okf::separar(&text) {
-        Some((c, r)) => (crate::okf::yaml::leer(c).ok()?, r),
+    let text = crate::okf::strip_git_crlf(text.to_string());
+    let (header, rest) = match crate::okf::split_front_matter(&text) {
+        Some((c, r)) => (crate::okf::yaml::parse(c).ok()?, r),
         None => (Map::new(), text.trim_start_matches('\u{feff}')),
     };
     let mut body = rest;
@@ -632,7 +632,7 @@ fn signed_text(id: &str, scope: &str, updated: &str, base: &str) -> String {
 fn signed(text: &str, rel: &Path, m: &Memory, scope: &str, key: &[u8]) -> String {
     let Some(l) = parse_note(&stem_of(rel), text) else { return text.to_string() };
     let base = fingerprint(&l);
-    let sig = crate::okf::firma::firmar(key, &signed_text(&m.id, scope, &m.updated_at, &base));
+    let sig = crate::okf::signature::sign(key, &signed_text(&m.id, scope, &m.updated_at, &base));
     let i = text.get(3..).and_then(|t| t.find("\n---\n")).map_or(0, |i| i + 4);
     format!("{}base: \"{base}\"\nsig: \"{sig}\"\n{}", &text[..i], &text[i..])
 }
@@ -640,7 +640,7 @@ fn signed(text: &str, rel: &Path, m: &Memory, scope: &str, key: &[u8]) -> String
 /// Whether the note was exported by this database, from this scope, for the memory it claims.
 fn signature_valid(l: &ReadNote, key: &[u8], scope: &str) -> bool {
     let (Some(id), Some(base), Some(sig)) = (l.id(), l.field("base"), l.field("sig")) else { return false };
-    crate::okf::firma::vale(key, &signed_text(&id, scope, &l.field("updated").unwrap_or_default(), &base), &sig)
+    crate::okf::signature::is_valid(key, &signed_text(&id, scope, &l.field("updated").unwrap_or_default(), &base), &sig)
 }
 
 /// Whether it has been edited since it was exported.
@@ -648,10 +648,10 @@ fn edited(l: &ReadNote) -> bool {
     l.field("base").as_deref() != Some(fingerprint(l).as_str())
 }
 
-fn scope_of(db: &Connection, what: Que) -> Result<String> {
+fn scope_of(db: &Connection, what: ExportScope) -> Result<String> {
     match what {
-        Que::Personal => Ok(String::new()),
-        Que::Espacio(s) => crate::proyecto::space_key(db, Some(s)),
+        ExportScope::Personal => Ok(String::new()),
+        ExportScope::Space(s) => crate::project::space_key(db, Some(s)),
     }
 }
 
@@ -666,12 +666,12 @@ fn vault_notes(root: &Path, notices: &mut Vec<String>) -> Result<Vec<(PathBuf, R
         for e in rd.flatten() {
             seen += 1;
             anyhow::ensure!(
-                seen <= crate::okf::MAX_FICHEROS,
+                seen <= crate::okf::MAX_FILES,
                 tr!(
                     "{} has over {} files and folders: is it the right vault? Nothing was imported",
                     "{} tiene más de {} ficheros y carpetas: ¿es el vault bueno? No se ha importado nada",
                     root.display(),
-                    crate::okf::MAX_FICHEROS
+                    crate::okf::MAX_FILES
                 )
             );
             let p = e.path();
@@ -681,7 +681,7 @@ fn vault_notes(root: &Path, notices: &mut Vec<String>) -> Result<Vec<(PathBuf, R
             }
             let Ok(t) = e.file_type() else { continue };
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-            if t.is_symlink() || crate::okf::es_union(&p) {
+            if t.is_symlink() || crate::okf::is_junction(&p) {
                 notices.push(tr!("{rel}: a symbolic link, skipped", "{rel}: un enlace simbólico, saltado"));
                 continue;
             }
@@ -694,7 +694,7 @@ fn vault_notes(root: &Path, notices: &mut Vec<String>) -> Result<Vec<(PathBuf, R
             if !name.to_lowercase().ends_with(".md") {
                 continue;
             }
-            if std::fs::metadata(&p).is_ok_and(|m| m.len() > crate::okf::MAX_CONCEPTO) {
+            if std::fs::metadata(&p).is_ok_and(|m| m.len() > crate::okf::MAX_CONCEPT) {
                 notices.push(tr!("{rel}: over 1 MB, skipped", "{rel}: de más de 1 MB, saltada"));
                 continue;
             }
@@ -722,7 +722,7 @@ struct Proposal {
     tags: Vec<String>,
     paths: Vec<String>,
     /// Whether saving it hides something that looks like a secret (it's no longer visible in the memory:
-    /// `memoria::update` won't find it again, so it's counted here).
+    /// `memory::update` won't find it again, so it's counted here).
     redacted: bool,
 }
 
@@ -748,7 +748,7 @@ fn propose(l: &ReadNote, m: &Memory, b: &ReadNote, names: &HashMap<String, Strin
     // renames the file when the note's title changes) if the alias is the memory's, otherwise the alias.
     let alias = |x: &ReadNote| x.list("aliases").into_iter().next().unwrap_or_default();
     let (al, ab) = (alias(l), alias(b));
-    let suffix = format!(" ({})", corto(&m.id));
+    let suffix = format!(" ({})", short_id(&m.id));
     let name = l.stem.strip_suffix(&suffix).unwrap_or(&l.stem).to_string();
     let title = if al.is_empty() {
         name
@@ -776,7 +776,7 @@ fn propose(l: &ReadNote, m: &Memory, b: &ReadNote, names: &HashMap<String, Strin
         tr!("the note's text is empty: to forget the memory, use `omoi forget`", "el texto de la nota está vacío: para olvidar la memoria, `omoi forget`")
     );
     let mut redacted = Vec::new();
-    let (title, content, paths, tags) = crate::memoria::as_stored(&title, &content, &paths, &tags, &mut redacted)?;
+    let (title, content, paths, tags) = crate::memory::as_stored(&title, &content, &paths, &tags, &mut redacted)?;
     Ok(Proposal { title, content, kind, tags, paths, redacted: !redacted.is_empty() })
 }
 
@@ -892,10 +892,10 @@ fn foreign_intact(l: &ReadNote, p: &Prepared, by_id: &HashMap<&str, usize>) -> b
 
 /// What to do with an edited note whose memory has also changed in Omoikane since the export.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Preferir {
+pub enum Prefer {
     /// Nothing: it's reported and left as it is (the note isn't overwritten).
     #[default]
-    Nada,
+    Neither,
     /// Obsidian's: the note is applied (Omoikane's version stays in the history).
     Obsidian,
     /// Omoikane's: the note is rebuilt from the memory and its change is lost.
@@ -904,14 +904,14 @@ pub enum Preferir {
 
 /// A note that didn't get in, and why.
 #[derive(Clone, Debug, serde::Serialize)]
-pub struct Saltada {
+pub struct SkippedNote {
     pub note: String,
     pub reason: String,
 }
 
 /// What an import from Obsidian did (or would do, in a dry run).
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Resumen {
+pub struct ImportSummary {
     /// The memory notes (one per memory) and the new ones that were looked at.
     pub notes: usize,
     pub updated: usize,
@@ -930,8 +930,8 @@ pub struct Resumen {
     /// Edited, but their memory is no longer exported to this vault (forgotten, or moved elsewhere).
     pub gone: Vec<String>,
     /// New notes that can't get in (no project or no kind that can be inferred, global, empty).
-    pub skipped: Vec<Saltada>,
-    pub failed: Vec<Saltada>,
+    pub skipped: Vec<SkippedNote>,
+    pub failed: Vec<SkippedNote>,
     /// The titles of the memories in which something that looked like a secret was hidden.
     pub redacted: Vec<String>,
     /// Memories verified by a person whose text changed: they lose the verification.
@@ -940,7 +940,7 @@ pub struct Resumen {
     pub notices: Vec<String>,
     /// The export that brings the vault up to date after importing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub export: Option<Cuenta>,
+    pub export: Option<ExportCount>,
 }
 
 /// The key a new note is saved under: `obsidian:<its path>` (importing it again doesn't
@@ -958,7 +958,7 @@ fn note_key(rel: &str) -> String {
     format!("{}-{:02x}{:02x}{:02x}{:02x}", k.chars().take(71).collect::<String>(), h[0], h[1], h[2], h[3])
 }
 
-/// Brings into Omoikane what was edited in a vault exported with [`exportar`] (`omoi import --obsidian`).
+/// Brings into Omoikane what was edited in a vault exported with [`export`] (`omoi import --obsidian`).
 ///
 /// - An edited memory note (with `omoikane: <id>`) updates its memory, with history (reason
 ///   `obsidian import`): title (the alias or the file name), text, kind, plain tags and
@@ -966,7 +966,7 @@ fn note_key(rel: &str) -> String {
 ///   [`signed_text`]): an id is not a secret (it travels in sync, in bundles and in other
 ///   vaults), and without a signature nobody can point a note at a memory. It never changes project or
 ///   space, nor makes it global, pinned or verified; changing a verified memory's text removes its
-///   verification, like `update`. A trade memory goes through `oficios::leaks`.
+///   verification, like `update`. A trade memory goes through `trades::leaks`.
 /// - Not edited (its fingerprint is the one in `base`) or already imported: nothing.
 /// - Edited and also changed in Omoikane after exporting it (`updated` is no longer the
 ///   memory's): conflict. Without `prefer`, neither is touched and it's reported; the export
@@ -983,22 +983,22 @@ fn note_key(rel: &str) -> String {
 ///
 /// Everything that comes in goes through secret redaction, like any write. Afterwards, if it's not a
 /// dry run, it exports again to bring the vault up to date.
-pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vault: &Path, what: Que, prefer: Preferir, dry_run: bool) -> Result<Resumen> {
-    crate::proyecto::require_local(vault)?;
-    let root = vault.join(CARPETA);
+pub fn import(db: &mut Connection, model: Option<&crate::embed::Model>, vault: &Path, what: ExportScope, prefer: Prefer, dry_run: bool) -> Result<ImportSummary> {
+    crate::project::require_local(vault)?;
+    let root = vault.join(FOLDER);
     anyhow::ensure!(
         root.is_dir(),
         tr!(
-            "{} has no {CARPETA}/ folder: export to it first (omoi export --obsidian <vault>)",
-            "{} no tiene la carpeta {CARPETA}/: exporta antes a él (omoi export --obsidian <vault>)",
+            "{} has no {FOLDER}/ folder: export to it first (omoi export --obsidian <vault>)",
+            "{} no tiene la carpeta {FOLDER}/: exporta antes a él (omoi export --obsidian <vault>)",
             vault.display()
         )
     );
-    let mut r = Resumen::default();
+    let mut r = ImportSummary::default();
     let notes = vault_notes(&root, &mut r.notices)?;
     let p = prepare(db, what)?;
     let scope = scope_of(db, what)?;
-    let sign_key = crate::okf::firma::clave(db, false)?;
+    let sign_key = crate::okf::signature::key(db, false)?;
     let rel_of = |path: &Path| path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
 
     // A vault exported from another scope (the personal one versus a space): say so clearly.
@@ -1072,7 +1072,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
         let proposal = match proposal {
             Ok(x) => x,
             Err(e) => {
-                r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
+                r.failed.push(SkippedNote { note: rel, reason: format!("{e:#}") });
                 continue;
             }
         };
@@ -1085,16 +1085,16 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
         }
         if l.field("updated").as_deref() != Some(m.updated_at.as_str()) {
             match prefer {
-                Preferir::Nada => {
+                Prefer::Neither => {
                     r.conflicts.push(rel);
                     continue;
                 }
-                Preferir::Omoikane => {
+                Prefer::Omoikane => {
                     r.conflicts_discarded += 1;
                     overwrite.insert(path.clone());
                     continue;
                 }
-                Preferir::Obsidian => r.conflicts_applied += 1,
+                Prefer::Obsidian => r.conflicts_applied += 1,
             }
         }
         let mut changes = Changes {
@@ -1106,13 +1106,13 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
             reason: Some("obsidian import".into()),
             ..Default::default()
         };
-        // A trade memory: the new content goes through `oficios::leaks`, as in `update`.
-        if crate::oficios::has_trade(&m.tags) {
-            let request = crate::oficios::ChangeRequest { trade: None, for_whom: None, changes: &changes, data: None, allow_leaks: false };
-            match crate::oficios::on_update(db, m, request)? {
+        // A trade memory: the new content goes through `trades::leaks`, as in `update`.
+        if crate::trades::has_trade(&m.tags) {
+            let request = crate::trades::ChangeRequest { trade: None, for_whom: None, changes: &changes, data: None, allow_leaks: false };
+            match crate::trades::on_update(db, m, request)? {
                 Err(leaks) => {
                     let list: Vec<String> = leaks.iter().map(|f| format!("{} «{}»", f.kind, f.text)).collect();
-                    r.failed.push(Saltada {
+                    r.failed.push(SkippedNote {
                         note: rel,
                         reason: tr!(
                             "a trade memory (reaches every project of its trade) and the change names what looks like a project or a client: {}",
@@ -1123,7 +1123,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
                     continue;
                 }
                 Ok(plan) if plan.make_global || plan.create_new => {
-                    r.failed.push(Saltada { note: rel, reason: tr!("it would change where the memory belongs", "cambiaría dónde está la memoria") });
+                    r.failed.push(SkippedNote { note: rel, reason: tr!("it would change where the memory belongs", "cambiaría dónde está la memoria") });
                     continue;
                 }
                 Ok(plan) => {
@@ -1140,25 +1140,25 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
             }
             continue;
         }
-        match crate::memoria::update(db, &m.id, changes, model) {
+        match crate::memory::update(db, &m.id, changes, model) {
             Ok(x) => {
                 r.updated += 1;
                 overwrite.insert(path.clone());
-                // `memoria::update` no longer sees the secret (`propose` hid it, to compare): it's counted from
+                // `memory::update` no longer sees the secret (`propose` hid it, to compare): it's counted from
                 // the proposal.
                 if proposal.redacted || !x.redacted.is_empty() {
                     r.redacted.push(x.title.clone());
                 }
                 r.unverified += usize::from(x.unverified.is_some());
             }
-            Err(e) => r.failed.push(Saltada { note: rel, reason: format!("{e:#}") }),
+            Err(e) => r.failed.push(SkippedNote { note: rel, reason: format!("{e:#}") }),
         }
     }
 
     for (path, l) in new_notes {
         r.notes += 1;
         let rel = rel_of(&path);
-        let mut skip = |reason: String| r.skipped.push(Saltada { note: rel.clone(), reason });
+        let mut skip = |reason: String| r.skipped.push(SkippedNote { note: rel.clone(), reason });
         let folder = rel.split_once('/').map(|(c, _)| c.to_lowercase());
         let group = match folder.as_ref().and_then(|c| p.groups.get(c)) {
             Some(g) => Some(g),
@@ -1208,7 +1208,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
             .map(|t| t.trim_start_matches('#').to_lowercase())
             .filter(|t| !t.is_empty() && !t.contains(':') && t.parse::<Kind>().is_err())
             .collect();
-        let new_memory = crate::memoria::NewMemory {
+        let new_memory = crate::memory::NewMemory {
             project_id: (g.project_id != 0).then_some(g.project_id),
             space_id: if g.project_id == 0 { g.space_id } else { None },
             kind: Some(kind),
@@ -1221,7 +1221,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
             ..Default::default()
         };
         let key = note_key(&rel);
-        let topic = format!("{}{key}", crate::memoria::TOPIC_TAG);
+        let topic = format!("{}{key}", crate::memory::TOPIC_TAG);
         let earlier: Option<(String, String)> = db
             .query_row(
                 "SELECT id, hlc FROM memory WHERE project_id = ?1 AND space_id IS ?2
@@ -1235,16 +1235,16 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
         // note is the one that gets edited). If it says the same, there's nothing to do; if not, it stays as
         // it is, the export doesn't overwrite it and the user is told how to bring it over.
         if let Some((id, _)) = &earlier {
-            let m = match crate::memoria::get(db, id) {
+            let m = match crate::memory::get(db, id) {
                 Ok(m) => m,
                 Err(e) => {
-                    r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
+                    r.failed.push(SkippedNote { note: rel, reason: format!("{e:#}") });
                     keep.insert(path);
                     continue;
                 }
             };
             let mut redacted = Vec::new();
-            let same = crate::memoria::as_stored(&new_memory.title, &new_memory.content, &new_memory.paths, &new_memory.tags, &mut redacted)
+            let same = crate::memory::as_stored(&new_memory.title, &new_memory.content, &new_memory.paths, &new_memory.tags, &mut redacted)
                 .is_ok_and(|(t, c, _, _)| t == m.title && c == m.content && Some(m.kind) == new_memory.kind);
             if same {
                 r.unchanged += 1;
@@ -1253,7 +1253,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
                     let _ = std::fs::remove_file(&path);
                 }
             } else {
-                r.skipped.push(Saltada {
+                r.skipped.push(SkippedNote {
                     note: rel,
                     reason: tr!(
                         "the memory {} «{}» already came from this note, and a note without Omoikane's signature doesn't change an existing memory: it was left as it is. Bring the change over with `omoi update {}` (or rename the note to save it as a new memory), then delete it",
@@ -1272,11 +1272,11 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
             continue;
         }
         let (title, content) = (new_memory.title.clone(), new_memory.content.clone());
-        match crate::memoria::save_by_key(db, &key, new_memory, None, model) {
+        match crate::memory::save_by_key(db, &key, new_memory, None, model) {
             Ok(x) => {
                 let changed = match &earlier {
                     None => true,
-                    Some((id, hlc)) => crate::memoria::hlc_of(db, id).map(|h| h != *hlc).unwrap_or(true),
+                    Some((id, hlc)) => crate::memory::hlc_of(db, id).map(|h| h != *hlc).unwrap_or(true),
                 };
                 match (x.created, changed) {
                     (true, _) => r.created += 1,
@@ -1293,7 +1293,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vaul
                     let _ = std::fs::remove_file(&path);
                 }
             }
-            Err(e) => r.failed.push(Saltada { note: rel, reason: format!("{e:#}") }),
+            Err(e) => r.failed.push(SkippedNote { note: rel, reason: format!("{e:#}") }),
         }
     }
 

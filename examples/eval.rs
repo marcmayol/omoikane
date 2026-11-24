@@ -3,7 +3,7 @@
 //!
 //!   cargo build --release && cargo run --release --example eval -- CASES [options]
 //!
-//! CASES is a TSV like `tests/busquedas.tsv` (lines starting with `#` are ignored):
+//! CASES is a TSV like `tests/searches.tsv` (lines starting with `#` are ignored):
 //!
 //!   m <key> <title> <content> [<kind> [<tags,with,commas> [<project>]]]   a memory for the database
 //!                                                                  (global, or of the project of a folder
@@ -38,7 +38,7 @@
 //! nothing» (`-` cases where it injected nothing).
 
 use anyhow::{Context, Result, anyhow, bail};
-use omoikane::memoria::{self, NewMemory, Kind};
+use omoikane::memory::{self, NewMemory, Kind};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -107,7 +107,7 @@ fn save(db: &Path, ms: &[Mem], folders: &Path) -> Result<BTreeMap<String, String
             Some(p) => {
                 let d = folders.join(p);
                 std::fs::create_dir_all(&d)?;
-                omoikane::proyecto::of_dir(&d)?
+                omoikane::project::of_dir(&d)?
             }
             None => String::new(),
         };
@@ -120,7 +120,7 @@ fn save(db: &Path, ms: &[Mem], folders: &Path) -> Result<BTreeMap<String, String
             source: "eval".into(),
             ..Default::default()
         };
-        ids.insert(m.key.clone(), memoria::save(&mut c, n, None)?.id);
+        ids.insert(m.key.clone(), memory::save(&mut c, n, None)?.id);
     }
     // The database will be copied with the file alone: nothing pending in the WAL.
     c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;

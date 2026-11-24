@@ -7,7 +7,7 @@
 // macOS and Linux.
 import type { Register } from 'claude-code'
 
-import { register as registerNames } from './nombres'
+import { register as registerNames } from './names'
 
 const REPO = 'marcmayol/omoikane'
 
@@ -26,7 +26,7 @@ const openedFiles = new Set<string>()
 let seenSession: string | undefined
 
 export const register: Register = on => {
-  // Subagents named "Project: task" (it was the agent-names plugin): see nombres.ts.
+  // Subagents named "Project: task" (it was the agent-names plugin): see names.ts.
   registerNames(on)
   on('session.start', async ($, e, next) => {
     const l = await ready($)
@@ -38,7 +38,7 @@ export const register: Register = on => {
 
   // Saving on demand: the agent goes over the session and saves what is worth knowing next time. The
   // text is the one `omoi setup` writes into the other agents' `/omoikane` (TEXTO_GUARDAR in
-  // src/agentes.rs). A command.run hook can't submit a prompt itself (it would wait on its own turn),
+  // src/agents.rs). A command.run hook can't submit a prompt itself (it would wait on its own turn),
   // so a timer does it right after; the prompt runs as a turn of its own once the session is idle.
   on('command.run', { command: 'omoikane' }, ($, e) => {
     const lo = e.args.trim()

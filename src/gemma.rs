@@ -299,7 +299,7 @@ enum Source {
 
 impl Source {
     fn mapped(path: &Path) -> Result<Source> {
-        // SAFETY: the file is not touched after it is installed (`modelos` installs into another folder).
+        // SAFETY: the file is not touched after it is installed (`models` installs into another folder).
         let map = Arc::new(unsafe { memmap2::Mmap::map(&std::fs::File::open(path)?)? });
         let st = safetensors::SafeTensors::deserialize(&map[..])?;
         let base = map.as_ptr() as usize;
@@ -427,7 +427,7 @@ impl Gemma {
     }
 
     fn int8_table(dir: &Path, width: usize) -> Result<Table> {
-        // SAFETY: the file is not touched after it is installed (`modelos` installs into another folder).
+        // SAFETY: the file is not touched after it is installed (`models` installs into another folder).
         let rows = unsafe { memmap2::Mmap::map(&std::fs::File::open(dir.join(TABLE_FILE))?)? };
         let scales: Vec<f32> = std::fs::read(dir.join(SCALES_FILE))?.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         ensure!(rows.len() == scales.len() * width, "{TABLE_FILE}: {} bytes for {} rows of {width}", rows.len(), scales.len());

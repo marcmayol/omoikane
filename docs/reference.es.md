@@ -15,7 +15,7 @@ OMOIKANE_LANG=es omoi --help
 
 Las memorias pertenecen al repositorio git desde el que ejecutas `omoi` (`--global` hace que una valga en todos; más en [sync-and-spaces.es.md](sync-and-spaces.es.md#proyectos)). La base está en `~/.omoikane/omoikane.db` (`OMOIKANE_DB` para cambiarla, u `OMOIKANE_HOME` para llevar a otro sitio toda la carpeta `~/.omoikane`; para CI y servidores, ver [unattended.es.md](unattended.es.md)). Todos los comandos aceptan `--json`. Los mensajes salen en inglés; con `OMOIKANE_LANG=es`, en español.
 
-Varios agentes pueden usar la misma base a la vez (subagentes, varias sesiones, trabajos de CI): cada `omoi` espera su turno para escribir, hasta 5 s, y una base nueva que crean varios procesos en el mismo momento sale una sola. Lo comprueba `tests/concurrencia.rs` con procesos `omoi` de verdad; `cargo test --release --test concurrencia -- --ignored --nocapture` hace la medida entera (20 agentes durante 30 s).
+Varios agentes pueden usar la misma base a la vez (subagentes, varias sesiones, trabajos de CI): cada `omoi` espera su turno para escribir, hasta 5 s, y una base nueva que crean varios procesos en el mismo momento sale una sola. Lo comprueba `tests/concurrency.rs` con procesos `omoi` de verdad; `cargo test --release --test concurrency -- --ignored --nocapture` hace la medida entera (20 agentes durante 30 s).
 
 ## La ves y la ordenas tú
 
