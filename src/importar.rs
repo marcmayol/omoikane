@@ -5,7 +5,7 @@
 //! without the history.
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, Nueva, Tipo};
+use crate::memoria::{self, NewMemory, Kind};
 use crate::{proyecto, vectores};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
@@ -16,7 +16,7 @@ use std::path::Path;
 /// A memory as it is going to be saved, with its original dates.
 #[derive(Debug, Clone)]
 pub struct Entrante {
-    pub nueva: Nueva,
+    pub nueva: NewMemory,
     pub creada: Option<String>,
     pub cambiada: Option<String>,
 }
@@ -29,9 +29,9 @@ pub struct Resumen {
     pub fallidas: usize,
 }
 
-/// What `memoria::guardar` rejects and can be fixed without losing anything: a title over 200
+/// What `memoria::save` rejects and can be fixed without losing anything: a title over 200
 /// characters is cut (and the whole one moves to the start of the content) and empty content takes the title.
-fn fix_up(mut n: Nueva) -> Nueva {
+fn fix_up(mut n: NewMemory) -> NewMemory {
     if n.title.chars().count() > 200 {
         let short: String = n.title.chars().take(199).collect();
         n.content = if n.content.trim().is_empty() { n.title.clone() } else { format!("{}\n\n{}", n.title, n.content) };
@@ -44,7 +44,7 @@ fn fix_up(mut n: Nueva) -> Nueva {
 }
 
 /// Is there already a memory with the same title and content in that scope? For when there is no model.
-fn identical(db: &Connection, n: &Nueva) -> Result<bool> {
+fn identical(db: &Connection, n: &NewMemory) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM memory WHERE project_id = ?1 AND title = ?2 AND content = ?3)",
         params![crate::proyecto::resolver(db, &n.project)?.map_or(-1, |(id, _)| id), n.title, n.content],
@@ -103,7 +103,7 @@ fn boolish<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, 
 #[derive(Deserialize)]
 struct OmoikaneLine {
     project: String,
-    kind: Tipo,
+    kind: Kind,
     title: String,
     content: String,
     #[serde(default)]
@@ -117,12 +117,12 @@ struct OmoikaneLine {
 }
 
 /// engram kind → Omoikane kind. Anything with no equivalent is a `fact`.
-fn kind_from_engram(t: &str) -> Tipo {
+fn kind_from_engram(t: &str) -> Kind {
     match t {
-        "bugfix" => Tipo::Gotcha,
-        "decision" => Tipo::Decision,
-        "preference" => Tipo::Preference,
-        _ => Tipo::Fact,
+        "bugfix" => Kind::Gotcha,
+        "decision" => Kind::Decision,
+        "preference" => Kind::Preference,
+        _ => Kind::Fact,
     }
 }
 
@@ -149,7 +149,7 @@ pub fn leer(path: &Path, dir: Option<&Path>, current: &str) -> Result<(Vec<Entra
             (None, false) => m.project,
         };
         v.push(Entrante {
-            nueva: Nueva { project, kind: Some(m.kind), title: m.title, content: m.content, paths: m.paths, tags: m.tags, pinned: m.pinned, source: "import:omoikane".into(), ..Default::default() },
+            nueva: NewMemory { project, kind: Some(m.kind), title: m.title, content: m.content, paths: m.paths, tags: m.tags, pinned: m.pinned, source: "import:omoikane".into(), ..Default::default() },
             creada: m.created_at,
             cambiada: m.updated_at,
         });
@@ -190,7 +190,7 @@ fn from_engram(e: EngramExport, forced: Option<&str>, current: &str) -> (Vec<Ent
             tags.push(format!("topic:{t}"));
         }
         v.push(Entrante {
-            nueva: Nueva {
+            nueva: NewMemory {
                 project,
                 kind: Some(kind_from_engram(&kind)),
                 title: o.title,
@@ -224,7 +224,7 @@ pub fn guardar(db: &mut Connection, model: Option<&Modelo>, incoming: Vec<Entran
             continue;
         }
         let title = new.title.clone();
-        let id = match memoria::guardar(db, new, model) {
+        let id = match memoria::save(db, new, model) {
             Ok(m) => m.id,
             Err(err) => {
                 // A broken entry doesn't stop the import: count it and carry on.

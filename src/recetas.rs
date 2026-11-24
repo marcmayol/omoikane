@@ -10,7 +10,7 @@
 //! `git add → git commit → git push`, which everybody does; with those filters you get, for example,
 //! `git fetch → gh issue → gh pr` (checking if they answered on their PRs), which had no recipe.
 
-use crate::memoria::{AHORA, Tipo};
+use crate::memoria::{NOW, Kind};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
@@ -245,8 +245,8 @@ pub fn apuntar(db: &Connection, session: &str, steps: &[String]) -> Result<()> {
         return Ok(());
     }
     create_table(db)?;
-    db.execute(&format!("INSERT OR REPLACE INTO session_steps(session, at, steps) VALUES (?1, {AHORA}, ?2)"), params![session, serde_json::to_string(steps)?])?;
-    db.execute(&format!("DELETE FROM session_steps WHERE julianday({AHORA}) - julianday(at) > {DAYS}"), [])?;
+    db.execute(&format!("INSERT OR REPLACE INTO session_steps(session, at, steps) VALUES (?1, {NOW}, ?2)"), params![session, serde_json::to_string(steps)?])?;
+    db.execute(&format!("DELETE FROM session_steps WHERE julianday({NOW}) - julianday(at) > {DAYS}"), [])?;
     Ok(())
 }
 
@@ -300,7 +300,7 @@ pub fn propuesta(db: &Connection, current: &[String]) -> Result<Option<(Vec<Stri
     v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(b.0.len().cmp(&a.0.len())).then(a.0.cmp(&b.0)));
     let recipes: Vec<std::collections::HashSet<String>> = {
         let mut q = db.prepare("SELECT title || ' ' || content FROM memory WHERE kind = ?1")?;
-        q.query_map([Tipo::Procedure.as_str()], |f| f.get::<_, String>(0))?.filter_map(|t| t.ok()).map(|t| words(&t)).collect()
+        q.query_map([Kind::Procedure.as_str()], |f| f.get::<_, String>(0))?.filter_map(|t| t.ok()).map(|t| words(&t)).collect()
     };
     let already: std::collections::HashSet<String> = {
         let mut q = db.prepare("SELECT k FROM meta WHERE k LIKE 'receta_propuesta:%'")?;
@@ -325,9 +325,9 @@ pub fn proponer(db: &Connection, project: &str, session: &str, current: &[String
         "steps repeated in {n} sessions: `{}`. If it is a procedure the user follows, ask them and save it as a recipe (kind procedure, numbered steps and a `when:` line); if not, ignore it",
         w.join("` → `")
     );
-    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"), params![project, session, RECETA, text])?;
+    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {NOW})"), params![project, session, RECETA, text])?;
     let key = format!("receta_propuesta:{}", w.join(" > "));
-    db.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, {AHORA})"), [&key])?;
+    db.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, {NOW})"), [&key])?;
     Ok(true)
 }
 

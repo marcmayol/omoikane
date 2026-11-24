@@ -4,7 +4,7 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Cambios, Nueva, Tipo};
+use omoikane::memoria::{self, Changes, NewMemory, Kind};
 use omoikane::skill::{self, Destino, Estado};
 use std::path::Path;
 
@@ -18,14 +18,14 @@ fn setup(name: &str) -> (comun::Temporal, rusqlite::Connection, String) {
 }
 
 fn recipe(db: &mut rusqlite::Connection, repo: &str) -> String {
-    let n = Nueva {
+    let n = NewMemory {
         project: repo.into(),
-        kind: Some(Tipo::Procedure),
+        kind: Some(Kind::Procedure),
         title: "Publicar una versión".into(),
         content: "1. Subir la versión en Cargo.toml.\n2. Etiquetar y empujar.\n\nwhen: publica, saca versión".into(),
         ..Default::default()
     };
-    memoria::guardar(db, n, None).unwrap().id
+    memoria::save(db, n, None).unwrap().id
 }
 
 fn states(db: &rusqlite::Connection, repo: &str) -> Vec<(String, Estado)> {
@@ -51,7 +51,7 @@ fn writes_both_and_tracks_their_state() {
     assert!(skill::escribir(&db, &repo, &id, Destino::Ambas, false, false).unwrap().iter().all(|e| e.action == "unchanged"));
 
     // The memory changes: outdated, and `refresh` brings them up to date (with another title, in the same file).
-    memoria::actualizar(&mut db, &id, Cambios { title: Some("Publicar una versión nueva".into()), ..Default::default() }, None).unwrap();
+    memoria::update(&mut db, &id, Changes { title: Some("Publicar una versión nueva".into()), ..Default::default() }, None).unwrap();
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == Estado::Outdated));
     assert_eq!(skill::refrescar(&db, &repo, false).unwrap().len(), 2);
     assert!(states(&db, &repo).iter().all(|(p, e)| *e == Estado::UpToDate && p.contains("/publicar-una-version/")));
@@ -59,7 +59,7 @@ fn writes_both_and_tracks_their_state() {
     // Edited by hand (and with Windows line endings): it is respected, and `refresh` doesn't touch it.
     let by_hand = Path::new(&repo).join(".claude/skills/publicar-una-version/SKILL.md");
     std::fs::write(&by_hand, std::fs::read_to_string(&by_hand).unwrap().replace("Etiquetar", "Etiquetar con -a").replace('\n', "\r\n")).unwrap();
-    memoria::actualizar(&mut db, &id, Cambios { append: Some("3. Publicar.".into()), ..Default::default() }, None).unwrap();
+    memoria::update(&mut db, &id, Changes { append: Some("3. Publicar.".into()), ..Default::default() }, None).unwrap();
     let e: Vec<Estado> = states(&db, &repo).into_iter().map(|(_, e)| e).collect();
     assert_eq!(e, [Estado::Outdated, Estado::Edited]);
     assert_eq!(skill::refrescar(&db, &repo, false).unwrap().len(), 1);
@@ -73,7 +73,7 @@ fn writes_both_and_tracks_their_state() {
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == Estado::UpToDate));
 
     // Forgotten: orphan.
-    memoria::olvidar(&mut db, &id).unwrap();
+    memoria::forget(&mut db, &id).unwrap();
     assert!(states(&db, &repo).iter().all(|(_, e)| *e == Estado::Orphan));
 }
 
@@ -93,14 +93,14 @@ fn does_not_overwrite_others_nor_write_secrets() {
     let text = std::fs::read_to_string(Path::new(&repo).join(&r[0].path)).unwrap();
     assert!(text.starts_with(&format!("---\nname: {name}\n")), "{text}");
 
-    let n = Nueva {
+    let n = NewMemory {
         project: repo.clone(),
-        kind: Some(Tipo::Fact),
+        kind: Some(Kind::Fact),
         title: "Clave del despliegue".into(),
         content: "Se despliega con la clave de servicio.".into(),
         ..Default::default()
     };
-    let secret = memoria::guardar(&mut db, n, None).unwrap().id;
+    let secret = memoria::save(&mut db, n, None).unwrap().id;
     // Saving it already strips secrets; here, one that arrived with one (from an old database).
     db.execute("UPDATE memory SET content = 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789' WHERE id = ?1", [&secret]).unwrap();
     let e = skill::escribir(&db, &repo, &secret, Destino::Ambas, false, false).unwrap_err().to_string();
@@ -117,16 +117,16 @@ fn suggests_and_finds_without_id() {
     let (d, mut db, repo) = setup("propone");
     let recipe_id = recipe(&mut db, &repo);
     let fact = |db: &mut rusqlite::Connection, title: &str| {
-        let n = Nueva { project: repo.clone(), kind: Some(Tipo::Fact), title: title.into(), content: format!("{title}, con detalle."), ..Default::default() };
-        memoria::guardar(db, n, None).unwrap().id
+        let n = NewMemory { project: repo.clone(), kind: Some(Kind::Fact), title: title.into(), content: format!("{title}, con detalle."), ..Default::default() };
+        memoria::save(db, n, None).unwrap().id
     };
     let used = fact(&mut db, "El smoke test necesita compilar antes");
     let once = fact(&mut db, "El puerto del servidor es el 8010");
     // Global: not from the repository.
-    let n = Nueva { kind: Some(Tipo::Procedure), title: "Receta global".into(), content: "1. Algo.
+    let n = NewMemory { kind: Some(Kind::Procedure), title: "Receta global".into(), content: "1. Algo.
 
 when: global".into(), ..Default::default() };
-    memoria::guardar(&mut db, n, None).unwrap();
+    memoria::save(&mut db, n, None).unwrap();
     for (session, ids) in [("s1", vec![used.clone(), once.clone()]), ("s2", vec![used.clone()])] {
         let conv = d.join(format!("{session}.jsonl"));
         std::fs::write(&conv, "").unwrap();

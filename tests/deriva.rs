@@ -4,7 +4,7 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use omoikane::revisar;
 use rusqlite::Connection;
 use std::path::Path;
@@ -48,23 +48,23 @@ fn date(db: &Connection, ago: &str) -> String {
 
 /// A project memory with those paths, written `ago`.
 fn memory(db: &mut Connection, project: &str, title: &str, content: &str, paths: &[&str], ago: &str) -> String {
-    let n = Nueva {
+    let n = NewMemory {
         project: project.into(),
-        kind: Some(Tipo::Gotcha),
+        kind: Some(Kind::Gotcha),
         title: title.into(),
         content: content.into(),
         paths: paths.iter().map(|r| r.to_string()).collect(),
         ..Default::default()
     };
-    let m = memoria::guardar(db, n, None).unwrap();
+    let m = memoria::save(db, n, None).unwrap();
     let f = date(db, ago);
     db.execute("UPDATE memory SET created_at = ?1, updated_at = ?1 WHERE id = ?2", rusqlite::params![f, m.id]).unwrap();
     m.id
 }
 
 fn drifts(db: &Connection, project: &str) -> Vec<(String, String)> {
-    let scope = Ambito::de(db, project).unwrap();
-    revisar::avisos(db, &scope).unwrap().into_iter().filter(|a| a.kind == revisar::DERIVA_CODIGO).map(|a| (a.memory_id, a.detail)).collect()
+    let scope = Scope::from_project(db, project).unwrap();
+    revisar::notices(db, &scope).unwrap().into_iter().filter(|a| a.kind == revisar::CODE_DRIFT).map(|a| (a.memory_id, a.detail)).collect()
 }
 
 /// A git repository with `src/a.rs` and `src/b.rs` (40 lines each) from 20 days ago.
@@ -98,8 +98,8 @@ fn warns_if_its_files_change_a_lot_and_not_for_touch_ups() {
     assert!(v[0].1.starts_with("`src/a.rs` changed a lot since ") && v[0].1.contains("1 commit, 80 lines changed, 200% of their size") && v[0].1.ends_with("is it still true?"), "{}", v[0].1);
     assert!(!v.iter().any(|(id, _)| *id == small));
     // The warning at start counts what was already computed.
-    let counts = revisar::pendientes(&db, &Ambito::de(&db, &project).unwrap()).unwrap();
-    assert_eq!(counts.get(revisar::DERIVA_CODIGO), Some(&1), "{counts:?}");
+    let counts = revisar::pending(&db, &Scope::from_project(&db, &project).unwrap()).unwrap();
+    assert_eq!(counts.get(revisar::CODE_DRIFT), Some(&1), "{counts:?}");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn fine_as_is_until_it_changes_again() {
     let id = memory(&mut db, &project, "Cómo va a.rs", "Lo de a.rs.", &["src/a.rs"], "-10 days");
     commit(&db, &root, "src/a.rs", &text(40, "dos"), Some("-8 days"));
     assert_eq!(drifts(&db, &project).len(), 1);
-    revisar::descartar(&db, &id, revisar::DERIVA_CODIGO, "").unwrap();
+    revisar::dismiss(&db, &id, revisar::CODE_DRIFT, "").unwrap();
     assert!(drifts(&db, &project).is_empty());
     // Confirmed 5 days ago: the change from 8 days ago no longer counts…
     let f = date(&db, "-5 days");
@@ -139,12 +139,12 @@ fn fine_as_is_until_it_changes_again() {
     // result is already stored).
     commit(&db, &root, "src/a.rs", &text(40, "tres"), Some("-1 days"));
     assert!(drifts(&db, &project).is_empty());
-    assert_eq!(omoikane::deriva::refrescar(&db).unwrap(), 1);
+    assert_eq!(omoikane::deriva::refresh(&db).unwrap(), 1);
     let v = drifts(&db, &project);
     assert_eq!(v.len(), 1, "{v:?}");
     assert!(v[0].1.contains("since ") && v[0].1.contains("1 commit,"), "{}", v[0].1);
     // The memory has not been touched.
-    assert_eq!(memoria::obtener(&db, &id).unwrap().content, "Lo de a.rs.");
+    assert_eq!(memoria::get(&db, &id).unwrap().content, "Lo de a.rs.");
 }
 
 #[test]
@@ -208,8 +208,8 @@ fn cli_recomputes_and_confirms() {
     omoi(&d, &["review", "--refresh-drift"]);
     let stored: String = db.query_row("SELECT v FROM meta WHERE k = 'deriva_codigo'", [], |f| f.get(0)).unwrap();
     assert!(stored.contains(&id) && stored.contains("changed a lot"), "{stored}");
-    let counts = revisar::pendientes(&db, &Ambito::de(&db, &project).unwrap()).unwrap();
-    assert_eq!(counts.get(revisar::DERIVA_CODIGO), Some(&1), "{counts:?}");
+    let counts = revisar::pending(&db, &Scope::from_project(&db, &project).unwrap()).unwrap();
+    assert_eq!(counts.get(revisar::CODE_DRIFT), Some(&1), "{counts:?}");
     let output = omoi(&d, &["review", "--dismiss", &id, "--kind", "code_drift"]);
     assert!(output.contains("until its files change a lot again"), "{output}");
     assert!(drifts(&db, &project).is_empty());

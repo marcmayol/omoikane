@@ -3,10 +3,10 @@
 //! (memories and activity per author and per agent) and what is stale or paused (what `revisar`
 //! says, projects paused by sync and what nobody has touched for months).
 //!
-//! Read-only, and only what is visible from where you look (`Ambito`): from a project, its space; from
+//! Read-only, and only what is visible from where you look (`Scope`): from a project, its space; from
 //! the user's folder, all of them. Global memories belong to no client and don't show up here.
 
-use crate::memoria::{self, Ambito, Memoria};
+use crate::memoria::{self, Scope, Memory};
 use crate::{proyecto, revisar};
 use anyhow::Result;
 use rusqlite::Connection;
@@ -24,10 +24,10 @@ const RECENT_DAYS: u32 = 30;
 /// A group in the view: a space, or the projects without a space (empty key).
 #[derive(Default)]
 struct Group<'a> {
-    memories: Vec<&'a Memoria>,
+    memories: Vec<&'a Memory>,
     projects: Vec<Value>,
     pauses: Vec<Value>,
-    warnings: Vec<&'a revisar::Aviso>,
+    warnings: Vec<&'a revisar::Notice>,
 }
 
 /// An author's figures within a group.
@@ -41,7 +41,7 @@ struct Author<'a> {
 }
 
 /// The memory in a few words, for lists.
-fn brief(m: &Memoria) -> Value {
+fn brief(m: &Memory) -> Value {
     json!({
         "id": m.id,
         "title": m.title,
@@ -62,15 +62,15 @@ fn ago(db: &Connection, offset: &str) -> Result<String> {
 
 /// What the lead sees from `base`, grouped by space. `months`: since when an untouched memory
 /// counts as forgotten.
-pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> Result<Value> {
+pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> Result<Value> {
     let months = months.clamp(1, 120);
     // From a project, its whole space (the client's other projects too), not just its own.
-    let base = &base.amplio();
-    let all = memoria::recientes(db, base, None, usize::MAX >> 1)?;
-    let warnings = revisar::avisos(db, base)?;
+    let base = &base.widen();
+    let all = memoria::recent(db, base, None, usize::MAX >> 1)?;
+    let warnings = revisar::notices(db, base)?;
     // The space being looked from (its key; empty: none) and whether everything is visible.
-    let everything = matches!(base, Ambito::Todos);
-    let own = proyecto::clave_espacio(db, base.espacio())?;
+    let everything = matches!(base, Scope::All);
+    let own = proyecto::clave_espacio(db, base.space())?;
     let visible = |key: &str| everything || key == own;
     let cutoff = ago(db, &format!("-{months} months"))?;
     let recent_cutoff = ago(db, &format!("-{RECENT_DAYS} days"))?;
@@ -92,7 +92,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> 
             groups.entry(m.space.clone()).or_default().memories.push(m);
         }
     }
-    let by_id: HashMap<&str, &Memoria> = all.iter().map(|m| (m.id.as_str(), m)).collect();
+    let by_id: HashMap<&str, &Memory> = all.iter().map(|m| (m.id.as_str(), m)).collect();
     for a in &warnings {
         if let Some(m) = by_id.get(a.memory_id.as_str())
             && !(m.project_id == 0 && m.space.is_empty())
@@ -122,9 +122,9 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> 
         })
         .collect();
     // Each project's latest `status` (the list goes from newest to oldest).
-    let mut statuses: HashMap<i64, &Memoria> = HashMap::new();
+    let mut statuses: HashMap<i64, &Memory> = HashMap::new();
     for m in &all {
-        if m.project_id != 0 && m.tags.iter().any(|t| t == memoria::ESTADO) {
+        if m.project_id != 0 && m.tags.iter().any(|t| t == memoria::STATUS) {
             statuses.entry(m.project_id).or_insert(m);
         }
     }
@@ -188,20 +188,20 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> 
                 })
                 .collect();
             authors.sort_by(|a, b| b["last"].as_str().cmp(&a["last"].as_str()));
-            let mut open: Vec<&&Memoria> =
-                ms.iter().filter(|m| m.kind == memoria::Tipo::Decision && m.tags.iter().any(|t| t == memoria::ABIERTA)).collect();
+            let mut open: Vec<&&Memory> =
+                ms.iter().filter(|m| m.kind == memoria::Kind::Decision && m.tags.iter().any(|t| t == memoria::OPEN)).collect();
             // Blocking ones first, as at session start.
-            open.sort_by_key(|m| !m.bloqueante());
-            let blocking = open.iter().filter(|m| m.bloqueante()).count();
-            let pinned_mems: Vec<&&Memoria> = ms.iter().filter(|m| m.pinned).collect();
+            open.sort_by_key(|m| !m.is_blocking());
+            let blocking = open.iter().filter(|m| m.is_blocking()).count();
+            let pinned_mems: Vec<&&Memory> = ms.iter().filter(|m| m.pinned).collect();
             // Those nobody has touched since the cutoff, oldest to newest.
-            let mut untouched: Vec<&&Memoria> = ms.iter().filter(|m| m.updated_at < cutoff).collect();
+            let mut untouched: Vec<&&Memory> = ms.iter().filter(|m| m.updated_at < cutoff).collect();
             untouched.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
             let mut by_kind: BTreeMap<&str, usize> = BTreeMap::new();
             for a in &g.warnings {
                 *by_kind.entry(a.kind.as_str()).or_default() += 1;
             }
-            let list = |v: &[&&Memoria]| v.iter().take(PER_LIST).map(|m| brief(m)).collect::<Vec<_>>();
+            let list = |v: &[&&Memory]| v.iter().take(PER_LIST).map(|m| brief(m)).collect::<Vec<_>>();
             json!({
                 "key": key,
                 "name": names.get(&key).cloned().unwrap_or_default(),
@@ -215,7 +215,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Ambito, months: u32) -> 
                     "blocking": blocking,
                     "items": open.iter().take(PER_LIST).map(|m| {
                         let mut b = brief(m);
-                        b["blocking"] = json!(m.bloqueante());
+                        b["blocking"] = json!(m.is_blocking());
                         b
                     }).collect::<Vec<_>>(),
                 },

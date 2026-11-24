@@ -2,7 +2,7 @@
 //! record in which agent session and in which project commit it was written, so we can go back to
 //! the source (the conversation, the code at that moment).
 //!
-//! It goes in `memory.extra` under the key [`CLAVE`], like the data and the verification: without
+//! It goes in `memory.extra` under the key [`KEY`], like the data and the verification: without
 //! changing the schema, it travels as a `provenance` field of the line and a 1.0–1.8 keeps it without understanding it.
 //! It is the one from when it was created: changing it later doesn't touch it (the history says when it changed).
 //!
@@ -26,19 +26,19 @@
 //! project, only the session: the commit and branch belong to the folder it was written in, which may
 //! be a client's, and those memories are seen from others. Same when moving it later (promoting it to
 //! a trade leaves it without provenance; to global, without commit or branch) and when reading or
-//! exporting it ([`para_memoria`]).
+//! exporting it ([`for_memory`]).
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The key in `memory.extra` (and the `provenance` field of the line that travels).
-pub const CLAVE: &str = "provenance";
+pub const KEY: &str = "provenance";
 
 
 /// Where a memory came from.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Procedencia {
+pub struct Provenance {
     /// The agent session id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub session: String,
@@ -56,13 +56,13 @@ pub struct Procedencia {
     pub span_id: String,
 }
 
-impl Procedencia {
-    pub fn vacia(&self) -> bool {
+impl Provenance {
+    pub fn is_empty(&self) -> bool {
         self.session.is_empty() && self.commit.is_empty() && self.trace_id.is_empty()
     }
 
     /// On one line: «session 2bd891d2… · commit e564a66 (master)».
-    pub fn texto(&self) -> String {
+    pub fn text(&self) -> String {
         let mut parts = Vec::new();
         if !self.session.is_empty() {
             parts.push(format!("session {}", self.session));
@@ -78,35 +78,35 @@ impl Procedencia {
     }
 }
 
-/// The one from its column in `memoria::COLUMNAS` (the JSON of `extra.provenance`).
-pub(crate) fn de_columna(json: Option<&str>) -> Option<Procedencia> {
-    serde_json::from_str::<Procedencia>(json?).ok().filter(|p| !p.vacia())
+/// The one from its column in `memoria::COLUMNS` (the JSON of `extra.provenance`).
+pub(crate) fn from_column(json: Option<&str>) -> Option<Provenance> {
+    serde_json::from_str::<Provenance>(json?).ok().filter(|p| !p.is_empty())
 }
 
 /// The provenance of what is being saved now in the project folder `project` (the root, as given by
 /// `proyecto::de`; empty: global without a folder), or `None` if there is nothing to record.
-pub fn actual(db: &Connection, project: &str) -> Option<Procedencia> {
+pub fn current(db: &Connection, project: &str) -> Option<Provenance> {
     let session = session(db, project).unwrap_or_default();
-    let (commit, branch) = if project.is_empty() { None } else { commit_de(Path::new(project)) }.unwrap_or_default();
+    let (commit, branch) = if project.is_empty() { None } else { head_commit(Path::new(project)) }.unwrap_or_default();
     let (trace_id, span_id) = trace().unwrap_or_default();
-    let p = Procedencia { session, commit, branch, trace_id, span_id };
-    (!p.vacia()).then_some(p)
+    let p = Provenance { session, commit, branch, trace_id, span_id };
+    (!p.is_empty()).then_some(p)
 }
 
 /// Only the agent session (no commit or branch), for what doesn't belong to the project of the folder
 /// `project`: a global memory, one from a space without a project, or a trade one must not carry the
 /// branch of the folder it was written in, which may be a client's (`feature/acme-…`) and would be
 /// seen from any other.
-pub fn solo_sesion(db: &Connection, project: &str) -> Option<Procedencia> {
+pub fn session_only(db: &Connection, project: &str) -> Option<Provenance> {
     let (trace_id, span_id) = trace().unwrap_or_default();
-    let p = Procedencia { session: session(db, project).unwrap_or_default(), trace_id, span_id, ..Default::default() };
-    (!p.vacia()).then_some(p)
+    let p = Provenance { session: session(db, project).unwrap_or_default(), trace_id, span_id, ..Default::default() };
+    (!p.is_empty()).then_some(p)
 }
 
 /// The one a memory may carry depending on where it is now: none if it is a trade one (it belongs to
 /// every project of its trade), only the session if it isn't a project's (global or a space's), and
 /// all of it if it is a project's. Works for what was saved before trimming it and for what is moved later.
-pub(crate) fn para_memoria(p: Option<Procedencia>, project_id: i64, tags: &[String]) -> Option<Procedencia> {
+pub(crate) fn for_memory(p: Option<Provenance>, project_id: i64, tags: &[String]) -> Option<Provenance> {
     let mut p = p?;
     if tags.iter().any(|t| t.starts_with(crate::oficios::PREFIJO)) {
         return None;
@@ -115,22 +115,22 @@ pub(crate) fn para_memoria(p: Option<Procedencia>, project_id: i64, tags: &[Stri
         p.commit.clear();
         p.branch.clear();
     }
-    (!p.vacia()).then_some(p)
+    (!p.is_empty()).then_some(p)
 }
 
-/// [`para_memoria`] on an `extra` (the one of `memory.extra` or of an outgoing line): removes the key
+/// [`for_memory`] on an `extra` (the one of `memory.extra` or of an outgoing line): removes the key
 /// or trims it. `true` if anything changed.
-pub(crate) fn recortar_extra(extra: &mut serde_json::Map<String, serde_json::Value>, project_id: i64, tags: &[String]) -> bool {
+pub(crate) fn trim_extra(extra: &mut serde_json::Map<String, serde_json::Value>, project_id: i64, tags: &[String]) -> bool {
     // One we don't understand (from a future version with another shape) is left as it is.
-    let Some(before) = extra.get(CLAVE).and_then(|v| serde_json::from_value::<Procedencia>(v.clone()).ok()) else { return false };
-    match para_memoria(Some(before.clone()), project_id, tags) {
+    let Some(before) = extra.get(KEY).and_then(|v| serde_json::from_value::<Provenance>(v.clone()).ok()) else { return false };
+    match for_memory(Some(before.clone()), project_id, tags) {
         Some(p) if p == before => false,
         Some(p) => {
-            extra.insert(CLAVE.into(), serde_json::to_value(p).unwrap_or_default());
+            extra.insert(KEY.into(), serde_json::to_value(p).unwrap_or_default());
             true
         }
         None => {
-            extra.remove(CLAVE);
+            extra.remove(KEY);
             true
         }
     }
@@ -144,10 +144,10 @@ fn env_var(k: &str) -> Option<String> {
 /// other than `ff` (a future version may add fields after: the first four are read), ids that aren't
 /// all zeros. A malformed one is ignored, as the standard says.
 fn trace() -> Option<(String, String)> {
-    traza_de(&env_var("TRACEPARENT")?)
+    parse_traceparent(&env_var("TRACEPARENT")?)
 }
 
-pub(crate) fn traza_de(v: &str) -> Option<(String, String)> {
+pub(crate) fn parse_traceparent(v: &str) -> Option<(String, String)> {
     let mut parts = v.split('-');
     let (version, trace, span, flags) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
@@ -181,7 +181,7 @@ fn session(db: &Connection, project: &str) -> Option<String> {
 /// The HEAD commit and its branch in the repository rooted at `root`, reading git's files: `.git`
 /// (or, in a worktree, the `gitdir:` file and its `commondir`), `HEAD`, the loose ref or
 /// `packed-refs`. `None` if it isn't a repository, has no commits yet or can't be understood (reftable).
-pub fn commit_de(root: &Path) -> Option<(String, String)> {
+pub fn head_commit(root: &Path) -> Option<(String, String)> {
     // Every file opened costs (on Windows, ~0.1 ms): the minimum. A normal repository: HEAD
     // and its branch; a worktree: also `.git` and `commondir`.
     // Local, or on the network share of the folder being worked in (`proyecto::legible`).
@@ -239,23 +239,23 @@ mod tests {
         let root = t.join("repo");
         let git = root.join(".git");
         std::fs::create_dir_all(git.join("refs").join("heads")).unwrap();
-        assert_eq!(commit_de(&root), None, "sin HEAD");
+        assert_eq!(head_commit(&root), None, "sin HEAD");
         let a = "a".repeat(40);
         let b = "b".repeat(40);
         // Branch with its file.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::write(git.join("refs").join("heads").join("main"), format!("{a}\n")).unwrap();
-        assert_eq!(commit_de(&root), Some((a.clone(), "main".into())));
+        assert_eq!(head_commit(&root), Some((a.clone(), "main".into())));
         // Branch only in packed-refs.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/vieja\n").unwrap();
         std::fs::write(git.join("packed-refs"), format!("# pack-refs with: peeled fully-peeled sorted\n{b} refs/heads/vieja\n")).unwrap();
-        assert_eq!(commit_de(&root), Some((b.clone(), "vieja".into())));
+        assert_eq!(head_commit(&root), Some((b.clone(), "vieja".into())));
         // Branch without commits.
         std::fs::write(git.join("HEAD"), "ref: refs/heads/nueva\n").unwrap();
-        assert_eq!(commit_de(&root), None);
+        assert_eq!(head_commit(&root), None);
         // Detached HEAD.
         std::fs::write(git.join("HEAD"), format!("{a}\n")).unwrap();
-        assert_eq!(commit_de(&root), Some((a.clone(), String::new())));
+        assert_eq!(head_commit(&root), Some((a.clone(), String::new())));
         // A worktree: `.git` is a file, its own HEAD and the branches in the common folder.
         let wt = t.join("wt");
         let gitdir = git.join("worktrees").join("wt");
@@ -264,40 +264,40 @@ mod tests {
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
         std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
         std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(commit_de(&wt), Some((a, "main".into())));
-        assert_eq!(commit_de(&t.join("no-existe")), None);
+        assert_eq!(head_commit(&wt), Some((a, "main".into())));
+        assert_eq!(head_commit(&t.join("no-existe")), None);
     }
 
     #[test]
     fn traceparent_valid_and_invalid() {
         let t = "4bf92f3577b34da6a3ce929d0e0e4736";
         let s = "00f067aa0ba902b7";
-        assert_eq!(traza_de(&format!("00-{t}-{s}-01")), Some((t.into(), s.into())));
+        assert_eq!(parse_traceparent(&format!("00-{t}-{s}-01")), Some((t.into(), s.into())));
         // A future version may bring fields after; version 00, no.
-        assert_eq!(traza_de(&format!("01-{t}-{s}-01-extra")), Some((t.into(), s.into())));
-        assert_eq!(traza_de(&format!("00-{t}-{s}-01-extra")), None);
-        assert_eq!(traza_de(&format!("ff-{t}-{s}-01")), None);
-        assert_eq!(traza_de(&format!("00-{}-{s}-01", "0".repeat(32))), None);
-        assert_eq!(traza_de(&format!("00-{t}-{}-01", "0".repeat(16))), None);
-        assert_eq!(traza_de(&format!("00-{}-{s}-01", t.to_uppercase())), None);
-        assert_eq!(traza_de(&format!("00-{t}-{s}")), None);
-        assert_eq!(traza_de("basura"), None);
+        assert_eq!(parse_traceparent(&format!("01-{t}-{s}-01-extra")), Some((t.into(), s.into())));
+        assert_eq!(parse_traceparent(&format!("00-{t}-{s}-01-extra")), None);
+        assert_eq!(parse_traceparent(&format!("ff-{t}-{s}-01")), None);
+        assert_eq!(parse_traceparent(&format!("00-{}-{s}-01", "0".repeat(32))), None);
+        assert_eq!(parse_traceparent(&format!("00-{t}-{}-01", "0".repeat(16))), None);
+        assert_eq!(parse_traceparent(&format!("00-{}-{s}-01", t.to_uppercase())), None);
+        assert_eq!(parse_traceparent(&format!("00-{t}-{s}")), None);
+        assert_eq!(parse_traceparent("basura"), None);
     }
 
     #[test]
     fn trace_only_is_not_empty_and_shows() {
-        let p = Procedencia { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(), span_id: "00f067aa0ba902b7".into(), ..Default::default() };
-        assert!(!p.vacia());
-        assert_eq!(p.texto(), "trace 4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7");
+        let p = Provenance { trace_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(), span_id: "00f067aa0ba902b7".into(), ..Default::default() };
+        assert!(!p.is_empty());
+        assert_eq!(p.text(), "trace 4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7");
         // A global one keeps it (they are ids with nothing from the project); a trade one, no.
-        assert_eq!(para_memoria(Some(p.clone()), 0, &[]), Some(p.clone()));
-        assert_eq!(para_memoria(Some(p), 3, &[format!("{}android", crate::oficios::PREFIJO)]), None);
+        assert_eq!(for_memory(Some(p.clone()), 0, &[]), Some(p.clone()));
+        assert_eq!(for_memory(Some(p), 3, &[format!("{}android", crate::oficios::PREFIJO)]), None);
     }
 
     #[test]
     fn short_text() {
-        let p = Procedencia { session: "s1".into(), commit: "0123456789abcdef0123456789abcdef01234567".into(), branch: "main".into(), ..Default::default() };
-        assert_eq!(p.texto(), "session s1 · commit 0123456789ab (main)");
-        assert!(de_columna(Some("{}")).is_none());
+        let p = Provenance { session: "s1".into(), commit: "0123456789abcdef0123456789abcdef01234567".into(), branch: "main".into(), ..Default::default() };
+        assert_eq!(p.text(), "session s1 · commit 0123456789ab (main)");
+        assert!(from_column(Some("{}")).is_none());
     }
 }

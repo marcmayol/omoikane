@@ -234,8 +234,8 @@ fn web_only_shows_the_space_it_started_in() {
         ("/api/restore", serde_json::json!({ "id": forgotten_globex })),
         ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_old, "kind": "outdated", "other_id": globex_new })),
         ("/api/candidates/dismiss", serde_json::json!({ "id": cand_globex })),
-        // The id in lowercase, or just its prefix, is the same id: not allowed either (before, `ve` didn't
-        // find it as is, treated it as visible, and `descartar` did find it).
+        // The id in lowercase, or just its prefix, is the same id: not allowed either (before, `Scope::sees` didn't
+        // find it as is, treated it as visible, and `revisar::dismiss` did find it).
         ("/api/review/dismiss", serde_json::json!({ "memory_id": globex_old.to_lowercase(), "kind": "outdated", "other_id": globex_new.to_lowercase() })),
         ("/api/review/dismiss", serde_json::json!({ "memory_id": &globex_old[..20], "kind": "outdated", "other_id": &globex_new[..20] })),
         ("/api/review/dismiss", serde_json::json!({ "memory_id": globex.to_lowercase(), "kind": "secret" })),

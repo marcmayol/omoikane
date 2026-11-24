@@ -3,9 +3,9 @@
 
 mod comun;
 
-use omoikane::buscar::{self, Opciones};
+use omoikane::buscar::{self, SearchOptions};
 use omoikane::embeber::{Modelo, compilar};
-use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, Changes, NewMemory, Kind};
 use omoikane::{db, vectores};
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -67,8 +67,8 @@ fn fresh_db(name: &str) -> (comun::Temporal, Connection) {
     (dir, db)
 }
 
-fn new_memory(project: &str, title: &str, content: &str) -> Nueva {
-    Nueva { project: project.into(), kind: Some(Tipo::Fact), title: title.into(), content: content.into(), ..Default::default() }
+fn new_memory(project: &str, title: &str, content: &str) -> NewMemory {
+    NewMemory { project: project.into(), kind: Some(Kind::Fact), title: title.into(), content: content.into(), ..Default::default() }
 }
 
 fn count(db: &Connection, sql: &str) -> i64 {
@@ -80,26 +80,26 @@ fn vectors_follow_the_memories() {
     let Some(m) = model() else { return };
     let (_dir, mut db) = fresh_db("al-dia");
     // Two saved without a model (as before installing it) and one with it.
-    let a = memoria::guardar(&mut db, new_memory("/p", "Uno", "primero"), None).unwrap();
-    memoria::guardar(&mut db, new_memory("/p", "Dos", "segundo"), None).unwrap();
-    memoria::guardar(&mut db, new_memory("/p", "Tres", "tercero"), Some(&m)).unwrap();
+    let a = memoria::save(&mut db, new_memory("/p", "Uno", "primero"), None).unwrap();
+    memoria::save(&mut db, new_memory("/p", "Dos", "segundo"), None).unwrap();
+    memoria::save(&mut db, new_memory("/p", "Tres", "tercero"), Some(&m)).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 1);
     // sincronizar fills in the missing ones and records the model; the second time it does nothing.
     assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 3);
     assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 3);
     // Changing the text without a model invalidates its vector; sincronizar rebuilds it.
-    memoria::actualizar(&mut db, &a.id, Cambios { content: Some("otro".into()), ..Default::default() }, None).unwrap();
+    memoria::update(&mut db, &a.id, Changes { content: Some("otro".into()), ..Default::default() }, None).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 2);
     assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 1);
     // Pinning doesn't change the text: the vector stays.
-    memoria::actualizar(&mut db, &a.id, Cambios { pinned: Some(true), ..Default::default() }, None).unwrap();
+    memoria::update(&mut db, &a.id, Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 3);
     // If the vectors are from another model, they are all rebuilt.
     db.execute("UPDATE meta SET v = 'otro-modelo' WHERE k = 'modelo'", []).unwrap();
     assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 3);
     // Forgetting takes the vector with it.
-    memoria::olvidar(&mut db, &a.id).unwrap();
+    memoria::forget(&mut db, &a.id).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 2);
 }
 
@@ -107,9 +107,9 @@ fn vectors_follow_the_memories() {
 fn the_vector_is_the_new_texts() {
     let Some(m) = model() else { return };
     let (_dir, mut db) = fresh_db("texto-nuevo");
-    let a = memoria::guardar(&mut db, new_memory("/p", "Puerto", "El servidor escucha en el 8765."), Some(&m)).unwrap();
-    let c = Cambios { content: Some("La tortilla lleva cebolla.".into()), ..Default::default() };
-    memoria::actualizar(&mut db, &a.id, c, Some(&m)).unwrap();
+    let a = memoria::save(&mut db, new_memory("/p", "Puerto", "El servidor escucha en el 8765."), Some(&m)).unwrap();
+    let c = Changes { content: Some("La tortilla lleva cebolla.".into()), ..Default::default() };
+    memoria::update(&mut db, &a.id, c, Some(&m)).unwrap();
     let p = vectores::parecidas(&db, &m, &vectores::texto("Puerto", "La tortilla lleva cebolla."), None, None, -1.0, 1).unwrap();
     assert!(p[0].1 > 0.999, "similitud {}", p[0].1);
 }
@@ -119,10 +119,10 @@ fn duplicates_in_the_same_scope() {
     let Some(m) = model() else { return };
     let (_dir, mut db) = fresh_db("duplicados");
     let n = new_memory("/p", "Bug en auth: el token caduca antes de tiempo", "El middleware compara la hora local con la caducidad en UTC.");
-    memoria::guardar(&mut db, n, Some(&m)).unwrap();
+    memoria::save(&mut db, n, Some(&m)).unwrap();
     // A few more memories, as in a real database (the mean comes from them).
     for (t, c) in [("Puerto", "El servidor escucha en el 8765."), ("Commits", "Una línea, en inglés."), ("Node", "Hace falta Node 20.")] {
-        memoria::guardar(&mut db, new_memory("/p", t, c), Some(&m)).unwrap();
+        memoria::save(&mut db, new_memory("/p", t, c), Some(&m)).unwrap();
     }
     // The same memory said another way, in the same project: it is detected.
     let d = vectores::duplicada(&db, &m, "/p", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap();
@@ -160,7 +160,7 @@ fn duplicate_threshold() {
     let mut seen = std::collections::HashSet::new();
     for (_, a, _) in &pairs {
         if seen.insert(a.clone()) {
-            memoria::guardar(&mut db, new_memory("/p", a, a), Some(&m)).unwrap();
+            memoria::save(&mut db, new_memory("/p", a, a), Some(&m)).unwrap();
         }
     }
     let (mut hits, mut duplicates, mut false_positives) = (0, 0, Vec::new());
@@ -192,20 +192,20 @@ fn search_quality() {
     for l in include_str!("busquedas.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         let c: Vec<&str> = l.split('\t').collect();
         if c[0] == "m" {
-            let mem = memoria::guardar(&mut db, new_memory("/p", c[2], c[3]), Some(&m)).unwrap();
+            let mem = memoria::save(&mut db, new_memory("/p", c[2], c[3]), Some(&m)).unwrap();
             keys.insert(mem.id, c[1].to_string());
         } else {
             queries.push((c[1].to_string(), c[2].to_string()));
         }
     }
-    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
+    let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 5 };
     let mut measure = |with: Option<&Modelo>| {
         let (mut top1, mut noise) = (0, 0);
         for (key, q) in &queries {
-            let r = buscar::buscar(&mut db, q, &o, with).unwrap();
+            let r = buscar::search(&mut db, q, &o, with).unwrap();
             match (key.as_str(), r.first()) {
                 ("-", Some(_)) => noise += 1,
-                (k, Some(p)) if keys[&p.memoria.id] == k => top1 += 1,
+                (k, Some(p)) if keys[&p.memory.id] == k => top1 += 1,
                 _ => {}
             }
         }
@@ -218,8 +218,8 @@ fn search_quality() {
     assert_eq!(noise_without, 0);
     assert_eq!(noise_with, 0, "{noise_with} consultas sin respuesta devuelven algo");
     // What comes up by words also carries its similarity.
-    let r = buscar::buscar(&mut db, "el token caduca antes de tiempo", &o, Some(&m)).unwrap();
-    assert_eq!(keys[&r[0].memoria.id], "auth");
+    let r = buscar::search(&mut db, "el token caduca antes de tiempo", &o, Some(&m)).unwrap();
+    assert_eq!(keys[&r[0].memory.id], "auth");
     assert!(r[0].similarity.is_some());
 }
 
@@ -230,16 +230,16 @@ fn consistency_with_vectors() {
     let mut ids = Vec::new();
     for i in 0..60 {
         let uses = if i % 3 == 0 { None } else { Some(&*m) };
-        ids.push(memoria::guardar(&mut db, new_memory("/p", &format!("nota {i}"), &format!("contenido {i}")), uses).unwrap().id);
+        ids.push(memoria::save(&mut db, new_memory("/p", &format!("nota {i}"), &format!("contenido {i}")), uses).unwrap().id);
     }
     for (i, id) in ids.iter().enumerate() {
         match i % 4 {
             0 => {
-                memoria::olvidar(&mut db, id).unwrap();
+                memoria::forget(&mut db, id).unwrap();
             }
             1 => {
-                let c = Cambios { content: Some(format!("cambiado {i}")), ..Default::default() };
-                memoria::actualizar(&mut db, id, c, if i % 2 == 0 { Some(&m) } else { None }).unwrap();
+                let c = Changes { content: Some(format!("cambiado {i}")), ..Default::default() };
+                memoria::update(&mut db, id, c, if i % 2 == 0 { Some(&m) } else { None }).unwrap();
             }
             _ => {}
         }
@@ -256,13 +256,13 @@ fn consistency_with_vectors() {
 fn duplicates_among_trade_memories() {
     let Some(m) = model() else { return };
     let (_dir, mut db) = fresh_db("duplicados-oficio");
-    let trade_memory = |trade: &str, t: &str, c: &str| Nueva { tags: vec![format!("trade:{trade}")], ..new_memory("", t, c) };
-    let old = memoria::guardar(&mut db, trade_memory("android", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill."), Some(&m)).unwrap().id;
+    let trade_memory = |trade: &str, t: &str, c: &str| NewMemory { tags: vec![format!("trade:{trade}")], ..new_memory("", t, c) };
+    let old = memoria::save(&mut db, trade_memory("android", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill."), Some(&m)).unwrap().id;
     for (t, c) in [("Puerto", "El servidor escucha en el 8765."), ("Commits", "Una línea, en inglés."), ("Node", "Hace falta Node 20.")] {
-        memoria::guardar(&mut db, new_memory("/p", t, c), Some(&m)).unwrap();
+        memoria::save(&mut db, new_memory("/p", t, c), Some(&m)).unwrap();
     }
     // A project's memory isn't a trade one even if it says the same: it doesn't count.
-    memoria::guardar(&mut db, new_memory("/cliente", "Cerrar el emulador", "Con taskkill el AVD queda bloqueado."), Some(&m)).unwrap();
+    memoria::save(&mut db, new_memory("/cliente", "Cerrar el emulador", "Con taskkill el AVD queda bloqueado."), Some(&m)).unwrap();
     let (t, c) = ("El emulador no se mata con taskkill", "Con taskkill el AVD se queda bloqueado: cerrarlo con adb emu kill.");
     // Before: from the global scope, nothing.
     assert!(vectores::duplicada(&db, &m, "", t, c).unwrap().is_none());
@@ -273,19 +273,19 @@ fn duplicates_among_trade_memories() {
     assert!(vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, Some(&old)).unwrap().is_none());
 
     // If there are already two (saved with `force`, or from before 1.8.6), the review proposes merging them.
-    let new_id = memoria::guardar(&mut db, trade_memory("android", t, c), Some(&m)).unwrap().id;
-    memoria::guardar(&mut db, trade_memory("web", t, c), Some(&m)).unwrap();
-    let pairs = omoikane::revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap();
+    let new_id = memoria::save(&mut db, trade_memory("android", t, c), Some(&m)).unwrap().id;
+    memoria::save(&mut db, trade_memory("web", t, c), Some(&m)).unwrap();
+    let pairs = omoikane::revisar::trade_duplicates(&db, &Scope::All).unwrap();
     assert_eq!(pairs.len(), 1, "solo las del mismo oficio: {pairs:?}");
     assert_eq!((pairs[0].0.as_str(), pairs[0].1.as_str()), (new_id.as_str(), old.as_str()));
-    let warnings = omoikane::revisar::avisos(&db, &Ambito::Todos).unwrap();
-    let a: Vec<_> = warnings.iter().filter(|a| a.kind == omoikane::revisar::DUPLICADA_OFICIO).collect();
+    let warnings = omoikane::revisar::notices(&db, &Scope::All).unwrap();
+    let a: Vec<_> = warnings.iter().filter(|a| a.kind == omoikane::revisar::TRADE_DUPLICATE).collect();
     assert_eq!(a.len(), 1);
     assert_eq!((a[0].memory_id.as_str(), a[0].other_id.as_str()), (old.as_str(), new_id.as_str()));
-    assert_eq!(omoikane::revisar::pendientes(&db, &Ambito::Todos).unwrap().get(omoikane::revisar::DUPLICADA_OFICIO), Some(&1));
+    assert_eq!(omoikane::revisar::pending(&db, &Scope::All).unwrap().get(omoikane::revisar::TRADE_DUPLICATE), Some(&1));
     // «It's fine like this»: they stop showing up.
-    omoikane::revisar::descartar(&db, &old, omoikane::revisar::DUPLICADA_OFICIO, &new_id).unwrap();
-    assert!(omoikane::revisar::duplicadas_de_oficio(&db, &Ambito::Todos).unwrap().is_empty());
+    omoikane::revisar::dismiss(&db, &old, omoikane::revisar::TRADE_DUPLICATE, &new_id).unwrap();
+    assert!(omoikane::revisar::trade_duplicates(&db, &Scope::All).unwrap().is_empty());
 }
 
 /// 1.8.6: `duplicada_de_oficio` took the 50 most similar of the whole database and then kept the
@@ -300,14 +300,14 @@ fn the_trade_duplicate_is_not_hidden_by_project_ones() {
     // same topic): the sentences of `corpus.txt`, in another project.
     let corpus = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus.txt")).unwrap();
     for (i, l) in corpus.lines().filter(|l| !l.starts_with('#') && l.chars().filter(|c| c.is_alphabetic()).count() > 30).take(600).enumerate() {
-        memoria::guardar(&mut db, new_memory("/otro", &format!("Nota {i}"), l), Some(&m)).unwrap();
+        memoria::save(&mut db, new_memory("/otro", &format!("Nota {i}"), l), Some(&m)).unwrap();
     }
     // 60 from projects that say exactly the same: the most similar of the whole database.
     for i in 0..60 {
-        memoria::guardar(&mut db, new_memory(&format!("/p{i}"), t, c), Some(&m)).unwrap();
+        memoria::save(&mut db, new_memory(&format!("/p{i}"), t, c), Some(&m)).unwrap();
     }
-    let n = Nueva { tags: vec!["trade:android".into()], ..new_memory("", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.") };
-    let old = memoria::guardar(&mut db, n, Some(&m)).unwrap().id;
+    let n = NewMemory { tags: vec!["trade:android".into()], ..new_memory("", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.") };
+    let old = memoria::save(&mut db, n, Some(&m)).unwrap().id;
     let d = vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, None).unwrap();
     assert_eq!(d.map(|x| x.0.id), Some(old));
 }

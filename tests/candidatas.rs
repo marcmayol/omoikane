@@ -5,8 +5,8 @@ mod comun;
 
 use omoikane::candidatas;
 use omoikane::db;
-use omoikane::memoria::{self, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::memoria::{self, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -146,8 +146,8 @@ fn proposed_once_in_the_next_session_and_not_what_is_already_saved() {
     let d = dir("propone");
     let mut db = db::abrir(&d.join("o.db")).unwrap();
     // Already saved: not proposed again.
-    let saved = Nueva { project: "/web".into(), kind: Some(Tipo::Preference), title: "Commits en inglés".into(), content: "Prefiere que los commits vayan en inglés.".into(), ..Default::default() };
-    memoria::guardar(&mut db, saved, None).unwrap();
+    let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Preference), title: "Commits en inglés".into(), content: "Prefiere que los commits vayan en inglés.".into(), ..Default::default() };
+    memoria::save(&mut db, saved, None).unwrap();
     let n = candidatas::apartar(&db, "/web", "s1", &conversation(&d)).unwrap();
     let all = candidatas::todas(&db).unwrap();
     assert_eq!(n, all.len());
@@ -156,12 +156,12 @@ fn proposed_once_in_the_next_session_and_not_what_is_already_saved() {
     candidatas::apartar(&db, "/web", "s1", &conversation(&d)).unwrap();
     assert_eq!(candidatas::todas(&db).unwrap().len(), n);
     // In the same session they don't show up; in the next one, they do, and only once.
-    let e = |s: &str| Entrada { session_id: s.into(), ..Default::default() };
-    let t = recall::al_empezar(&mut db, "/web", &e("s1")).unwrap().unwrap();
+    let e = |s: &str| HookInput { session_id: s.into(), ..Default::default() };
+    let t = recall::on_session_start(&mut db, "/web", &e("s1")).unwrap().unwrap();
     assert!(!t.contains("possibly worth keeping"), "{t}");
-    let t = recall::al_empezar(&mut db, "/web", &e("s2")).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/web", &e("s2")).unwrap().unwrap();
     assert!(t.contains("possibly worth keeping") && t.contains("sin el fondo verde"), "{t}");
-    let t = recall::al_empezar(&mut db, "/web", &e("s3")).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/web", &e("s3")).unwrap().unwrap();
     assert!(!t.contains("possibly worth keeping"), "{t}");
     // Another project doesn't see them.
 }
@@ -223,12 +223,12 @@ fn sets_aside_each_subagents_report() {
     let n = all.len();
     candidatas::apartar(&db, "/web", "s1", &session).unwrap();
     assert_eq!(candidatas::todas(&db).unwrap().len(), n);
-    let t = recall::al_empezar(&mut db, "/web", &Entrada { session_id: "s2".into(), ..Default::default() }).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/web", &HookInput { session_id: "s2".into(), ..Default::default() }).unwrap().unwrap();
     assert!(t.contains("[subagent] Eres el agente «velocidad»") && t.contains("checkpoint del WAL"), "{t}");
     // A report already saved as a memory isn't proposed again.
     let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
-    let saved = Nueva { project: "/web".into(), kind: Some(Tipo::Gotcha), title: "El recall lento era el checkpoint del WAL".into(), content: report.into(), ..Default::default() };
-    memoria::guardar(&mut db2, saved, None).unwrap();
+    let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Gotcha), title: "El recall lento era el checkpoint del WAL".into(), content: report.into(), ..Default::default() };
+    memoria::save(&mut db2, saved, None).unwrap();
     candidatas::apartar(&db2, "/web", "s1", &session).unwrap();
     assert!(!candidatas::todas(&db2).unwrap().iter().any(|c| c.kind == "subagent"));
 }

@@ -10,7 +10,7 @@
 //!   global for someone working from their home folder, and a single note for all of it turned it into
 //!   the centre of a star that hid the real links), to the memories it names with
 //!   `[[name]]` (resolved with the rules of `enlaces`, but only among what is exported), to the ones it
-//!   supersedes or contradicts (current verdicts, `veredictos::parejas`) and to one note per file
+//!   supersedes or contradicts (current verdicts, `veredictos::pairs`) and to one note per file
 //!   cited by two or more memories (`_ficheros/`).
 //! - Each note is named after its memory's title (that's what Obsidian shows as the title), with the
 //!   end of the id appended only if another would have the same name: retitling a memory renames it, and
@@ -23,7 +23,7 @@
 //!   `sig` (the signature of this database, with the OKF key: `okf::firma`), to tell on the way back whether
 //!   it was edited and whether it really belongs to that memory.
 
-use crate::memoria::{Ambito, Cambios, Memoria, Tipo};
+use crate::memoria::{Scope, Changes, Memory, Kind};
 use crate::tr;
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
@@ -104,7 +104,7 @@ fn export_with(db: &Connection, vault: &Path, what: Que, overwrite: &BTreeSet<Pa
 
 /// A memory note as the export writes it now (without `base` or `sig`).
 struct Render {
-    m: Memoria,
+    m: Memory,
     /// Its path inside `<vault>/omoikane/`.
     rel: PathBuf,
     text: String,
@@ -123,10 +123,10 @@ struct Prepared {
 
 fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
     let scope = match what {
-        Que::Personal => Ambito::Espacio(None),
-        Que::Espacio(s) => Ambito::Espacio(Some(s)),
+        Que::Personal => Scope::Space(None),
+        Que::Espacio(s) => Scope::Space(Some(s)),
     };
-    let mut all = crate::memoria::recientes(db, &scope, None, usize::MAX >> 1)?;
+    let mut all = crate::memoria::recent(db, &scope, None, usize::MAX >> 1)?;
     if matches!(what, Que::Espacio(_)) {
         all.retain(|m| !m.global());
     }
@@ -144,7 +144,7 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
             names.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
-    let group = |m: &Memoria| -> Group {
+    let group = |m: &Memory| -> Group {
         if m.project_id == 0 {
             return if m.space.is_empty() {
                 Group { folder: "_global".into(), note: String::new(), title: tr!("Global", "Global").to_string(), project_id: 0, space_id: None }
@@ -163,15 +163,15 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
 
     let taken: BTreeSet<String> = all.iter().map(|m| group(m).note.to_lowercase()).filter(|n| !n.is_empty()).collect();
     let note_names = note_names_by_id(&all, &taken);
-    // The `[[name]]` links, as in `enlaces::recalcular`, but only among what is exported.
+    // The `[[name]]` links, as in `enlaces::recompute`, but only among what is exported.
     let mut by_name: HashMap<String, Vec<&str>> = HashMap::new();
     for m in &all {
         for t in &m.tags {
-            by_name.entry(crate::enlaces::nombre(t)).or_default().push(m.id.as_str());
+            by_name.entry(crate::enlaces::link_name(t)).or_default().push(m.id.as_str());
         }
     }
-    let targets = |m: &Memoria, e: &str| -> Vec<String> {
-        match by_name.get(&crate::enlaces::nombre(e)) {
+    let targets = |m: &Memory, e: &str| -> Vec<String> {
+        match by_name.get(&crate::enlaces::link_name(e)) {
             Some(v) => v.iter().filter(|d| **d != m.id).map(|d| d.to_string()).collect(),
             None => {
                 let s = e.trim().to_uppercase();
@@ -185,14 +185,14 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
     let mut superseded_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut supersedes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut contradicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for v in crate::veredictos::parejas(db)?.into_values() {
+    for v in crate::veredictos::pairs(db)?.into_values() {
         if !note_names.contains_key(&v.memory_id) || !note_names.contains_key(&v.other_id) {
             continue;
         }
-        if v.relation == crate::veredictos::SUSTITUIDA {
+        if v.relation == crate::veredictos::SUPERSEDED {
             superseded_by.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             supersedes.entry(v.other_id).or_default().push(v.memory_id);
-        } else if v.relation == crate::veredictos::CONTRADICE {
+        } else if v.relation == crate::veredictos::CONTRADICTS {
             contradicts.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             contradicts.entry(v.other_id).or_default().push(v.memory_id);
         }
@@ -255,7 +255,7 @@ struct Group {
 /// title. Obsidian resolves links by name across the whole vault, case-insensitively, so
 /// if two memories (or a memory and a group note) would have the same name, they get the end of
 /// their id appended, which doesn't change.
-fn note_names_by_id(all: &[Memoria], taken: &BTreeSet<String>) -> HashMap<String, String> {
+fn note_names_by_id(all: &[Memory], taken: &BTreeSet<String>) -> HashMap<String, String> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for m in all {
         *counts.entry(file_title(&m.title).to_lowercase()).or_default() += 1;
@@ -320,10 +320,10 @@ fn file_note(path: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn render_note(
-    m: &Memoria,
+    m: &Memory,
     g: &Group,
     note_names: &HashMap<String, String>,
-    targets: &dyn Fn(&Memoria, &str) -> Vec<String>,
+    targets: &dyn Fn(&Memory, &str) -> Vec<String>,
     file_notes: &BTreeMap<String, String>,
     superseded_by: &BTreeMap<String, Vec<String>>,
     supersedes: &BTreeMap<String, Vec<String>>,
@@ -629,7 +629,7 @@ fn signed_text(id: &str, scope: &str, updated: &str, base: &str) -> String {
 }
 
 /// The note with its `base` and `sig` in the header.
-fn signed(text: &str, rel: &Path, m: &Memoria, scope: &str, key: &[u8]) -> String {
+fn signed(text: &str, rel: &Path, m: &Memory, scope: &str, key: &[u8]) -> String {
     let Some(l) = parse_note(&stem_of(rel), text) else { return text.to_string() };
     let base = fingerprint(&l);
     let sig = crate::okf::firma::firmar(key, &signed_text(&m.id, scope, &m.updated_at, &base));
@@ -718,17 +718,17 @@ struct Proposal {
     title: String,
     content: String,
     /// The kind, if the note changes it.
-    kind: Option<Tipo>,
+    kind: Option<Kind>,
     tags: Vec<String>,
     paths: Vec<String>,
     /// Whether saving it hides something that looks like a secret (it's no longer visible in the memory:
-    /// `actualizar` won't find it again, so it's counted here).
+    /// `memoria::update` won't find it again, so it's counted here).
     redacted: bool,
 }
 
 impl Proposal {
     /// Whether the memory is already like this (imported again, or a change that changes nothing).
-    fn matches(&self, m: &Memoria) -> bool {
+    fn matches(&self, m: &Memory) -> bool {
         let as_set = |v: &[String]| v.iter().cloned().collect::<BTreeSet<String>>();
         self.title == m.title
             && self.content == m.content
@@ -742,7 +742,7 @@ impl Proposal {
 /// would write for it now (`b`). Only title, text, kind, tags and paths: never which project
 /// or space it belongs to, whether it's global, pinned or verified. Of the tags, only the plain ones: those
 /// with `:` (`trade:`, `topic:`, `review:`…) carry scope or meaning and are neither removed nor added.
-fn propose(l: &ReadNote, m: &Memoria, b: &ReadNote, names: &HashMap<String, String>) -> Result<Proposal> {
+fn propose(l: &ReadNote, m: &Memory, b: &ReadNote, names: &HashMap<String, String>) -> Result<Proposal> {
     // The title: on export, the file name is the alias turned into a file name. If they still
     // match, the alias wins (edited or not); if not, whatever was changed: the name (Obsidian
     // renames the file when the note's title changes) if the alias is the memory's, otherwise the alias.
@@ -758,11 +758,11 @@ fn propose(l: &ReadNote, m: &Memoria, b: &ReadNote, names: &HashMap<String, Stri
         name
     };
     let kind = match (l.field("kind"), b.field("kind")) {
-        (Some(k), before) if Some(&k) != before.as_ref() => Some(k.parse::<Tipo>()?),
+        (Some(k), before) if Some(&k) != before.as_ref() => Some(k.parse::<Kind>()?),
         _ => None,
     };
     let plain = |v: Vec<String>| -> BTreeSet<String> {
-        v.into_iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty() && t.parse::<Tipo>().is_err()).collect()
+        v.into_iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty() && t.parse::<Kind>().is_err()).collect()
     };
     let (in_note, before) = (plain(l.list("tags")), plain(b.list("tags")));
     let removed: BTreeSet<&String> = before.difference(&in_note).collect();
@@ -776,7 +776,7 @@ fn propose(l: &ReadNote, m: &Memoria, b: &ReadNote, names: &HashMap<String, Stri
         tr!("the note's text is empty: to forget the memory, use `omoi forget`", "el texto de la nota está vacío: para olvidar la memoria, `omoi forget`")
     );
     let mut redacted = Vec::new();
-    let (title, content, paths, tags) = crate::memoria::como_se_guarda(&title, &content, &paths, &tags, &mut redacted)?;
+    let (title, content, paths, tags) = crate::memoria::as_stored(&title, &content, &paths, &tags, &mut redacted)?;
     Ok(Proposal { title, content, kind, tags, paths, redacted: !redacted.is_empty() })
 }
 
@@ -1097,7 +1097,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
                 Preferir::Obsidian => r.conflicts_applied += 1,
             }
         }
-        let mut changes = Cambios {
+        let mut changes = Changes {
             title: (proposal.title != m.title).then(|| proposal.title.clone()),
             content: (proposal.content != m.content).then(|| proposal.content.clone()),
             kind: proposal.kind,
@@ -1140,11 +1140,11 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             }
             continue;
         }
-        match crate::memoria::actualizar(db, &m.id, changes, model) {
+        match crate::memoria::update(db, &m.id, changes, model) {
             Ok(x) => {
                 r.updated += 1;
                 overwrite.insert(path.clone());
-                // `actualizar` no longer sees the secret (`propose` hid it, to compare): it's counted from
+                // `memoria::update` no longer sees the secret (`propose` hid it, to compare): it's counted from
                 // the proposal.
                 if proposal.redacted || !x.redacted.is_empty() {
                     r.redacted.push(x.title.clone());
@@ -1179,14 +1179,14 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             continue;
         }
         let kind = match l.field("kind") {
-            Some(k) => match k.parse::<Tipo>() {
+            Some(k) => match k.parse::<Kind>() {
                 Ok(t) => t,
                 Err(e) => {
                     skip(format!("{e:#}"));
                     continue;
                 }
             },
-            None => match l.list("tags").iter().find_map(|t| t.trim_start_matches('#').parse::<Tipo>().ok()) {
+            None => match l.list("tags").iter().find_map(|t| t.trim_start_matches('#').parse::<Kind>().ok()) {
                 Some(t) => t,
                 None => {
                     skip(tr!(
@@ -1206,9 +1206,9 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             .list("tags")
             .into_iter()
             .map(|t| t.trim_start_matches('#').to_lowercase())
-            .filter(|t| !t.is_empty() && !t.contains(':') && t.parse::<Tipo>().is_err())
+            .filter(|t| !t.is_empty() && !t.contains(':') && t.parse::<Kind>().is_err())
             .collect();
-        let new_memory = crate::memoria::Nueva {
+        let new_memory = crate::memoria::NewMemory {
             project_id: (g.project_id != 0).then_some(g.project_id),
             space_id: if g.project_id == 0 { g.space_id } else { None },
             kind: Some(kind),
@@ -1221,7 +1221,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             ..Default::default()
         };
         let key = note_key(&rel);
-        let topic = format!("{}{key}", crate::memoria::ETIQUETA_TEMA);
+        let topic = format!("{}{key}", crate::memoria::TOPIC_TAG);
         let earlier: Option<(String, String)> = db
             .query_row(
                 "SELECT id, hlc FROM memory WHERE project_id = ?1 AND space_id IS ?2
@@ -1235,7 +1235,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
         // note is the one that gets edited). If it says the same, there's nothing to do; if not, it stays as
         // it is, the export doesn't overwrite it and the user is told how to bring it over.
         if let Some((id, _)) = &earlier {
-            let m = match crate::memoria::obtener(db, id) {
+            let m = match crate::memoria::get(db, id) {
                 Ok(m) => m,
                 Err(e) => {
                     r.failed.push(Saltada { note: rel, reason: format!("{e:#}") });
@@ -1244,7 +1244,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
                 }
             };
             let mut redacted = Vec::new();
-            let same = crate::memoria::como_se_guarda(&new_memory.title, &new_memory.content, &new_memory.paths, &new_memory.tags, &mut redacted)
+            let same = crate::memoria::as_stored(&new_memory.title, &new_memory.content, &new_memory.paths, &new_memory.tags, &mut redacted)
                 .is_ok_and(|(t, c, _, _)| t == m.title && c == m.content && Some(m.kind) == new_memory.kind);
             if same {
                 r.unchanged += 1;
@@ -1272,24 +1272,24 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             continue;
         }
         let (title, content) = (new_memory.title.clone(), new_memory.content.clone());
-        match crate::memoria::guardar_por_clave(db, &key, new_memory, None, model) {
+        match crate::memoria::save_by_key(db, &key, new_memory, None, model) {
             Ok(x) => {
                 let changed = match &earlier {
                     None => true,
-                    Some((id, hlc)) => crate::memoria::hlc_de(db, id).map(|h| h != *hlc).unwrap_or(true),
+                    Some((id, hlc)) => crate::memoria::hlc_of(db, id).map(|h| h != *hlc).unwrap_or(true),
                 };
-                match (x.creada, changed) {
+                match (x.created, changed) {
                     (true, _) => r.created += 1,
                     (false, true) => r.updated += 1,
                     (false, false) => r.unchanged += 1,
                 }
-                let was_redacted = !x.memoria.redacted.is_empty();
+                let was_redacted = !x.memory.redacted.is_empty();
                 if was_redacted {
-                    r.redacted.push(x.memoria.title.clone());
+                    r.redacted.push(x.memory.title.clone());
                 }
                 // The note becomes Omoikane's copy (the following export writes it with its id).
                 // If something was hidden, it stays as it is: its text isn't the memory's.
-                if !was_redacted && x.memoria.title == title.split_whitespace().collect::<Vec<_>>().join(" ") && x.memoria.content == content.trim() {
+                if !was_redacted && x.memory.title == title.split_whitespace().collect::<Vec<_>>().join(" ") && x.memory.content == content.trim() {
                     let _ = std::fs::remove_file(&path);
                 }
             }

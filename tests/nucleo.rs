@@ -3,9 +3,9 @@
 
 mod comun;
 
-use omoikane::buscar::{self, Opciones};
+use omoikane::buscar::{self, SearchOptions};
 use omoikane::db;
-use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, Changes, NewMemory, Kind};
 use rusqlite::Connection;
 
 /// Fresh database in a temp file (not in memory: that way WAL gets tested too).
@@ -16,13 +16,13 @@ fn open_db(name: &str) -> (comun::Temporal, Connection) {
     (dir, db)
 }
 
-fn new_memory(project: &str, kind: Tipo, title: &str, content: &str) -> Nueva {
-    Nueva { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() }
+fn new_memory(project: &str, kind: Kind, title: &str, content: &str) -> NewMemory {
+    NewMemory { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() }
 }
 
-fn search(db: &mut Connection, scope: Ambito, q: &str) -> Vec<String> {
-    let o = Opciones { ambito: scope, kind: None, tags: vec![], limite: 50 };
-    buscar::buscar(db, q, &o, None).unwrap().into_iter().map(|r| r.memoria.title).collect()
+fn search(db: &mut Connection, scope: Scope, q: &str) -> Vec<String> {
+    let o = SearchOptions { scope, kind: None, tags: vec![], limit: 50 };
+    buscar::search(db, q, &o, None).unwrap().into_iter().map(|r| r.memory.title).collect()
 }
 
 fn count(db: &Connection, sql: &str) -> i64 {
@@ -32,13 +32,13 @@ fn count(db: &Connection, sql: &str) -> i64 {
 #[test]
 fn finds_with_and_without_accents() {
     let (_dir, mut db) = open_db("tildes");
-    memoria::guardar(
+    memoria::save(
         &mut db,
-        new_memory("/p", Tipo::Gotcha, "Bug en auth", "Fallo de autenticación: el token caduca antes de tiempo."), None,
+        new_memory("/p", Kind::Gotcha, "Bug en auth", "Fallo de autenticación: el token caduca antes de tiempo."), None,
     )
     .unwrap();
-    memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "Receta", "Tortilla de patatas con cebolla."), None).unwrap();
-    let p0 = Ambito::de(&db, "/p").unwrap();
+    memoria::save(&mut db, new_memory("/p", Kind::Fact, "Receta", "Tortilla de patatas con cebolla."), None).unwrap();
+    let p0 = Scope::from_project(&db, "/p").unwrap();
     let p = || p0;
     assert_eq!(search(&mut db, p(), "fallo de autenticación"), ["Bug en auth"]);
     assert_eq!(search(&mut db, p(), "AUTENTICACION"), ["Bug en auth"]);
@@ -56,9 +56,9 @@ fn orders_by_how_many_words_match() {
         ("Dos", "fallo de autenticación en el login"),
         ("Tres", "el login va lento"),
     ] {
-        memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, t, c), None).unwrap();
+        memoria::save(&mut db, new_memory("/p", Kind::Fact, t, c), None).unwrap();
     }
-    let r = search(&mut db, Ambito::Todos, "fallo autenticación login");
+    let r = search(&mut db, Scope::All, "fallo autenticación login");
     assert_eq!(r[0], "Dos");
     assert_eq!(r.len(), 3);
 }
@@ -66,71 +66,71 @@ fn orders_by_how_many_words_match() {
 #[test]
 fn update_keeps_previous_version_and_reindexes() {
     let (_dir, mut db) = open_db("update");
-    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Decision, "Usamos UUID", "Por compatibilidad."), None).unwrap();
-    let c = Cambios {
+    let m = memoria::save(&mut db, new_memory("/p", Kind::Decision, "Usamos UUID", "Por compatibilidad."), None).unwrap();
+    let c = Changes {
         title: Some("Usamos ULID".into()),
         content: Some("Se ordenan por fecha.".into()),
         reason: Some("los UUID no se ordenan".into()),
         ..Default::default()
     };
-    let m2 = memoria::actualizar(&mut db, &m.id, c, None).unwrap();
+    let m2 = memoria::update(&mut db, &m.id, c, None).unwrap();
     assert_eq!(m2.id, m.id);
     assert_eq!(m2.title, "Usamos ULID");
     assert_eq!(m2.created_at, m.created_at);
-    let h = memoria::historial(&db, &m.id).unwrap();
+    let h = memoria::history(&db, &m.id).unwrap();
     assert_eq!(h.len(), 1);
     assert_eq!((h[0].version, h[0].title.as_str()), (1, "Usamos UUID"));
     assert_eq!(h[0].reason.as_deref(), Some("los UUID no se ordenan"));
     // The index has the new text and not the old one.
-    assert_eq!(search(&mut db, Ambito::Todos, "ordenan fecha"), ["Usamos ULID"]);
-    assert!(search(&mut db, Ambito::Todos, "compatibilidad").is_empty());
+    assert_eq!(search(&mut db, Scope::All, "ordenan fecha"), ["Usamos ULID"]);
+    assert!(search(&mut db, Scope::All, "compatibilidad").is_empty());
     // A second version goes first in the history.
-    memoria::actualizar(&mut db, &m.id, Cambios { kind: Some(Tipo::Fact), ..Default::default() }, None).unwrap();
-    let h = memoria::historial(&db, &m.id).unwrap();
+    memoria::update(&mut db, &m.id, Changes { kind: Some(Kind::Fact), ..Default::default() }, None).unwrap();
+    let h = memoria::history(&db, &m.id).unwrap();
     assert_eq!(h.iter().map(|v| v.version).collect::<Vec<_>>(), [2, 1]);
 }
 
 #[test]
 fn pinning_creates_no_version_nor_changes_the_date() {
     let (_dir, mut db) = open_db("fijar");
-    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Preference, "Tabs", "Cuatro espacios."), None).unwrap();
-    let m2 = memoria::actualizar(&mut db, &m.id, Cambios { pinned: Some(true), ..Default::default() }, None).unwrap();
+    let m = memoria::save(&mut db, new_memory("/p", Kind::Preference, "Tabs", "Cuatro espacios."), None).unwrap();
+    let m2 = memoria::update(&mut db, &m.id, Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     assert!(m2.pinned);
     assert_eq!(m2.updated_at, m.updated_at);
-    assert!(memoria::historial(&db, &m.id).unwrap().is_empty());
+    assert!(memoria::history(&db, &m.id).unwrap().is_empty());
     // Without real changes, neither.
-    memoria::actualizar(&mut db, &m.id, Cambios { title: Some("Tabs".into()), ..Default::default() }, None).unwrap();
-    assert!(memoria::historial(&db, &m.id).unwrap().is_empty());
+    memoria::update(&mut db, &m.id, Changes { title: Some("Tabs".into()), ..Default::default() }, None).unwrap();
+    assert!(memoria::history(&db, &m.id).unwrap().is_empty());
 }
 
 #[test]
 fn forget_deletes_everything() {
     let (_dir, mut db) = open_db("forget");
-    let mut n = new_memory("/p", Tipo::Gotcha, "Trampa", "No borres la caché a mano.");
+    let mut n = new_memory("/p", Kind::Gotcha, "Trampa", "No borres la caché a mano.");
     n.paths = vec!["src/cache.rs".into()];
-    let m = memoria::guardar(&mut db, n, None).unwrap();
-    memoria::actualizar(&mut db, &m.id, Cambios { content: Some("Nunca.".into()), ..Default::default() }, None).unwrap();
-    memoria::olvidar(&mut db, &m.id).unwrap();
+    let m = memoria::save(&mut db, n, None).unwrap();
+    memoria::update(&mut db, &m.id, Changes { content: Some("Nunca.".into()), ..Default::default() }, None).unwrap();
+    memoria::forget(&mut db, &m.id).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory"), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_version"), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_path"), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_fts_docsize"), 0);
-    assert!(search(&mut db, Ambito::Todos, "caché nunca trampa").is_empty());
-    assert!(memoria::obtener(&db, &m.id).is_err());
+    assert!(search(&mut db, Scope::All, "caché nunca trampa").is_empty());
+    assert!(memoria::get(&db, &m.id).is_err());
 }
 
 #[test]
 fn scopes_project_global_and_all() {
     let (_dir, mut db) = open_db("ambitos");
-    memoria::guardar(&mut db, new_memory("/a", Tipo::Fact, "De A", "compartida palabra"), None).unwrap();
-    memoria::guardar(&mut db, new_memory("/b", Tipo::Fact, "De B", "compartida palabra"), None).unwrap();
-    memoria::guardar(&mut db, new_memory("", Tipo::Preference, "Global", "compartida palabra"), None).unwrap();
-    let of_a = Ambito::de(&db, "/a").unwrap();
+    memoria::save(&mut db, new_memory("/a", Kind::Fact, "De A", "compartida palabra"), None).unwrap();
+    memoria::save(&mut db, new_memory("/b", Kind::Fact, "De B", "compartida palabra"), None).unwrap();
+    memoria::save(&mut db, new_memory("", Kind::Preference, "Global", "compartida palabra"), None).unwrap();
+    let of_a = Scope::from_project(&db, "/a").unwrap();
     let mut a = search(&mut db, of_a, "compartida");
     a.sort();
     assert_eq!(a, ["De A", "Global"]);
-    assert_eq!(search(&mut db, Ambito::Todos, "compartida").len(), 3);
-    let r = memoria::recientes(&db, &Ambito::de(&db, "/b").unwrap(), None, 10).unwrap();
+    assert_eq!(search(&mut db, Scope::All, "compartida").len(), 3);
+    let r = memoria::recent(&db, &Scope::from_project(&db, "/b").unwrap(), None, 10).unwrap();
     assert_eq!(r.len(), 2);
     // The projects (global is not one).
     let p = omoikane::proyecto::lista(&db, None, None, usize::MAX).unwrap();
@@ -140,45 +140,45 @@ fn scopes_project_global_and_all() {
 #[test]
 fn kind_and_tag_filters() {
     let (_dir, mut db) = open_db("filtros");
-    let mut n = new_memory("/p", Tipo::Gotcha, "Con etiqueta", "despliegue roto");
+    let mut n = new_memory("/p", Kind::Gotcha, "Con etiqueta", "despliegue roto");
     n.tags = vec!["#Deploy".into(), "ci".into()];
-    memoria::guardar(&mut db, n, None).unwrap();
-    memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "Sin etiqueta", "despliegue lento"), None).unwrap();
-    let o = |kind, tags: &[&str]| Opciones {
-        ambito: Ambito::Todos,
+    memoria::save(&mut db, n, None).unwrap();
+    memoria::save(&mut db, new_memory("/p", Kind::Fact, "Sin etiqueta", "despliegue lento"), None).unwrap();
+    let o = |kind, tags: &[&str]| SearchOptions {
+        scope: Scope::All,
         kind,
         tags: tags.iter().map(|t| t.to_string()).collect(),
-        limite: 10,
+        limit: 10,
     };
-    let titles = |db: &mut Connection, o: Opciones| -> Vec<String> {
-        buscar::buscar(db, "despliegue", &o, None).unwrap().into_iter().map(|r| r.memoria.title).collect()
+    let titles = |db: &mut Connection, o: SearchOptions| -> Vec<String> {
+        buscar::search(db, "despliegue", &o, None).unwrap().into_iter().map(|r| r.memory.title).collect()
     };
     assert_eq!(titles(&mut db, o(None, &["deploy"])), ["Con etiqueta"]);
     assert_eq!(titles(&mut db, o(None, &["deploy", "otra"])), Vec::<String>::new());
-    assert_eq!(titles(&mut db, o(Some(Tipo::Fact), &[])), ["Sin etiqueta"]);
+    assert_eq!(titles(&mut db, o(Some(Kind::Fact), &[])), ["Sin etiqueta"]);
 }
 
 #[test]
 fn ids_by_prefix() {
     let (_dir, mut db) = open_db("ids");
-    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "Una", "uno"), None).unwrap();
-    memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "Otra", "dos"), None).unwrap();
-    assert_eq!(memoria::obtener(&db, &m.id).unwrap().title, "Una");
-    assert_eq!(memoria::obtener(&db, &m.id.to_lowercase()).unwrap().title, "Una");
+    let m = memoria::save(&mut db, new_memory("/p", Kind::Fact, "Una", "uno"), None).unwrap();
+    memoria::save(&mut db, new_memory("/p", Kind::Fact, "Otra", "dos"), None).unwrap();
+    assert_eq!(memoria::get(&db, &m.id).unwrap().title, "Una");
+    assert_eq!(memoria::get(&db, &m.id.to_lowercase()).unwrap().title, "Una");
     // Both were created in the same millisecond or nearly: the time prefix is not enough.
-    assert!(memoria::obtener(&db, &m.id[..4]).is_err());
-    assert!(memoria::obtener(&db, "ZZZZZZZZ").is_err());
-    assert!(memoria::obtener(&db, "a'b--").is_err());
+    assert!(memoria::get(&db, &m.id[..4]).is_err());
+    assert!(memoria::get(&db, "ZZZZZZZZ").is_err());
+    assert!(memoria::get(&db, "a'b--").is_err());
 }
 
 #[test]
 fn search_counts_as_recalled() {
     let (_dir, mut db) = open_db("recuperada");
-    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "Puerto", "El servidor escucha en el 8765."), None).unwrap();
+    let m = memoria::save(&mut db, new_memory("/p", Kind::Fact, "Puerto", "El servidor escucha en el 8765."), None).unwrap();
     assert_eq!(m.recall_count, 0);
-    search(&mut db, Ambito::Todos, "servidor puerto");
-    search(&mut db, Ambito::Todos, "servidor");
-    let m = memoria::obtener(&db, &m.id).unwrap();
+    search(&mut db, Scope::All, "servidor puerto");
+    search(&mut db, Scope::All, "servidor");
+    let m = memoria::get(&db, &m.id).unwrap();
     assert_eq!(m.recall_count, 2);
     assert!(m.recalled_at.is_some());
 }
@@ -186,12 +186,12 @@ fn search_counts_as_recalled() {
 #[test]
 fn exports_with_history() {
     let (dir, mut db) = open_db("export");
-    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, "A", "uno"), None).unwrap();
-    memoria::actualizar(&mut db, &m.id, Cambios { content: Some("dos".into()), ..Default::default() }, None).unwrap();
-    memoria::guardar(&mut db, new_memory("/otro", Tipo::Fact, "B", "tres"), None).unwrap();
+    let m = memoria::save(&mut db, new_memory("/p", Kind::Fact, "A", "uno"), None).unwrap();
+    memoria::update(&mut db, &m.id, Changes { content: Some("dos".into()), ..Default::default() }, None).unwrap();
+    memoria::save(&mut db, new_memory("/otro", Kind::Fact, "B", "tres"), None).unwrap();
     let path = dir.join("o.db");
     let mut out = Vec::new();
-    assert_eq!(omoikane::copia::exportar(&db, &path, &Ambito::de(&db, "/p").unwrap(), false, &mut out).unwrap().memories, 1);
+    assert_eq!(omoikane::copia::exportar(&db, &path, &Scope::from_project(&db, "/p").unwrap(), false, &mut out).unwrap().memories, 1);
     let lines: Vec<serde_json::Value> =
         String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     // Header, the memory and the footer.
@@ -199,7 +199,7 @@ fn exports_with_history() {
     assert_eq!(lines[1]["content"], "dos");
     assert_eq!(lines[1]["versions"][0]["content"], "uno");
     let mut all = Vec::new();
-    assert_eq!(omoikane::copia::exportar(&db, &path, &Ambito::Todos, false, &mut all).unwrap().memories, 2);
+    assert_eq!(omoikane::copia::exportar(&db, &path, &Scope::All, false, &mut all).unwrap().memories, 2);
 }
 
 /// After hundreds of random operations, the table, the FTS index and the paths still add up, and
@@ -218,25 +218,25 @@ fn consistency_after_random_operations() {
     for i in 0..400u64 {
         match rand(10) {
             0..=4 => {
-                let mut n = new_memory("/p", Tipo::TODOS[rand(4) as usize], &format!("marca{i} título"), "contenido común");
+                let mut n = new_memory("/p", Kind::ALL[rand(4) as usize], &format!("marca{i} título"), "contenido común");
                 n.paths = (0..rand(3)).map(|k| format!("src/f{k}.rs")).collect();
                 n.tags = (0..rand(3)).map(|k| format!("t{k}")).collect();
-                alive.push((memoria::guardar(&mut db, n, None).unwrap().id, i));
+                alive.push((memoria::save(&mut db, n, None).unwrap().id, i));
             }
             5..=7 if !alive.is_empty() => {
                 let k = rand(alive.len() as u64) as usize;
                 let mark = alive[k].1;
-                let c = Cambios {
+                let c = Changes {
                     content: Some(format!("cambiado {i}")),
                     paths: Some((0..rand(3)).map(|k| format!("lib/g{k}.rs")).collect()),
                     title: Some(format!("marca{mark} retitulada")),
                     ..Default::default()
                 };
-                memoria::actualizar(&mut db, &alive[k].0, c, None).unwrap();
+                memoria::update(&mut db, &alive[k].0, c, None).unwrap();
             }
             8..=9 if !alive.is_empty() => {
                 let k = rand(alive.len() as u64) as usize;
-                memoria::olvidar(&mut db, &alive.remove(k).0).unwrap();
+                memoria::forget(&mut db, &alive.remove(k).0).unwrap();
             }
             _ => {}
         }
@@ -251,9 +251,9 @@ fn consistency_after_random_operations() {
     assert_eq!(count(&db, "SELECT count(*) FROM memory_version WHERE memory_id NOT IN (SELECT id FROM memory)"), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_fts_docsize WHERE id NOT IN (SELECT n FROM memory)"), 0);
     for (id, mark) in &alive {
-        let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
-        let r = buscar::buscar(&mut db, &format!("marca{mark}"), &o, None).unwrap();
-        assert_eq!(r.first().map(|r| r.memoria.id.as_str()), Some(id.as_str()), "marca{mark}");
+        let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 5 };
+        let r = buscar::search(&mut db, &format!("marca{mark}"), &o, None).unwrap();
+        assert_eq!(r.first().map(|r| r.memory.id.as_str()), Some(id.as_str()), "marca{mark}");
     }
 }
 
@@ -270,10 +270,10 @@ fn concurrent_writes() {
             std::thread::spawn(move || {
                 let mut db = db::abrir(&path).unwrap();
                 for i in 0..50 {
-                    let m = memoria::guardar(&mut db, new_memory("/p", Tipo::Fact, &format!("h{h} n{i}"), "texto"), None).unwrap();
+                    let m = memoria::save(&mut db, new_memory("/p", Kind::Fact, &format!("h{h} n{i}"), "texto"), None).unwrap();
                     if i % 5 == 0 {
-                        let c = Cambios { content: Some(format!("otro {i}")), ..Default::default() };
-                        memoria::actualizar(&mut db, &m.id, c, None).unwrap();
+                        let c = Changes { content: Some(format!("otro {i}")), ..Default::default() };
+                        memoria::update(&mut db, &m.id, c, None).unwrap();
                     }
                 }
             })
@@ -296,7 +296,7 @@ fn viewer() {
     use ratatui::{Terminal, backend::TestBackend};
     let (_dir, mut db) = open_viewer_db();
     for (t, c) in [("Puerto del servidor", "Escucha en el 8010"), ("Pasarela de pago", "Redsys y no Stripe")] {
-        omoikane::memoria::guardar(&mut db, omoikane::memoria::Nueva { project: "/p".into(), kind: Some(omoikane::memoria::Tipo::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+        omoikane::memoria::save(&mut db, omoikane::memoria::NewMemory { project: "/p".into(), kind: Some(omoikane::memoria::Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
     }
     let mut e = Estado::nuevo("/p".into());
     e.cargar(&mut db, None).unwrap();

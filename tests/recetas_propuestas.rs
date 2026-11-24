@@ -3,8 +3,8 @@
 
 mod comun;
 
-use omoikane::memoria::{self, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::memoria::{self, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use omoikane::{candidatas, db, recetas};
 use serde_json::json;
 use std::path::PathBuf;
@@ -52,20 +52,20 @@ fn proposes_once_what_repeats_and_not_what_is_already_saved() {
     assert_eq!(r.len(), 1, "{all:?}");
     assert!(r[0].text.contains("`git fetch` → `gh issue` → `gh pr`") && r[0].text.contains(&format!("{} sessions", recetas::MIN_SESIONES)), "{}", r[0].text);
     // It reaches the next session, like the other candidates.
-    let t = recall::al_empezar(&mut db, "/web", &Entrada { session_id: "nueva".into(), ..Default::default() }).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/web", &HookInput { session_id: "nueva".into(), ..Default::default() }).unwrap().unwrap();
     assert!(t.contains("[recipe] steps repeated"), "{t}");
 
     // Another sequence, already covered by a saved recipe: not proposed.
     let publish = ["cargo test -q", "git tag -a v1 -m 1", "git push origin v1", "cargo publish"];
     let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
-    let recipe = Nueva {
+    let recipe = NewMemory {
         project: "/web".into(),
-        kind: Some(Tipo::Procedure),
+        kind: Some(Kind::Procedure),
         title: "Publicar una versión".into(),
         content: "1. cargo test.\n2. git tag -a y git push del tag.\n3. cargo publish.\n\nwhen: publica".into(),
         ..Default::default()
     };
-    memoria::guardar(&mut db2, recipe, None).unwrap();
+    memoria::save(&mut db2, recipe, None).unwrap();
     for i in 0..recetas::MIN_SESIONES {
         let c = conversation(&d, &format!("p{i}"), &publish);
         recetas::apuntar(&db2, &format!("p{i}"), &recetas::pasos(&c).unwrap()).unwrap();

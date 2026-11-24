@@ -4,8 +4,8 @@
 
 mod comun;
 
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use omoikane::{db, diario, proyecto, riesgo};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -17,16 +17,16 @@ fn repo(dir: &Path) -> String {
 }
 
 fn decision(db: &mut Connection, project: &str, space_id: Option<i64>, title: &str, tags: &[&str]) -> String {
-    let n = Nueva {
+    let n = NewMemory {
         project: project.into(),
         space_id,
-        kind: Some(Tipo::Decision),
+        kind: Some(Kind::Decision),
         title: title.into(),
         content: format!("{title}. Opciones distintas para «{title}»; asumido lo primero mientras tanto."),
         tags: tags.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    let id = memoria::guardar(db, n, None).unwrap().id;
+    let id = memoria::save(db, n, None).unwrap().id;
     // Different dates: the date ordering shows.
     std::thread::sleep(std::time::Duration::from_millis(5));
     id
@@ -94,8 +94,8 @@ fn factory(name: &str) -> Factory {
 fn blocking_first_and_without_leaving_the_space() {
     let f = factory("orden");
     let db = db::abrir(&f.dir.join("o.db")).unwrap();
-    let scope = Ambito::de(&db, &f.acme).unwrap();
-    let v = memoria::decisiones(&db, &scope, false, &[], 50).unwrap();
+    let scope = Scope::from_project(&db, &f.acme).unwrap();
+    let v = memoria::decisions(&db, &scope, false, &[], 50).unwrap();
     let t: Vec<(&str, &str)> = v.iter().map(|d| (d.title.as_str(), d.priority)).collect();
     // Blocking first (newest to oldest), then the later ones; no Globex and not the one that's no
     // longer open.
@@ -108,19 +108,19 @@ fn blocking_first_and_without_leaving_the_space() {
     ]);
     assert!(v[0].project.is_empty() && v[0].space == "acme" && !v[0].global);
     assert!(v[2].global);
-    let blocking_only = memoria::decisiones(&db, &scope, true, &[], 50).unwrap();
+    let blocking_only = memoria::decisions(&db, &scope, true, &[], 50).unwrap();
     assert_eq!(blocking_only.len(), 2);
-    assert_eq!(memoria::decisiones(&db, &scope, false, &[], 1).unwrap().len(), 1);
+    assert_eq!(memoria::decisions(&db, &scope, false, &[], 1).unwrap().len(), 1);
     // From the general folder, everyone's.
-    assert_eq!(memoria::decisiones(&db, &Ambito::Todos, true, &[], 50).unwrap().len(), 3);
+    assert_eq!(memoria::decisions(&db, &Scope::All, true, &[], 50).unwrap().len(), 3);
 }
 
 #[test]
 fn on_start_blocking_ones_are_marked() {
     let f = factory("empezar");
     let mut db = db::abrir(&f.dir.join("o.db")).unwrap();
-    let e = Entrada { session_id: "s1".into(), ..Default::default() };
-    let t = recall::al_empezar(&mut db, &f.acme, &e).unwrap().unwrap();
+    let e = HookInput { session_id: "s1".into(), ..Default::default() };
+    let t = recall::on_session_start(&mut db, &f.acme, &e).unwrap().unwrap();
     let (_, rest) = t.split_once("Decisions waiting for the user").expect("la sección");
     assert!(rest.lines().next().unwrap().contains("the 2 marked BLOCKING first"), "{t}");
     let l: Vec<&str> = rest.lines().skip(1).take_while(|l| l.starts_with("- ")).collect();
@@ -131,7 +131,7 @@ fn on_start_blocking_ones_are_marked() {
     assert!(!t.contains("Globex"), "{t}");
     // Without blocking ones, the usual header.
     let mut db2 = db::abrir(&f.dir.join("o.db")).unwrap();
-    let t = recall::al_empezar(&mut db2, &f.globex, &e).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db2, &f.globex, &e).unwrap().unwrap();
     assert!(t.contains("BLOCKING") && t.contains("Globex: migrar la base"), "{t}");
     // The instructions say when it's blocking.
     assert!(t.contains("Add the tag `blocking` too only when the work can't go on without the answer"), "{t}");
@@ -189,15 +189,15 @@ fn session(db: &Connection, name: &str, project_id: i64, folder: &str, day: &str
 }
 
 fn gotcha(db: &mut Connection, project: &str, title: &str, paths: &[&str]) -> String {
-    let n = Nueva {
+    let n = NewMemory {
         project: project.into(),
-        kind: Some(Tipo::Gotcha),
+        kind: Some(Kind::Gotcha),
         title: title.into(),
         content: format!("{title}: cuidado al tocarlo."),
         paths: paths.iter().map(|r| r.to_string()).collect(),
         ..Default::default()
     };
-    memoria::guardar(db, n, None).unwrap().id
+    memoria::save(db, n, None).unwrap().id
 }
 
 /// A repository with 5 sessions on `src/sync.rs` (4 with `tests/sync.rs`, 2 with `CHANGELOG.md`), and
@@ -344,11 +344,11 @@ fn data_is_not_searched_and_changes_on_its_own() {
     let s = json(omoi(&f.dir, root, &["search", "xilofonorara", "--json"], None));
     assert_eq!(s.as_array().unwrap().len(), 0, "{s}");
     let mut db = db::abrir(&f.dir.join("o.db")).unwrap();
-    let e = Entrada { session_id: "s".into(), prompt: "qué pasa con xilofonorara".into(), ..Default::default() };
-    let r = recall::al_preguntar(&mut db, &f.acme, &e, None).unwrap().unwrap_or_default();
+    let e = HookInput { session_id: "s".into(), prompt: "qué pasa con xilofonorara".into(), ..Default::default() };
+    let r = recall::on_prompt(&mut db, &f.acme, &e, None).unwrap().unwrap_or_default();
     assert!(!r.contains("xilofonorara"), "{r}");
     // What looks like a secret is redacted in the data too.
-    let data = memoria::datos_de(&db, &[id.as_str()]).unwrap();
+    let data = memoria::data_of(&db, &[id.as_str()]).unwrap();
     assert!(data[&id]["clave"].as_str().unwrap().starts_with("[redacted:"), "{data:?}");
     drop(db);
     // Only the data: no version in the history, and the stamp changes (sync carries it).
@@ -377,7 +377,7 @@ fn data_is_not_searched_and_changes_on_its_own() {
     std::fs::write(&copy, &text).unwrap();
     json(omoi(&other_dir, root, &["import", copy.to_str().unwrap(), "--json"], None));
     let db2 = db::abrir(&other_dir.join("o.db")).unwrap();
-    assert_eq!(memoria::datos_de(&db2, &[id.as_str()]).unwrap()[&id]["fase"], "alpha");
+    assert_eq!(memoria::data_of(&db2, &[id.as_str()]).unwrap()[&id]["fase"], "alpha");
     // The import launches `omoi review --refresh-trade-duplicates` separately on this database. If the
     // test deletes the folder before that process opens it, it recreates it and it stays in temp: wait
     // until it saves its computation (then, if it still has it open, `Temporal` retries).
@@ -409,7 +409,7 @@ fn blocking_task_decision_then_resolved() {
     // Without an answer, no; one that isn't a decision, no; another client's, neither.
     assert!(!omoi(&f.dir, root, &["decisions", "--resolve", &id], None).status.success());
     let db = db::abrir(&f.dir.join("o.db")).unwrap();
-    let globex_id = memoria::decisiones(&db, &Ambito::Todos, true, &["".to_string()], 50).unwrap().into_iter().find(|d| d.title.starts_with("Globex")).unwrap().id;
+    let globex_id = memoria::decisions(&db, &Scope::All, true, &["".to_string()], 50).unwrap().into_iter().find(|d| d.title.starts_with("Globex")).unwrap().id;
     drop(db);
     let o = omoi(&f.dir, root, &["decisions", "--resolve", &globex_id, "--answer", "sí"], None);
     assert!(!o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));

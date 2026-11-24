@@ -5,15 +5,15 @@
 //! «History of `src/sync.rs`: changed in 14 sessions (last 2026-11-04); it usually changes together
 //! with `tests/sync.rs` (9 of 14) and `CHANGELOG.md` (7); 3 gotchas mention it.»
 //!
-//! Only with at least `SESIONES_MIN` sessions (with fewer it says nothing), once per file and session
+//! Only with at least `MIN_SESSIONS` sessions (with fewer it says nothing), once per file and session
 //! (local table `diary_hint`, separate from `recall_log`: it's not a memory and must not count as
 //! received) and at most `MAX_POR_MENSAJE` files per message. The gotchas themselves already arrive
-//! through `recall::por_rutas`; here they are only counted.
+//! through `recall::by_paths`; here they are only counted.
 //!
 //! Cost: normally the message names no file, and that is decided without touching the database
 //! (`parece_nombrar`). Only if it seems to does it check for a diary and read the project's lines.
 
-use crate::memoria::{AHORA, Ambito};
+use crate::memoria::{NOW, Scope};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap};
@@ -28,7 +28,7 @@ pub const JUNTOS_PARTE: f64 = 0.4;
 pub const JUNTOS_MAX: usize = 3;
 /// How many files are talked about in a single message.
 pub const MAX_POR_MENSAJE: usize = 2;
-/// How many days it remembers it already said it (after compacting it forgets sooner: `al_empezar`).
+/// How many days it remembers it already said it (after compacting it forgets sooner: `on_session_start`).
 const HINT_DAYS: i64 = 7;
 
 /// The table with what was already said in each session. Local like `diary`, and like it, created with
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS diary_hint (
 ";
 
 /// Whether `path` shows up in `text` (already lowercase and with `/`): the whole path, or the file
-/// name if it has at least 5 characters. The same rule as `recall::por_rutas`.
+/// name if it has at least 5 characters. The same rule as `recall::by_paths`.
 pub fn nombra(text: &str, path: &str) -> bool {
     let path = path.to_lowercase().replace('\\', "/");
     let name = path.rsplit('/').next().unwrap_or(&path);
@@ -69,7 +69,7 @@ pub fn al_empezar(db: &Connection, session: &str) -> Result<()> {
     if !has_table(db)? {
         return Ok(());
     }
-    db.execute(&format!("DELETE FROM diary_hint WHERE session = ?1 OR julianday({AHORA}) - julianday(at) > {HINT_DAYS}"), [session])?;
+    db.execute(&format!("DELETE FROM diary_hint WHERE session = ?1 OR julianday({NOW}) - julianday(at) > {HINT_DAYS}"), [session])?;
     Ok(())
 }
 
@@ -154,7 +154,7 @@ pub(crate) fn misma(a: &str, b: &str) -> bool {
     long == short || (!short.is_empty() && long.ends_with(short.as_str()) && long.as_bytes()[long.len() - short.len() - 1] == b'/')
 }
 
-/// The history of the files the message names (those above `SESIONES_MIN`), without checking whether
+/// The history of the files the message names (those above `MIN_SESSIONS`), without checking whether
 /// it was already said. Those named with their whole path first; of those named only by name, for each
 /// name the one that moved the most (`main.rs` isn't every `main.rs` in the repository).
 pub fn historias(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Historia>> {
@@ -187,7 +187,7 @@ pub fn historias(db: &Connection, project: &str, prompt: &str) -> Result<Vec<His
     // The scope's gotchas with paths: few.
     let mut q = db.prepare(&format!(
         "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id WHERE m.kind = 'gotcha' AND {}",
-        Ambito::de(db, project)?.sql()
+        Scope::from_project(db, project)?.sql()
     ))?;
     let gotchas: Vec<(String, String)> = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut r = Vec::new();
@@ -231,7 +231,7 @@ pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str)
         }
         db.execute_batch(TABLE)?;
         for h in &hs {
-            db.execute(&format!("INSERT OR IGNORE INTO diary_hint(session, file, at) VALUES (?1, ?2, {AHORA})"), params![session, h.fichero])?;
+            db.execute(&format!("INSERT OR IGNORE INTO diary_hint(session, file, at) VALUES (?1, ?2, {NOW})"), params![session, h.fichero])?;
         }
     }
     Ok(Some(hs.iter().map(Historia::linea).collect::<Vec<_>>().join("\n")))
@@ -359,7 +359,7 @@ pub fn de_ficheros(db: &Connection, project: &str, files: &[String]) -> Result<I
     } else {
         let mut q = db.prepare(&format!(
             "SELECT DISTINCT mp.memory_id, mp.path FROM memory_path mp JOIN memory m ON m.id = mp.memory_id WHERE m.kind = 'gotcha' AND {}",
-            Ambito::de(db, project)?.sql()
+            Scope::from_project(db, project)?.sql()
         ))?;
         q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };

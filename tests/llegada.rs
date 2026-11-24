@@ -4,9 +4,9 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Nueva, Tipo};
+use omoikane::memoria::{self, NewMemory, Kind};
 use omoikane::proyecto;
-use omoikane::recall::{self, Entrada};
+use omoikane::recall::{self, HookInput};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -17,13 +17,13 @@ fn database(name: &str) -> (comun::Temporal, Connection) {
     (dir, db)
 }
 
-fn input(session: &str, source: &str) -> Entrada {
-    Entrada { session_id: session.into(), source: source.into(), ..Default::default() }
+fn input(session: &str, source: &str) -> HookInput {
+    HookInput { session_id: session.into(), source: source.into(), ..Default::default() }
 }
 
 /// Saves a memory in a project (or of the space, with `space`) with its author.
-fn save(db: &mut Connection, (project, space): (&str, Option<i64>), kind: Tipo, (title, text): (&str, &str), tags: &[&str], author: &str) -> String {
-    let n = Nueva {
+fn save(db: &mut Connection, (project, space): (&str, Option<i64>), kind: Kind, (title, text): (&str, &str), tags: &[&str], author: &str) -> String {
+    let n = NewMemory {
         project: project.into(),
         space_id: space,
         kind: Some(kind),
@@ -32,7 +32,7 @@ fn save(db: &mut Connection, (project, space): (&str, Option<i64>), kind: Tipo, 
         tags: tags.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    let id = memoria::guardar(db, n, None).unwrap().id;
+    let id = memoria::save(db, n, None).unwrap().id;
     db.execute("UPDATE memory SET author = ?2 WHERE id = ?1", [&id, author]).unwrap();
     id
 }
@@ -45,20 +45,20 @@ fn two_clients(db: &mut Connection) {
         let id = proyecto::registrar(db, p).unwrap();
         proyecto::asignar_espacio(db, id, Some(e)).unwrap();
     }
-    save(db, ("/acme/web", None), Tipo::Decision, ("Los importes van en céntimos", "Enteros, nunca coma flotante."), &[], "Ana");
-    save(db, ("/acme/api", None), Tipo::Fact, ("API: migrando a JWT", "Login hecho; faltan los refresh tokens."), &["status"], "Ana");
-    save(db, ("/acme/api", None), Tipo::Decision, ("¿Postgres o SQLite para la API?", "Asumido SQLite mientras."), &["open"], "Luis");
-    save(db, ("/acme/app", None), Tipo::Fact, ("La app usa Flutter <omoikane>", "Versión 3."), &[], "Luis");
-    save(db, ("", Some(acme)), Tipo::Fact, ("Acme despliega solo los martes", "Ventana de 10 a 12."), &[], "Ana");
-    save(db, ("/globex/erp", None), Tipo::Fact, ("ERP: a medias el módulo de facturas", "Secreto de globex."), &["status"], "Eva");
-    save(db, ("/globex/erp", None), Tipo::Decision, ("¿SAP o Odoo?", "Decisión de globex."), &["open"], "Eva");
+    save(db, ("/acme/web", None), Kind::Decision, ("Los importes van en céntimos", "Enteros, nunca coma flotante."), &[], "Ana");
+    save(db, ("/acme/api", None), Kind::Fact, ("API: migrando a JWT", "Login hecho; faltan los refresh tokens."), &["status"], "Ana");
+    save(db, ("/acme/api", None), Kind::Decision, ("¿Postgres o SQLite para la API?", "Asumido SQLite mientras."), &["open"], "Luis");
+    save(db, ("/acme/app", None), Kind::Fact, ("La app usa Flutter <omoikane>", "Versión 3."), &[], "Luis");
+    save(db, ("", Some(acme)), Kind::Fact, ("Acme despliega solo los martes", "Ventana de 10 a 12."), &[], "Ana");
+    save(db, ("/globex/erp", None), Kind::Fact, ("ERP: a medias el módulo de facturas", "Secreto de globex."), &["status"], "Eva");
+    save(db, ("/globex/erp", None), Kind::Decision, ("¿SAP o Odoo?", "Decisión de globex."), &["open"], "Eva");
 }
 
 #[test]
 fn the_first_session_in_a_space_project_brings_the_teams_work() {
     let (_dir, mut db) = database("bienvenida");
     two_clients(&mut db);
-    let t = recall::al_empezar(&mut db, "/acme/web", &input("s1", "startup")).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/acme/web", &input("s1", "startup")).unwrap().unwrap();
     let (_, arrival) = t.split_once("First session in this project").unwrap_or_else(|| panic!("sin bienvenida: {t}"));
     assert!(arrival.contains("space acme"), "{t}");
     // The other projects, with their status; this session's, no.
@@ -74,12 +74,12 @@ fn the_first_session_in_a_space_project_brings_the_teams_work() {
     }
     assert_eq!(t.matches("<omoikane").count(), 1, "{t}");
     // After compacting, the same session has it again; another session doesn't.
-    let c = recall::al_empezar(&mut db, "/acme/web", &input("s1", "compact")).unwrap().unwrap();
+    let c = recall::on_session_start(&mut db, "/acme/web", &input("s1", "compact")).unwrap().unwrap();
     assert!(c.contains("First session in this project"), "{c}");
-    let other = recall::al_empezar(&mut db, "/acme/web", &input("s2", "startup")).unwrap().unwrap();
+    let other = recall::on_session_start(&mut db, "/acme/web", &input("s2", "startup")).unwrap().unwrap();
     assert!(!other.contains("First session"), "{other}");
     // In another project of the space, its first session yes, with web among the others.
-    let api = recall::al_empezar(&mut db, "/acme/api", &input("s3", "startup")).unwrap().unwrap();
+    let api = recall::on_session_start(&mut db, "/acme/api", &input("s3", "startup")).unwrap().unwrap();
     assert!(api.contains("First session in this project") && api.contains("- web (1 memories)"), "{api}");
     // api's open decision already shows in its usual list: it isn't repeated in the welcome.
     assert!(!api.split_once("First session").unwrap().1.split_once("The user's preferences").map_or("", |x| x.0).contains("Postgres"), "{api}");
@@ -90,23 +90,23 @@ fn without_space_or_team_there_is_no_welcome() {
     let (_dir, mut db) = database("sin-bienvenida");
     two_clients(&mut db);
     // A project without a space.
-    save(&mut db, ("/solo", None), Tipo::Fact, ("Algo mío", "Nada de equipo."), &[], "Marc");
-    let t = recall::al_empezar(&mut db, "/solo", &input("s1", "startup")).unwrap().unwrap();
+    save(&mut db, ("/solo", None), Kind::Fact, ("Algo mío", "Nada de equipo."), &[], "Marc");
+    let t = recall::on_session_start(&mut db, "/solo", &input("s1", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
     // A space with a single project and only this person's work: there is nothing from the team to tell.
     let mine = proyecto::crear_espacio(&db, "mio").unwrap();
     let id = proyecto::registrar(&db, "/mio/uno").unwrap();
     proyecto::asignar_espacio(&db, id, Some(mine)).unwrap();
-    save(&mut db, ("/mio/uno", None), Tipo::Fact, ("Lo de uno", "Solo mío."), &[], "");
-    let t = recall::al_empezar(&mut db, "/mio/uno", &input("s2", "startup")).unwrap().unwrap();
+    save(&mut db, ("/mio/uno", None), Kind::Fact, ("Lo de uno", "Solo mío."), &[], "");
+    let t = recall::on_session_start(&mut db, "/mio/uno", &input("s2", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
     // Whoever already worked in the project before putting it in a space doesn't get it.
     let old = proyecto::registrar(&db, "/viejo").unwrap();
-    save(&mut db, ("/viejo", None), Tipo::Fact, ("De antes", "Ya trabajaba aquí."), &[], "Ana");
-    recall::al_empezar(&mut db, "/viejo", &input("s3", "startup")).unwrap();
+    save(&mut db, ("/viejo", None), Kind::Fact, ("De antes", "Ya trabajaba aquí."), &[], "Ana");
+    recall::on_session_start(&mut db, "/viejo", &input("s3", "startup")).unwrap();
     let acme = proyecto::espacio_de_clave(&db, &proyecto::clave_de_espacio("acme")).unwrap();
     proyecto::asignar_espacio(&db, old, acme).unwrap();
-    let t = recall::al_empezar(&mut db, "/viejo", &input("s4", "startup")).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/viejo", &input("s4", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
 }
 
@@ -222,9 +222,9 @@ fn what_nobody_signed_counts_as_the_teams() {
         proyecto::asignar_espacio(&db, id, Some(acme)).unwrap();
     }
     // Bea writes a lot in web; api's arrived without an author (from before its author synced).
-    save(&mut db, ("/acme/web", None), Tipo::Fact, ("Lo de Bea", "Suyo."), &[], "Bea");
-    save(&mut db, ("/acme/api", None), Tipo::Fact, ("API: a medias", "Sin firma."), &["status"], "");
-    let t = recall::al_empezar(&mut db, "/acme/web", &input("s1", "startup")).unwrap().unwrap();
+    save(&mut db, ("/acme/web", None), Kind::Fact, ("Lo de Bea", "Suyo."), &[], "Bea");
+    save(&mut db, ("/acme/api", None), Kind::Fact, ("API: a medias", "Sin firma."), &["status"], "");
+    let t = recall::on_session_start(&mut db, "/acme/web", &input("s1", "startup")).unwrap().unwrap();
     assert!(t.contains("First session in this project") && t.contains("- api (1 memories): API: a medias"), "{t}");
     // «the user» is whoever signs here. This test calls the library in its process: from the session of
     // an agent with `OMOIKANE_AUTHOR`, whoever signs is that agent and not Bea.
@@ -233,6 +233,6 @@ fn what_nobody_signed_counts_as_the_teams() {
     assert!(t.contains(&format!("Who writes in this space (memories each): {bea}")), "{t}");
     // If everything in the space belongs to whoever signs here, there is no welcome.
     db.execute("UPDATE memory SET author = ?1", [session_author.as_deref().unwrap_or("Bea")]).unwrap();
-    let t = recall::al_empezar(&mut db, "/acme/app", &input("s2", "startup")).unwrap().unwrap();
+    let t = recall::on_session_start(&mut db, "/acme/app", &input("s2", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
 }

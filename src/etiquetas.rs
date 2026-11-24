@@ -6,16 +6,16 @@
 //! system tag (`open`, `blocking`, `status`, `draft`, the ones with `:`) is neither changed nor
 //! used as a target.
 
-use crate::memoria::Ambito;
+use crate::memoria::Scope;
 use anyhow::Result;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
 /// Tags with their own meaning for Omoikane: they are never changed and no other tag is changed into them.
 const SYSTEM_TAGS: [&str; 8] = [
-    crate::memoria::ESTADO,
-    crate::memoria::ABIERTA,
-    crate::memoria::BLOQUEANTE,
+    crate::memoria::STATUS,
+    crate::memoria::OPEN,
+    crate::memoria::BLOCKING,
     "draft",
     "deprecated",
     "verified",
@@ -51,14 +51,14 @@ fn forms(t: &str) -> Vec<String> {
 }
 
 /// Whether two tags are variants of each other.
-pub fn variantes(a: &str, b: &str) -> bool {
+pub fn are_variants(a: &str, b: &str) -> bool {
     let fb = forms(b);
     forms(a).iter().any(|f| fb.contains(f))
 }
 
 /// A change made: the requested tag and the one that already existed and takes its place.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Cambio {
+pub struct TagChange {
     pub from: String,
     pub to: String,
 }
@@ -66,16 +66,16 @@ pub struct Cambio {
 /// Where the vocabulary is looked up for a memory going to the project of folder `project` (empty: no
 /// project) or to space `space_id`: what is visible from that project; for a space, the space's;
 /// global, what belongs to no space (never a client's tags).
-pub fn ambito_de(db: &Connection, project: &str, space_id: Option<i64>) -> Result<Ambito> {
+pub fn scope_for(db: &Connection, project: &str, space_id: Option<i64>) -> Result<Scope> {
     Ok(match space_id {
-        _ if !project.is_empty() => Ambito::de(db, project)?,
-        Some(s) => Ambito::Espacio(Some(s)),
-        None => Ambito::Espacio(None),
+        _ if !project.is_empty() => Scope::from_project(db, project)?,
+        Some(s) => Scope::Space(Some(s)),
+        None => Scope::Space(None),
     })
 }
 
 /// How many memories in the scope carry each tag.
-fn tag_counts(db: &Connection, scope: &Ambito) -> Result<HashMap<String, usize>> {
+fn tag_counts(db: &Connection, scope: &Scope) -> Result<HashMap<String, usize>> {
     let mut q = db.prepare(&format!("SELECT j.value FROM memory m, json_each(m.tags) j WHERE {}", scope.sql()))?;
     let mut n = HashMap::new();
     for t in q.query_map([], |f| f.get::<_, String>(0))? {
@@ -86,7 +86,7 @@ fn tag_counts(db: &Connection, scope: &Ambito) -> Result<HashMap<String, usize>>
 
 /// The tags of a new memory with each variant replaced by the tag that already exists in
 /// `scope` (the most used, if there are several), without duplicates, and the changes made.
-pub fn cerrar(db: &Connection, scope: &Ambito, tags: Vec<String>) -> Result<(Vec<String>, Vec<Cambio>)> {
+pub fn normalize_tags(db: &Connection, scope: &Scope, tags: Vec<String>) -> Result<(Vec<String>, Vec<TagChange>)> {
     if tags.iter().all(|t| is_system(t)) {
         return Ok((tags, Vec::new()));
     }
@@ -94,7 +94,7 @@ pub fn cerrar(db: &Connection, scope: &Ambito, tags: Vec<String>) -> Result<(Vec
     Ok(close_with(&counts, tags))
 }
 
-fn close_with(counts: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String>, Vec<Cambio>) {
+fn close_with(counts: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String>, Vec<TagChange>) {
     let mut out = Vec::new();
     let mut changes = Vec::new();
     for t in tags {
@@ -103,12 +103,12 @@ fn close_with(counts: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String
         } else {
             let best = counts
                 .iter()
-                .filter(|(e, _)| !is_system(e) && variantes(&t, e))
+                .filter(|(e, _)| !is_system(e) && are_variants(&t, e))
                 .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
                 .map(|(e, _)| e.clone());
             match best {
                 Some(e) => {
-                    changes.push(Cambio { from: t, to: e.clone() });
+                    changes.push(TagChange { from: t, to: e.clone() });
                     e
                 }
                 None => t,
@@ -122,14 +122,14 @@ fn close_with(counts: &HashMap<String, usize>, tags: Vec<String>) -> (Vec<String
 }
 
 /// The pairs of variant tags already in the scope (the most used first), for review.
-pub fn parejas(db: &Connection, scope: &Ambito) -> Result<Vec<(String, usize, String, usize)>> {
+pub fn variant_pairs(db: &Connection, scope: &Scope) -> Result<Vec<(String, usize, String, usize)>> {
     let counts = tag_counts(db, scope)?;
     let mut v: Vec<(&String, &usize)> = counts.iter().filter(|(t, _)| !is_system(t)).collect();
     v.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
     let mut out = Vec::new();
     for (i, (a, na)) in v.iter().enumerate() {
         for (b, nb) in &v[i + 1..] {
-            if variantes(a, b) {
+            if are_variants(a, b) {
                 out.push(((*a).clone(), **na, (*b).clone(), **nb));
             }
         }
@@ -139,7 +139,7 @@ pub fn parejas(db: &Connection, scope: &Ambito) -> Result<Vec<(String, usize, St
 
 /// Replaces tag `from` with `to` in every memory of the scope that carries it, each one with its
 /// version in the history. Returns how many changed. System tags are not merged.
-pub fn unir(db: &mut Connection, scope: &Ambito, from: &str, to: &str) -> Result<usize> {
+pub fn merge(db: &mut Connection, scope: &Scope, from: &str, to: &str) -> Result<usize> {
     let (from, to) = (from.trim().trim_start_matches('#').to_lowercase(), to.trim().trim_start_matches('#').to_lowercase());
     anyhow::ensure!(!from.is_empty() && !to.is_empty() && from != to, "{}", crate::tr!("give two different tags: --merge FROM TO", "di dos etiquetas distintas: --merge DE A"));
     anyhow::ensure!(
@@ -152,7 +152,7 @@ pub fn unir(db: &mut Connection, scope: &Ambito, from: &str, to: &str) -> Result
         q.query_map([&from], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?
     };
     for id in &ids {
-        let m = crate::memoria::obtener(db, id)?;
+        let m = crate::memoria::get(db, id)?;
         let mut tags: Vec<String> = Vec::new();
         for t in m.tags {
             let t = if t == from { to.clone() } else { t };
@@ -160,8 +160,8 @@ pub fn unir(db: &mut Connection, scope: &Ambito, from: &str, to: &str) -> Result
                 tags.push(t);
             }
         }
-        let changes = crate::memoria::Cambios { tags: Some(tags), reason: Some(format!("tag «{from}» merged into «{to}»")), ..Default::default() };
-        crate::memoria::actualizar(db, id, changes, None)?;
+        let changes = crate::memoria::Changes { tags: Some(tags), reason: Some(format!("tag «{from}» merged into «{to}»")), ..Default::default() };
+        crate::memoria::update(db, id, changes, None)?;
     }
     Ok(ids.len())
 }
@@ -173,10 +173,10 @@ mod tests {
     #[test]
     fn real_variants() {
         for (a, b) in [("idea", "ideas"), ("test", "tests"), ("Release", "release"), ("code-review", "code_review"), ("versión", "version"), ("versiones", "version"), ("errores", "error"), ("doc", "docs")] {
-            assert!(variantes(a, b), "{a} ~ {b}");
+            assert!(are_variants(a, b), "{a} ~ {b}");
         }
         for (a, b) in [("ide", "ideas"), ("not", "notes"), ("io", "ios"), ("rust", "rest"), ("bus", "bu"), ("android", "kotlin")] {
-            assert!(!variantes(a, b), "{a} !~ {b}");
+            assert!(!are_variants(a, b), "{a} !~ {b}");
         }
     }
 
@@ -185,7 +185,7 @@ mod tests {
         let counts: HashMap<String, usize> = [("tests".to_string(), 5), ("test".to_string(), 2), ("open".to_string(), 3)].into();
         let (t, c) = close_with(&counts, vec!["Tests".into(), "nueva".into(), "tests".into(), "opens".into(), "review:2027-01-01".into()]);
         assert_eq!(t, ["tests", "nueva", "opens", "review:2027-01-01"]);
-        assert_eq!(c, [Cambio { from: "Tests".into(), to: "tests".into() }]);
+        assert_eq!(c, [TagChange { from: "Tests".into(), to: "tests".into() }]);
     }
 
     #[test]

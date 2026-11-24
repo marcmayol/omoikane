@@ -3,7 +3,7 @@
 
 mod comun;
 
-use omoikane::recall::{self, Entrada};
+use omoikane::recall::{self, HookInput};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -48,13 +48,13 @@ impl Fixture {
 
     fn on_start(&self, session: &str) -> String {
         let mut db = omoikane::db::abrir(&self.db).unwrap();
-        recall::al_empezar(&mut db, &self.project_id(), &Entrada { session_id: session.into(), ..Default::default() }).unwrap().unwrap()
+        recall::on_session_start(&mut db, &self.project_id(), &HookInput { session_id: session.into(), ..Default::default() }).unwrap().unwrap()
     }
 
     fn on_prompt(&self, session: &str, prompt: &str) -> String {
         let mut db = omoikane::db::abrir(&self.db).unwrap();
-        let e = Entrada { session_id: session.into(), prompt: prompt.into(), ..Default::default() };
-        recall::al_preguntar(&mut db, &self.project_id(), &e, None).unwrap().unwrap_or_default()
+        let e = HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() };
+        recall::on_prompt(&mut db, &self.project_id(), &e, None).unwrap().unwrap_or_default()
     }
 }
 

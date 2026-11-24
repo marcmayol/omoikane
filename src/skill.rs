@@ -10,7 +10,7 @@
 //! brings it up to date) or if someone edited the file by hand (**edited**: not overwritten without `force`). Nor is
 //! a skill written whose text looks like it holds a secret, because the file is going to end up in a commit.
 
-use crate::memoria::{Memoria, Tipo};
+use crate::memoria::{Memory, Kind};
 use anyhow::{Result, bail};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -95,9 +95,9 @@ struct Header {
 }
 
 /// The skill's name: the title without accents, lowercase, with letters, digits and `-`.
-pub fn nombre(m: &Memoria) -> String {
+pub fn nombre(m: &Memory) -> String {
     let mut r = String::new();
-    for c in crate::nombres::sin_acentos(&m.title).chars() {
+    for c in crate::nombres::fold_accents(&m.title).chars() {
         if c.is_ascii_alphanumeric() {
             r.push(c.to_ascii_lowercase());
         } else if !r.is_empty() && !r.ends_with('-') {
@@ -117,9 +117,9 @@ fn id_suffix(id: &str) -> String {
 
 /// The description, which decides when the agent loads it: the title and, in a recipe, its
 /// `when:` words; otherwise, the files it refers to. One line.
-pub fn descripcion(m: &Memoria) -> String {
+pub fn descripcion(m: &Memory) -> String {
     let title = m.title.trim().trim_end_matches('.');
-    let when = if m.kind == Tipo::Procedure { when_words(m) } else { Vec::new() };
+    let when = if m.kind == Kind::Procedure { when_words(m) } else { Vec::new() };
     let mut d = if !when.is_empty() {
         let w = when.join(", ");
         if in_spanish(m) { format!("{title}. Úsala cuando: {w}.") } else { format!("{title}. Use it when: {w}.") }
@@ -137,7 +137,7 @@ pub fn descripcion(m: &Memoria) -> String {
 }
 
 /// The words of a recipe's `when:` (or `cuando:`) line, as the user wrote them.
-fn when_words(m: &Memoria) -> Vec<String> {
+fn when_words(m: &Memory) -> Vec<String> {
     m.content
         .lines()
         .filter_map(|l| {
@@ -151,7 +151,7 @@ fn when_words(m: &Memoria) -> Vec<String> {
 }
 
 /// The body: the title, the memory's text and where it comes from.
-fn body(m: &Memoria) -> String {
+fn body(m: &Memory) -> String {
     let short: String = m.id.chars().take(12).collect();
     let date = m.updated_at.get(..10).unwrap_or(&m.updated_at);
     format!(
@@ -174,7 +174,7 @@ fn body(m: &Memoria) -> String {
 
 /// Whether the memory is in Spanish (the skill's fixed words go in its language, not in the
 /// CLI's): accents, eñes and opening marks, or more frequent Spanish words than English ones.
-fn in_spanish(m: &Memoria) -> bool {
+fn in_spanish(m: &Memory) -> bool {
     let t = format!(" {} {} ", m.title, m.content).to_lowercase();
     let marks = t.chars().filter(|c| "áéíóúñ¿¡".contains(*c)).count();
     let count = |ws: &[&str]| ws.iter().map(|w| t.matches(&format!(" {w} ")).count()).sum::<usize>();
@@ -192,7 +192,7 @@ fn fingerprint(description: &str, body: &str) -> String {
 }
 
 /// The whole `SKILL.md` of memory `m` with name `n`.
-pub fn generar(m: &Memoria, n: &str) -> String {
+pub fn generar(m: &Memory, n: &str) -> String {
     let d = descripcion(m);
     let c = body(m);
     let h = fingerprint(&d, &c);
@@ -258,8 +258,8 @@ fn generated_in(root: &Path, folder: &str) -> Vec<(PathBuf, Header)> {
     v
 }
 
-fn state_of(db: &Connection, c: &Header) -> (Estado, Option<Memoria>) {
-    let Some(m) = c.id.as_deref().and_then(|id| crate::memoria::obtener(db, id).ok()) else { return (Estado::Orphan, None) };
+fn state_of(db: &Connection, c: &Header) -> (Estado, Option<Memory>) {
+    let Some(m) = c.id.as_deref().and_then(|id| crate::memoria::get(db, id).ok()) else { return (Estado::Orphan, None) };
     if c.hash.as_deref() != Some(fingerprint(&c.description, &c.body).as_str()) {
         return (Estado::Edited, Some(m));
     }
@@ -272,7 +272,7 @@ fn state_of(db: &Connection, c: &Header) -> (Estado, Option<Memoria>) {
 pub struct Sugerencia {
     pub id: String,
     pub title: String,
-    pub kind: Tipo,
+    pub kind: Kind,
     /// In how many sessions the agent applied it (journal).
     pub applied_sessions: i64,
     pub recall_count: i64,
@@ -294,11 +294,11 @@ pub fn sugerencias(db: &Connection, project: &str) -> Result<Vec<Sugerencia>> {
         return Ok(Vec::new());
     }
     let already: std::collections::BTreeSet<String> = listar(db, project)?.into_iter().map(|s| s.memory_id).collect();
-    let all = crate::memoria::recientes(db, &crate::memoria::Ambito::de(db, project)?, None, usize::MAX >> 1)?;
+    let all = crate::memoria::recent(db, &crate::memoria::Scope::from_project(db, project)?, None, usize::MAX >> 1)?;
     let mut r: Vec<Sugerencia> = Vec::new();
     for m in all.into_iter().filter(|m| m.project_id == pid && !already.contains(&m.id)) {
         let (applied, _) = crate::diario::aplicada(db, &m.id)?;
-        if m.kind != Tipo::Procedure && applied < MIN_APLICADA {
+        if m.kind != Kind::Procedure && applied < MIN_APLICADA {
             continue;
         }
         if !crate::secretos::hallazgos(&format!("{}\n{}", m.title, m.content)).is_empty() {
@@ -318,27 +318,27 @@ pub fn sugerencias(db: &Connection, project: &str) -> Result<Vec<Sugerencia>> {
 pub fn resolver(db: &mut Connection, project: &str, requested: &str) -> Result<String> {
     let p = requested.trim();
     if !p.contains(char::is_whitespace)
-        && let Ok(id) = crate::memoria::resolver_id(db, p)
+        && let Ok(id) = crate::memoria::resolve_id(db, p)
     {
         return Ok(id);
     }
-    let o = crate::buscar::Opciones { ambito: crate::memoria::Ambito::de(db, project)?, kind: None, tags: Vec::new(), limite: 5 };
-    let mut rs = crate::buscar::buscar_sin_apuntar(db, p, &o)?;
+    let o = crate::buscar::SearchOptions { scope: crate::memoria::Scope::from_project(db, project)?, kind: None, tags: Vec::new(), limit: 5 };
+    let mut rs = crate::buscar::search_without_recording(db, p, &o)?;
     // The search scores those sharing words almost the same; whoever asks for a skill names its
     // title. They are sorted by how many of the query's words are in the title (without accents), and on a
     // tie the search order stays.
     let words = |t: &str| -> std::collections::BTreeSet<String> {
-        crate::nombres::sin_acentos(t).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(str::to_string).collect()
+        crate::nombres::fold_accents(t).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(str::to_string).collect()
     };
     let query = words(p);
-    let in_title = |m: &Memoria| words(&m.title).intersection(&query).count();
-    rs.sort_by_key(|r| std::cmp::Reverse(in_title(&r.memoria)));
+    let in_title = |m: &Memory| words(&m.title).intersection(&query).count();
+    rs.sort_by_key(|r| std::cmp::Reverse(in_title(&r.memory)));
     match rs.as_slice() {
         [] => bail!(crate::tr!("no memory matches «{p}»", "ninguna memoria encaja con «{p}»")),
-        [one] => Ok(one.memoria.id.clone()),
-        [a, b, ..] if in_title(&a.memoria) > in_title(&b.memoria) => Ok(a.memoria.id.clone()),
+        [one] => Ok(one.memory.id.clone()),
+        [a, b, ..] if in_title(&a.memory) > in_title(&b.memory) => Ok(a.memory.id.clone()),
         several => {
-            let list: Vec<String> = several.iter().map(|r| format!("  {}  {}", r.memoria.id.chars().take(12).collect::<String>(), r.memoria.title)).collect();
+            let list: Vec<String> = several.iter().map(|r| format!("  {}  {}", r.memory.id.chars().take(12).collect::<String>(), r.memory.title)).collect();
             bail!(crate::tr!(
                 "several memories match «{p}»; pick one by its id:\n{}",
                 "varias memorias encajan con «{p}»; elige una por su id:\n{}",
@@ -366,8 +366,8 @@ pub fn listar(db: &Connection, project: &str) -> Result<Vec<Skill>> {
 /// Omoikane's, and doesn't write a memory that looks like it holds a secret.
 pub fn escribir(db: &Connection, project: &str, id: &str, target: Destino, force: bool, dry_run: bool) -> Result<Vec<Escrita>> {
     let root = repo_root(project)?;
-    let m = crate::memoria::obtener(db, id)?;
-    crate::memoria::en_ambito(db, &crate::memoria::Ambito::de(db, project)?, &m.id)?;
+    let m = crate::memoria::get(db, id)?;
+    crate::memoria::in_scope(db, &crate::memoria::Scope::from_project(db, project)?, &m.id)?;
     let secrets = crate::secretos::tipos(&crate::secretos::hallazgos(&format!("{}\n{}", m.title, m.content)));
     if !secrets.is_empty() && !force {
         bail!(crate::tr!(
@@ -439,8 +439,8 @@ pub fn refrescar(db: &Connection, project: &str, dry_run: bool) -> Result<Vec<Es
 mod tests {
     use super::*;
 
-    fn memory(title: &str, content: &str, kind: Tipo) -> Memoria {
-        Memoria {
+    fn memory(title: &str, content: &str, kind: Kind) -> Memory {
+        Memory {
             id: "01M64R0KKD0AXYZ123456789AB".into(),
             kind,
             title: title.into(),
@@ -452,27 +452,27 @@ mod tests {
 
     #[test]
     fn valid_names() {
-        let m = memory("Publicar una versión de Omoikane (crates.io)", "", Tipo::Procedure);
+        let m = memory("Publicar una versión de Omoikane (crates.io)", "", Kind::Procedure);
         assert_eq!(nombre(&m), "publicar-una-version-de-omoikane-crates-io");
-        let long = memory(&"palabra ".repeat(30), "", Tipo::Fact);
+        let long = memory(&"palabra ".repeat(30), "", Kind::Fact);
         assert!(nombre(&long).len() <= MAX_NAME && !nombre(&long).ends_with('-'));
-        assert_eq!(nombre(&memory("«»", "", Tipo::Fact)), "memoria-6789ab");
+        assert_eq!(nombre(&memory("«»", "", Kind::Fact)), "memoria-6789ab");
     }
 
     #[test]
     fn the_recipe_says_when() {
-        let m = memory("Publicar una versión", "1. tag\n2. push\n\nwhen: publica, saca versión", Tipo::Procedure);
+        let m = memory("Publicar una versión", "1. tag\n2. push\n\nwhen: publica, saca versión", Kind::Procedure);
         let d = descripcion(&m);
         assert!(d.contains("publica") && d.contains("saca versión"), "{d}");
         assert!(d.contains("Úsala cuando"), "{d}");
-        let mut g = memory("Don't kill the emulator", "taskkill leaves the lock file behind", Tipo::Gotcha);
+        let mut g = memory("Don't kill the emulator", "taskkill leaves the lock file behind", Kind::Gotcha);
         g.paths = vec!["scripts/emu.ps1".into()];
         assert_eq!(descripcion(&g), "Don't kill the emulator. Applies to: scripts/emu.ps1.");
     }
 
     #[test]
     fn the_header_is_read_and_the_fingerprint_matches() {
-        let m = memory("Título: con dos puntos # y almohadilla", "Paso 1\nPaso 2", Tipo::Procedure);
+        let m = memory("Título: con dos puntos # y almohadilla", "Paso 1\nPaso 2", Kind::Procedure);
         let t = generar(&m, "titulo");
         let c = read_header(&t).unwrap();
         assert_eq!(c.id.as_deref(), Some(m.id.as_str()));

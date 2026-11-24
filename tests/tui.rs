@@ -5,7 +5,7 @@
 
 mod comun;
 
-use omoikane::memoria::{self, Nueva, Tipo};
+use omoikane::memoria::{self, NewMemory, Kind};
 use omoikane::tui::{Estado, Vista, dibujar};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
@@ -24,31 +24,31 @@ struct Fixture {
 fn fixture(name: &str) -> Fixture {
     let dir = comun::Temporal::nueva(name);
     let mut db = omoikane::db::abrir(&dir.join("o.db")).unwrap();
-    let save = |db: &mut Connection, project: &str, space_id: Option<i64>, kind: Tipo, title: &str| {
-        let n = Nueva { project: project.into(), space_id, kind: Some(kind), title: title.into(), content: format!("{title}."), ..Default::default() };
-        memoria::guardar(db, n, None).unwrap().id
+    let save = |db: &mut Connection, project: &str, space_id: Option<i64>, kind: Kind, title: &str| {
+        let n = NewMemory { project: project.into(), space_id, kind: Some(kind), title: title.into(), content: format!("{title}."), ..Default::default() };
+        memoria::save(db, n, None).unwrap().id
     };
-    save(&mut db, "", None, Tipo::Preference, "Respuestas cortas");
+    save(&mut db, "", None, Kind::Preference, "Respuestas cortas");
     let acme = omoikane::proyecto::crear_espacio(&db, "Acme").unwrap();
     let globex = omoikane::proyecto::crear_espacio(&db, "Globex").unwrap();
-    save(&mut db, "/acme-api", None, Tipo::Fact, "Acme usa Postgres");
-    save(&mut db, "/acme-web", None, Tipo::Fact, "Acme web en Astro");
-    let trashed_acme = save(&mut db, "/acme-web", None, Tipo::Fact, "Acme web: tirar");
-    save(&mut db, "", Some(acme), Tipo::Decision, "Acme: norma del cliente");
-    save(&mut db, "/globex", None, Tipo::Fact, "Globex es Flutter");
-    let trashed_globex = save(&mut db, "/globex", None, Tipo::Fact, "Globex: tirar");
-    save(&mut db, "/notas", None, Tipo::Fact, "Idea de blog");
+    save(&mut db, "/acme-api", None, Kind::Fact, "Acme usa Postgres");
+    save(&mut db, "/acme-web", None, Kind::Fact, "Acme web en Astro");
+    let trashed_acme = save(&mut db, "/acme-web", None, Kind::Fact, "Acme web: tirar");
+    save(&mut db, "", Some(acme), Kind::Decision, "Acme: norma del cliente");
+    save(&mut db, "/globex", None, Kind::Fact, "Globex es Flutter");
+    let trashed_globex = save(&mut db, "/globex", None, Kind::Fact, "Globex: tirar");
+    save(&mut db, "/notas", None, Kind::Fact, "Idea de blog");
     for (p, e) in [("/acme-api", acme), ("/acme-web", acme), ("/globex", globex)] {
         let id = omoikane::proyecto::registrar(&db, p).unwrap();
         omoikane::proyecto::asignar_espacio(&db, id, Some(e)).unwrap();
     }
-    memoria::olvidar(&mut db, &trashed_acme).unwrap();
-    memoria::olvidar(&mut db, &trashed_globex).unwrap();
+    memoria::forget(&mut db, &trashed_acme).unwrap();
+    memoria::forget(&mut db, &trashed_globex).unwrap();
     Fixture { db, _dir: dir }
 }
 
 fn forgotten_id(db: &Connection, title: &str) -> String {
-    memoria::papelera(db).unwrap().into_iter().find(|o| o.title == title).unwrap().id
+    memoria::trash(db).unwrap().into_iter().find(|o| o.title == title).unwrap().id
 }
 
 fn titles(e: &Estado) -> Vec<String> {
@@ -89,7 +89,7 @@ fn other_client_not_visible_from_a_client_in_tui() {
     assert!(!t.contains(&"Acme web en Astro".into()), "solo este proyecto: {t:?}");
     assert_no_others("la lista", &t.join("\n"));
 
-    // «All» from an Acme project is all of Acme, never everything (before 1.9 it was `Ambito::Todos`).
+    // «All» from an Acme project is all of Acme, never everything (before 1.9 it was `Scope::All`).
     press(&mut e, &mut db, KeyCode::Char('a'));
     let t = titles(&e);
     assert!(t.contains(&"Acme web en Astro".into()), "{t:?}");
@@ -124,7 +124,7 @@ fn other_client_not_visible_from_a_client_in_tui() {
     assert!(!e.restaurar(&mut db, &globex, None).unwrap());
     assert!(e.aviso.contains("espacio") || e.aviso.contains("space"), "{}", e.aviso);
     assert_eq!(e.borrar_de_papelera(&mut db, std::slice::from_ref(&globex)).unwrap(), 0);
-    assert!(memoria::papelera(&db).unwrap().iter().any(|o| o.id == globex));
+    assert!(memoria::trash(&db).unwrap().iter().any(|o| o.id == globex));
 
     // Emptying from Acme empties Acme's and leaves Globex's.
     press(&mut e, &mut db, KeyCode::Char('E'));
@@ -132,7 +132,7 @@ fn other_client_not_visible_from_a_client_in_tui() {
     press(&mut e, &mut db, KeyCode::Char('s'));
     assert_eq!(e.vista, Vista::Papelera);
     assert!(e.papelera.is_empty());
-    let remaining: Vec<String> = memoria::papelera(&db).unwrap().into_iter().map(|o| o.title).collect();
+    let remaining: Vec<String> = memoria::trash(&db).unwrap().into_iter().map(|o| o.title).collect();
     assert_eq!(remaining, ["Globex: tirar"]);
 }
 
@@ -213,8 +213,8 @@ fn restore_and_purge_from_trash() {
     press(&mut e, &mut db, KeyCode::Char('x'));
     press(&mut e, &mut db, KeyCode::Char('s'));
     assert!(e.papelera.is_empty());
-    assert!(memoria::papelera(&db).unwrap().iter().all(|o| o.title != "Acme web: tirar"));
-    assert!(memoria::papelera(&db).unwrap().iter().any(|o| o.title == "Globex: tirar"), "lo de Globex sigue");
+    assert!(memoria::trash(&db).unwrap().iter().all(|o| o.title != "Acme web: tirar"));
+    assert!(memoria::trash(&db).unwrap().iter().any(|o| o.title == "Globex: tirar"), "lo de Globex sigue");
 }
 
 /// The new screens fit in 80×24, in 120×40 and in a small terminal. With `--nocapture` they are shown.
@@ -268,7 +268,7 @@ fn cli_trash_does_not_show_other_client() {
 fn restore_needs_at_least_four_chars() {
     let mut b = fixture("restore-corto");
     let id = forgotten_id(&b.db, "Globex: tirar");
-    assert!(memoria::restaurar(&mut b.db, &id[..1], None).is_err());
-    assert!(memoria::restaurar(&mut b.db, &id[..3], None).is_err());
-    assert!(memoria::restaurar(&mut b.db, &id, None).is_ok());
+    assert!(memoria::restore(&mut b.db, &id[..1], None).is_err());
+    assert!(memoria::restore(&mut b.db, &id[..3], None).is_err());
+    assert!(memoria::restore(&mut b.db, &id, None).is_ok());
 }

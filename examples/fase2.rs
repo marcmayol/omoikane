@@ -224,8 +224,8 @@ fn model() -> Result<Modelo> {
 /// Saves the memories of tests/busquedas.tsv and measures, for each threshold, how many queries bring their
 /// memory first or among the top three, and how much noise the ones with no answer return.
 fn search() -> Result<()> {
-    use omoikane::buscar::{Opciones, buscar_con};
-    use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+    use omoikane::buscar::{SearchOptions, search_with};
+    use omoikane::memoria::{self, Scope, NewMemory, Kind};
     let m = model()?;
     let dir = std::env::temp_dir().join(format!("omoi-fase2-busqueda-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -236,14 +236,14 @@ fn search() -> Result<()> {
         let c: Vec<&str> = l.split('\t').collect();
         match c[0] {
             "m" => {
-                let n = Nueva {
+                let n = NewMemory {
                     project: "/p".into(),
-                    kind: Some(Tipo::Fact),
+                    kind: Some(Kind::Fact),
                     title: c[2].into(),
                     content: c[3].into(),
                     ..Default::default()
                 };
-                let mem = memoria::guardar(&mut db, n, Some(&m))?;
+                let mem = memoria::save(&mut db, n, Some(&m))?;
                 keys.insert(mem.id, c[1].to_string());
             }
             _ => queries.push((c[1].to_string(), c[2].to_string())),
@@ -254,12 +254,12 @@ fn search() -> Result<()> {
 ", keys.len(), answered, queries.len() - answered);
     println!("{:<18} {:>7} {:>7} {:>6}   {:>16} {:>14}", "modo", "top-1", "top-3", "MRR", "sin resp. con algo", "ruido medio");
     let configs = configs();
-    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
+    let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 5 };
     for (name, with_model, u, fusion) in &configs {
         let (mut top1, mut top3, mut mrr, mut with_any, mut noise) = (0, 0, 0.0, 0, 0);
         for (key, q) in &queries {
-            let r = buscar_con(&mut db, q, &o, with_model.then_some(&m), *u, *fusion)?;
-            let ranked: Vec<&String> = r.iter().map(|r| &keys[&r.memoria.id]).collect();
+            let r = search_with(&mut db, q, &o, with_model.then_some(&m), *u, *fusion)?;
+            let ranked: Vec<&String> = r.iter().map(|r| &keys[&r.memory.id]).collect();
             if key == "-" {
                 if std::env::var_os("DETALLE").is_some() && !ranked.is_empty() {
                     println!("    {name}: sin respuesta «{q}» → {:?}", ranked);
@@ -361,8 +361,8 @@ fn variants() -> Result<()> {
 /// note: `- [Title](file.md) — summary`. The summary is the query; its note, the answer.
 /// It also looks at every pair of different notes: any duplicate warning is a false positive.
 fn real(dir: &std::path::Path) -> Result<()> {
-    use omoikane::buscar::{Opciones, buscar_con};
-    use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+    use omoikane::buscar::{SearchOptions, search_with};
+    use omoikane::memoria::{self, Scope, NewMemory, Kind};
     let m = model()?;
     let mut notes: Vec<(String, String, String)> = Vec::new(); // (file, title, body)
     for e in std::fs::read_dir(dir)?.flatten() {
@@ -428,18 +428,18 @@ fn real(dir: &std::path::Path) -> Result<()> {
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut file_of = std::collections::HashMap::new();
     for (f, t, c) in &notes {
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f.clone());
     }
-    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 5 };
+    let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 5 };
     println!("
 {:<18} {:>7} {:>7} {:>6}", "modo", "top-1", "top-3", "MRR");
     let configs = configs();
     for (name, with_model, u, fusion) in &configs {
         let (mut t1, mut t3, mut mrr) = (0, 0, 0.0);
         for (f, q) in &queries {
-            let r = buscar_con(&mut db, q, &o, with_model.then_some(&m), *u, *fusion)?;
-            if let Some(i) = r.iter().position(|r| &file_of[&r.memoria.id] == f) {
+            let r = search_with(&mut db, q, &o, with_model.then_some(&m), *u, *fusion)?;
+            if let Some(i) = r.iter().position(|r| &file_of[&r.memory.id] == f) {
                 t1 += usize::from(i == 0);
                 t3 += usize::from(i < 3);
                 mrr += 1.0 / (i as f64 + 1.0);
@@ -568,11 +568,11 @@ notas reales centradas con la media GENÉRICA del corpus de tests:");
 
 fn configs() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
     use omoikane::buscar::Fusion;
-    let mut v = vec![("solo palabras".to_string(), false, 0.0, Fusion::Rescate)];
+    let mut v = vec![("solo palabras".to_string(), false, 0.0, Fusion::Fallback)];
     for u in [0.15f32, 0.20, 0.25, 0.30, 0.35] {
-        v.push((format!("rrf 1.0 >= {u:.2}"), true, u, Fusion::Rrf { peso_vector: 1.0 }));
-        v.push((format!("rrf 0.5 >= {u:.2}"), true, u, Fusion::Rrf { peso_vector: 0.5 }));
-        v.push((format!("rescate >= {u:.2}"), true, u, Fusion::Rescate));
+        v.push((format!("rrf 1.0 >= {u:.2}"), true, u, Fusion::Rrf { vector_weight: 1.0 }));
+        v.push((format!("rrf 0.5 >= {u:.2}"), true, u, Fusion::Rrf { vector_weight: 0.5 }));
+        v.push((format!("rescate >= {u:.2}"), true, u, Fusion::Fallback));
     }
     v
 }
@@ -585,7 +585,7 @@ fn configs() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
 ///   as title and the start of the body). It should warn, and about its original.
 /// - the hand-written pairs of tests/pares_duplicados.tsv, in the same database.
 fn dupreal(dir: &std::path::Path) -> Result<()> {
-    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::memoria::{self, NewMemory, Kind};
     use omoikane::vectores::{parecidas, texto};
     let m = model()?;
     let mut notes: Vec<(String, String, String)> = Vec::new();
@@ -623,8 +623,8 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
         if let Some((other, s)) = p.first() {
             different.push((*s, f.clone(), other.title.chars().take(50).collect::<String>()));
         }
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        id_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        id_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f.clone());
     }
     let mut resaved = Vec::new(); // (similarity with its original, best of the others)
     for (f, _, c) in &notes {
@@ -639,8 +639,8 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
     for (i, l) in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).enumerate() {
         let c: Vec<&str> = l.split('\t').collect();
         let project = format!("/cal{i}");
-        let n = Nueva { project: project.clone(), kind: Some(Tipo::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
-        let a = memoria::guardar(&mut db, n, Some(&m))?.id;
+        let n = NewMemory { project: project.clone(), kind: Some(Kind::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
+        let a = memoria::save(&mut db, n, Some(&m))?.id;
         let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&project), None, -1.0, 50)?;
         by_hand.push((c[0].to_string(), p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1)));
     }
@@ -687,12 +687,12 @@ type Candidate = (f32, (f64, usize));
 /// weight of the new one's words is in the candidate, with Lucene's IDF over the notes, the
 /// same as recall's). Rule: duplicate if cosine ≥ a, or if cosine ≥ b and coverage ≥ k.
 fn dupcob(dir: &std::path::Path) -> Result<()> {
-    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::memoria::{self, NewMemory, Kind};
     use omoikane::vectores::{parecidas, texto};
     use std::collections::{BTreeSet, HashMap};
     let m = model()?;
     let tokens = |s: &str| -> BTreeSet<String> {
-        omoikane::buscar::terminos(s)
+        omoikane::buscar::terms(s)
             .into_iter()
             .map(|t| {
                 t.chars()
@@ -763,8 +763,8 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
         let new = &note_tokens[f];
         let p = parecidas(&db, &m, &texto(t, c), Some("/p"), None, -1.0, 5)?;
         different.push(p.iter().map(|(x, s)| (*s, coverage(new, &tokens_of_id[&x.id]))).collect());
-        let nn = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        let id = memoria::guardar(&mut db, nn, Some(&m))?.id;
+        let nn = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        let id = memoria::save(&mut db, nn, Some(&m))?.id;
         file_of.insert(id.clone(), f.clone());
         tokens_of_id.insert(id, new.clone());
     }
@@ -789,8 +789,8 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
     for (i, l) in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).enumerate() {
         let c: Vec<&str> = l.split('\t').collect();
         let project = format!("/cal{i}");
-        let nn = Nueva { project: project.clone(), kind: Some(Tipo::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
-        let a = memoria::guardar(&mut db, nn, Some(&m))?.id;
+        let nn = NewMemory { project: project.clone(), kind: Some(Kind::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
+        let a = memoria::save(&mut db, nn, Some(&m))?.id;
         let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&project), None, -1.0, 50)?;
         let s = p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1);
         by_hand.push((c[0].to_string(), s, coverage(&tokens(c[2]), &tokens(c[1]))));
@@ -848,7 +848,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
 /// different (each note before saving it: every warning is false), re-saved (each note said again:
 /// it must warn, and about its own) and short sentences of the pairs against the notes (every warning is false).
 fn dupprod(dir: &std::path::Path) -> Result<()> {
-    use omoikane::memoria::{self, Nueva, Tipo};
+    use omoikane::memoria::{self, NewMemory, Kind};
     use omoikane::vectores::{duplicada, relacionadas};
     use std::collections::HashMap;
     use std::time::Instant;
@@ -889,8 +889,8 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
             different_with_rel += 1;
         }
         times.push(now.elapsed().as_secs_f64() * 1000.0);
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f.clone());
     }
     let (mut own, mut other, mut total, mut in_rel) = (0, 0, 0, 0);
     for (f, _, c) in &notes {

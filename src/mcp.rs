@@ -4,9 +4,9 @@
 //! from the process's folder, which is that of the project where the client started the server. The
 //! model is opened once and shared; if it was not installed, it is checked again on every call.
 
-use crate::buscar::{self, Opciones};
+use crate::buscar::{self, SearchOptions};
 use crate::embeber::Modelo;
-use crate::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo};
+use crate::memoria::{self, Scope, Changes, Memory, NewMemory, Kind};
 use crate::{db, modelos, proyecto, vectores, veredictos};
 use anyhow::Result;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
@@ -95,7 +95,7 @@ pub struct Remember {
     /// Structured data for programs (any JSON, up to 64 KB): kept with the memory and returned by `get` (and, with `key`, by `get` with `key` and `resolve`), never searched or recalled.
     data: Option<serde_json::Value>,
     /// What this is based on, so the next agent knows how far to trust it: one or more of {kind, detail, url}. kind: "user-said" (quote the user), "code-read" (the file and line), "tested" (what you ran and what came out), "doc" (what the page says; its URL in url) or "inferred" (you worked it out: from what). Say what you saw, not how sure you are. Memories based only on "inferred" rank lower and show up marked.
-    evidence: Option<Vec<crate::evidencia::Evidencia>>,
+    evidence: Option<Vec<crate::evidencia::Evidence>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -198,7 +198,7 @@ pub struct Update {
     /// Bring a forgotten memory back from the trash (with its history, on every synced computer). The other fields are ignored.
     restore: Option<bool>,
     /// More evidence for it (added to what it had, no new version): {kind, detail, url}, kind one of user-said, code-read, tested, doc, inferred. E.g. after you test what an "inferred" memory says.
-    evidence: Option<Vec<crate::evidencia::Evidencia>>,
+    evidence: Option<Vec<crate::evidencia::Evidence>>,
     /// Edit part of the content: each `find` is literal and has to appear exactly once in the current content (otherwise nothing changes and you get the count). Applied in order, before `append`.
     replace: Option<Vec<Reemplazo>>,
     /// Text added at the end of the content (a blank line in between), for one more step in a procedure.
@@ -278,7 +278,7 @@ fn double_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option
 #[derive(Serialize)]
 struct Compact {
     id: String,
-    kind: Tipo,
+    kind: Kind,
     title: String,
     snippet: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -315,7 +315,7 @@ struct Compact {
 
 const SNIPPET_LEN: usize = 200;
 
-fn compact(m: Memoria, with_project: bool, similarity: Option<f32>) -> Compact {
+fn compact(m: Memory, with_project: bool, similarity: Option<f32>) -> Compact {
     let flat = m.content.split_whitespace().collect::<Vec<_>>().join(" ");
     let snippet = if flat.chars().count() > SNIPPET_LEN {
         format!("{}…", flat.chars().take(SNIPPET_LEN).collect::<String>())
@@ -328,7 +328,7 @@ fn compact(m: Memoria, with_project: bool, similarity: Option<f32>) -> Compact {
         para: if trade.is_empty() { None } else { crate::oficios::para_de(&m.tags) },
         trade,
         project: (with_project && !m.project.is_empty()).then(|| m.project.clone()),
-        space: ((m.de_espacio() || with_project) && !m.space.is_empty()).then(|| m.space.clone()),
+        space: ((m.space_only() || with_project) && !m.space.is_empty()).then(|| m.space.clone()),
         id: m.id,
         kind: m.kind,
         title: m.title,
@@ -339,14 +339,14 @@ fn compact(m: Memoria, with_project: bool, similarity: Option<f32>) -> Compact {
         similarity: similarity.map(|s| (s * 1000.0).round() / 1000.0),
         note: None,
         verified: m.verified.as_ref().map(|v| format!("by {}, {}", v.by, v.at.get(..10).unwrap_or(&v.at))),
-        based_on: crate::evidencia::tipos(&m.evidence),
+        based_on: crate::evidencia::kinds(&m.evidence),
     }
 }
 
 /// What to check when the review date arrives, cleaned up. With a date (`has_date`) it is
 /// required: a date with no reason means rereading the whole memory to know what to check.
 fn review_reason_for(has_date: bool, reason: Option<&str>) -> Result<Option<String>> {
-    let reason = reason.and_then(memoria::limpiar_motivo_revision);
+    let reason = reason.and_then(memoria::clean_review_reason);
     anyhow::ensure!(
         !has_date || reason.is_some(),
         "a review date (tag review:YYYY-MM-DD) needs `review_reason`: what to check that day, e.g. \"the API token expires\""
@@ -356,17 +356,17 @@ fn review_reason_for(has_date: bool, reason: Option<&str>) -> Result<Option<Stri
 
 /// The verdicts the agent gives with `supersedes`, `contradicts` and `compatible` about `id`, with their
 /// reason (the `update`'s `reason`, or the new memory's title) and who signs them (`source`:
-/// the sync person or `agent:<client>`, see `veredictos::autor`).
+/// the sync person or `agent:<client>`, see `veredictos::author`).
 fn judge(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts: Option<Vec<String>>, compatible: Option<Vec<String>>, reason: &str, source: &str) -> Result<usize> {
-    let author = veredictos::autor(db, source, id);
+    let author = veredictos::author(db, source, id);
     let mut n = 0;
     for old in supersedes.unwrap_or_default() {
-        veredictos::poner(db, &old, id, veredictos::SUSTITUIDA, reason, &author)?;
+        veredictos::set(db, &old, id, veredictos::SUPERSEDED, reason, &author)?;
         n += 1;
     }
-    for (list, relation) in [(contradicts, veredictos::CONTRADICE), (compatible, veredictos::COMPATIBLE)] {
+    for (list, relation) in [(contradicts, veredictos::CONTRADICTS), (compatible, veredictos::COMPATIBLE)] {
         for other in list.unwrap_or_default() {
-            veredictos::poner(db, id, &other, relation, reason, &author)?;
+            veredictos::set(db, id, &other, relation, reason, &author)?;
             n += 1;
         }
     }
@@ -375,7 +375,7 @@ fn judge(db: &Connection, id: &str, supersedes: Option<Vec<String>>, contradicts
 
 /// `redacted: N` and the kinds, if something that looked like a secret was removed when saving: the
 /// agent has to know (and tell the person), because what it saved is no longer what it sent.
-fn with_redacted(r: &mut serde_json::Value, m: &Memoria) {
+fn with_redacted(r: &mut serde_json::Value, m: &Memory) {
     if m.redacted.is_empty() {
         return;
     }
@@ -394,7 +394,7 @@ fn failure(e: anyhow::Error) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))])
 }
 
-fn parse_kind(t: Option<String>) -> Result<Option<Tipo>> {
+fn parse_kind(t: Option<String>) -> Result<Option<Kind>> {
     t.filter(|t| !t.trim().is_empty()).map(|t| t.parse()).transpose()
 }
 
@@ -404,15 +404,15 @@ fn limit_of(n: Option<usize>) -> usize {
 
 /// The scope of `search` and `recent`: the session's, or the requested one (`project`, `space`,
 /// `all_projects`), never leaving the session's space (from a general folder, everything).
-fn requested_scope(db: &Connection, session_project: &str, project: Option<&str>, space: Option<&str>, all: bool) -> Result<Ambito> {
-    let base = Ambito::de(db, session_project)?;
+fn requested_scope(db: &Connection, session_project: &str, project: Option<&str>, space: Option<&str>, all: bool) -> Result<Scope> {
+    let base = Scope::from_project(db, session_project)?;
     let requested = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
-        Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
+        Scope::Space(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
         let id = proyecto::buscar_en(db, p, &base)?;
-        Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
+        Scope::Project { id, space: proyecto::espacio_de(db, id)? }
     } else if all {
-        base.amplio()
+        base.widen()
     } else {
         base
     };
@@ -421,9 +421,9 @@ fn requested_scope(db: &Connection, session_project: &str, project: Option<&str>
 }
 
 /// Error if `requested` can't be seen (or written to) from `base`: another space.
-fn outside_space(base: &Ambito, requested: &Ambito) -> Result<()> {
+fn outside_space(base: &Scope, requested: &Scope) -> Result<()> {
     anyhow::ensure!(
-        base.permite(requested),
+        base.allows(requested),
         "that is in another space: from this project you only see its own space (and the global memories); open the session in that project, or in the home folder, to see it"
     );
     Ok(())
@@ -438,26 +438,26 @@ fn id_in_scope(db: &Connection, session_project: &str, id: &str, trash: bool) ->
         let requested = id.trim().to_uppercase();
         let mut q = db.prepare("SELECT id FROM forgotten WHERE id >= ?1 AND id < ?1 || '~' ORDER BY id LIMIT 2")?;
         let ids: Vec<String> = q.query_map([&requested], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-        // Without exactly one match, `restaurar` will say so.
+        // Without exactly one match, `memoria::restore` will say so.
         match <[String; 1]>::try_from(ids) {
             Ok([single]) => single,
             Err(_) => return Ok(requested),
         }
     } else {
-        memoria::resolver_id(db, id)?
+        memoria::resolve_id(db, id)?
     };
-    let base = Ambito::de(db, session_project)?;
+    let base = Scope::from_project(db, session_project)?;
     if trash {
         // In the trash there are no trades to check: only its space.
-        let own = proyecto::clave_espacio(db, base.espacio())?;
-        return match memoria::alcance_de_memoria(db, &id)? {
-            Some((global, space)) if !matches!(base, Ambito::Todos) && !global && space != own => anyhow::bail!(
+        let own = proyecto::clave_espacio(db, base.space())?;
+        return match memoria::memory_placement(db, &id)? {
+            Some((global, space)) if !matches!(base, Scope::All) && !global && space != own => anyhow::bail!(
                 "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
             ),
             _ => Ok(id),
         };
     }
-    memoria::en_ambito(db, &base, &id)?;
+    memoria::in_scope(db, &base, &id)?;
     Ok(id)
 }
 
@@ -483,16 +483,16 @@ fn requested_trades(trade: Option<&str>, tags: Vec<String>) -> Result<(Vec<Strin
 
 /// The space of `remember` (`space: true` or its name) or of `update` (`space: "<name>"`).
 fn requested_space(db: &Connection, session_project: &str, p: Option<EspacioParam>) -> Result<Option<i64>> {
-    let base = Ambito::de(db, session_project)?;
+    let base = Scope::from_project(db, session_project)?;
     let id = match p {
         None | Some(EspacioParam::Si(false)) => return Ok(None),
-        Some(EspacioParam::Si(true)) => base.espacio().ok_or_else(|| {
+        Some(EspacioParam::Si(true)) => base.space().ok_or_else(|| {
             anyhow::anyhow!("this project is not in a space: give the space's name, or put the project in one with `omoi space assign <space>`")
         })?,
         Some(EspacioParam::Nombre(n)) if n.trim().is_empty() => return Ok(None),
         Some(EspacioParam::Nombre(n)) => proyecto::buscar_espacio(db, &n)?,
     };
-    outside_space(&base, &Ambito::Espacio(Some(id)))?;
+    outside_space(&base, &Scope::Space(Some(id)))?;
     Ok(Some(id))
 }
 
@@ -541,7 +541,7 @@ impl Servidor {
     async fn save(&self, p: Remember, source: String) -> Result<CallToolResult, ErrorData> {
         let r = self
             .with_db(move |db, model, session_project| {
-                let kind = Some(p.kind.parse::<Tipo>()?);
+                let kind = Some(p.kind.parse::<Kind>()?);
                 let space_id = requested_space(db, session_project, p.space)?;
                 // Trade memory: `trade`, or the `trade:` tags the agent sets by hand.
                 let para = match p.para.as_deref() {
@@ -549,7 +549,7 @@ impl Servidor {
                     None => crate::oficios::para_de(p.tags.as_deref().unwrap_or_default()),
                 };
                 let (trades, tags) = requested_trades(p.trade.as_deref(), p.tags.unwrap_or_default())?;
-                let review_reason = review_reason_for(crate::revisar::fecha_revision(&tags).is_some(), p.review_reason.as_deref())?;
+                let review_reason = review_reason_for(crate::revisar::review_date_of(&tags).is_some(), p.review_reason.as_deref())?;
                 let is_trade = !trades.is_empty();
                 anyhow::ensure!(is_trade || para.is_none(), "`for` only applies to a trade memory: give `trade` too");
                 if is_trade {
@@ -569,7 +569,7 @@ impl Servidor {
                 }
                 // Preferences belong to the person, not to a project or a client: global unless
                 // told otherwise (`project`, `space`).
-                let preference = kind == Some(Tipo::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
+                let preference = kind == Some(Kind::Preference) && p.project.is_none() && space_id.is_none() && p.global.is_none();
                 let (project, paths) = match p.project.as_deref().map(str::trim) {
                     _ if is_trade || p.global.unwrap_or(false) || preference => (String::new(), p.paths.unwrap_or_default()),
                     Some("") => (String::new(), p.paths.unwrap_or_default()),
@@ -598,7 +598,7 @@ impl Servidor {
                     }));
                 }
                 if space_id.is_none() && !project.is_empty() {
-                    outside_space(&Ambito::de(db, session_project)?, &Ambito::de(db, &project)?)?;
+                    outside_space(&Scope::from_project(db, session_project)?, &Scope::from_project(db, &project)?)?;
                 }
                 // The memories it judges (`supersedes`, `contradicts`), checked BEFORE saving anything,
                 // as in `update`: each one can be seen from here and can go together with where the new one
@@ -607,13 +607,13 @@ impl Servidor {
                 let its_space = match space_id {
                     Some(s) => proyecto::clave_espacio(db, Some(s))?,
                     None if project.is_empty() => String::new(),
-                    None => proyecto::clave_espacio(db, Ambito::de(db, &project)?.espacio())?,
+                    None => proyecto::clave_espacio(db, Scope::from_project(db, &project)?.space())?,
                 };
                 let mut to_judge: [Vec<String>; 2] = [Vec::new(), Vec::new()];
                 for (i, list) in [&p.supersedes, &p.contradicts].into_iter().enumerate() {
                     for other in list.iter().flatten() {
                         let other = id_in_scope(db, session_project, other, false)?;
-                        veredictos::comprobar_espacios(db, &other, global, &its_space)?;
+                        veredictos::check_spaces(db, &other, global, &its_space)?;
                         to_judge[i].push(other);
                     }
                 }
@@ -624,14 +624,14 @@ impl Servidor {
                 let provenance = if is_trade {
                     None
                 } else if project.is_empty() || space_id.is_some() {
-                    crate::procedencia::solo_sesion(db, session_project)
+                    crate::procedencia::session_only(db, session_project)
                 } else {
-                    crate::procedencia::actual(db, &project)
+                    crate::procedencia::current(db, &project)
                 };
-                let evidence = if is_trade { Vec::new() } else { crate::evidencia::limpiar(p.evidence.unwrap_or_default())? };
+                let evidence = if is_trade { Vec::new() } else { crate::evidencia::clean(p.evidence.unwrap_or_default())? };
                 // A variant of a tag that already exists where it will go (`ideas` with `idea`), replaced by that one.
-                let (tags, tags_merged) = if is_trade { (tags, Vec::new()) } else { crate::etiquetas::cerrar(db, &crate::etiquetas::ambito_de(db, &project, space_id)?, tags)? };
-                let new = Nueva {
+                let (tags, tags_merged) = if is_trade { (tags, Vec::new()) } else { crate::etiquetas::normalize_tags(db, &crate::etiquetas::scope_for(db, &project, space_id)?, tags)? };
+                let new = NewMemory {
                     project,
                     space_id,
                     kind,
@@ -648,20 +648,20 @@ impl Servidor {
                 };
                 let data = p.data.filter(|d| !d.is_null());
                 if let Some(d) = &data {
-                    anyhow::ensure!(serde_json::to_string(d)?.len() <= memoria::DATOS_MAX, "data over {} bytes", memoria::DATOS_MAX);
+                    anyhow::ensure!(serde_json::to_string(d)?.len() <= memoria::DATA_MAX, "data over {} bytes", memoria::DATA_MAX);
                 }
-                let before = crate::revisar::antes(db)?;
+                let before = crate::revisar::before(db)?;
                 // With a key: the one with that key in this scope, created or updated in the same transaction
                 // (with its data, if given).
                 let (mut m, by_key, hidden) = match &key {
                     Some(k) => {
-                        let r = memoria::guardar_por_clave(db, k, new, data, model)?;
-                        (r.memoria, Some((r.creada, r.parecidas)), r.tapados)
+                        let r = memoria::save_by_key(db, k, new, data, model)?;
+                        (r.memory, Some((r.created, r.similar_keys)), r.redacted)
                     }
                     None => {
-                        let m = memoria::guardar(db, new, model)?;
+                        let m = memoria::save(db, new, model)?;
                         let hidden = match data {
-                            Some(d) => memoria::poner_datos(db, &m.id, Some(d))?,
+                            Some(d) => memoria::set_data(db, &m.id, Some(d))?,
                             None => Vec::new(),
                         };
                         (m, None, hidden)
@@ -669,18 +669,18 @@ impl Servidor {
                 };
                 // The reason for a verdict given when saving is the new memory itself: its title.
                 // With a key it may have updated one that already existed: it is added to it.
-                if !evidence.is_empty() && memoria::anadir_evidencia(db, &m.id, &evidence)? {
-                    m = memoria::obtener(db, &m.id)?;
+                if !evidence.is_empty() && memoria::add_evidence(db, &m.id, &evidence)? {
+                    m = memoria::get(db, &m.id)?;
                 }
                 if let Some(x) = &review_reason
-                    && memoria::poner_motivo_revision(db, &m.id, x)?
+                    && memoria::set_review_reason(db, &m.id, x)?
                 {
-                    m = memoria::obtener(db, &m.id)?;
+                    m = memoria::get(db, &m.id)?;
                 }
                 let judged = judge(db, &m.id, Some(supersedes), Some(contradicts), None, &m.title, &source)?;
                 let place = if is_trade {
                     format!("(trade {}{})", trades.join(", "), para.as_deref().map(|x| format!(", {x} projects only")).unwrap_or_default())
-                } else if m.de_espacio() {
+                } else if m.space_only() {
                     format!("(space {})", m.space)
                 } else if m.project.is_empty() {
                     "(global)".to_string()
@@ -691,14 +691,14 @@ impl Servidor {
                 if !tags_merged.is_empty() {
                     r["tags_merged"] = serde_json::json!(tags_merged);
                 }
-                match crate::evidencia::tipos(&m.evidence) {
+                match crate::evidencia::kinds(&m.evidence) {
                     Some(t) => r["based_on"] = serde_json::json!(t),
                     None if !is_trade => {
                         r["evidence_hint"] = serde_json::json!("No evidence: add what it is based on with `update` and `evidence` (user-said, code-read, tested, doc or inferred, with what you saw).")
                     }
                     None => {}
                 }
-                if is_trade && let Some(here) = Ambito::de(db, session_project)?.proyecto() {
+                if is_trade && let Some(here) = Scope::from_project(db, session_project)?.project() {
                     let own = crate::oficios::del_proyecto(db, here)?;
                     let foreign: Vec<&String> = trades.iter().filter(|o| !own.contains(o)).collect();
                     if !foreign.is_empty() {
@@ -718,7 +718,7 @@ impl Servidor {
                     r["judged"] = serde_json::json!(judged);
                 }
                 if let Some((created, similar)) = &by_key {
-                    r["key"] = serde_json::json!(memoria::clave_de(&m));
+                    r["key"] = serde_json::json!(memoria::key_of(&m));
                     r["created"] = serde_json::json!(created);
                     if !similar.is_empty() {
                         r["similar_keys"] = serde_json::json!(similar);
@@ -731,13 +731,13 @@ impl Servidor {
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
                 }
                 // If it makes another one outdated (higher version, or what was pending there is done), say so now.
-                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                 // Only those visible from here: a trade memory may make another client's one outdated.
-                let here = Ambito::de(db, session_project)?;
-                let olds: Vec<_> = crate::revisar::superadas_por(db, &m.id)?
+                let here = Scope::from_project(db, session_project)?;
+                let olds: Vec<_> = crate::revisar::superseded_by(db, &m.id)?
                     .into_iter()
-                    .filter(|(id, _, _)| veredictos::parejas(db).map(|p| !p.contains_key(&veredictos::pareja(id, &m.id))).unwrap_or(true))
-                    .filter(|(id, _, _)| here.ve(db, id).unwrap_or(false))
+                    .filter(|(id, _, _)| veredictos::pairs(db).map(|p| !p.contains_key(&veredictos::pair_key(id, &m.id))).unwrap_or(true))
+                    .filter(|(id, _, _)| here.sees(db, id).unwrap_or(false))
                     .collect();
                 if !olds.is_empty() {
                     // One that is already superseded (maybe by a chain) is reported, with the end of the
@@ -746,11 +746,11 @@ impl Servidor {
                     let mut chained = false;
                     for (id, title, detail) in &olds {
                         let mut e = serde_json::json!({ "id": id, "title": title, "why": detail });
-                        if let Some(end) = veredictos::cadena(db, id)?
-                            && here.ve(db, &end.id)?
+                        if let Some(end) = veredictos::chain(db, id)?
+                            && here.sees(db, &end.id)?
                         {
                             let t: String = db.query_row("SELECT title FROM memory WHERE id = ?1", [&end.id], |row| row.get(0))?;
-                            let via = if end.saltos > 1 { format!(" (via {})", end.saltos) } else { String::new() };
+                            let via = if end.hops > 1 { format!(" (via {})", end.hops) } else { String::new() };
                             e["already_superseded_by"] = serde_json::json!(format!("{} «{}»{via}", end.id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>()));
                             chained = true;
                         }
@@ -763,8 +763,8 @@ impl Servidor {
                     }
                     r["supersedes_hint"] = serde_json::json!(hint);
                 }
-                if m.content.chars().count() > crate::recall::LARGO_PARA_RECALL {
-                    r["length_hint"] = serde_json::json!(format!("Long memory: only its first {} characters count for automatic recall. Consider splitting it into shorter memories, one fact each.", crate::recall::LARGO_PARA_RECALL));
+                if m.content.chars().count() > crate::recall::RECALL_LEN {
+                    r["length_hint"] = serde_json::json!(format!("Long memory: only its first {} characters count for automatic recall. Consider splitting it into shorter memories, one fact each.", crate::recall::RECALL_LEN));
                 }
                 Ok(r)
             })
@@ -779,21 +779,21 @@ impl Servidor {
     async fn change(&self, p: Update, source: String) -> Result<CallToolResult, ErrorData> {
         let r = self
             .with_db(move |db, model, session_project| {
-                let before = crate::revisar::antes(db)?;
+                let before = crate::revisar::before(db)?;
                 if p.restore.unwrap_or(false) {
                     let id = id_in_scope(db, session_project, &p.id, true)?;
-                    let m = memoria::restaurar(db, &id, model)?;
-                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    let m = memoria::restore(db, &id, model)?;
+                    crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::to_value(compact(m, false, None))?);
                 }
                 // The memory and every one named (verdicts, absorb), among those visible from here.
-                let base = Ambito::de(db, session_project)?;
+                let base = Scope::from_project(db, session_project)?;
                 let id = id_in_scope(db, session_project, &p.id, false)?;
                 for other in [&p.supersedes, &p.contradicts, &p.compatible, &p.absorb].into_iter().flatten().flatten() {
                     id_in_scope(db, session_project, other, false)?;
                 }
                 if let Some(d) = p.project.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-                    outside_space(&base, &Ambito::de(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
+                    outside_space(&base, &Scope::from_project(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
                 }
                 // The reason for the change is also that of the verdicts that come with it.
                 let reason = p.reason.clone().unwrap_or_default();
@@ -801,13 +801,13 @@ impl Servidor {
                 // Trades: make it a trade memory (promote it), stop being one, who it is for, or take it out of
                 // its trade by moving it to a project or a space. What is new in a trade memory goes
                 // through `oficios::fugas`.
-                let current = memoria::obtener(db, &id)?;
+                let current = memoria::get(db, &id)?;
                 // A new review date asks what to check that day; a reason alone, that there is a date.
-                let new_date = p.tags.as_deref().and_then(crate::revisar::fecha_revision).is_some_and(|f| crate::revisar::fecha_revision(&current.tags) != Some(f));
-                let has_date = crate::revisar::fecha_revision(p.tags.as_deref().unwrap_or(&current.tags)).is_some();
+                let new_date = p.tags.as_deref().and_then(crate::revisar::review_date_of).is_some_and(|f| crate::revisar::review_date_of(&current.tags) != Some(f));
+                let has_date = crate::revisar::review_date_of(p.tags.as_deref().unwrap_or(&current.tags)).is_some();
                 let gives_reason = p.review_reason.as_deref().is_some_and(|x| !x.trim().is_empty());
                 anyhow::ensure!(has_date || !gives_reason, "`review_reason` goes with a review date: add the tag review:YYYY-MM-DD too");
-                let review_reason = review_reason_for(new_date, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::limpiar_motivo_revision));
+                let review_reason = review_reason_for(new_date, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::clean_review_reason));
                 // In a trade memory (or one that will be), the reason goes through the leak check like the text.
                 if let Some(x) = &review_reason
                     && (!crate::oficios::de_etiquetas(&current.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
@@ -817,7 +817,7 @@ impl Servidor {
                         return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS }));
                     }
                 }
-                let mut c = Cambios {
+                let mut c = Changes {
                     space_id,
                     title: p.title,
                     content: p.content,
@@ -853,7 +853,7 @@ impl Servidor {
                 if let Some(ids) = &absorb {
                     let stays_global = (current.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.hacer_global;
                     for other in ids {
-                        let o = memoria::obtener(db, other)?;
+                        let o = memoria::get(db, other)?;
                         anyhow::ensure!(
                             !(stays_global && !o.space.is_empty()),
                             "memory {} is a client's: absorbing it would carry its history, tags and paths to a memory every client sees; write what holds into this one and `forget` it instead",
@@ -867,11 +867,11 @@ impl Servidor {
                     let tags = c.tags.clone().unwrap_or_else(|| current.tags.clone());
                     let m = crate::oficios::crear_de_oficio(db, &current, &c, tags, &source, model)?;
                     let hidden = match p.data {
-                        Some(d) => memoria::poner_datos(db, &m.id, d)?,
+                        Some(d) => memoria::set_data(db, &m.id, d)?,
                         None => Vec::new(),
                     };
                     judge(db, &m.id, p.supersedes, p.contradicts, p.compatible, &reason, &source)?;
-                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                     let mut r = serde_json::to_value(compact(m.clone(), false, None))?;
                     with_redacted(&mut r, &m);
                     r["created"] = serde_json::json!(true);
@@ -906,30 +906,30 @@ impl Servidor {
                     && c.append.is_none()
                     && absorb.is_none();
                 let data = p.data;
-                let evidence = crate::evidencia::limpiar(p.evidence.unwrap_or_default())?;
+                let evidence = crate::evidencia::clean(p.evidence.unwrap_or_default())?;
                 let (mut m, changed, absorbed) = if only_verdicts {
-                    (memoria::obtener(db, &id)?, Vec::new(), Vec::new())
+                    (memoria::get(db, &id)?, Vec::new(), Vec::new())
                 } else if let Some(ids) = absorb {
-                    memoria::absorber(db, &id, &ids, c, model)?
+                    memoria::absorb(db, &id, &ids, c, model)?
                 } else {
-                    let (m, changed) = memoria::actualizar_con_cambios(db, &id, c, model)?;
+                    let (m, changed) = memoria::update_with_changes(db, &id, c, model)?;
                     (m, changed, Vec::new())
                 };
                 let hidden = match data {
-                    Some(d) => memoria::poner_datos(db, &m.id, d)?,
+                    Some(d) => memoria::set_data(db, &m.id, d)?,
                     None => Vec::new(),
                 };
-                if !evidence.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(db, &m.id, &evidence)? {
-                    m = memoria::obtener(db, &m.id)?;
+                if !evidence.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::add_evidence(db, &m.id, &evidence)? {
+                    m = memoria::get(db, &m.id)?;
                 }
                 if let Some(x) = &review_reason
-                    && memoria::poner_motivo_revision(db, &m.id, x)?
+                    && memoria::set_review_reason(db, &m.id, x)?
                 {
-                    m = memoria::obtener(db, &m.id)?;
+                    m = memoria::get(db, &m.id)?;
                 }
                 judge(db, &m.id, p.supersedes, p.contradicts, p.compatible, &reason, &source)?;
                 let touched: Vec<String> = std::iter::once(m.id.clone()).chain(absorbed.iter().cloned()).collect();
-                crate::revisar::al_dia_de(db, &before, if only_verdicts { &[] } else { &touched })?;
+                crate::revisar::refresh_for(db, &before, if only_verdicts { &[] } else { &touched })?;
                 let mut r = serde_json::to_value(compact(m.clone(), false, None))?;
                 with_redacted(&mut r, &m);
                 if !hidden.is_empty() {
@@ -978,20 +978,20 @@ impl Servidor {
         let r = self
             .with_db(move |db, model, session_project| {
                 let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let wide = !matches!(scope, Ambito::Proyecto { .. });
-                let o = Opciones {
-                    ambito: scope,
+                let wide = !matches!(scope, Scope::Project { .. });
+                let o = SearchOptions {
+                    scope,
                     kind: parse_kind(p.kind)?,
                     tags: p.tags.unwrap_or_default(),
-                    limite: limit_of(p.limit),
+                    limit: limit_of(p.limit),
                 };
-                let res = buscar::buscar(db, &p.query, &o, model)?;
-                let mut notes = crate::revisar::notas_busqueda(db, &scope, &res.iter().map(|r| &r.memoria).collect::<Vec<_>>())?;
+                let res = buscar::search(db, &p.query, &o, model)?;
+                let mut notes = crate::revisar::search_notes(db, &scope, &res.iter().map(|r| &r.memory).collect::<Vec<_>>())?;
                 Ok(res
                     .into_iter()
                     .map(|r| {
-                        let note = notes.remove(&r.memoria.id);
-                        Compact { note, ..compact(r.memoria, wide, r.similarity) }
+                        let note = notes.remove(&r.memory.id);
+                        Compact { note, ..compact(r.memory, wide, r.similarity) }
                     })
                     .collect::<Vec<_>>())
             })
@@ -1004,12 +1004,12 @@ impl Servidor {
         let r = self
             .with_db(move |db, _, session_project| {
                 let m = match (p.id.as_deref(), p.key.as_deref()) {
-                    (None, Some(k)) if p.resolve.unwrap_or(false) => return Ok(serde_json::to_value(memoria::capas_de_clave(db, &Ambito::de(db, session_project)?, k)?)?),
-                    (Some(id), _) => memoria::obtener(db, &id_in_scope(db, session_project, id, false)?)?,
-                    (None, Some(k)) => memoria::por_clave(db, &Ambito::de(db, session_project)?, k)?.ok_or_else(|| anyhow::anyhow!("no memory with key «{}» here", k.trim()))?,
+                    (None, Some(k)) if p.resolve.unwrap_or(false) => return Ok(serde_json::to_value(memoria::key_layers(db, &Scope::from_project(db, session_project)?, k)?)?),
+                    (Some(id), _) => memoria::get(db, &id_in_scope(db, session_project, id, false)?)?,
+                    (None, Some(k)) => memoria::by_key(db, &Scope::from_project(db, session_project)?, k)?.ok_or_else(|| anyhow::anyhow!("no memory with key «{}» here", k.trim()))?,
                     (None, None) => anyhow::bail!("give id or key"),
                 };
-                Ok(memoria::con_datos(db, vec![m])?.remove(0))
+                Ok(memoria::with_data(db, vec![m])?.remove(0))
             })
             .await;
         Ok(r.map(|m| json(&m)).unwrap_or_else(failure))
@@ -1025,9 +1025,9 @@ impl Servidor {
         let r = self
             .with_db(move |db, _, session_project| {
                 let id = id_in_scope(db, session_project, &p.id, false)?;
-                let before = crate::revisar::antes(db)?;
-                let m = memoria::olvidar(db, &id)?;
-                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                let before = crate::revisar::before(db)?;
+                let m = memoria::forget(db, &id)?;
+                crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                 Ok(m)
             })
             .await;
@@ -1062,7 +1062,7 @@ impl Servidor {
 
     #[tool(description = "Previous versions of a memory, newest first, with the reason for each change.")]
     async fn history(&self, Parameters(p): Parameters<Id>) -> Result<CallToolResult, ErrorData> {
-        let r = self.with_db(move |db, _, session_project| memoria::historial_en(db, &Ambito::de(db, session_project)?, &id_in_scope(db, session_project, &p.id, false)?)).await;
+        let r = self.with_db(move |db, _, session_project| memoria::history_in(db, &Scope::from_project(db, session_project)?, &id_in_scope(db, session_project, &p.id, false)?)).await;
         Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
 
@@ -1071,30 +1071,30 @@ impl Servidor {
         let r = self
             .with_db(|db, _, session_project| {
                 // Its trades, looking at its files again (`with_db` only looks the first time).
-                if let Some(id) = Ambito::de(db, session_project)?.proyecto() {
+                if let Some(id) = Scope::from_project(db, session_project)?.project() {
                     crate::oficios::al_dia(db, id, session_project)?;
                 }
-                let scope = Ambito::de(db, session_project)?;
-                let v = memoria::contexto(db, &scope, 30)?;
+                let scope = Scope::from_project(db, session_project)?;
+                let v = memoria::context(db, &scope, 30)?;
                 let memories: Vec<_> = v.into_iter().map(|m| compact(m, false, None)).collect();
-                let review = crate::revisar::avisos_sin_esperar(db, &scope)?;
+                let review = crate::revisar::notices_without_waiting(db, &scope)?;
                 // Where it is: the project (or the general folder) and, of the others, only those in its space.
                 let current = match scope {
-                    Ambito::Proyecto { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
+                    Scope::Project { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
                         x.path = session_project.to_string();
                         serde_json::to_value(x).unwrap_or_default()
                     }),
-                    Ambito::Todos => Some(serde_json::json!({ "path": session_project, "general": true, "memories": memoria::cuantas(db, &scope)? })),
+                    Scope::All => Some(serde_json::json!({ "path": session_project, "general": true, "memories": memoria::count(db, &scope)? })),
                     _ => Some(serde_json::json!({ "path": session_project, "memories": 0 })),
                 };
                 let filter = match scope {
-                    Ambito::Todos => None,
-                    a => Some(a.espacio()),
+                    Scope::All => None,
+                    a => Some(a.space()),
                 };
                 let projects = proyecto::lista(db, None, filter, 50)?;
                 let mut r = serde_json::json!({ "project": current, "projects": projects, "memories": memories, "review": review });
                 // Duplicated projects or ones in temporary folders: the agent proposes them with the command written out.
-                let proposals = crate::nombres::propuestas(db, &scope)?;
+                let proposals = crate::nombres::proposals(db, &scope)?;
                 if !proposals.is_empty() {
                     r["projects_review"] = serde_json::json!(proposals);
                     r["projects_review_hint"] = serde_json::json!("These projects look duplicated or are not real projects. Ask the user before running each `command` (a merge reaches every synced computer); if they say no, run its `dismiss`.");
@@ -1103,9 +1103,9 @@ impl Servidor {
                 // With the same figures as at the start: without broken paths (they aren't counted there), or
                 // having a few would make the count "grow" and repeat the notice in the same session.
                 // Secrets do count, they always warn. It is optional: if it fails, only the notice is lost.
-                let mut figures = crate::revisar::cifras(&review);
-                figures.remove(crate::revisar::RUTA_ROTA);
-                if let Some(a) = crate::revisar::aviso(db, &figures, memoria::cuantas(db, &scope)? as usize).ok().flatten() {
+                let mut figures = crate::revisar::counts(&review);
+                figures.remove(crate::revisar::BROKEN_PATH);
+                if let Some(a) = crate::revisar::notice(db, &figures, memoria::count(db, &scope)? as usize).ok().flatten() {
                     r["review_notice"] = serde_json::json!(a);
                 }
                 // What was set aside when other sessions closed: in agents with no recall at start (Grok,
@@ -1126,7 +1126,7 @@ impl Servidor {
         let r = self
             .with_db(move |db, _, session_project| {
                 let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let wide = !matches!(scope, Ambito::Proyecto { .. });
+                let wide = !matches!(scope, Scope::Project { .. });
                 if p.sessions.unwrap_or(false) {
                     let filter = crate::diario::Filtro {
                         desde: p.since.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
@@ -1139,8 +1139,8 @@ impl Servidor {
                 }
                 if let Some(tags) = p.tags.filter(|t| !t.is_empty()) {
                     // By tag: all of them (at most `limit`, 200 if not given), with their data.
-                    let v = memoria::con_etiquetas(db, &scope, &tags, parse_kind(p.kind)?, p.limit.unwrap_or(200).clamp(1, 200))?;
-                    let data = memoria::datos_de(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+                    let v = memoria::with_tags(db, &scope, &tags, parse_kind(p.kind)?, p.limit.unwrap_or(200).clamp(1, 200))?;
+                    let data = memoria::data_of(db, &v.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
                     let mut list = Vec::new();
                     for m in v {
                         let d = data.get(&m.id).cloned();
@@ -1152,7 +1152,7 @@ impl Servidor {
                     }
                     return Ok(serde_json::Value::Array(list));
                 }
-                let v = memoria::recientes(db, &scope, parse_kind(p.kind)?, limit_of(p.limit))?;
+                let v = memoria::recent(db, &scope, parse_kind(p.kind)?, limit_of(p.limit))?;
                 Ok(serde_json::to_value(v.into_iter().map(|m| compact(m, wide, None)).collect::<Vec<_>>())?)
             })
             .await;
@@ -1170,13 +1170,13 @@ impl Servidor {
                     let (a, b) = (id_in_scope(db, session_project, a, false)?, id_in_scope(db, session_project, b, false)?);
                     let answer = p.answer.unwrap_or_default();
                     anyhow::ensure!(!answer.trim().is_empty(), "`answer`: what the user said (their words); ask them which one holds");
-                    let keep = veredictos::Queda::de(db, p.keep.as_deref().unwrap_or_default())?;
-                    let before = crate::revisar::antes(db)?;
-                    let superseded = veredictos::resolver(db, &a, &b, &keep, &answer, veredictos::USUARIO)?;
-                    crate::revisar::al_dia_de(db, &before, &[])?;
+                    let keep = veredictos::Keep::parse(db, p.keep.as_deref().unwrap_or_default())?;
+                    let before = crate::revisar::before(db)?;
+                    let superseded = veredictos::resolve(db, &a, &b, &keep, &answer, veredictos::USER)?;
+                    crate::revisar::refresh_for(db, &before, &[])?;
                     return Ok(serde_json::json!({
                         "resolved": true,
-                        "kept": match &keep { veredictos::Queda::Una(x) => serde_json::json!(x), veredictos::Queda::LasDos => serde_json::json!("both") },
+                        "kept": match &keep { veredictos::Keep::One(x) => serde_json::json!(x), veredictos::Keep::Both => serde_json::json!("both") },
                         "superseded": superseded,
                         "hint": if superseded.is_some() { "The other one is now superseded by the one that holds: offer the user to `forget` it if nothing in it still holds." } else { "Both hold: the warning is gone." },
                     }));
@@ -1184,17 +1184,17 @@ impl Servidor {
                 if let Some(id) = p.resolve {
                     let id = id_in_scope(db, session_project, &id, false)?;
                     let answer = p.answer.unwrap_or_default();
-                    let before = crate::revisar::antes(db)?;
-                    let m = match memoria::resolver_decision(db, &id, &answer, p.reason, p.allow_leaks.unwrap_or(false))? {
+                    let before = crate::revisar::before(db)?;
+                    let m = match memoria::resolve_decision(db, &id, &answer, p.reason, p.allow_leaks.unwrap_or(false))? {
                         Ok(m) => m,
                         Err(leaks) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS })),
                     };
-                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::json!({ "resolved": true, "memory": compact(m, false, None) }));
                 }
-                crate::revisar::limpiar_callado(db);
+                crate::revisar::cleanup_quietly(db);
                 let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
-                let v = memoria::decisiones(db, &scope, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
+                let v = memoria::decisions(db, &scope, p.blocking.unwrap_or(false), &p.tags.unwrap_or_default(), p.limit.unwrap_or(50).clamp(1, 50))?;
                 Ok(serde_json::to_value(v)?)
             })
             .await;

@@ -38,7 +38,7 @@
 //! out the same on export.
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo};
+use crate::memoria::{self, Scope, Changes, Memory, NewMemory, Kind};
 use crate::obsidian::{Que, corto};
 use crate::{tr, veredictos};
 use anyhow::{Context, Result, anyhow, bail};
@@ -104,16 +104,16 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
         }
     }
     let scope = match what {
-        Que::Personal => Ambito::Espacio(None),
-        Que::Espacio(s) => Ambito::Espacio(Some(s)),
+        Que::Personal => Scope::Space(None),
+        Que::Espacio(s) => Scope::Space(Some(s)),
     };
-    let mut all_memories = memoria::recientes(db, &scope, None, usize::MAX >> 1)?;
+    let mut all_memories = memoria::recent(db, &scope, None, usize::MAX >> 1)?;
     if matches!(what, Que::Espacio(_)) {
         all_memories.retain(|m| !m.global());
     }
     all_memories.sort_by(|a, b| a.id.cmp(&b.id));
     std::fs::create_dir_all(dir).with_context(|| tr!("could not create {}", "no se pudo crear {}", dir.display()))?;
-    let data = memoria::datos_de(db, &all_memories.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
+    let data = memoria::data_of(db, &all_memories.iter().map(|m| m.id.as_str()).collect::<Vec<_>>())?;
     // This database's signature: when imported here, what was signed is recognised as our own (see `firma`).
     let key = firma::clave(db, true)?;
 
@@ -124,7 +124,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
             names.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
-    let group_of = |m: &Memoria| -> Group {
+    let group_of = |m: &Memory| -> Group {
         if m.project_id == 0 {
             return if m.space.is_empty() {
                 Group { folder: "_global".into(), title: tr!("Global", "Global").to_string() }
@@ -151,7 +151,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     let mut path: HashMap<String, String> = HashMap::new();
     for m in &all_memories {
         let g = group_of(m);
-        let sub = memoria::clave_de(m).and_then(path_from_key).unwrap_or_else(|| format!("{}/{}", slug(m.tipo_texto(), 30), slug(&m.title, 60)));
+        let sub = memoria::key_of(m).and_then(path_from_key).unwrap_or_else(|| format!("{}/{}", slug(m.kind_str(), 30), slug(&m.title, 60)));
         let mut r = format!("{}/{sub}", g.folder);
         let last = r.rsplit('/').next().unwrap_or("").to_string();
         if taken.contains(&r.to_lowercase()) || matches!(last.as_str(), "index" | "log") || is_reserved(&last) {
@@ -165,14 +165,14 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     let mut superseded_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut supersedes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut contradicts: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for v in veredictos::parejas(db)?.into_values() {
+    for v in veredictos::pairs(db)?.into_values() {
         if !path.contains_key(&v.memory_id) || !path.contains_key(&v.other_id) {
             continue;
         }
-        if v.relation == veredictos::SUSTITUIDA {
+        if v.relation == veredictos::SUPERSEDED {
             superseded_by.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             supersedes.entry(v.other_id).or_default().push(v.memory_id);
-        } else if v.relation == veredictos::CONTRADICE {
+        } else if v.relation == veredictos::CONTRADICTS {
             contradicts.entry(v.memory_id.clone()).or_default().push(v.other_id.clone());
             contradicts.entry(v.other_id).or_default().push(v.memory_id);
         }
@@ -410,20 +410,20 @@ fn okf_type_name(t: &str) -> String {
 }
 
 /// The Omoikane kind of an OKF `type` (anyone's: there is no closed list).
-pub fn tipo_de_okf(t: &str) -> Tipo {
+pub fn tipo_de_okf(t: &str) -> Kind {
     let t: String = t.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     let has = |ps: &[&str]| ps.iter().any(|p| t == *p || t.split(' ').any(|w| w == *p));
     if has(&["decision", "adr", "decisions"]) {
-        Tipo::Decision
+        Kind::Decision
     } else if has(&["gotcha", "pitfall", "caveat", "warning", "bug", "bugfix", "issue", "trap", "antipattern"]) {
-        Tipo::Gotcha
+        Kind::Gotcha
     } else if has(&["preference", "convention", "guideline", "style", "rule", "policy", "standard"]) {
-        Tipo::Preference
+        Kind::Preference
     } else if has(&["procedure", "playbook", "runbook", "process", "howto", "how to", "recipe", "workflow", "guide", "steps"]) {
-        Tipo::Procedure
+        Kind::Procedure
     } else {
-        Tipo::Fact
+        Kind::Fact
     }
 }
 
@@ -451,7 +451,7 @@ fn by_of(x: &Value) -> &str {
 /// The verifications: a person's only if the memory carries the stamp and it holds (`m.verified`, the one from
 /// `omoi verify`, the web or an import; a tag doesn't count), first; and the process ones it
 /// brought from OKF (`data.okf.verified`), as is.
-fn verifications(m: &Memoria, stored: Option<&Value>) -> Vec<Value> {
+fn verifications(m: &Memory, stored: Option<&Value>) -> Vec<Value> {
     let mut v: Vec<Value> = Vec::new();
     if let Some(s) = &m.verified {
         v.push(json!({ "by": format!("human:{}", actor_id(&s.by)), "at": s.at }));
@@ -512,7 +512,7 @@ fn is_human(by: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Value>, rel: &Relations, description: &str, footer: &[String], key: Option<&[u8]>) -> String {
+fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Value>, rel: &Relations, description: &str, footer: &[String], key: Option<&[u8]>) -> String {
     // What it brought from OKF that Omoikane doesn't have, and the rest of its data.
     let (okf, rest): (Map<String, Value>, Option<Value>) = match data {
         Some(Value::Object(o)) => {
@@ -526,7 +526,7 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
         Some(other) => (Map::new(), Some(other.clone())),
         None => (Map::new(), None),
     };
-    let okf_type = okf.get("type").and_then(Value::as_str).filter(|t| tipo_de_okf(t).as_str() == m.tipo_texto()).map(str::to_string).unwrap_or_else(|| okf_type_name(m.tipo_texto()));
+    let okf_type = okf.get("type").and_then(Value::as_str).filter(|t| tipo_de_okf(t).as_str() == m.kind_str()).map(str::to_string).unwrap_or_else(|| okf_type_name(m.kind_str()));
     let mut f = Map::new();
     f.insert("type".into(), json!(okf_type));
     f.insert("title".into(), json!(m.title));
@@ -535,7 +535,7 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
     let tags: Vec<&String> = m
         .tags
         .iter()
-        .filter(|t| !t.starts_with(crate::revisar::ETIQUETA_FECHA) && !t.starts_with(memoria::ETIQUETA_TEMA) && !is_status(t))
+        .filter(|t| !t.starts_with(crate::revisar::REVIEW_DATE_TAG) && !t.starts_with(memoria::TOPIC_TAG) && !is_status(t))
         .collect();
     if !tags.is_empty() {
         f.insert("tags".into(), json!(tags));
@@ -550,7 +550,7 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
     if let Some(e) = status {
         f.insert("status".into(), json!(e));
     }
-    if let Some(d) = crate::revisar::fecha_revision(&m.tags) {
+    if let Some(d) = crate::revisar::review_date_of(&m.tags) {
         f.insert("stale_after".into(), json!(format!("{d}T00:00:00Z")));
     }
     // `code_refs` are repository paths: the absolute ones (and those going out with `..`) go separately.
@@ -592,10 +592,10 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
     }
     let mut o = Map::new();
     o.insert("id".into(), json!(m.id));
-    if let Some(k) = memoria::clave_de(m) {
+    if let Some(k) = memoria::key_of(m) {
         o.insert("key".into(), json!(k));
     }
-    o.insert("kind".into(), json!(m.tipo_texto()));
+    o.insert("kind".into(), json!(m.kind_str()));
     if m.global() {
         o.insert("scope".into(), json!("global"));
     } else if m.project_id != 0 {
@@ -622,13 +622,13 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
     o.insert("created".into(), json!(m.created_at));
     o.insert("updated".into(), json!(m.updated_at));
     if let Some(p) = &m.provenance {
-        o.insert(crate::procedencia::CLAVE.into(), json!(p));
+        o.insert(crate::procedencia::KEY.into(), json!(p));
     }
     if !m.evidence.is_empty() {
-        o.insert(crate::evidencia::CLAVE.into(), json!(m.evidence));
+        o.insert(crate::evidencia::KEY.into(), json!(m.evidence));
     }
     if let Some(r) = &m.review_reason {
-        o.insert(memoria::CLAVE_MOTIVO_REVISION.into(), json!(r));
+        o.insert(memoria::REVIEW_REASON_KEY.into(), json!(r));
     }
     for (k, v) in [("superseded_by", &rel.superseded_by), ("supersedes", &rel.supersedes), ("contradicts", &rel.contradicts)] {
         if !v.is_empty() {
@@ -643,7 +643,7 @@ fn render_concept(m: &Memoria, concept_id: &str, project: &str, data: Option<&Va
     }
     // The fingerprint of the verified text: on import, the stamp only comes back if the text is still that one
     // (re-editing the Markdown doesn't keep the verification).
-    let sha = m.verified.as_ref().map(|_| crate::verificado::huella(m.tipo_texto(), &m.title, &m.content)).unwrap_or_default();
+    let sha = m.verified.as_ref().map(|_| crate::verificado::huella(m.kind_str(), &m.title, &m.content)).unwrap_or_default();
     if !sha.is_empty() {
         o.insert("verified_sha".into(), json!(sha));
     }
@@ -683,7 +683,7 @@ const SOURCE_ID_PREFIX: &str = "omoikane-";
 /// A memory's provenance as OKF `sources` (1.10.1): the commit (a link to the commit if the
 /// project is on GitHub, GitLab or Codeberg; otherwise `git:<sha>`), the agent session and the
 /// OpenTelemetry trace. The exact data travels in `omoikane.provenance`; this is for whoever reads the bundle.
-fn sources_of(m: &Memoria) -> Vec<Value> {
+fn sources_of(m: &Memory) -> Vec<Value> {
     let Some(p) = &m.provenance else { return Vec::new() };
     let mut v = Vec::new();
     if !p.commit.is_empty() {
@@ -1254,7 +1254,7 @@ struct Entry {
     global: bool,
     /// The sync key of its project, if it came from an Omoikane one.
     project_key: Option<String>,
-    memory: Nueva,
+    memory: NewMemory,
     data: Option<Value>,
     created: Option<String>,
     updated: Option<String>,
@@ -1275,7 +1275,7 @@ struct Entry {
 /// isn't valid in a key changed to `-`, and with a piece of its hash if it goes past 80).
 fn concept_key(id: &str, om: &Map<String, Value>) -> String {
     if let Some(k) = om.get("key").and_then(Value::as_str)
-        && let Ok(k) = memoria::clave_tema(k)
+        && let Ok(k) = memoria::topic_key(k)
     {
         return k;
     }
@@ -1315,7 +1315,7 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
     };
     let ours = !om.is_empty();
     let okf_type = escalar_texto(&f["type"]).trim().to_string();
-    let kind = om.get("kind").and_then(Value::as_str).and_then(|k| k.parse::<Tipo>().ok()).unwrap_or_else(|| tipo_de_okf(&okf_type));
+    let kind = om.get("kind").and_then(Value::as_str).and_then(|k| k.parse::<Kind>().ok()).unwrap_or_else(|| tipo_de_okf(&okf_type));
     let title = f.get("title").map(escalar_texto).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
         let name = c.id.rsplit('/').next().unwrap_or(&c.id);
         name.replace(['-', '_'], " ")
@@ -1342,9 +1342,9 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
         content = title.clone();
     }
 
-    let mut tags: Vec<String> = lista_de_textos(f.get("tags")).into_iter().filter(|t| !t.starts_with(crate::revisar::ETIQUETA_FECHA)).collect();
+    let mut tags: Vec<String> = lista_de_textos(f.get("tags")).into_iter().filter(|t| !t.starts_with(crate::revisar::REVIEW_DATE_TAG)).collect();
     if let Some(d) = f.get("stale_after").map(escalar_texto).as_deref().and_then(day_of) {
-        tags.push(format!("{}{d}", crate::revisar::ETIQUETA_FECHA));
+        tags.push(format!("{}{d}", crate::revisar::REVIEW_DATE_TAG));
     }
     // A person's verification (the most recent, if there are several): it becomes the stamp when
     // saving it, not data nor a tag.
@@ -1414,29 +1414,29 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
     Ok(Entry {
         concept: c.id.clone(),
         key: concept_key(&c.id, &om),
-        own_key: om.get("key").and_then(Value::as_str).and_then(|k| memoria::clave_tema(k).ok()),
+        own_key: om.get("key").and_then(Value::as_str).and_then(|k| memoria::topic_key(k).ok()),
         // In its form (uppercase): `Ulid::from_string` also accepts lowercase, and the database stores and
         // compares ids as is (a forget with the id in lowercase didn't match and the memory came back).
         id: text("id").and_then(|i| id_normal(&i)),
         global: text("scope").as_deref() == Some("global"),
         project_key: text("project_key").filter(|k| !k.is_empty()),
-        memory: Nueva {
+        memory: NewMemory {
             kind: Some(kind),
             // A kind from a future Omoikane version, as is (as in sync).
-            kind_text: om.get("kind").and_then(Value::as_str).filter(|k| !k.is_empty() && k.parse::<Tipo>().is_err()).map(str::to_string),
+            kind_text: om.get("kind").and_then(Value::as_str).filter(|k| !k.is_empty() && k.parse::<Kind>().is_err()).map(str::to_string),
             title,
             content,
             paths: lista_de_textos(f.get("code_refs")).into_iter().chain(lista_de_textos(om.get("paths"))).collect(),
             tags,
             pinned: om.get("pinned").and_then(Value::as_bool).unwrap_or(false),
             source: text("source").unwrap_or_else(|| if ours { String::new() } else { "import:okf".into() }),
-            provenance: om.get(crate::procedencia::CLAVE).and_then(|p| serde_json::from_value::<crate::procedencia::Procedencia>(p.clone()).ok()).filter(|p| !p.vacia()),
+            provenance: om.get(crate::procedencia::KEY).and_then(|p| serde_json::from_value::<crate::procedencia::Provenance>(p.clone()).ok()).filter(|p| !p.is_empty()),
             evidence: om
-                .get(crate::evidencia::CLAVE)
-                .and_then(|v| serde_json::from_value::<Vec<crate::evidencia::Evidencia>>(v.clone()).ok())
-                .and_then(|v| crate::evidencia::limpiar(v).ok())
+                .get(crate::evidencia::KEY)
+                .and_then(|v| serde_json::from_value::<Vec<crate::evidencia::Evidence>>(v.clone()).ok())
+                .and_then(|v| crate::evidencia::clean(v).ok())
                 .unwrap_or_default(),
-            review_reason: om.get(memoria::CLAVE_MOTIVO_REVISION).and_then(Value::as_str).and_then(memoria::limpiar_motivo_revision),
+            review_reason: om.get(memoria::REVIEW_REASON_KEY).and_then(Value::as_str).and_then(memoria::clean_review_reason),
             ..Default::default()
         },
         data,
@@ -1451,7 +1451,7 @@ fn to_entry(c: &Concepto) -> Result<Entry> {
     })
 }
 
-fn okf_type_of(t: Tipo) -> String {
+fn okf_type_of(t: Kind) -> String {
     okf_type_name(t.as_str())
 }
 
@@ -1476,7 +1476,7 @@ pub fn espacio_de(b: &Bundle) -> Option<String> {
     b.conceptos.iter().find_map(|c| c.cabecera.get("omoikane").and_then(|o| o.get("space")).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string))
 }
 
-/// Where an entry lands: (project folder, project id, space) for `Nueva`. What came
+/// Where an entry lands: (project folder, project id, space) for `NewMemory`. What came
 /// from a project this database also has (the same sync key, in the same space
 /// or without a space) goes back to it; the rest, to the destination.
 fn placement(db: &Connection, destination: &Destino, e: &Entry) -> Result<(String, Option<i64>, Option<i64>)> {
@@ -1511,7 +1511,7 @@ fn find_by_key(db: &Connection, project: &str, project_id: Option<i64>, space: O
         .query_row(
             "SELECT id, hlc FROM memory WHERE project_id = ?1 AND space_id IS ?2
                AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?3) ORDER BY created_at, id LIMIT 1",
-            params![project_id, space, format!("{}{key}", memoria::ETIQUETA_TEMA)],
+            params![project_id, space, format!("{}{key}", memoria::TOPIC_TAG)],
             |f| Ok((f.get(0)?, f.get(1)?)),
         )
         .optional()?)
@@ -1638,14 +1638,14 @@ pub fn importar_con(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, des
     }
     // The verdicts among what was imported: `superseded_by` and `contradicts` point to other concepts of the
     // bundle (`/path.md`). One that already holds isn't set again.
-    let current = veredictos::parejas(db)?;
+    let current = veredictos::pairs(db)?;
     let id_of = |path: &str| -> Option<&(String, bool, bool)> {
         let r = path.trim().trim_start_matches('/');
         let r = r.strip_suffix(".md").unwrap_or(r);
         ids.get(&nfc(r).to_lowercase()).and_then(Option::as_ref)
     };
     for (id, own, superseded_by, contradicts) in &relations {
-        for (relation, others) in [(veredictos::SUSTITUIDA, superseded_by), (veredictos::CONTRADICE, contradicts)] {
+        for (relation, others) in [(veredictos::SUPERSEDED, superseded_by), (veredictos::CONTRADICTS, contradicts)] {
             for (other, other_own, other_older) in others.iter().filter_map(|o| id_of(o)) {
                 // Never between a concept of this database and one without its signature: a foreign one can't mark
                 // a memory from here as superseded (nor contradict it), nor the other way round with what one of our own concepts
@@ -1653,11 +1653,11 @@ pub fn importar_con(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, des
                 if other == id || other_own != own || *other_older {
                     continue;
                 }
-                let already = current.get(&veredictos::pareja(id, other)).is_some_and(|v| v.relation == relation && (relation == veredictos::CONTRADICE || v.memory_id == *id));
+                let already = current.get(&veredictos::pair_key(id, other)).is_some_and(|v| v.relation == relation && (relation == veredictos::CONTRADICTS || v.memory_id == *id));
                 if already {
                     continue;
                 }
-                match veredictos::poner(db, id, other, relation, "okf import", "import:okf") {
+                match veredictos::set(db, id, other, relation, "okf import", "import:okf") {
                     Ok(()) => r.verdicts += 1,
                     Err(err) => eprintln!("omoikane: {id}: {err:#}"),
                 }
@@ -1715,7 +1715,7 @@ fn check_trade(db: &Connection, e: &Entry, global: bool, before: Option<&str>, k
         return Ok(());
     }
     let old = match before {
-        Some(id) => Some(memoria::obtener(db, id)?),
+        Some(id) => Some(memoria::get(db, id)?),
         None => None,
     };
     let mut tags: Vec<String> = e.memory.tags.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).collect();
@@ -1731,9 +1731,9 @@ fn check_trade(db: &Connection, e: &Entry, global: bool, before: Option<&str>, k
     let fields = crate::oficios::campos_para_fugas(&[("title", &e.memory.title), ("content", &e.memory.content), ("paths", &joined_paths)], &tags, Some(key), e.data.as_ref());
     let mut leaks = crate::oficios::fugas_en(db, &fields)?;
     if let Some(v) = old.filter(|v| v.global() && crate::oficios::lleva_oficio(&v.tags)) {
-        let data = memoria::datos_de(db, &[v.id.as_str()])?.remove(&v.id);
+        let data = memoria::data_of(db, &[v.id.as_str()])?.remove(&v.id);
         let joined_paths = v.paths.join(" ");
-        let already = crate::oficios::campos_para_fugas(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memoria::clave_de(&v), data.as_ref());
+        let already = crate::oficios::campos_para_fugas(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memoria::key_of(&v), data.as_ref());
         let already: BTreeSet<String> = crate::oficios::fugas_en(db, &already)?.into_iter().map(|f| f.text.to_lowercase()).collect();
         leaks.retain(|f| !already.contains(&f.text.to_lowercase()));
     }
@@ -1814,7 +1814,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     // The data, checked before writing anything: if it isn't valid, the concept fails without leaving a
     // half-written memory.
     if let Some(d) = &e.data {
-        memoria::comprobar_datos(d)?;
+        memoria::check_data(d)?;
     }
     let (project, project_id, space_id) = placement(db, destination, &e)?;
     e.memory.project = project.clone();
@@ -1826,7 +1826,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     // was done here afterwards is newer than the bundle.
     let own_id = match &e.id {
         Some(id) if is_alive(db, id)? => {
-            let (_, space) = memoria::alcance_de_memoria(db, id)?.unwrap_or((false, String::new()));
+            let (_, space) = memoria::memory_placement(db, id)?.unwrap_or((false, String::new()));
             let target_space = crate::proyecto::clave_espacio(db, space_id)?;
             (space == target_space).then(|| id.clone())
         }
@@ -1835,7 +1835,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     // Global: what asks to be (and is trusted), everything if the destination is the global (`--global`), or the one that is already
     // global and gets updated where it is.
     u.global = match &own_id {
-        Some(id) => memoria::alcance_de_memoria(db, id)?.is_some_and(|(g, _)| g),
+        Some(id) => memoria::memory_placement(db, id)?.is_some_and(|(g, _)| g),
         None => space_id.is_none() && project_id.is_none() && project.is_empty(),
     };
     // How it is saved: updating the same memory; by its key, if there's already one with it where it lands;
@@ -1894,7 +1894,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
         Some(_) if !op.verificar => Stamp::Agent,
         Some(_) if !own && !op.confiar_verificadas => Stamp::Foreign,
         Some((_, at)) => {
-            let kind = e.memory.kind_text.clone().unwrap_or_else(|| e.memory.kind.unwrap_or(Tipo::Fact).as_str().to_string());
+            let kind = e.memory.kind_text.clone().unwrap_or_else(|| e.memory.kind.unwrap_or(Kind::Fact).as_str().to_string());
             let other_text = e.verified_sha.as_deref().is_some_and(|s| s != crate::verificado::huella(&kind, &e.memory.title, &e.memory.content));
             // The person unverified it here after that verification (reimporting an old bundle).
             let unverified_later = match (&before, at) {
@@ -1925,12 +1925,12 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     let secret = crate::secretos::activo() && !crate::secretos::hallazgos(&format!("{}\n{}", e.memory.title, e.memory.content)).is_empty();
     let (id, created, redactions) = match &own_id {
         Some(id) => {
-            let m = memoria::obtener(db, id)?;
+            let m = memoria::get(db, id)?;
             let mut tags = m.tags.clone();
             tags.extend(e.memory.tags.iter().cloned());
             let mut paths = m.paths.clone();
             paths.extend(e.memory.paths.iter().cloned());
-            let changes = Cambios {
+            let changes = Changes {
                 title: Some(e.memory.title.clone()),
                 content: Some(e.memory.content.clone()),
                 kind: e.memory.kind,
@@ -1940,31 +1940,31 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
                 reason: Some("okf import".into()),
                 ..Default::default()
             };
-            let m = memoria::actualizar(db, id, changes, model)?;
+            let m = memoria::update(db, id, changes, model)?;
             let mut redactions = m.redacted.clone();
             if e.data.is_some() {
-                redactions.extend(memoria::poner_datos(db, id, e.data.clone())?);
+                redactions.extend(memoria::set_data(db, id, e.data.clone())?);
             }
             (m.id, false, redactions)
         }
         None if with_own_id.is_some() => {
             let mut memory = e.memory.clone();
             if let Some(k) = &e.own_key {
-                memory.tags.push(format!("{}{k}", memoria::ETIQUETA_TEMA));
+                memory.tags.push(format!("{}{k}", memoria::TOPIC_TAG));
             }
-            let m = memoria::guardar_con_su_id(db, with_own_id.as_deref().unwrap_or_default(), memory, model)?;
+            let m = memoria::save_with_its_id(db, with_own_id.as_deref().unwrap_or_default(), memory, model)?;
             let mut redactions = m.redacted.clone();
             if e.data.is_some() {
-                redactions.extend(memoria::poner_datos(db, &m.id, e.data.clone())?);
+                redactions.extend(memoria::set_data(db, &m.id, e.data.clone())?);
             }
             (m.id, true, redactions)
         }
         None => {
             let key = by_own_key.as_ref().map_or(e.key.as_str(), |(k, _)| k.as_str());
-            let p = memoria::guardar_por_clave(db, key, e.memory.clone(), e.data.clone(), model)?;
-            let mut redactions = p.memoria.redacted.clone();
-            redactions.extend(p.tapados);
-            (p.memoria.id, p.creada, redactions)
+            let p = memoria::save_by_key(db, key, e.memory.clone(), e.data.clone(), model)?;
+            let mut redactions = p.memory.redacted.clone();
+            redactions.extend(p.redacted);
+            (p.memory.id, p.created, redactions)
         }
     };
     if created {
@@ -1980,19 +1980,19 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     }
     // The evidence, also on the one that already existed (with its key or its id): it is added to what it had.
     if !e.memory.evidence.is_empty() {
-        memoria::anadir_evidencia(db, &id, &e.memory.evidence)?;
+        memoria::add_evidence(db, &id, &e.memory.evidence)?;
     }
     // And what to check when its review date arrives (1.14).
     if let Some(r) = &e.memory.review_reason {
-        memoria::poner_motivo_revision(db, &id, r)?;
+        memoria::set_review_reason(db, &id, r)?;
     }
     // The stamp only comes back if the text that was verified (`verified_sha`) is the one the memory has NOW,
     // already written (saving it may have covered a secret, or the memory it went to had another text).
     if u.stamp == Stamp::Set
         && let Some(sha) = &e.verified_sha
     {
-        let m = memoria::obtener(db, &id)?;
-        if crate::verificado::huella(m.tipo_texto(), &m.title, &m.content) != *sha {
+        let m = memoria::get(db, &id)?;
+        if crate::verificado::huella(m.kind_str(), &m.title, &m.content) != *sha {
             u.stamp = Stamp::Stale;
         }
     }
@@ -2678,18 +2678,18 @@ mod tests {
 
     #[test]
     fn kinds_and_keys() {
-        assert_eq!(tipo_de_okf("Decision"), Tipo::Decision);
-        assert_eq!(tipo_de_okf("Architecture Decision Record"), Tipo::Decision);
-        assert_eq!(tipo_de_okf("Runbook"), Tipo::Procedure);
-        assert_eq!(tipo_de_okf("Convention"), Tipo::Preference);
-        assert_eq!(tipo_de_okf("BigQuery Table"), Tipo::Fact);
-        for t in Tipo::TODOS {
+        assert_eq!(tipo_de_okf("Decision"), Kind::Decision);
+        assert_eq!(tipo_de_okf("Architecture Decision Record"), Kind::Decision);
+        assert_eq!(tipo_de_okf("Runbook"), Kind::Procedure);
+        assert_eq!(tipo_de_okf("Convention"), Kind::Preference);
+        assert_eq!(tipo_de_okf("BigQuery Table"), Kind::Fact);
+        for t in Kind::ALL {
             assert_eq!(tipo_de_okf(&okf_type_name(t.as_str())), t);
         }
         assert_eq!(concept_key("Architecture/Governance Model", &Map::new()), "okf:architecture/governance-model");
         let long_id = "a/".repeat(60);
         let k = concept_key(&long_id, &Map::new());
-        assert!(k.chars().count() <= 80 && memoria::clave_tema(&k).is_ok(), "{k}");
+        assert!(k.chars().count() <= 80 && memoria::topic_key(&k).is_ok(), "{k}");
         assert_eq!(day_of("2026-09-23T00:00:00Z").as_deref(), Some("2026-09-23"));
         assert_eq!(day_of("mañana"), None);
         assert_eq!(description_of("# Título\n\nPrimera frase. Segunda.", "t"), "Título");

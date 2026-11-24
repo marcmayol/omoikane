@@ -146,7 +146,7 @@ pub fn permitido() -> bool {
 /// `OMOIKANE_SEMANTIC` rules; otherwise, what the user chose; and if nothing was chosen, the size: from
 /// `umbral()` memories in the database on, it is on.
 pub fn estado(db: &rusqlite::Connection) -> Estado {
-    let memories = crate::memoria::cuantas(db, &crate::memoria::Ambito::Todos).unwrap_or(0).max(0) as usize;
+    let memories = crate::memoria::count(db, &crate::memoria::Scope::All).unwrap_or(0).max(0) as usize;
     let threshold = umbral();
     let (on, reason) = match std::env::var("OMOIKANE_SEMANTIC") {
         Ok(v) if !v.is_empty() => (v != "0", Porque::Env),
@@ -430,12 +430,12 @@ pub fn listo(db: &rusqlite::Connection) -> bool {
 }
 
 /// The cosine of `query` with each memory in the scope that has a vector, highest first.
-pub fn cosenos(db: &rusqlite::Connection, query: &[f32], scope: &crate::memoria::Ambito, kind: Option<crate::memoria::Tipo>) -> Result<Vec<(String, f32)>> {
+pub fn cosenos(db: &rusqlite::Connection, query: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>) -> Result<Vec<(String, f32)>> {
     let mut q = db.prepare(&format!(
         "SELECT s.id, s.v FROM memory_sig s JOIN memory m ON m.id = s.id WHERE {} AND (?1 IS NULL OR m.kind = ?1)",
         scope.sql()
     ))?;
-    let mut rows = q.query(rusqlite::params![kind.map(crate::memoria::Tipo::as_str)])?;
+    let mut rows = q.query(rusqlite::params![kind.map(crate::memoria::Kind::as_str)])?;
     let mut v = Vec::new();
     while let Some(f) = rows.next()? {
         let c = cosine(query, f.get_ref(1)?.as_blob()?);
@@ -564,7 +564,7 @@ pub type Cosenos = Vec<(String, f32)>;
 struct Index {
     fingerprint: (i64, i64, String, String, i64),
     rows: Vec<Row>,
-    /// The space of each project (for `Ambito::Espacio`).
+    /// The space of each project (for `Scope::Space`).
     space_of: std::collections::HashMap<i64, Option<i64>>,
     memories: i64,
 }
@@ -602,20 +602,20 @@ impl Index {
         Ok(Index { memories: fingerprint.4, fingerprint, rows, space_of })
     }
 
-    /// `Ambito::sql`, in memory (a test checks that both give the same).
-    fn sees(&self, a: &crate::memoria::Ambito, f: &Row) -> bool {
-        use crate::memoria::Ambito;
+    /// `Scope::sql`, in memory (a test checks that both give the same).
+    fn sees(&self, a: &crate::memoria::Scope, f: &Row) -> bool {
+        use crate::memoria::Scope;
         let space = |s: Option<i64>| f.project_id != 0 || f.space_id.is_none() || (s.is_some() && f.space_id == s);
         match *a {
-            Ambito::Proyecto { id, space: sp } => (f.project_id == id || f.project_id == 0) && space(sp),
-            Ambito::Espacio(Some(s)) => (f.project_id == 0 || self.space_of.get(&f.project_id) == Some(&Some(s))) && space(Some(s)),
-            Ambito::Espacio(None) => self.space_of.get(&f.project_id) == Some(&None) && space(None),
-            Ambito::Todos => true,
+            Scope::Project { id, space: sp } => (f.project_id == id || f.project_id == 0) && space(sp),
+            Scope::Space(Some(s)) => (f.project_id == 0 || self.space_of.get(&f.project_id) == Some(&Some(s))) && space(Some(s)),
+            Scope::Space(None) => self.space_of.get(&f.project_id) == Some(&None) && space(None),
+            Scope::All => true,
         }
     }
 
     /// The `k` closest to `q` in the scope (highest first) and the cosine of `requested`.
-    fn search(&self, q: &[f32], a: &crate::memoria::Ambito, kind: Option<&str>, k: usize, requested: &[String]) -> (Cosenos, Cosenos) {
+    fn search(&self, q: &[f32], a: &crate::memoria::Scope, kind: Option<&str>, k: usize, requested: &[String]) -> (Cosenos, Cosenos) {
         let mut all: Vec<(usize, f32)> = self
             .rows
             .iter()
@@ -641,7 +641,7 @@ impl Index {
 
 /// What the service would answer for vector `q`, without the service: loads the index of `db` and searches
 /// (for the tests, which compare with `cosenos`, which filters the scope in SQL).
-pub fn parecidas_en_base(db: &rusqlite::Connection, q: &[f32], scope: &crate::memoria::Ambito, kind: Option<crate::memoria::Tipo>, k: usize) -> Result<Vec<(String, f32)>> {
+pub fn parecidas_en_base(db: &rusqlite::Connection, q: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>, k: usize) -> Result<Vec<(String, f32)>> {
     let i = Index::load(db)?;
     Ok(i.search(q, scope, kind.map(|k| k.as_str()), k, &[]).0)
 }
@@ -688,7 +688,7 @@ fn search_in_service(gemma: &Gemma, b: &SearchRequest) -> Result<Parecidas> {
 struct SearchRequest {
     db: String,
     texto: String,
-    ambito: crate::memoria::Ambito,
+    ambito: crate::memoria::Scope,
     #[serde(default)]
     kind: Option<String>,
     k: usize,
@@ -731,8 +731,8 @@ impl Fallo {
 pub fn parecidas(
     db: &std::path::Path,
     text: &str,
-    scope: &crate::memoria::Ambito,
-    kind: Option<crate::memoria::Tipo>,
+    scope: &crate::memoria::Scope,
+    kind: Option<crate::memoria::Kind>,
     k: usize,
     ids: &[String],
     budget: Duration,
@@ -744,8 +744,8 @@ pub fn parecidas(
 pub fn parecidas_o_fallo(
     db: &std::path::Path,
     text: &str,
-    scope: &crate::memoria::Ambito,
-    kind: Option<crate::memoria::Tipo>,
+    scope: &crate::memoria::Scope,
+    kind: Option<crate::memoria::Kind>,
     k: usize,
     ids: &[String],
     budget: Duration,

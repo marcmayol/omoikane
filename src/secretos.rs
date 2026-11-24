@@ -64,7 +64,7 @@ pub fn tipos(found: &[Hallazgo]) -> Vec<&'static str> {
     tipos_distintos(&found.iter().map(|h| h.tipo).collect::<Vec<_>>())
 }
 
-/// The same from the loose types (`Memoria::redacted`, one per finding).
+/// The same from the loose types (`Memory::redacted`, one per finding).
 pub fn tipos_distintos(ts: &[&'static str]) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = Vec::new();
     for t in ts {

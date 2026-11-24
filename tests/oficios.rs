@@ -497,7 +497,7 @@ fn notes_do_not_name_another_client() {
 }
 
 /// Recall does not swap ordinary words for project names: "faltas" is not Faltis, "rodeo" is not
-/// Rodet, "balsa" is not Balùa, nor are "tropa" or "trobar" Troba (see `nombres::mal_escritos`).
+/// Rodet, "balsa" is not Balùa, nor are "tropa" or "trobar" Troba (see `nombres::misspelled`).
 #[test]
 fn recall_does_not_swap_ordinary_words_for_projects() {
     let p = Harness::new("oficios-recall-nombres");

@@ -428,7 +428,7 @@ fn trash_travels_with_its_project_space_and_verdicts() {
     assert_eq!(av["reason"], "JWT replaced the cookie");
 }
 
-/// Exports from 0.18.0 and 0.19.0 carry in `forgotten.memory` the JSON API's `Memoria` (with
+/// Exports from 0.18.0 and 0.19.0 carry in `forgotten.memory` the JSON API's `Memory` (with
 /// `project`, the path, and without its stamp): they still import, and what is restored lands in that folder.
 #[test]
 fn trash_from_a_0_19_export_still_imports() {

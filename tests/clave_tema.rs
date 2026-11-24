@@ -5,7 +5,7 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use rusqlite::Connection;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -16,8 +16,8 @@ fn base(name: &str) -> (comun::Temporal, Connection) {
     (dir, db)
 }
 
-fn new_memory(project: &str, title: &str, content: &str) -> Nueva {
-    Nueva { project: project.into(), kind: Some(Tipo::Fact), title: title.into(), content: content.into(), ..Default::default() }
+fn new_memory(project: &str, title: &str, content: &str) -> NewMemory {
+    NewMemory { project: project.into(), kind: Some(Kind::Fact), title: title.into(), content: content.into(), ..Default::default() }
 }
 
 fn with_key(db: &Connection, key: &str) -> i64 {
@@ -32,52 +32,52 @@ fn with_key(db: &Connection, key: &str) -> i64 {
 #[test]
 fn the_key_creates_once_and_then_updates() {
     let (_dir, mut db) = base("crea");
-    let a = memoria::guardar_por_clave(&mut db, "Kumi-Perfil", new_memory("/p", "Perfil de p", "Factoría web, fase 1."), None, None).unwrap();
-    assert!(a.creada);
-    assert_eq!(memoria::clave_de(&a.memoria), Some("kumi-perfil"));
+    let a = memoria::save_by_key(&mut db, "Kumi-Perfil", new_memory("/p", "Perfil de p", "Factoría web, fase 1."), None, None).unwrap();
+    assert!(a.created);
+    assert_eq!(memoria::key_of(&a.memory), Some("kumi-perfil"));
     let mut n = new_memory("/p", "Perfil de p", "Factoría web, fase 2.");
     n.tags = vec!["kumi".into()];
     n.paths = vec!["src/main.rs".into()];
-    let b = memoria::guardar_por_clave(&mut db, "kumi-perfil", n, None, None).unwrap();
-    assert!(!b.creada);
-    assert_eq!(b.memoria.id, a.memoria.id);
-    assert_eq!(b.memoria.content, "Factoría web, fase 2.");
-    assert!(b.memoria.tags.contains(&"kumi".to_string()) && b.memoria.tags.contains(&"topic:kumi-perfil".to_string()));
+    let b = memoria::save_by_key(&mut db, "kumi-perfil", n, None, None).unwrap();
+    assert!(!b.created);
+    assert_eq!(b.memory.id, a.memory.id);
+    assert_eq!(b.memory.content, "Factoría web, fase 2.");
+    assert!(b.memory.tags.contains(&"kumi".to_string()) && b.memory.tags.contains(&"topic:kumi-perfil".to_string()));
     assert_eq!(with_key(&db, "kumi-perfil"), 1);
     // The previous version stays in the history, with the key as the reason.
-    let h = memoria::historial(&db, &a.memoria.id).unwrap();
+    let h = memoria::history(&db, &a.memory.id).unwrap();
     assert_eq!(h.len(), 1);
     assert_eq!(h[0].content, "Factoría web, fase 1.");
     assert_eq!(h[0].reason.as_deref(), Some("key kumi-perfil"));
     // The same key in another project is another memory.
-    let c = memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("/q", "Perfil de q", "Factoría android."), None, None).unwrap();
-    assert!(c.creada && c.memoria.id != a.memoria.id);
+    let c = memoria::save_by_key(&mut db, "kumi-perfil", new_memory("/q", "Perfil de q", "Factoría android."), None, None).unwrap();
+    assert!(c.created && c.memory.id != a.memory.id);
     // `get --key` from each project gives its own; the global one only if the project has none.
-    memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("", "Perfil por defecto", "Sin factoría."), None, None).unwrap();
-    let sees = |p: &str| memoria::por_clave(&db, &Ambito::de(&db, p).unwrap(), "KUMI-PERFIL").unwrap().map(|m| m.title);
+    memoria::save_by_key(&mut db, "kumi-perfil", new_memory("", "Perfil por defecto", "Sin factoría."), None, None).unwrap();
+    let sees = |p: &str| memoria::by_key(&db, &Scope::from_project(&db, p).unwrap(), "KUMI-PERFIL").unwrap().map(|m| m.title);
     assert_eq!(sees("/p").as_deref(), Some("Perfil de p"));
     assert_eq!(sees("/q").as_deref(), Some("Perfil de q"));
     assert_eq!(sees("/r").as_deref(), Some("Perfil por defecto"));
-    assert!(memoria::por_clave(&db, &Ambito::de(&db, "/p").unwrap(), "otra").unwrap().is_none());
+    assert!(memoria::by_key(&db, &Scope::from_project(&db, "/p").unwrap(), "otra").unwrap().is_none());
 }
 
 #[test]
 fn warns_about_a_similar_key_and_rejects_odd_ones() {
     let (_dir, mut db) = base("parecida");
-    memoria::guardar_por_clave(&mut db, "kumi-perfil", new_memory("/p", "Perfil", "uno"), None, None).unwrap();
-    let r = memoria::guardar_por_clave(&mut db, "kumi_perfil", new_memory("/p", "Perfil", "dos"), None, None).unwrap();
-    assert!(r.creada);
-    assert_eq!(r.parecidas, vec!["kumi-perfil".to_string()]);
-    let r = memoria::guardar_por_clave(&mut db, "kumi-perfl", new_memory("/p", "Perfil", "tres"), None, None).unwrap();
-    assert!(r.parecidas.contains(&"kumi-perfil".to_string()), "{:?}", r.parecidas);
+    memoria::save_by_key(&mut db, "kumi-perfil", new_memory("/p", "Perfil", "uno"), None, None).unwrap();
+    let r = memoria::save_by_key(&mut db, "kumi_perfil", new_memory("/p", "Perfil", "dos"), None, None).unwrap();
+    assert!(r.created);
+    assert_eq!(r.similar_keys, vec!["kumi-perfil".to_string()]);
+    let r = memoria::save_by_key(&mut db, "kumi-perfl", new_memory("/p", "Perfil", "tres"), None, None).unwrap();
+    assert!(r.similar_keys.contains(&"kumi-perfil".to_string()), "{:?}", r.similar_keys);
     // Really different: nothing.
-    let r = memoria::guardar_por_clave(&mut db, "deploy-recipe", new_memory("/p", "Receta", "cuatro"), None, None).unwrap();
-    assert!(r.parecidas.is_empty(), "{:?}", r.parecidas);
+    let r = memoria::save_by_key(&mut db, "deploy-recipe", new_memory("/p", "Receta", "cuatro"), None, None).unwrap();
+    assert!(r.similar_keys.is_empty(), "{:?}", r.similar_keys);
     // In another project it does not count.
-    let r = memoria::guardar_por_clave(&mut db, "kumi-perfi", new_memory("/q", "Perfil", "cinco"), None, None).unwrap();
-    assert!(r.parecidas.is_empty());
+    let r = memoria::save_by_key(&mut db, "kumi-perfi", new_memory("/q", "Perfil", "cinco"), None, None).unwrap();
+    assert!(r.similar_keys.is_empty());
     for bad in ["", "  ", "dos palabras", "¿qué?"] {
-        assert!(memoria::guardar_por_clave(&mut db, bad, new_memory("/p", "x", "y"), None, None).is_err(), "{bad:?}");
+        assert!(memoria::save_by_key(&mut db, bad, new_memory("/p", "x", "y"), None, None).is_err(), "{bad:?}");
     }
 }
 
@@ -201,23 +201,23 @@ fn kumis_route_on_three_levels() {
         proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
         omoikane::oficios::anadir(&db, id, &["web".to_string()]).unwrap();
     }
-    let save = |db: &mut Connection, mut n: Nueva, tags: &[&str], data: serde_json::Value| {
+    let save = |db: &mut Connection, mut n: NewMemory, tags: &[&str], data: serde_json::Value| {
         n.tags = tags.iter().map(|t| t.to_string()).collect();
-        memoria::guardar_por_clave(db, "kumi-ruta", n, Some(data), None).unwrap()
+        memoria::save_by_key(db, "kumi-ruta", n, Some(data), None).unwrap()
     };
     // Trade: a global one with `trade:web` (what `--trade web` saves).
-    let trade = Nueva { kind: Some(Tipo::Fact), title: "Ruta de la factoría web".into(), content: "La ruta por defecto de una web.".into(), ..Default::default() };
+    let trade = NewMemory { kind: Some(Kind::Fact), title: "Ruta de la factoría web".into(), content: "La ruta por defecto de una web.".into(), ..Default::default() };
     save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web", "cyber"]}));
     // Client X (its space) and client Y.
-    let client = |s, route: &str| Nueva { space_id: Some(s), kind: Some(Tipo::Fact), title: format!("Ruta del cliente {route}"), content: "La ruta del cliente.".into(), ..Default::default() };
+    let client = |s, route: &str| NewMemory { space_id: Some(s), kind: Some(Kind::Fact), title: format!("Ruta del cliente {route}"), content: "La ruta del cliente.".into(), ..Default::default() };
     save(&mut db, client(x, "seo-geo"), &[], serde_json::json!({"ruta": ["web", "seo-geo"]}));
     save(&mut db, client(y, "cyber"), &[], serde_json::json!({"ruta": ["web", "cyber"]}));
     // Project: disney-countdown without SEO. And a global one without a trade.
-    let project_mem = Nueva { project: disney.into(), kind: Some(Tipo::Fact), title: "Ruta de disney-countdown".into(), content: "Sin SEO: es una cuenta atrás familiar.".into(), ..Default::default() };
+    let project_mem = NewMemory { project: disney.into(), kind: Some(Kind::Fact), title: "Ruta de disney-countdown".into(), content: "Sin SEO: es una cuenta atrás familiar.".into(), ..Default::default() };
     save(&mut db, project_mem, &[], serde_json::json!({"ruta": ["web"], "fase": "alpha"}));
-    save(&mut db, Nueva { kind: Some(Tipo::Fact), title: "Ruta por defecto".into(), content: "Sin factoría.".into(), ..Default::default() }, &[], serde_json::json!({"ruta": []}));
+    save(&mut db, NewMemory { kind: Some(Kind::Fact), title: "Ruta por defecto".into(), content: "Sin factoría.".into(), ..Default::default() }, &[], serde_json::json!({"ruta": []}));
 
-    let layers = |p: &str| memoria::capas_de_clave(&db, &Ambito::de(&db, p).unwrap(), "kumi-ruta").unwrap();
+    let layers = |p: &str| memoria::key_layers(&db, &Scope::from_project(&db, p).unwrap(), "kumi-ruta").unwrap();
     let scopes = |p: &str| layers(p).into_iter().map(|c| c.scope).collect::<Vec<_>>();
     assert_eq!(scopes(disney), ["project", "space", "trade:web", "global"]);
     let c = layers(disney);
@@ -232,7 +232,7 @@ fn kumis_route_on_three_levels() {
     assert_eq!(of_y_layers.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["space", "trade:web", "global"]);
     assert_eq!(of_y_layers[0].data, Some(serde_json::json!({"ruta": ["web", "cyber"]})));
     // Plain `get --key`: the most specific one.
-    assert_eq!(memoria::por_clave(&db, &Ambito::de(&db, disney).unwrap(), "kumi-ruta").unwrap().unwrap().title, "Ruta de disney-countdown");
+    assert_eq!(memoria::by_key(&db, &Scope::from_project(&db, disney).unwrap(), "kumi-ruta").unwrap().unwrap().title, "Ruta de disney-countdown");
 
     // The trade and the global one without a trade are different scopes: one for each.
     assert_eq!(with_key(&db, "kumi-ruta"), 5);
@@ -241,22 +241,22 @@ fn kumis_route_on_three_levels() {
     let versions = |db: &Connection| db.query_row("SELECT count(*) FROM memory_version", [], |f| f.get::<_, i64>(0)).unwrap();
     let before = versions(&db);
     let r = save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"tests": ["web", "cyber"], "ruta": ["web"]}));
-    assert!(!r.creada);
-    let stamp = r.memoria.updated_at.clone();
+    assert!(!r.created);
+    let stamp = r.memory.updated_at.clone();
     assert_eq!(versions(&db), before, "lo mismo no deja versión");
     let r = save(&mut db, trade.clone(), &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
     assert_eq!(versions(&db), before, "solo los datos no dejan versión");
-    assert!(r.memoria.updated_at >= stamp);
-    assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
-    let other = Nueva { content: "Otra ruta por defecto.".into(), ..trade.clone() };
+    assert!(r.memory.updated_at >= stamp);
+    assert_eq!(memoria::data_of(&db, &[r.memory.id.as_str()]).unwrap()[&r.memory.id], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
+    let other = NewMemory { content: "Otra ruta por defecto.".into(), ..trade.clone() };
     save(&mut db, other, &["trade:web"], serde_json::json!({"ruta": ["web"], "tests": ["web"]}));
     assert_eq!(versions(&db), before + 1);
     assert_eq!(with_key(&db, "kumi-ruta"), 5);
     // `trade-for:client` is another level of the same trade: it does not overwrite the one for everyone.
     let r = save(&mut db, trade, &["trade:web", "trade-for:client"], serde_json::json!({"ruta": ["web", "seo-geo"]}));
-    assert!(r.creada);
+    assert!(r.created);
     assert_eq!(with_key(&db, "kumi-ruta"), 6);
-    let all = memoria::capas_de_clave(&db, &Ambito::de(&db, disney).unwrap(), "kumi-ruta").unwrap();
+    let all = memoria::key_layers(&db, &Scope::from_project(&db, disney).unwrap(), "kumi-ruta").unwrap();
     assert_eq!(all.iter().map(|c| c.scope.as_str()).collect::<Vec<_>>(), ["project", "space", "trade:web", "trade:web", "global"]);
 }
 
@@ -268,16 +268,16 @@ fn kumis_route_on_three_levels() {
 fn data_goes_apart_from_the_text() {
     let (_dir, mut db) = base("datos");
     let v = serde_json::json!({"b": 1, "a": {"d": [1, 2], "c": null}});
-    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto."), Some(v.clone()), None).unwrap();
-    assert_eq!(r.memoria.content, "Texto.");
-    assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], v);
-    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), None, None).unwrap();
-    assert_eq!(r.memoria.content, "Texto nuevo.");
-    assert_eq!(memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap()[&r.memoria.id], v);
-    let r = memoria::guardar_por_clave(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), Some(serde_json::json!({"token": "export GH=gh~p_abcdefghijklmnopqrstuvwxyz0123456789".replace('~', "")})), None).unwrap();
-    assert!(!r.tapados.is_empty());
-    let d = memoria::datos_de(&db, &[r.memoria.id.as_str()]).unwrap();
-    assert!(!d[&r.memoria.id]["token"].as_str().unwrap().contains("abcdefghijklmnop"));
+    let r = memoria::save_by_key(&mut db, "perfil", new_memory("/p", "Perfil", "Texto."), Some(v.clone()), None).unwrap();
+    assert_eq!(r.memory.content, "Texto.");
+    assert_eq!(memoria::data_of(&db, &[r.memory.id.as_str()]).unwrap()[&r.memory.id], v);
+    let r = memoria::save_by_key(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), None, None).unwrap();
+    assert_eq!(r.memory.content, "Texto nuevo.");
+    assert_eq!(memoria::data_of(&db, &[r.memory.id.as_str()]).unwrap()[&r.memory.id], v);
+    let r = memoria::save_by_key(&mut db, "perfil", new_memory("/p", "Perfil", "Texto nuevo."), Some(serde_json::json!({"token": "export GH=gh~p_abcdefghijklmnopqrstuvwxyz0123456789".replace('~', "")})), None).unwrap();
+    assert!(!r.redacted.is_empty());
+    let d = memoria::data_of(&db, &[r.memory.id.as_str()]).unwrap();
+    assert!(!d[&r.memory.id]["token"].as_str().unwrap().contains("abcdefghijklmnop"));
 }
 
 /// 1.8.6: the same key in two databases; when importing one into the other, the losing one is superseded by

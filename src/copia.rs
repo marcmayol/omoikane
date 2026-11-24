@@ -31,7 +31,7 @@
 //! `OMOIKANE_TRASH_DAYS` (30; 0 = never).
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, Ambito, COLUMNAS, NCOL, de_fila};
+use crate::memoria::{self, Scope, COLUMNS, NCOL, from_row};
 use crate::sync::{self, Aplicador, Cifra, Linea, Resumen};
 use crate::tr;
 use anyhow::{Context, Result, bail, ensure};
@@ -178,8 +178,8 @@ fn keys_per_space(db: &Connection, db_path: &Path) -> Result<Encryption> {
 /// The keys a copy of this scope is encrypted with: those of its space's repository (from an acme
 /// project, acme's: a client's copy isn't opened with the personal key) or, from something without a
 /// space, the general one's. With `--all`, each space's (`keys_per_space`).
-fn keys_for(db: &Connection, db_path: &Path, scope: &Ambito) -> Result<Cifra> {
-    let space = crate::proyecto::clave_espacio(db, scope.espacio())?;
+fn keys_for(db: &Connection, db_path: &Path, scope: &Scope) -> Result<Cifra> {
+    let space = crate::proyecto::clave_espacio(db, scope.space())?;
     if space.is_empty() {
         let r = sync::rutas(db_path);
         ensure!(
@@ -209,8 +209,8 @@ fn all_keys(db_path: &Path) -> Result<Vec<Cifra>> {
 }
 
 /// Writes the file. Returns how many lines go between the header and the end line.
-pub fn exportar(db: &Connection, db_path: &Path, scope: &Ambito, encrypt: bool, out: &mut impl Write) -> Result<Cuenta> {
-    let everything = matches!(scope, Ambito::Todos);
+pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, out: &mut impl Write) -> Result<Cuenta> {
+    let everything = matches!(scope, Scope::All);
     let encryption = match (encrypt, everything) {
         (false, _) => Encryption::None,
         (true, true) => keys_per_space(db, db_path)?,
@@ -223,7 +223,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Ambito, encrypt: bool, 
         format: FORMATO.into(),
         version: VERSION,
         schema: crate::db::VERSION_ESQUEMA,
-        exported_at: db.query_row(&format!("SELECT {}", memoria::AHORA), [], |r| r.get(0))?,
+        exported_at: db.query_row(&format!("SELECT {}", memoria::NOW), [], |r| r.get(0))?,
         machine: machine.clone(),
         encrypted: encrypt,
         person: crate::db::persona_de(db),
@@ -257,7 +257,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Ambito, encrypt: bool, 
             with_copy.insert(id);
         }
     }
-    let scope_space = crate::proyecto::clave_espacio(db, scope.espacio())?;
+    let scope_space = crate::proyecto::clave_espacio(db, scope.space())?;
     // First the forget marks (on import they are applied before the memories), then the memories
     // with their history, the trash and finally the verdicts, which need their memories (live or in
     // the trash).
@@ -278,15 +278,15 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Ambito, encrypt: bool, 
     // The memories that go (live or in the trash): their verdicts, with them.
     let mut going = in_trash.clone();
     // The history of those that a pre-1.8.0 version promoted from a client with its id was the
-    // client's text: it only goes in the copy of everything (as in `memoria::historial_en`).
+    // client's text: it only goes in the copy of everything (as in `memoria::history_in`).
     let without_history = if everything { Default::default() } else { crate::oficios::historiales_solo_aqui(db)? };
     {
-        let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", scope.sql()))?;
+        let mut q = db.prepare(&format!("SELECT {COLUMNS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", scope.sql()))?;
         let mut rows = q.query([])?;
         while let Some(row) = rows.next()? {
-            let m = de_fila(row)?;
+            let m = from_row(row)?;
             let (hlc, content_hlc, extra): (String, String, String) = (row.get(NCOL)?, row.get(NCOL + 1)?, row.get(NCOL + 2)?);
-            let versions = if without_history.contains(&m.id) { Vec::new() } else { memoria::historial(db, &m.id)? };
+            let versions = if without_history.contains(&m.id) { Vec::new() } else { memoria::history(db, &m.id)? };
             going.insert(m.id.clone());
             let space = m.space.clone();
             let l = sync::linea_de(m, hlc, content_hlc, &machine, versions, sync::extra_de(&extra));
@@ -310,7 +310,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Ambito, encrypt: bool, 
             count.forgotten += 1;
         }
     }
-    for v in crate::veredictos::todos(db)? {
+    for v in crate::veredictos::all(db)? {
         // Both memories, of the scope: a verdict isn't taken to a copy that doesn't have the other one.
         if !everything && !(going.contains(&v.memory_id) && (v.other_id.is_empty() || going.contains(&v.other_id))) {
             continue;
@@ -345,7 +345,7 @@ fn verdict_space(db: &Connection, id: &str) -> Result<Option<String>> {
 /// Whether a memory in the trash (`text`, what `forgotten.memory` stores) belongs to this scope: its
 /// project by key (or, in those from before schema 10, by path) or its space. One whose project or
 /// space no longer exists here belongs to no scope.
-fn trash_in_scope(db: &Connection, scope: &Ambito, text: &str) -> Result<bool> {
+fn trash_in_scope(db: &Connection, scope: &Scope, text: &str) -> Result<bool> {
     let Some((m, _, _)) = sync::de_papelera(text) else { return Ok(false) };
     let project = if !m.project_key.is_empty() {
         db.query_row("SELECT id FROM project WHERE key = ?1", [&m.project_key], |r| r.get::<_, i64>(0)).optional()?
@@ -362,7 +362,7 @@ fn trash_in_scope(db: &Connection, scope: &Ambito, text: &str) -> Result<bool> {
         },
         _ => None,
     };
-    scope.incluye(db, project, space)
+    scope.includes(db, project, space)
 }
 
 /// Whether the file starts with this format's header (anything else is the old export or engram's,
@@ -545,9 +545,9 @@ pub fn importar(db: &mut Connection, db_path: &Path, path: &Path, current: &str,
         }
         Ok(())
     })?;
-    // The same key written on another computer without seeing this one: one wins (`memoria::resolver_claves_repetidas`).
-    crate::memoria::resolver_claves_repetidas(db)?;
-    crate::revisar::al_dia(db)?;
+    // The same key written on another computer without seeing this one: one wins (`memoria::resolve_repeated_keys`).
+    crate::memoria::resolve_repeated_keys(db)?;
+    crate::revisar::refresh(db)?;
     Ok((count, r))
 }
 
@@ -614,7 +614,7 @@ pub fn diaria(db: &Connection, db_path: &Path) -> Option<PathBuf> {
         return None;
     }
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('copia_dia', ?1)", [&today]).ok()?;
-    let _ = memoria::purgar(db, memoria::dias_papelera());
+    let _ = memoria::purge(db, memoria::trash_days());
     if copias_a_conservar() == 0 {
         return None;
     }

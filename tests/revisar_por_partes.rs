@@ -1,4 +1,4 @@
-//! The partial review (`revisar::al_dia_de`) gives the same as the full recompute: after random
+//! The partial review (`revisar::refresh_for`) gives the same as the full recompute: after random
 //! writes on a database of over 2,000 memories (the sentences of `corpus.txt`, with versions,
 //! to-dos and dones, tags and links), the same outdated pairs, the same links and
 //! the same broken links as if everything were redone.
@@ -6,7 +6,7 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Cambios, Nueva, Tipo};
+use omoikane::memoria::{self, Changes, NewMemory, Kind};
 use omoikane::revisar;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
@@ -79,8 +79,8 @@ fn invent(rng: &mut Rng, fr: &[String], ids: &[String]) -> (String, String, Vec<
 fn save(db: &mut Connection, rng: &mut Rng, fr: &[String], ids: &[String]) -> Option<String> {
     let (title, content, tags) = invent(rng, fr, ids);
     let project = rng.pick(&PROJECTS).to_string();
-    let n = Nueva { project, kind: Some(Tipo::Fact), title, content, tags, ..Default::default() };
-    memoria::guardar(db, n, None).ok().map(|m| m.id)
+    let n = NewMemory { project, kind: Some(Kind::Fact), title, content, tags, ..Default::default() };
+    memoria::save(db, n, None).ok().map(|m| m.id)
 }
 
 type Snapshot = (BTreeSet<(String, String, String)>, BTreeSet<(String, String)>, BTreeSet<(String, String)>);
@@ -104,7 +104,7 @@ fn full_snapshot(db: &Connection, dir: &Path, k: usize) -> Snapshot {
     db.execute("VACUUM INTO ?1", [copy.to_string_lossy()]).unwrap();
     let c = db::abrir(&copy).unwrap();
     c.execute("DELETE FROM meta WHERE k = 'revision'", []).unwrap();
-    revisar::al_dia(&c).unwrap();
+    revisar::refresh(&c).unwrap();
     snapshot(&c)
 }
 
@@ -133,40 +133,40 @@ fn partial_equals_full() {
     let fr = sentences();
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut ids: Vec<String> = Vec::new();
-    while ids.len() < revisar::MINIMO_POR_PARTES + 150 {
+    while ids.len() < revisar::MIN_FOR_INCREMENTAL + 150 {
         if let Some(id) = save(&mut db, &mut rng, &fr, &ids) {
             ids.push(id);
         }
     }
-    revisar::al_dia(&db).unwrap();
+    revisar::refresh(&db).unwrap();
     let initial = snapshot(&db);
     assert!(initial.0.len() > 20 && initial.1.len() > 20 && initial.2.len() > 20, "corpus pobre: {} {} {}", initial.0.len(), initial.1.len(), initial.2.len());
 
     let mut forgotten: Vec<String> = Vec::new();
     for step in 1..=80 {
-        let before = revisar::antes(&db).unwrap();
+        let before = revisar::before(&db).unwrap();
         let touched: Vec<String> = match rng.below(10) {
             0..=3 => save(&mut db, &mut rng, &fr, &ids).into_iter().collect(),
             4..=6 => {
                 let id = rng.pick(&ids).clone();
                 let (title, content, tags) = invent(&mut rng, &fr, &ids);
                 let c = match rng.below(4) {
-                    0 => Cambios { content: Some(content), tags: Some(tags), ..Default::default() },
-                    1 => Cambios { title: Some(title), ..Default::default() },
-                    2 => Cambios { project: Some(rng.pick(&PROJECTS).to_string()), ..Default::default() },
-                    _ => Cambios { content: Some(content), ..Default::default() },
+                    0 => Changes { content: Some(content), tags: Some(tags), ..Default::default() },
+                    1 => Changes { title: Some(title), ..Default::default() },
+                    2 => Changes { project: Some(rng.pick(&PROJECTS).to_string()), ..Default::default() },
+                    _ => Changes { content: Some(content), ..Default::default() },
                 };
-                memoria::actualizar(&mut db, &id, c, None).ok().map(|m| m.id).into_iter().collect()
+                memoria::update(&mut db, &id, c, None).ok().map(|m| m.id).into_iter().collect()
             }
             7 => {
                 let id = ids.swap_remove(rng.below(ids.len()));
-                memoria::olvidar(&mut db, &id).unwrap();
+                memoria::forget(&mut db, &id).unwrap();
                 forgotten.push(id.clone());
                 vec![id]
             }
             8 if !forgotten.is_empty() => {
                 let id = forgotten.swap_remove(rng.below(forgotten.len()));
-                memoria::restaurar(&mut db, &id, None).unwrap();
+                memoria::restore(&mut db, &id, None).unwrap();
                 ids.push(id.clone());
                 vec![id]
             }
@@ -177,12 +177,12 @@ fn partial_equals_full() {
                     continue;
                 }
                 let (_, content, _) = invent(&mut rng, &fr, &ids);
-                memoria::absorber(&mut db, &a, std::slice::from_ref(&b), Cambios { content: Some(content), ..Default::default() }, None).unwrap();
+                memoria::absorb(&mut db, &a, std::slice::from_ref(&b), Changes { content: Some(content), ..Default::default() }, None).unwrap();
                 ids.retain(|x| *x != b);
                 vec![a, b]
             }
         };
-        revisar::al_dia_de(&db, &before, &touched).unwrap();
+        revisar::refresh_for(&db, &before, &touched).unwrap();
         assert!(fingerprint_up_to_date(&db), "huella, paso {step}");
         if step % 20 == 0 {
             let (partial, full) = (snapshot(&db), full_snapshot(&db, &dir, step));
@@ -207,28 +207,28 @@ fn rarity_is_fixed_until_the_next_full_run() {
     let fr = sentences();
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let mut ids = Vec::new();
-    while ids.len() < revisar::MINIMO_POR_PARTES {
+    while ids.len() < revisar::MIN_FOR_INCREMENTAL {
         if let Some(id) = save(&mut db, &mut rng, &fr, &ids) {
             ids.push(id);
         }
     }
     // «frontera» in 99 memories of another project: rare (the cap is 100).
     for i in 0..99 {
-        let n = Nueva { project: "/otro".into(), kind: Some(Tipo::Fact), title: format!("Nota {i} de la frontera"), content: "Algo sin más.".into(), ..Default::default() };
-        memoria::guardar(&mut db, n, None).unwrap();
+        let n = NewMemory { project: "/otro".into(), kind: Some(Kind::Fact), title: format!("Nota {i} de la frontera"), content: "Algo sin más.".into(), ..Default::default() };
+        memoria::save(&mut db, n, None).unwrap();
     }
-    revisar::al_dia(&db).unwrap();
+    revisar::refresh(&db).unwrap();
     let save_pair = |db: &mut Connection, title: &str, version: &str| {
-        let before = revisar::antes(db).unwrap();
-        let n = Nueva {
+        let before = revisar::before(db).unwrap();
+        let n = NewMemory {
             project: "/frontera".into(),
-            kind: Some(Tipo::Fact),
+            kind: Some(Kind::Fact),
             title: title.into(),
             content: format!("La frontera en la {version}."),
             ..Default::default()
         };
-        let id = memoria::guardar(db, n, None).unwrap().id;
-        revisar::al_dia_de(db, &before, std::slice::from_ref(&id)).unwrap();
+        let id = memoria::save(db, n, None).unwrap().id;
+        revisar::refresh_for(db, &before, std::slice::from_ref(&id)).unwrap();
     };
     // The 100th and the 101st: in full it's no longer rare and the two share nothing; in parts it still is,
     // they talk about the same thing and 0.2.0 makes 0.1.0 outdated.
@@ -240,9 +240,9 @@ fn rarity_is_fixed_until_the_next_full_run() {
     assert_eq!(partial, full + 1, "la diferencia esperada es justo esa pareja");
     // More than 5 % new memories: it's redone in full and adds up.
     for _ in 0..(ids.len() + 99) / 20 + 1 {
-        let before = revisar::antes(&db).unwrap();
+        let before = revisar::before(&db).unwrap();
         let id = save(&mut db, &mut rng, &fr, &ids).unwrap();
-        revisar::al_dia_de(&db, &before, &[id]).unwrap();
+        revisar::refresh_for(&db, &before, &[id]).unwrap();
     }
     assert_eq!(snapshot(&db), full_snapshot(&db, &dir, 1));
 }

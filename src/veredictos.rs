@@ -23,26 +23,26 @@
 //! person, `agent:<client>` if there is none, `user` from the view or the CLI). They show wherever
 //! the verdict shows: in the recall and `search` note, in Review and in `omoi review`. And
 //! supersessions chain: if A is superseded by B and B by C, A's note points to C
-//! (`ultima_de_cadena`).
+//! (`last_in_chain`).
 
-use crate::memoria::AHORA;
+use crate::memoria::NOW;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 
-pub const SUSTITUIDA: &str = "superseded";
-pub const CONTRADICE: &str = "contradicts";
+pub const SUPERSEDED: &str = "superseded";
+pub const CONTRADICTS: &str = "contradicts";
 pub const COMPATIBLE: &str = "compatible";
-const PAIR_RELATIONS: [&str; 3] = [SUSTITUIDA, CONTRADICE, COMPATIBLE];
+const PAIR_RELATIONS: [&str; 3] = [SUPERSEDED, CONTRADICTS, COMPATIBLE];
 
 /// Who says it from the web view or the CLI ("it's fine like this").
-pub const USUARIO: &str = "user";
+pub const USER: &str = "user";
 
 /// How far a supersession chain goes (a cycle is cut earlier by the path taken).
 const MAX_HOPS: usize = 20;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Veredicto {
+pub struct Verdict {
     pub memory_id: String,
     pub other_id: String,
     pub relation: String,
@@ -53,26 +53,26 @@ pub struct Veredicto {
     /// Who: the sync person, `agent:<client>`, `cli` or `user`.
     pub author: String,
     /// The fields this version doesn't know from the line that brought it (`verdict.extra`, as JSON): they
-    /// are written again when re-exporting it. Only `todos` and `recibir` read it; everywhere else it's `{}`.
+    /// are written again when re-exporting it. Only `all` and `receive` read it; everywhere else it's `{}`.
     pub extra: String,
 }
 
 /// The key of a pair, unordered: (a, b) and (b, a) are the same.
-pub fn pareja(a: &str, b: &str) -> (String, String) {
+pub fn pair_key(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.into(), b.into()) } else { (b.into(), a.into()) }
 }
 
 /// Who signs a verdict given here about the memory `memory`: the author that would sign what is
-/// saved where it lives (`memoria::autor_de`: the one of its space's repository, or the general one) if there
+/// saved where it lives (`memoria::author_of`: the one of its space's repository, or the general one) if there
 /// is one and, if not, the caller: `mcp:claude-code` → `agent:claude-code`, plain `mcp` → `agent`, and
 /// the rest (`cli`, `http`) as is.
-pub fn autor(db: &Connection, origin: &str, memory: &str) -> String {
-    let location: Option<(i64, Option<i64>)> = crate::memoria::resolver_id(db, memory)
+pub fn author(db: &Connection, origin: &str, memory: &str) -> String {
+    let location: Option<(i64, Option<i64>)> = crate::memoria::resolve_id(db, memory)
         .ok()
         .and_then(|id| db.query_row("SELECT project_id, space_id FROM memory WHERE id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).optional().ok().flatten());
     let person = match location {
-        Some((p, s)) => crate::memoria::autor_de(db, p, s),
-        None => crate::memoria::autor_en(db, ""),
+        Some((p, s)) => crate::memoria::author_of(db, p, s),
+        None => crate::memoria::author_in(db, ""),
     }
     .unwrap_or_default();
     if !person.is_empty() {
@@ -88,7 +88,7 @@ pub fn autor(db: &Connection, origin: &str, memory: &str) -> String {
 }
 
 /// The error for a verdict between memories of different spaces, without saying which or whose.
-pub fn distintos_espacios() -> String {
+pub fn different_spaces_error() -> String {
     crate::tr!(
         "these memories are in different spaces: a verdict can't join them",
         "estas memorias son de espacios distintos: un veredicto no puede juntarlas"
@@ -97,68 +97,68 @@ pub fn distintos_espacios() -> String {
 
 /// Whether a verdict can join the memory `other` (the full id, alive) with one that is global (`global`)
 /// or from `space` (its key; empty, from none): to check it before saving the new memory.
-pub fn comprobar_espacios(db: &Connection, other: &str, global: bool, space: &str) -> Result<()> {
+pub fn check_spaces(db: &Connection, other: &str, global: bool, space: &str) -> Result<()> {
     if global {
         return Ok(());
     }
-    if let Some((g, e)) = crate::memoria::alcance_de_memoria(db, other)?
+    if let Some((g, e)) = crate::memoria::memory_placement(db, other)?
         && !g
         && e != space
     {
-        anyhow::bail!(distintos_espacios());
+        anyhow::bail!(different_spaces_error());
     }
     Ok(())
 }
 
 /// Records a verdict from this machine. Empty `other_id` only with `ok:<warning>`. `reason` and `author`
 /// may be empty (an "it's fine like this" needs no reason).
-pub fn poner(db: &Connection, memory_id: &str, other_id: &str, relation: &str, reason: &str, author: &str) -> Result<()> {
+pub fn set(db: &Connection, memory_id: &str, other_id: &str, relation: &str, reason: &str, author: &str) -> Result<()> {
     let is_pair = PAIR_RELATIONS.contains(&relation);
     anyhow::ensure!(is_pair || relation.starts_with("ok:"), "unknown verdict «{relation}»");
-    let id = crate::memoria::resolver_id(db, memory_id)?;
-    let other = if other_id.is_empty() { String::new() } else { crate::memoria::resolver_id(db, other_id)? };
+    let id = crate::memoria::resolve_id(db, memory_id)?;
+    let other = if other_id.is_empty() { String::new() } else { crate::memoria::resolve_id(db, other_id)? };
     anyhow::ensure!(is_pair != other.is_empty(), "«{relation}» needs {}", if is_pair { "another memory" } else { "no other memory" });
     anyhow::ensure!(id != other, "a memory can't be judged against itself");
     // Never between memories of different spaces (a global one goes with any): the "superseded
     // by …" note would carry the title of one client's stuff into another client's sessions.
     if !other.is_empty()
-        && let (Some((ga, ea)), Some((gb, eb))) = (crate::memoria::alcance_de_memoria(db, &id)?, crate::memoria::alcance_de_memoria(db, &other)?)
+        && let (Some((ga, ea)), Some((gb, eb))) = (crate::memoria::memory_placement(db, &id)?, crate::memoria::memory_placement(db, &other)?)
         && !ga
         && !gb
         && ea != eb
     {
         // No ids or space names: the other one's may belong to another client.
-        anyhow::bail!(distintos_espacios());
+        anyhow::bail!(different_spaces_error());
     }
     // Later than the last text change of both: even if that change comes from a machine with its clock
     // far ahead (which doesn't push this clock forward), the verdict given now holds.
     let last: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, other], |row| row.get(0))?;
     let hlc = crate::reloj::sello_tras(db, &last)?;
     db.execute(
-        &format!("INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, {AHORA}, ?4, ?5, ?6)"),
+        &format!("INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, {NOW}, ?4, ?5, ?6)"),
         params![id, other, relation, hlc, reason.trim(), author.trim()],
     )?;
     Ok(())
 }
 
-fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Veredicto> {
-    Ok(Veredicto { memory_id: row.get(0)?, other_id: row.get(1)?, relation: row.get(2)?, at: row.get(3)?, hlc: row.get(4)?, reason: row.get(5)?, author: row.get(6)?, extra: "{}".into() })
+fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Verdict> {
+    Ok(Verdict { memory_id: row.get(0)?, other_id: row.get(1)?, relation: row.get(2)?, at: row.get(3)?, hlc: row.get(4)?, reason: row.get(5)?, author: row.get(6)?, extra: "{}".into() })
 }
 
 /// All of them, with their unknown fields: also those of memories in the trash (`omoi export`
 /// carries them all, so that what gets restored comes back with its `superseded`; sync only
 /// sends those of memories that travel).
-pub fn todos(db: &Connection) -> Result<Vec<Veredicto>> {
+pub fn all(db: &Connection) -> Result<Vec<Verdict>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, v.extra FROM verdict v
          ORDER BY v.memory_id, v.other_id, v.relation",
     )?;
-    let v = q.query_map([], |row| Ok(Veredicto { extra: row.get(7)?, ..from_row(row)? }))?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([], |row| Ok(Verdict { extra: row.get(7)?, ..from_row(row)? }))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
 /// A verdict arriving from another machine: it stays if it's newer than the existing one. Returns whether it went in.
-pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
+pub fn receive(db: &Connection, v: &Verdict) -> Result<bool> {
     let local: Option<String> = db
         .query_row(
             "SELECT hlc FROM verdict WHERE memory_id = ?1 AND other_id = ?2 AND relation = ?3",
@@ -178,23 +178,23 @@ pub fn recibir(db: &Connection, v: &Veredicto) -> Result<bool> {
 }
 
 /// What holds for each pair: the newest verdict, if what it judged hasn't changed since.
-pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> {
+pub fn pairs(db: &Connection) -> Result<HashMap<(String, String), Verdict>> {
     let mut q = db.prepare(
         "SELECT v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, a.content_hlc, b.content_hlc FROM verdict v
          JOIN memory a ON a.id = v.memory_id JOIN memory b ON b.id = v.other_id
          WHERE v.other_id != ''",
     )?;
-    let rows: Vec<(Veredicto, String, String)> = q.query_map([], |row| Ok((from_row(row)?, row.get(7)?, row.get(8)?)))?.collect::<rusqlite::Result<_>>()?;
-    let mut r: HashMap<(String, String), Veredicto> = HashMap::new();
+    let rows: Vec<(Verdict, String, String)> = q.query_map([], |row| Ok((from_row(row)?, row.get(7)?, row.get(8)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut r: HashMap<(String, String), Verdict> = HashMap::new();
     let mut latest: HashMap<(String, String), String> = HashMap::new();
     for (v, change_a, change_b) in rows {
-        let k = pareja(&v.memory_id, &v.other_id);
+        let k = pair_key(&v.memory_id, &v.other_id);
         // The newest wins even if it no longer holds: an old verdict doesn't come back because the new one expires.
         if latest.get(&k).is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
             continue;
         }
         latest.insert(k.clone(), v.hlc.clone());
-        let holds = change_a <= v.hlc && (v.relation != CONTRADICE || change_b <= v.hlc);
+        let holds = change_a <= v.hlc && (v.relation != CONTRADICTS || change_b <= v.hlc);
         if holds {
             r.insert(k, v);
         } else {
@@ -206,19 +206,19 @@ pub fn parejas(db: &Connection) -> Result<HashMap<(String, String), Veredicto>> 
 
 /// The end of a supersession chain: (id, hops, reason, author) of the last link.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Final {
+pub struct ChainEnd {
     pub id: String,
-    pub saltos: usize,
+    pub hops: usize,
     pub reason: String,
     pub author: String,
 }
 
 /// If `id` is superseded by B and B by C, the last one is C (with how many hops and the reason of the last
-/// link). Only a current `superseded` counts, with the same rule as `parejas`: the judged one hasn't
+/// link). Only a current `superseded` counts, with the same rule as `pairs`: the judged one hasn't
 /// changed since and there is no newer verdict on the same pair (stamps compare fine
 /// as text: milliseconds and counter are fixed width). A cycle is cut by the path taken and
 /// nothing goes past `MAX_HOPS`. `None` if it isn't superseded.
-pub fn cadena(db: &Connection, id: &str) -> Result<Option<Final>> {
+pub fn chain(db: &Connection, id: &str) -> Result<Option<ChainEnd>> {
     let r = db
         .query_row(
             "WITH RECURSIVE vigente AS (
@@ -237,16 +237,16 @@ pub fn cadena(db: &Connection, id: &str) -> Result<Option<Final>> {
                WHERE p.saltos < ?3 AND instr(p.camino, ',' || g.other_id || ',') = 0
              )
              SELECT id, saltos, reason, author FROM paso WHERE saltos > 0 ORDER BY saltos DESC, id LIMIT 1",
-            params![id, SUSTITUIDA, MAX_HOPS as i64],
-            |row| Ok(Final { id: row.get(0)?, saltos: row.get::<_, i64>(1)? as usize, reason: row.get(2)?, author: row.get(3)? }),
+            params![id, SUPERSEDED, MAX_HOPS as i64],
+            |row| Ok(ChainEnd { id: row.get(0)?, hops: row.get::<_, i64>(1)? as usize, reason: row.get(2)?, author: row.get(3)? }),
         )
         .optional()?;
     Ok(r)
 }
 
 /// The last memory in `id`'s supersession chain and how many hops it takes to reach it.
-pub fn ultima_de_cadena(db: &Connection, id: &str) -> Result<Option<(String, usize)>> {
-    Ok(cadena(db, id)?.map(|f| (f.id, f.saltos)))
+pub fn last_in_chain(db: &Connection, id: &str) -> Result<Option<(String, usize)>> {
+    Ok(chain(db, id)?.map(|f| (f.id, f.hops)))
 }
 
 /// The single-memory `ok:<warning>`s: (memory, warning) → when. With `current_only`, only those that
@@ -261,7 +261,7 @@ pub fn oks(db: &Connection, current_only: bool) -> Result<HashMap<(String, Strin
 }
 
 /// The reason as it goes in a note: one line, cut at 120 characters.
-pub fn motivo_corto(reason: &str) -> String {
+pub fn short_reason(reason: &str) -> String {
     let flat = reason.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 120 { format!("{}…", flat.chars().take(120).collect::<String>()) } else { flat }
 }
@@ -270,63 +270,63 @@ pub fn motivo_corto(reason: &str) -> String {
 //
 // A current `contradicts` leaves the contradicted memory (`other_id`: the one that was already there; the one
 // contradicting is `memory_id`, the new one or the one being changed) on hold until the person says which holds: the
-// automatic recall doesn't bring it, in `search` it ranks lower ([`FACTOR_EN_ESPERA`]) and its note says it's waiting.
-// The contradicting one shows normally, with its note. It is resolved with [`resolver`]: one supersedes the other
+// automatic recall doesn't bring it, in `search` it ranks lower ([`ON_HOLD_FACTOR`]) and its note says it's waiting.
+// The contradicting one shows normally, with its note. It is resolved with [`resolve`]: one supersedes the other
 // (`superseded`) or both hold (`compatible`); since the pair's newest verdict wins, the
 // `contradicts` stops holding without deleting it. The person can do it from the web view or the agent with
 // their answer (`decisions` with `contradiction`), and the reason keeps their words.
 
 /// The weight of a memory on hold when searching.
-pub const FACTOR_EN_ESPERA: f64 = 0.6;
+pub const ON_HOLD_FACTOR: f64 = 0.6;
 
 /// The current contradictions, newest first.
-pub fn contradicciones(db: &Connection) -> Result<Vec<Veredicto>> {
-    let mut v: Vec<Veredicto> = parejas(db)?.into_values().filter(|v| v.relation == CONTRADICE).collect();
+pub fn contradictions(db: &Connection) -> Result<Vec<Verdict>> {
+    let mut v: Vec<Verdict> = pairs(db)?.into_values().filter(|v| v.relation == CONTRADICTS).collect();
     v.sort_by(|a, b| b.hlc.cmp(&a.hlc).then_with(|| a.memory_id.cmp(&b.memory_id)));
     Ok(v)
 }
 
 /// The memories on hold: the contradicted ones of the current contradictions.
-pub fn en_espera(db: &Connection) -> Result<std::collections::HashSet<String>> {
+pub fn on_hold(db: &Connection) -> Result<std::collections::HashSet<String>> {
     // Almost always there are none: without `contradicts` in the table there's no need to look at the pairs.
-    let any: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM verdict WHERE relation = ?1)", [CONTRADICE], |row| row.get(0))?;
+    let any: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM verdict WHERE relation = ?1)", [CONTRADICTS], |row| row.get(0))?;
     if !any {
         return Ok(Default::default());
     }
-    Ok(contradicciones(db)?.into_iter().map(|v| v.other_id).collect())
+    Ok(contradictions(db)?.into_iter().map(|v| v.other_id).collect())
 }
 
 /// Which one holds in a contradicting pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Queda {
+pub enum Keep {
     /// This one holds (its id): the other is superseded by it.
-    Una(String),
+    One(String),
     /// Both hold: they talk about different things or complement each other.
-    LasDos,
+    Both,
 }
 
-impl Queda {
+impl Keep {
     /// `keep` as it arrives: an id (or its prefix), or "both".
-    pub fn de(db: &Connection, t: &str) -> Result<Queda> {
+    pub fn parse(db: &Connection, t: &str) -> Result<Keep> {
         match t.trim().to_lowercase().as_str() {
-            "both" | "las dos" | "ambas" => Ok(Queda::LasDos),
+            "both" | "las dos" | "ambas" => Ok(Keep::Both),
             "" => anyhow::bail!("`keep`: the id of the one that holds, or \"both\""),
-            _ => Ok(Queda::Una(crate::memoria::resolver_id(db, t)?)),
+            _ => Ok(Keep::One(crate::memoria::resolve_id(db, t)?)),
         }
     }
 }
 
-/// The person's decision on the pair `a`-`b`: `Una(x)` leaves the other superseded by `x`;
-/// `LasDos`, compatible. `reason`, what they said (or empty). Returns the one left superseded, if any.
-pub fn resolver(db: &Connection, a: &str, b: &str, keep: &Queda, reason: &str, author: &str) -> Result<Option<String>> {
-    let (a, b) = (crate::memoria::resolver_id(db, a)?, crate::memoria::resolver_id(db, b)?);
+/// The person's decision on the pair `a`-`b`: `One(x)` leaves the other superseded by `x`;
+/// `Both`, compatible. `reason`, what they said (or empty). Returns the one left superseded, if any.
+pub fn resolve(db: &Connection, a: &str, b: &str, keep: &Keep, reason: &str, author: &str) -> Result<Option<String>> {
+    let (a, b) = (crate::memoria::resolve_id(db, a)?, crate::memoria::resolve_id(db, b)?);
     anyhow::ensure!(a != b, "a memory can't be judged against itself");
     match keep {
-        Queda::LasDos => {
-            poner(db, &a, &b, COMPATIBLE, reason, author)?;
+        Keep::Both => {
+            set(db, &a, &b, COMPATIBLE, reason, author)?;
             Ok(None)
         }
-        Queda::Una(x) => {
+        Keep::One(x) => {
             let other = if *x == a {
                 b
             } else if *x == b {
@@ -334,7 +334,7 @@ pub fn resolver(db: &Connection, a: &str, b: &str, keep: &Queda, reason: &str, a
             } else {
                 anyhow::bail!("`keep` has to be one of the two memories, or \"both\"")
             };
-            poner(db, &other, x, SUSTITUIDA, reason, author)?;
+            set(db, &other, x, SUPERSEDED, reason, author)?;
             Ok(Some(other))
         }
     }

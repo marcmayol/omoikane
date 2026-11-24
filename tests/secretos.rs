@@ -240,8 +240,8 @@ fn corpus_has_no_false_positives() {
 }
 
 /// What it costs: `redactar` over 6,000 characters (what the recall reads from a memory), with no
-/// secrets and with four, and the scan `revisar::avisos` does when reading, over a database (a COPY)
-/// with `OMOIKANE_MEDIR_DB`, interleaved with the whole `avisos`. In release:
+/// secrets and with four, and the scan `revisar::notices` does when reading, over a database (a COPY)
+/// with `OMOIKANE_MEDIR_DB`, interleaved with the whole `notices`. In release:
 /// `OMOIKANE_MEDIR_DB=<copy.db> cargo test --release --test secretos measure -- --ignored --nocapture`.
 #[test]
 #[ignore]
@@ -272,15 +272,15 @@ fn measure() {
         return;
     };
     let db = omoikane::db::abrir(std::path::Path::new(&path)).unwrap();
-    let all = omoikane::memoria::recientes(&db, &omoikane::memoria::Ambito::Todos, None, usize::MAX >> 1).unwrap();
-    omoikane::revisar::avisos(&db, &omoikane::memoria::Ambito::Todos).unwrap();
+    let all = omoikane::memoria::recent(&db, &omoikane::memoria::Scope::All, None, usize::MAX >> 1).unwrap();
+    omoikane::revisar::notices(&db, &omoikane::memoria::Scope::All).unwrap();
     let (mut scan, mut warnings) = (Vec::new(), Vec::new());
     for _ in 0..5 {
         let t0 = std::time::Instant::now();
-        let flagged = all.iter().filter(|m| !omoikane::revisar::secretos_de(m).is_empty()).count();
+        let flagged = all.iter().filter(|m| !omoikane::revisar::secrets_of(m).is_empty()).count();
         scan.push(t0.elapsed().as_secs_f64() * 1000.0);
         let t0 = std::time::Instant::now();
-        let v = omoikane::revisar::avisos(&db, &omoikane::memoria::Ambito::Todos).unwrap();
+        let v = omoikane::revisar::notices(&db, &omoikane::memoria::Scope::All).unwrap();
         warnings.push(t0.elapsed().as_secs_f64() * 1000.0);
         eprintln!("  {} memorias, {flagged} con hallazgos, {} avisos `secret` de {}", all.len(), v.iter().filter(|a| a.kind == "secret").count(), v.len());
     }
@@ -448,11 +448,11 @@ fn off_review_doctor_and_redact() {
     e.omoi(&["update", &id, "--title", "Token de GitHub (CI)", "--reason", "título"], None, &redaction_off);
     {
         let mut db = omoikane::db::abrir(&e.db_path()).unwrap();
-        let m = omoikane::memoria::redactar(&mut db, &id, None).unwrap();
+        let m = omoikane::memoria::redact(&mut db, &id, None).unwrap();
         assert_eq!(m.redacted, vec!["github-token"]);
         assert_eq!(m.content, "export GH_TOKEN=[redacted:github-token]");
         // Nothing there again.
-        assert!(omoikane::memoria::redactar(&mut db, &id, None).unwrap().redacted.is_empty());
+        assert!(omoikane::memoria::redact(&mut db, &id, None).unwrap().redacted.is_empty());
     }
     let h = e.json(&["history", &id], &[]);
     let h = h.as_array().unwrap();

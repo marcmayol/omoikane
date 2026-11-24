@@ -28,7 +28,7 @@
 //! text's fingerprint, a change made by an older version (which keeps the seal without
 //! understanding it) also leaves it unverified: when read, the fingerprint no longer matches.
 
-use crate::memoria::{AHORA, Memoria};
+use crate::memoria::{NOW, Memory};
 use crate::tr;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -41,7 +41,7 @@ pub const CLAVE: &str = "verified";
 /// The local mark (in `meta`, which doesn't travel) of another person's verified seal that arrived
 /// through a space's repository (`sync::sello_de_otro`): `sello_ajeno:<id>` with its `by` and `at` on
 /// two lines. While the memory carries that same seal, here it doesn't count as verified
-/// (`memoria::COLUMNAS`); the seal stays in the memory, as is, for the others.
+/// (`memoria::COLUMNS`); the seal stays in the memory, as is, for the others.
 pub const SELLO_AJENO: &str = "sello_ajeno:";
 
 /// When the person last removed the verification (`memory.extra`), so that reimporting an old
@@ -377,7 +377,7 @@ pub(crate) fn huella(kind: &str, title: &str, content: &str) -> String {
     h.finalize().iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
-/// The verification from its column in `memoria::COLUMNAS` (the seal's JSON), if its fingerprint is that of the current text.
+/// The verification from its column in `memoria::COLUMNS` (the seal's JSON), if its fingerprint is that of the current text.
 pub(crate) fn de_columna(json: Option<&str>, kind: &str, title: &str, content: &str) -> Option<Verificada> {
     let s: Seal = serde_json::from_str(json?).ok()?;
     (!s.by.trim().is_empty() && s.sha == huella(kind, title, content)).then_some(Verificada { by: s.by, at: s.at })
@@ -385,13 +385,13 @@ pub(crate) fn de_columna(json: Option<&str>, kind: &str, title: &str, content: &
 
 /// Who verifies if not given (`--by`, or the web view): this machine's author for that memory's
 /// scope (`OMOIKANE_AUTHOR` or the name used to join sync), and failing that, the system user.
-pub fn quien_por_defecto(db: &Connection, m: &Memoria) -> Result<String> {
+pub fn quien_por_defecto(db: &Connection, m: &Memory) -> Result<String> {
     quien_aqui(db, &m.space)
 }
 
 /// [`quien_por_defecto`] for a space's content (its key; empty, no space).
 pub(crate) fn quien_aqui(db: &Connection, space: &str) -> Result<String> {
-    let a = crate::memoria::autor_en(db, space)?;
+    let a = crate::memoria::author_in(db, space)?;
     if !a.trim().is_empty() {
         return Ok(a);
     }
@@ -463,18 +463,18 @@ pub fn shell_de_agente() -> Option<&'static str> {
 
 /// Marks memory `id` (full) as verified by `by`. Creates no version and doesn't change its date (like
 /// pinning it); changes its timestamp so sync carries it. Returns the memory.
-pub fn verificar(db: &mut Connection, id: &str, by: &str) -> Result<Memoria> {
+pub fn verificar(db: &mut Connection, id: &str, by: &str) -> Result<Memory> {
     Ok(verificar_en(db, id, by, None)?.0)
 }
 
 /// Like [`verificar`], with the date it was verified if known (an ISO 8601 instant, the `at` of an
 /// OKF `verified` when importing it; if not understood, now). If it already has that same seal and
 /// it holds, it doesn't put it again (doesn't change its timestamp): returns the memory and whether it put it.
-pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -> Result<(Memoria, bool)> {
+pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -> Result<(Memory, bool)> {
     let by = by.split_whitespace().collect::<Vec<_>>().join(" ");
     ensure!(!by.is_empty(), tr!("who verifies it? Give --by <name>", "¿quién la verifica? Di --by <nombre>"));
     ensure!(by.chars().count() <= 100, tr!("--by: up to 100 characters", "--by: hasta 100 caracteres"));
-    let tx = crate::memoria::escribir_tx(db)?;
+    let tx = crate::memoria::write_tx(db)?;
     let (kind, title, content): (String, String, String) =
         tx.query_row("SELECT kind, title, content FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?;
     // The given date, in Omoikane's form (`…T…:…:….mmmZ`, in UTC); if not understood, now.
@@ -490,9 +490,9 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
     }
     let at = match given {
         Some(a) => a,
-        None => tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?,
+        None => tx.query_row(&format!("SELECT {NOW}"), [], |f| f.get(0))?,
     };
-    let before = crate::memoria::leer(&tx, id)?;
+    let before = crate::memoria::read(&tx, id)?;
     if before.verified.as_ref().is_some_and(|v| v.by == by && v.at == at) {
         return Ok((before, false));
     }
@@ -505,7 +505,7 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
     set_seal(&tx, id, Some(serde_json::to_value(seal)?))?;
     // If it was marked as another person's (`SELLO_AJENO`), no longer: now it's theirs.
     tx.execute("DELETE FROM meta WHERE k = ?1", [format!("{SELLO_AJENO}{id}")])?;
-    let m = crate::memoria::leer(&tx, id)?;
+    let m = crate::memoria::read(&tx, id)?;
     tx.commit()?;
     Ok((m, true))
 }
@@ -513,12 +513,12 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
 /// Removes its verification and records when ([`DESVERIFICADA`]): reimporting a bundle exported
 /// earlier doesn't verify it again. `false` if it had none.
 pub fn desverificar(db: &mut Connection, id: &str) -> Result<bool> {
-    let tx = crate::memoria::escribir_tx(db)?;
+    let tx = crate::memoria::write_tx(db)?;
     let had = set_seal(&tx, id, None)?;
     if had {
         let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
         let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
-        let now: String = tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?;
+        let now: String = tx.query_row(&format!("SELECT {NOW}"), [], |f| f.get(0))?;
         o.insert(DESVERIFICADA.into(), now.into());
         tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
     }
@@ -549,7 +549,7 @@ fn set_seal(tx: &Connection, id: &str, seal: Option<serde_json::Value>) -> Resul
     if !changed {
         return Ok(false);
     }
-    let hlc = crate::reloj::sello_tras(tx, &crate::memoria::hlc_de(tx, id)?)?;
+    let hlc = crate::reloj::sello_tras(tx, &crate::memoria::hlc_of(tx, id)?)?;
     tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
     Ok(true)
 }
@@ -559,14 +559,14 @@ fn set_seal(tx: &Connection, id: &str, seal: Option<serde_json::Value>) -> Resul
 /// one it had, if it held. Without the date, the old seal would come back with a newer line carrying
 /// the old text (another machine of the person that hasn't seen the change yet, `import <file>`, an
 /// OKF bundle): with the old text, its fingerprint matches again.
-pub(crate) fn quitar_al_cambiar(tx: &Transaction, id: &str, before: &Memoria) -> Result<Option<Verificada>> {
+pub(crate) fn quitar_al_cambiar(tx: &Transaction, id: &str, before: &Memory) -> Result<Option<Verificada>> {
     let extra: Option<String> = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
     let Some(extra) = extra.filter(|e| e.contains("\"verified\"")) else { return Ok(None) };
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
     if o.remove(CLAVE).is_none() {
         return Ok(None);
     }
-    let now: String = tx.query_row(&format!("SELECT {AHORA}"), [], |f| f.get(0))?;
+    let now: String = tx.query_row(&format!("SELECT {NOW}"), [], |f| f.get(0))?;
     o.insert(DESVERIFICADA.into(), now.into());
     tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
     Ok(before.verified.clone())

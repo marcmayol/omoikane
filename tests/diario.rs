@@ -5,7 +5,7 @@ mod comun;
 
 use omoikane::db;
 use omoikane::diario::{self, Filtro};
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use serde_json::json;
 use std::path::Path;
 
@@ -28,8 +28,8 @@ fn tool_result(id: &str, output: &str) -> serde_json::Value {
 }
 
 fn save(db: &mut rusqlite::Connection, project: &str, title: &str, pinned: bool) -> String {
-    let n = Nueva { project: project.into(), kind: Some(Tipo::Fact), title: title.into(), content: format!("{title}, con detalle."), pinned, ..Default::default() };
-    memoria::guardar(db, n, None).unwrap().id
+    let n = NewMemory { project: project.into(), kind: Some(Kind::Fact), title: title.into(), content: format!("{title}, con detalle."), pinned, ..Default::default() };
+    memoria::save(db, n, None).unwrap().id
 }
 
 fn received(db: &rusqlite::Connection, session: &str, id: &str) {
@@ -79,7 +79,7 @@ fn one_line_per_session_with_files_and_memories() {
     let conv = d.join("s1.jsonl");
     write(&conv, &lines);
     assert!(diario::apuntar(&db, &repo, "s1", Some(&conv)).unwrap());
-    let v = diario::lineas(&db, &Ambito::de(&db, &repo).unwrap(), &Filtro { limite: 10, ..Default::default() }).unwrap();
+    let v = diario::lineas(&db, &Scope::from_project(&db, &repo).unwrap(), &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert_eq!(v.len(), 1, "{v:?}");
     let l = &v[0];
     let outside = outside.to_string_lossy().replace('\\', "/");
@@ -99,7 +99,7 @@ fn one_line_per_session_with_files_and_memories() {
     more.push(tool("t12", "Write", json!({"file_path": format!("{repo}/README.md")})));
     write(&conv, &more);
     diario::apuntar(&db, &repo, "s1", Some(&conv)).unwrap();
-    let l = &diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap()[0];
+    let l = &diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap()[0];
     assert_eq!(l.files.last().map(String::as_str), Some("README.md"));
     assert_eq!(l.files.len(), 5);
     assert_eq!(l.recalled.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![used.as_str(), another.as_str()]);
@@ -175,7 +175,7 @@ fn filters_and_expiry() {
     let db = db::abrir(&d.join("o.db")).unwrap();
     let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
     // With no line yet the table does not exist (opening the database does not create it), and reading does not fail.
-    assert!(diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap().is_empty());
+    assert!(diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap().is_empty());
     let conv = d.join("c.jsonl");
     write(&conv, &[tool("t1", "Edit", json!({"file_path": format!("{repo}/src/sync.rs")}))]);
     diario::apuntar(&db, &repo, "hoy", Some(&conv)).unwrap();
@@ -186,10 +186,10 @@ fn filters_and_expiry() {
     db.execute("UPDATE diary SET first_at = last_at WHERE session = 'hoy'", []).unwrap();
     // In another folder (another unregistered project): only visible from all.
     diario::apuntar(&db, &d.join("otro").to_string_lossy(), "fuera", None).unwrap();
-    let sessions = |a: &Ambito, f: Filtro| diario::lineas(&db, a, &f).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>();
-    let project = Ambito::Proyecto { id, space: None };
+    let sessions = |a: &Scope, f: Filtro| diario::lineas(&db, a, &f).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>();
+    let project = Scope::Project { id, space: None };
     assert_eq!(sessions(&project, Filtro { limite: 10, ..Default::default() }), vec!["hoy", "martes"]);
-    assert_eq!(sessions(&Ambito::Todos, Filtro { limite: 10, ..Default::default() }).len(), 3);
+    assert_eq!(sessions(&Scope::All, Filtro { limite: 10, ..Default::default() }).len(), 3);
     assert_eq!(sessions(&project, Filtro { limite: 1, ..Default::default() }), vec!["hoy"]);
     assert_eq!(sessions(&project, Filtro { fichero: Some("SYNC.rs".into()), limite: 10, ..Default::default() }), vec!["hoy"]);
     assert_eq!(sessions(&project, Filtro { fichero: Some("src\\db".into()), limite: 10, ..Default::default() }), vec!["martes"]);
@@ -236,7 +236,7 @@ fn counts_what_subagents_did() {
     let big = tool("g1", "Write", json!({"file_path": format!("{repo}/src/grande.rs")})).to_string();
     std::fs::write(subs.join("agent-grande.jsonl"), format!("{big}\n{}", " ".repeat(17 << 20))).unwrap();
     diario::apuntar(&db, &repo, "s1", Some(&conv)).unwrap();
-    let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    let v = diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert_eq!(v[0].files, vec!["src/main.rs", "src/sub.rs"], "{v:?}");
     assert_eq!(v[0].saved.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![theirs.as_str()]);
 }
@@ -255,7 +255,7 @@ fn lines_without_project_and_pruned() {
     diario::apuntar(&db, &d.join("otra").to_string_lossy(), "otra", None).unwrap();
     let from = |folder: &str| {
         let f = Filtro { carpeta: Some(folder.into()), limite: 10, ..Default::default() };
-        diario::lineas(&db, &Ambito::de(&db, folder).unwrap(), &f).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
+        diario::lineas(&db, &Scope::from_project(&db, folder).unwrap(), &f).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
     };
     assert_eq!(from(&repo), vec!["antes"]);
     // Now it is a project: it is visible through its folders, even if where it is viewed from is not given.
@@ -263,7 +263,7 @@ fn lines_without_project_and_pruned() {
     diario::apuntar(&db, &repo, "despues", None).unwrap();
     db.execute("UPDATE diary SET last_at = '2026-11-01T10:00:00.000Z' WHERE session = 'antes'", []).unwrap();
     let only = |id: i64| {
-        diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &Filtro { limite: 10, ..Default::default() }).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
+        diario::lineas(&db, &Scope::Project { id, space: None }, &Filtro { limite: 10, ..Default::default() }).unwrap().into_iter().map(|l| l.session).collect::<Vec<_>>()
     };
     assert_eq!(only(id), vec!["despues", "antes"]);
     // It is pruned (it has no memories) and another folder takes its id.
@@ -276,7 +276,7 @@ fn lines_without_project_and_pruned() {
     assert!(only(other).is_empty());
     // And from its folder they are still there, with the folder as the project.
     assert_eq!(from(&repo), vec!["despues", "antes"]);
-    let v = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    let v = diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert!(v.iter().all(|l| !l.project.is_empty()), "{v:?}");
     // A client's project that gets pruned takes its lines with it: without a project they would be visible from the personal space.
     let client = d.join("cliente");
@@ -315,7 +315,7 @@ fn unicode_file_and_limit() {
     diario::apuntar(&db, &repo, "dos", Some(&conv)).unwrap();
     db.execute("UPDATE diary SET last_at = '2026-11-01T10:00:00.000Z' WHERE session = 'uno'", []).unwrap();
     let f = Filtro { fichero: Some("ñandú".into()), limite: 1, ..Default::default() };
-    let v = diario::lineas(&db, &Ambito::Proyecto { id, space: None }, &f).unwrap();
+    let v = diario::lineas(&db, &Scope::Project { id, space: None }, &f).unwrap();
     assert_eq!(v.iter().map(|l| l.session.as_str()).collect::<Vec<_>>(), vec!["uno"]);
 }
 
@@ -348,7 +348,7 @@ fn applied_by_citation() {
     assert_eq!(diario::apuntar_aplicadas(&db, &repo, "s9", Some(&conv), &ids).unwrap(), 1);
     // Again (after compacting it is reread in full): it is not duplicated.
     assert_eq!(diario::apuntar_aplicadas(&db, &repo, "s9", Some(&conv), &ids).unwrap(), 1);
-    let l = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    let l = diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert_eq!(l[0].applied.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), vec![followed.clone()]);
     let (n, last) = diario::aplicada(&db, &followed).unwrap();
     assert!(n == 1 && last.is_some());
@@ -371,10 +371,10 @@ fn old_diary_without_applied() {
          INSERT INTO diary(session, folder, first_at, last_at) VALUES ('vieja', '', '2026-11-01T10:00:00Z', strftime('%Y-%m-%dT%H:%M:%fZ','now'));",
     )
     .unwrap();
-    let l = diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap();
+    let l = diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert!(l.len() == 1 && l[0].applied.is_empty());
     assert_eq!(diario::aplicada(&db, "01M").unwrap().0, 0);
     omoikane::proyecto::registrar(&db, &repo).unwrap();
     assert!(diario::apuntar(&db, &repo, "nueva", None).unwrap());
-    assert_eq!(diario::lineas(&db, &Ambito::Todos, &Filtro { limite: 10, ..Default::default() }).unwrap().len(), 2);
+    assert_eq!(diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap().len(), 2);
 }

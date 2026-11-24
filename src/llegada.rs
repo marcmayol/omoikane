@@ -6,9 +6,9 @@
 //!   decisions and who writes. Once: later sessions don't repeat it.
 //! - `al_unirse`: what `omoi sync join --space` just brought, told to the person.
 //!
-//! Everything is looked up with `Ambito::Espacio(Some(s))`: nothing from another space ever leaks.
+//! Everything is looked up with `Scope::Space(Some(s))`: nothing from another space ever leaks.
 
-use crate::memoria::{self, Ambito};
+use crate::memoria::{self, Scope};
 use crate::tr;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -46,7 +46,7 @@ fn authors(db: &Connection, space: i64) -> Result<Vec<(String, i64)>> {
         "SELECT m.author, count(*) FROM memory m
          WHERE {} AND (m.project_id <> 0 OR m.space_id IS NOT NULL) AND m.author <> ''
          GROUP BY m.author ORDER BY count(*) DESC, m.author LIMIT ?1",
-        Ambito::Espacio(Some(space)).sql()
+        Scope::Space(Some(space)).sql()
     ))?;
     let v = q.query_map([AUTORES as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
@@ -63,18 +63,18 @@ fn snippet(text: &str, n: usize) -> String {
 /// of the start doesn't show (other projects, their open decisions or other people who write) and the
 /// person didn't write all of it themselves.
 /// `own` is this computer's author. Called before recording the session.
-pub fn bienvenida(db: &Connection, scope: &Ambito, session: &str, own: Option<&str>) -> Result<Option<String>> {
-    let Ambito::Proyecto { id, space: Some(space) } = *scope else { return Ok(None) };
+pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&str>) -> Result<Option<String>> {
+    let Scope::Project { id, space: Some(space) } = *scope else { return Ok(None) };
     if id <= 0 || !primera_sesion(db, id, session)? {
         return Ok(None);
     }
-    let wide = Ambito::Espacio(Some(space));
+    let wide = Scope::Space(Some(space));
     // The space's other projects, most active first, with their latest `status`.
     let mut others = crate::proyecto::lista(db, None, Some(Some(space)), PROYECTOS + 2)?;
     others.retain(|p| p.id != id);
-    let statuses = memoria::estados(db, &wide, PROYECTOS + 3)?;
+    let statuses = memoria::statuses(db, &wide, PROYECTOS + 3)?;
     // The open decisions of the other projects (this one's, the space's and the global ones already show).
-    let open: Vec<_> = memoria::abiertas(db, &wide, usize::MAX)?.into_iter().filter(|m| m.project_id != 0 && m.project_id != id).collect();
+    let open: Vec<_> = memoria::open_decisions(db, &wide, usize::MAX)?.into_iter().filter(|m| m.project_id != 0 && m.project_id != id).collect();
     let authors = authors(db, space)?;
     // Whether the space has something this person didn't write (without an author, unknown: counts as someone else's).
     // If it's all theirs (whoever set up the space), they already know it.
@@ -113,7 +113,7 @@ pub fn bienvenida(db: &Connection, scope: &Ambito, session: &str, own: Option<&s
                 .optional()?
                 .filter(|n: &String| !n.is_empty())
                 .unwrap_or_else(|| crate::proyecto::nombre_de(&m.project, &m.project_key));
-            let mark = if m.bloqueante() { "BLOCKING " } else { "" };
+            let mark = if m.is_blocking() { "BLOCKING " } else { "" };
             s.push_str(&format!("- {mark}[project {p}] {} (id {})\n", m.title, m.id.chars().take(12).collect::<String>()));
         }
         if open.len() > ABIERTAS {
@@ -129,7 +129,7 @@ pub fn bienvenida(db: &Connection, scope: &Ambito, session: &str, own: Option<&s
         s.push_str(&format!("Who writes in this space (memories each): {}.\n", v.join(", ")));
     }
     // Titles and contents are other people's text: they must not be able to close the block.
-    Ok(Some(crate::recall::citado(&s)))
+    Ok(Some(crate::recall::quoted(&s)))
 }
 
 /// What just arrived from a space on joining its repository, to tell the person: its memories, its
@@ -146,7 +146,7 @@ pub fn al_unirse(db: &Connection, space: &str) -> Result<Option<String>> {
     if memories == 0 {
         return Ok(None);
     }
-    let open = memoria::abiertas(db, &Ambito::Espacio(Some(s)), usize::MAX)?.into_iter().filter(|m| !m.global()).count();
+    let open = memoria::open_decisions(db, &Scope::Space(Some(s)), usize::MAX)?.into_iter().filter(|m| !m.global()).count();
     let projects: Vec<String> = crate::proyecto::lista(db, None, Some(Some(s)), 50)?.into_iter().map(|p| p.name).collect();
     let names = if projects.len() > 6 { format!("{}, …", projects[..6].join(", ")) } else { projects.join(", ") };
     let mut t = tr!(

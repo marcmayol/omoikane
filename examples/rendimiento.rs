@@ -32,7 +32,7 @@
 //! projects and the global ones. The queries are those of `tests/busquedas.tsv`.
 
 use anyhow::{Context, Result, anyhow, bail};
-use omoikane::memoria::{self, Nueva, Tipo};
+use omoikane::memoria::{self, NewMemory, Kind};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -104,16 +104,16 @@ fn create_db(db: &Path, folders: &Path, n: usize) -> Result<PathBuf> {
         std::fs::create_dir_all(&d)?;
         keys.push(omoikane::proyecto::de(&d)?);
     }
-    let kinds = [Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Fact, Tipo::Preference, Tipo::Fact];
-    let save = |c: &mut rusqlite::Connection, project: String, kind: Tipo, title: String, content: String| -> Result<()> {
-        memoria::guardar(c, Nueva { project, kind: Some(kind), title, content, source: "rendimiento".into(), ..Default::default() }, None)?;
+    let kinds = [Kind::Fact, Kind::Decision, Kind::Gotcha, Kind::Fact, Kind::Preference, Kind::Fact];
+    let save = |c: &mut rusqlite::Connection, project: String, kind: Kind, title: String, content: String| -> Result<()> {
+        memoria::save(c, NewMemory { project, kind: Some(kind), title, content, source: "rendimiento".into(), ..Default::default() }, None)?;
         Ok(())
     };
     // The real ones, so the queries find theirs among the filler.
     for l in SEARCHES.lines().filter(|l| l.starts_with("m\t")) {
         let c4: Vec<&str> = l.split('\t').collect();
         if let [_, _, title, content, ..] = c4.as_slice() {
-            save(&mut c, keys[0].clone(), Tipo::Fact, title.to_string(), content.to_string())?;
+            save(&mut c, keys[0].clone(), Kind::Fact, title.to_string(), content.to_string())?;
         }
     }
     let voc = vocabulary();

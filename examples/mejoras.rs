@@ -6,9 +6,9 @@
 //! TSV: `tipo<TAB>fichero<TAB>pregunta` (file `-` if it has no answer).
 
 use anyhow::{Result, anyhow};
-use omoikane::buscar::{Fusion, Opciones, buscar_con};
+use omoikane::buscar::{Fusion, SearchOptions, search_with};
 use omoikane::embeber::Modelo;
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -62,14 +62,14 @@ fn search(dir: &Path, tsvs: &[String]) -> Result<()> {
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in notes(dir)? {
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t, content: c, ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f);
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t, content: c, ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f);
     }
-    let o = Opciones { ambito: Ambito::de(&db, "/p")?, kind: None, tags: vec![], limite: 5 };
-    let mut configs: Vec<(String, Fusion)> = vec![("rescate (0.5.0)".into(), Fusion::Rescate)];
+    let o = SearchOptions { scope: Scope::from_project(&db, "/p")?, kind: None, tags: vec![], limit: 5 };
+    let mut configs: Vec<(String, Fusion)> = vec![("rescate (0.5.0)".into(), Fusion::Fallback)];
     for from in [0.30f32, 0.40, 0.50, 0.60] {
         for slots in [1usize, 2] {
-            configs.push((format!("reserva {slots} desde {from}"), Fusion::Reserva { huecos: slots, desde: from }));
+            configs.push((format!("reserva {slots} desde {from}"), Fusion::Reserve { slots, min_similarity: from }));
         }
     }
     for tsv in tsvs {
@@ -87,8 +87,8 @@ fn search(dir: &Path, tsvs: &[String]) -> Result<()> {
                 if f == "-" {
                     continue;
                 }
-                let r = buscar_con(&mut db, q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, *fusion)?;
-                let pos = r.iter().position(|x| &file_of[&x.memoria.id] == f);
+                let r = search_with(&mut db, q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, *fusion)?;
+                let pos = r.iter().position(|x| &file_of[&x.memory.id] == f);
                 let e = per_kind.entry(kind).or_default();
                 e.0 += usize::from(pos == Some(0));
                 e.1 += usize::from(pos.is_some_and(|p| p < 3));
@@ -129,18 +129,18 @@ pub fn failures(dir: &Path, tsv: &str) -> Result<()> {
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in notes(dir)? {
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t, content: c, ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f);
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t, content: c, ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f);
     }
-    let o = Opciones { ambito: Ambito::de(&db, "/p")?, kind: None, tags: vec![], limite: 5 };
+    let o = SearchOptions { scope: Scope::from_project(&db, "/p")?, kind: None, tags: vec![], limit: 5 };
     for (kind, f, q) in questions(tsv)? {
         if f == "-" {
             continue;
         }
-        let r = buscar_con(&mut db, &q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, Fusion::Rescate)?;
-        let pos = r.iter().position(|x| file_of[&x.memoria.id] == f);
+        let r = search_with(&mut db, &q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, Fusion::Fallback)?;
+        let pos = r.iter().position(|x| file_of[&x.memory.id] == f);
         if pos != Some(0) {
-            let first = r.first().map_or("(nada)".to_string(), |x| file_of[&x.memoria.id].clone());
+            let first = r.first().map_or("(nada)".to_string(), |x| file_of[&x.memory.id].clone());
             println!("[{kind}] puesto {:?}  «{q}»\n    buena: {f}   primera: {first}", pos.map(|p| p + 1));
         }
     }

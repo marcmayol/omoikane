@@ -12,10 +12,10 @@
 //! filter and what gets restored or deleted for good follow the same rule: another client's memories
 //! don't show up, and aren't touched even if you have their id.
 
-use crate::buscar::{self, Opciones};
+use crate::buscar::{self, SearchOptions};
 use crate::embeber::Modelo;
 use crate::http::Mirador;
-use crate::memoria::{self, Ambito, Cambios, Memoria, Olvidada, Version};
+use crate::memoria::{self, Scope, Changes, Memory, Forgotten, Version};
 use crate::proyecto::Espacio;
 use crate::tr;
 use anyhow::Result;
@@ -49,7 +49,7 @@ pub enum Vista {
 /// A memory in the trash and how many days it has been there.
 #[derive(Debug, Clone)]
 pub struct EnPapelera {
-    pub olvidada: Olvidada,
+    pub olvidada: Forgotten,
     pub dias: f64,
 }
 
@@ -66,7 +66,7 @@ pub struct Estado {
     /// The space key of the project being looked from (empty: none, or everything).
     pub espacio_propio: String,
     pub consulta: String,
-    pub memorias: Vec<Memoria>,
+    pub memorias: Vec<Memory>,
     pub lista: ListState,
     pub vista: Vista,
     pub desplazamiento: u16,
@@ -107,10 +107,10 @@ impl Estado {
 
     /// What the list shows: the space filter if there is one (and it's visible from here), otherwise "all" (the
     /// wide scope from here: its space, never everything from a project) or this project.
-    pub fn ambito(&self, db: &Connection) -> Result<Ambito> {
+    pub fn ambito(&self, db: &Connection) -> Result<Scope> {
         let m = self.viewpoint(db)?;
         if let Some(f) = self.espacio {
-            let a = Ambito::Espacio(f);
+            let a = Scope::Space(f);
             if m.abarca(&a) {
                 return Ok(a);
             }
@@ -124,10 +124,10 @@ impl Estado {
         let m = self.viewpoint(db)?;
         let mut v: Vec<Option<i64>> = self.espacios.iter().map(|e| Some(e.id)).collect();
         v.push(None);
-        Ok(v.into_iter().filter(|f| m.abarca(&Ambito::Espacio(*f))).collect())
+        Ok(v.into_iter().filter(|f| m.abarca(&Scope::Space(*f))).collect())
     }
 
-    pub fn elegida(&self) -> Option<&Memoria> {
+    pub fn elegida(&self) -> Option<&Memory> {
         self.lista.selected().and_then(|i| self.memorias.get(i))
     }
 
@@ -147,17 +147,17 @@ impl Estado {
         self.espacio_propio = m.espacio.clone();
         self.espacios = crate::proyecto::espacios(db)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect();
         if let Some(f) = self.espacio
-            && !m.abarca(&Ambito::Espacio(f))
+            && !m.abarca(&Scope::Space(f))
         {
             self.espacio = None;
         }
         let scope = self.ambito(db)?;
         let before = self.elegida().map(|m| m.id.clone());
         self.memorias = if self.consulta.trim().is_empty() {
-            memoria::recientes(db, &scope, None, LIMIT)?
+            memoria::recent(db, &scope, None, LIMIT)?
         } else {
-            let o = Opciones { ambito: scope, kind: None, tags: vec![], limite: 50 };
-            buscar::buscar_sin_apuntar_con(db, &self.consulta, &o, model)?.into_iter().map(|r| r.memoria).collect()
+            let o = SearchOptions { scope, kind: None, tags: vec![], limit: 50 };
+            buscar::search_without_recording_with(db, &self.consulta, &o, model)?.into_iter().map(|r| r.memory).collect()
         };
         let i = before.and_then(|id| self.memorias.iter().position(|m| m.id == id)).unwrap_or(0);
         self.lista.select((!self.memorias.is_empty()).then_some(i));
@@ -174,7 +174,7 @@ impl Estado {
         };
         let mut days_since = db.prepare("SELECT julianday('now') - julianday(?1)")?;
         let mut v = Vec::new();
-        for o in memoria::papelera(db)? {
+        for o in memoria::trash(db)? {
             if !m.ve(db, &o.id)? {
                 continue;
             }
@@ -200,10 +200,10 @@ impl Estado {
             self.aviso = out_of_scope();
             return Ok(false);
         }
-        let before = crate::revisar::antes(db)?;
-        match memoria::restaurar(db, id, model) {
+        let before = crate::revisar::before(db)?;
+        match memoria::restore(db, id, model) {
             Ok(r) => {
-                crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&r.id))?;
+                crate::revisar::refresh_for(db, &before, std::slice::from_ref(&r.id))?;
                 self.aviso = tr!("restored: {}", "recuperada: {}", r.title);
                 Ok(true)
             }
@@ -227,14 +227,14 @@ impl Estado {
         if visible.len() < ids.len() {
             self.aviso = out_of_scope();
         }
-        memoria::vaciar_papelera_de(db, &visible)
+        memoria::empty_trash_of(db, &visible)
     }
 
     /// Empties the visible part of the trash. From the user's folder and with no filter, the whole trash
     /// (like `omoi trash --empty`); from a project or with a filter, only what it shows.
     pub fn vaciar_papelera(&mut self, db: &mut Connection) -> Result<usize> {
         if self.viewpoint(db)?.todo && self.espacio.is_none() {
-            return memoria::vaciar_papelera(db);
+            return memoria::empty_trash(db);
         }
         let ids: Vec<String> = self.papelera.iter().map(|o| o.olvidada.id.clone()).collect();
         self.borrar_de_papelera(db, &ids)
@@ -267,9 +267,9 @@ impl Estado {
             },
             Vista::Borrar => {
                 if yes && let Some(m) = self.elegida().cloned() {
-                    let before = crate::revisar::antes(db)?;
-                    memoria::olvidar(db, &m.id)?;
-                    crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                    let before = crate::revisar::before(db)?;
+                    memoria::forget(db, &m.id)?;
+                    crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                     self.aviso = tr!("forgotten: {} (t: trash)", "olvidada: {} (t: papelera)", m.title);
                     self.vista = Vista::Lista;
                     return Ok(true);
@@ -335,17 +335,17 @@ impl Estado {
                 KeyCode::Char('h') => {
                     if let Some(m) = self.elegida() {
                         // Like `omoi history`: through the folder's scope, which never shows another client's memories.
-                        self.historial = memoria::historial_en(db, &self.viewpoint(db)?.base, &m.id)?;
+                        self.historial = memoria::history_in(db, &self.viewpoint(db)?.base, &m.id)?;
                         self.vista = Vista::Historial;
                         self.desplazamiento = 0;
                     }
                 }
                 KeyCode::Char('p') => {
                     if let Some(m) = self.elegida().cloned() {
-                        let c = Cambios { pinned: Some(!m.pinned), reason: Some("pinned from omoi tui".into()), ..Default::default() };
-                        let before = crate::revisar::antes(db)?;
-                        memoria::actualizar(db, &m.id, c, None)?;
-                        crate::revisar::al_dia_de(db, &before, std::slice::from_ref(&m.id))?;
+                        let c = Changes { pinned: Some(!m.pinned), reason: Some("pinned from omoi tui".into()), ..Default::default() };
+                        let before = crate::revisar::before(db)?;
+                        memoria::update(db, &m.id, c, None)?;
+                        crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                         self.aviso = if m.pinned { tr!("unpinned", "soltada") } else { tr!("pinned", "fijada") };
                         return Ok(true);
                     }
@@ -459,7 +459,7 @@ pub fn dibujar(f: &mut Frame, e: &mut Estado) {
 
     let in_trash = matches!(e.vista, Vista::Papelera | Vista::PapeleraBorrar | Vista::PapeleraVaciar);
     let title = if in_trash {
-        let days = memoria::dias_papelera();
+        let days = memoria::trash_days();
         let kept = if days > 0.0 { tr!("kept {} days", "se guarda {} días", days) } else { tr!("kept until emptied", "se guarda hasta vaciarla") };
         format!(" {} · {} · {} · {kept} ", tr!("trash", "papelera"), e.scope_text(), e.papelera.len())
     } else {
@@ -492,7 +492,7 @@ pub fn dibujar(f: &mut Frame, e: &mut Estado) {
                         v.push(Span::styled(column(m.kind.as_str(), 10), Style::default().add_modifier(Modifier::DIM)));
                     }
                     if with_space {
-                        v.push(Span::styled(column(&e.space_label(&m.project, &m.space, m.de_espacio()), 8), Style::default().add_modifier(Modifier::DIM)));
+                        v.push(Span::styled(column(&e.space_label(&m.project, &m.space, m.space_only()), 8), Style::default().add_modifier(Modifier::DIM)));
                     }
                     v.push(Span::raw(m.title.clone()));
                     ListItem::new(Line::from(v))
@@ -558,9 +558,9 @@ fn help(e: &Estado) -> String {
 }
 
 /// The memory as text: title, metadata and content.
-fn detail_lines(e: &Estado, m: &Memoria) -> Vec<Line<'static>> {
+fn detail_lines(e: &Estado, m: &Memory) -> Vec<Line<'static>> {
     let mut v = vec![Line::from(m.title.clone()).bold(), Line::raw("")];
-    let location = e.location(&m.project, &m.space, m.de_espacio());
+    let location = e.location(&m.project, &m.space, m.space_only());
     v.push(Line::from(format!("{} · {location} · {}", m.kind.as_str(), &m.updated_at[..m.updated_at.len().min(10)])).dim());
     if !m.project.is_empty() {
         v.push(Line::from(m.project.clone()).dim());
@@ -640,7 +640,7 @@ fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
                 v.push(Line::from(o.project.clone()).dim());
             }
             v.push(Line::from(tr!("forgotten {} on {}", "olvidada el {} en {}", o.deleted_at.get(..10).unwrap_or(&o.deleted_at), o.by)).dim());
-            let total = memoria::dias_papelera();
+            let total = memoria::trash_days();
             if total > 0.0 {
                 let remaining = (total - p.dias).max(0.0).ceil() as i64;
                 v.push(Line::from(tr!("deleted for good in {remaining} days", "se borra del todo en {remaining} días")).dim());

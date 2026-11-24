@@ -5,9 +5,9 @@
 
 mod comun;
 
-use omoikane::buscar::{self, Opciones};
-use omoikane::memoria::{self, Ambito, Cambios, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::buscar::{self, SearchOptions};
+use omoikane::memoria::{self, Scope, Changes, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use omoikane::{db, proyecto, veredictos};
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
@@ -38,12 +38,12 @@ fn loose_dir(dir: &Path) -> String {
     proyecto::de(dir).unwrap()
 }
 
-fn save(db: &mut Connection, project: &str, kind: Tipo, title: &str, content: &str) -> String {
-    let n = Nueva { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() };
-    memoria::guardar(db, n, None).unwrap().id
+fn save(db: &mut Connection, project: &str, kind: Kind, title: &str, content: &str) -> String {
+    let n = NewMemory { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() };
+    memoria::save(db, n, None).unwrap().id
 }
 
-fn titles(v: impl IntoIterator<Item = memoria::Memoria>) -> Vec<String> {
+fn titles(v: impl IntoIterator<Item = memoria::Memory>) -> Vec<String> {
     let mut t: Vec<String> = v.into_iter().map(|m| m.title).collect();
     t.sort();
     t
@@ -127,11 +127,11 @@ fn migrates_a_schema_9_database_without_losing_anything() {
     assert_eq!(one(&db, "SELECT count(*) FROM memory_path"), 1);
     assert_eq!(one(&db, "SELECT count(*) FROM forgotten"), 1);
     assert_eq!(one(&db, "SELECT count(*) FROM tombstone"), 1);
-    assert_eq!(memoria::historial(&db, &ids[0]).unwrap()[0].title, "Antes");
+    assert_eq!(memoria::history(&db, &ids[0]).unwrap()[0].title, "Antes");
     // Search by words, the same.
-    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 10 };
+    let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 10 };
     let mut db = db;
-    assert_eq!(buscar::buscar(&mut db, "zafiro", &o, None).unwrap().len(), 3);
+    assert_eq!(buscar::search(&mut db, "zafiro", &o, None).unwrap().len(), 3);
     // Projects: the two clones with the same `origin`, one; the folder without git, its own; the one
     // that's gone, marked; the one that came from another computer, with its key and as a foreign path.
     fn pid_of(db: &Connection, id: &str) -> i64 {
@@ -151,9 +151,9 @@ fn migrates_a_schema_9_database_without_losing_anything() {
     let list = proyecto::lista(&db, None, None, 50).unwrap();
     assert!(list.iter().any(|p| p.path == gone_path && p.gone), "{list:?}");
     assert!(!list.iter().any(|p| p.path == foreign && p.gone), "lo de otro equipo no «ya no está»");
-    assert_eq!(memoria::obtener(&db, &ids[0]).unwrap().project, web_a);
+    assert_eq!(memoria::get(&db, &ids[0]).unwrap().project, web_a);
     // Verdict, still valid; stamps in today's format (comparing as text = comparing stamps).
-    assert_eq!(veredictos::parejas(&db).unwrap().len(), 1);
+    assert_eq!(veredictos::pairs(&db).unwrap().len(), 1);
     assert_eq!(one(&db, "SELECT count(*) FROM memory WHERE hlc != '' AND length(hlc) - length(replace(hlc, '-', '')) >= 2 AND substr(hlc, 15, 10) GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'"), 8);
     let stamp: String = db.query_row("SELECT hlc FROM memory WHERE id = ?1", [&ids[1]], |f| f.get(0)).unwrap();
     assert_eq!(stamp, "1793181600001-0000000002-pc-a");
@@ -168,10 +168,10 @@ fn migrates_a_schema_9_database_without_losing_anything() {
     assert_eq!(one(&db, "SELECT project_id FROM recall_log WHERE session = 's1'"), pid(&ids[0]));
     // The trash returns the forgotten one to its project (by path: it's from before schema 10).
     let web = pid(&ids[0]);
-    let m = memoria::restaurar(&mut db, "01JZZZZZZZZZZZZZZZZZZZZZZZ", None).unwrap();
+    let m = memoria::restore(&mut db, "01JZZZZZZZZZZZZZZZZZZZZZZZ", None).unwrap();
     assert_eq!(m.project_id, web);
     // And writing goes on as always.
-    let new_id = save(&mut db, &web_b, Tipo::Fact, "Nueva tras migrar", "Funciona.");
+    let new_id = save(&mut db, &web_b, Kind::Fact, "Nueva tras migrar", "Funciona.");
     assert_eq!(pid_of(&db, &new_id), web);
 }
 
@@ -181,13 +181,13 @@ fn a_newer_schema_database_opens_if_its_min_reader_allows_it() {
     let path = dir.join("o.db");
     {
         let mut db = db::abrir(&path).unwrap();
-        save(&mut db, "", Tipo::Fact, "Una", "Algo.");
+        save(&mut db, "", Kind::Fact, "Una", "Algo.");
         // A future version that only adds: schema 11, readable from 10.
         db.execute_batch("PRAGMA user_version = 11; CREATE TABLE futura (x); INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', '10');").unwrap();
     }
     {
         let db = db::abrir(&path).unwrap();
-        assert_eq!(memoria::recientes(&db, &Ambito::Todos, None, 10).unwrap().len(), 1);
+        assert_eq!(memoria::recent(&db, &Scope::All, None, 10).unwrap().len(), 1);
         assert_eq!(one(&db, "PRAGMA user_version"), 11, "no la baja ni la toca");
     }
     {
@@ -226,11 +226,11 @@ fn clients(name: &str) -> Clients {
     let b_web = loose_dir(&dir.join("globex-web"));
     let loose = loose_dir(&dir.join("personal"));
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    save(&mut db, &a_web, Tipo::Fact, "Acme web: puerto zafiro", "El servidor zafiro de Acme escucha en el 7741.");
-    save(&mut db, &a_app, Tipo::Fact, "Acme app: build zafiro", "La app de Acme compila con el perfil zafiro.");
-    save(&mut db, &b_web, Tipo::Fact, "Globex web: puerto zafiro", "El servidor zafiro de Globex escucha en el 9931.");
-    save(&mut db, &loose, Tipo::Fact, "Personal: zafiro", "Mi script zafiro de copias.");
-    save(&mut db, "", Tipo::Preference, "Global: respuestas zafiro", "Respuestas cortas, también con zafiro.");
+    save(&mut db, &a_web, Kind::Fact, "Acme web: puerto zafiro", "El servidor zafiro de Acme escucha en el 7741.");
+    save(&mut db, &a_app, Kind::Fact, "Acme app: build zafiro", "La app de Acme compila con el perfil zafiro.");
+    save(&mut db, &b_web, Kind::Fact, "Globex web: puerto zafiro", "El servidor zafiro de Globex escucha en el 9931.");
+    save(&mut db, &loose, Kind::Fact, "Personal: zafiro", "Mi script zafiro de copias.");
+    save(&mut db, "", Kind::Preference, "Global: respuestas zafiro", "Respuestas cortas, también con zafiro.");
     let acme = proyecto::crear_espacio(&db, "Acme").unwrap();
     let globex = proyecto::crear_espacio(&db, "Globex").unwrap();
     for (p, s) in [(&a_web, acme), (&a_app, acme), (&b_web, globex)] {
@@ -238,8 +238,8 @@ fn clients(name: &str) -> Clients {
         proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
     }
     for (s, t) in [(acme, "Acme espacio: VPN zafiro"), (globex, "Globex espacio: VPN zafiro")] {
-        let n = Nueva { space_id: Some(s), kind: Some(Tipo::Gotcha), title: t.into(), content: "La VPN zafiro del cliente.".into(), ..Default::default() };
-        memoria::guardar(&mut db, n, None).unwrap();
+        let n = NewMemory { space_id: Some(s), kind: Some(Kind::Gotcha), title: t.into(), content: "La VPN zafiro del cliente.".into(), ..Default::default() };
+        memoria::save(&mut db, n, None).unwrap();
     }
     Clients { dir, db, a_web, a_app, b_web, loose }
 }
@@ -247,34 +247,34 @@ fn clients(name: &str) -> Clients {
 #[test]
 fn from_one_client_nothing_of_another_is_seen() {
     let Clients { dir: _dir, mut db, a_web, a_app, b_web, loose } = clients("aislar");
-    let from_a = Ambito::de(&db, &a_web).unwrap();
-    let o = Opciones { ambito: from_a, kind: None, tags: vec![], limite: 50 };
-    let seen = titles(buscar::buscar(&mut db, "zafiro", &o, None).unwrap().into_iter().map(|r| r.memoria));
+    let from_a = Scope::from_project(&db, &a_web).unwrap();
+    let o = SearchOptions { scope: from_a, kind: None, tags: vec![], limit: 50 };
+    let seen = titles(buscar::search(&mut db, "zafiro", &o, None).unwrap().into_iter().map(|r| r.memory));
     assert_eq!(seen, ["Acme espacio: VPN zafiro", "Acme web: puerto zafiro", "Global: respuestas zafiro"]);
-    assert_eq!(titles(memoria::recientes(&db, &from_a, None, 50).unwrap()), seen);
+    assert_eq!(titles(memoria::recent(&db, &from_a, None, 50).unwrap()), seen);
     // «All projects» from an Acme project: Acme's, never Globex's.
-    let wide = from_a.amplio();
-    let o = Opciones { ambito: wide, kind: None, tags: vec![], limite: 50 };
-    let seen = titles(buscar::buscar(&mut db, "zafiro", &o, None).unwrap().into_iter().map(|r| r.memoria));
+    let wide = from_a.widen();
+    let o = SearchOptions { scope: wide, kind: None, tags: vec![], limit: 50 };
+    let seen = titles(buscar::search(&mut db, "zafiro", &o, None).unwrap().into_iter().map(|r| r.memory));
     assert_eq!(seen, ["Acme app: build zafiro", "Acme espacio: VPN zafiro", "Acme web: puerto zafiro", "Global: respuestas zafiro"]);
     // The context (preferences and pinned) and the project list.
-    assert!(memoria::contexto(&db, &from_a, 30).unwrap().iter().all(|m| !m.title.contains("Globex")));
+    assert!(memoria::context(&db, &from_a, 30).unwrap().iter().all(|m| !m.title.contains("Globex")));
     // From a project without a space: neither Acme nor Globex (only its own, other space-less ones' and the global ones).
-    let from_loose = Ambito::de(&db, &loose).unwrap().amplio();
-    assert_eq!(titles(memoria::recientes(&db, &from_loose, None, 50).unwrap()), ["Global: respuestas zafiro", "Personal: zafiro"]);
+    let from_loose = Scope::from_project(&db, &loose).unwrap().widen();
+    assert_eq!(titles(memoria::recent(&db, &from_loose, None, 50).unwrap()), ["Global: respuestas zafiro", "Personal: zafiro"]);
     // From the general folder (the user's), everything.
-    assert_eq!(memoria::recientes(&db, &Ambito::Todos, None, 50).unwrap().len(), 7);
+    assert_eq!(memoria::recent(&db, &Scope::All, None, 50).unwrap().len(), 7);
     // The recall: even though the Globex memory matches the message better, it doesn't arrive.
-    let e = Entrada { session_id: "s".into(), prompt: "¿en qué puerto escucha el servidor zafiro de Globex?".into(), ..Default::default() };
-    let r = recall::al_preguntar(&mut db, &a_web, &e, None).unwrap().unwrap_or_default();
+    let e = HookInput { session_id: "s".into(), prompt: "¿en qué puerto escucha el servidor zafiro de Globex?".into(), ..Default::default() };
+    let r = recall::on_prompt(&mut db, &a_web, &e, None).unwrap().unwrap_or_default();
     assert!(!r.contains("Globex web") && !r.contains("9931"), "{r}");
-    let e = Entrada { session_id: "s2".into(), ..Default::default() };
-    let r = recall::al_empezar(&mut db, &a_app, &e).unwrap().unwrap_or_default();
+    let e = HookInput { session_id: "s2".into(), ..Default::default() };
+    let r = recall::on_session_start(&mut db, &a_app, &e).unwrap().unwrap_or_default();
     assert!(!r.contains("Globex"), "{r}");
     assert!(r.contains("Acme"), "{r}");
     // And Globex's stuff is visible from Globex.
-    let from_b = Ambito::de(&db, &b_web).unwrap();
-    assert!(titles(memoria::recientes(&db, &from_b, None, 50).unwrap()).iter().any(|t| t.starts_with("Globex web")));
+    let from_b = Scope::from_project(&db, &b_web).unwrap();
+    assert!(titles(memoria::recent(&db, &from_b, None, 50).unwrap()).iter().any(|t| t.starts_with("Globex web")));
 }
 
 /// The same through the MCP tools (`search`, `recent`, `context`), which is what the agent sees,
@@ -348,16 +348,16 @@ fn two_clones_and_a_worktree_are_one_project() {
     let b = repo(&dir.join("web-2"), "https://github.com/acme/web.git");
     let w = worktree(&dir.join("web"), &dir.join("web-rama"));
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    save(&mut db, &a, Tipo::Gotcha, "La caché del build", "Borrar target al cambiar de rama.");
+    save(&mut db, &a, Kind::Gotcha, "La caché del build", "Borrar target al cambiar de rama.");
     let (pa, pb, pw) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap(), proyecto::registrar(&db, &w).unwrap());
     assert_eq!((pa, pa), (pb, pw));
     assert_eq!(one(&db, "SELECT count(*) FROM project_path"), 3);
     // It's visible from any of the three, and doesn't show up as «from another project».
     for from in [&a, &b, &w] {
-        assert_eq!(memoria::recientes(&db, &Ambito::de(&db, from).unwrap(), None, 10).unwrap().len(), 1);
+        assert_eq!(memoria::recent(&db, &Scope::from_project(&db, from).unwrap(), None, 10).unwrap().len(), 1);
     }
-    let e = Entrada { session_id: "s".into(), ..Default::default() };
-    let r = recall::al_empezar(&mut db, &w, &e).unwrap().unwrap();
+    let e = HookInput { session_id: "s".into(), ..Default::default() };
+    let r = recall::on_session_start(&mut db, &w, &e).unwrap().unwrap();
     assert!(r.contains("La caché del build") && !r.contains("[project"), "{r}");
 }
 
@@ -367,20 +367,20 @@ fn a_moved_folder_is_still_its_project() {
     let old_path = repo(&dir.join("app"), "git@github.com:acme/app.git");
     let no_git = loose_dir(&dir.join("notas"));
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let id = save(&mut db, &old_path, Tipo::Fact, "La app usa Kotlin", "Y Compose.");
-    let notes_id = save(&mut db, &no_git, Tipo::Fact, "Notas en markdown", "Todo en .md.");
+    let id = save(&mut db, &old_path, Kind::Fact, "La app usa Kotlin", "Y Compose.");
+    let notes_id = save(&mut db, &no_git, Kind::Fact, "Notas en markdown", "Todo en .md.");
     let key: String = db.query_row("SELECT key FROM project", [], |f| f.get(0)).unwrap_or_default();
     let _ = key;
     // With `origin`: the folder moves and the project follows it by itself (same key, the main path changes).
     std::fs::rename(dir.join("app"), dir.join("app-nueva")).unwrap();
     let new_id = proyecto::de(&dir.join("app-nueva")).unwrap();
-    assert_eq!(memoria::recientes(&db, &Ambito::de(&db, &new_id).unwrap(), None, 10).unwrap().len(), 1, "ya se ve antes de apuntarla");
+    assert_eq!(memoria::recent(&db, &Scope::from_project(&db, &new_id).unwrap(), None, 10).unwrap().len(), 1, "ya se ve antes de apuntarla");
     // When the session starts there, it's recorded and announced once.
-    let e = Entrada { session_id: "s".into(), ..Default::default() };
-    let r = recall::al_empezar(&mut db, &new_id, &e).unwrap().unwrap();
+    let e = HookInput { session_id: "s".into(), ..Default::default() };
+    let r = recall::on_session_start(&mut db, &new_id, &e).unwrap().unwrap();
     assert!(r.contains("used to be in") && r.contains("La app usa Kotlin"), "{r}");
-    assert_eq!(memoria::obtener(&db, &id).unwrap().project, new_id);
-    let r = recall::al_empezar(&mut db, &new_id, &e).unwrap().unwrap();
+    assert_eq!(memoria::get(&db, &id).unwrap().project, new_id);
+    let r = recall::on_session_start(&mut db, &new_id, &e).unwrap().unwrap();
     assert!(!r.contains("used to be in"), "solo una vez");
     // Without `origin`: a new folder with the same name doesn't join by itself (it could be something
     // else); the old one shows up as «gone», and `projects move` takes it.
@@ -388,12 +388,12 @@ fn a_moved_folder_is_still_its_project() {
     std::fs::create_dir_all(dir.join("otra").join("notas")).unwrap();
     let other = proyecto::de(&dir.join("otra").join("notas")).unwrap();
     let other_pid = proyecto::registrar(&db, &other).unwrap();
-    assert_ne!(other_pid, memoria::obtener(&db, &notes_id).unwrap().project_id, "mismo nombre, otra carpeta");
+    assert_ne!(other_pid, memoria::get(&db, &notes_id).unwrap().project_id, "mismo nombre, otra carpeta");
     assert!(proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.path == no_git && p.gone));
     let moved = proyecto::de(&dir.join("notas-2026")).unwrap();
-    let pid = memoria::obtener(&db, &notes_id).unwrap().project_id;
+    let pid = memoria::get(&db, &notes_id).unwrap().project_id;
     proyecto::mover(&mut db, pid, &moved, false).unwrap();
-    let m = memoria::obtener(&db, &notes_id).unwrap();
+    let m = memoria::get(&db, &notes_id).unwrap();
     assert_eq!((m.project_id, m.project.as_str()), (pid, moved.as_str()));
     assert!(!proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.gone));
     // `projects prune`: the other «notas» folder's project, without memories, goes away.
@@ -407,17 +407,17 @@ fn merging_two_projects_keeps_ids_and_leaves_the_newest_status() {
     let a = loose_dir(&dir.join("viejo"));
     let b = loose_dir(&dir.join("nuevo"));
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let ea = memoria::guardar(&mut db, Nueva { project: a.clone(), kind: Some(Tipo::Fact), title: "Estado viejo".into(), content: "Iba por la 1.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
-    let other = save(&mut db, &a, Tipo::Fact, "Una del viejo", "Algo.");
-    memoria::actualizar(&mut db, &other, Cambios { content: Some("Algo más.".into()), ..Default::default() }, None).unwrap();
-    let eb = memoria::guardar(&mut db, Nueva { project: b.clone(), kind: Some(Tipo::Fact), title: "Estado nuevo".into(), content: "Voy por la 2.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
+    let ea = memoria::save(&mut db, NewMemory { project: a.clone(), kind: Some(Kind::Fact), title: "Estado viejo".into(), content: "Iba por la 1.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
+    let other = save(&mut db, &a, Kind::Fact, "Una del viejo", "Algo.");
+    memoria::update(&mut db, &other, Changes { content: Some("Algo más.".into()), ..Default::default() }, None).unwrap();
+    let eb = memoria::save(&mut db, NewMemory { project: b.clone(), kind: Some(Kind::Fact), title: "Estado nuevo".into(), content: "Voy por la 2.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
     let (pa, pb) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap());
     assert_eq!(proyecto::fundir(&mut db, pa, pb, false).unwrap(), 2);
     for id in [&ea, &other, &eb] {
-        assert_eq!(memoria::obtener(&db, id).unwrap().project_id, pb);
+        assert_eq!(memoria::get(&db, id).unwrap().project_id, pb);
     }
-    assert_eq!(memoria::historial(&db, &other).unwrap().len(), 1, "con su historial");
-    assert_eq!(veredictos::ultima_de_cadena(&db, &ea).unwrap().map(|x| x.0), Some(eb.clone()), "el estado viejo, sustituido por el nuevo");
+    assert_eq!(memoria::history(&db, &other).unwrap().len(), 1, "con su historial");
+    assert_eq!(veredictos::last_in_chain(&db, &ea).unwrap().map(|x| x.0), Some(eb.clone()), "el estado viejo, sustituido por el nuevo");
     assert_eq!(proyecto::resolver(&db, &a).unwrap().map(|x| x.0), Some(pb), "la carpeta vieja ya es del nuevo");
 }
 
@@ -429,8 +429,8 @@ fn merging_two_projects_keeps_ids_and_leaves_the_newest_status() {
 fn a_verdict_holds_even_with_skewed_wall_clocks() {
     let dir = temp_dir("relojes");
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let a = save(&mut db, "/p", Tipo::Fact, "El puerto es el 8080", "Del servidor.");
-    let b = save(&mut db, "/p", Tipo::Fact, "El puerto es el 9090", "Del servidor.");
+    let a = save(&mut db, "/p", Kind::Fact, "El puerto es el 8080", "Del servidor.");
+    let b = save(&mut db, "/p", Kind::Fact, "El puerto es el 9090", "Del servidor.");
     // What sync leaves: the other computer's change with its (ahead) time and its stamp.
     let future_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 30 * 60 * 1000;
     let stamp = omoikane::reloj::formato(future_ms, 0, "pc-adelantado");
@@ -440,16 +440,16 @@ fn a_verdict_holds_even_with_skewed_wall_clocks() {
     )
     .unwrap();
     omoikane::reloj::recibir(&db, &stamp).unwrap();
-    veredictos::poner(&db, &a, &b, veredictos::SUSTITUIDA, "la nueva", "user").unwrap();
-    assert!(veredictos::parejas(&db).unwrap().contains_key(&veredictos::pareja(&a, &b)), "vale ya");
-    assert_eq!(veredictos::ultima_de_cadena(&db, &a).unwrap().map(|x| x.0), Some(b.clone()));
+    veredictos::set(&db, &a, &b, veredictos::SUPERSEDED, "la nueva", "user").unwrap();
+    assert!(veredictos::pairs(&db).unwrap().contains_key(&veredictos::pair_key(&a, &b)), "vale ya");
+    assert_eq!(veredictos::last_in_chain(&db, &a).unwrap().map(|x| x.0), Some(b.clone()));
     let (at, changed_at): (String, String) = db.query_row("SELECT v.at, m.updated_at FROM verdict v JOIN memory m ON m.id = v.memory_id", [], |f| Ok((f.get(0)?, f.get(1)?))).unwrap();
     assert!(changed_at > at, "con la regla de antes no valdría: {changed_at} > {at}");
     // Pinning or tagging it doesn't expire it; changing the text does.
-    memoria::actualizar(&mut db, &a, Cambios { pinned: Some(true), tags: Some(vec!["puertos".into()]), ..Default::default() }, None).unwrap();
-    assert!(veredictos::parejas(&db).unwrap().contains_key(&veredictos::pareja(&a, &b)));
-    memoria::actualizar(&mut db, &a, Cambios { content: Some("Del servidor de pruebas.".into()), ..Default::default() }, None).unwrap();
-    assert!(!veredictos::parejas(&db).unwrap().contains_key(&veredictos::pareja(&a, &b)));
+    memoria::update(&mut db, &a, Changes { pinned: Some(true), tags: Some(vec!["puertos".into()]), ..Default::default() }, None).unwrap();
+    assert!(veredictos::pairs(&db).unwrap().contains_key(&veredictos::pair_key(&a, &b)));
+    memoria::update(&mut db, &a, Changes { content: Some("Del servidor de pruebas.".into()), ..Default::default() }, None).unwrap();
+    assert!(!veredictos::pairs(&db).unwrap().contains_key(&veredictos::pair_key(&a, &b)));
 }
 
 /// A kind from a future version arrives through an export: it's stored as is, treated as `fact` and
@@ -459,16 +459,16 @@ fn an_unknown_kind_is_kept() {
     let dir = temp_dir("tipo");
     let path = dir.join("o.db");
     let mut db = db::abrir(&path).unwrap();
-    let id = save(&mut db, "", Tipo::Fact, "Una idea", "Para más adelante.");
+    let id = save(&mut db, "", Kind::Fact, "Una idea", "Para más adelante.");
     db.execute("UPDATE memory SET kind = 'insight' WHERE id = ?1", [&id]).unwrap();
-    let m = memoria::obtener(&db, &id).unwrap();
-    assert_eq!((m.kind, m.kind_text.as_deref()), (Tipo::Fact, Some("insight")));
+    let m = memoria::get(&db, &id).unwrap();
+    assert_eq!((m.kind, m.kind_text.as_deref()), (Kind::Fact, Some("insight")));
     // Changing something else doesn't lose it.
-    memoria::actualizar(&mut db, &id, Cambios { content: Some("Para la 2.0.".into()), ..Default::default() }, None).unwrap();
+    memoria::update(&mut db, &id, Changes { content: Some("Para la 2.0.".into()), ..Default::default() }, None).unwrap();
     let kind: String = db.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
     let mut out = Vec::new();
-    omoikane::copia::exportar(&db, &path, &Ambito::Todos, false, &mut out).unwrap();
+    omoikane::copia::exportar(&db, &path, &Scope::All, false, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("\"kind\":\"insight\""), "{text}");
     // And it goes into another database the same.
@@ -490,25 +490,25 @@ fn usage_from_each_project_is_summarized() {
     let a = loose_dir(&dir.join("balua"));
     let b = loose_dir(&dir.join("lumbre"));
     let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let id = save(&mut db, "", Tipo::Gotcha, "bitsandbytes 4-bit rompe la visión en la RTX 5070 Ti", "Cuantizar a 8 bits.");
+    let id = save(&mut db, "", Kind::Gotcha, "bitsandbytes 4-bit rompe la visión en la RTX 5070 Ti", "Cuantizar a 8 bits.");
     let (pa, pb) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap());
-    let e = Entrada { session_id: "s1".into(), prompt: "la visión con bitsandbytes 4-bit en la RTX 5070 Ti falla".into(), ..Default::default() };
-    let r = recall::al_preguntar(&mut db, &a, &e, None).unwrap().unwrap_or_default();
+    let e = HookInput { session_id: "s1".into(), prompt: "la visión con bitsandbytes 4-bit en la RTX 5070 Ti falla".into(), ..Default::default() };
+    let r = recall::on_prompt(&mut db, &a, &e, None).unwrap().unwrap_or_default();
     assert!(r.contains("bitsandbytes"), "{r}");
     let in_log: i64 = db.query_row("SELECT project_id FROM recall_log WHERE session = 's1' AND memory_id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(in_log, pa);
     // The session compacts (or another starts): what was injected is deleted from the log and summarized.
-    recall::al_empezar(&mut db, &a, &Entrada { session_id: "s1".into(), source: "compact".into(), ..Default::default() }).unwrap();
+    recall::on_session_start(&mut db, &a, &HookInput { session_id: "s1".into(), source: "compact".into(), ..Default::default() }).unwrap();
     assert_eq!(one(&db, "SELECT count(*) FROM recall_log WHERE session = 's1'"), 0);
     let (times, used_pid): (i64, i64) = db.query_row("SELECT veces, project_id FROM memory_use WHERE memory_id = ?1", [&id], |f| Ok((f.get(0)?, f.get(1)?))).unwrap();
     assert_eq!((times, used_pid), (1, pa));
     // Searched from another project.
-    let o = Opciones { ambito: Ambito::de(&db, &b).unwrap(), kind: None, tags: vec![], limite: 5 };
-    assert!(!buscar::buscar(&mut db, "bitsandbytes", &o, None).unwrap().is_empty());
+    let o = SearchOptions { scope: Scope::from_project(&db, &b).unwrap(), kind: None, tags: vec![], limit: 5 };
+    assert!(!buscar::search(&mut db, "bitsandbytes", &o, None).unwrap().is_empty());
     assert_eq!(one(&db, &format!("SELECT count(DISTINCT project_id) FROM memory_use WHERE memory_id = '{id}'")), 2);
     assert_eq!(one(&db, &format!("SELECT veces FROM memory_use WHERE memory_id = '{id}' AND project_id = {pb}")), 1);
     // Forget it completely (and nothing is left dangling).
-    memoria::olvidar_del_todo(&mut db, &id).unwrap();
+    memoria::forget_for_good(&mut db, &id).unwrap();
     assert_eq!(one(&db, "SELECT count(*) FROM memory_use"), 0);
 }
 
@@ -556,9 +556,9 @@ fn a_schema_10_database_without_a_person_is_brought_up_to_date() {
     let path = dir.join("o.db");
     {
         let mut db = db::abrir(&path).unwrap();
-        save(&mut db, &notes, Tipo::Fact, "Notas", "En markdown.");
-        let other = save(&mut db, &notes, Tipo::Fact, "Otra", "Para olvidar.");
-        memoria::olvidar(&mut db, &other).unwrap();
+        save(&mut db, &notes, Kind::Fact, "Notas", "En markdown.");
+        let other = save(&mut db, &notes, Kind::Fact, "Otra", "Para olvidar.");
+        memoria::forget(&mut db, &other).unwrap();
         db.execute_batch("DELETE FROM meta WHERE k = 'persona'; UPDATE project SET key = 'dir:/notas' WHERE id != 0; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc;").unwrap();
     }
     let db = db::abrir(&path).unwrap();
@@ -580,7 +580,7 @@ fn an_old_schema_10_database_opened_concurrently() {
         let path = dir.join("o.db");
         {
             let mut db = db::abrir(&path).unwrap();
-            save(&mut db, &notes, Tipo::Fact, "Notas", "En markdown.");
+            save(&mut db, &notes, Kind::Fact, "Notas", "En markdown.");
             db.execute_batch("DELETE FROM meta WHERE k = 'persona'; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc; ALTER TABLE project DROP COLUMN paused;").unwrap();
         }
         let out = std::sync::Arc::new(std::sync::Barrier::new(8));
@@ -655,7 +655,7 @@ fn by_id_spaces_do_not_cross_either() {
     assert!(error && t.contains("different spaces"), "{t}");
     let db = db::abrir(&path).unwrap();
     assert_eq!(one(&db, "SELECT count(*) FROM verdict"), 0);
-    assert!(memoria::obtener(&db, &globex).is_ok(), "no se absorbió");
+    assert!(memoria::get(&db, &globex).is_ok(), "no se absorbió");
     drop(db);
     // With a global one, yes: it's visible from both.
     let (t, error) = call(&a_web, "update", serde_json::json!({ "id": acme, "compatible": [global] }));

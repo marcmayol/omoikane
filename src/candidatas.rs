@@ -14,7 +14,7 @@
 //! Reads the transcripts of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI and Cursor, and a generic
 //! JSONL (Kiro, the OpenCode plugin): see `turnos`.
 
-use crate::memoria::{AHORA, Ambito};
+use crate::memoria::{NOW, Scope};
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde::Serialize;
@@ -44,7 +44,7 @@ pub struct Candidata {
 }
 
 fn normal(s: &str) -> String {
-    crate::buscar::sin_tildes(&s.to_lowercase())
+    crate::buscar::strip_accents(&s.to_lowercase())
 }
 
 fn contains_phrase(t: &str, phrases: &[&str]) -> bool {
@@ -595,20 +595,20 @@ pub fn apartar_con(db: &Connection, project: &str, session: &str, path: &Path, t
             reports += 1;
         }
     }
-    let memories = crate::memoria::recientes(db, &Ambito::de(db, project)?, None, usize::MAX >> 1)?;
+    let memories = crate::memoria::recent(db, &Scope::from_project(db, project)?, None, usize::MAX >> 1)?;
     let mut n = 0;
     for (c, answer) in cs {
-        let coverage = crate::recall::cobertura(db, project, &answer, memories.iter())?.into_iter().fold(0.0, f64::max);
+        let coverage = crate::recall::coverage(db, project, &answer, memories.iter())?.into_iter().fold(0.0, f64::max);
         if c.kind != HITO && coverage >= ALREADY_SAVED {
             continue;
         }
         n += db.execute(
-            &format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {AHORA})"),
+            &format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {NOW})"),
             params![project, session, c.kind, c.text],
         )?;
     }
     // The ones nobody looked at expire.
-    db.execute(&format!("DELETE FROM candidate WHERE julianday({AHORA}) - julianday(created_at) > {DIAS}"), [])?;
+    db.execute(&format!("DELETE FROM candidate WHERE julianday({NOW}) - julianday(created_at) > {DIAS}"), [])?;
     Ok(n)
 }
 
@@ -632,12 +632,12 @@ fn from_row(f: &rusqlite::Row) -> rusqlite::Result<Apartada> {
 pub fn para_empezar(db: &Connection, project: &str, session: &str) -> Result<Vec<Apartada>> {
     let mut q = db.prepare(&format!(
         "SELECT id, project, session, kind, text, created_at, shown_at FROM candidate
-         WHERE project = ?1 AND session != ?2 AND shown_at IS NULL AND julianday({AHORA}) - julianday(created_at) <= {DIAS}
+         WHERE project = ?1 AND session != ?2 AND shown_at IS NULL AND julianday({NOW}) - julianday(created_at) <= {DIAS}
          ORDER BY CASE kind WHEN 'preference' THEN 0 WHEN 'decision' THEN 1 ELSE 2 END, id DESC LIMIT ?3"
     ))?;
     let v: Vec<Apartada> = q.query_map(params![project, session, (MAXIMO + 2) as i64], from_row)?.collect::<rusqlite::Result<_>>()?;
     for c in &v {
-        db.execute(&format!("UPDATE candidate SET shown_at = {AHORA} WHERE id = ?1"), [c.id])?;
+        db.execute(&format!("UPDATE candidate SET shown_at = {NOW} WHERE id = ?1"), [c.id])?;
     }
     Ok(v)
 }
@@ -646,7 +646,7 @@ pub fn para_empezar(db: &Connection, project: &str, session: &str) -> Result<Vec
 pub fn todas(db: &Connection) -> Result<Vec<Apartada>> {
     let mut q = db.prepare(&format!(
         "SELECT id, project, session, kind, text, created_at, shown_at FROM candidate
-         WHERE julianday({AHORA}) - julianday(created_at) <= {DIAS} ORDER BY id DESC"
+         WHERE julianday({NOW}) - julianday(created_at) <= {DIAS} ORDER BY id DESC"
     ))?;
     let v = q.query_map([], from_row)?.collect::<rusqlite::Result<_>>()?;
     Ok(v)

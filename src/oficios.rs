@@ -14,7 +14,7 @@
 //!   in its folder, and a correction belongs to whoever makes it. Like those in `db::LOCALES`, a 1.0 ignores them.
 //!
 //! From a project you see the memories of the trades it has; from a space, those of the trades
-//! of its projects; from the user's folder, all of them (`Ambito::sql`, with [`ocultas`]).
+//! of its projects; from the user's folder, all of them (`Scope::sql`, with [`ocultas`]).
 //!
 //! The most important thing is that nothing of a client gets out through here: when saving a trade memory,
 //! [`fugas`] warns if it names projects, spaces (clients), absolute paths, repositories or domains
@@ -25,7 +25,7 @@
 //! they only go through the general repository (they are global: `sync::va_al_repo` no longer lets them go to a space one),
 //! and a client repository doesn't bring them (`sync`, with [`lleva_oficio`]).
 
-use crate::memoria::{Ambito, Memoria};
+use crate::memoria::{Scope, Memory};
 use crate::tr;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -160,7 +160,7 @@ pub fn etiquetas_de_oficio(tags: Vec<String>, trades: &[String], for_whom: Optio
 
 /// A memory's trades: those of its tags if it is global; none if it belongs to a project or a
 /// space (there the tag doesn't count).
-pub fn de_memoria(m: &Memoria) -> Vec<String> {
+pub fn de_memoria(m: &Memory) -> Vec<String> {
     if m.global() { de_etiquetas(&m.tags) } else { Vec::new() }
 }
 
@@ -194,12 +194,12 @@ pub fn lista(text: &str) -> Result<Vec<String>> {
 }
 
 /// The projects whose trades count from a scope, as an SQL list (`None`: from everything, all are seen).
-fn projects_sql(a: &Ambito) -> Option<String> {
+fn projects_sql(a: &Scope) -> Option<String> {
     match a {
-        Ambito::Todos => None,
-        Ambito::Proyecto { id, .. } => Some(id.to_string()),
-        Ambito::Espacio(Some(s)) => Some(format!("SELECT id FROM project WHERE space_id = {s}")),
-        Ambito::Espacio(None) => Some("SELECT id FROM project WHERE space_id IS NULL AND id <> 0".to_string()),
+        Scope::All => None,
+        Scope::Project { id, .. } => Some(id.to_string()),
+        Scope::Space(Some(s)) => Some(format!("SELECT id FROM project WHERE space_id = {s}")),
+        Scope::Space(None) => Some("SELECT id FROM project WHERE space_id IS NULL AND id <> 0".to_string()),
     }
 }
 
@@ -207,7 +207,7 @@ fn projects_sql(a: &Ambito) -> Option<String> {
 /// (client ones if `trade-for:client`, personal ones if `trade-for:personal`). `None` from everything. It is an uncorrelated subquery: SQLite runs it once
 /// per query, through the partial index `memory_oficio` (which `crear_tabla` always creates; without `INDEXED BY`,
 /// SQLite preferred `memory_scope` and read all the globals), and then checks each global by its `n`.
-pub(crate) fn ocultas(a: &Ambito) -> Option<String> {
+pub(crate) fn ocultas(a: &Scope) -> Option<String> {
     let ps = projects_sql(a)?;
     Some(format!(
         "SELECT o.n FROM memory o INDEXED BY memory_oficio WHERE o.project_id = 0 AND o.space_id IS NULL AND instr(o.tags, '\"trade:') > 0
@@ -219,7 +219,7 @@ pub(crate) fn ocultas(a: &Ambito) -> Option<String> {
 }
 
 /// Whether a memory (by its id) is a trade one not seen from `a`.
-pub(crate) fn oculta(db: &Connection, a: &Ambito, id: &str) -> Result<bool> {
+pub(crate) fn oculta(db: &Connection, a: &Scope, id: &str) -> Result<bool> {
     match ocultas(a) {
         None => Ok(false),
         Some(q) => Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory m WHERE m.id = ?1 AND m.n IN ({q}))"), [id], |row| row.get(0))?),
@@ -227,7 +227,7 @@ pub(crate) fn oculta(db: &Connection, a: &Ambito, id: &str) -> Result<bool> {
 }
 
 /// How many trade memories aren't seen from `a`.
-pub(crate) fn cuantas_ocultas(db: &Connection, a: &Ambito) -> Result<i64> {
+pub(crate) fn cuantas_ocultas(db: &Connection, a: &Scope) -> Result<i64> {
     match ocultas(a) {
         None => Ok(0),
         Some(q) => Ok(db.query_row(&format!("SELECT count(*) FROM ({q})"), [], |row| row.get(0))?),
@@ -935,11 +935,11 @@ fn variants(n: &str) -> Vec<String> {
 /// date (`review:`) and the status ones (`open`, `blocking`, `resolved`, `status`). Of the key one
 /// (`topic:<key>`) the key counts. Returns what must be looked at of a tag.
 fn free_tag(t: &str) -> Option<&str> {
-    use crate::memoria::{ABIERTA, BLOQUEANTE, ESTADO, ETIQUETA_TEMA, RESUELTA};
-    if t.starts_with(PREFIJO) || t.starts_with(PARA) || t.starts_with(crate::revisar::ETIQUETA_FECHA) || [ABIERTA, BLOQUEANTE, RESUELTA, ESTADO].contains(&t) {
+    use crate::memoria::{OPEN, BLOCKING, STATUS, TOPIC_TAG, RESOLVED};
+    if t.starts_with(PREFIJO) || t.starts_with(PARA) || t.starts_with(crate::revisar::REVIEW_DATE_TAG) || [OPEN, BLOCKING, RESOLVED, STATUS].contains(&t) {
         return None;
     }
-    Some(t.strip_prefix(ETIQUETA_TEMA).unwrap_or(t))
+    Some(t.strip_prefix(TOPIC_TAG).unwrap_or(t))
 }
 
 /// The keys and texts of some data (`data`), flattened, to look at them as text.
@@ -983,7 +983,7 @@ pub fn campos_para_fugas(parts: &[(&'static str, &str)], tags: &[String], key: O
 /// [`fugas`] of some fields, each leak with the field it appears in (the first one containing it).
 pub fn fugas_en(db: &Connection, fields: &[(&'static str, String)]) -> Result<Vec<Fuga>> {
     let text = fields.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-    let normalize = |s: &str| crate::nombres::sin_acentos(&s.to_lowercase());
+    let normalize = |s: &str| crate::nombres::fold_accents(&s.to_lowercase());
     let normalized: Vec<(&'static str, String)> = fields.iter().map(|(c, t)| (*c, normalize(t))).collect();
     let mut v = fugas(db, &text)?;
     for f in &mut v {
@@ -1011,7 +1011,7 @@ pub fn bloquean(leaks: Vec<Fuga>, allow: bool) -> Vec<Fuga> {
 /// domains that only appear in a client's memories (or its git server's). Without repeats. Names
 /// are compared case- and accent-insensitively («balua» is «Balùa»).
 pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
-    let lower = crate::nombres::sin_acentos(&text.to_lowercase());
+    let lower = crate::nombres::fold_accents(&text.to_lowercase());
     let mut v: Vec<Fuga> = Vec::new();
     let mut put = |kind: &'static str, text: String| {
         if !v.iter().any(|f| f.tipo == kind && f.text.eq_ignore_ascii_case(&text)) {
@@ -1025,7 +1025,7 @@ pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
     };
     for (key, name) in &spaces {
         for n in [key, name] {
-            let n = crate::nombres::sin_acentos(&n.trim().to_lowercase());
+            let n = crate::nombres::fold_accents(&n.trim().to_lowercase());
             if n.chars().count() >= 2 && variants(&n).iter().any(|x| x.chars().count() >= 2 && appears(&lower, x)) {
                 put("space", name.clone());
             }
@@ -1037,7 +1037,7 @@ pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
         q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (name, _) in &projects {
-        let n = crate::nombres::sin_acentos(&name.trim().to_lowercase());
+        let n = crate::nombres::fold_accents(&name.trim().to_lowercase());
         if n.chars().count() < 4 || GENERIC.contains(&n.as_str()) || DETECTABLES.contains(&n.as_str()) || n.starts_with("tmp.") {
             continue;
         }
@@ -1117,7 +1117,7 @@ pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
 /// from a client to a trade with the same id and recorded in `meta('historial_local:<id>')`. Since
 /// promoting a client's memory creates a new memory ([`crear_de_oficio`]) none is recorded any more; those
 /// that exist still don't travel and their history is only shown from a general folder
-/// (`memoria::historial_en`).
+/// (`memoria::history_in`).
 pub(crate) fn historiales_solo_aqui(db: &Connection) -> Result<HashSet<String>> {
     let mut q = db.prepare("SELECT substr(k, 17) FROM meta WHERE k LIKE 'historial_local:%'")?;
     Ok(q.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
@@ -1135,7 +1135,7 @@ pub struct PedidoCambio<'a> {
     /// `for`: `client`, `personal` or `both`.
     pub para: Option<&'a str>,
     /// What changes (title, content, `replace`, `append`, paths, tags, where it goes).
-    pub cambios: &'a crate::memoria::Cambios,
+    pub cambios: &'a crate::memoria::Changes,
     /// The new data (`Some(None)`: removed), if changed.
     pub datos: Option<Option<&'a serde_json::Value>>,
     /// The leaks permission (`allow_leaks`): lets through what looks like a false positive, never a
@@ -1163,7 +1163,7 @@ pub struct Plan {
 /// Promoting a personal memory (of a project without a space) moves it with its id, its history and its
 /// verdicts: all of that belongs to the person. Promoting a client's creates a new memory (`nueva`):
 /// its history and verdicts belong to the client and must not reach the others.
-pub fn al_cambiar(db: &Connection, current: &Memoria, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
+pub fn al_cambiar(db: &Connection, current: &Memory, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
     let normalize = |v: &[String]| -> Vec<String> {
         let mut v: Vec<String> = v.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty()).collect();
         v.sort();
@@ -1204,11 +1204,11 @@ pub fn al_cambiar(db: &Connection, current: &Memoria, p: PedidoCambio) -> Result
     let new_trade = was.is_empty() || trades.iter().any(|o| !was.contains(o));
     let text = if new_trade {
         // Enters a trade (or another one): everything that will remain, as it will remain (after `replace` and `append`).
-        let (title, content) = crate::memoria::texto_tras(current, c)?;
+        let (title, content) = crate::memoria::text_after(current, c)?;
         let paths = c.paths.clone().unwrap_or_else(|| current.paths.clone());
         let data = match p.datos {
             Some(d) => d.cloned(),
-            None => crate::memoria::datos_de(db, &[current.id.as_str()])?.remove(&current.id),
+            None => crate::memoria::data_of(db, &[current.id.as_str()])?.remove(&current.id),
         };
         campos_para_fugas(&[("title", &title), ("content", &content), ("paths", &paths.join(" "))], &base, None, data.as_ref())
     } else {
@@ -1242,15 +1242,15 @@ pub fn al_cambiar(db: &Connection, current: &Memoria, p: PedidoCambio) -> Result
 /// conflict, and its history was client text).
 pub fn crear_de_oficio(
     db: &mut Connection,
-    current: &Memoria,
-    c: &crate::memoria::Cambios,
+    current: &Memory,
+    c: &crate::memoria::Changes,
     tags: Vec<String>,
     source: &str,
     model: Option<&crate::embeber::Modelo>,
-) -> Result<Memoria> {
-    let (title, content) = crate::memoria::texto_tras(current, c)?;
-    let data = crate::memoria::datos_de(db, &[current.id.as_str()])?.remove(&current.id);
-    let new = crate::memoria::Nueva {
+) -> Result<Memory> {
+    let (title, content) = crate::memoria::text_after(current, c)?;
+    let data = crate::memoria::data_of(db, &[current.id.as_str()])?.remove(&current.id);
+    let new = crate::memoria::NewMemory {
         project_id: Some(0),
         kind: Some(c.kind.unwrap_or(current.kind)),
         kind_text: if c.kind.is_none() { current.kind_text.clone() } else { None },
@@ -1262,9 +1262,9 @@ pub fn crear_de_oficio(
         source: source.to_string(),
         ..Default::default()
     };
-    let m = crate::memoria::guardar(db, new, model)?;
+    let m = crate::memoria::save(db, new, model)?;
     if let Some(d) = data {
-        crate::memoria::poner_datos(db, &m.id, Some(d))?;
+        crate::memoria::set_data(db, &m.id, Some(d))?;
     }
     Ok(m)
 }

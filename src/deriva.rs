@@ -10,11 +10,11 @@
 //!    that was just talked about gets touched, and that is not drift.
 //! 2. The git history, if the file is in a repository: one `git log --numstat` command per
 //!    repository, only with the files that changed, and in parallel. Drift: the lines changed
-//!    since then are at least half of what they measure today (`PARTE_MIN`) and at least `LINEAS_MIN`.
-//! 3. Outside git, the session diary (`diario`): drift if they were edited in `SESIONES_MIN`
+//!    since then are at least half of what they measure today (`MIN_SHARE`) and at least `MIN_LINES`.
+//! 3. Outside git, the session diary (`diario`): drift if they were edited in `MIN_SESSIONS`
 //!    different sessions afterwards (not counting the one that saved the memory).
 //!
-//! What changes in the `GRACIA` hours after writing it does not count: the normal thing is to save the memory
+//! What changes in the `GRACE_HOURS` hours after writing it does not count: the normal thing is to save the memory
 //! and then commit the work it talks about. A file that no longer exists is already reported by the review
 //! (`broken_path`); here only what is still on disk is looked at.
 //!
@@ -34,22 +34,22 @@
 //! separate process (`omoi review --refresh-drift`): with 225 memories, about 0.6-0.9 s, almost all of it
 //! git start-up in eight repositories. It is local: it does not travel with sync.
 
-use crate::memoria::{Ambito, Memoria};
+use crate::memoria::{Scope, Memory};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// The kind of notice in the review.
-pub const DERIVA: &str = "code_drift";
+pub const CODE_DRIFT: &str = "code_drift";
 /// The share of what its files measure today that must have changed (lines added plus removed).
-pub const PARTE_MIN: f64 = 0.5;
+pub const MIN_SHARE: f64 = 0.5;
 /// And at least this many lines: in a ten-line file, five lines say nothing.
-pub const LINEAS_MIN: usize = 20;
+pub const MIN_LINES: usize = 20;
 /// Outside git: diary sessions that edited its files afterwards.
-pub const SESIONES_MIN: usize = 5;
+pub const MIN_SESSIONS: usize = 5;
 /// Hours after writing (or reviewing) it during which what changes is still that session's work.
-pub const GRACIA: i64 = 6;
+pub const GRACE_HOURS: i64 = 6;
 /// How many files of a memory are looked at (its own first, then the ones it names).
 const MAX_FILES: usize = 20;
 /// Larger files are not counted by lines (a model, a binary).
@@ -85,7 +85,7 @@ fn is_absolute(r: &str) -> bool {
 
 /// Where a memory's path is on this computer: absolute, `~/…` or relative to its project. Never a
 /// network one (`\\server\…`, `//cdn…`): looking at it would open a connection (see `proyecto::ruta_de_red`).
-fn on_disk(m: &Memoria, path: &str) -> Option<PathBuf> {
+fn on_disk(m: &Memory, path: &str) -> Option<PathBuf> {
     if crate::proyecto::ruta_de_red(path) {
         return None;
     }
@@ -104,7 +104,7 @@ fn on_disk(m: &Memoria, path: &str) -> Option<PathBuf> {
 /// The file paths a text names: words with a slash and an extension at the end
 /// (`src/sync.rs`, `D:\repo\a.py`), without web addresses. Those without a folder (`sync.rs`) don't count:
 /// a repository has many `main.rs`.
-pub fn nombrados(text: &str) -> Vec<String> {
+pub fn named_paths(text: &str) -> Vec<String> {
     let mut r: Vec<String> = Vec::new();
     for p in text.split(|c: char| c.is_whitespace() || "`'\"«»()[]{}<>,;|*".contains(c)) {
         let p = p.trim_end_matches(['.', ':', '!', '?']);
@@ -124,10 +124,10 @@ pub fn nombrados(text: &str) -> Vec<String> {
 
 /// A memory's files that exist on this computer: its paths and the ones it names, without repeats.
 /// (what it shows, path on disk)
-fn files(m: &Memoria) -> Vec<(String, PathBuf)> {
+fn files(m: &Memory) -> Vec<(String, PathBuf)> {
     let mut r: Vec<(String, PathBuf)> = Vec::new();
     let mut seen = BTreeSet::new();
-    let named = nombrados(&m.content);
+    let named = named_paths(&m.content);
     for path in m.paths.iter().chain(&named) {
         if r.len() >= MAX_FILES {
             break;
@@ -277,7 +277,7 @@ fn line_count(p: &Path) -> usize {
 struct Pending {
     id: String,
     since: String,
-    m: Memoria,
+    m: Memory,
     files: Vec<(String, PathBuf)>,
 }
 
@@ -326,7 +326,7 @@ fn today(db: &Connection) -> Result<String> {
 /// that have not changed since then (without reading their content, without git or disk). If what is stored is from
 /// another day, everything is recomputed in the background and the next session will see it. If it has never been computed,
 /// nothing: the first review (`omoi review`, `context`, the Review tab) computes it.
-pub fn de_ambito(db: &Connection, scope: &Ambito) -> Result<HashMap<String, String>> {
+pub fn for_scope(db: &Connection, scope: &Scope) -> Result<HashMap<String, String>> {
     let mut q = db.prepare(&format!("SELECT m.id, m.updated_at FROM memory m WHERE {}", scope.sql()))?;
     let rows: Vec<(String, String)> = q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     let (r, day) = from_saved(db, raw(db)?.as_deref(), rows.iter().map(|(id, u)| (id.as_str(), u.as_str())), |_| {})?;
@@ -346,7 +346,7 @@ fn from_saved<'a>(
     let (day, cache) = parse_saved_borrowed(saved);
     let oks = crate::veredictos::oks(db, false)?;
     // The «it's fine as is» of this notice for each memory (what `since` looks at).
-    let ok: HashMap<&str, &str> = oks.iter().filter(|((_, notice), _)| notice == DERIVA).map(|((id, _), at)| (id.as_str(), at.as_str())).collect();
+    let ok: HashMap<&str, &str> = oks.iter().filter(|((_, notice), _)| notice == CODE_DRIFT).map(|((id, _), at)| (id.as_str(), at.as_str())).collect();
     let mut r = HashMap::new();
     for (id, updated) in rows {
         let d = match ok.get(id) {
@@ -406,8 +406,8 @@ fn launch_today(db: &Connection, today: &str) -> Result<()> {
 }
 
 /// Recomputes the drift of every memory and stores it for today (what runs in the background).
-pub fn refrescar(db: &Connection) -> Result<usize> {
-    let all = crate::memoria::recientes(db, &Ambito::Todos, None, usize::MAX >> 1)?;
+pub fn refresh(db: &Connection) -> Result<usize> {
+    let all = crate::memoria::recent(db, &Scope::All, None, usize::MAX >> 1)?;
     let oks = crate::veredictos::oks(db, false)?;
     let r = compute(db, all.iter().map(|m| Pending::new(m, &oks)).collect())?;
     save_cache(db, &today(db)?, &r)?;
@@ -419,8 +419,8 @@ pub fn refrescar(db: &Connection) -> Result<usize> {
 /// recomputing in the background. Only what has nothing stored (new memories, changed ones or
 /// ones marked as fine, or all of them the first time) is computed here, and almost always the date of their
 /// files is enough.
-pub fn de(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, String>> {
-    let by_id: HashMap<&str, &Memoria> = memories.iter().map(|m| (m.id.as_str(), m)).collect();
+pub fn for_memories(db: &Connection, memories: &[Memory]) -> Result<HashMap<String, String>> {
+    let by_id: HashMap<&str, &Memory> = memories.iter().map(|m| (m.id.as_str(), m)).collect();
     let mut missing = Vec::new();
     // What is stored, exactly as read: it is overwritten only if nobody has changed it meanwhile (see below).
     let raw_before = raw(db)?;
@@ -441,7 +441,7 @@ pub fn de(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, Strin
     }
     // The new results are recorded with the day of what was there (or today, if there was nothing): that way the old ones keep
     // counting as old until everything is recomputed.
-    // Compare-and-set: while computing, `refrescar` (in another process) may have stored a newer full
+    // Compare-and-set: while computing, `refresh` (in another process) may have stored a newer full
     // result; overwriting it with the old one plus this would lose it. If what is stored is no longer
     // what was read, nothing is written (what was computed is valid for this response, and the next one will
     // recompute it if needed). It is a cache: if it cannot be written, nothing happens.
@@ -450,16 +450,16 @@ pub fn de(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, Strin
     Ok(r)
 }
 
-/// Like [`de`], for whoever cannot wait (the `context` tool, at session start): if it has
+/// Like [`for_memories`], for whoever cannot wait (the `context` tool, at session start): if it has
 /// never been computed yet (all of it, with git, can take seconds), it is not computed here: it is launched
 /// separately and the next one will see it. If something is already stored, whatever is missing (new or changed memories,
-/// almost always just the date of their files), like [`de`].
-pub fn de_sin_esperar(db: &Connection, memories: &[Memoria]) -> Result<HashMap<String, String>> {
+/// almost always just the date of their files), like [`for_memories`].
+pub fn for_memories_no_wait(db: &Connection, memories: &[Memory]) -> Result<HashMap<String, String>> {
     if raw(db)?.is_none() {
         launch_today(db, &today(db)?)?;
         return Ok(HashMap::new());
     }
-    de(db, memories)
+    for_memories(db, memories)
 }
 
 /// What is stored in `meta`, as is.
@@ -480,8 +480,8 @@ fn save_if_unchanged(db: &Connection, before: Option<&str>, day: &str, c: &Saved
 }
 
 impl Pending {
-    fn new(m: &Memoria, oks: &HashMap<(String, String), String>) -> Pending {
-        Pending { id: m.id.clone(), since: since(&m.updated_at, oks.get(&(m.id.clone(), DERIVA.to_string()))), m: m.clone(), files: Vec::new() }
+    fn new(m: &Memory, oks: &HashMap<(String, String), String>) -> Pending {
+        Pending { id: m.id.clone(), since: since(&m.updated_at, oks.get(&(m.id.clone(), CODE_DRIFT.to_string()))), m: m.clone(), files: Vec::new() }
     }
 }
 
@@ -501,7 +501,7 @@ fn compute_pending(db: &Connection, pending: &mut [Pending]) -> Result<HashMap<S
     let mut alive: Vec<usize> = Vec::new();
     for (i, p) in pending.iter_mut().enumerate() {
         let Some(cutoff) = seconds(&p.since) else { continue };
-        let cutoff = cutoff + GRACIA * 3600;
+        let cutoff = cutoff + GRACE_HOURS * 3600;
         p.files = files(&p.m);
         let changed: Vec<&PathBuf> = p.files.iter().map(|(_, d)| d).filter(|d| modified(d).is_some_and(|t| t > cutoff)).collect();
         if changed.is_empty() {
@@ -542,7 +542,7 @@ fn compute_pending(db: &Connection, pending: &mut [Pending]) -> Result<HashMap<S
     let mut r = HashMap::new();
     for i in alive {
         let p = &pending[i];
-        let cutoff = seconds(&p.since).unwrap_or(0) + GRACIA * 3600;
+        let cutoff = seconds(&p.since).unwrap_or(0) + GRACE_HOURS * 3600;
         let (mut commits, mut changed, mut total) = (BTreeSet::new(), 0usize, 0usize);
         let mut its_sessions: BTreeSet<&str> = BTreeSet::new();
         let mut names: Vec<&str> = Vec::new();
@@ -585,8 +585,8 @@ fn compute_pending(db: &Connection, pending: &mut [Pending]) -> Result<HashMap<S
             }
         }
         let share = changed as f64 / total.max(1) as f64;
-        let by_git = changed >= LINEAS_MIN && share >= PARTE_MIN;
-        let by_diary = its_sessions.len() >= SESIONES_MIN;
+        let by_git = changed >= MIN_LINES && share >= MIN_SHARE;
+        let by_diary = its_sessions.len() >= MIN_SESSIONS;
         if !(by_git || by_diary) {
             continue;
         }
@@ -639,9 +639,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn named_paths() {
+    fn named_paths_finds_paths() {
         let t = "Está en `src/sync.rs` y en D:\\repo\\a.py, no en main.rs ni en https://x.com/a.html ni en src/; también (tests/x.rs).";
-        assert_eq!(nombrados(t), vec!["src/sync.rs", "D:\\repo\\a.py", "tests/x.rs"]);
+        assert_eq!(named_paths(t), vec!["src/sync.rs", "D:\\repo\\a.py", "tests/x.rs"]);
     }
 
     /// Network paths are not taken as files nor looked at on disk (on Windows, looking at them opens an
@@ -649,13 +649,13 @@ mod tests {
     #[test]
     fn never_network_paths() {
         let t = "Carga //cdn.example.com/x.js y \\\\host\\share\\a.py, o \\\\?\\C:\\x\\b.rs y \\\\.\\pipe\\c.rs; pero sí src/d.rs.";
-        assert_eq!(nombrados(t), vec!["src/d.rs"]);
-        let m = Memoria { project: "/p".into(), ..Default::default() };
+        assert_eq!(named_paths(t), vec!["src/d.rs"]);
+        let m = Memory { project: "/p".into(), ..Default::default() };
         for r in ["//cdn.example.com/x.js", "\\\\host\\share\\a.py", "\\\\?\\C:\\x\\b.rs", "\\\\.\\pipe\\c.rs", "/\\host\\x.rs"] {
             assert_eq!(on_disk(&m, r), None, "{r}");
         }
         // Relative to a project that is on a network share: not either.
-        let remote = Memoria { project: "\\\\host\\share\\repo".into(), ..Default::default() };
+        let remote = Memory { project: "\\\\host\\share\\repo".into(), ..Default::default() };
         assert_eq!(on_disk(&remote, "src/a.rs"), None);
         assert!(on_disk(&m, "src/a.rs").is_some());
     }
@@ -701,7 +701,7 @@ mod tests {
         }
     }
 
-    /// What is computed does not overwrite what another process stored meanwhile (`refrescar`): it is only written if what is
+    /// What is computed does not overwrite what another process stored meanwhile (`refresh`): it is only written if what is
     /// stored is still what was read.
     #[test]
     fn the_cache_does_not_overwrite_newer_data() {
@@ -711,7 +711,7 @@ mod tests {
         old.insert("A".into(), ("2026-01-01".into(), String::new()));
         save_cache(&db, "2026-11-01", &old).unwrap();
         let read = raw(&db).unwrap();
-        // Meanwhile, `refrescar` stores today's.
+        // Meanwhile, `refresh` stores today's.
         let mut new = Saved::new();
         new.insert("A".into(), ("2026-01-01".into(), "cambió mucho".into()));
         save_cache(&db, "2026-11-08", &new).unwrap();
@@ -721,7 +721,7 @@ mod tests {
         assert!(save_if_unchanged(&db, now.as_deref(), "2026-11-08", &old).unwrap());
         // And `context` does not compute it the first time: with nothing stored, it does not wait.
         let empty = crate::db::abrir(&t.join("v.db")).unwrap();
-        assert!(de_sin_esperar(&empty, &[]).unwrap().is_empty());
+        assert!(for_memories_no_wait(&empty, &[]).unwrap().is_empty());
         assert_eq!(raw(&empty).unwrap(), None);
     }
 

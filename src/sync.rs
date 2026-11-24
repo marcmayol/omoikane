@@ -44,7 +44,7 @@
 //! share sync.
 
 use crate::embeber::Modelo;
-use crate::memoria::{self, COLUMNAS, Cambios, Memoria, NCOL, Nueva, Origen, Tipo, de_fila};
+use crate::memoria::{self, COLUMNS, Changes, Memory, NCOL, NewMemory, Origin, Kind, from_row};
 use crate::{reloj, tr};
 use aes_siv::KeyInit;
 use aes_siv::siv::Aes256Siv;
@@ -200,7 +200,7 @@ pub fn espacio_valido(name: &str) -> Result<String> {
 pub struct Config {
     pub url: String,
     /// Kinds that are shared (preferences, only if sharing them was chosen).
-    pub kinds: Vec<Tipo>,
+    pub kinds: Vec<Kind>,
     /// Whether global memories are shared.
     pub global: bool,
     /// Projects that are shared, by their key; none = all.
@@ -232,11 +232,11 @@ impl Config {
     /// of this project (`key`) and of this space (`space`: the memory's or its project's).
     /// Which repository each one goes to is decided by `goes_to_repo`.
     fn accepts(&self, kind: &str, key: &str, space: &str) -> bool {
-        let kind = kind.parse::<Tipo>().unwrap_or(Tipo::Fact);
+        let kind = kind.parse::<Kind>().unwrap_or(Kind::Fact);
         // A preference saved for a whole space (`remember --space`) belongs to the team, not the
         // person: it always goes through that space's repository, even if preferences are not shared.
-        let team_preference = kind == Tipo::Preference && key.is_empty() && !space.is_empty() && self.space.is_some();
-        if !team_preference && !self.kinds.contains(&kind) && !(kind == Tipo::Procedure && self.kinds.contains(&Tipo::Fact)) {
+        let team_preference = kind == Kind::Preference && key.is_empty() && !space.is_empty() && self.space.is_some();
+        if !team_preference && !self.kinds.contains(&kind) && !(kind == Kind::Procedure && self.kinds.contains(&Kind::Fact)) {
             return false;
         }
         if key.is_empty() {
@@ -251,10 +251,10 @@ impl Config {
         self.accepts(kind, key, space) && goes_to_repo(self, space)
     }
 
-    fn shares(&self, m: &Memoria) -> bool {
+    fn shares(&self, m: &Memory) -> bool {
         // A trade memory (global with `trade:`) belongs to the person or the factory: it never goes through a
         // client's repository (being global it wouldn't anyway; this makes it explicit).
-        self.admits(m.tipo_texto(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
+        self.admits(m.kind_str(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
     }
 }
 
@@ -716,13 +716,13 @@ pub(crate) struct CuerpoMemoria {
 impl CuerpoMemoria {
     /// A database memory as it travels: the project key comes from the `project` table (computed
     /// once), so it is the same through sync and through `omoi export`.
-    pub(crate) fn de(m: Memoria, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> CuerpoMemoria {
+    pub(crate) fn de(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, mut extra: Extra) -> CuerpoMemoria {
         // The provenance, only what applies to where it is (a global one doesn't carry a client's branch).
         // (The trash one has no `project_id`: it counts as a project's if it has its key or its folder.)
         let in_project = m.project_id != 0 || !m.project_key.is_empty() || !m.project.is_empty();
-        crate::procedencia::recortar_extra(&mut extra, i64::from(in_project), &m.tags);
+        crate::procedencia::trim_extra(&mut extra, i64::from(in_project), &m.tags);
         CuerpoMemoria {
-            kind: m.tipo_texto().to_string(),
+            kind: m.kind_str().to_string(),
             id: m.id,
             project_key: m.project_key,
             project_path: m.project,
@@ -743,16 +743,16 @@ impl CuerpoMemoria {
         }
     }
 
-    /// As stored in the trash (`forgotten.memory`, the usual `Memoria`): whatever has no
-    /// place in `Memoria` (the unknown fields) is added by `a_papelera`.
-    fn to_memory(&self, source: &str) -> Memoria {
-        let parsed_kind = self.kind.parse::<Tipo>().ok();
-        Memoria {
+    /// As stored in the trash (`forgotten.memory`, the usual `Memory`): whatever has no
+    /// place in `Memory` (the unknown fields) is added by `a_papelera`.
+    fn to_memory(&self, source: &str) -> Memory {
+        let parsed_kind = self.kind.parse::<Kind>().ok();
+        Memory {
             id: self.id.clone(),
             project: self.project_path.clone(),
             project_key: self.project_key.clone(),
             space: self.space_key.clone(),
-            kind: parsed_kind.unwrap_or(Tipo::Fact),
+            kind: parsed_kind.unwrap_or(Kind::Fact),
             kind_text: if parsed_kind.is_none() { Some(self.kind.clone()) } else { None },
             title: self.title.clone(),
             content: self.content.clone(),
@@ -769,14 +769,14 @@ impl CuerpoMemoria {
     }
 }
 
-/// The keys the trash adds to the JSON of `Memoria` (which ignores them when reading it): the
+/// The keys the trash adds to the JSON of `Memory` (which ignores them when reading it): the
 /// memory's unknown fields and those of the `forgotten` line.
 pub(crate) const PAPELERA_EXTRA: &str = "extra";
 pub(crate) const PAPELERA_EXTRA_LINEA: &str = "extra_forgotten";
 
-/// The JSON stored in `forgotten.memory`: the usual `Memoria` (what the trash and
+/// The JSON stored in `forgotten.memory`: the usual `Memory` (what the trash and
 /// `restaurar` read) and, if there are any, the unknown fields.
-pub(crate) fn a_papelera(m: &Memoria, extra: &Extra, line_extra: &Extra) -> Result<String> {
+pub(crate) fn a_papelera(m: &Memory, extra: &Extra, line_extra: &Extra) -> Result<String> {
     let mut v = serde_json::to_value(m)?;
     if !extra.is_empty() {
         v[PAPELERA_EXTRA] = serde_json::Value::Object(extra.clone());
@@ -789,14 +789,14 @@ pub(crate) fn a_papelera(m: &Memoria, extra: &Extra, line_extra: &Extra) -> Resu
 
 /// What `forgotten.memory` stores: the memory and its unknown fields (the memory's and the
 /// line's). `None` if it isn't understood.
-pub(crate) fn de_papelera(text: &str) -> Option<(Memoria, Extra, Extra)> {
+pub(crate) fn de_papelera(text: &str) -> Option<(Memory, Extra, Extra)> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let object = |k: &str| v.get(k).and_then(|x| x.as_object()).cloned().unwrap_or_default();
     let (extra, line_extra) = (object(PAPELERA_EXTRA), object(PAPELERA_EXTRA_LINEA));
     Some((serde_json::from_value(v).ok()?, extra, line_extra))
 }
 
-/// The memory of a `forgotten` line: the shape of `CuerpoMemoria` (since 0.20.0) or the `Memoria`
+/// The memory of a `forgotten` line: the shape of `CuerpoMemoria` (since 0.20.0) or the `Memory`
 /// of the JSON API that 0.18.0 and 0.19.0 wrote (without `project_path`; with `project`, the path).
 /// Those from back then don't carry their stamp inside: it stays empty and the line's counts.
 fn cuerpo_olvidado<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<CuerpoMemoria, D::Error> {
@@ -805,7 +805,7 @@ fn cuerpo_olvidado<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Resul
     if v.get("project_path").is_some() {
         return serde_json::from_value(v).map_err(D::Error::custom);
     }
-    let m: Memoria = serde_json::from_value(v).map_err(D::Error::custom)?;
+    let m: Memory = serde_json::from_value(v).map_err(D::Error::custom)?;
     Ok(CuerpoMemoria::de(m, String::new(), String::new(), "", Vec::new(), Extra::new()))
 }
 
@@ -964,7 +964,7 @@ impl Linea {
     }
 
     /// A verdict as it travels, with its unknown fields.
-    pub(crate) fn veredicto(v: crate::veredictos::Veredicto, machine: &str) -> Linea {
+    pub(crate) fn veredicto(v: crate::veredictos::Verdict, machine: &str) -> Linea {
         Linea::Verdict {
             memory_id: v.memory_id,
             other_id: v.other_id,
@@ -1384,16 +1384,16 @@ pub fn claves_de(r: &Rutas) -> (Vec<u32>, u32) {
 
 /// All memories, with their stamp (`hlc`), that of their last text change (`content_hlc`) and their
 /// unknown fields (`extra`).
-pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memoria, String, String, Extra)>> {
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS}, m.hlc, m.content_hlc, m.extra FROM memory m ORDER BY m.id"))?;
+pub(crate) fn todas(db: &Connection) -> Result<Vec<(Memory, String, String, Extra)>> {
+    let mut q = db.prepare(&format!("SELECT {COLUMNS}, m.hlc, m.content_hlc, m.extra FROM memory m ORDER BY m.id"))?;
     let v = q
-        .query_map([], |f| Ok((de_fila(f)?, f.get::<_, String>(NCOL)?, f.get::<_, String>(NCOL + 1)?, extra_de(&f.get::<_, String>(NCOL + 2)?))))?
+        .query_map([], |f| Ok((from_row(f)?, f.get::<_, String>(NCOL)?, f.get::<_, String>(NCOL + 1)?, extra_de(&f.get::<_, String>(NCOL + 2)?))))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
 /// A memory's line, for sync and `omoi export`.
-pub(crate) fn linea_de(m: Memoria, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Linea {
+pub(crate) fn linea_de(m: Memory, hlc: String, content_hlc: String, machine: &str, versions: Vec<crate::memoria::Version>, extra: Extra) -> Linea {
     Linea::Memory(CuerpoMemoria::de(m, hlc, content_hlc, machine, versions, extra))
 }
 
@@ -1422,7 +1422,7 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
     // The folder of each shared memory: its verdicts go with it.
     let mut folders: HashMap<String, String> = HashMap::new();
     // Everyone's history, in one query (one per memory was 50,000 with a large database).
-    let mut histories = crate::memoria::historiales(db)?;
+    let mut histories = crate::memoria::histories(db)?;
     // What a version before 1.8.0 moved from a client to a trade with its id doesn't carry its
     // history (it was the client's text). Since that now creates a new memory, none is recorded any more.
     for id in crate::oficios::historiales_solo_aqui(db)? {
@@ -1454,7 +1454,7 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
         let (m, versions) = if crate::secretos::activo() {
             let redact = |t: &str| crate::secretos::redactar(t).0;
             let versions = versions.into_iter().map(|v| crate::memoria::Version { title: redact(&v.title), content: redact(&v.content), ..v }).collect();
-            (Memoria { title: redact(&m.title), content: redact(&m.content), ..m }, versions)
+            (Memory { title: redact(&m.title), content: redact(&m.content), ..m }, versions)
         } else {
             (m, versions)
         };
@@ -1462,7 +1462,7 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
         files.entry(folder).or_default().push(cipher.cifrar(&serde_json::to_string(&l)?)?);
         n += 1;
     }
-    for v in crate::veredictos::todos(db)? {
+    for v in crate::veredictos::all(db)? {
         // Only if both memories travel: a verdict about something the other machine doesn't have is useless.
         let (Some(folder), true) = (folders.get(&v.memory_id), v.other_id.is_empty() || folders.contains_key(&v.other_id)) else {
             continue;
@@ -1608,7 +1608,7 @@ pub struct Resumen {
     /// seal (see `foreign_seal`): here they don't count as verified.
     pub sellos_ajenos: usize,
     /// Memories with a key (`--key`) that another machine also created without seeing it: they become superseded by
-    /// the one that rules (`memoria::resolver_claves_repetidas`).
+    /// the one that rules (`memoria::resolve_repeated_keys`).
     #[serde(rename = "duplicate_keys")]
     pub claves_repetidas: usize,
     /// Per file read in this pass (path inside the repository), how many bad lines it had.
@@ -2080,15 +2080,15 @@ impl<'a> Aplicador<'a> {
                 match hlc_local(db, &id)? {
                     Some(local) if reloj::mayor(&local, &hlc) => {
                         // It was changed here after it was forgotten there: it stays, and the old tombstone is recorded.
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &space)?;
+                        memoria::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
                         reloj::recibir(db, &hlc)?;
                     }
                     Some(_) => {
-                        memoria::olvidar_con(db, &id, &hlc, &deleted_at, source)?;
+                        memoria::forget_with(db, &id, &hlc, &deleted_at, source)?;
                         r.olvidadas += 1;
                     }
                     None => {
-                        memoria::marcar_olvido(db, &id, Some(&deleted_at), &hlc, &space)?;
+                        memoria::mark_forgotten(db, &id, Some(&deleted_at), &hlc, &space)?;
                         reloj::recibir(db, &hlc)?;
                     }
                 }
@@ -2180,11 +2180,11 @@ impl<'a> Aplicador<'a> {
                 } else {
                     (Some(0), None)
                 };
-                let parsed_kind = kind.parse::<Tipo>().ok();
+                let parsed_kind = kind.parse::<Kind>().ok();
                 let kind_text = if parsed_kind.is_none() { Some(kind.clone()) } else { None };
                 // Another person's verified seal doesn't count here (see `foreign_seal`). It is stored as
                 // is (the line this machine writes again carries it, for the others) and `meta` records
-                // that it doesn't count here: `memoria::COLUMNAS` doesn't treat it as verified.
+                // that it doesn't count here: `memoria::COLUMNS` doesn't treat it as verified.
                 if let Some(c) = self.config {
                     let mark = format!("{}{id}", crate::verificado::SELLO_AJENO);
                     match foreign_seal(db, c, &id, &extra)? {
@@ -2209,14 +2209,14 @@ impl<'a> Aplicador<'a> {
                 }
                 // The fields this version doesn't know are stored with it, to write them back.
                 let extra = extra_a_texto(&extra);
-                let o = Origen { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author, extra: &extra };
+                let o = Origin { created_at: &created_at, updated_at: &updated_at, hlc: &hlc, content_hlc: &content_hlc, author: &author, extra: &extra };
                 // A line that doesn't pass the checks (empty or long title, empty content…) is
                 // skipped and counted: it never stops the sync.
                 if local.is_some() {
-                    let c = Cambios {
+                    let c = Changes {
                         title: Some(title),
                         content: Some(content),
-                        kind: Some(parsed_kind.unwrap_or(Tipo::Fact)),
+                        kind: Some(parsed_kind.unwrap_or(Kind::Fact)),
                         kind_text,
                         paths: Some(paths),
                         tags: Some(tags),
@@ -2226,14 +2226,14 @@ impl<'a> Aplicador<'a> {
                         reason: Some(format!("sync: {source}")),
                         ..Default::default()
                     };
-                    memoria::actualizar_con_origen(db, &id, c, &o, model)?;
+                    memoria::update_with_origin(db, &id, c, &o, model)?;
                     r.actualizadas += 1;
                 } else {
-                    let new_memory = Nueva {
+                    let new_memory = NewMemory {
                         project: String::new(),
                         project_id,
                         space_id,
-                        kind: Some(parsed_kind.unwrap_or(Tipo::Fact)),
+                        kind: Some(parsed_kind.unwrap_or(Kind::Fact)),
                         kind_text,
                         title,
                         content,
@@ -2245,7 +2245,7 @@ impl<'a> Aplicador<'a> {
                         evidence: Vec::new(),
                         review_reason: None,
                     };
-                    memoria::guardar_con_id(db, &id, new_memory, &o, model)?;
+                    memoria::save_with_id(db, &id, new_memory, &o, model)?;
                     r.nuevas += 1;
                 }
                 // It exists again with a stamp later than its tombstone (another machine restored it): it is no
@@ -2253,7 +2253,7 @@ impl<'a> Aplicador<'a> {
                 db.execute("DELETE FROM forgotten WHERE id = ?1", [&id])?;
                 // Whatever history comes: what already exists with that number stays.
                 for v in &versions {
-                    memoria::poner_version(db, &id, v)?;
+                    memoria::put_version(db, &id, v)?;
                 }
                 Ok(())
             }
@@ -2277,12 +2277,12 @@ impl<'a> Aplicador<'a> {
                     return Ok(());
                 }
                 let extra = extra_a_texto(&extra);
-                crate::veredictos::recibir(db, &crate::veredictos::Veredicto { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
+                crate::veredictos::receive(db, &crate::veredictos::Verdict { memory_id, other_id, relation, at, hlc, reason, author, extra })?;
                 Ok(())
             }
             Linea::Forgotten { id, memory, versions, hlc, deleted_at, by, extra } => {
                 // To the trash, if it isn't live here nor already in the trash. It is stored like the local one
-                // (`Memoria`, with its project and its space by key) and with its unknown fields.
+                // (`Memory`, with its project and its space by key) and with its unknown fields.
                 if hlc_local(db, &id)?.is_some() {
                     return Ok(());
                 }
@@ -2293,7 +2293,7 @@ impl<'a> Aplicador<'a> {
                     params![id, text, serde_json::to_string(&versions)?, hlc, deleted_at, by],
                 )?;
                 // As in a `memory` line: another person's seal arriving in the trash through a
-                // space's repository doesn't count here if restored (`memoria::restaurar` keeps
+                // space's repository doesn't count here if restored (`memoria::restore` keeps
                 // it as is).
                 if n > 0
                     && let Some(c) = self.config
@@ -2486,7 +2486,7 @@ fn sync_repo(db: &mut Connection, r: &Rutas, config: &Config, current: Option<&s
         import(db, &r.clon, &files, config, &cipher, current, model, &mut res)?;
         // Two machines that created the same key without seeing each other: one rules and the others become superseded
         // by it, with a verdict that goes out in this same `export`.
-        res.claves_repetidas += crate::memoria::resolver_claves_repetidas(db)?;
+        res.claves_repetidas += crate::memoria::resolve_repeated_keys(db)?;
         res.avisos = sin_repetir(res.choques.values().flatten()).iter().map(Choque::texto).collect();
         // If this version skipped new lines and a newer one used the database before (it went back to an
         // old one), that one will have to reread them when it comes back.
@@ -2507,7 +2507,7 @@ fn sync_repo(db: &mut Connection, r: &Rutas, config: &Config, current: Option<&s
                     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![r.marca_commit, head.trim()])?;
                 }
                 // What came from other machines may leave local memories outdated (or the other way round).
-                let _ = crate::revisar::al_dia(db);
+                let _ = crate::revisar::refresh(db);
                 return Ok((res, cipher));
             }
             // Another machine pushed in between: its changes are pulled and we try again.
@@ -2547,9 +2547,9 @@ pub fn config_de(url: &str, e: &Eleccion) -> Config {
 /// projects without a remote of the same person merge across their machines even if each one has a different
 /// author name) and, if there is neither an author nor a git name, the database's local person (`local`).
 pub fn config_con_persona(url: &str, e: &Eleccion, fixed: Option<&str>, local: &str) -> Config {
-    let mut kinds = vec![Tipo::Fact, Tipo::Decision, Tipo::Gotcha, Tipo::Procedure];
+    let mut kinds = vec![Kind::Fact, Kind::Decision, Kind::Gotcha, Kind::Procedure];
     if e.preferencias {
-        kinds.push(Tipo::Preference);
+        kinds.push(Kind::Preference);
     }
     // The person: the given one; if not, the name's; without a name, a fixed random identifier
     // (stored in the configuration and passed in the code for joining), never one shared by everyone.
@@ -2627,7 +2627,7 @@ fn save_config(db: &Connection, r: &Rutas, config: &Config, cipher: &Cifra) -> R
     write_private(&r.config, &serde_json::to_string_pretty(config)?)?;
     // The general repository's author signs what belongs to no space (`meta` `autor`); a
     // space repository's, only that space's (`autor:<space>`, empty if joined without an author):
-    // the name someone joins a client with never signs another's (`memoria::autor_en`).
+    // the name someone joins a client with never signs another's (`memoria::author_in`).
     match &r.espacio {
         None => match &config.author {
             Some(a) => db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', ?1)", [a])?,

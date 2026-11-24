@@ -13,7 +13,7 @@
 //! first line (`crear_tabla`), not when opening the database. It weighs a few hundred bytes per session; it is
 //! kept for a year (`DIAS`).
 
-use crate::memoria::{AHORA, Ambito};
+use crate::memoria::{NOW, Scope};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -81,7 +81,7 @@ pub struct Lectura {
     pub guardadas: Vec<String>,
     /// The ids (or their prefix) passed to an `update` whose response was not found.
     pub pedidas: Vec<String>,
-    /// The first time in the conversation, if it says (UTC, like `AHORA`).
+    /// The first time in the conversation, if it says (UTC, like `memoria::NOW`).
     pub primera: Option<String>,
 }
 
@@ -295,7 +295,7 @@ impl Reader {
     }
 }
 
-/// The time of a record (`"timestamp":"2026-11-04T10:00:00.123Z"`), in the format of `AHORA`.
+/// The time of a record (`"timestamp":"2026-11-04T10:00:00.123Z"`), in the format of `memoria::NOW`.
 fn time_of(line: &str) -> Option<String> {
     for key in ["\"timestamp\":\"", "\"startTime\":\"", "\"timestamp\": \"", "\"startTime\": \""] {
         if let Some(i) = line.find(key) {
@@ -480,7 +480,7 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Opti
         }
     }
     for p in &reading.pedidas {
-        if let Ok(id) = crate::memoria::resolver_id(db, p) {
+        if let Ok(id) = crate::memoria::resolve_id(db, p) {
             saved.push(id);
         }
     }
@@ -493,14 +493,14 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Opti
     db.execute(
         &format!(
             "INSERT INTO diary(session, project_id, folder, first_at, last_at, files, recalled, saved)
-             VALUES (?1, ?2, ?3, min(COALESCE(?4, {AHORA}), {AHORA}), {AHORA}, ?5, ?6, ?7)
+             VALUES (?1, ?2, ?3, min(COALESCE(?4, {NOW}), {NOW}), {NOW}, ?5, ?6, ?7)
              ON CONFLICT(session, project_id) DO UPDATE SET folder = excluded.folder,
                first_at = min(diary.first_at, excluded.first_at), last_at = excluded.last_at,
                files = excluded.files, recalled = excluded.recalled, saved = excluded.saved"
         ),
         params![session_key, project_id, project, first, serde_json::to_string(&files)?, serde_json::to_string(&recalled)?, serde_json::to_string(&saved)?],
     )?;
-    db.execute(&format!("DELETE FROM diary WHERE julianday({AHORA}) - julianday(last_at) > {DIAS}"), [])?;
+    db.execute(&format!("DELETE FROM diary WHERE julianday({NOW}) - julianday(last_at) > {DIAS}"), [])?;
     Ok(true)
 }
 
@@ -558,13 +558,13 @@ pub fn fecha(db: &Connection, text: &str) -> Result<String> {
 }
 
 /// The SQL fragment that keeps the lines visible from `scope` (`d` is the table).
-fn where_clause(scope: &Ambito) -> String {
+fn where_clause(scope: &Scope) -> String {
     match scope {
-        Ambito::Todos => "1".into(),
+        Scope::All => "1".into(),
         // Those with `project_id` 0, only if they belong to one of its folders (checked later, in `lineas`).
-        Ambito::Proyecto { id, .. } => format!("d.project_id IN ({id}, 0)"),
-        Ambito::Espacio(Some(s)) => format!("d.project_id IN (SELECT id FROM project WHERE space_id = {s})"),
-        Ambito::Espacio(None) => "(d.project_id = 0 OR d.project_id IN (SELECT id FROM project WHERE space_id IS NULL))".into(),
+        Scope::Project { id, .. } => format!("d.project_id IN ({id}, 0)"),
+        Scope::Space(Some(s)) => format!("d.project_id IN (SELECT id FROM project WHERE space_id = {s})"),
+        Scope::Space(None) => "(d.project_id = 0 OR d.project_id IN (SELECT id FROM project WHERE space_id IS NULL))".into(),
     }
 }
 
@@ -574,14 +574,14 @@ pub(crate) fn carpeta_cmp(path: &str) -> String {
 }
 
 /// The diary lines visible from `scope`, from most recent to oldest.
-pub fn lineas(db: &Connection, scope: &Ambito, f: &Filtro) -> Result<Vec<Linea>> {
+pub fn lineas(db: &Connection, scope: &Scope, f: &Filtro) -> Result<Vec<Linea>> {
     if !hay_tabla(db)? {
         return Ok(Vec::new());
     }
     // From a project, the lines without a project that belong to its folders (or to the folder it is
     // looked at from, if it is not a project yet).
     let folders: Option<BTreeSet<String>> = match scope {
-        Ambito::Proyecto { id, .. } if *id != 0 => {
+        Scope::Project { id, .. } if *id != 0 => {
             let mut c: BTreeSet<String> = column_list(db, "SELECT path FROM project_path WHERE project_id = ?1", [id])?.iter().map(|p| carpeta_cmp(p)).collect();
             c.extend(f.carpeta.as_deref().filter(|x| !x.is_empty()).map(carpeta_cmp));
             Some(c)
@@ -670,7 +670,7 @@ pub fn citadas<'a>(db: &Connection, texts: impl IntoIterator<Item = &'a str>) ->
             if checked > MAX_CITED {
                 return Ok(r);
             }
-            if let Ok(id) = crate::memoria::resolver_id(db, w)
+            if let Ok(id) = crate::memoria::resolve_id(db, w)
                 && !r.contains(&id)
             {
                 r.push(id);

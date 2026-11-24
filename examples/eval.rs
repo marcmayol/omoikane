@@ -38,7 +38,7 @@
 //! nothing» (`-` cases where it injected nothing).
 
 use anyhow::{Context, Result, anyhow, bail};
-use omoikane::memoria::{self, Nueva, Tipo};
+use omoikane::memoria::{self, NewMemory, Kind};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -50,7 +50,7 @@ struct Mem {
     key: String,
     title: String,
     content: String,
-    kind: Tipo,
+    kind: Kind,
     tags: Vec<String>,
     project: Option<String>,
 }
@@ -82,7 +82,7 @@ fn read_tsv(f: &Path) -> Result<(Vec<Mem>, Vec<Case>)> {
                 key: key.to_string(),
                 title: title.to_string(),
                 content: content.replace("\\n", "\n"),
-                kind: rest.first().filter(|t| !t.is_empty()).map(|t| t.parse()).transpose()?.unwrap_or(Tipo::Fact),
+                kind: rest.first().filter(|t| !t.is_empty()).map(|t| t.parse()).transpose()?.unwrap_or(Kind::Fact),
                 tags: rest.get(1).map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(),
                 project: rest.get(2).filter(|p| !p.is_empty()).map(|p| p.to_string()),
             }),
@@ -111,7 +111,7 @@ fn save(db: &Path, ms: &[Mem], folders: &Path) -> Result<BTreeMap<String, String
             }
             None => String::new(),
         };
-        let n = Nueva {
+        let n = NewMemory {
             project,
             kind: Some(m.kind),
             title: m.title.clone(),
@@ -120,7 +120,7 @@ fn save(db: &Path, ms: &[Mem], folders: &Path) -> Result<BTreeMap<String, String
             source: "eval".into(),
             ..Default::default()
         };
-        ids.insert(m.key.clone(), memoria::guardar(&mut c, n, None)?.id);
+        ids.insert(m.key.clone(), memoria::save(&mut c, n, None)?.id);
     }
     // The database will be copied with the file alone: nothing pending in the WAL.
     c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;

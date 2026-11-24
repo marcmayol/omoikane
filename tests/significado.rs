@@ -86,12 +86,12 @@ fn semantic_service() {
     assert!((c - 0.6904).abs() < 0.002, "coseno {c}");
 
     // The service computes in the background the vectors of the database of whoever asks it something.
-    use omoikane::memoria::{self, Ambito, Nueva, Tipo as Kind};
+    use omoikane::memoria::{self, Scope, NewMemory, Kind as Kind};
     let path = dir.join("o.db");
     {
         let mut db = omoikane::db::abrir(&path).unwrap();
         for (t, c) in [("Cargo yank", "Cargo yank --undo restores a yanked version so it can be used again."), ("Gradle", "Two Gradle daemons at once corrupt the build cache.")] {
-            memoria::guardar(&mut db, Nueva { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
+            memoria::save(&mut db, NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
         }
     }
     let _ = s::vector_consulta(&path, "hola", Duration::from_secs(5));
@@ -102,14 +102,14 @@ fn semantic_service() {
 
     // And search finds what is asked in other words, which a word search does not find.
     let mut db = omoikane::db::abrir(&path).unwrap();
-    let o = omoikane::buscar::Opciones { ambito: Ambito::de(&db, "/p").unwrap(), kind: None, tags: vec![], limite: 5 };
+    let o = omoikane::buscar::SearchOptions { scope: Scope::from_project(&db, "/p").unwrap(), kind: None, tags: vec![], limit: 5 };
     let question = "how do I bring back a release I pulled from the registry?";
-    let r = omoikane::buscar::buscar(&mut db, question, &o, None).unwrap();
-    assert_eq!(r.first().map(|x| x.memoria.title.as_str()), Some("Cargo yank"), "{r:?}");
+    let r = omoikane::buscar::search(&mut db, question, &o, None).unwrap();
+    assert_eq!(r.first().map(|x| x.memory.title.as_str()), Some("Cargo yank"), "{r:?}");
     assert!(r[0].similarity.is_some());
     // Off, as in 1.1: words only, and by words there is nothing.
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC", "0") };
-    assert!(omoikane::buscar::buscar(&mut db, question, &o, None).unwrap().iter().all(|x| x.memoria.title != "Cargo yank" || x.similarity.is_none()));
+    assert!(omoikane::buscar::search(&mut db, question, &o, None).unwrap().iter().all(|x| x.memory.title != "Cargo yank" || x.similarity.is_none()));
     unsafe { std::env::remove_var("OMOIKANE_SEMANTIC") };
     drop(db);
 

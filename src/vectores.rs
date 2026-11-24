@@ -15,7 +15,7 @@
 //! of `memory_vec` (they record what changes in `vec_cambio`) and `up_to_date_summary`, which applies it when used.
 
 use crate::embeber::Modelo;
-use crate::memoria::{Ambito, COLUMNAS, Memoria, Tipo, de_fila};
+use crate::memoria::{Scope, COLUMNS, Memory, Kind, from_row};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -449,8 +449,8 @@ fn with_summary(
     db: &Connection,
     query: &[f32],
     mean: &[f32],
-    scope: &Ambito,
-    kind: Option<Tipo>,
+    scope: &Scope,
+    kind: Option<Kind>,
     min: f32,
     limit: usize,
     dim: usize,
@@ -463,14 +463,14 @@ fn with_summary(
     // If the scope doesn't see them all (or a kind is requested), only the `n` it sees count, in order like the
     // summary. If it sees them all, there is no need to look (what doesn't exist is discarded when checking).
     let all: i64 = db.query_row("SELECT COALESCE(sum(n), 0) FROM memory_cuenta", [], |row| row.get(0))?;
-    let allowed: Option<Vec<i64>> = if kind.is_none() && crate::memoria::cuantas(db, scope)? == all {
+    let allowed: Option<Vec<i64>> = if kind.is_none() && crate::memoria::count(db, scope)? == all {
         None
     } else {
         let mut q = db.prepare(&format!(
             "SELECT m.n FROM memory m INDEXED BY memory_ambito WHERE {} AND (?1 IS NULL OR m.kind = ?1) ORDER BY m.n",
             scope.sql()
         ))?;
-        let v = q.query_map(params![kind.map(Tipo::as_str)], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let v = q.query_map(params![kind.map(Kind::as_str)], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         Some(v)
     };
     let mut bounds = bounds_of(db, query, mean, allowed.as_deref(), min, Some(limit), dim)?;
@@ -498,7 +498,7 @@ fn with_summary(
                 break;
             }
             i += 1;
-            let e: Option<Vec<u8>> = exact.query_row(params![n, kind.map(Tipo::as_str)], |row| row.get(0)).optional()?;
+            let e: Option<Vec<u8>> = exact.query_row(params![n, kind.map(Kind::as_str)], |row| row.get(0)).optional()?;
             if let Some(e) = e {
                 let norm = (1.0 - 2.0 * dot(&e, mean) + mm).max(1e-12).sqrt();
                 let s = (dot(&e, query) - mq) / norm;
@@ -615,19 +615,19 @@ fn bounds_of(
 }
 
 /// Memories most similar to `text`, from most to least, with their similarity (cosine of the centered
-/// vectors). `project` as in `Ambito`: `Some(p)` = those of `p` plus the globals; `None` = all.
+/// vectors). `project` as in `Scope`: `Some(p)` = those of `p` plus the globals; `None` = all.
 pub fn parecidas(
     db: &Connection,
     model: &Modelo,
     text: &str,
     project: Option<&str>,
-    kind: Option<Tipo>,
+    kind: Option<Kind>,
     min: f32,
     limit: usize,
-) -> Result<Vec<(Memoria, f32)>> {
+) -> Result<Vec<(Memory, f32)>> {
     let scope = match project {
-        Some(p) => Ambito::de(db, p)?,
-        None => Ambito::Todos,
+        Some(p) => Scope::from_project(db, p)?,
+        None => Scope::All,
     };
     parecidas_en(db, model, text, &scope, kind, min, limit)
 }
@@ -637,11 +637,11 @@ pub fn parecidas_en(
     db: &Connection,
     model: &Modelo,
     text: &str,
-    scope: &Ambito,
-    kind: Option<Tipo>,
+    scope: &Scope,
+    kind: Option<Kind>,
     min: f32,
     limit: usize,
-) -> Result<Vec<(Memoria, f32)>> {
+) -> Result<Vec<(Memory, f32)>> {
     let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
     let mean = match &summary {
         Some(r) if r.cuantos > 0 => mean_from_summary(db, model, r)?,
@@ -655,8 +655,8 @@ pub fn parecidas_en(
         None => linear(db, &query, &mean, scope, kind, min, limit)?,
     };
     // Only those returned are read whole.
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
-    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
+    let mut q = db.prepare(&format!("SELECT {COLUMNS} FROM memory m WHERE m.n = ?1"))?;
+    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], from_row)?, s))).collect()
 }
 
 /// The most similar comparing with all the vectors of the scope: without a summary.
@@ -664,8 +664,8 @@ fn linear(
     db: &Connection,
     query: &[f32],
     mean: &[f32],
-    scope: &Ambito,
-    kind: Option<Tipo>,
+    scope: &Scope,
+    kind: Option<Kind>,
     min: f32,
     limit: usize,
 ) -> Result<Vec<(i64, f32)>> {
@@ -678,7 +678,7 @@ fn linear_where(
     query: &[f32],
     mean: &[f32],
     condition: &str,
-    kind: Option<Tipo>,
+    kind: Option<Kind>,
     min: f32,
     limit: usize,
 ) -> Result<Vec<(i64, f32)>> {
@@ -692,7 +692,7 @@ fn linear_where(
             "SELECT v.n, v.e FROM memory_vec v JOIN memory m ON m.n = v.n
              WHERE {condition} AND (?1 IS NULL OR m.kind = ?1)"
         ))?;
-        let mut rows = q.query(params![kind.map(Tipo::as_str)])?;
+        let mut rows = q.query(params![kind.map(Kind::as_str)])?;
         while let Some(row) = rows.next()? {
             let e = row.get_ref(1)?.as_blob()?;
             let norm = (1.0 - 2.0 * dot(e, mean) + mm).max(1e-12).sqrt();
@@ -710,9 +710,9 @@ fn linear_where(
 /// If there is already an almost identical memory in the same scope (the project and the globals, or only the
 /// globals if the new one is global; all if `project` is a general folder), returns it with its
 /// similarity.
-pub fn duplicada(db: &Connection, model: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memoria, f32)>> {
+pub fn duplicada(db: &Connection, model: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memory, f32)>> {
     let new = texto(title, content);
-    let scope = Ambito::de(db, project)?;
+    let scope = Scope::from_project(db, project)?;
     let v = parecidas_en(db, model, &new, &scope, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
     the_duplicate(db, &scope, &new, v)
 }
@@ -725,7 +725,7 @@ pub fn duplicada(db: &Connection, model: &Modelo, project: &str, title: &str, co
 /// It only searches among those: before, the 50 most similar of the whole database were taken and then
 /// filtered, and with many similar project memories the real duplicate was left out. The
 /// words weigh with the IDF of the whole database, as in [`duplicadas_entre`].
-pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], title: &str, content: &str, exclude: Option<&str>) -> Result<Option<(Memoria, f32)>> {
+pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], title: &str, content: &str, exclude: Option<&str>) -> Result<Option<(Memory, f32)>> {
     let new = texto(title, content);
     let mut candidates: Vec<i64> = Vec::new();
     {
@@ -745,12 +745,12 @@ pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], t
     }
     let list = candidates.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
     let v = similar_where(db, model, &new, &format!("m.n IN ({list})"), SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
-    the_duplicate(db, &Ambito::Todos, &new, v)
+    the_duplicate(db, &Scope::All, &new, v)
 }
 
 /// The most similar to `text` among the memories that meet `condition` (SQL over `memory m`),
 /// comparing with all their vectors: for a set that isn't a scope.
-fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, min: f32, limit: usize) -> Result<Vec<(Memoria, f32)>> {
+fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, min: f32, limit: usize) -> Result<Vec<(Memory, f32)>> {
     let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
     let mean = match &summary {
         Some(r) if r.cuantos == 0 => return Ok(Vec::new()),
@@ -759,21 +759,21 @@ fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, m
     };
     let query = normalized(model.vector(text)?.iter().zip(&mean).map(|(x, m)| x - m).collect());
     let sims = linear_where(db, &query, &mean, condition, None, min, limit)?;
-    let mut q = db.prepare(&format!("SELECT {COLUMNAS} FROM memory m WHERE m.n = ?1"))?;
-    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], de_fila)?, s))).collect()
+    let mut q = db.prepare(&format!("SELECT {COLUMNS} FROM memory m WHERE m.n = ?1"))?;
+    sims.into_iter().map(|(n, s)| Ok((q.query_row([n], from_row)?, s))).collect()
 }
 
 /// Of the similar ones (from most to least), the duplicate: the first if it reaches `SIMILITUD_DUPLICADO`
 /// and, if not, the one that best covers the new one's words (at least `COBERTURA_DUPLICADO`, with the IDF of
 /// `scope`).
-fn the_duplicate(db: &Connection, scope: &Ambito, new: &str, mut v: Vec<(Memoria, f32)>) -> Result<Option<(Memoria, f32)>> {
+fn the_duplicate(db: &Connection, scope: &Scope, new: &str, mut v: Vec<(Memory, f32)>) -> Result<Option<(Memory, f32)>> {
     if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
         return Ok(Some(v.swap_remove(0)));
     }
     if v.is_empty() {
         return Ok(None);
     }
-    let coverages = crate::recall::cobertura_en(db, scope, new, v.iter().map(|x| &x.0))?;
+    let coverages = crate::recall::coverage_in(db, scope, new, v.iter().map(|x| &x.0))?;
     let best = coverages.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
     Ok(best.map(|i| v.swap_remove(i)))
 }
@@ -827,7 +827,7 @@ fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
 /// words, and then both have to cover each other (`COBERTURA_DUPLICADO` in both
 /// directions).
 ///
-/// Words weigh with the IDF of the whole database (`Ambito::Todos`): trade ones aren't seen from
+/// Words weigh with the IDF of the whole database (`Scope::All`): trade ones aren't seen from
 /// global, and with that scope (what was done before) a database with only trade memories gave negative
 /// IDF and none covered any. The words, their weights and each memory's centered vector
 /// are computed once, not once per pair: with 42 trade memories without a model, the review took
@@ -835,7 +835,7 @@ fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
 ///
 /// With `only`, only the pairs involving one of those (the ones that changed since the last
 /// computation): the others were already judged then.
-pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<usize>], only: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
+pub fn duplicadas_entre(db: &Connection, memories: &[&Memory], groups: &[Vec<usize>], only: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
     use std::collections::{BTreeSet, HashMap};
     let counts = |i: &usize| only.is_none_or(|s| s.contains(i));
     let groups: Vec<&Vec<usize>> = groups.iter().filter(|g| g.len() >= 2 && g.iter().any(counts)).collect();
@@ -844,11 +844,11 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<us
     }
     let mean = stored_mean(db)?;
     let mut q = db.prepare("SELECT v.e FROM memory_vec v JOIN memory m ON m.n = v.n WHERE m.id = ?1")?;
-    let mut frequencies = crate::recall::Frecuencias::nuevas(db, &Ambito::Todos)?;
+    let mut frequencies = crate::recall::Frequencies::new(db, &Scope::All)?;
     // Each memory's data, computed the first time it's needed.
     struct PerMemory {
         centered: Option<Vec<f32>>,
-        weights: crate::recall::Pesos,
+        weights: crate::recall::Weights,
         tokens: BTreeSet<String>,
     }
     let mut per_memory: HashMap<usize, PerMemory> = HashMap::new();
@@ -868,8 +868,8 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<us
                 }
                 _ => None,
             };
-            let weights = crate::recall::Pesos::de(&texto(&m.title, &m.content), &mut frequencies)?;
-            per_memory.insert(i, PerMemory { centered, weights, tokens: crate::recall::fichas(m) });
+            let weights = crate::recall::Weights::of(&texto(&m.title, &m.content), &mut frequencies)?;
+            per_memory.insert(i, PerMemory { centered, weights, tokens: crate::recall::words_of(m) });
         }
         for (x, &i) in g.iter().enumerate() {
             for &j in &g[x + 1..] {
@@ -878,7 +878,7 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<us
                 }
                 // The new one against the old one.
                 let (new, old) = if (memories[i].created_at.as_str(), memories[i].id.as_str()) >= (memories[j].created_at.as_str(), memories[j].id.as_str()) { (i, j) } else { (j, i) };
-                let covers = |from: usize, to: usize| per_memory[&from].weights.cobertura(&per_memory[&to].tokens);
+                let covers = |from: usize, to: usize| per_memory[&from].weights.coverage(&per_memory[&to].tokens);
                 let is_dup = match (&per_memory[&i].centered, &per_memory[&j].centered) {
                     (Some(a), Some(b)) => {
                         let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
@@ -906,22 +906,22 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memoria], groups: &[Vec<us
 /// with it (or the only one, if both titles have one). It blocks nothing: they are returned so
 /// the agent decides whether to merge them. This also catches the 10 % of duplicates that `duplicada` lets
 /// through, without false warnings upfront.
-pub fn relacionadas(db: &Connection, project: &str, title: &str, exclude: &str, limit: usize) -> Result<Vec<Memoria>> {
-    let Some(query) = crate::buscar::consulta_fts(title) else { return Ok(Vec::new()) };
-    let own: std::collections::BTreeSet<String> = crate::recall::utiles(title).into_iter().collect();
+pub fn relacionadas(db: &Connection, project: &str, title: &str, exclude: &str, limit: usize) -> Result<Vec<Memory>> {
+    let Some(query) = crate::buscar::fts_query(title) else { return Ok(Vec::new()) };
+    let own: std::collections::BTreeSet<String> = crate::recall::useful_terms(title).into_iter().collect();
     let mut q = db.prepare(&format!(
-        "SELECT {COLUMNAS} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
+        "SELECT {COLUMNS} FROM memory_fts JOIN memory m ON m.n = memory_fts.rowid
          WHERE memory_fts MATCH ?1 AND {} AND m.id != ?2
          ORDER BY bm25(memory_fts) LIMIT 30",
-        Ambito::de(db, project)?.sql()
+        Scope::from_project(db, project)?.sql()
     ))?;
-    let candidates: Vec<Memoria> = q.query_map(params![query, exclude], de_fila)?.collect::<rusqlite::Result<_>>()?;
+    let candidates: Vec<Memory> = q.query_map(params![query, exclude], from_row)?.collect::<rusqlite::Result<_>>()?;
     // Also tried requiring a minimum vector similarity: each point less of noise cost
     // uncovered duplicates (with 0.15, from 100 % to 98 %), so it isn't required.
     Ok(candidates
         .into_iter()
         .filter(|m| {
-            let theirs: std::collections::BTreeSet<String> = crate::recall::utiles(&m.title).into_iter().collect();
+            let theirs: std::collections::BTreeSet<String> = crate::recall::useful_terms(&m.title).into_iter().collect();
             let common = own.intersection(&theirs).count();
             common >= 2 || (common == 1 && own.len() == 1 && theirs.len() == 1)
         })
@@ -940,7 +940,7 @@ pub fn estado(db: &Connection) -> Result<(Option<String>, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memoria::{self, Cambios, Nueva};
+    use crate::memoria::{self, Changes, NewMemory};
 
     /// Repeatable pseudo-random numbers (xorshift), so as not to depend on anything.
     struct Rng(u64);
@@ -970,9 +970,9 @@ mod tests {
         (dir, db)
     }
 
-    fn save_memory(db: &mut Connection, project: &str, kind: Tipo, i: usize) -> (String, i64) {
-        let n = Nueva { project: project.into(), kind: Some(kind), title: format!("nota {i}"), content: format!("texto {i}"), ..Default::default() };
-        let m = memoria::guardar(db, n, None).unwrap();
+    fn save_memory(db: &mut Connection, project: &str, kind: Kind, i: usize) -> (String, i64) {
+        let n = NewMemory { project: project.into(), kind: Some(kind), title: format!("nota {i}"), content: format!("texto {i}"), ..Default::default() };
+        let m = memoria::save(db, n, None).unwrap();
         let n: i64 = db.query_row("SELECT n FROM memory WHERE id = ?1", [&m.id], |row| row.get(0)).unwrap();
         (m.id, n)
     }
@@ -996,7 +996,7 @@ mod tests {
         let centers: Vec<Vec<f32>> = (0..12).map(|_| normalized((0..DIM).map(|_| rng.next_f32()).collect())).collect();
         for i in 0..how_many {
             let project = ["/p1", "/p1", "/p2", ""][i % 4];
-            let kind = if i % 3 == 0 { Tipo::Gotcha } else { Tipo::Fact };
+            let kind = if i % 3 == 0 { Kind::Gotcha } else { Kind::Fact };
             let (_, n) = save_memory(&mut db, project, kind, i);
             set_vector(&db, n, &rng.vector(&centers));
         }
@@ -1010,12 +1010,12 @@ mod tests {
         let r = up_to_date_summary(&db).unwrap().expect("resumen");
         assert_eq!(r.cuantos, 1200);
         let mean: Vec<f32> = r.suma.iter().map(|s| (*s / r.cuantos as f64) as f32).collect();
-        let scopes = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::Espacio(None)];
+        let scopes = [Scope::All, Scope::from_project(&db, "/p1").unwrap(), Scope::from_project(&db, "/p2").unwrap(), Scope::Space(None)];
         let (mut non_empty, mut cut_off) = (0, 0);
         for _ in 0..12 {
             let query = normalized(rng.vector(&centers).iter().zip(&mean).map(|(x, m)| x - m).collect());
             for scope in &scopes {
-                for kind in [None, Some(Tipo::Gotcha)] {
+                for kind in [None, Some(Kind::Gotcha)] {
                     for (min, limit) in [(-1.0, 40), (-1.0, 1), (0.1, 5), (0.35, 2), (0.6, 3), (0.9, 2)] {
                         let a = linear(&db, &query, &mean, scope, kind, min, limit).unwrap();
                         let b = with_summary(&db, &query, &mean, scope, kind, min, limit, DIM).unwrap();
@@ -1047,11 +1047,11 @@ mod tests {
         db.execute("DELETE FROM memory_vec WHERE n = ?1", [ns[11]]).unwrap();
         for i in [20, 21, 299] {
             let id: String = db.query_row("SELECT id FROM memory WHERE n = ?1", [ns[i]], |row| row.get(0)).unwrap();
-            memoria::olvidar(&mut db, &id).unwrap();
+            memoria::forget(&mut db, &id).unwrap();
         }
-        let (_, new) = save_memory(&mut db, "/p2", Tipo::Fact, 1000);
+        let (_, new) = save_memory(&mut db, "/p2", Kind::Fact, 1000);
         set_vector(&db, new, &rng.vector(&centers));
-        save_memory(&mut db, "/p1", Tipo::Fact, 1001);
+        save_memory(&mut db, "/p1", Kind::Fact, 1001);
         // The new one reuses the `n` of the last forgotten one: a single record, with the previous vector.
         assert_eq!(count(&db, "SELECT count(*) FROM vec_cambio"), 6);
         let r = up_to_date_summary(&db).unwrap().expect("resumen");
@@ -1082,21 +1082,21 @@ mod tests {
         let (_dir, mut db) = database("cuentas");
         let mut ids = Vec::new();
         for i in 0..40 {
-            ids.push(save_memory(&mut db, ["/p1", "/p2", "", "/p3"][i % 4], Tipo::Fact, i).0);
+            ids.push(save_memory(&mut db, ["/p1", "/p2", "", "/p3"][i % 4], Kind::Fact, i).0);
         }
-        memoria::olvidar(&mut db, &ids[0]).unwrap();
-        memoria::olvidar(&mut db, &ids[2]).unwrap();
-        let move_to = Cambios { project: Some("/p2".into()), ..Default::default() };
-        memoria::actualizar(&mut db, &ids[5], move_to, None).unwrap();
-        let global = Cambios { project: Some(String::new()), ..Default::default() };
-        memoria::actualizar(&mut db, &ids[9], global, None).unwrap();
-        let scopes = [Ambito::Todos, Ambito::de(&db, "/p1").unwrap(), Ambito::de(&db, "/p2").unwrap(), Ambito::de(&db, "/p3").unwrap(), Ambito::Espacio(None)];
+        memoria::forget(&mut db, &ids[0]).unwrap();
+        memoria::forget(&mut db, &ids[2]).unwrap();
+        let move_to = Changes { project: Some("/p2".into()), ..Default::default() };
+        memoria::update(&mut db, &ids[5], move_to, None).unwrap();
+        let global = Changes { project: Some(String::new()), ..Default::default() };
+        memoria::update(&mut db, &ids[9], global, None).unwrap();
+        let scopes = [Scope::All, Scope::from_project(&db, "/p1").unwrap(), Scope::from_project(&db, "/p2").unwrap(), Scope::from_project(&db, "/p3").unwrap(), Scope::Space(None)];
         for scope in scopes {
             let counted = count(&db, &format!("SELECT count(*) FROM memory m WHERE {}", scope.sql()));
-            assert_eq!(memoria::cuantas(&db, &scope).unwrap(), counted, "{scope:?}");
+            assert_eq!(memoria::count(&db, &scope).unwrap(), counted, "{scope:?}");
         }
-        assert!(memoria::ve_todas(&db, &Ambito::Todos));
-        assert!(!memoria::ve_todas(&db, &Ambito::de(&db, "/p1").unwrap()));
+        assert!(memoria::sees_all(&db, &Scope::All));
+        assert!(!memoria::sees_all(&db, &Scope::from_project(&db, "/p1").unwrap()));
     }
 
     /// If a piece is missing (a database another version touched, or a migration that rebuilt `memory`), on
@@ -1108,11 +1108,11 @@ mod tests {
         up_to_date_summary(&db).unwrap().expect("resumen");
         let path = std::path::PathBuf::from(db.path().unwrap());
         db.execute_batch("DROP TRIGGER memory_cuenta_mas; DROP TRIGGER vec_cambio_pon;").unwrap();
-        let (_, n) = save_memory(&mut db, "/p1", Tipo::Fact, 99);
+        let (_, n) = save_memory(&mut db, "/p1", Kind::Fact, 99);
         set_vector(&db, n, &rng.vector(&centers));
         drop(db);
         let db = crate::db::abrir(&path).unwrap();
-        assert_eq!(memoria::cuantas(&db, &Ambito::Todos).unwrap(), 31);
+        assert_eq!(memoria::count(&db, &Scope::All).unwrap(), 31);
         assert!(read_summary(&db).unwrap().is_none());
         assert_eq!(up_to_date_summary(&db).unwrap().expect("resumen").cuantos, 31);
     }

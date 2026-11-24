@@ -2,8 +2,8 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Arg, ArgAction, Args, Command, CommandFactory, FromArgMatches, Parser, Subcommand};
-use omoikane::buscar::{self, Opciones};
-use omoikane::memoria::{self, Ambito, Cambios, Memoria, Nueva, Tipo, Version};
+use omoikane::buscar::{self, SearchOptions};
+use omoikane::memoria::{self, Scope, Changes, Memory, NewMemory, Kind, Version};
 use omoikane::embeber::Modelo;
 use omoikane::{db, idioma, modelos, proyecto, recall, tr, vectores};
 use rusqlite::Connection;
@@ -74,7 +74,7 @@ struct UpdateArgs {
     content: Option<String>,
     /// New kind.
     #[arg(short, long)]
-    kind: Option<Tipo>,
+    kind: Option<Kind>,
     /// Replace the paths with these (repeatable).
     #[arg(long = "path", value_name = "PATH")]
     paths: Vec<String>,
@@ -202,7 +202,7 @@ struct ListArgs {
     tags: Vec<String>,
     /// Only this kind.
     #[arg(short, long)]
-    kind: Option<Tipo>,
+    kind: Option<Kind>,
     /// At most this many (all, by default).
     #[arg(short = 'n', long)]
     limit: Option<usize>,
@@ -246,7 +246,7 @@ enum Commands {
     Remember {
         /// fact, decision, gotcha, preference or procedure.
         #[arg(short, long)]
-        kind: Tipo,
+        kind: Kind,
         /// One line saying what it is about.
         #[arg(short, long)]
         title: String,
@@ -295,7 +295,7 @@ enum Commands {
         query: Vec<String>,
         /// Only this kind.
         #[arg(short, long)]
-        kind: Option<Tipo>,
+        kind: Option<Kind>,
         /// Only memories with this tag (repeatable).
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
@@ -365,7 +365,7 @@ enum Commands {
         limit: usize,
         /// Only this kind.
         #[arg(short, long)]
-        kind: Option<Tipo>,
+        kind: Option<Kind>,
         /// From every project (of this space, if the project is in one).
         #[arg(long)]
         all: bool,
@@ -617,7 +617,7 @@ enum Commands {
         file_open: bool,
         /// The agent's hook format: claude (also Codex and Qwen), gemini, cursor, copilot, antigravity or plain.
         #[arg(long, value_enum, default_value = "claude")]
-        format: recall::Formato,
+        format: recall::HookFormat,
     },
     /// Check SQLite, FTS5 and sqlite-vec, and show where the database is.
     Doctor,
@@ -954,13 +954,13 @@ fn main() -> Result<()> {
     }
     let writes = matches!(cli.orden, Commands::Remember { .. } | Commands::Tags { merge: Some(_), .. } | Commands::Update(..) | Commands::Verify(..) | Commands::Forget { .. } | Commands::Restore { .. } | Commands::Import { .. } | Commands::Tui { .. });
     // Remember, update, forget and restore know which memory they touch and bring the review up to date
-    // with only that one (`revisar::al_dia_de`); an import or whatever is done in the view, all of it.
+    // with only that one (`revisar::refresh_for`); an import or whatever is done in the view, all of it.
     let whole_review = matches!(cli.orden, Commands::Import { .. } | Commands::Tui { .. });
     let r = run(c, cli.orden);
     if writes && r.is_ok() {
         // Whatever needs reviewing is brought up to date for recall, which only reads (see `revisar`).
         if whole_review && let Ok(db) = open_db(c) {
-            let _ = omoikane::revisar::al_dia(&db);
+            let _ = omoikane::revisar::refresh(&db);
         }
         omoikane::sync::programar(&db_path(c));
     }
@@ -1325,35 +1325,35 @@ fn remember_by_key(
     c: &Common,
     db: &mut rusqlite::Connection,
     key: &str,
-    new_memory: Nueva,
+    new_memory: NewMemory,
     data: Option<serde_json::Value>,
     model: Option<&omoikane::embeber::Modelo>,
-    before: &omoikane::revisar::Antes,
+    before: &omoikane::revisar::Before,
 ) -> Result<()> {
-    let r = memoria::guardar_por_clave(db, key, new_memory, data, model)?;
-    let _ = omoikane::revisar::al_dia_de(db, before, std::slice::from_ref(&r.memoria.id));
-    warn_redacted(&r.memoria);
-    warn_masked_data(&r.tapados);
+    let r = memoria::save_by_key(db, key, new_memory, data, model)?;
+    let _ = omoikane::revisar::refresh_for(db, before, std::slice::from_ref(&r.memory.id));
+    warn_redacted(&r.memory);
+    warn_masked_data(&r.redacted);
     if c.json {
         // The memory with its data (`data`), if any, like `get --json`.
-        let mut v = memoria::con_datos(db, vec![r.memoria])?.remove(0);
-        v["created"] = serde_json::json!(r.creada);
-        if !r.parecidas.is_empty() {
-            v["similar_keys"] = serde_json::json!(r.parecidas);
+        let mut v = memoria::with_data(db, vec![r.memory])?.remove(0);
+        v["created"] = serde_json::json!(r.created);
+        if !r.similar_keys.is_empty() {
+            v["similar_keys"] = serde_json::json!(r.similar_keys);
         }
         return json(&v);
     }
-    let id = short_id(&r.memoria.id);
-    println!("{}", if r.creada { tr!("saved {id}", "guardada {id}") } else { tr!("updated {id}", "actualizada {id}") });
-    if !r.parecidas.is_empty() {
-        println!("{}", tr!("  new key, but these keys already exist here: {}", "  clave nueva, pero aquí ya hay estas parecidas: {}", r.parecidas.join(", ")));
+    let id = short_id(&r.memory.id);
+    println!("{}", if r.created { tr!("saved {id}", "guardada {id}") } else { tr!("updated {id}", "actualizada {id}") });
+    if !r.similar_keys.is_empty() {
+        println!("{}", tr!("  new key, but these keys already exist here: {}", "  clave nueva, pero aquí ya hay estas parecidas: {}", r.similar_keys.join(", ")));
     }
     Ok(())
 }
 
 /// `get --key --resolve`: every layer of the key for this project, without merging them.
 fn print_key_layers(c: &Common, db: &rusqlite::Connection, key: &str) -> Result<()> {
-    let layers = memoria::capas_de_clave(db, &Ambito::de(db, &project_of(c)?)?, key)?;
+    let layers = memoria::key_layers(db, &Scope::from_project(db, &project_of(c)?)?, key)?;
     if c.json {
         return json(&layers);
     }
@@ -1412,7 +1412,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         }
         Commands::Reindex => {
             let mut db = open_db(c)?;
-            let n = memoria::reindexar_palabras(&mut db)?;
+            let n = memoria::reindex_words(&mut db)?;
             let v = match modelos::abrir_actual()? {
                 Some(m) => {
                     db.execute("DELETE FROM meta WHERE k = 'modelo'", [])?;
@@ -1425,8 +1425,8 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         }
         Commands::Remember { kind, title, content, paths, tags, pinned, global, space, trades, para: audience, source, force, allow_leaks, key, datos: NewData { data, evidence, review_reason } } => {
             let content = content_of(content, &title, data.is_some())?;
-            let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
-            let data = data.as_deref().map(memoria::datos_de_texto).transpose()?;
+            let evidence = omoikane::evidencia::clean(evidence.iter().map(|e| omoikane::evidencia::from_cli(e)).collect::<Result<Vec<_>>>()?)?;
+            let data = data.as_deref().map(memoria::data_from_text).transpose()?;
             // Trade memory: `--trade`, or a `trade:` tag set by hand.
             let (trade_names, tags) = requested_trades(&trades, tags)?;
             let is_trade = !trade_names.is_empty();
@@ -1441,7 +1441,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             // its paths point to, or it is global.
             let current = project_of(c)?;
             // Preferences belong to the person: global, unless the space or the folder (--dir) is given.
-            let global = global || (kind == Tipo::Preference && space.is_none() && c.dir.is_none());
+            let global = global || (kind == Kind::Preference && space.is_none() && c.dir.is_none());
             let (project, paths) =
                 if global { (String::new(), paths) } else { proyecto::para_guardar(&current, &paths, &format!("{title} {content}")) };
             // From a general folder everything is visible: that is where duplicates are looked for.
@@ -1465,7 +1465,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 if c.json {
                     #[derive(serde::Serialize)]
                     struct Similar<'a> {
-                        duplicate_of: &'a Memoria,
+                        duplicate_of: &'a Memory,
                         similarity: f32,
                     }
                     json(&Similar { duplicate_of: &existing, similarity: sim })?;
@@ -1485,56 +1485,56 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             }
             let space_id = match space.as_deref().map(str::trim) {
                 None => None,
-                Some("") => Some(Ambito::de(&db, &current)?.espacio().with_context(|| {
+                Some("") => Some(Scope::from_project(&db, &current)?.space().with_context(|| {
                     tr!("this project is not in a space: give its name (--space <name>), or `omoi space assign <space>`", "este proyecto no está en ningún espacio: di cuál (--space <nombre>), o `omoi space assign <espacio>`")
                 })?),
                 Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
             };
-            let before = omoikane::revisar::antes(&db)?;
+            let before = omoikane::revisar::before(&db)?;
             // Where it comes from: the session and the commit (see `procedencia`); trade ones, nothing of the project;
             // global ones and a space's, only the session (this folder's branch may be a client's).
             let provenance = if is_trade {
                 None
             } else if project.is_empty() || space_id.is_some() {
-                omoikane::procedencia::solo_sesion(&db, &current)
+                omoikane::procedencia::session_only(&db, &current)
             } else {
-                omoikane::procedencia::actual(&db, &project)
+                omoikane::procedencia::current(&db, &project)
             };
             // A variant of a tag that already exists where it will go (`ideas` with `idea`), becomes that one.
             let tags = if is_trade {
                 tags
             } else {
-                let (tags, changes) = omoikane::etiquetas::cerrar(&db, &omoikane::etiquetas::ambito_de(&db, &project, space_id)?, tags)?;
+                let (tags, changes) = omoikane::etiquetas::normalize_tags(&db, &omoikane::etiquetas::scope_for(&db, &project, space_id)?, tags)?;
                 for x in &changes {
                     eprintln!("{}", tr!("  tag «{}» → «{}» (it already existed)", "  etiqueta «{}» → «{}» (ya existía)", x.from, x.to));
                 }
                 tags
             };
             let evidence = if is_trade { Vec::new() } else { evidence };
-            if review_reason.is_some() && omoikane::revisar::fecha_revision(&tags).is_none() {
+            if review_reason.is_some() && omoikane::revisar::review_date_of(&tags).is_none() {
                 anyhow::bail!(tr!("--review-reason goes with a review date: add --tag review:YYYY-MM-DD too", "--review-reason va con una fecha de revisión: añade también --tag review:AAAA-MM-DD"));
             }
-            let review_reason = review_reason.as_deref().and_then(memoria::limpiar_motivo_revision);
-            let new_memory = Nueva { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, evidence, review_reason, ..Default::default() };
+            let review_reason = review_reason.as_deref().and_then(memoria::clean_review_reason);
+            let new_memory = NewMemory { project, space_id, kind: Some(kind), title, content, paths, tags, pinned, source, provenance, evidence, review_reason, ..Default::default() };
             if let Some(k) = key {
                 return remember_by_key(c, &mut db, &k, new_memory, data, model.as_ref(), &before);
             }
-            let m = memoria::guardar(&mut db, new_memory, model.as_ref())?;
-            let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+            let m = memoria::save(&mut db, new_memory, model.as_ref())?;
+            let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
             warn_redacted(&m);
             if let Some(d) = &data {
-                warn_masked_data(&memoria::poner_datos(&mut db, &m.id, Some(d.clone()))?);
+                warn_masked_data(&memoria::set_data(&mut db, &m.id, Some(d.clone()))?);
             }
             let rel = vectores::relacionadas(&db, &search_in, &m.title, &m.id, 3)?;
             if c.json {
                 #[derive(serde::Serialize)]
                 struct Saved<'a> {
                     #[serde(flatten)]
-                    memoria: &'a Memoria,
+                    memoria: &'a Memory,
                     #[serde(skip_serializing_if = "Option::is_none")]
                     data: Option<&'a serde_json::Value>,
-                    #[serde(skip_serializing_if = "<[Memoria]>::is_empty")]
-                    related: &'a [Memoria],
+                    #[serde(skip_serializing_if = "<[Memory]>::is_empty")]
+                    related: &'a [Memory],
                 }
                 return json(&Saved { memoria: &m, data: data.as_ref(), related: &rel });
             }
@@ -1542,13 +1542,13 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             for r in &rel {
                 println!("{}", tr!("  related: {} «{}»", "  relacionada: {} «{}»", short_id(&r.id), r.title));
             }
-            if m.content.chars().count() > recall::LARGO_PARA_RECALL {
+            if m.content.chars().count() > recall::RECALL_LEN {
                 println!(
                     "{}",
                     tr!(
                         "  long memory: only its first {} characters count for recall; consider splitting it",
                         "  memoria larga: para el recall solo cuentan sus primeros {} caracteres; mejor partirla",
-                        recall::LARGO_PARA_RECALL
+                        recall::RECALL_LEN
                     )
                 );
             }
@@ -1557,9 +1557,9 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         Commands::Search { query, kind, tags, limit, all, project, space } => {
             let (mut db, model) = open_with_model(c)?;
             let scope = requested_scope(c, &db, all, project.as_deref(), space.as_deref())?;
-            let all = !matches!(scope, Ambito::Proyecto { .. });
-            let o = Opciones { ambito: scope, kind, tags, limite: limit };
-            let res = buscar::buscar(&mut db, &query.join(" "), &o, model.as_ref())?;
+            let all = !matches!(scope, Scope::Project { .. });
+            let o = SearchOptions { scope, kind, tags, limit };
+            let res = buscar::search(&mut db, &query.join(" "), &o, model.as_ref())?;
             if c.json {
                 return json(&res);
             }
@@ -1567,7 +1567,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 println!("{}", tr!("nothing found", "nada"));
             }
             for r in &res {
-                listing(&r.memoria, all);
+                listing(&r.memory, all);
             }
             Ok(())
         }
@@ -1577,15 +1577,15 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 return print_key_layers(c, &db, k);
             }
             let m = match (id, key) {
-                (Some(id), _) => memoria::obtener(&db, &id)?,
-                (None, Some(k)) => memoria::por_clave(&db, &Ambito::de(&db, &project_of(c)?)?, &k)?
+                (Some(id), _) => memoria::get(&db, &id)?,
+                (None, Some(k)) => memoria::by_key(&db, &Scope::from_project(&db, &project_of(c)?)?, &k)?
                     .with_context(|| tr!("no memory with key «{}» here", "aquí no hay ninguna memoria con la clave «{}»", k.trim()))?,
                 (None, None) => unreachable!("clap pide id o --key"),
             };
             if c.json {
-                return json(&memoria::con_datos(&db, vec![m])?.remove(0));
+                return json(&memoria::with_data(&db, vec![m])?.remove(0));
             }
-            let data = memoria::datos_de(&db, &[m.id.as_str()])?;
+            let data = memoria::data_of(&db, &[m.id.as_str()])?;
             print_full(&m, omoikane::diario::aplicada(&db, &m.id).ok());
             if let Some(d) = data.get(&m.id) {
                 println!("\ndata: {}", serde_json::to_string_pretty(d)?);
@@ -1593,13 +1593,13 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Update(UpdateArgs { id, title, content, kind, paths, no_paths, tags, no_tags, pin, unpin, project, global, space, trades, no_trade, para: audience, allow_leaks, reason, replace, with, append, datos: UpdateData { data, no_data, evidence, review_reason } }) => {
-            let evidence = omoikane::evidencia::limpiar(evidence.iter().map(|e| omoikane::evidencia::de_cli(e)).collect::<Result<Vec<_>>>()?)?;
-            let data = if no_data { Some(None) } else { data.as_deref().map(memoria::datos_de_texto).transpose()?.map(Some) };
+            let evidence = omoikane::evidencia::clean(evidence.iter().map(|e| omoikane::evidencia::from_cli(e)).collect::<Result<Vec<_>>>()?)?;
+            let data = if no_data { Some(None) } else { data.as_deref().map(memoria::data_from_text).transpose()?.map(Some) };
             anyhow::ensure!(
                 replace.len() == with.len(),
                 tr!("each --replace needs its --with ({} and {})", "cada --replace necesita su --with ({} y {})", replace.len(), with.len())
             );
-            let changes = Cambios {
+            let changes = Changes {
                 title,
                 content: content.map(|t| text_or_stdin(Some(t))).transpose()?,
                 kind,
@@ -1613,17 +1613,17 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 ..Default::default()
             };
             let (mut db, model) = open_with_model(c)?;
-            let changes = Cambios { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..changes };
+            let changes = Changes { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..changes };
             let (changes, from_client) = trades_for_update(c, &db, &id, changes, &trades, no_trade, audience.as_deref(), data.as_ref(), allow_leaks)?;
-            let before = omoikane::revisar::antes(&db)?;
+            let before = omoikane::revisar::before(&db)?;
             // From a client to a trade: a new memory, and the client's one stays as it was.
             if let Some(current) = from_client {
                 let tags = changes.tags.clone().unwrap_or_else(|| current.tags.clone());
                 let m = omoikane::oficios::crear_de_oficio(&mut db, &current, &changes, tags, "cli", model.as_ref())?;
                 if let Some(d) = data {
-                    warn_masked_data(&memoria::poner_datos(&mut db, &m.id, d)?);
+                    warn_masked_data(&memoria::set_data(&mut db, &m.id, d)?);
                 }
-                let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+                let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
                 warn_redacted(&m);
                 // The same thing promoted from another client: not prevented (it's done already), just said.
                 let duplicate = match &model {
@@ -1631,7 +1631,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                     None => None,
                 };
                 if c.json {
-                    let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
+                    let mut v = memoria::with_data(&db, vec![memoria::get(&db, &m.id)?])?.remove(0);
                     v["promoted_from"] = serde_json::json!(current.id);
                     if let Some((another, sim)) = &duplicate {
                         v["duplicate_of"] = serde_json::to_value(another)?;
@@ -1664,30 +1664,30 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             // Only the data: no new version (like pinning it), and without `update`'s «nothing to change».
             let data_only = (data.is_some() || !evidence.is_empty() || review_reason.is_some()) && no_changes(&changes);
             let (mut m, changed) = if data_only {
-                (memoria::obtener(&db, &id)?, Vec::new())
+                (memoria::get(&db, &id)?, Vec::new())
             } else {
-                memoria::actualizar_con_cambios(&mut db, &id, changes, model.as_ref())?
+                memoria::update_with_changes(&mut db, &id, changes, model.as_ref())?
             };
             if let Some(d) = data {
-                warn_masked_data(&memoria::poner_datos(&mut db, &m.id, d)?);
+                warn_masked_data(&memoria::set_data(&mut db, &m.id, d)?);
             }
-            if !evidence.is_empty() && omoikane::oficios::de_etiquetas(&m.tags).is_empty() && memoria::anadir_evidencia(&mut db, &m.id, &evidence)? {
-                m = memoria::obtener(&db, &m.id)?;
+            if !evidence.is_empty() && omoikane::oficios::de_etiquetas(&m.tags).is_empty() && memoria::add_evidence(&mut db, &m.id, &evidence)? {
+                m = memoria::get(&db, &m.id)?;
             }
             if let Some(r) = &review_reason {
                 anyhow::ensure!(
-                    omoikane::revisar::fecha_revision(&m.tags).is_some(),
+                    omoikane::revisar::review_date_of(&m.tags).is_some(),
                     tr!("--review-reason goes with a review date: add --tag review:YYYY-MM-DD too", "--review-reason va con una fecha de revisión: añade también --tag review:AAAA-MM-DD")
                 );
-                if memoria::poner_motivo_revision(&mut db, &m.id, r)? {
-                    m = memoria::obtener(&db, &m.id)?;
+                if memoria::set_review_reason(&mut db, &m.id, r)? {
+                    m = memoria::get(&db, &m.id)?;
                 }
             }
-            let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+            let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
             warn_redacted(&m);
             warn_unverified(&m);
             if c.json {
-                let mut v = memoria::con_datos(&db, vec![memoria::obtener(&db, &m.id)?])?.remove(0);
+                let mut v = memoria::with_data(&db, vec![memoria::get(&db, &m.id)?])?.remove(0);
                 if !changed.is_empty() {
                     v["changed"] = serde_json::json!(changed);
                 }
@@ -1707,14 +1707,14 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         }
         Commands::Forget { id, yes, purge } => {
             let mut db = open_db(c)?;
-            let m = memoria::obtener(&db, &id)?;
+            let m = memoria::get(&db, &id)?;
             if !yes && !confirm_forget(&m, purge)? {
                 println!("{}", tr!("nothing deleted", "no se ha borrado nada"));
                 return Ok(());
             }
-            let before = omoikane::revisar::antes(&db)?;
-            let m = if purge { memoria::olvidar_del_todo(&mut db, &m.id)? } else { memoria::olvidar(&mut db, &m.id)? };
-            let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+            let before = omoikane::revisar::before(&db)?;
+            let m = if purge { memoria::forget_for_good(&mut db, &m.id)? } else { memoria::forget(&mut db, &m.id)? };
+            let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
             if c.json {
                 return json(&m);
             }
@@ -1742,10 +1742,10 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 }
             }
             let n = if everything {
-                memoria::vaciar_papelera(&db)?
+                memoria::empty_trash(&db)?
             } else {
                 let ids: Vec<String> = visible.into_iter().map(|o| o.id).collect();
-                memoria::vaciar_papelera_de(&mut db, &ids)?
+                memoria::empty_trash_of(&mut db, &ids)?
             };
             if c.json {
                 return json(&serde_json::json!({ "emptied": n }));
@@ -1755,14 +1755,14 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         }
         Commands::History { id } => {
             let db = open_db(c)?;
-            let m = memoria::obtener(&db, &id)?;
-            // From a project, only a memory seen from there (see `memoria::historial_en`), with
+            let m = memoria::get(&db, &id)?;
+            // From a project, only a memory seen from there (see `memoria::history_in`), with
             // its trades looked at (without them it wouldn't see the memories of its trade).
             let here = project_of(c)?;
             if let Err(e) = omoikane::oficios::preparar(&db, &here) {
                 eprintln!("omoikane: trades: {e:#}");
             }
-            let v = memoria::historial_en(&db, &Ambito::de(&db, &here)?, &m.id)?;
+            let v = memoria::history_in(&db, &Scope::from_project(&db, &here)?, &m.id)?;
             if c.json {
                 return json(&v);
             }
@@ -1772,8 +1772,8 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         Commands::Recent { limit, kind, all, project, space } => {
             let db = open_db(c)?;
             let scope = requested_scope(c, &db, all, project.as_deref(), space.as_deref())?;
-            let all = !matches!(scope, Ambito::Proyecto { .. });
-            let v = memoria::recientes(&db, &scope, kind, limit)?;
+            let all = !matches!(scope, Scope::Project { .. });
+            let v = memoria::recent(&db, &scope, kind, limit)?;
             if c.json {
                 return json(&v);
             }
@@ -1792,10 +1792,10 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         Commands::List(l) => {
             let db = open_db(c)?;
             let scope = requested_scope(c, &db, l.all, l.project.as_deref(), l.space.as_deref())?;
-            let all = !matches!(scope, Ambito::Proyecto { .. });
-            let v = memoria::con_etiquetas(&db, &scope, &l.tags, l.kind, l.limit.unwrap_or(usize::MAX))?;
+            let all = !matches!(scope, Scope::Project { .. });
+            let v = memoria::with_tags(&db, &scope, &l.tags, l.kind, l.limit.unwrap_or(usize::MAX))?;
             if c.json {
-                return json(&memoria::con_datos(&db, v)?);
+                return json(&memoria::with_data(&db, v)?);
             }
             if v.is_empty() {
                 println!("{}", tr!("nothing with those tags", "nada con esas etiquetas"));
@@ -1811,22 +1811,22 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             let db = open_db(c)?;
             if refresh_drift {
                 // The daily background process: drift and trade duplicates.
-                omoikane::deriva::refrescar(&db)?;
-                omoikane::revisar::refrescar_duplicadas_de_oficio(&db, true)?;
+                omoikane::deriva::refresh(&db)?;
+                omoikane::revisar::refresh_trade_duplicates(&db, true)?;
                 return Ok(());
             }
             if refresh_trade_duplicates {
-                omoikane::revisar::refrescar_duplicadas_de_oficio(&db, false)?;
+                omoikane::revisar::refresh_trade_duplicates(&db, false)?;
                 return Ok(());
             }
             if let Some(id) = dismiss {
                 let another = match other {
-                    Some(o) => memoria::resolver_id(&db, &o)?,
+                    Some(o) => memoria::resolve_id(&db, &o)?,
                     None => String::new(),
                 };
-                let kind = kind.unwrap_or_else(|| if another.is_empty() { omoikane::revisar::LARGA.into() } else { omoikane::revisar::DESFASADA.into() });
-                omoikane::revisar::descartar(&db, &id, &kind, &another)?;
-                if kind == omoikane::revisar::DERIVA_CODIGO {
+                let kind = kind.unwrap_or_else(|| if another.is_empty() { omoikane::revisar::TOO_LONG.into() } else { omoikane::revisar::OUTDATED.into() });
+                omoikane::revisar::dismiss(&db, &id, &kind, &another)?;
+                if kind == omoikane::revisar::CODE_DRIFT {
                     println!("{}", tr!("ok: it won't warn about it again until its files change a lot again", "hecho: no volverá a avisar hasta que sus ficheros vuelvan a cambiar mucho"));
                     return Ok(());
                 }
@@ -1834,22 +1834,22 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 return Ok(());
             }
             let mut db = db;
-            if omoikane::revisar::limpiar_callado(&mut db) {
+            if omoikane::revisar::cleanup_quietly(&mut db) {
                 omoikane::sync::programar(&db_path(c));
             }
             let scope = requested_scope(c, &db, all, None, None)?;
             if c.json {
-                return json(&omoikane::revisar::avisos(&db, &scope)?);
+                return json(&omoikane::revisar::notices(&db, &scope)?);
             }
             // Paused projects, those no longer in their folder or whose `origin` changed, and the
             // repeated ones (of those seen from here) don't depend on the warnings: they are checked at the same time, with
             // another read-only connection (each project list walks the memory table). If
             // that one can't be opened or fails, afterwards, with the usual one.
-            let filter = omoikane::nombres::filtro_de(&scope);
+            let filter = omoikane::nombres::space_filter(&scope);
             let load_projects = |db: &Connection| -> Result<_> {
                 let paused_list = proyecto::en_pausa(db)?;
                 let projects = proyecto::lista(db, None, filter, usize::MAX)?;
-                let proposals = omoikane::nombres::propuestas_de(db, &projects)?;
+                let proposals = omoikane::nombres::proposals_for(db, &projects)?;
                 Ok((paused_list, projects, proposals))
             };
             let path = db.path().filter(|r| !r.is_empty()).map(PathBuf::from);
@@ -1858,7 +1858,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
                     path.as_ref().and_then(|r| Connection::open_with_flags(r, flags).ok()).map(|another| load_projects(&another))
                 });
-                (omoikane::revisar::avisos(&db, &scope), side.join())
+                (omoikane::revisar::notices(&db, &scope), side.join())
             });
             let v = v?;
             let (paused_list, projects, proposals) = match side {
@@ -1912,9 +1912,9 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 writeln!(out, "{:<12}  {id}  {}", a.kind, a.title.chars().take(90).collect::<String>())?;
                 if let Some(t) = &a.other_title {
                     let label = match a.kind.as_str() {
-                        omoikane::revisar::SUSTITUIDA if a.via > 1 => tr!("by (via {}):", "por (via {}):", a.via),
-                        omoikane::revisar::SUSTITUIDA => tr!("by:", "por:"),
-                        omoikane::revisar::CONTRADICE => tr!("against:", "frente a:"),
+                        omoikane::revisar::SUPERSEDED if a.via > 1 => tr!("by (via {}):", "por (via {}):", a.via),
+                        omoikane::revisar::SUPERSEDED => tr!("by:", "por:"),
+                        omoikane::revisar::CONTRADICTS => tr!("against:", "frente a:"),
                         _ => tr!("newer:", "nueva:"),
                     };
                     writeln!(out, "{:<12}  {label} {}  {}", "", a.other_id.chars().take(12).collect::<String>(), t.chars().take(80).collect::<String>())?;
@@ -2062,11 +2062,11 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             let db = open_db(c)?;
             // Without --all, what is seen from the project (also from the user's folder: not everything).
             let scope = if all {
-                Ambito::Todos
+                Scope::All
             } else {
                 match proyecto::resolver(&db, &project_of(c)?)? {
-                    Some((id, space)) => Ambito::Proyecto { id, space },
-                    None => Ambito::Proyecto { id: -1, space: None },
+                    Some((id, space)) => Scope::Project { id, space },
+                    None => Scope::Project { id: -1, space: None },
                 }
             };
             let n = omoikane::copia::exportar(&db, &path, &scope, encrypt, &mut output)?;
@@ -2210,7 +2210,7 @@ fn setup(agent: &str, yes: bool, dry_run: bool, no_auto_update: bool) -> Result<
 fn recall_on_session_end(c: &Common) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let mut e: recall::Entrada = serde_json::from_str(&input).unwrap_or_default();
+    let mut e: recall::HookInput = serde_json::from_str(&input).unwrap_or_default();
     let db_path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
     // Cursor gives the folder in `workspace_roots`; Copilot and Kiro don't give the conversation's path.
     if e.cwd.is_empty()
@@ -2280,10 +2280,10 @@ fn recall_on_session_end(c: &Common) -> Result<()> {
     Ok(())
 }
 
-fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: recall::Formato) -> Result<()> {
+fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: recall::HookFormat) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let mut e: recall::Entrada = serde_json::from_str(&input).unwrap_or_default();
+    let mut e: recall::HookInput = serde_json::from_str(&input).unwrap_or_default();
     if e.cwd.is_empty()
         && let Some(root) = e.workspace_roots.first()
     {
@@ -2307,7 +2307,7 @@ fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: r
     }
     let mut db = db::abrir(&path)?;
     let (event, text) = if on_file_open {
-        ("PreToolUse", recall::al_abrir(&mut db, &project, &e)?)
+        ("PreToolUse", recall::on_file_open(&mut db, &project, &e)?)
     } else if on_session_start {
         // Once a day: the database backup and purging the trash.
         omoikane::copia::diaria(&db, &path);
@@ -2321,7 +2321,7 @@ fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: r
             // That sync already brings what's new: the first message doesn't launch another.
             omoikane::sync::apuntar_traido(&db);
         }
-        let text = recall::al_empezar(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&path) {
+        let text = recall::on_session_start(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&path) {
             // Before the block's closing, which is the last `</omoikane>`.
             Some(a) => match t.rfind("</omoikane>") {
                 Some(i) => format!("{}{a}\n{}", &t[..i], &t[i..]),
@@ -2335,10 +2335,10 @@ fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: r
         // channel; without it, recall goes by words only.
         let model = std::cell::OnceCell::new();
         let mut open_model = || model.get_or_init(|| modelos::abrir_actual().ok().flatten()).as_ref();
-        ("UserPromptSubmit", recall::al_preguntar_abriendo(&mut db, &project, &e, &mut open_model)?)
+        ("UserPromptSubmit", recall::on_prompt_opening(&mut db, &project, &e, &mut open_model)?)
     };
     if let Some(t) = text {
-        println!("{}", recall::salida_en(hook_format, event, &t));
+        println!("{}", recall::hook_output_in(hook_format, event, &t));
     }
     // What other computers pushed mid-session: every 2 minutes at most, on the side and without
     // waiting for it (without sync, nothing).
@@ -2384,7 +2384,7 @@ fn meaning_report(path: &std::path::Path) -> Result<(serde_json::Value, Vec<Stri
         (Some(db), true) => s::cobertura(db)?,
         _ => (0, e.memories),
     };
-    let (queries, unanswered, last_miss) = db.as_ref().map(omoikane::recall::consultas_al_modelo).unwrap_or((0, 0, None));
+    let (queries, unanswered, last_miss) = db.as_ref().map(omoikane::recall::model_queries).unwrap_or((0, 0, None));
     let (n, u) = (e.memories, e.threshold);
     let why = match e.reason {
         Porque::Env => "OMOIKANE_SEMANTIC".to_string(),
@@ -2568,14 +2568,14 @@ fn tags_cli(c: &Common, merge: Option<Vec<String>>, all: bool, project: Option<S
     let mut db = open_db(c)?;
     let scope = requested_scope(c, &db, all, project.as_deref(), space.as_deref())?;
     if let Some([from, a]) = merge.as_deref() {
-        let n = omoikane::etiquetas::unir(&mut db, &scope, from, a)?;
+        let n = omoikane::etiquetas::merge(&mut db, &scope, from, a)?;
         if c.json {
             return json(&serde_json::json!({ "from": from, "to": a, "changed": n }));
         }
         println!("{}", tr!("«{}» → «{}» in {} memories", "«{}» → «{}» en {} memorias", from, a, n));
         return Ok(());
     }
-    let pairs = omoikane::etiquetas::parejas(&db, &scope)?;
+    let pairs = omoikane::etiquetas::variant_pairs(&db, &scope)?;
     if c.json {
         let v: Vec<_> = pairs.iter().map(|(a, na, b, nb)| serde_json::json!({ "tag": a, "count": na, "variant": b, "variant_count": nb })).collect();
         return json(&v);
@@ -2599,7 +2599,7 @@ fn skill_cli(c: &Common, id: Option<String>, suggest: bool, refresh: bool, to: O
             let id = omoikane::skill::resolver(&mut db, &project, asked)?;
             // If it was asked for with words, show which one was chosen.
             if !c.json && !id.starts_with(&asked.trim().to_uppercase()) {
-                let m = memoria::obtener(&db, &id)?;
+                let m = memoria::get(&db, &id)?;
                 println!("{}", tr!("memory {}  {}", "memoria {}  {}", short_id(&id), m.title));
             }
             omoikane::skill::escribir(&db, &project, &id, omoikane::skill::Destino::de(to.as_deref())?, force, dry_run)?
@@ -2638,7 +2638,7 @@ fn skill_cli(c: &Common, id: Option<String>, suggest: bool, refresh: bool, to: O
             }
             println!("{}", tr!("Could be skills:", "Podrían ser skills:"));
             for i in &ideas {
-                let why = match (i.kind == omoikane::memoria::Tipo::Procedure, i.applied_sessions) {
+                let why = match (i.kind == omoikane::memoria::Kind::Procedure, i.applied_sessions) {
                     (_, 1) => tr!("applied in 1 session", "aplicada en 1 sesión"),
                     (_, n) if n > 1 => tr!("applied in {n} sessions", "aplicada en {n} sesiones"),
                     _ => tr!("procedure", "receta"),
@@ -2688,39 +2688,39 @@ fn decisions_cli(c: &Common, d: DecisionsArgs) -> Result<()> {
     let mut db = open_db(c)?;
     if let (Some(id), Some(answer)) = (&d.resolve, &d.answer) {
         // Only one seen from here: another client's is not resolved.
-        let id = memoria::resolver_id(&db, id)?;
+        let id = memoria::resolve_id(&db, id)?;
         anyhow::ensure!(
-            Ambito::de(&db, &project_of(c)?)?.ve(&db, &id)?,
+            Scope::from_project(&db, &project_of(c)?)?.sees(&db, &id)?,
             tr!("{id} is in another space: resolve it from that project", "{id} es de otro espacio: resuélvela desde ese proyecto")
         );
-        let before = omoikane::revisar::antes(&db)?;
-        let m = match memoria::resolver_decision(&mut db, &id, answer, d.reason, d.allow_leaks)? {
+        let before = omoikane::revisar::before(&db)?;
+        let m = match memoria::resolve_decision(&mut db, &id, answer, d.reason, d.allow_leaks)? {
             Ok(m) => m,
             Err(leaks) => {
                 warn_leaks(c, &leaks)?;
                 unreachable!()
             }
         };
-        let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+        let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
         omoikane::sync::programar(&db_path(c));
         if c.json {
-            return json(&memoria::con_datos(&db, vec![m])?.remove(0));
+            return json(&memoria::with_data(&db, vec![m])?.remove(0));
         }
         println!("{}", tr!("resolved {}: {}", "resuelta {}: {}", short_id(&m.id), m.title));
         return Ok(());
     }
-    if omoikane::revisar::limpiar_callado(&mut db) {
+    if omoikane::revisar::cleanup_quietly(&mut db) {
         omoikane::sync::programar(&db_path(c));
     }
     let scope = requested_scope(c, &db, d.all, d.project.as_deref(), d.space.as_deref())?;
-    let v = memoria::decisiones(&db, &scope, d.blocking, &d.tags, d.limit)?;
+    let v = memoria::decisions(&db, &scope, d.blocking, &d.tags, d.limit)?;
     if c.json {
         return json(&v);
     }
     if v.is_empty() {
         println!("{}", tr!("no open decisions", "no hay decisiones abiertas"));
     }
-    let with_project = !matches!(scope, Ambito::Proyecto { .. });
+    let with_project = !matches!(scope, Scope::Project { .. });
     for x in &v {
         let mark = if x.priority == "blocking" { tr!("BLOCKING", "BLOQUEANTE") } else { tr!("later", "después") };
         println!("{}  {:<10} {}", short_id(&x.id), mark, x.title);
@@ -2813,7 +2813,7 @@ fn diary_cli(c: &Common, d: DiaryArgs) -> Result<()> {
     if v.is_empty() {
         println!("{}", tr!("nothing yet", "nada todavía"));
     }
-    let several = !matches!(scope, Ambito::Proyecto { .. });
+    let several = !matches!(scope, Scope::Project { .. });
     for l in &v {
         let time_of = |t: &str| t.get(11..16).unwrap_or("").to_string();
         let day = l.first_at.get(..10).unwrap_or("");
@@ -2932,25 +2932,25 @@ fn docs_cli(c: &Common, action: DocsAction) -> Result<()> {
     }
 }
 
-fn requested_scope(c: &Common, db: &Connection, all: bool, project: Option<&str>, space: Option<&str>) -> Result<Ambito> {
+fn requested_scope(c: &Common, db: &Connection, all: bool, project: Option<&str>, space: Option<&str>) -> Result<Scope> {
     let current = project_of(c)?;
     // Its trades, if they were never looked at: without them it wouldn't see the memories of its trade. Optional.
     if let Err(e) = omoikane::oficios::preparar(db, &current) {
         eprintln!("omoikane: trades: {e:#}");
     }
-    let base = Ambito::de(db, &current)?;
+    let base = Scope::from_project(db, &current)?;
     let requested = if let Some(s) = space {
-        Ambito::Espacio(Some(proyecto::buscar_espacio(db, s)?))
+        Scope::Space(Some(proyecto::buscar_espacio(db, s)?))
     } else if let Some(p) = project {
         let id = proyecto::buscar_en(db, p, &base)?;
-        Ambito::Proyecto { id, space: proyecto::espacio_de(db, id)? }
+        Scope::Project { id, space: proyecto::espacio_de(db, id)? }
     } else if all {
-        base.amplio()
+        base.widen()
     } else {
         base
     };
     anyhow::ensure!(
-        base.permite(&requested),
+        base.allows(&requested),
         tr!(
             "that is in another space: from this project you only see its own space; run it from that project or from your home folder",
             "eso es de otro espacio: desde este proyecto solo se ve su espacio; hazlo desde ese proyecto o desde tu carpeta de usuario"
@@ -2978,8 +2978,8 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
     let mut db = open_db(c)?;
     match action {
         ProjectsAction::List => {
-            let base = Ambito::de(&db, &project_of(c)?)?;
-            let filter = if matches!(base, Ambito::Todos) { None } else { Some(base.espacio()) };
+            let base = Scope::from_project(&db, &project_of(c)?)?;
+            let filter = if matches!(base, Scope::All) { None } else { Some(base.space()) };
             let mut v = proyecto::lista(&db, None, filter, usize::MAX)?;
             // Their trades: for those never looked at, now (the root and one level of each).
             for p in v.iter_mut().filter(|p| !p.gone && p.trades.is_empty()) {
@@ -3068,7 +3068,7 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
         ProjectsAction::Distinct { a, b } => {
             let from = proyecto::buscar(&db, &a)?;
             let the_other = b.as_deref().map(|b| proyecto::buscar(&db, b)).transpose()?;
-            omoikane::nombres::marcar_distintos(&db, from, the_other)?;
+            omoikane::nombres::mark_distinct(&db, from, the_other)?;
             println!("{}", tr!("ok: the review won't propose it again", "hecho: la revisión no volverá a proponerlo"));
             Ok(())
         }
@@ -3240,15 +3240,15 @@ fn trades_for_update(
     c: &Common,
     db: &Connection,
     id: &str,
-    mut changes: Cambios,
+    mut changes: Changes,
     trades: &[String],
     no_trade: bool,
     audience: Option<&str>,
     data: Option<&Option<serde_json::Value>>,
     allow_leaks: bool,
-) -> Result<(Cambios, Option<Memoria>)> {
+) -> Result<(Changes, Option<Memory>)> {
     use omoikane::oficios;
-    let current = memoria::obtener(db, id)?;
+    let current = memoria::get(db, id)?;
     let trade = if no_trade { Some(String::new()) } else { (!trades.is_empty()).then(|| trades.join(",")) };
     let requested = oficios::PedidoCambio { trade: trade.as_deref(), para: audience, cambios: &changes, datos: data.map(|d| d.as_ref()), permitir_fugas: allow_leaks };
     let plan = match oficios::al_cambiar(db, &current, requested)? {
@@ -3319,8 +3319,8 @@ fn trades_cli(c: &Common, action: TradesAction) -> Result<()> {
             show_state(id)
         }
         TradesAction::List { all: true } => {
-            let base = Ambito::de(&db, &project_of(c)?)?;
-            let filter = if matches!(base, Ambito::Todos) { None } else { Some(base.espacio()) };
+            let base = Scope::from_project(&db, &project_of(c)?)?;
+            let filter = if matches!(base, Scope::All) { None } else { Some(base.space()) };
             let mut v = proyecto::lista(&db, None, filter, usize::MAX)?;
             for p in v.iter_mut().filter(|p| !p.gone) {
                 p.trades = oficios::al_dia_si_falta(&db, p.id, &p.path)?;
@@ -3389,7 +3389,7 @@ fn text_or_stdin(t: Option<String>) -> Result<String> {
 
 /// On stderr (also with `--json`): what was saved is not what was written.
 /// If the change removed a person's verification: let whoever changes it know.
-fn warn_unverified(m: &Memoria) {
+fn warn_unverified(m: &Memory) {
     if let Some(v) = &m.unverified {
         eprintln!(
             "{}",
@@ -3413,7 +3413,7 @@ fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
         ));
     }
     let mut db = open_db(c)?;
-    let m = memoria::obtener(&db, &v.id)?;
+    let m = memoria::get(&db, &v.id)?;
     if v.unverify {
         let was_verified = omoikane::verificado::desverificar(&mut db, &m.id)?;
         if c.json {
@@ -3446,7 +3446,7 @@ fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
     Ok(())
 }
 
-fn warn_redacted(m: &Memoria) {
+fn warn_redacted(m: &Memory) {
     if !m.redacted.is_empty() {
         let r = omoikane::secretos::resumen(&m.redacted);
         eprintln!(
@@ -3460,7 +3460,7 @@ fn warn_redacted(m: &Memoria) {
 }
 
 /// Whether an `update` changes nothing of the memory (only, perhaps, its data).
-fn no_changes(c: &Cambios) -> bool {
+fn no_changes(c: &Changes) -> bool {
     c.title.is_none()
         && c.content.is_none()
         && c.kind.is_none()
@@ -3504,7 +3504,7 @@ fn one_line(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s } else { format!("{}…", s.chars().take(max).collect::<String>()) }
 }
 
-fn listing(m: &Memoria, with_project: bool) {
+fn listing(m: &Memory, with_project: bool) {
     let pinned = if m.pinned { tr!(" (pinned)", " (fijada)") } else { String::new() };
     let verified = m.verified.as_ref().map(|v| tr!(" (verified by {})", " (verificada por {})", v.by)).unwrap_or_default();
     println!("{}  {:<10} {}{pinned}{verified}", short_id(&m.id), m.kind.as_str(), m.title);
@@ -3525,7 +3525,7 @@ fn listing(m: &Memoria, with_project: bool) {
     println!("              {}", one_line(&m.content, 160));
 }
 
-fn print_full(m: &Memoria, applied: Option<(i64, Option<String>)>) {
+fn print_full(m: &Memory, applied: Option<(i64, Option<String>)>) {
     println!("{}  {}{}", m.id, m.kind, if m.pinned { tr!("  (pinned)", "  (fijada)") } else { String::new() });
     println!("{}\n", m.title);
     println!("{}\n", m.content);
@@ -3547,13 +3547,13 @@ fn print_full(m: &Memoria, applied: Option<(i64, Option<String>)>) {
     println!("{}{project}", tr!("project    ", "proyecto   "));
     println!("{}{}", tr!("source     ", "origen     "), m.source);
     if let Some(p) = &m.provenance {
-        println!("{}{}", tr!("written in ", "escrita en "), p.texto());
+        println!("{}{}", tr!("written in ", "escrita en "), p.text());
     }
     for (i, e) in m.evidence.iter().enumerate() {
         let label = if i == 0 { tr!("based on   ", "se basa en ") } else { "           ".to_string() };
-        println!("{label}{}", e.texto());
+        println!("{label}{}", e.text());
     }
-    if let Some(f) = omoikane::revisar::fecha_revision(&m.tags) {
+    if let Some(f) = omoikane::revisar::review_date_of(&m.tags) {
         match &m.review_reason {
             Some(r) => println!("{}", tr!("review     {f}: {r}", "revisar    {f}: {r}")),
             None => println!("{}", tr!("review     {f}", "revisar    {f}")),
@@ -3576,10 +3576,10 @@ fn print_full(m: &Memoria, applied: Option<(i64, Option<String>)>) {
     }
 }
 
-fn print_history(m: &Memoria, v: &[Version]) {
+fn print_history(m: &Memory, v: &[Version]) {
     println!("{}  {}", short_id(&m.id), m.title);
     if let Some(p) = &m.provenance {
-        println!("{}", tr!("written in {} ({})", "escrita en {} ({})", p.texto(), m.created_at));
+        println!("{}", tr!("written in {} ({})", "escrita en {} ({})", p.text(), m.created_at));
     }
     if let Some(x) = &m.verified {
         println!("{}", tr!("verified by {} ({})", "verificada por {} ({})", x.by, x.at));
@@ -3645,9 +3645,9 @@ fn doctor(c: &Common) -> Result<()> {
             None if omoikane::copia::copias_a_conservar() == 0 => println!("{}", tr!("backups    off (OMOIKANE_BACKUPS=0)", "copias     apagadas (OMOIKANE_BACKUPS=0)")),
             None => println!("{}", tr!("backups    none yet (the first one happens at the next session start)", "copias     todavía ninguna (la primera, al empezar la próxima sesión)")),
         }
-        let with_secret = memoria::recientes(&base, &Ambito::Todos, None, usize::MAX >> 1)?
+        let with_secret = memoria::recent(&base, &Scope::All, None, usize::MAX >> 1)?
             .iter()
-            .filter(|m| !omoikane::revisar::secretos_de(m).is_empty())
+            .filter(|m| !omoikane::revisar::secrets_of(m).is_empty())
             .count();
         let redaction = if omoikane::secretos::activo() {
             tr!("on", "activa")
@@ -4669,9 +4669,9 @@ fn restore_cli(c: &Common, id: Option<String>) -> Result<()> {
     let (mut db, model) = open_with_model(c)?;
     // With the id given, like `forget` and `get`: whoever types it in their terminal already has it. What is
     // limited by folder is what is shown without asking (the list) and what is deleted in bulk.
-    let before = omoikane::revisar::antes(&db)?;
-    let m = memoria::restaurar(&mut db, &id, model.as_ref())?;
-    let _ = omoikane::revisar::al_dia_de(&db, &before, std::slice::from_ref(&m.id));
+    let before = omoikane::revisar::before(&db)?;
+    let m = memoria::restore(&mut db, &id, model.as_ref())?;
+    let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
     omoikane::sync::programar(&c.db.clone().unwrap_or_else(db::ruta_por_defecto));
     if c.json {
         return json(&m);
@@ -4696,7 +4696,7 @@ fn list_trash(c: &Common, db: &Connection) -> Result<()> {
 
 /// In a terminal, it asks; anywhere else (an agent, a script) it refuses without `--yes`,
 /// so that nobody deletes something for not having read the help.
-fn confirm_forget(m: &Memoria, purge: bool) -> Result<bool> {
+fn confirm_forget(m: &Memory, purge: bool) -> Result<bool> {
     if !omoikane::entorno::puede_preguntar() {
         bail!(tr!("add --yes to forget {} without asking", "añade --yes para olvidar {} sin preguntar", short_id(&m.id)));
     }

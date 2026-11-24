@@ -39,7 +39,7 @@ struct Conf {
     sync: bool,
     model: Option<PathBuf>,
     /// Starting memories, spread across the three projects (with 2,000 or more, the review after
-    /// each write goes in parts, `revisar::al_dia_de`; with fewer, it is redone whole).
+    /// each write goes in parts, `revisar::refresh_for`; with fewer, it is redone whole).
     memories: usize,
 }
 
@@ -406,15 +406,15 @@ fn run(name: &str, c: &Conf) -> Report {
         let projects: Vec<String> = (0..3).map(|i| omoikane::proyecto::de(&e.repo(i)).unwrap()).collect();
         for j in 0..c.memories {
             let mut a = Rng(1 + j as u64);
-            let n = omoikane::memoria::Nueva {
+            let n = omoikane::memoria::NewMemory {
                 project: projects[j % 3].clone(),
-                kind: Some(omoikane::memoria::Tipo::Decision),
+                kind: Some(omoikane::memoria::Kind::Decision),
                 title: format!("semilla{j} {}", phrase(&mut a, 3)),
                 content: phrase(&mut a, 15),
                 source: "semilla".into(),
                 ..Default::default()
             };
-            omoikane::memoria::guardar(&mut db, n, None).unwrap();
+            omoikane::memoria::save(&mut db, n, None).unwrap();
         }
     }
     if let Some(m) = &c.model {

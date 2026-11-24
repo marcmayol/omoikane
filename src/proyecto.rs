@@ -967,7 +967,7 @@ pub fn lista(db: &Connection, only: Option<i64>, space: Option<Option<i64>>, lim
              WHERE project_id != 0 AND tags LIKE ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2)
              GROUP BY project_id",
         )?;
-        let tag = crate::memoria::ESTADO;
+        let tag = crate::memoria::STATUS;
         q.query_map(params![format!("%\"{tag}\"%"), tag], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     let mut trades = crate::oficios::de_proyectos(db)?;
@@ -984,18 +984,18 @@ pub fn lista(db: &Connection, only: Option<i64>, space: Option<Option<i64>>, lim
 /// The project a person or an agent names: a folder, or a name or part of a name of the known
 /// projects («balua»). Error if it matches none or matches several (with the list).
 pub fn buscar(db: &Connection, text: &str) -> Result<i64> {
-    buscar_en(db, text, &crate::memoria::Ambito::Todos)
+    buscar_en(db, text, &crate::memoria::Scope::All)
 }
 
 /// [`buscar`] among the projects visible from `scope`: from a project or a space, those of its space
 /// (or, without a space, those that have none); from a general folder, all of them. A name is only
 /// searched among them (one from another client doesn't match nor appears in the error), and a folder
 /// from another space is an error.
-pub fn buscar_en(db: &Connection, text: &str, scope: &crate::memoria::Ambito) -> Result<i64> {
-    let all = matches!(scope, crate::memoria::Ambito::Todos);
-    let id = search_among(db, text, if all { None } else { Some(scope.espacio()) })?;
+pub fn buscar_en(db: &Connection, text: &str, scope: &crate::memoria::Scope) -> Result<i64> {
+    let all = matches!(scope, crate::memoria::Scope::All);
+    let id = search_among(db, text, if all { None } else { Some(scope.space()) })?;
     anyhow::ensure!(
-        all || espacio_de(db, id)? == scope.espacio(),
+        all || espacio_de(db, id)? == scope.space(),
         tr!(
             "that project is in another space: from here you only reach the projects of this one",
             "ese proyecto es de otro espacio: desde aquí solo se llega a los proyectos de este"
@@ -1046,7 +1046,7 @@ fn search_among(db: &Connection, text: &str, space: Option<Option<i64>>) -> Resu
     } else if !partial.is_empty() {
         partial
     } else {
-        all.iter().filter(|(_, name, _)| crate::nombres::parecido(name, t) == Some(crate::nombres::Parecido::UnaLetra)).collect()
+        all.iter().filter(|(_, name, _)| crate::nombres::similarity(name, t) == Some(crate::nombres::Similarity::OneLetter)).collect()
     };
     match chosen.as_slice() {
         [one] => Ok(one.0),
@@ -1549,7 +1549,7 @@ pub fn fundir(db: &mut Connection, from: i64, to: i64, force: bool) -> Result<us
         Ok(tx
             .query_row(
                 "SELECT id FROM memory WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = ?2) ORDER BY updated_at DESC LIMIT 1",
-                params![p, crate::memoria::ESTADO],
+                params![p, crate::memoria::STATUS],
                 |f| f.get(0),
             )
             .optional()?)
@@ -1575,7 +1575,7 @@ pub fn fundir(db: &mut Connection, from: i64, to: i64, force: bool) -> Result<us
             params![a, b],
             |f| Ok((f.get(0)?, f.get(1)?)),
         )?;
-        crate::veredictos::poner(&tx, &older, &newer, crate::veredictos::SUSTITUIDA, "projects merged: the newer status stays", "omoikane")?;
+        crate::veredictos::set(&tx, &older, &newer, crate::veredictos::SUPERSEDED, "projects merged: the newer status stays", "omoikane")?;
     }
     tx.commit()?;
     Ok(n)

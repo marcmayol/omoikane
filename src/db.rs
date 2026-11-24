@@ -156,7 +156,7 @@ fn open_once(path: &Path) -> Result<Connection> {
 ///   3 ms). Used with `INDEXED BY`: on its own, SQLite goes by the primary key.
 /// - `memory_reciente`: the scope's latest in order, without reading and sorting all of them (at
 ///   session start, with 100,000 memories, 440 ms).
-/// - `memory_hlc`: the latest stamp, without reading the table (the fingerprint of `revisar::al_dia`,
+/// - `memory_hlc`: the latest stamp, without reading the table (the fingerprint of `revisar::refresh`,
 ///   in every session: with 100,000 memories, 90 ms).
 /// - `memory_cuenta`: how many memories there are per project and space, kept up to date by triggers;
 ///   counting a scope's no longer scans the table.

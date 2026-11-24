@@ -8,8 +8,8 @@
 
 mod comun;
 
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use omoikane::significado::{self as s, Porque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -55,8 +55,8 @@ fn fake_service(home: &Path) -> Arc<Fake> {
     f
 }
 
-fn save(db: &mut rusqlite::Connection, project: &str, kind: Tipo, title: &str, content: &str) -> String {
-    memoria::guardar(db, Nueva { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() }, None).unwrap().id
+fn save(db: &mut rusqlite::Connection, project: &str, kind: Kind, title: &str, content: &str) -> String {
+    memoria::save(db, NewMemory { project: project.into(), kind: Some(kind), title: title.into(), content: content.into(), ..Default::default() }, None).unwrap().id
 }
 
 /// A vector (any) for each memory: without it, the veto doesn't judge a memory and keeps it.
@@ -68,8 +68,8 @@ fn with_vectors(db: &rusqlite::Connection) {
     }
 }
 
-fn e(session: &str, prompt: &str) -> Entrada {
-    Entrada { session_id: session.into(), prompt: prompt.into(), ..Default::default() }
+fn e(session: &str, prompt: &str) -> HookInput {
+    HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() }
 }
 
 fn recall_cli(db: &Path, start: bool) -> String {
@@ -121,10 +121,10 @@ fn when_and_how_much_the_model_is_used() {
     ];
     let mut ids = Vec::new();
     for (t, c) in others {
-        ids.push(save(&mut db, "/p", Tipo::Fact, t, c));
+        ids.push(save(&mut db, "/p", Kind::Fact, t, c));
     }
-    let fact = save(&mut db, "/p", Tipo::Fact, "Gradle daemons", "Two Gradle daemons at once corrupt the build cache on the CI runner; stop them before building.");
-    let pref = save(&mut db, "/p", Tipo::Preference, "Offline builds", "With two gradle daemons the build cache gets corrupt on the CI runner: always build offline with one daemon.");
+    let fact = save(&mut db, "/p", Kind::Fact, "Gradle daemons", "Two Gradle daemons at once corrupt the build cache on the CI runner; stop them before building.");
+    let pref = save(&mut db, "/p", Kind::Preference, "Offline builds", "With two gradle daemons the build cache gets corrupt on the CI runner: always build offline with one daemon.");
     with_vectors(&db);
     let fake = fake_service(&home);
     // The most similar according to the «model»: three memories that have nothing to do with it.
@@ -136,10 +136,10 @@ fn when_and_how_much_the_model_is_used() {
     let e0 = s::estado(&db);
     assert!(!e0.on && e0.reason == Porque::Size && e0.memories == 12 && e0.threshold == 1000, "{e0:?}");
     assert!(!s::en_uso(&db));
-    let t = recall::al_preguntar(&mut db, "/p", &e("s1", question), None).unwrap().expect("las palabras traen algo");
+    let t = recall::on_prompt(&mut db, "/p", &e("s1", question), None).unwrap().expect("las palabras traen algo");
     assert!(t.contains("Gradle daemons") && t.contains("Offline builds"), "{t}");
-    let o = omoikane::buscar::Opciones { ambito: Ambito::de(&db, "/p").unwrap(), kind: None, tags: vec![], limite: 5 };
-    let r = omoikane::buscar::buscar(&mut db, question, &o, None).unwrap();
+    let o = omoikane::buscar::SearchOptions { scope: Scope::from_project(&db, "/p").unwrap(), kind: None, tags: vec![], limit: 5 };
+    let r = omoikane::buscar::search(&mut db, question, &o, None).unwrap();
     assert!(r.iter().all(|x| x.similarity.is_none()), "sin modelo: {r:?}");
     assert_eq!(fake.questions.load(Ordering::SeqCst), 0, "por debajo del umbral no se consulta el servicio");
 
@@ -149,7 +149,7 @@ fn when_and_how_much_the_model_is_used() {
     let e1 = s::estado(&db);
     assert!(e1.on && e1.reason == Porque::Size, "{e1:?}");
     assert!(s::en_uso(&db));
-    let t = recall::al_preguntar(&mut db, "/p", &e("s2", question), None).unwrap().expect("la preferencia");
+    let t = recall::on_prompt(&mut db, "/p", &e("s2", question), None).unwrap().expect("la preferencia");
     assert!(!t.contains("Gradle daemons") && t.contains("Offline builds"), "{t}");
     assert_eq!(fake.questions.load(Ordering::SeqCst), 1);
     let _ = (&fact, &pref);
@@ -157,20 +157,20 @@ fn when_and_how_much_the_model_is_used() {
     // 3. Policy D: it isn't consulted on messages of 5 words or fewer, of more than 300 characters, nor
     // when the words brought nothing to veto.
     let short = "gradle daemons corrupt build cache";
-    let t = recall::al_preguntar(&mut db, "/p", &e("s3", short), None).unwrap().unwrap_or_default();
+    let t = recall::on_prompt(&mut db, "/p", &e("s3", short), None).unwrap().unwrap_or_default();
     assert!(t.contains("Gradle daemons"), "corto, sin veto: {t}");
     let long = format!("{question}. {}", "I have been looking at the logs of the last builds and the timings look odd to me. ".repeat(4));
-    assert!(long.chars().count() > recall::LARGO_MAX_GEMMA);
-    let _ = recall::al_preguntar(&mut db, "/p", &e("s4", &long), None).unwrap();
-    let _ = recall::al_preguntar(&mut db, "/p", &e("s5", "tell me something nice about the weather today please friend"), None).unwrap();
+    assert!(long.chars().count() > recall::MAX_LEN_GEMMA);
+    let _ = recall::on_prompt(&mut db, "/p", &e("s4", &long), None).unwrap();
+    let _ = recall::on_prompt(&mut db, "/p", &e("s5", "tell me something nice about the weather today please friend"), None).unwrap();
     assert_eq!(fake.questions.load(Ordering::SeqCst), 1, "D: ni corto, ni largo, ni sin nada que vetar");
-    assert_eq!(recall::consultas_al_modelo(&db), (1, 0, None));
+    assert_eq!(recall::model_queries(&db), (1, 0, None));
 
     // 4. If the service doesn't answer in time: words only, like in 1.1, and it's recorded.
     fake.delay_ms.store(600, Ordering::SeqCst);
-    let t = recall::al_preguntar(&mut db, "/p", &e("s6", question), None).unwrap().unwrap();
+    let t = recall::on_prompt(&mut db, "/p", &e("s6", question), None).unwrap().unwrap();
     assert!(t.contains("Gradle daemons"), "sin respuesta no se veta: {t}");
-    let (n, without, last) = recall::consultas_al_modelo(&db);
+    let (n, without, last) = recall::model_queries(&db);
     assert_eq!((n, without), (2, 1));
     assert!(last.is_some_and(|u| u.ends_with(" timeout")));
     fake.delay_ms.store(0, Ordering::SeqCst);
@@ -179,11 +179,11 @@ fn when_and_how_much_the_model_is_used() {
     // similarity. What is very similar does get in even if it shares no words.
     let nothing = "quarterly marketing budget meeting agenda";
     *fake.top.lock().unwrap() = vec![(ids[0].clone(), 0.12), (ids[1].clone(), 0.11)];
-    let r = omoikane::buscar::buscar(&mut db, nothing, &o, None).unwrap();
+    let r = omoikane::buscar::search(&mut db, nothing, &o, None).unwrap();
     assert!(r.is_empty(), "sin palabras y sin parecido: vacía, {r:?}");
     *fake.top.lock().unwrap() = vec![(ids[0].clone(), 0.8), (ids[1].clone(), 0.11)];
-    let r = omoikane::buscar::buscar(&mut db, nothing, &o, None).unwrap();
-    assert_eq!(r.iter().map(|x| x.memoria.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str()], "{r:?}");
+    let r = omoikane::buscar::search(&mut db, nothing, &o, None).unwrap();
+    assert_eq!(r.iter().map(|x| x.memory.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str()], "{r:?}");
 
     // 6. What the user chooses overrides the size, and `--auto` hands it back to the size.
     s::fijar(Some(false)).unwrap();

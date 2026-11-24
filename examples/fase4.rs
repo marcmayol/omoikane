@@ -7,9 +7,9 @@
 //! real messages used to measure how much gets injected (and whether it makes sense, by looking at a sample).
 
 use anyhow::{Result, anyhow};
-use omoikane::buscar::{self, Opciones, Resultado};
+use omoikane::buscar::{self, SearchOptions, SearchResult};
 use omoikane::embeber::Modelo;
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -86,7 +86,7 @@ fn messages(dir: &Path) -> Result<Vec<String>> {
 
 /// What would be injected with a criterion: the first `max` that have at least `min_words` words
 /// from the query, or that only came up by meaning with similarity ≥ `sim`.
-fn choose(r: &[Resultado], min_words: usize, sim: f32, max: usize) -> Vec<&Resultado> {
+fn choose(r: &[SearchResult], min_words: usize, sim: f32, max: usize) -> Vec<&SearchResult> {
     r.iter()
         .filter(|x| x.matched_words >= min_words || (x.matched_words == 0 && x.similarity.unwrap_or(-1.0) >= sim))
         .take(max)
@@ -101,8 +101,8 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in &notes {
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, Some(&m))?.id, f.clone());
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f.clone());
     }
     omoikane::vectores::sincronizar(&mut db, &m)?;
     let index = std::fs::read_to_string(notes_dir.join("MEMORY.md"))?;
@@ -122,11 +122,11 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     }
     println!("{} notas · {} positivos (resúmenes de MEMORY.md) · {} mensajes reales\n", notes.len(), positives.len(), real.len());
 
-    let o = Opciones { ambito: Ambito::Todos, kind: None, tags: vec![], limite: 10 };
-    let res_pos: Vec<(String, Vec<Resultado>)> =
-        positives.iter().map(|(f, q)| Ok((f.clone(), buscar::buscar(&mut db, q, &o, Some(&m))?))).collect::<Result<_>>()?;
-    let res_real: Vec<(String, Vec<Resultado>)> =
-        real.iter().map(|q| Ok((q.clone(), buscar::buscar(&mut db, q, &o, Some(&m))?))).collect::<Result<_>>()?;
+    let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 10 };
+    let res_pos: Vec<(String, Vec<SearchResult>)> =
+        positives.iter().map(|(f, q)| Ok((f.clone(), buscar::search(&mut db, q, &o, Some(&m))?))).collect::<Result<_>>()?;
+    let res_real: Vec<(String, Vec<SearchResult>)> =
+        real.iter().map(|q| Ok((q.clone(), buscar::search(&mut db, q, &o, Some(&m))?))).collect::<Result<_>>()?;
 
     // IDF-weighted coverage: the part of the query's «weight» that is in the memory.
     let toks = |t: &str| -> std::collections::BTreeSet<String> {
@@ -142,9 +142,9 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
         let df = docs.iter().filter(|d| has(t, d)).count() as f64;
         ((n_docs - df + 0.5) / (df + 0.5)).ln().max(0.0)
     };
-    let wc = |q: &str, r: &Resultado| -> f64 {
-        let ts: Vec<String> = buscar::terminos(q).iter().map(|t| strip_accents(t)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        let d = toks(&format!("{} {}", r.memoria.title, r.memoria.content));
+    let wc = |q: &str, r: &SearchResult| -> f64 {
+        let ts: Vec<String> = buscar::terms(q).iter().map(|t| strip_accents(t)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let d = toks(&format!("{} {}", r.memory.title, r.memory.content));
         let (mut a, mut b) = (0.0, 0.0);
         for t in &ts {
             let w = idf(t);
@@ -159,11 +159,11 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     for threshold in [0.15f64, 0.25, 0.35, 0.45] {
         for relative in [0.0f64, 0.7] {
             for max in [1usize, 3] {
-                let pick = |q: &str, r: &[Resultado]| -> Vec<String> {
-                    let mut v: Vec<(f64, &Resultado)> = r.iter().map(|x| (wc(q, x), x)).filter(|(w, _)| *w >= threshold).collect();
+                let pick = |q: &str, r: &[SearchResult]| -> Vec<String> {
+                    let mut v: Vec<(f64, &SearchResult)> = r.iter().map(|x| (wc(q, x), x)).filter(|(w, _)| *w >= threshold).collect();
                     v.sort_by(|a, b| b.0.total_cmp(&a.0));
                     let best = v.first().map(|x| x.0).unwrap_or(0.0);
-                    v.into_iter().filter(|(w, _)| *w >= relative * best).take(max).map(|(_, x)| x.memoria.id.clone()).collect()
+                    v.into_iter().filter(|(w, _)| *w >= relative * best).take(max).map(|(_, x)| x.memory.id.clone()).collect()
                 };
                 let (mut ok, mut injected) = (0, 0);
                 for ((f, r), (_, q)) in res_pos.iter().zip(&positives) {
@@ -202,7 +202,7 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
         "the", "this", "that", "with", "please", "now", "can", "you", "it",
     ];
     let useful = |q: &str| -> Vec<String> {
-        buscar::terminos(q)
+        buscar::terms(q)
             .iter()
             .map(|t| strip_accents(t))
             .filter(|t| t.chars().count() >= 3 && !t.chars().all(|c| c.is_ascii_digit()))
@@ -212,7 +212,7 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
             .collect()
     };
     let df = |t: &str| docs.iter().filter(|d| has(t, d)).count() as f64;
-    let full = |q: &str, r: &[Resultado], u: f64, min_terms: usize, min_rare: usize| -> Vec<(f64, String)> {
+    let full = |q: &str, r: &[SearchResult], u: f64, min_terms: usize, min_rare: usize| -> Vec<(f64, String)> {
         let ts = useful(q);
         if ts.len() < min_terms {
             return vec![];
@@ -224,11 +224,11 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
         let mut v: Vec<(f64, String)> = r
             .iter()
             .filter_map(|x| {
-                let d = toks(&format!("{} {}", x.memoria.title, x.memoria.content));
+                let d = toks(&format!("{} {}", x.memory.title, x.memory.content));
                 let common: Vec<&String> = ts.iter().filter(|t| has(t, &d)).collect();
                 let rare = common.iter().filter(|t| df(t) <= rare_max * n_docs).count();
                 let w = common.iter().map(|t| idf(t)).sum::<f64>() / total;
-                (rare >= min_rare && w >= u).then(|| (w, x.memoria.id.clone()))
+                (rare >= min_rare && w >= u).then(|| (w, x.memory.id.clone()))
             })
             .collect();
         v.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -287,7 +287,7 @@ muestra con el criterio completo {c}:");
 muestra con cobertura IDF ≥ {u}, ≥0.7×mejor, máx 3:");
         let mut n = 0;
         for (q, r) in &res_real {
-            let mut v: Vec<(f64, &Resultado)> = r.iter().map(|x| (wc(q, x), x)).filter(|(w, _)| *w >= u).collect();
+            let mut v: Vec<(f64, &SearchResult)> = r.iter().map(|x| (wc(q, x), x)).filter(|(w, _)| *w >= u).collect();
             v.sort_by(|a, b| b.0.total_cmp(&a.0));
             let best = v.first().map(|x| x.0).unwrap_or(0.0);
             let v: Vec<_> = v.into_iter().filter(|(w, _)| *w >= 0.7 * best).take(3).collect();
@@ -301,7 +301,7 @@ muestra con cobertura IDF ≥ {u}, ≥0.7×mejor, máx 3:");
             let short: String = q.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(90).collect();
             println!("· «{short}»");
             for (w, x) in v {
-                println!("      {:.2} {}", w, file_of[&x.memoria.id]);
+                println!("      {:.2} {}", w, file_of[&x.memory.id]);
             }
         }
         return Ok(());
@@ -315,7 +315,7 @@ muestra con cobertura IDF ≥ {u}, ≥0.7×mejor, máx 3:");
             let (mut ok, mut injected) = (0, 0);
             for (f, r) in &res_pos {
                 let e = choose(r, min_words, sim, 3);
-                ok += usize::from(e.iter().any(|x| &file_of[&x.memoria.id] == f));
+                ok += usize::from(e.iter().any(|x| &file_of[&x.memory.id] == f));
                 injected += e.len();
             }
             let (mut with_any, mut injected_r) = (0, 0);
@@ -342,7 +342,7 @@ muestra con cobertura IDF ≥ {u}, ≥0.7×mejor, máx 3:");
         let short: String = q.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(90).collect();
         println!("· «{short}»");
         for x in choose(r, min_words, sim, 3) {
-            println!("      {} ({} pal.)", file_of[&x.memoria.id], x.matched_words);
+            println!("      {} ({} pal.)", file_of[&x.memory.id], x.matched_words);
         }
     }
     drop(db);
@@ -363,7 +363,7 @@ fn strip_accents(s: &str) -> String {
         .collect()
 }
 
-/// The real criterion (`recall::relevantes`, with its constants) on the same data, fast.
+/// The real criterion (`recall::relevant`, with its constants) on the same data, fast.
 fn production(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     let notes = notes(notes_dir)?;
     let tmp = std::env::temp_dir().join(format!("omoi-fase4p-{}", std::process::id()));
@@ -373,14 +373,14 @@ fn production(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     // With a model, also the recall's by-meaning channel (as in the hook).
     let model = omoikane::modelos::abrir_actual()?;
     for (f, t, c) in &notes {
-        let n = Nueva { project: "/p".into(), kind: Some(Tipo::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
-        file_of.insert(memoria::guardar(&mut db, n, model.as_ref())?.id, f.clone());
+        let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
+        file_of.insert(memoria::save(&mut db, n, model.as_ref())?.id, f.clone());
     }
-    let all_for = |db: &mut rusqlite::Connection, q: &str| -> Result<Vec<(omoikane::memoria::Memoria, f64)>> {
-        let mut r = omoikane::recall::relevantes(db, "/p", q)?;
+    let all_for = |db: &mut rusqlite::Connection, q: &str| -> Result<Vec<(omoikane::memoria::Memory, f64)>> {
+        let mut r = omoikane::recall::relevant(db, "/p", q)?;
         if let Some(m) = &model {
-            for x in omoikane::recall::por_significado(db, "/p", q, m)? {
-                if !r.iter().any(|(y, _)| y.id == x.id) && r.len() < omoikane::recall::MAXIMO {
+            for x in omoikane::recall::by_meaning(db, "/p", q, m)? {
+                if !r.iter().any(|(y, _)| y.id == x.id) && r.len() < omoikane::recall::MAX_PER_PROMPT {
                     r.push((x, 0.0));
                 }
             }

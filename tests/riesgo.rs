@@ -5,8 +5,8 @@ mod comun;
 
 use omoikane::db;
 use omoikane::diario;
-use omoikane::memoria::{self, Nueva, Tipo};
-use omoikane::recall::{self, Entrada};
+use omoikane::memoria::{self, NewMemory, Kind};
+use omoikane::recall::{self, HookInput};
 use omoikane::riesgo;
 use rusqlite::Connection;
 
@@ -26,20 +26,20 @@ fn session(db: &Connection, name: &str, project_id: i64, folder: &str, day: &str
     .unwrap();
 }
 
-fn entry(session: &str, prompt: &str) -> Entrada {
-    Entrada { session_id: session.into(), prompt: prompt.into(), ..Default::default() }
+fn entry(session: &str, prompt: &str) -> HookInput {
+    HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() }
 }
 
 fn gotcha(db: &mut Connection, project: &str, title: &str, paths: &[&str]) {
-    let n = Nueva {
+    let n = NewMemory {
         project: project.into(),
-        kind: Some(Tipo::Gotcha),
+        kind: Some(Kind::Gotcha),
         title: title.into(),
         content: format!("{title}: cuidado al tocarlo."),
         paths: paths.iter().map(|r| r.to_string()).collect(),
         ..Default::default()
     };
-    memoria::guardar(db, n, None).unwrap();
+    memoria::save(db, n, None).unwrap();
 }
 
 /// A project with 5 sessions on `src/sync.rs`: 4 with `tests/sync.rs`, 3 with `CHANGELOG.md`, 2 with
@@ -65,7 +65,7 @@ fn project(name: &str) -> (comun::Temporal, Connection, String, i64) {
 #[test]
 fn one_line_with_what_changes_together() {
     let (_d, mut db, repo, _) = project("linea");
-    let t = recall::al_preguntar(&mut db, &repo, &entry("s1", "arregla el fallo en sync.rs"), None).unwrap().expect("la historia");
+    let t = recall::on_prompt(&mut db, &repo, &entry("s1", "arregla el fallo en sync.rs"), None).unwrap().expect("la historia");
     assert!(t.starts_with("<omoikane>") && t.ends_with("</omoikane>"), "{t}");
     assert!(
         t.contains(
@@ -76,13 +76,13 @@ fn one_line_with_what_changes_together() {
     // The gotchas themselves arrive through the paths, as always.
     assert!(t.contains("El push de sync pierde el orden"), "{t}");
     // Once per file and session.
-    let other = recall::al_preguntar(&mut db, &repo, &entry("s1", "y ahora el test de sync.rs"), None).unwrap().unwrap_or_default();
+    let other = recall::on_prompt(&mut db, &repo, &entry("s1", "y ahora el test de sync.rs"), None).unwrap().unwrap_or_default();
     assert!(!other.contains("History of"), "{other}");
     // Another session sees it again, and so does one after compacting (it's no longer in its context).
-    let t2 = recall::al_preguntar(&mut db, &repo, &entry("s2", "mira src/sync.rs"), None).unwrap().unwrap_or_default();
+    let t2 = recall::on_prompt(&mut db, &repo, &entry("s2", "mira src/sync.rs"), None).unwrap().unwrap_or_default();
     assert!(t2.contains("History of `src/sync.rs`"), "{t2}");
-    recall::al_empezar(&mut db, &repo, &Entrada { session_id: "s1".into(), source: "compact".into(), ..Default::default() }).unwrap();
-    let t3 = recall::al_preguntar(&mut db, &repo, &entry("s1", "otra vez sync.rs"), None).unwrap().unwrap_or_default();
+    recall::on_session_start(&mut db, &repo, &HookInput { session_id: "s1".into(), source: "compact".into(), ..Default::default() }).unwrap();
+    let t3 = recall::on_prompt(&mut db, &repo, &entry("s1", "otra vez sync.rs"), None).unwrap().unwrap_or_default();
     assert!(t3.contains("History of `src/sync.rs`"), "{t3}");
     // It doesn't count as a received memory: `recall_log` only holds memories.
     let log: i64 = db.query_row("SELECT count(*) FROM recall_log WHERE memory_id NOT IN (SELECT id FROM memory)", [], |f| f.get(0)).unwrap();
@@ -107,7 +107,7 @@ fn not_enough_sessions_says_nothing() {
 fn no_file_in_message_skips_the_diary() {
     let (_d, mut db, repo, _) = project("nada");
     assert!(!riesgo::parece_nombrar("qué tal ha ido la sincronización de ayer"));
-    let t = recall::al_preguntar(&mut db, &repo, &entry("s1", "qué tal ha ido la sincronización de ayer"), None).unwrap().unwrap_or_default();
+    let t = recall::on_prompt(&mut db, &repo, &entry("s1", "qué tal ha ido la sincronización de ayer"), None).unwrap().unwrap_or_default();
     assert!(!t.contains("History of"), "{t}");
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'diary_hint')", [], |f| f.get(0)).unwrap();
     assert!(!exists, "sin nada que decir no se crea la tabla");
@@ -156,8 +156,8 @@ fn if_history_fails_recall_goes_on() {
     let (_d, mut db, repo, _) = project("falla");
     db.execute_batch("CREATE TABLE diary_hint (otra TEXT)").unwrap();
     assert!(riesgo::al_preguntar(&db, &repo, "s1", "mira src/sync.rs").is_err(), "la tabla rota hace fallar el historial");
-    let t = recall::al_preguntar(&mut db, &repo, &entry("s1", "mira src/sync.rs"), None).unwrap().expect("las memorias siguen llegando");
+    let t = recall::on_prompt(&mut db, &repo, &entry("s1", "mira src/sync.rs"), None).unwrap().expect("las memorias siguen llegando");
     assert!(t.contains("El push de sync pierde el orden"), "{t}");
     assert!(!t.contains("History of"), "{t}");
-    assert!(recall::al_empezar(&mut db, &repo, &entry("s2", "")).unwrap().is_some());
+    assert!(recall::on_session_start(&mut db, &repo, &entry("s2", "")).unwrap().is_some());
 }

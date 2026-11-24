@@ -5,10 +5,10 @@
 mod comun;
 
 use omoikane::db;
-use omoikane::memoria::{self, Ambito, Nueva, Tipo};
-use omoikane::nombres::{self, Propuesta};
+use omoikane::memoria::{self, Scope, NewMemory, Kind};
+use omoikane::nombres::{self, Proposal};
 use omoikane::proyecto;
-use omoikane::recall::{self, Entrada};
+use omoikane::recall::{self, HookInput};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
@@ -26,8 +26,8 @@ fn project_dir(dir: &Path, name: &str) -> String {
 }
 
 fn save(db: &mut Connection, project: &str, title: &str, content: &str) -> String {
-    let n = Nueva { project: project.into(), kind: Some(Tipo::Fact), title: title.into(), content: content.into(), ..Default::default() };
-    memoria::guardar(db, n, None).unwrap().id
+    let n = NewMemory { project: project.into(), kind: Some(Kind::Fact), title: title.into(), content: content.into(), ..Default::default() };
+    memoria::save(db, n, None).unwrap().id
 }
 
 fn id_of(db: &Connection, path: &str) -> i64 {
@@ -36,11 +36,11 @@ fn id_of(db: &Connection, path: &str) -> i64 {
 
 /// The proposals, without taking the tests' folders as temporary (they live in `%TEMP%`): only those that
 /// have `subidas` in the path.
-fn proposals(db: &Connection) -> Vec<Propuesta> {
-    nombres::propuestas_con(db, &Ambito::Todos, &|r: &str| r.contains("subidas")).unwrap()
+fn proposals(db: &Connection) -> Vec<Proposal> {
+    nombres::proposals_with(db, &Scope::All, &|r: &str| r.contains("subidas")).unwrap()
 }
 
-fn pairs(v: &[Propuesta]) -> Vec<(&'static str, String, String)> {
+fn pairs(v: &[Proposal]) -> Vec<(&'static str, String, String)> {
     v.iter().map(|p| (p.kind, p.project.clone(), p.other.clone())).collect()
 }
 
@@ -96,14 +96,14 @@ fn review_proposes_the_same_name_and_never_merges() {
     }
     save(&mut db, &small, "Campaña", "De la campaña.");
     let v = proposals(&db);
-    assert_eq!(pairs(&v), vec![(nombres::MISMO_NOMBRE, "omoikane".to_string(), "Omoikane".to_string())], "{v:?}");
+    assert_eq!(pairs(&v), vec![(nombres::SAME_NAME, "omoikane".to_string(), "Omoikane".to_string())], "{v:?}");
     // The command already written, with each project named so that `buscar` finds it.
     assert_eq!(v[0].command, "omoi projects merge omoikane Omoikane");
     assert_eq!(v[0].dismiss, "omoi projects distinct omoikane Omoikane");
     // Nothing has been merged.
     assert_ne!(id_of(&db, &big), id_of(&db, &small));
     // «They aren't the same»: it doesn't come up again.
-    nombres::marcar_distintos(&db, id_of(&db, &small), Some(id_of(&db, &big))).unwrap();
+    nombres::mark_distinct(&db, id_of(&db, &small), Some(id_of(&db, &big))).unwrap();
     assert!(proposals(&db).is_empty());
 }
 
@@ -130,7 +130,7 @@ fn one_letter_only_with_another_signal() {
     save(&mut db, &gone, "Mal escrito", "Una.");
     std::fs::remove_dir_all(&gone).unwrap();
     let v = proposals(&db);
-    assert_eq!(pairs(&v), vec![(nombres::UNA_LETRA, "Omoikae".to_string(), "Omoikane".to_string())], "{v:?}");
+    assert_eq!(pairs(&v), vec![(nombres::ONE_LETTER, "Omoikae".to_string(), "Omoikane".to_string())], "{v:?}");
     assert!(v[0].detail.contains("no longer exists"), "{}", v[0].detail);
 }
 
@@ -146,7 +146,7 @@ fn one_letter_with_a_new_almost_empty_one() {
     let new = project_dir(&dir, "Narradr");
     save(&mut db, &new, "Una", "Sola.");
     let v = proposals(&db);
-    assert_eq!(pairs(&v), vec![(nombres::UNA_LETRA, "Narradr".to_string(), "Narrador".to_string())], "{v:?}");
+    assert_eq!(pairs(&v), vec![(nombres::ONE_LETTER, "Narradr".to_string(), "Narrador".to_string())], "{v:?}");
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn gone_folder_continued_by_another() {
     assert!(proposals(&db).is_empty(), "mientras la carpeta existe, nada");
     std::fs::remove_dir_all(&old).unwrap();
     let v = proposals(&db);
-    assert_eq!(pairs(&v), vec![(nombres::CONTINUA, "Narrador".to_string(), "Aloud".to_string())], "{v:?}");
+    assert_eq!(pairs(&v), vec![(nombres::CONTINUED, "Narrador".to_string(), "Aloud".to_string())], "{v:?}");
     assert_eq!(v[0].command, "omoi projects merge Narrador Aloud");
 }
 
@@ -175,28 +175,28 @@ fn uploads_folder_is_not_a_project() {
     let up = proyecto::de(&up).unwrap();
     save(&mut db, &up, "Algo subido", "Una nota que no es de esa carpeta.");
     let v = proposals(&db);
-    assert_eq!(pairs(&v), vec![(nombres::TEMPORAL, "d35c0488-7e14-4d1e-ac3b-b60a8d6d8f39".to_string(), String::new())], "{v:?}");
+    assert_eq!(pairs(&v), vec![(nombres::TEMP_FOLDER, "d35c0488-7e14-4d1e-ac3b-b60a8d6d8f39".to_string(), String::new())], "{v:?}");
     assert!(v[0].detail.contains("--global"), "{}", v[0].detail);
     // «It's a real project».
-    nombres::marcar_distintos(&db, id_of(&db, &up), None).unwrap();
+    nombres::mark_distinct(&db, id_of(&db, &up), None).unwrap();
     assert!(proposals(&db).is_empty());
 }
 
 #[test]
 fn the_notice_shows_at_start_once_a_day() {
     let (dir, mut db) = fresh_db("aviso");
-    // A real temporary folder (`%TEMP%`): the notice uses `es_temporal`.
+    // A real temporary folder (`%TEMP%`): the notice uses `is_temp_folder`.
     let up = project_dir(&dir, "d35c0488");
     save(&mut db, &up, "Algo subido", "Una nota.");
-    let a = nombres::aviso_al_empezar(&db, &Ambito::Todos).unwrap().expect("aviso");
+    let a = nombres::start_notice(&db, &Scope::All).unwrap().expect("aviso");
     assert!(a.contains("omoi projects distinct") && a.contains("d35c0488"), "{a}");
-    assert!(nombres::aviso_al_empezar(&db, &Ambito::Todos).unwrap().is_none(), "una vez al día");
+    assert!(nombres::start_notice(&db, &Scope::All).unwrap().is_none(), "una vez al día");
     // And in the session-start block, through the review.
     let (dir2, mut db2) = fresh_db("aviso-sesion");
     let up2 = project_dir(&dir2, "subida");
     save(&mut db2, &up2, "Algo subido", "Una nota.");
     let home = std::env::home_dir().unwrap();
-    let t = recall::al_empezar(&mut db2, &proyecto::de(&home).unwrap(), &Entrada { session_id: "s".into(), ..Default::default() }).unwrap().unwrap_or_default();
+    let t = recall::on_session_start(&mut db2, &proyecto::de(&home).unwrap(), &HookInput { session_id: "s".into(), ..Default::default() }).unwrap().unwrap_or_default();
     assert!(t.contains("Projects review") && t.contains("omoi projects distinct"), "{t}");
 }
 
@@ -212,27 +212,27 @@ fn the_recall_understands_a_misdictated_name() {
     }
     let home = proyecto::de(&std::env::home_dir().unwrap()).unwrap();
     let ask = |db: &mut Connection, session: &str, prompt: &str| {
-        recall::al_preguntar(db, &home, &Entrada { session_id: session.into(), prompt: prompt.into(), ..Default::default() }, None).unwrap().unwrap_or_default()
+        recall::on_prompt(db, &home, &HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() }, None).unwrap().unwrap_or_default()
     };
     // With 5 letters no longer: «trova» could be a normal word (like «tropa»).
-    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &["trova".to_string()], &[true]).unwrap().is_empty(), "trova (5 letras) no es Troba");
+    assert!(nombres::misspelled(&db, &Scope::All, &["trova".to_string()], &[true]).unwrap().is_empty(), "trova (5 letras) no es Troba");
     let t = ask(&mut db, "a", "cómo va trova esta semana");
     assert!(!t.contains("troba-releases"), "{t}");
     let t = ask(&mut db, "b", "en tokimicho de dónde salen las fechas del calendario");
     assert!(t.contains("hoja de config"), "tokimicho → Tokimichi: {t}");
     // A word that is in some memory isn't touched, even if it is one letter away from a name.
     let terms: Vec<String> = ["trova", "tokimicho", "onmoikane", "socialpublish"].iter().map(|t| t.to_string()).collect();
-    let fixes = nombres::mal_escritos(&db, &Ambito::Todos, &terms, &[false, true, true, true]).unwrap();
+    let fixes = nombres::misspelled(&db, &Scope::All, &terms, &[false, true, true, true]).unwrap();
     assert_eq!(fixes, vec![(1, vec!["tokimichi".to_string()])], "trova está en alguna memoria; onmoikane y socialpublish no son proyectos de esta base");
     // A name with separators, written together or one letter off, gives its words.
     let sp = project_dir(&dir, "social-publish");
     save(&mut db, &sp, "Social", "Publica en redes.");
-    let fixes = nombres::mal_escritos(&db, &Ambito::Todos, &terms, &[false, false, false, true]).unwrap();
+    let fixes = nombres::misspelled(&db, &Scope::All, &terms, &[false, false, false, true]).unwrap();
     assert_eq!(fixes, vec![(3, vec!["social".to_string(), "publish".to_string()])]);
     // One letter away from two projects at once, neither.
     let toka = project_dir(&dir, "Tokimicha");
     save(&mut db, &toka, "Otro", "Otro.");
-    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &terms, &[false, true, false, false]).unwrap().is_empty());
+    assert!(nombres::misspelled(&db, &Scope::All, &terms, &[false, true, false, false]).unwrap().is_empty());
 }
 
 /// Normal words that don't show up in any memory don't become projects: with fewer than 6 letters
@@ -248,10 +248,10 @@ fn the_recall_doesnt_change_normal_words_nor_look_at_other_clients() {
     }
     let terms: Vec<String> = ["tropa", "trobar", "rodeo", "rodes", "balsa", "faltas"].iter().map(|t| t.to_string()).collect();
     let all = vec![true; terms.len()];
-    assert!(nombres::mal_escritos(&db, &Ambito::Todos, &terms, &all).unwrap().is_empty());
+    assert!(nombres::misspelled(&db, &Scope::All, &terms, &all).unwrap().is_empty());
     // «faltis» is Faltis, and «faltiz» (not an inflection) too.
     let t2: Vec<String> = ["faltiz".to_string()].to_vec();
-    assert_eq!(nombres::mal_escritos(&db, &Ambito::Todos, &t2, &[true]).unwrap(), vec![(0, vec!["faltis".to_string()])]);
+    assert_eq!(nombres::misspelled(&db, &Scope::All, &t2, &[true]).unwrap(), vec![(0, vec!["faltis".to_string()])]);
     // A client's project: from what has no space its name isn't looked up; from its space or
     // from the general folder, it is.
     let acme = proyecto::crear_espacio(&db, "acme").unwrap();
@@ -259,10 +259,10 @@ fn the_recall_doesnt_change_normal_words_nor_look_at_other_clients() {
     save(&mut db, &kawa, "Kawaneko guarda fotos", "En la caché.");
     proyecto::asignar_espacio(&db, id_of(&db, &kawa), Some(acme)).unwrap();
     let t3: Vec<String> = ["kawaneco".to_string()].to_vec();
-    let personal = Ambito::Espacio(None);
-    assert!(nombres::mal_escritos(&db, &personal, &t3, &[true]).unwrap().is_empty(), "de otro cliente, no");
-    assert_eq!(nombres::mal_escritos(&db, &Ambito::Espacio(Some(acme)), &t3, &[true]).unwrap().len(), 1);
-    assert_eq!(nombres::mal_escritos(&db, &Ambito::Todos, &t3, &[true]).unwrap().len(), 1);
+    let personal = Scope::Space(None);
+    assert!(nombres::misspelled(&db, &personal, &t3, &[true]).unwrap().is_empty(), "de otro cliente, no");
+    assert_eq!(nombres::misspelled(&db, &Scope::Space(Some(acme)), &t3, &[true]).unwrap().len(), 1);
+    assert_eq!(nombres::misspelled(&db, &Scope::All, &t3, &[true]).unwrap().len(), 1);
 }
 
 /// `proyecto::buscar_en` only searches among the projects of the scope's space, and its error doesn't name
@@ -278,7 +278,7 @@ fn searching_a_project_doesnt_leave_the_space() {
     save(&mut db, &b, "Nota", "De beta.");
     proyecto::asignar_espacio(&db, id_of(&db, &a), Some(acme)).unwrap();
     proyecto::asignar_espacio(&db, id_of(&db, &b), Some(beta)).unwrap();
-    let from_beta = Ambito::Proyecto { id: id_of(&db, &b), space: Some(beta) };
+    let from_beta = Scope::Project { id: id_of(&db, &b), space: Some(beta) };
     assert_eq!(proyecto::buscar_en(&db, "beta", &from_beta).unwrap(), id_of(&db, &b), "«beta» encaja solo con el suyo, aunque «app» también con acme");
     let e = proyecto::buscar_en(&db, "acme-app", &from_beta).unwrap_err().to_string();
     let known = e.split_once("known:").map(|(_, l)| l.to_string()).unwrap_or_default();
@@ -286,7 +286,7 @@ fn searching_a_project_doesnt_leave_the_space() {
     assert_eq!(proyecto::buscar_en(&db, "app", &from_beta).unwrap(), id_of(&db, &b), "«app» solo encaja con el suyo");
     // Not by its folder either.
     assert!(proyecto::buscar_en(&db, &a, &from_beta).is_err());
-    assert_eq!(proyecto::buscar_en(&db, "acme-app", &Ambito::Todos).unwrap(), id_of(&db, &a));
+    assert_eq!(proyecto::buscar_en(&db, "acme-app", &Scope::All).unwrap(), id_of(&db, &a));
 }
 
 /// Two worktrees of a repository without `origin`, in folders with different names, are the same

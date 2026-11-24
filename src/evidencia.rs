@@ -10,12 +10,12 @@
 //! | `doc` | Read in documentation or on a web page | What it says; the URL in `url` |
 //! | `inferred` | The agent worked it out | What it worked it out from |
 //!
-//! Anything based only on `inferred` weighs less in search ([`FACTOR_DEDUCIDA`]) and is marked
+//! Anything based only on `inferred` weighs less in search ([`INFERRED_FACTOR`]) and is marked
 //! "inferred" in lists: the agent receiving it knows nobody has checked it. A memory without
 //! evidence (those from before 1.13, imported ones) is left alone.
 //!
 //! It is not the provenance (`procedencia`: in which session and commit it was written) but the basis
-//! of the fact. It goes in `memory.extra` under the key [`CLAVE`], like provenance: no schema change,
+//! of the fact. It goes in `memory.extra` under the key [`KEY`], like provenance: no schema change,
 //! it travels with sync and an older version keeps it without understanding it. It is added with
 //! `update` (nothing is overwritten and no version is created); two equal details of the same kind count as one.
 
@@ -23,18 +23,19 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// The key in `memory.extra`.
-pub const CLAVE: &str = "evidence";
+pub const KEY: &str = "evidence";
 /// At most how many a memory carries (the first ones stay).
-pub const MAXIMO: usize = 10;
+pub const MAX: usize = 10;
 /// The maximum length of a detail, in characters.
 const MAX_DETAIL_LEN: usize = 400;
 /// The search weight of a memory based only on what the agent inferred.
-pub const FACTOR_DEDUCIDA: f64 = 0.85;
+pub const INFERRED_FACTOR: f64 = 0.85;
 
 /// The kind of evidence: what whoever saves it saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub enum Clase {
+#[schemars(rename = "Clase")]
+pub enum EvidenceKind {
     /// The user said it (quote their words in `detail`).
     UserSaid,
     /// Read in the code (the file, and line, in `detail`).
@@ -47,24 +48,24 @@ pub enum Clase {
     Inferred,
 }
 
-impl Clase {
+impl EvidenceKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Clase::UserSaid => "user-said",
-            Clase::CodeRead => "code-read",
-            Clase::Tested => "tested",
-            Clase::Doc => "doc",
-            Clase::Inferred => "inferred",
+            EvidenceKind::UserSaid => "user-said",
+            EvidenceKind::CodeRead => "code-read",
+            EvidenceKind::Tested => "tested",
+            EvidenceKind::Doc => "doc",
+            EvidenceKind::Inferred => "inferred",
         }
     }
 
-    pub fn de(t: &str) -> Result<Clase> {
+    pub fn parse(t: &str) -> Result<EvidenceKind> {
         Ok(match t.trim().to_lowercase().replace('_', "-").as_str() {
-            "user-said" | "user" | "said" => Clase::UserSaid,
-            "code-read" | "code" => Clase::CodeRead,
-            "tested" | "test" | "ran" => Clase::Tested,
-            "doc" | "docs" | "web" => Clase::Doc,
-            "inferred" | "inference" => Clase::Inferred,
+            "user-said" | "user" | "said" => EvidenceKind::UserSaid,
+            "code-read" | "code" => EvidenceKind::CodeRead,
+            "tested" | "test" | "ran" => EvidenceKind::Tested,
+            "doc" | "docs" | "web" => EvidenceKind::Doc,
+            "inferred" | "inference" => EvidenceKind::Inferred,
             other => bail!(crate::tr!(
                 "unknown evidence kind «{other}»: use user-said, code-read, tested, doc or inferred",
                 "tipo de evidencia desconocido «{other}»: usa user-said, code-read, tested, doc o inferred"
@@ -75,9 +76,10 @@ impl Clase {
 
 /// One piece of evidence: what was seen, in a person's words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Evidencia {
+#[schemars(rename = "Evidencia")]
+pub struct Evidence {
     /// What kind of evidence: user-said, code-read, tested, doc or inferred.
-    pub kind: Clase,
+    pub kind: EvidenceKind,
     /// What you saw, readable by a person: the user's words, the file and line, the command and its output, what the page says. Not «confirmed».
     pub detail: String,
     /// The page or document, for `doc`.
@@ -85,9 +87,9 @@ pub struct Evidencia {
     pub url: Option<String>,
 }
 
-impl Evidencia {
+impl Evidence {
     /// On one line: "tested: cargo test, 83 passed".
-    pub fn texto(&self) -> String {
+    pub fn text(&self) -> String {
         match &self.url {
             Some(u) => format!("{}: {} ({u})", self.kind.as_str(), self.detail),
             None => format!("{}: {}", self.kind.as_str(), self.detail),
@@ -97,8 +99,8 @@ impl Evidencia {
 
 /// Cleans what comes in (detail without extra spaces and truncated, URL only if http/https) and removes
 /// duplicates. An empty detail is an error: evidence that doesn't say what was seen is not evidence.
-pub fn limpiar(v: Vec<Evidencia>) -> Result<Vec<Evidencia>> {
-    let mut r: Vec<Evidencia> = Vec::new();
+pub fn clean(v: Vec<Evidence>) -> Result<Vec<Evidence>> {
+    let mut r: Vec<Evidence> = Vec::new();
     for mut e in v {
         e.detail = e.detail.split_whitespace().collect::<Vec<_>>().join(" ");
         if e.detail.is_empty() {
@@ -124,17 +126,17 @@ pub fn limpiar(v: Vec<Evidencia>) -> Result<Vec<Evidencia>> {
 }
 
 /// Those from a column (the JSON of `extra.evidence`); anything not understood, none.
-pub(crate) fn de_columna(json: Option<&str>) -> Vec<Evidencia> {
+pub(crate) fn from_column(json: Option<&str>) -> Vec<Evidence> {
     json.and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default()
 }
 
 /// Whether it is based only on what the agent inferred (no evidence doesn't count: unknown).
-pub fn solo_deducida(v: &[Evidencia]) -> bool {
-    !v.is_empty() && v.iter().all(|e| e.kind == Clase::Inferred)
+pub fn only_inferred(v: &[Evidence]) -> bool {
+    !v.is_empty() && v.iter().all(|e| e.kind == EvidenceKind::Inferred)
 }
 
 /// Its kinds, deduplicated and in order, for lists: "tested, user-said". `None` without evidence.
-pub fn tipos(v: &[Evidencia]) -> Option<String> {
+pub fn kinds(v: &[Evidence]) -> Option<String> {
     let mut t: Vec<&str> = Vec::new();
     for e in v {
         if !t.contains(&e.kind.as_str()) {
@@ -145,79 +147,79 @@ pub fn tipos(v: &[Evidencia]) -> Option<String> {
 }
 
 /// Merges the new ones with those already in `extra` (older ones first, no duplicates, up to
-/// [`MAXIMO`]). `true` if anything changed.
-pub(crate) fn anadir(extra: &mut serde_json::Map<String, serde_json::Value>, new: &[Evidencia]) -> bool {
-    let mut v: Vec<Evidencia> = extra.get(CLAVE).and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default();
+/// [`MAX`]). `true` if anything changed.
+pub(crate) fn add(extra: &mut serde_json::Map<String, serde_json::Value>, new: &[Evidence]) -> bool {
+    let mut v: Vec<Evidence> = extra.get(KEY).and_then(|x| serde_json::from_value(x.clone()).ok()).unwrap_or_default();
     let before = v.len();
     for e in new {
-        if v.len() < MAXIMO && !v.iter().any(|x| x.kind == e.kind && x.detail == e.detail) {
+        if v.len() < MAX && !v.iter().any(|x| x.kind == e.kind && x.detail == e.detail) {
             v.push(e.clone());
         }
     }
     if v.len() == before {
         return false;
     }
-    extra.insert(CLAVE.into(), serde_json::to_value(v).unwrap_or_default());
+    extra.insert(KEY.into(), serde_json::to_value(v).unwrap_or_default());
     true
 }
 
 /// `--evidence kind:detail` from the CLI (with `doc:https://…` the URL goes in `url`).
-pub fn de_cli(t: &str) -> Result<Evidencia> {
+pub fn from_cli(t: &str) -> Result<Evidence> {
     let Some((k, d)) = t.split_once(':') else {
         bail!(crate::tr!("--evidence KIND:DETAIL, e.g. --evidence \"tested:cargo test, 83 passed\"", "--evidence TIPO:DETALLE, p. ej. --evidence \"tested:cargo test, 83 passed\""))
     };
-    let kind = Clase::de(k)?;
+    let kind = EvidenceKind::parse(k)?;
     let d = d.trim();
     let (detail, url) = match kind {
-        Clase::Doc if d.starts_with("http://") || d.starts_with("https://") => match d.split_once(char::is_whitespace) {
+        EvidenceKind::Doc if d.starts_with("http://") || d.starts_with("https://") => match d.split_once(char::is_whitespace) {
             Some((u, rest)) => (rest.trim().to_string(), Some(u.to_string())),
             None => (d.to_string(), Some(d.to_string())),
         },
         _ => (d.to_string(), None),
     };
-    Ok(Evidencia { kind, detail, url })
+    Ok(Evidence { kind, detail, url })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ev(k: Clase, d: &str) -> Evidencia {
-        Evidencia { kind: k, detail: d.into(), url: None }
+    fn ev(k: EvidenceKind, d: &str) -> Evidence {
+        Evidence { kind: k, detail: d.into(), url: None }
     }
 
     #[test]
     fn cleans_and_removes_duplicates() {
-        let v = limpiar(vec![ev(Clase::Tested, "  cargo   test "), ev(Clase::Tested, "cargo test"), ev(Clase::Inferred, "x")]).unwrap();
-        assert_eq!(v, [ev(Clase::Tested, "cargo test"), ev(Clase::Inferred, "x")]);
-        assert!(limpiar(vec![ev(Clase::Doc, "  ")]).is_err());
-        let u = limpiar(vec![Evidencia { kind: Clase::Doc, detail: "d".into(), url: Some("javascript:x".into()) }]).unwrap();
+        let v = clean(vec![ev(EvidenceKind::Tested, "  cargo   test "), ev(EvidenceKind::Tested, "cargo test"), ev(EvidenceKind::Inferred, "x")]).unwrap();
+        assert_eq!(v, [ev(EvidenceKind::Tested, "cargo test"), ev(EvidenceKind::Inferred, "x")]);
+        assert!(clean(vec![ev(EvidenceKind::Doc, "  ")]).is_err());
+        let u = clean(vec![Evidence { kind: EvidenceKind::Doc, detail: "d".into(), url: Some("javascript:x".into()) }]).unwrap();
         assert_eq!(u[0].url, None);
     }
 
     #[test]
     fn only_inferred_false_without_evidence() {
-        assert!(!solo_deducida(&[]));
-        assert!(solo_deducida(&[ev(Clase::Inferred, "a")]));
-        assert!(!solo_deducida(&[ev(Clase::Inferred, "a"), ev(Clase::UserSaid, "b")]));
+        assert!(!only_inferred(&[]));
+        assert!(only_inferred(&[ev(EvidenceKind::Inferred, "a")]));
+        assert!(!only_inferred(&[ev(EvidenceKind::Inferred, "a"), ev(EvidenceKind::UserSaid, "b")]));
     }
 
     #[test]
-    fn from_cli() {
-        assert_eq!(de_cli("tested: cargo test").unwrap(), ev(Clase::Tested, "cargo test"));
-        let d = de_cli("doc:https://x.dev/a dice que sí").unwrap();
+    fn from_cli_parses_kind_and_detail() {
+        assert_eq!(from_cli("tested: cargo test").unwrap(), ev(EvidenceKind::Tested, "cargo test"));
+        let d = from_cli("doc:https://x.dev/a dice que sí").unwrap();
         assert_eq!((d.url.as_deref(), d.detail.as_str()), (Some("https://x.dev/a"), "dice que sí"));
-        assert!(de_cli("guess:algo").is_err());
-        assert!(de_cli("sin tipo").is_err());
+        assert!(from_cli("guess:algo").is_err());
+        assert!(from_cli("sin tipo").is_err());
     }
 
     #[test]
     fn add_without_duplicates_or_exceeding_max() {
         let mut extra = serde_json::Map::new();
-        assert!(anadir(&mut extra, &[ev(Clase::Tested, "a")]));
-        assert!(!anadir(&mut extra, &[ev(Clase::Tested, "a")]));
-        let many: Vec<Evidencia> = (0..20).map(|i| ev(Clase::CodeRead, &format!("f{i}"))).collect();
-        anadir(&mut extra, &many);
-        assert_eq!(de_columna(Some(&extra[CLAVE].to_string())).len(), MAXIMO);
+        assert!(add(&mut extra, &[ev(EvidenceKind::Tested, "a")]));
+        assert!(!add(&mut extra, &[ev(EvidenceKind::Tested, "a")]));
+        let many: Vec<Evidence> = (0..20).map(|i| ev(EvidenceKind::CodeRead, &format!("f{i}"))).collect();
+        add(&mut extra, &many);
+        assert_eq!(from_column(Some(&extra[KEY].to_string())).len(), MAX);
     }
 }
