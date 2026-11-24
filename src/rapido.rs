@@ -23,7 +23,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 /// Algo que mantiene vivos los datos a los que apunta una `Mat` (un fichero mapeado o un `Vec`).
-type Dueño = Arc<dyn Send + Sync>;
+type Owner = Arc<dyn Send + Sync>;
 
 /// Un trozo de filas seguidas de una matriz en f16.
 struct Parte {
@@ -40,10 +40,10 @@ pub struct Mat {
     // Solo se lee en x86_64 (AVX2); en ARM el camino es el genérico.
     #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     simd: bool,
-    _dueños: Vec<Dueño>,
+    _owners: Vec<Owner>,
 }
 
-// SAFETY: los punteros apuntan a datos que no cambian nunca y que `_dueños` mantiene vivos.
+// SAFETY: los punteros apuntan a datos que no cambian nunca y que `_owners` mantiene vivos.
 unsafe impl Send for Mat {}
 unsafe impl Sync for Mat {}
 
@@ -54,16 +54,16 @@ impl Mat {
     /// # Safety
     /// Cada puntero tiene que apuntar a `filas · cols` u16 alineados que no cambien mientras viva
     /// el `dueño` correspondiente.
-    pub unsafe fn de_partes(partes: Vec<(*const u16, usize, Dueño)>, cols: usize, simd: bool) -> Mat {
+    pub unsafe fn de_partes(partes: Vec<(*const u16, usize, Owner)>, cols: usize, simd: bool) -> Mat {
         let filas = partes.iter().map(|p| p.1).sum();
         let mut ps = Vec::new();
-        let mut dueños = Vec::new();
+        let mut owners = Vec::new();
         for (ptr, f, d) in partes {
             assert!((ptr as usize).is_multiple_of(2));
             ps.push(Parte { ptr, filas: f });
-            dueños.push(d);
+            owners.push(d);
         }
-        Mat { filas, cols, partes: ps, simd, _dueños: dueños }
+        Mat { filas, cols, partes: ps, simd, _owners: owners }
     }
 
     /// Una matriz propia a partir de valores f32 (se guardan en f16).
@@ -71,7 +71,7 @@ impl Mat {
         assert_eq!(datos.len(), filas * cols);
         let v: Arc<Vec<u16>> = Arc::new(datos.iter().map(|x| half::f16::from_f32(*x).to_bits()).collect());
         // SAFETY: `v` tiene filas·cols u16 y va como dueño.
-        unsafe { Mat::de_partes(vec![(v.as_ptr(), filas, v.clone() as Dueño)], cols, simd) }
+        unsafe { Mat::de_partes(vec![(v.as_ptr(), filas, v.clone() as Owner)], cols, simd) }
     }
 
     pub fn bytes(&self) -> usize {

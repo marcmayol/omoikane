@@ -43,7 +43,7 @@ pub struct Bpe {
     bytes: [u32; 256],
     /// Tabla hash de fusiones: `(a << 32 | b) → (rango, nuevo)`, 16 bytes por hueco desde `fusiones`.
     fusiones: (usize, u32),
-    añadidos: HashMap<Box<[u8]>, u32>,
+    added: HashMap<Box<[u8]>, u32>,
     /// Por primer byte: las longitudes de los tokens añadidos que empiezan por él, de mayor a menor.
     largos: Vec<Vec<usize>>,
 }
@@ -131,10 +131,10 @@ pub fn compilar(json: &Path, destino: &Path) -> Result<()> {
         tabla[h] = (clave, rango as u32, nuevo);
     }
 
-    let mut añadidos: Vec<(u32, &str)> = Vec::new();
+    let mut added: Vec<(u32, &str)> = Vec::new();
     for a in d["added_tokens"].as_array().context("no added_tokens")? {
         ensure!(a["normalized"] != true && a["lstrip"] != true && a["rstrip"] != true && a["single_word"] != true, "added token with options");
-        añadidos.push((a["id"].as_u64().context("added id")? as u32, a["content"].as_str().context("added content")?));
+        added.push((a["id"].as_u64().context("added id")? as u32, a["content"].as_str().context("added content")?));
     }
 
     let (tam, fecha) = huella(json)?;
@@ -142,7 +142,7 @@ pub fn compilar(json: &Path, destino: &Path) -> Result<()> {
     o.extend_from_slice(MAGIA);
     o.extend_from_slice(&tam.to_le_bytes());
     o.extend_from_slice(&fecha.to_le_bytes());
-    for x in [bos, eos, bits, chars.len() as u32, añadidos.len() as u32] {
+    for x in [bos, eos, bits, chars.len() as u32, added.len() as u32] {
         o.extend_from_slice(&x.to_le_bytes());
     }
     for b in bytes {
@@ -157,7 +157,7 @@ pub fn compilar(json: &Path, destino: &Path) -> Result<()> {
         o.extend_from_slice(&rango.to_le_bytes());
         o.extend_from_slice(&nuevo.to_le_bytes());
     }
-    for (id, s) in &añadidos {
+    for (id, s) in &added {
         o.extend_from_slice(&id.to_le_bytes());
         o.extend_from_slice(&(s.len() as u32).to_le_bytes());
         o.extend_from_slice(s.as_bytes());
@@ -196,7 +196,7 @@ impl Bpe {
         let b = &mapa[..];
         ensure!(b.len() >= 44 + 1024 && &b[..8] == MAGIA, "{FICHERO}: not a compiled tokenizer");
         ensure!((u64_en(b, 8), u64_en(b, 16)) == huella(json)?, "{FICHERO}: compiled from another tokenizer.json");
-        let (bos, eos, bits, n_chars, n_añadidos) = (u32_en(b, 24), u32_en(b, 28), u32_en(b, 32), u32_en(b, 36) as usize, u32_en(b, 40) as usize);
+        let (bos, eos, bits, n_chars, n_added) = (u32_en(b, 24), u32_en(b, 28), u32_en(b, 32), u32_en(b, 36) as usize, u32_en(b, 40) as usize);
         let mut bytes = [NO; 256];
         for (i, x) in bytes.iter_mut().enumerate() {
             *x = u32_en(b, 44 + 4 * i);
@@ -205,9 +205,9 @@ impl Bpe {
         let ini_fusiones = ini_chars + 8 * n_chars;
         let mut i = ini_fusiones + 16 * (1usize << bits);
         ensure!(i <= b.len(), "{FICHERO}: truncated");
-        let mut añadidos = HashMap::with_capacity(n_añadidos);
+        let mut added = HashMap::with_capacity(n_added);
         let mut largos = vec![Vec::new(); 256];
-        for _ in 0..n_añadidos {
+        for _ in 0..n_added {
             ensure!(i + 8 <= b.len(), "{FICHERO}: truncated");
             let (id, l) = (u32_en(b, i), u32_en(b, i + 4) as usize);
             ensure!(l > 0 && i + 8 + l <= b.len(), "{FICHERO}: truncated");
@@ -216,13 +216,13 @@ impl Bpe {
             if !ls.contains(&l) {
                 ls.push(l);
             }
-            añadidos.insert(s, id);
+            added.insert(s, id);
             i += 8 + l;
         }
         for l in &mut largos {
             l.sort_unstable_by(|a, b| b.cmp(a));
         }
-        Ok(Bpe { bos, eos, chars: (ini_chars, n_chars), bytes, fusiones: (ini_fusiones, bits), añadidos, largos, mapa })
+        Ok(Bpe { bos, eos, chars: (ini_chars, n_chars), bytes, fusiones: (ini_fusiones, bits), added, largos, mapa })
     }
 
     fn char_id(&self, c: char) -> Option<u32> {
@@ -262,10 +262,10 @@ impl Bpe {
     }
 
     /// El token añadido más largo que empieza en `t[0]`, con su longitud en bytes.
-    fn añadido(&self, t: &[u8]) -> Option<(usize, u32)> {
+    fn added_token(&self, t: &[u8]) -> Option<(usize, u32)> {
         for &l in &self.largos[t[0] as usize] {
             if l <= t.len()
-                && let Some(&id) = self.añadidos.get(&t[..l])
+                && let Some(&id) = self.added.get(&t[..l])
             {
                 return Some((l, id));
             }
@@ -281,7 +281,7 @@ impl Bpe {
         while i < b.len() {
             // Todos los tokens añadidos son UTF-8 válido: solo pueden empezar donde empieza un carácter.
             if !self.largos[b[i] as usize].is_empty()
-                && let Some((l, id)) = self.añadido(&b[i..])
+                && let Some((l, id)) = self.added_token(&b[i..])
             {
                 self.trozo(&texto[inicio..i], &mut ids);
                 ids.push(id);
@@ -312,7 +312,7 @@ impl Bpe {
             vivo: bool,
         }
         let mut s: Vec<S> = Vec::with_capacity(t.len());
-        let añadir = |c: u32, s: &mut Vec<S>| {
+        let push = |c: u32, s: &mut Vec<S>| {
             let i = s.len() as isize;
             if let Some(u) = s.last_mut() {
                 u.next = i;
@@ -323,10 +323,10 @@ impl Bpe {
         for c in t.chars() {
             let c = if c == ' ' { '\u{2581}' } else { c };
             match self.char_id(c) {
-                Some(id) => añadir(id, &mut s),
+                Some(id) => push(id, &mut s),
                 None => {
                     for &byte in c.encode_utf8(&mut buf).as_bytes() {
-                        añadir(self.bytes[byte as usize], &mut s);
+                        push(self.bytes[byte as usize], &mut s);
                     }
                 }
             }

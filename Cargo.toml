@@ -1,6 +1,6 @@
 [package]
 name = "omoikane"
-version = "1.14.0"
+version = "1.14.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -64,3 +64,7 @@ rmcp = { version = "3.8.0", features = ["client", "transport-child-process"] }
 lto = true
 codegen-units = 1
 strip = true
+
+# Identifiers stay ASCII: anyone can type them on any keyboard (src/bpe.rs and src/rapido.rs had ñ until 1.14.1).
+[lints.rust]
+non_ascii_idents = "deny"

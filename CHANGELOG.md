@@ -4,6 +4,14 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.14.1 (2026-11-24)
+
+### ASCII identifiers
+- A few identifiers in `src/bpe.rs` and `src/rapido.rs` had `ñ` in them (`Dueño`, `añadidos`), which is awkward to type on most keyboards and odd to read for anyone who doesn't speak Spanish. They are now `Owner`, `added`, `added_token` and `push`, and the crate denies `non_ascii_idents`, so no new one can creep in. Thanks to the reader on LinkedIn who pointed it out.
+
+### Compatibility
+- Nothing changes in behaviour, data or the database schema (10): only internal names. 1.14.1 reads and writes exactly what 1.0–1.14.0 do.
+
 ## 1.14.0 (2026-11-21)
 
 ### Contradictions wait for you
