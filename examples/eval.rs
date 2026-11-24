@@ -100,14 +100,14 @@ fn read_tsv(f: &Path) -> Result<(Vec<Mem>, Vec<Case>)> {
 /// Saves the memories in the database and returns key → id. Project ones, in a folder named after
 /// the project inside `folders`.
 fn save(db: &Path, ms: &[Mem], folders: &Path) -> Result<BTreeMap<String, String>> {
-    let mut c = omoikane::db::abrir(db)?;
+    let mut c = omoikane::db::open(db)?;
     let mut ids = BTreeMap::new();
     for m in ms {
         let project = match &m.project {
             Some(p) => {
                 let d = folders.join(p);
                 std::fs::create_dir_all(&d)?;
-                omoikane::proyecto::de(&d)?
+                omoikane::proyecto::of_dir(&d)?
             }
             None => String::new(),
         };

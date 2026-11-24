@@ -12,7 +12,7 @@ use rusqlite::Connection;
 fn open_db(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("nucleo-{name}"));
     let path = dir.join("o.db");
-    let db = db::abrir(&path).unwrap();
+    let db = db::open(&path).unwrap();
     (dir, db)
 }
 
@@ -133,7 +133,7 @@ fn scopes_project_global_and_all() {
     let r = memoria::recent(&db, &Scope::from_project(&db, "/b").unwrap(), None, 10).unwrap();
     assert_eq!(r.len(), 2);
     // The projects (global is not one).
-    let p = omoikane::proyecto::lista(&db, None, None, usize::MAX).unwrap();
+    let p = omoikane::proyecto::list(&db, None, None, usize::MAX).unwrap();
     assert_eq!(p.len(), 2);
 }
 
@@ -191,7 +191,7 @@ fn exports_with_history() {
     memoria::save(&mut db, new_memory("/otro", Kind::Fact, "B", "tres"), None).unwrap();
     let path = dir.join("o.db");
     let mut out = Vec::new();
-    assert_eq!(omoikane::copia::exportar(&db, &path, &Scope::from_project(&db, "/p").unwrap(), false, &mut out).unwrap().memories, 1);
+    assert_eq!(omoikane::copia::export(&db, &path, &Scope::from_project(&db, "/p").unwrap(), false, &mut out).unwrap().memories, 1);
     let lines: Vec<serde_json::Value> =
         String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     // Header, the memory and the footer.
@@ -199,7 +199,7 @@ fn exports_with_history() {
     assert_eq!(lines[1]["content"], "dos");
     assert_eq!(lines[1]["versions"][0]["content"], "uno");
     let mut all = Vec::new();
-    assert_eq!(omoikane::copia::exportar(&db, &path, &Scope::All, false, &mut all).unwrap().memories, 2);
+    assert_eq!(omoikane::copia::export(&db, &path, &Scope::All, false, &mut all).unwrap().memories, 2);
 }
 
 /// After hundreds of random operations, the table, the FTS index and the paths still add up, and
@@ -268,7 +268,7 @@ fn concurrent_writes() {
         .map(|h| {
             let path = path.clone();
             std::thread::spawn(move || {
-                let mut db = db::abrir(&path).unwrap();
+                let mut db = db::open(&path).unwrap();
                 for i in 0..50 {
                     let m = memoria::save(&mut db, new_memory("/p", Kind::Fact, &format!("h{h} n{i}"), "texto"), None).unwrap();
                     if i % 5 == 0 {
@@ -282,7 +282,7 @@ fn concurrent_writes() {
     for h in threads {
         h.join().unwrap();
     }
-    let db = db::abrir(&path).unwrap();
+    let db = db::open(&path).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory"), 200);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_fts_docsize"), 200);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_version"), 40);
@@ -339,6 +339,6 @@ fn viewer() {
 
 fn open_viewer_db() -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva("visor");
-    let db = omoikane::db::abrir(&dir.join("o.db")).unwrap();
+    let db = omoikane::db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }

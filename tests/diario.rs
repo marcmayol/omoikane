@@ -39,9 +39,9 @@ fn received(db: &rusqlite::Connection, session: &str, id: &str) {
 #[test]
 fn one_line_per_session_with_files_and_memories() {
     let d = dir("claude");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
     let new = save(&mut db, &repo, "El puerto es el 8010", false);
     let changed = save(&mut db, &repo, "Sync por git", false);
     let used = save(&mut db, &repo, "La caché vive en D:", false);
@@ -171,9 +171,9 @@ fn files_from_other_agents() {
 #[test]
 fn filters_and_expiry() {
     let d = dir("filtros");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let db = db::abrir(&d.join("o.db")).unwrap();
-    let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
+    let id = omoikane::proyecto::register(&db, &repo).unwrap();
     // With no line yet the table does not exist (opening the database does not create it), and reading does not fail.
     assert!(diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap().is_empty());
     let conv = d.join("c.jsonl");
@@ -211,9 +211,9 @@ fn filters_and_expiry() {
 #[test]
 fn counts_what_subagents_did() {
     let d = dir("subagentes");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
     let theirs = save(&mut db, &repo, "Lo guardó el subagente", false);
     let conv = d.join("s1.jsonl");
     write(&conv, &[tool("t1", "Edit", json!({"file_path": format!("{repo}/src/main.rs")}))]);
@@ -247,8 +247,8 @@ fn counts_what_subagents_did() {
 #[test]
 fn lines_without_project_and_pruned() {
     let d = dir("podados");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let db = db::abrir(&d.join("o.db")).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
     let conv = d.join("c.jsonl");
     write(&conv, &[tool("t1", "Edit", json!({"file_path": format!("{repo}/src/a.rs")}))]);
     diario::apuntar(&db, &repo, "antes", Some(&conv)).unwrap();
@@ -259,7 +259,7 @@ fn lines_without_project_and_pruned() {
     };
     assert_eq!(from(&repo), vec!["antes"]);
     // Now it is a project: it is visible through its folders, even if where it is viewed from is not given.
-    let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let id = omoikane::proyecto::register(&db, &repo).unwrap();
     diario::apuntar(&db, &repo, "despues", None).unwrap();
     db.execute("UPDATE diary SET last_at = '2026-11-01T10:00:00.000Z' WHERE session = 'antes'", []).unwrap();
     let only = |id: i64| {
@@ -267,11 +267,11 @@ fn lines_without_project_and_pruned() {
     };
     assert_eq!(only(id), vec!["despues", "antes"]);
     // It is pruned (it has no memories) and another folder takes its id.
-    assert_eq!(omoikane::proyecto::podar(&db).unwrap(), 1);
+    assert_eq!(omoikane::proyecto::prune(&db).unwrap(), 1);
     assert_eq!(db.query_row("SELECT count(*) FROM diary WHERE project_id != 0", [], |f| f.get::<_, i64>(0)).unwrap(), 0);
     let new_dir = d.join("nueva");
     std::fs::create_dir_all(new_dir.join(".git")).unwrap();
-    let other = omoikane::proyecto::registrar(&db, &omoikane::proyecto::de(&new_dir).unwrap()).unwrap();
+    let other = omoikane::proyecto::register(&db, &omoikane::proyecto::of_dir(&new_dir).unwrap()).unwrap();
     assert_eq!(other, id, "SQLite reutiliza el id");
     assert!(only(other).is_empty());
     // And from its folder they are still there, with the folder as the project.
@@ -281,12 +281,12 @@ fn lines_without_project_and_pruned() {
     // A client's project that gets pruned takes its lines with it: without a project they would be visible from the personal space.
     let client = d.join("cliente");
     std::fs::create_dir_all(client.join(".git")).unwrap();
-    let client_path = omoikane::proyecto::de(&client).unwrap();
-    let client_project = omoikane::proyecto::registrar(&db, &client_path).unwrap();
+    let client_path = omoikane::proyecto::of_dir(&client).unwrap();
+    let client_project = omoikane::proyecto::register(&db, &client_path).unwrap();
     db.execute("INSERT INTO space(key, name, created_at) VALUES ('acme', 'acme', '2026-11-04T00:00:00.000Z')", []).unwrap();
     db.execute("UPDATE project SET space_id = (SELECT id FROM space WHERE key = 'acme') WHERE id = ?1", [client_project]).unwrap();
     diario::apuntar(&db, &client_path, "del-cliente", None).unwrap();
-    omoikane::proyecto::podar(&db).unwrap();
+    omoikane::proyecto::prune(&db).unwrap();
     assert_eq!(db.query_row("SELECT count(*) FROM diary WHERE session = 'del-cliente'", [], |f| f.get::<_, i64>(0)).unwrap(), 0);
 }
 
@@ -305,9 +305,9 @@ fn truncated_conversation() {
 #[test]
 fn unicode_file_and_limit() {
     let d = dir("unicode");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let db = db::abrir(&d.join("o.db")).unwrap();
-    let id = omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
+    let id = omoikane::proyecto::register(&db, &repo).unwrap();
     let conv = d.join("c.jsonl");
     write(&conv, &[tool("t1", "Edit", json!({"file_path": format!("{repo}/src/Ñandú.rs")}))]);
     diario::apuntar(&db, &repo, "uno", Some(&conv)).unwrap();
@@ -324,9 +324,9 @@ fn unicode_file_and_limit() {
 #[test]
 fn applied_by_citation() {
     let d = dir("aplicadas");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
     let followed = save(&mut db, &repo, "Compilar antes del smoke test", false);
     let new = save(&mut db, &repo, "El puerto es el 8010", false);
     let conv = d.join("s9.jsonl");
@@ -362,8 +362,8 @@ fn applied_by_citation() {
 #[test]
 fn old_diary_without_applied() {
     let d = dir("antes");
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let db = db::abrir(&d.join("o.db")).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
     db.execute_batch(
         "CREATE TABLE diary (session TEXT NOT NULL, project_id INTEGER NOT NULL DEFAULT 0, folder TEXT NOT NULL DEFAULT '',
            first_at TEXT NOT NULL, last_at TEXT NOT NULL, files TEXT NOT NULL DEFAULT '[]', recalled TEXT NOT NULL DEFAULT '[]',
@@ -374,7 +374,7 @@ fn old_diary_without_applied() {
     let l = diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap();
     assert!(l.len() == 1 && l[0].applied.is_empty());
     assert_eq!(diario::aplicada(&db, "01M").unwrap().0, 0);
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
     assert!(diario::apuntar(&db, &repo, "nueva", None).unwrap());
     assert_eq!(diario::lineas(&db, &Scope::All, &Filtro { limite: 10, ..Default::default() }).unwrap().len(), 2);
 }

@@ -63,7 +63,7 @@ fn model() -> Option<WithModel> {
 
 fn fresh_db(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("vectores-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 

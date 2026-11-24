@@ -933,24 +933,24 @@ fn main() -> Result<()> {
     // in the folder it runs in.
     // `setup` and `upgrade` don't open the database: they don't need it.
     let no_db = matches!(cli.orden, Commands::Setup { .. } | Commands::Upgrade { .. });
-    if let Some(e) = omoikane::entorno::casa_mala() {
+    if let Some(e) = omoikane::entorno::bad_home() {
         bail!(e);
     }
     // The database and the models, only on this computer: with `\\server\share` (or `//host/x`) in `--db`,
     // `OMOIKANE_DB` or `OMOIKANE_MODELS`, every command would open an SMB connection there.
     if !no_db
-        && (cli.comun.db.is_some() || omoikane::entorno::hay_donde_guardar())
-        && let Some(e) = omoikane::entorno::ruta_mala(&tr!("the database", "la base"), &cli.comun.db.clone().unwrap_or_else(db::ruta_por_defecto))
-            .or_else(|| omoikane::entorno::ruta_mala("OMOIKANE_MODELS", &omoikane::modelos::carpeta()))
+        && (cli.comun.db.is_some() || omoikane::entorno::has_place_to_save())
+        && let Some(e) = omoikane::entorno::bad_path(&tr!("the database", "la base"), &cli.comun.db.clone().unwrap_or_else(db::default_path))
+            .or_else(|| omoikane::entorno::bad_path("OMOIKANE_MODELS", &omoikane::modelos::carpeta()))
     {
         bail!(e);
     }
-    if !no_db && cli.comun.db.is_none() && !omoikane::entorno::hay_donde_guardar() {
-        bail!(omoikane::entorno::sin_casa());
+    if !no_db && cli.comun.db.is_none() && !omoikane::entorno::has_place_to_save() {
+        bail!(omoikane::entorno::no_home_error());
     }
     let c = &cli.comun;
     if !matches!(cli.orden, Commands::Upgrade { .. }) {
-        omoikane::actualizar::quizas_en_segundo_plano();
+        omoikane::actualizar::maybe_in_background();
     }
     let writes = matches!(cli.orden, Commands::Remember { .. } | Commands::Tags { merge: Some(_), .. } | Commands::Update(..) | Commands::Verify(..) | Commands::Forget { .. } | Commands::Restore { .. } | Commands::Import { .. } | Commands::Tui { .. });
     // Remember, update, forget and restore know which memory they touch and bring the review up to date
@@ -962,7 +962,7 @@ fn main() -> Result<()> {
         if whole_review && let Ok(db) = open_db(c) {
             let _ = omoikane::revisar::refresh(&db);
         }
-        omoikane::sync::programar(&db_path(c));
+        omoikane::sync::schedule(&db_path(c));
     }
     trace_wait();
     r
@@ -972,12 +972,12 @@ fn main() -> Result<()> {
 /// concurrency test adds it up per operation).
 fn trace_wait() {
     if std::env::var_os("OMOIKANE_TRAZA").is_some_and(|v| !v.is_empty()) {
-        eprintln!("TRAZA espera_base {}", serde_json::json!({ "ms": db::esperado().as_secs_f64() * 1000.0 }));
+        eprintln!("TRAZA espera_base {}", serde_json::json!({ "ms": db::waited().as_secs_f64() * 1000.0 }));
     }
 }
 
 fn db_path(c: &Common) -> PathBuf {
-    c.db.clone().unwrap_or_else(db::ruta_por_defecto)
+    c.db.clone().unwrap_or_else(db::default_path)
 }
 
 /// The content of `remember`: the argument or standard input. With `--data` and no content, the
@@ -993,7 +993,7 @@ fn content_of(content: Option<String>, title: &str, con_datos: bool) -> Result<S
 fn export_okf(c: &Common, folder: &Path, space: Option<String>) -> Result<()> {
     let db = open_db(c)?;
     let what = match space {
-        Some(s) => omoikane::obsidian::Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        Some(s) => omoikane::obsidian::Que::Espacio(proyecto::find_space(&db, &s)?),
         None => omoikane::obsidian::Que::Personal,
     };
     let n = omoikane::okf::exportar(&db, folder, what)?;
@@ -1021,7 +1021,7 @@ fn import_obsidian(c: &Common, vault: &Path, space: Option<String>, prefer: Opti
     use omoikane::obsidian::{Preferir, Que};
     let (mut db, model) = open_with_model(c)?;
     let what = match space {
-        Some(s) => Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        Some(s) => Que::Espacio(proyecto::find_space(&db, &s)?),
         None => Que::Personal,
     };
     let prefer_mode = match prefer {
@@ -1031,7 +1031,7 @@ fn import_obsidian(c: &Common, vault: &Path, space: Option<String>, prefer: Opti
     };
     let r = omoikane::obsidian::importar(&mut db, model.as_ref(), vault, what, prefer_mode, dry_run)?;
     if !dry_run && r.updated + r.created > 0 {
-        omoikane::sync::programar(&db_path(c));
+        omoikane::sync::schedule(&db_path(c));
     }
     if c.json {
         let mut v = serde_json::to_value(&r)?;
@@ -1144,7 +1144,7 @@ fn import_okf(c: &Common, folder: &Path, space: Option<String>, global: bool, tr
     // From the home folder, everything would go global (any project sees it): only if asked for.
     let current = project_of(c)?;
     anyhow::ensure!(
-        space.is_some() || global || !proyecto::es_general(&current),
+        space.is_some() || global || !proyecto::is_general(&current),
         tr!(
             "this is your home folder, not a project: importing here would make every concept global (seen from every project). Run it in the project's folder (or give --dir <project>), use --space <name> for a client, or --global if you do want them global",
             "esta es tu carpeta personal, no un proyecto: importar aquí haría globales todos los conceptos (los vería cualquier proyecto). Lánzalo en la carpeta del proyecto (o con --dir <proyecto>), usa --space <nombre> para un cliente, o --global si de verdad las quieres globales"
@@ -1159,21 +1159,21 @@ fn import_okf(c: &Common, folder: &Path, space: Option<String>, global: bool, tr
     }
     let (mut db, model) = open_with_model(c)?;
     let target = match space {
-        Some(s) => omoikane::okf::Destino::Espacio(proyecto::buscar_espacio(&db, &s)?),
+        Some(s) => omoikane::okf::Destino::Espacio(proyecto::find_space(&db, &s)?),
         None if global => omoikane::okf::Destino::Proyecto(String::new()),
         None => omoikane::okf::Destino::Proyecto(current),
     };
     // Importing is the person's call: a person's `verified` sets the seal, except inside an agent's
     // shell (like `omoi verify`), and only what was exported from this database unless
     // --trust-verified.
-    let agent = omoikane::verificado::shell_de_agente();
+    let agent = omoikane::verificado::agent_shell();
     let op = omoikane::okf::Opciones { en_seco: dry_run, verificar: agent.is_none(), confiar_verificadas: trust && agent.is_none() };
     // Into a client's space (other people share its repository): pinned, verified and personal
     // (Omoikane memories from outside that space) are warned about, and without --yes it asks (with
     // nobody there, it stops).
     if let omoikane::okf::Destino::Espacio(e) = &target {
         let preview = omoikane::okf::importar_con(&mut db, model.as_ref(), &bundle, &target, omoikane::okf::Opciones { en_seco: true, ..op })?;
-        let key = proyecto::clave_espacio(&db, Some(*e))?;
+        let key = proyecto::space_key(&db, Some(*e))?;
         let outside = omoikane::okf::de_fuera_del_espacio(&bundle, &key);
         if preview.pinned + preview.verified + outside > 0 {
             let notice = tr!(
@@ -1186,7 +1186,7 @@ fn import_okf(c: &Common, folder: &Path, space: Option<String>, global: bool, tr
             eprintln!("omoikane: {notice}");
             if !dry_run && !yes {
                 anyhow::ensure!(
-                    omoikane::entorno::puede_preguntar(),
+                    omoikane::entorno::can_ask(),
                     tr!("nothing was imported: add --yes if that is what you want", "no se ha importado nada: añade --yes si es lo que quieres")
                 );
                 if !ask_yes_no(&tr!("Import them into the space?", "¿Importarlas al espacio?"), false)? {
@@ -1373,7 +1373,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
     match command {
         Commands::Doctor => doctor(c),
         Commands::Model { accion: action } => model(c, action.unwrap_or(ModelAction::Status)),
-        Commands::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone()),
+        Commands::Mcp => omoikane::mcp::servir(c.db.clone().unwrap_or_else(db::default_path), c.dir.clone()),
         Commands::Serve { port, open, memory } => {
             // The whole id, and that this folder's view shows it, before starting anything.
             let memory = match memory {
@@ -1383,14 +1383,14 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 }
                 None => None,
             };
-            omoikane::http::servir(c.db.clone().unwrap_or_else(db::ruta_por_defecto), c.dir.clone(), port, open, memory)
+            omoikane::http::servir(c.db.clone().unwrap_or_else(db::default_path), c.dir.clone(), port, open, memory)
         }
         Commands::Tool { nombre: name } => {
             let mut args = String::new();
             if name.is_some() {
                 std::io::stdin().read_to_string(&mut args)?;
             }
-            let db = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            let db = c.db.clone().unwrap_or_else(db::default_path);
             // The caller says who it is (the Claude Code mod sets mcp:claude-code).
             let origin = std::env::var("OMOIKANE_SOURCE").ok().filter(|o| !o.trim().is_empty()).unwrap_or_else(|| "mcp".into());
             let (text, is_error) = omoikane::mcp::herramienta(db, c.dir.clone(), name.as_deref(), &args, &origin)?;
@@ -1443,9 +1443,9 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             // Preferences belong to the person: global, unless the space or the folder (--dir) is given.
             let global = global || (kind == Kind::Preference && space.is_none() && c.dir.is_none());
             let (project, paths) =
-                if global { (String::new(), paths) } else { proyecto::para_guardar(&current, &paths, &format!("{title} {content}")) };
+                if global { (String::new(), paths) } else { proyecto::for_saving(&current, &paths, &format!("{title} {content}")) };
             // From a general folder everything is visible: that is where duplicates are looked for.
-            let search_in = if !project.is_empty() && proyecto::es_general(&current) { current.clone() } else { project.clone() };
+            let search_in = if !project.is_empty() && proyecto::is_general(&current) { current.clone() } else { project.clone() };
             let (mut db, model) = open_with_model(c)?;
             // Everything it will carry: text, paths, tags, key and data (`--force` doesn't skip it).
             if is_trade {
@@ -1488,7 +1488,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 Some("") => Some(Scope::from_project(&db, &current)?.space().with_context(|| {
                     tr!("this project is not in a space: give its name (--space <name>), or `omoi space assign <space>`", "este proyecto no está en ningún espacio: di cuál (--space <nombre>), o `omoi space assign <espacio>`")
                 })?),
-                Some(n) => Some(proyecto::buscar_espacio(&db, n)?),
+                Some(n) => Some(proyecto::find_space(&db, n)?),
             };
             let before = omoikane::revisar::before(&db)?;
             // Where it comes from: the session and the commit (see `procedencia`); trade ones, nothing of the project;
@@ -1606,14 +1606,14 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 paths: if no_paths { Some(Vec::new()) } else { (!paths.is_empty()).then_some(paths) },
                 tags: if no_tags { Some(Vec::new()) } else { (!tags.is_empty()).then_some(tags) },
                 pinned: if pin { Some(true) } else if unpin { Some(false) } else { None },
-                project: if global { Some(String::new()) } else { project.as_deref().map(proyecto::de_carpeta).transpose()? },
+                project: if global { Some(String::new()) } else { project.as_deref().map(proyecto::of_given_folder).transpose()? },
                 reason,
                 replace: replace.into_iter().zip(with).collect(),
                 append,
                 ..Default::default()
             };
             let (mut db, model) = open_with_model(c)?;
-            let changes = Changes { space_id: space.as_deref().map(|s| proyecto::buscar_espacio(&db, s)).transpose()?, ..changes };
+            let changes = Changes { space_id: space.as_deref().map(|s| proyecto::find_space(&db, s)).transpose()?, ..changes };
             let (changes, from_client) = trades_for_update(c, &db, &id, changes, &trades, no_trade, audience.as_deref(), data.as_ref(), allow_leaks)?;
             let before = omoikane::revisar::before(&db)?;
             // From a client to a trade: a new memory, and the client's one stays as it was.
@@ -1736,7 +1736,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             let (visible, everything) = omoikane::http::papelera_desde(&db, &project_of(c)?)?;
             let n = visible.len();
             if !yes {
-                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
+                anyhow::ensure!(omoikane::entorno::can_ask(), tr!("add --yes to empty the trash without asking", "añade --yes para vaciar la papelera sin preguntar"));
                 if !ask_yes_no(&tr!("Empty the trash ({n} memories)? They can't be brought back afterwards.", "¿Vaciar la papelera ({n} memorias)? Después no se pueden recuperar."), false)? {
                     return Ok(());
                 }
@@ -1835,7 +1835,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             }
             let mut db = db;
             if omoikane::revisar::cleanup_quietly(&mut db) {
-                omoikane::sync::programar(&db_path(c));
+                omoikane::sync::schedule(&db_path(c));
             }
             let scope = requested_scope(c, &db, all, None, None)?;
             if c.json {
@@ -1847,8 +1847,8 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             // that one can't be opened or fails, afterwards, with the usual one.
             let filter = omoikane::nombres::space_filter(&scope);
             let load_projects = |db: &Connection| -> Result<_> {
-                let paused_list = proyecto::en_pausa(db)?;
-                let projects = proyecto::lista(db, None, filter, usize::MAX)?;
+                let paused_list = proyecto::paused_projects(db)?;
+                let projects = proyecto::list(db, None, filter, usize::MAX)?;
                 let proposals = omoikane::nombres::proposals_for(db, &projects)?;
                 Ok((paused_list, projects, proposals))
             };
@@ -1869,11 +1869,11 @@ fn run(c: &Common, command: Commands) -> Result<()> {
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             // And those in another space on another computer of the sync, with the command, and those
             // that are paused, with both.
-            let clashes = omoikane::sync::choques(&db_path(c));
+            let clashes = omoikane::sync::clashes(&db_path(c));
             for p in &projects {
                 if let Some(x) = paused_list.iter().find(|x| x.key == p.key) {
                     writeln!(out, "{:<12}  {}  {}", "project_paused", p.name, p.path)?;
-                    writeln!(out, "{:<12}  {}", "", omoikane::sync::texto_pausa(&db_path(c), x))?;
+                    writeln!(out, "{:<12}  {}", "", omoikane::sync::pause_text(&db_path(c), x))?;
                 }
                 if p.gone {
                     writeln!(out, "{:<12}  {}  {}", "project_gone", p.name, p.path)?;
@@ -1881,7 +1881,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                 }
                 if let Some(x) = clashes.iter().find(|x| x.key == p.key) {
                     writeln!(out, "{:<12}  {}  {}", "project_space", p.name, p.path)?;
-                    writeln!(out, "{:<12}  {}", "", x.texto())?;
+                    writeln!(out, "{:<12}  {}", "", x.text())?;
                 }
                 if !p.origin_changed.is_empty() {
                     writeln!(out, "{:<12}  {}  {}", "origin", p.name, p.path)?;
@@ -1930,24 +1930,24 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         Commands::Tui { all } => {
             let (mut db, model) = open_with_model(c)?;
             let project = project_of(c)?;
-            let all = all || proyecto::es_general(&project);
+            let all = all || proyecto::is_general(&project);
             omoikane::tui::ejecutar(&mut db, model.as_ref(), project, all)
         }
         Commands::Import { okf: Some(folder), space, global, trust_verified, yes, dry_run, .. } => import_okf(c, &folder, space, global, trust_verified, yes, dry_run),
         Commands::Import { obsidian: Some(vault), space, prefer, dry_run, .. } => import_obsidian(c, &vault, space, prefer.as_deref(), dry_run),
         Commands::Import { fichero: file, force, dry_run, trust_verified, .. } => {
             let file = file.context("missing file")?;
-            // A network file is not opened (see `proyecto::ruta_local`).
-            proyecto::exigir_local(&file)?;
+            // A network file is not opened (see `proyecto::is_local_path`).
+            proyecto::require_local(&file)?;
             let current = project_of(c)?;
-            if omoikane::copia::es_propio(&file)? {
-                let path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            if omoikane::copia::is_own_format(&file)? {
+                let path = c.db.clone().unwrap_or_else(db::default_path);
                 let (mut db, model) = open_with_model(c)?;
                 // The verified seals, as in `import --okf`: the ones this person set; another person's,
                 // only with --trust-verified; and from an agent's shell, none.
-                let agent = omoikane::verificado::shell_de_agente();
-                let seals = omoikane::copia::Sellos { agente: agent.is_some(), confiar: trust_verified };
-                let (count, r) = omoikane::copia::importar(&mut db, &path, &file, &current, model.as_ref(), dry_run, seals)?;
+                let agent = omoikane::verificado::agent_shell();
+                let seals = omoikane::copia::StampPolicy { agent: agent.is_some(), trust: trust_verified };
+                let (count, r) = omoikane::copia::import(&mut db, &path, &file, &current, model.as_ref(), dry_run, seals)?;
                 if agent.is_none() && count.untrusted_verified > 0 {
                     eprintln!(
                         "{}",
@@ -1969,18 +1969,18 @@ fn run(c: &Common, command: Commands) -> Result<()> {
                     );
                 }
                 if c.json {
-                    return json(&serde_json::json!({ "file": count, "new": r.nuevas, "updated": r.actualizadas, "forgotten": r.olvidadas, "skipped_lines": r.ilegibles, "dry_run": dry_run }));
+                    return json(&serde_json::json!({ "file": count, "new": r.created, "updated": r.updated, "forgotten": r.forgotten, "skipped_lines": r.unreadable, "dry_run": dry_run }));
                 }
                 if dry_run {
                     println!("{}", tr!("{} memories, {} forget marks, {} verdicts and {} in the trash to import (the file checks out)", "{} memorias, {} marcas de olvido, {} veredictos y {} en la papelera para importar (el fichero está bien)", count.memories, count.tombstones, count.verdicts, count.forgotten));
                 } else {
-                    println!("{}", tr!("imported: {} new, {} updated, {} forgotten; {} lines skipped; the rest was already here", "importado: {} nuevas, {} actualizadas, {} olvidadas; {} líneas saltadas; lo demás ya estaba", r.nuevas, r.actualizadas, r.olvidadas, r.ilegibles));
+                    println!("{}", tr!("imported: {} new, {} updated, {} forgotten; {} lines skipped; the rest was already here", "importado: {} nuevas, {} actualizadas, {} olvidadas; {} líneas saltadas; lo demás ya estaba", r.created, r.updated, r.forgotten, r.unreadable));
                 }
                 if count.unknown > 0 {
-                    println!("{}", omoikane::sync::aviso_lineas_nuevas(count.unknown));
+                    println!("{}", omoikane::sync::newer_lines_notice(count.unknown));
                 }
-                if !dry_run && r.nuevas + r.actualizadas > 0 {
-                    omoikane::sync::programar(&path);
+                if !dry_run && r.created + r.updated > 0 {
+                    omoikane::sync::schedule(&path);
                 }
                 return Ok(());
             }
@@ -2015,7 +2015,7 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         Commands::Export { obsidian: Some(vault), space, watch, interval, .. } => {
             let db = open_db(c)?;
             let what = match space {
-                Some(s) => omoikane::obsidian::Que::Espacio(proyecto::buscar_espacio(&db, &s)?),
+                Some(s) => omoikane::obsidian::Que::Espacio(proyecto::find_space(&db, &s)?),
                 None => omoikane::obsidian::Que::Personal,
             };
             let json_output = c.json;
@@ -2058,31 +2058,31 @@ fn run(c: &Common, command: Commands) -> Result<()> {
         }
         Commands::Export { all, encrypt, .. } => {
             let mut output = std::io::BufWriter::new(std::io::stdout().lock());
-            let path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            let path = c.db.clone().unwrap_or_else(db::default_path);
             let db = open_db(c)?;
             // Without --all, what is seen from the project (also from the user's folder: not everything).
             let scope = if all {
                 Scope::All
             } else {
-                match proyecto::resolver(&db, &project_of(c)?)? {
+                match proyecto::resolve(&db, &project_of(c)?)? {
                     Some((id, space)) => Scope::Project { id, space },
                     None => Scope::Project { id: -1, space: None },
                 }
             };
-            let n = omoikane::copia::exportar(&db, &path, &scope, encrypt, &mut output)?;
+            let n = omoikane::copia::export(&db, &path, &scope, encrypt, &mut output)?;
             output.flush()?;
             eprintln!("{}", tr!("{} memories exported (with {} forget marks, {} verdicts and {} in the trash)", "{} memorias exportadas (con {} marcas de olvido, {} veredictos y {} en la papelera)", n.memories, n.tombstones, n.verdicts, n.forgotten));
             Ok(())
         }
         Commands::Backup { list } => {
-            let path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+            let path = c.db.clone().unwrap_or_else(db::default_path);
             if !list {
-                let target = omoikane::copia::copiar(&open_db(c)?, &path)?;
+                let target = omoikane::copia::make_backup(&open_db(c)?, &path)?;
                 if !c.json {
                     println!("{}", tr!("copied to {}", "copiada en {}", target.display()));
                 }
             }
-            let v = omoikane::copia::copias(&path);
+            let v = omoikane::copia::backups(&path);
             if c.json {
                 return json(&v.iter().map(|(p, b)| serde_json::json!({ "path": p, "bytes": b })).collect::<Vec<_>>());
             }
@@ -2101,14 +2101,14 @@ fn run(c: &Common, command: Commands) -> Result<()> {
 
 /// `omoi upgrade`.
 fn upgrade(check_only: bool, on: bool, off: bool, background: bool, after: Option<String>) -> Result<()> {
-    use omoikane::actualizar::{self, Resultado};
+    use omoikane::actualizar::{self, CheckResult};
     if let Some(previous) = after {
-        actualizar::despues(&previous)?;
+        actualizar::after_upgrade(&previous)?;
         return Ok(());
     }
     if on || off {
-        actualizar::fijar(on)?;
-        if omoikane::setup::instalado() {
+        actualizar::set_preference(on)?;
+        if omoikane::setup::installed() {
             let _ = omoikane::setup::auto_update(on);
         }
         println!(
@@ -2122,15 +2122,15 @@ fn upgrade(check_only: bool, on: bool, off: bool, background: bool, after: Optio
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    let r = actualizar::comprobar(&exe, !check_only);
+    let r = actualizar::check(&exe, !check_only);
     if background {
         return Ok(()); // nobody reads it: whatever happens shows up in the next session
     }
     match r? {
-        Resultado::AlDia(v) => println!("{}", tr!("omoi {v} is the latest version.", "omoi {v} es la última versión.")),
-        Resultado::NoSeInstala(v, reason) if reason.is_empty() => println!("{}", tr!("omoi {v} is available: `omoi upgrade` installs it.", "Hay omoi {v}: `omoi upgrade` la instala.")),
-        Resultado::NoSeInstala(v, reason) => println!("{}", tr!("omoi {v} is available, but not installed automatically: {reason}", "Hay omoi {v}, pero no se instala sola: {reason}")),
-        Resultado::Actualizado(v) => println!("{}", tr!("Updated to omoi {v}.", "Actualizado a omoi {v}.")),
+        CheckResult::UpToDate(v) => println!("{}", tr!("omoi {v} is the latest version.", "omoi {v} es la última versión.")),
+        CheckResult::NotInstalled(v, reason) if reason.is_empty() => println!("{}", tr!("omoi {v} is available: `omoi upgrade` installs it.", "Hay omoi {v}: `omoi upgrade` la instala.")),
+        CheckResult::NotInstalled(v, reason) => println!("{}", tr!("omoi {v} is available, but not installed automatically: {reason}", "Hay omoi {v}, pero no se instala sola: {reason}")),
+        CheckResult::Updated(v) => println!("{}", tr!("Updated to omoi {v}.", "Actualizado a omoi {v}.")),
     }
     Ok(())
 }
@@ -2143,9 +2143,9 @@ fn ask_auto_update(yes: bool, no: bool, dry_run: bool) -> Result<()> {
     }
     let on = if no {
         false
-    } else if let Some(already) = omoikane::actualizar::preferencia().filter(|_| yes || !omoikane::entorno::puede_preguntar()) {
+    } else if let Some(already) = omoikane::actualizar::preference().filter(|_| yes || !omoikane::entorno::can_ask()) {
         already
-    } else if yes || !omoikane::entorno::puede_preguntar() {
+    } else if yes || !omoikane::entorno::can_ask() {
         // Without asking it is not turned on: it has to be a yes from the person.
         false
     } else {
@@ -2157,7 +2157,7 @@ fn ask_auto_update(yes: bool, no: bool, dry_run: bool) -> Result<()> {
             false,
         )?
     };
-    omoikane::actualizar::fijar(on)?;
+    omoikane::actualizar::set_preference(on)?;
     omoikane::setup::auto_update(on)?;
     println!(
         "{}",
@@ -2177,14 +2177,14 @@ fn setup(agent: &str, yes: bool, dry_run: bool, no_auto_update: bool) -> Result<
     let steps = omoikane::setup::plan()?;
     if steps.is_empty() {
         println!("{}", tr!("Claude Code already has Omoikane: nothing to do.", "Claude Code ya tiene Omoikane: nada que hacer."));
-        if omoikane::actualizar::preferencia().is_none() || no_auto_update {
+        if omoikane::actualizar::preference().is_none() || no_auto_update {
             ask_auto_update(yes, no_auto_update, dry_run)?;
         }
         return Ok(());
     }
     println!("{}", tr!("To set up Claude Code, omoi will:", "Para preparar Claude Code, omoi va a:"));
     for p in &steps {
-        println!("  - {}   (claude {})", p.que, p.args.join(" "));
+        println!("  - {}   (claude {})", p.what, p.args.join(" "));
     }
     if dry_run {
         return Ok(());
@@ -2193,7 +2193,7 @@ fn setup(agent: &str, yes: bool, dry_run: bool, no_auto_update: bool) -> Result<
         println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
         return Ok(());
     }
-    omoikane::setup::ejecutar(&steps)?;
+    omoikane::setup::run(&steps)?;
     ask_auto_update(yes, no_auto_update, dry_run)?;
     println!(
         "{}",
@@ -2211,7 +2211,7 @@ fn recall_on_session_end(c: &Common) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let mut e: recall::HookInput = serde_json::from_str(&input).unwrap_or_default();
-    let db_path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    let db_path = c.db.clone().unwrap_or_else(db::default_path);
     // Cursor gives the folder in `workspace_roots`; Copilot and Kiro don't give the conversation's path.
     if e.cwd.is_empty()
         && let Some(root) = e.workspace_roots.first()
@@ -2223,18 +2223,18 @@ fn recall_on_session_end(c: &Common) -> Result<()> {
     {
         e.transcript_path = p.to_string_lossy().into_owned();
     }
-    let conversation = Some(std::path::Path::new(&e.transcript_path)).filter(|p| !e.transcript_path.is_empty() && proyecto::existe(p));
+    let conversation = Some(std::path::Path::new(&e.transcript_path)).filter(|p| !e.transcript_path.is_empty() && proyecto::exists(p));
     if (conversation.is_none() && e.session_id.trim().is_empty()) || !db_path.exists() {
         return Ok(());
     }
     let project = match (&c.dir, e.cwd.is_empty()) {
-        (Some(d), _) => proyecto::de(d)?,
+        (Some(d), _) => proyecto::of_dir(d)?,
         // The hook's `cwd` is the folder of the agent's own session: it may be on the network (see
-        // `proyecto::de_confianza`). `--dir` comes from outside and goes through `proyecto::de`.
-        (None, false) => proyecto::de_confianza(std::path::Path::new(&e.cwd))?,
-        (None, true) => proyecto::actual()?,
+        // `proyecto::of_trusted_dir`). `--dir` comes from outside and goes through `proyecto::of_dir`.
+        (None, false) => proyecto::of_trusted_dir(std::path::Path::new(&e.cwd))?,
+        (None, true) => proyecto::current()?,
     };
-    let db = db::abrir(&db_path)?;
+    let db = db::open(&db_path)?;
     // The diary first: it is the fastest, and if the hook is cut off, it stays noted. Neither an error nor a
     // panic of its own cuts the hook or leaves the candidates unset aside.
     let diary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| omoikane::diario::apuntar(&db, &project, &e.session_id, conversation)));
@@ -2295,33 +2295,33 @@ fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: r
         e.prompt = p;
     }
     let project = match (&c.dir, e.cwd.is_empty()) {
-        (Some(d), _) => proyecto::de(d)?,
+        (Some(d), _) => proyecto::of_dir(d)?,
         // The hook's `cwd` is the folder of the agent's own session: it may be on the network (see
-        // `proyecto::de_confianza`). `--dir` comes from outside and goes through `proyecto::de`.
-        (None, false) => proyecto::de_confianza(std::path::Path::new(&e.cwd))?,
-        (None, true) => proyecto::actual()?,
+        // `proyecto::of_trusted_dir`). `--dir` comes from outside and goes through `proyecto::of_dir`.
+        (None, false) => proyecto::of_trusted_dir(std::path::Path::new(&e.cwd))?,
+        (None, true) => proyecto::current()?,
     };
-    let path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    let path = c.db.clone().unwrap_or_else(db::default_path);
     if !path.exists() && !on_session_start {
         return Ok(()); // no memories yet: nothing to inject
     }
-    let mut db = db::abrir(&path)?;
+    let mut db = db::open(&path)?;
     let (event, text) = if on_file_open {
         ("PreToolUse", recall::on_file_open(&mut db, &project, &e)?)
     } else if on_session_start {
         // Once a day: the database backup and purging the trash.
-        omoikane::copia::diaria(&db, &path);
-        let general = matches!(omoikane::sync::leer_config(&path), Ok(Some(_)));
+        omoikane::copia::daily_backup(&db, &path);
+        let general = matches!(omoikane::sync::read_config(&path), Ok(Some(_)));
         if general {
-            let _ = omoikane::sync::adoptar(&db, &project);
+            let _ = omoikane::sync::adopt(&db, &project);
         }
         // With the general repository or with some space's (even if there are only spaces).
-        if general || !omoikane::sync::espacios(&path).is_empty() {
-            omoikane::sync::programar(&path);
+        if general || !omoikane::sync::spaces(&path).is_empty() {
+            omoikane::sync::schedule(&path);
             // That sync already brings what's new: the first message doesn't launch another.
-            omoikane::sync::apuntar_traido(&db);
+            omoikane::sync::record_pull(&db);
         }
-        let text = recall::on_session_start(&mut db, &project, &e)?.map(|t| match omoikane::sync::aviso(&path) {
+        let text = recall::on_session_start(&mut db, &project, &e)?.map(|t| match omoikane::sync::notice(&path) {
             // Before the block's closing, which is the last `</omoikane>`.
             Some(a) => match t.rfind("</omoikane>") {
                 Some(i) => format!("{}{a}\n{}", &t[..i], &t[i..]),
@@ -2345,7 +2345,7 @@ fn recall(c: &Common, on_session_start: bool, on_file_open: bool, hook_format: r
     if on_file_open {
         // Nothing else: opening files must not cost a sync.
     } else if !on_session_start {
-        omoikane::sync::traer_si_toca(&db, &path);
+        omoikane::sync::pull_if_due(&db, &path);
     } else {
         // And the index of the project's documentation, also on the side.
         omoikane::documentos::refrescar_aparte(&db, &project, &path);
@@ -2367,7 +2367,7 @@ fn open_with_model(c: &Common) -> Result<(Connection, Option<Modelo>)> {
 /// `omoi doctor` and `omoi model semantic`.
 fn meaning_report(path: &std::path::Path) -> Result<(serde_json::Value, Vec<String>)> {
     use omoikane::significado::{self as s, Porque};
-    let db = if path.exists() { Some(db::abrir(path)?) } else { None };
+    let db = if path.exists() { Some(db::open(path)?) } else { None };
     let e = match &db {
         Some(db) => s::estado(db),
         // No database yet: the environment and the choice count the same; if there is neither, 0 memories.
@@ -2561,7 +2561,7 @@ fn model(c: &Common, action: ModelAction) -> Result<()> {
 }
 
 fn open_db(c: &Common) -> Result<Connection> {
-    db::abrir(&c.db.clone().unwrap_or_else(db::ruta_por_defecto))
+    db::open(&c.db.clone().unwrap_or_else(db::default_path))
 }
 
 fn tags_cli(c: &Common, merge: Option<Vec<String>>, all: bool, project: Option<String>, space: Option<String>) -> Result<()> {
@@ -2676,8 +2676,8 @@ fn skill_cli(c: &Common, id: Option<String>, suggest: bool, refresh: bool, to: O
 
 fn project_of(c: &Common) -> Result<String> {
     match &c.dir {
-        Some(d) => proyecto::de(d),
-        None => proyecto::actual(),
+        Some(d) => proyecto::of_dir(d),
+        None => proyecto::current(),
     }
 }
 
@@ -2702,7 +2702,7 @@ fn decisions_cli(c: &Common, d: DecisionsArgs) -> Result<()> {
             }
         };
         let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
-        omoikane::sync::programar(&db_path(c));
+        omoikane::sync::schedule(&db_path(c));
         if c.json {
             return json(&memoria::with_data(&db, vec![m])?.remove(0));
         }
@@ -2710,7 +2710,7 @@ fn decisions_cli(c: &Common, d: DecisionsArgs) -> Result<()> {
         return Ok(());
     }
     if omoikane::revisar::cleanup_quietly(&mut db) {
-        omoikane::sync::programar(&db_path(c));
+        omoikane::sync::schedule(&db_path(c));
     }
     let scope = requested_scope(c, &db, d.all, d.project.as_deref(), d.space.as_deref())?;
     let v = memoria::decisions(&db, &scope, d.blocking, &d.tags, d.limit)?;
@@ -2796,7 +2796,7 @@ fn diary_cli(c: &Common, d: DiaryArgs) -> Result<()> {
         println!("{}", tr!("nothing yet", "nada todavía"));
         return Ok(());
     }
-    let db = db::abrir(&path)?;
+    let db = db::open(&path)?;
     let scope = requested_scope(c, &db, all, project.as_deref(), space.as_deref())?;
     let filter = diario::Filtro {
         desde: since.as_deref().map(|d| diario::fecha(&db, d)).transpose()?,
@@ -2818,7 +2818,7 @@ fn diary_cli(c: &Common, d: DiaryArgs) -> Result<()> {
         let time_of = |t: &str| t.get(11..16).unwrap_or("").to_string();
         let day = l.first_at.get(..10).unwrap_or("");
         let end = if l.last_at.get(..10) == Some(day) { time_of(&l.last_at) } else { format!("{} {}", l.last_at.get(..10).unwrap_or(""), time_of(&l.last_at)) };
-        let location = if several { format!("  {}", proyecto::nombre_de(&l.project, "")) } else { String::new() };
+        let location = if several { format!("  {}", proyecto::name_of(&l.project, "")) } else { String::new() };
         println!("{day} {}–{end} UTC{location}  [{}]", time_of(&l.first_at), l.session.chars().take(8).collect::<String>());
         if !l.files.is_empty() {
             println!("  {} {}", tr!("files:", "ficheros:"), l.files.join(", "));
@@ -2858,7 +2858,7 @@ fn docs_cli(c: &Common, action: DocsAction) -> Result<()> {
         println!("{}", tr!("no documentation folders yet (`omoi docs add <folder>`)", "aún no hay carpetas de documentación (`omoi docs add <carpeta>`)"));
         return Ok(());
     }
-    let db = db::abrir(&path)?;
+    let db = db::open(&path)?;
     match action {
         DocsAction::List => {
             let v = d::listar(&db, &project)?;
@@ -2940,10 +2940,10 @@ fn requested_scope(c: &Common, db: &Connection, all: bool, project: Option<&str>
     }
     let base = Scope::from_project(db, &current)?;
     let requested = if let Some(s) = space {
-        Scope::Space(Some(proyecto::buscar_espacio(db, s)?))
+        Scope::Space(Some(proyecto::find_space(db, s)?))
     } else if let Some(p) = project {
-        let id = proyecto::buscar_en(db, p, &base)?;
-        Scope::Project { id, space: proyecto::espacio_de(db, id)? }
+        let id = proyecto::find_in(db, p, &base)?;
+        Scope::Project { id, space: proyecto::space_of(db, id)? }
     } else if all {
         base.widen()
     } else {
@@ -2963,11 +2963,11 @@ fn requested_scope(c: &Common, db: &Connection, all: bool, project: Option<&str>
 /// `--force`: the pause was set by another computer saying it belongs to a client, and accepting it sends its
 /// memories to that client's repository.
 fn paused_without_space_needs_force(db: &Connection, id: i64, target: i64, paused: bool, force: bool) -> Result<()> {
-    if paused && !force && proyecto::espacio_de(db, id)?.is_none() {
+    if paused && !force && proyecto::space_of(db, id)?.is_none() {
         bail!(tr!(
             "the project is paused because another computer says it belongs to a space: moving it to «{}» sends its memories to that space's sync repository. If you are not sure, `omoi projects keep` leaves it as it is; add --force if moving it is what you want",
             "el proyecto está en pausa porque otro equipo dice que es de un espacio: pasarlo a «{}» manda sus memorias al repositorio de ese espacio. Si no lo sabes, `omoi projects keep` lo deja como está; añade --force si es lo que quieres",
-            proyecto::clave_espacio(db, Some(target))?
+            proyecto::space_key(db, Some(target))?
         ));
     }
     Ok(())
@@ -2980,7 +2980,7 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
         ProjectsAction::List => {
             let base = Scope::from_project(&db, &project_of(c)?)?;
             let filter = if matches!(base, Scope::All) { None } else { Some(base.space()) };
-            let mut v = proyecto::lista(&db, None, filter, usize::MAX)?;
+            let mut v = proyecto::list(&db, None, filter, usize::MAX)?;
             // Their trades: for those never looked at, now (the root and one level of each).
             for p in v.iter_mut().filter(|p| !p.gone && p.trades.is_empty()) {
                 p.trades = omoikane::oficios::al_dia_si_falta(&db, p.id, &p.path)?;
@@ -2997,43 +2997,43 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
             Ok(())
         }
         ProjectsAction::Move { proyecto: p, carpeta: folder, space, force } => {
-            let id = proyecto::buscar(&db, &p)?;
+            let id = proyecto::find(&db, &p)?;
             // From one space to another, only with --force (like merge and move by folder): a client's things
             // would go to another's repository. From none to one, it's not needed, unless it is paused
             // (because another computer says it belongs to a space: it may not). The space named by the line
             // that paused the project is created here if it isn't yet.
-            let key = proyecto::clave_de(&db, id)?;
-            let pause = proyecto::en_pausa(&db)?.into_iter().find(|x| x.key == key);
+            let key = proyecto::key_of(&db, id)?;
+            let pause = proyecto::paused_projects(&db)?.into_iter().find(|x| x.key == key);
             let target = match space.as_deref() {
-                Some(s) if pause.as_ref().is_some_and(|x| !x.pausa.space.is_empty() && x.pausa.space == proyecto::clave_de_espacio(s)) => {
-                    proyecto::espacio_de_clave(&db, &proyecto::clave_de_espacio(s))?
+                Some(s) if pause.as_ref().is_some_and(|x| !x.pause.space.is_empty() && x.pause.space == proyecto::space_key_from_name(s)) => {
+                    proyecto::space_of_key(&db, &proyecto::space_key_from_name(s))?
                 }
-                Some(s) => Some(proyecto::buscar_espacio(&db, s)?),
+                Some(s) => Some(proyecto::find_space(&db, s)?),
                 None => None,
             };
             if let Some(d) = target {
                 paused_without_space_needs_force(&db, id, d, pause.is_some(), force)?;
             }
-            if target.is_some() && proyecto::espacio_de(&db, id)?.is_none() && made_personal(&db, id)? && !force {
+            if target.is_some() && proyecto::space_of(&db, id)?.is_none() && made_personal(&db, id)? && !force {
                 bail!(tr!(
                     "this project was made personal on purpose (`omoi space unassign --force`): add --force to put it in a space",
                     "este proyecto se hizo personal a propósito (`omoi space unassign --force`): añade --force para meterlo en un espacio"
                 ));
             }
-            if let (Some(before), Some(d)) = (proyecto::espacio_de(&db, id)?, target)
+            if let (Some(before), Some(d)) = (proyecto::space_of(&db, id)?, target)
                 && before != d
                 && !force
             {
                 bail!(tr!(
                     "the project is in the space «{}»: moving it to «{}» sends its memories to that space's sync repository. Add --force if that is what you want",
                     "el proyecto está en el espacio «{}»: moverlo a «{}» manda sus memorias al repositorio de ese espacio. Añade --force si es lo que quieres",
-                    proyecto::clave_espacio(&db, Some(before))?,
-                    proyecto::clave_espacio(&db, Some(d))?
+                    proyecto::space_key(&db, Some(before))?,
+                    proyecto::space_key(&db, Some(d))?
                 ));
             }
             if let Some(folder) = folder {
-                let new_path = proyecto::de(&folder)?;
-                let merged = proyecto::mover(&mut db, id, &new_path, force)?;
+                let new_path = proyecto::of_dir(&folder)?;
+                let merged = proyecto::move_to(&mut db, id, &new_path, force)?;
                 if merged > 0 {
                     println!("{}", tr!("{new_path}: moved there (its {merged} memories joined it)", "{new_path}: movido allí (se le han sumado sus {merged} memorias)"));
                 } else {
@@ -3041,7 +3041,7 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
                 }
             }
             if let (Some(s), Some(d)) = (space, target) {
-                proyecto::asignar_espacio(&db, id, Some(d))?;
+                proyecto::assign_space(&db, id, Some(d))?;
                 db.execute("DELETE FROM meta WHERE k = 'personal:' || ?1", [id])?;
                 println!("{}", tr!("in the space «{s}» now", "ahora en el espacio «{s}»"));
                 if pause.is_some() {
@@ -3051,30 +3051,30 @@ fn projects_cli(c: &Common, action: ProjectsAction) -> Result<()> {
             Ok(())
         }
         ProjectsAction::Keep { proyecto: p } => {
-            let id = proyecto::buscar(&db, &p)?;
-            match proyecto::quedarse(&db, id)? {
+            let id = proyecto::find(&db, &p)?;
+            match proyecto::keep(&db, id)? {
                 None => println!("{}", tr!("it is not paused: nothing to do", "no está en pausa: nada que hacer")),
                 Some(e) if e.is_empty() => println!("{}", tr!("it stays in no space and syncs again", "se queda sin espacio y vuelve a sincronizarse")),
                 Some(e) => println!("{}", tr!("it stays in the space «{e}» and syncs again", "se queda en el espacio «{e}» y vuelve a sincronizarse")),
             }
-            omoikane::sync::programar(&db_path(c));
+            omoikane::sync::schedule(&db_path(c));
             Ok(())
         }
         ProjectsAction::Prune => {
-            let n = proyecto::podar(&db)?;
+            let n = proyecto::prune(&db)?;
             println!("{}", tr!("{n} projects without memories forgotten", "{n} proyectos sin memorias olvidados"));
             Ok(())
         }
         ProjectsAction::Distinct { a, b } => {
-            let from = proyecto::buscar(&db, &a)?;
-            let the_other = b.as_deref().map(|b| proyecto::buscar(&db, b)).transpose()?;
+            let from = proyecto::find(&db, &a)?;
+            let the_other = b.as_deref().map(|b| proyecto::find(&db, b)).transpose()?;
             omoikane::nombres::mark_distinct(&db, from, the_other)?;
             println!("{}", tr!("ok: the review won't propose it again", "hecho: la revisión no volverá a proponerlo"));
             Ok(())
         }
         ProjectsAction::Merge { a, b, force } => {
-            let (from, to) = (proyecto::buscar(&db, &a)?, proyecto::buscar(&db, &b)?);
-            let n = proyecto::fundir(&mut db, from, to, force)?;
+            let (from, to) = (proyecto::find(&db, &a)?, proyecto::find(&db, &b)?);
+            let n = proyecto::merge(&mut db, from, to, force)?;
             println!("{}", tr!("merged: {n} memories moved to {b}", "fundidos: {n} memorias pasan a {b}"));
             Ok(())
         }
@@ -3086,13 +3086,13 @@ fn spaces_cli(c: &Common, action: SpaceAction) -> Result<()> {
     let db = open_db(c)?;
     let chosen = |p: Option<String>| -> Result<i64> {
         match p {
-            Some(p) => proyecto::buscar(&db, &p),
-            None => proyecto::registrar(&db, &project_of(c)?),
+            Some(p) => proyecto::find(&db, &p),
+            None => proyecto::register(&db, &project_of(c)?),
         }
     };
     match action {
         SpaceAction::List => {
-            let v = proyecto::espacios(&db)?;
+            let v = proyecto::spaces(&db)?;
             if c.json {
                 return json(&v);
             }
@@ -3105,26 +3105,26 @@ fn spaces_cli(c: &Common, action: SpaceAction) -> Result<()> {
             Ok(())
         }
         SpaceAction::Add { nombre: name } => {
-            proyecto::crear_espacio(&db, &name)?;
-            println!("{}", tr!("space «{}» created; put projects in it with `omoi space assign {}`", "espacio «{}» creado; mete proyectos con `omoi space assign {}`", proyecto::clave_de_espacio(&name), proyecto::clave_de_espacio(&name)));
+            proyecto::create_space(&db, &name)?;
+            println!("{}", tr!("space «{}» created; put projects in it with `omoi space assign {}`", "espacio «{}» creado; mete proyectos con `omoi space assign {}`", proyecto::space_key_from_name(&name), proyecto::space_key_from_name(&name)));
             Ok(())
         }
         SpaceAction::Assign { espacio: space_name, proyecto: p, force } => {
-            let s = proyecto::buscar_espacio(&db, &space_name)?;
+            let s = proyecto::find_space(&db, &space_name)?;
             let id = chosen(p)?;
-            let paused = proyecto::pausado(&db, &proyecto::clave_de(&db, id)?)?;
+            let paused = proyecto::is_paused(&db, &proyecto::key_of(&db, id)?)?;
             paused_without_space_needs_force(&db, id, s, paused, force)?;
             // From one space to another, only with --force, like `projects move --space`: a client's things
             // would go to another's repository.
-            if let Some(before) = proyecto::espacio_de(&db, id)?
+            if let Some(before) = proyecto::space_of(&db, id)?
                 && before != s
                 && !force
             {
                 bail!(tr!(
                     "the project is in the space «{}»: moving it to «{}» sends its memories to that space's sync repository. Add --force if that is what you want",
                     "el proyecto está en el espacio «{}»: moverlo a «{}» manda sus memorias al repositorio de ese espacio. Añade --force si es lo que quieres",
-                    proyecto::clave_espacio(&db, Some(before))?,
-                    proyecto::clave_espacio(&db, Some(s))?
+                    proyecto::space_key(&db, Some(before))?,
+                    proyecto::space_key(&db, Some(s))?
                 ));
             }
             if made_personal(&db, id)? && !force {
@@ -3133,7 +3133,7 @@ fn spaces_cli(c: &Common, action: SpaceAction) -> Result<()> {
                     "este proyecto se hizo personal a propósito (`omoi space unassign --force`): añade --force para meterlo en «{space_name}»"
                 ));
             }
-            proyecto::asignar_espacio(&db, id, Some(s))?;
+            proyecto::assign_space(&db, id, Some(s))?;
             db.execute("DELETE FROM meta WHERE k = 'personal:' || ?1", [id])?;
             println!("{}", tr!("done: its memories are now seen only from the space «{space_name}» (and the home folder)", "hecho: sus memorias ya solo se ven desde el espacio «{space_name}» (y desde la carpeta de usuario)"));
             Ok(())
@@ -3142,26 +3142,26 @@ fn spaces_cli(c: &Common, action: SpaceAction) -> Result<()> {
             let id = chosen(p)?;
             // Taking it out of its space sends its memories to the general repository, the personal one: a
             // client's things would end up there. Only with --force.
-            if let Some(before) = proyecto::espacio_de(&db, id)?
+            if let Some(before) = proyecto::space_of(&db, id)?
                 && !force
             {
                 bail!(tr!(
                     "the project is in the space «{}»: without a space, its memories go to the general (personal) sync repository. Add --force if that is what you want",
                     "el proyecto está en el espacio «{}»: sin espacio, sus memorias van al repositorio general (el personal). Añade --force si es lo que quieres",
-                    proyecto::clave_espacio(&db, Some(before))?
+                    proyecto::space_key(&db, Some(before))?
                 ));
             }
             // What came from other computers through the space's repository belongs to the client, not to this
             // person: it stays in the space, as a space memory (it still goes only to its
             // repository and is no longer seen from this project). What was written here leaves with the project.
             let mut kept_in_space = 0;
-            if let Some(before) = proyecto::espacio_de(&db, id)? {
+            if let Some(before) = proyecto::space_of(&db, id)? {
                 kept_in_space = db.execute(
                     "UPDATE memory SET project_id = 0, space_id = ?2 WHERE project_id = ?1 AND source LIKE 'sync:%'",
                     rusqlite::params![id, before],
                 )?;
             }
-            proyecto::asignar_espacio(&db, id, None)?;
+            proyecto::assign_space(&db, id, None)?;
             // The person has decided it is personal: putting it in a space again will require --force,
             // even if a client's repository keeps proposing it.
             db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('personal:' || ?1, '1')", [id])?;
@@ -3276,17 +3276,17 @@ fn trades_cli(c: &Common, action: TradesAction) -> Result<()> {
     let chosen = |p: Option<String>| -> Result<(i64, String)> {
         match p {
             Some(p) => {
-                let id = proyecto::buscar(&db, &p)?;
+                let id = proyecto::find(&db, &p)?;
                 let path: String = db.query_row("SELECT path FROM project WHERE id = ?1", [id], |f| f.get(0))?;
                 Ok((id, path))
             }
             None => {
                 let path = project_of(c)?;
                 anyhow::ensure!(
-                    !proyecto::es_general(&path),
+                    !proyecto::is_general(&path),
                     tr!("this folder is not a project: run it in one, or give --project", "esta carpeta no es un proyecto: hazlo en uno, o di --project")
                 );
-                Ok((proyecto::registrar(&db, &path)?, path))
+                Ok((proyecto::register(&db, &path)?, path))
             }
         }
     };
@@ -3321,7 +3321,7 @@ fn trades_cli(c: &Common, action: TradesAction) -> Result<()> {
         TradesAction::List { all: true } => {
             let base = Scope::from_project(&db, &project_of(c)?)?;
             let filter = if matches!(base, Scope::All) { None } else { Some(base.space()) };
-            let mut v = proyecto::lista(&db, None, filter, usize::MAX)?;
+            let mut v = proyecto::list(&db, None, filter, usize::MAX)?;
             for p in v.iter_mut().filter(|p| !p.gone) {
                 p.trades = oficios::al_dia_si_falta(&db, p.id, &p.path)?;
             }
@@ -3406,7 +3406,7 @@ fn warn_unverified(m: &Memory) {
 /// `omoi verify`: only a person. In a terminal it asks; elsewhere, it requires `--yes`; inside an agent's
 /// shell it always refuses (see `verificado`).
 fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
-    if let Some(var) = omoikane::verificado::shell_de_agente() {
+    if let Some(var) = omoikane::verificado::agent_shell() {
         bail!(tr!(
             "verifying is for a person, and this looks like a coding agent's shell ({var} is set): run it in your own terminal, or use the web view (`omoi serve --open`)",
             "verificar es cosa de una persona, y esto parece la shell de un agente ({var} está puesta): hazlo en tu terminal, o en la vista web (`omoi serve --open`)"
@@ -3415,7 +3415,7 @@ fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
     let mut db = open_db(c)?;
     let m = memoria::get(&db, &v.id)?;
     if v.unverify {
-        let was_verified = omoikane::verificado::desverificar(&mut db, &m.id)?;
+        let was_verified = omoikane::verificado::unverify(&mut db, &m.id)?;
         if c.json {
             return json(&serde_json::json!({ "id": m.id, "verified": false, "changed": was_verified }));
         }
@@ -3424,10 +3424,10 @@ fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
     }
     let by = match v.by {
         Some(b) => b,
-        None => omoikane::verificado::quien_por_defecto(&db, &m)?,
+        None => omoikane::verificado::default_verifier(&db, &m)?,
     };
     if !v.yes {
-        if !omoikane::entorno::puede_preguntar() {
+        if !omoikane::entorno::can_ask() {
             bail!(tr!("add --yes to verify {} without asking", "añade --yes para verificar {} sin preguntar", short_id(&m.id)));
         }
         println!("{}  {}\n{}\n\n{}\n", short_id(&m.id), m.kind, m.title, m.content);
@@ -3437,7 +3437,7 @@ fn verify_cli(c: &Common, v: VerifyArgs) -> Result<()> {
             return Ok(());
         }
     }
-    let m = omoikane::verificado::verificar(&mut db, &m.id, &by)?;
+    let m = omoikane::verificado::verify(&mut db, &m.id, &by)?;
     if c.json {
         return json(&m);
     }
@@ -3608,7 +3608,7 @@ fn ram_in_use(mb: u64, origin: omoikane::significado::OrigenRam) -> String {
 }
 
 fn doctor(c: &Common) -> Result<()> {
-    db::registrar_sqlite_vec();
+    db::register_sqlite_vec();
     let probe = Connection::open_in_memory()?;
     let sqlite: String = probe.query_row("select sqlite_version()", [], |r| r.get(0))?;
     let vec: String = probe.query_row("select vec_version()", [], |r| r.get(0))?;
@@ -3618,31 +3618,31 @@ fn doctor(c: &Common) -> Result<()> {
     println!("sqlite-vec {vec}");
     println!("{}", tr!("fts5       ok (unicode61, accent-insensitive)", "fts5       ok (unicode61, sin acentos)"));
     println!("vec0       ok");
-    let path = c.db.clone().unwrap_or_else(db::ruta_por_defecto);
+    let path = c.db.clone().unwrap_or_else(db::default_path);
     if path.exists() {
-        let base = db::abrir(&path)?;
+        let base = db::open(&path)?;
         let n: i64 = base.query_row("SELECT count(*) FROM memory", [], |f| f.get(0))?;
         let p: i64 = base.query_row("SELECT count(DISTINCT project_id) FROM memory WHERE project_id != 0", [], |f| f.get(0))?;
-        let v = db::VERSION_ESQUEMA;
+        let v = db::SCHEMA_VERSION;
         let r = path.display();
         let memories = if n == 1 { tr!("1 memory", "1 memoria") } else { tr!("{n} memories", "{n} memorias") };
         let projects = if p == 1 { tr!("1 project", "1 proyecto") } else { tr!("{p} projects", "{p} proyectos") };
         println!("{}", tr!("database   {r} ({memories}, {projects}, schema {v})", "base       {r} ({memories}, {projects}, esquema {v})"));
-        for x in proyecto::lista(&base, None, None, usize::MAX)?.into_iter().filter(|x| x.gone) {
+        for x in proyecto::list(&base, None, None, usize::MAX)?.into_iter().filter(|x| x.gone) {
             println!("{}", tr!("project    {} is gone from {}: `omoi projects move {} <new folder>`", "proyecto   {} ya no está en {}: `omoi projects move {} <carpeta nueva>`", x.name, x.path, x.name));
         }
-        for a in omoikane::sync::avisos_de_pausa(&base, &path) {
+        for a in omoikane::sync::pause_notices(&base, &path) {
             println!("{}{a}", tr!("paused     ", "en pausa   "));
         }
         let trash: i64 = base.query_row("SELECT count(*) FROM forgotten", [], |f| f.get(0))?;
-        let copies = omoikane::copia::copias(&path);
+        let copies = omoikane::copia::backups(&path);
         let total_kb: u64 = copies.iter().map(|(_, b)| b).sum::<u64>() / 1024;
         match copies.first() {
             Some((p, _)) => {
                 let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 println!("{}", tr!("backups    {} ({} copies, {total_kb} KB, {} in the trash)", "copias     {} ({} copias, {total_kb} KB, {} en la papelera)", name, copies.len(), trash));
             }
-            None if omoikane::copia::copias_a_conservar() == 0 => println!("{}", tr!("backups    off (OMOIKANE_BACKUPS=0)", "copias     apagadas (OMOIKANE_BACKUPS=0)")),
+            None if omoikane::copia::backups_to_keep() == 0 => println!("{}", tr!("backups    off (OMOIKANE_BACKUPS=0)", "copias     apagadas (OMOIKANE_BACKUPS=0)")),
             None => println!("{}", tr!("backups    none yet (the first one happens at the next session start)", "copias     todavía ninguna (la primera, al empezar la próxima sesión)")),
         }
         let with_secret = memoria::recent(&base, &Scope::All, None, usize::MAX >> 1)?
@@ -3683,7 +3683,7 @@ fn doctor(c: &Common) -> Result<()> {
             let name = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             println!("{}{name}", tr!("model      ", "modelo     "));
             if path.exists() {
-                let (from, n) = vectores::estado(&db::abrir(&path)?)?;
+                let (from, n) = vectores::estado(&db::open(&path)?)?;
                 let up_to_date = from.as_deref() == Some(name.as_str());
                 println!(
                     "{}",
@@ -3708,7 +3708,7 @@ fn doctor(c: &Common) -> Result<()> {
     }
     let path = db_path(c);
     println!("{}{}", tr!("sync       ", "sincroniz. "), sync_status(&path, None));
-    for e in omoikane::sync::espacios(&path) {
+    for e in omoikane::sync::spaces(&path) {
         println!("{}{}", tr!("  space {e}: ", "  espacio {e}: "), sync_status(&path, Some(&e)));
     }
     println!("{}", tr!("language   en (OMOIKANE_LANG=es for Spanish)", "idioma     es (OMOIKANE_LANG)"));
@@ -3719,47 +3719,47 @@ fn doctor(c: &Common) -> Result<()> {
 /// (for `doctor` and `sync status`).
 fn sync_status(path: &std::path::Path, space_name: Option<&str>) -> String {
     use omoikane::sync;
-    let r = sync::rutas_de(path, space_name);
-    let Ok(Some(config)) = sync::leer_config_de(&r) else {
+    let r = sync::paths_for(path, space_name);
+    let Ok(Some(config)) = sync::read_config_from(&r) else {
         return tr!("off (`omoi sync init <git url>` to share memories between computers)", "apagada (`omoi sync init <url de git>` para compartir memorias entre equipos)");
     };
-    let e = sync::leer_estado_de(&r);
+    let e = sync::read_status_from(&r);
     let ago = |s: &str| {
         let t = s.parse::<u64>().unwrap_or(0);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let m = now.saturating_sub(t) / 60;
         if m < 60 { tr!("{m} min ago", "hace {m} min") } else { tr!("{} h ago", "hace {} h", m / 60) }
     };
-    let mut l = sync::sin_credenciales(&config.url);
-    match (&e.ultimo_error, &e.ultimo_ok) {
-        (Some(err), _) => l.push_str(&tr!(" · FAILING: {}", " · FALLA: {}", sync::sin_credenciales(err.lines().next().unwrap_or_default()))),
+    let mut l = sync::strip_credentials(&config.url);
+    match (&e.last_error, &e.last_ok) {
+        (Some(err), _) => l.push_str(&tr!(" · FAILING: {}", " · FALLA: {}", sync::strip_credentials(err.lines().next().unwrap_or_default()))),
         (None, Some(ok)) => l.push_str(&tr!(" · last ok {}", " · última bien {}", ago(ok))),
         (None, None) => l.push_str(&tr!(" · not synced yet", " · aún sin sincronizar")),
     }
-    if sync::pendiente(path) {
+    if sync::has_pending(path) {
         l.push_str(&tr!(" · changes pending", " · cambios pendientes"));
     }
-    if let Some(a) = e.aviso {
+    if let Some(a) = e.notice {
         l.push_str(&format!(" · {a}"));
     }
-    if sync::clave_cambiada(&r) {
-        l.push_str(&format!(" · {}", sync::aviso_clave_cambiada()));
+    if sync::key_changed(&r) {
+        l.push_str(&format!(" · {}", sync::key_changed_notice()));
     }
     // It says it even if last time's error already says it: it's what has to be done.
-    if sync::necesita_version(&r).is_some() && !e.ultimo_error.as_deref().is_some_and(|x| x.contains(&sync::aviso_version())) {
-        l.push_str(&format!(" · {}", sync::aviso_version()));
+    if sync::needs_version(&r).is_some() && !e.last_error.as_deref().is_some_and(|x| x.contains(&sync::version_notice())) {
+        l.push_str(&format!(" · {}", sync::version_notice()));
     }
     l
 }
 
 /// The space of a `--space` option, already checked.
 fn checked_space(space: Option<String>) -> Result<Option<String>> {
-    space.map(|e| omoikane::sync::espacio_valido(&e)).transpose()
+    space.map(|e| omoikane::sync::valid_space_name(&e)).transpose()
 }
 
 /// A repository's keys for `sync status`: «k1, k2 (current k2)».
-fn sync_keys(r: &omoikane::sync::Rutas) -> String {
-    let (ids, current_key) = omoikane::sync::claves_de(r);
+fn sync_keys(r: &omoikane::sync::SyncPaths) -> String {
+    let (ids, current_key) = omoikane::sync::key_ids(r);
     let listing: Vec<String> = ids.iter().map(|i| format!("k{i}")).collect();
     let current_key = if current_key == 0 { ids.last().copied().unwrap_or(1) } else { current_key };
     tr!("{} (current: k{})", "{} (vigente: k{})", listing.join(", "), current_key)
@@ -3805,21 +3805,21 @@ fn create_repository(name: &str) -> Result<String> {
     Ok(url)
 }
 
-fn confirm_upload(db: &Connection, config: &omoikane::sync::Config, e: &omoikane::sync::Eleccion, yes: bool) -> Result<bool> {
-    let (g, p, np) = omoikane::sync::resumen_de_subida(db, config)?;
+fn confirm_upload(db: &Connection, config: &omoikane::sync::Config, e: &omoikane::sync::SyncChoice, yes: bool) -> Result<bool> {
+    let (g, p, np) = omoikane::sync::push_summary(db, config)?;
     println!(
         "{}",
         tr!(
             "Will upload {g} global memories and {p} from {np} project(s), encrypted (preferences: {}). Everything stays on this computer too.",
             "Se subirán {g} memorias globales y {p} de {np} proyecto(s), cifradas (preferencias: {}). Todo sigue también en este equipo.",
-            if e.preferencias { tr!("yes", "sí") } else { "no".into() }
+            if e.preferences { tr!("yes", "sí") } else { "no".into() }
         )
     );
     if yes {
         return Ok(true);
     }
     anyhow::ensure!(
-        omoikane::entorno::puede_preguntar(),
+        omoikane::entorno::can_ask(),
         tr!("add --yes to confirm (or run it in a terminal to choose what to share)", "añade --yes para confirmarlo (o ejecútalo en una terminal para elegir qué compartir)")
     );
     if !ask_yes_no(&tr!("Continue?", "¿Seguir?"), true)? {
@@ -3830,31 +3830,31 @@ fn confirm_upload(db: &Connection, config: &omoikane::sync::Config, e: &omoikane
 }
 
 /// What to share: what the options say and, in a terminal without `--yes`, what the user answers.
-fn choose(o: &SyncOptions) -> Result<omoikane::sync::Eleccion> {
-    let projects = o.project.iter().map(|p| proyecto::de(p)).collect::<Result<Vec<_>>>()?;
-    let mut e = omoikane::sync::Eleccion {
-        preferencias: o.share_preferences,
+fn choose(o: &SyncOptions) -> Result<omoikane::sync::SyncChoice> {
+    let projects = o.project.iter().map(|p| proyecto::of_dir(p)).collect::<Result<Vec<_>>>()?;
+    let mut e = omoikane::sync::SyncChoice {
+        preferences: o.share_preferences,
         global: !o.no_global,
-        proyectos: projects,
-        espacios: Vec::new(),
-        autor: if o.no_author { None } else { o.author.clone().or_else(omoikane::entorno::autor).or_else(omoikane::sync::nombre_git) },
+        projects,
+        spaces: Vec::new(),
+        author: if o.no_author { None } else { o.author.clone().or_else(omoikane::entorno::author).or_else(omoikane::sync::git_user_name) },
     };
-    if o.yes || !omoikane::entorno::puede_preguntar() {
+    if o.yes || !omoikane::entorno::can_ask() {
         return Ok(e);
     }
-    e.preferencias = ask_yes_no(&tr!("Share your preferences too? They are usually personal.", "¿Compartir también tus preferencias? Suelen ser personales."), e.preferencias)?;
+    e.preferences = ask_yes_no(&tr!("Share your preferences too? They are usually personal.", "¿Compartir también tus preferencias? Suelen ser personales."), e.preferences)?;
     e.global = ask_yes_no(&tr!("Share your global memories?", "¿Compartir tus memorias globales?"), e.global)?;
-    if e.proyectos.is_empty() {
+    if e.projects.is_empty() {
         print!("{} ", tr!("Projects to share (Enter = all; or folders separated by commas):", "Proyectos que compartir (Intro = todos; o carpetas separadas por comas):"));
         std::io::stdout().flush()?;
         let mut l = String::new();
         std::io::stdin().read_line(&mut l)?;
-        e.proyectos = l.split(',').map(str::trim).filter(|x| !x.is_empty()).map(|x| proyecto::de(std::path::Path::new(x))).collect::<Result<_>>()?;
+        e.projects = l.split(',').map(str::trim).filter(|x| !x.is_empty()).map(|x| proyecto::of_dir(std::path::Path::new(x))).collect::<Result<_>>()?;
     }
-    if let Some(a) = e.autor.clone()
+    if let Some(a) = e.author.clone()
         && !ask_yes_no(&tr!("Write «{a}» as the author of each memory?", "¿Apuntar «{a}» como autor de cada memoria?"), true)?
     {
-        e.autor = None;
+        e.author = None;
     }
     Ok(e)
 }
@@ -3879,9 +3879,9 @@ enum Union {
 fn join_with(c: &Common, path: &std::path::Path, code: &str, other_url: Option<String>, another_person: bool, space: Option<String>, choice: &SyncOptions, confirm: bool) -> Result<Union> {
     use omoikane::sync;
     let mut db = open_db(c)?;
-    let sync::Codigo { url, clave: key, id, persona: person, espacio: space_name } = sync::leer_codigo(code)?;
+    let sync::SyncCode { url, key, id, person, space: space_name } = sync::parse_code(code)?;
     let space_name = checked_space(space)?.or(space_name);
-    if let Some(config) = sync::leer_config_de(&sync::rutas_de(path, space_name.as_deref()))? {
+    if let Some(config) = sync::read_config_from(&sync::paths_for(path, space_name.as_deref()))? {
         // Joining as another person the general repository it already syncs with as the same one (a computer joined with
         // 1.8.5 or earlier): without turning it off first, the keys and the mark would stay as they were and the
         // other person's seals would keep counting as theirs.
@@ -3895,22 +3895,22 @@ fn join_with(c: &Common, path: &std::path::Path, code: &str, other_url: Option<S
         // its own before anything else: with the old one it may no longer get through.
         // If the code turns out to be for another repository, the URL goes back to the previous one.
         let old_url = match &other_url {
-            Some(u) => sync::cambiar_url(path, space_name.as_deref(), u)?,
+            Some(u) => sync::change_url(path, space_name.as_deref(), u)?,
             None => None,
         };
         // The new key of a rotation, next to the old ones.
-        let union = match sync::anadir_clave(&db, path, space_name.as_deref(), id, &key) {
+        let union = match sync::add_key(&db, path, space_name.as_deref(), id, &key) {
             Ok(true) => Union::NewKey(id),
             Ok(false) => Union::AlreadyHad,
             Err(e) => {
                 if let Some(v) = &old_url {
-                    let _ = sync::cambiar_url(path, space_name.as_deref(), v);
+                    let _ = sync::change_url(path, space_name.as_deref(), v);
                 }
                 return Err(e);
             }
         };
         if let Some(u) = other_url.as_deref().filter(|_| old_url.is_some()) {
-            eprintln!("{}", tr!("the repository URL is now {}", "la URL del repositorio es ahora {}", sync::sin_credenciales(u)));
+            eprintln!("{}", tr!("the repository URL is now {}", "la URL del repositorio es ahora {}", sync::strip_credentials(u)));
         }
         return Ok(union);
     }
@@ -3919,27 +3919,27 @@ fn join_with(c: &Common, path: &std::path::Path, code: &str, other_url: Option<S
     // By default, another computer of the same person: their person, so that projects without
     // a git remote are merged even if each computer has a different author name (and the ones that were already
     // here move to it). With `--another-person`, this computer's: nothing is merged.
-    let local = omoikane::db::persona_de(&db);
+    let local = omoikane::db::person_of(&db);
     let person_to_use = if another_person { Some(local.clone()) } else { person };
-    let mut config = sync::config_con_persona(&url, &e, person_to_use.as_deref(), &local);
+    let mut config = sync::config_with_person(&url, &e, person_to_use.as_deref(), &local);
     config.global &= space_name.is_none();
-    // Another person's general repository: its key is not only this one's (see `verificado::llaves`).
+    // Another person's general repository: its key is not only this one's (see `verificado::seal_keys`).
     config.another_person = another_person && space_name.is_none();
     config.space = space_name;
     if confirm && !confirm_upload(&db, &config, &e, choice.yes)? {
         return Ok(Union::Cancelled);
     }
-    sync::unirse(&mut db, path, &config, id, &key)?;
-    sync::adoptar_persona(&mut db, path, &config.person)?;
-    Ok(Union::Joined(sync::sin_credenciales(&url), config.space))
+    sync::join(&mut db, path, &config, id, &key)?;
+    sync::adopt_person(&mut db, path, &config.person)?;
+    Ok(Union::Joined(sync::strip_credentials(&url), config.space))
 }
 
 /// `OMOIKANE_SYNC_CODE` (and `OMOIKANE_SYNC_URL`): joins, without asking, each repository of those
 /// codes this computer doesn't sync with yet (or adds the new key of a rotation). It
 /// reports it on the error output, without the code. Without the variable it does nothing.
 fn join_from_env(c: &Common, path: &std::path::Path) -> Result<()> {
-    let codes = omoikane::entorno::codigos_sync();
-    let url = omoikane::entorno::url_sync();
+    let codes = omoikane::entorno::sync_codes();
+    let url = omoikane::entorno::sync_url();
     anyhow::ensure!(
         url.is_none() || codes.len() <= 1,
         tr!("OMOIKANE_SYNC_URL goes with a single code in OMOIKANE_SYNC_CODE", "OMOIKANE_SYNC_URL va con un solo código en OMOIKANE_SYNC_CODE")
@@ -3973,28 +3973,28 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
         join_from_env(c, &path)?;
     }
     if pull {
-        return sync::traer(&path, || open_db(c));
+        return sync::pull(&path, || open_db(c));
     }
     if background {
         // Without the model: whatever arrives without a vector is completed by the next command that opens it.
-        return sync::en_segundo_plano(&path, || Ok((open_db(c)?, None)));
+        return sync::run_in_background(&path, || Ok((open_db(c)?, None)));
     }
     let first = |notice: &str| -> Result<()> {
         let (mut db, model) = open_with_model(c)?;
         let current = project_of(c).ok();
-        let r = sync::ahora_mismo(&mut db, &path, current.as_deref(), model.as_ref())?;
+        let r = sync::sync_now(&mut db, &path, current.as_deref(), model.as_ref())?;
         if c.json {
             return json(&r);
         }
         println!("{notice}");
-        println!("{}", tr!("  {} memories shared; {} received", "  {} memorias compartidas; {} recibidas", r.exportadas, r.nuevas));
+        println!("{}", tr!("  {} memories shared; {} received", "  {} memorias compartidas; {} recibidas", r.exported, r.created));
         Ok(())
     };
     match action {
         None => {
             let (mut db, model) = open_with_model(c)?;
             let current = project_of(c).ok();
-            let r = sync::ahora_mismo(&mut db, &path, current.as_deref(), model.as_ref())?;
+            let r = sync::sync_now(&mut db, &path, current.as_deref(), model.as_ref())?;
             if c.json {
                 return json(&r);
             }
@@ -4003,18 +4003,18 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
                 tr!(
                     "{}: {} new, {} updated, {} forgotten from {} file(s); {} memories shared",
                     "{}: {} nuevas, {} actualizadas, {} olvidadas de {} fichero(s); {} memorias compartidas",
-                    r.equipo,
-                    r.nuevas,
-                    r.actualizadas,
-                    r.olvidadas,
-                    r.leidos,
-                    r.exportadas
+                    r.machine,
+                    r.created,
+                    r.updated,
+                    r.forgotten,
+                    r.files_read,
+                    r.exported
                 )
             );
-            if r.de_version_nueva > 0 {
-                println!("{}", sync::aviso_lineas_nuevas(r.de_version_nueva));
+            if r.from_newer_version > 0 {
+                println!("{}", sync::newer_lines_notice(r.from_newer_version));
             }
-            for a in &r.avisos {
+            for a in &r.notices {
                 println!("{a}");
             }
             Ok(())
@@ -4022,7 +4022,7 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
         Some(SyncAction::Init { url, create, space, eleccion: choice }) => {
             let mut db = open_db(c)?;
             let space_name = checked_space(space)?;
-            if sync::leer_config_de(&sync::rutas_de(&path, space_name.as_deref()))?.is_some() {
+            if sync::read_config_from(&sync::paths_for(&path, space_name.as_deref()))?.is_some() {
                 bail!(tr!("sync is already set up here (`omoi sync status`; `omoi sync off` to start over)", "la sincronización ya está configurada aquí (`omoi sync status`; `omoi sync off` para empezar de nuevo)"));
             }
             let url = match (url, create) {
@@ -4033,17 +4033,17 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
             let e = choose(&choice)?;
             // The person: if this computer already syncs another repository, the one it already has; if this is the
             // first, the author's (or the git name), and if there is none, the local one.
-            let local = omoikane::db::persona_de(&db);
+            let local = omoikane::db::person_of(&db);
             let already_syncing = !sync::repos(&path).is_empty();
-            let mut config = sync::config_con_persona(&url, &e, already_syncing.then_some(local.as_str()), &local);
+            let mut config = sync::config_with_person(&url, &e, already_syncing.then_some(local.as_str()), &local);
             // A client's repository doesn't carry the global ones (they belong to the person, not the client).
             config.global &= space_name.is_none();
             config.space = space_name;
             if !confirm_upload(&db, &config, &e, choice.yes)? {
                 return Ok(());
             }
-            sync::iniciar(&mut db, &path, &config)?;
-            sync::adoptar_persona(&mut db, &path, &config.person)?;
+            sync::init(&mut db, &path, &config)?;
+            sync::adopt_person(&mut db, &path, &config.person)?;
             drop(db);
             first(&tr!(
                 "Sync set up. To add another computer, run `omoi sync code` here and `omoi sync join <code>` there.",
@@ -4061,7 +4061,7 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
                 // Without a code: those of `OMOIKANE_SYNC_CODE` (a CI, a server), without asking anything.
                 None => {
                     anyhow::ensure!(
-                        !omoikane::entorno::codigos_sync().is_empty(),
+                        !omoikane::entorno::sync_codes().is_empty(),
                         tr!("give the code from `omoi sync code` (or set OMOIKANE_SYNC_CODE)", "da el código de `omoi sync code` (o pon OMOIKANE_SYNC_CODE)")
                     );
                     anyhow::ensure!(
@@ -4096,41 +4096,41 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
             }
         }
         Some(SyncAction::Code { space }) => {
-            println!("{}", sync::codigo(&path, checked_space(space)?.as_deref())?);
+            println!("{}", sync::code(&path, checked_space(space)?.as_deref())?);
             eprintln!("{}", tr!("It carries the key to your memories: share it only through a private channel.", "Lleva la clave de tus memorias: pásalo solo por un canal privado."));
             Ok(())
         }
         Some(SyncAction::Status) => {
-            let config = sync::leer_config(&path)?.map(|mut cf| {
-                cf.url = sync::sin_credenciales(&cf.url);
+            let config = sync::read_config(&path)?.map(|mut cf| {
+                cf.url = sync::strip_credentials(&cf.url);
                 cf
             });
-            let general = sync::rutas(&path);
-            let spaces = sync::espacios(&path);
-            let paused_list = if path.exists() { proyecto::en_pausa(&db::abrir(&path)?)? } else { Vec::new() };
+            let general = sync::paths(&path);
+            let spaces = sync::spaces(&path);
+            let paused_list = if path.exists() { proyecto::paused_projects(&db::open(&path)?)? } else { Vec::new() };
             if c.json {
-                let keys = |r: &sync::Rutas| {
-                    let (ids, current_key) = sync::claves_de(r);
-                    serde_json::json!({ "ids": ids, "current": current_key, "changed": sync::clave_cambiada(r) })
+                let keys = |r: &sync::SyncPaths| {
+                    let (ids, current_key) = sync::key_ids(r);
+                    serde_json::json!({ "ids": ids, "current": current_key, "changed": sync::key_changed(r) })
                 };
                 let of_spaces: Vec<serde_json::Value> = spaces
                     .iter()
                     .map(|e| {
-                        let r = sync::rutas_de(&path, Some(e));
-                        let cf = sync::leer_config_de(&r).ok().flatten().map(|mut cf| {
-                            cf.url = sync::sin_credenciales(&cf.url);
+                        let r = sync::paths_for(&path, Some(e));
+                        let cf = sync::read_config_from(&r).ok().flatten().map(|mut cf| {
+                            cf.url = sync::strip_credentials(&cf.url);
                             cf
                         });
-                        serde_json::json!({ "space": e, "config": cf, "state": sync::leer_estado_de(&r), "keys": keys(&r) })
+                        serde_json::json!({ "space": e, "config": cf, "state": sync::read_status_from(&r), "keys": keys(&r) })
                     })
                     .collect();
                 return json(&serde_json::json!({
                     "config": config,
-                    "state": sync::leer_estado(&path),
-                    "pending": sync::pendiente(&path),
+                    "state": sync::read_status(&path),
+                    "pending": sync::has_pending(&path),
                     "paused": paused_list.iter().map(|x| {
                         let mut v = serde_json::to_value(x).unwrap_or_default();
-                        v["text"] = sync::texto_pausa(&path, x).into();
+                        v["text"] = sync::pause_text(&path, x).into();
                         v
                     }).collect::<Vec<_>>(),
                     "keys": config.as_ref().map(|_| keys(&general)),
@@ -4139,10 +4139,10 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
             }
             println!("{}", sync_status(&path, None));
             for x in &paused_list {
-                println!("{}{}", tr!("paused     ", "en pausa   "), sync::texto_pausa(&path, x));
+                println!("{}{}", tr!("paused     ", "en pausa   "), sync::pause_text(&path, x));
             }
             for e in &spaces {
-                let r = sync::rutas_de(&path, Some(e));
+                let r = sync::paths_for(&path, Some(e));
                 println!("{}{}", tr!("space {e}: ", "espacio {e}: "), sync_status(&path, Some(e)));
                 println!("{}{}", tr!("  keys     ", "  claves   "), sync_keys(&r));
             }
@@ -4156,7 +4156,7 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
                     Some(p) => println!("{}{}", tr!("projects   ", "proyectos  "), p.join(", ")),
                 }
                 println!("{}{}", tr!("author     ", "autor      "), cf.author.as_deref().unwrap_or("-"));
-                if let Some(err) = sync::leer_estado(&path).ultimo_error {
+                if let Some(err) = sync::read_status(&path).last_error {
                     println!("{}{err}", tr!("last error ", "último error "));
                 }
             }
@@ -4165,11 +4165,11 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
         Some(SyncAction::Restore { id }) => restore_cli(c, id),
         Some(SyncAction::Rotate { space, yes }) => {
             let space_name = checked_space(space)?;
-            if sync::leer_config_de(&sync::rutas_de(&path, space_name.as_deref()))?.is_none() {
+            if sync::read_config_from(&sync::paths_for(&path, space_name.as_deref()))?.is_none() {
                 bail!(tr!("sync is not set up", "la sincronización no está configurada"));
             }
             if !yes {
-                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to change the key", "añade --yes para cambiar la clave"));
+                anyhow::ensure!(omoikane::entorno::can_ask(), tr!("add --yes to change the key", "añade --yes para cambiar la clave"));
                 if !ask_yes_no(
                     &tr!(
                         "Change the key? Computers that should keep reading will need the new code (`omoi sync join <code>`).",
@@ -4182,17 +4182,17 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
             }
             let (mut db, model) = open_with_model(c)?;
             let current = project_of(c).ok();
-            let (id, r) = sync::rotar(&mut db, &path, space_name.as_deref(), current.as_deref(), model.as_ref())?;
-            let code = sync::codigo(&path, space_name.as_deref())?;
+            let (id, r) = sync::rotate(&mut db, &path, space_name.as_deref(), current.as_deref(), model.as_ref())?;
+            let code = sync::code(&path, space_name.as_deref())?;
             if c.json {
-                return json(&serde_json::json!({ "key": id, "exported": r.exportadas, "code": code }));
+                return json(&serde_json::json!({ "key": id, "exported": r.exported, "code": code }));
             }
             println!(
                 "{}",
                 tr!(
                     "New key k{id} in use: {} memories re-encrypted with it. On each computer that should keep reading, run `omoi sync join <code>` with this code:",
                     "Clave nueva k{id} en uso: {} memorias vueltas a cifrar con ella. En cada equipo que deba seguir leyendo, `omoi sync join <código>` con este código:",
-                    r.exportadas
+                    r.exported
                 )
             );
             println!("{code}");
@@ -4202,22 +4202,22 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
         Some(SyncAction::Off { yes, space }) => {
             let db = open_db(c)?;
             let space_name = checked_space(space)?;
-            if sync::leer_config_de(&sync::rutas_de(&path, space_name.as_deref()))?.is_none() {
+            if sync::read_config_from(&sync::paths_for(&path, space_name.as_deref()))?.is_none() {
                 println!("{}", tr!("sync is not set up", "la sincronización no está configurada"));
                 return Ok(());
             }
             if !yes {
-                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to stop syncing", "añade --yes para dejar de sincronizar"));
+                anyhow::ensure!(omoikane::entorno::can_ask(), tr!("add --yes to stop syncing", "añade --yes para dejar de sincronizar"));
                 if !ask_yes_no(&tr!("Stop syncing on this computer? Its memories stay; the key is deleted here.", "¿Dejar de sincronizar en este equipo? Sus memorias se quedan; la clave se borra de aquí."), false)? {
                     return Ok(());
                 }
             }
-            sync::desactivar(&db, &path, space_name.as_deref())?;
+            sync::disable(&db, &path, space_name.as_deref())?;
             println!("{}", tr!("sync is off on this computer", "sincronización apagada en este equipo"));
             Ok(())
         }
         Some(SyncAction::ForgetSealKeys { yes }) => {
-            if let Some(var) = omoikane::verificado::shell_de_agente() {
+            if let Some(var) = omoikane::verificado::agent_shell() {
                 bail!(tr!(
                     "forgetting verification keys is for a person, and this looks like a coding agent's shell ({var} is set): run it in your own terminal",
                     "olvidar las claves de verificación es cosa de una persona, y esto parece la shell de un agente ({var} está puesta): hazlo en tu terminal"
@@ -4225,7 +4225,7 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
             }
             let db = open_db(c)?;
             if !yes {
-                anyhow::ensure!(omoikane::entorno::puede_preguntar(), tr!("add --yes to forget them", "añade --yes para olvidarlas"));
+                anyhow::ensure!(omoikane::entorno::can_ask(), tr!("add --yes to forget them", "añade --yes para olvidarlas"));
                 if !ask_yes_no(
                     &tr!(
                         "Forget the verification keys of earlier general repositories? Your verifications signed only with them stop counting here until you verify them again.",
@@ -4236,7 +4236,7 @@ fn sync(c: &Common, action: Option<SyncAction>, background: bool, pull: bool) ->
                     return Ok(());
                 }
             }
-            let n = omoikane::verificado::olvidar_claves_apuntadas(&db)?;
+            let n = omoikane::verificado::forget_recorded_keys(&db)?;
             if c.json {
                 println!("{}", serde_json::json!({ "forgotten": n }));
             } else {
@@ -4634,7 +4634,7 @@ fn setup_other(agent: &str, yes: bool, dry_run: bool) -> Result<()> {
     }
     println!("{}", tr!("To set up {agent}, omoi will change:", "Para preparar {agent}, omoi va a cambiar:"));
     for c in &changes {
-        println!("  - {}   ({})", c.fichero.display(), c.que);
+        println!("  - {}   ({})", c.file.display(), c.what);
     }
     println!("{}", tr!("  (a copy of each file is kept as <file>.antes-de-omoikane)", "  (se guarda una copia de cada fichero como <fichero>.antes-de-omoikane)"));
     if dry_run {
@@ -4644,14 +4644,14 @@ fn setup_other(agent: &str, yes: bool, dry_run: bool) -> Result<()> {
         println!("{}", tr!("nothing changed", "no se ha cambiado nada"));
         return Ok(());
     }
-    omoikane::agentes::aplicar(&changes)?;
+    omoikane::agentes::apply(&changes)?;
     println!("{}", tr!("Done. Start a new {agent} session.", "Hecho. Abre una sesión nueva de {agent}."));
     Ok(())
 }
 
 /// «Go ahead?» in a terminal; outside one, --yes is needed.
 fn ask() -> Result<bool> {
-    if !omoikane::entorno::puede_preguntar() {
+    if !omoikane::entorno::can_ask() {
         bail!(tr!("add --yes to do it without asking", "añade --yes para hacerlo sin preguntar"));
     }
     eprint!("{}", tr!("Go ahead? [y/N] ", "¿Sigo? [s/N] "));
@@ -4672,7 +4672,7 @@ fn restore_cli(c: &Common, id: Option<String>) -> Result<()> {
     let before = omoikane::revisar::before(&db)?;
     let m = memoria::restore(&mut db, &id, model.as_ref())?;
     let _ = omoikane::revisar::refresh_for(&db, &before, std::slice::from_ref(&m.id));
-    omoikane::sync::programar(&c.db.clone().unwrap_or_else(db::ruta_por_defecto));
+    omoikane::sync::schedule(&c.db.clone().unwrap_or_else(db::default_path));
     if c.json {
         return json(&m);
     }
@@ -4697,7 +4697,7 @@ fn list_trash(c: &Common, db: &Connection) -> Result<()> {
 /// In a terminal, it asks; anywhere else (an agent, a script) it refuses without `--yes`,
 /// so that nobody deletes something for not having read the help.
 fn confirm_forget(m: &Memory, purge: bool) -> Result<bool> {
-    if !omoikane::entorno::puede_preguntar() {
+    if !omoikane::entorno::can_ask() {
         bail!(tr!("add --yes to forget {} without asking", "añade --yes para olvidar {} sin preguntar", short_id(&m.id)));
     }
     if purge {

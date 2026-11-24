@@ -58,7 +58,7 @@ struct Request {
 }
 
 fn home() -> Option<PathBuf> {
-    crate::entorno::casa()
+    crate::entorno::home()
 }
 
 const PREFERENCE_FILE: &str = "semantic";
@@ -190,14 +190,14 @@ pub fn descargando() -> bool {
 pub fn descargar_aparte(db: &std::path::Path) {
     // With nobody at the keyboard (or `OMOIKANE_NO_MODEL=1`), no 450 MB nobody asked for: the model is
     // installed by hand (`omoi model install --semantic`) and, meanwhile, everything goes by words.
-    if !permitido() || modelo().is_some() || descargando() || crate::entorno::sin_descargas() {
+    if !permitido() || modelo().is_some() || descargando() || crate::entorno::no_downloads() {
         return;
     }
     let Some(c) = home() else { return };
     let _ = std::fs::create_dir_all(&c);
     if std::fs::write(c.join(DOWNLOADING_FILE), now_secs().to_string()).is_ok() {
         let db = db.to_string_lossy();
-        crate::sync::lanzar_aparte(&["--db", &db, "model", "install", "--semantic"]);
+        crate::sync::spawn_detached(&["--db", &db, "model", "install", "--semantic"]);
     }
 }
 
@@ -221,7 +221,7 @@ pub fn al_empezar(db: &rusqlite::Connection) -> Option<String> {
         return None;
     }
     if modelo().is_none() {
-        if crate::entorno::sin_descargas() {
+        if crate::entorno::no_downloads() {
             return None;
         }
         descargar_aparte(&path);
@@ -669,7 +669,7 @@ fn search_in_service(gemma: &Gemma, b: &SearchRequest) -> Result<Parecidas> {
     let q = gemma.vector(&b.texto, Tipo::Pregunta)?;
     let mut ix = indexes().lock().map_err(|_| anyhow!("index lock"))?;
     if !ix.contains_key(&path) {
-        let c = crate::db::abrir(&path)?;
+        let c = crate::db::open(&path)?;
         let i = Index::load(&c)?;
         ix.insert(path.clone(), (c, i));
     }
@@ -802,7 +802,7 @@ pub fn vector_consulta(db: &std::path::Path, text: &str, budget: Duration) -> Op
 /// (starts it if it is not running). For `remember`, `update`, `import` and sync.
 pub fn avisar(db: &std::path::Path) {
     // With nobody at the keyboard, nothing left indexing after the process (`arrancar`).
-    if crate::entorno::desatendido() || !en_uso_en(db) {
+    if crate::entorno::unattended() || !en_uso_en(db) {
         return;
     }
     let _ = vectors_in(Some(db), &[], Tipo::Documento, Duration::from_millis(100));
@@ -851,7 +851,7 @@ pub fn vivo(budget: Duration) -> Option<Registro> {
 /// (in CI, stretching the job or dying with it). If one is already running, it is used; if not, everything goes
 /// by words.
 pub fn arrancar(db: Option<&std::path::Path>) {
-    if !permitido() || modelo().is_none() || crate::entorno::desatendido() {
+    if !permitido() || modelo().is_none() || crate::entorno::unattended() {
         return;
     }
     let Some(c) = home() else { return };
@@ -863,8 +863,8 @@ pub fn arrancar(db: Option<&std::path::Path>) {
     let _ = std::fs::create_dir_all(&c);
     if std::fs::write(&marker, now_secs().to_string()).is_ok() {
         match db {
-            Some(d) => crate::sync::lanzar_aparte(&["--db", &d.to_string_lossy(), "model", "serve-semantic"]),
-            None => crate::sync::lanzar_aparte(&["model", "serve-semantic"]),
+            Some(d) => crate::sync::spawn_detached(&["--db", &d.to_string_lossy(), "model", "serve-semantic"]),
+            None => crate::sync::spawn_detached(&["model", "serve-semantic"]),
         }
     }
 }
@@ -1028,7 +1028,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
                         break;
                     }
                     if !open.contains_key(&path) {
-                        match crate::db::abrir(&path) {
+                        match crate::db::open(&path) {
                             Ok(c) => {
                                 open.insert(path.clone(), c);
                             }

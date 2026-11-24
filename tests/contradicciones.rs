@@ -43,16 +43,16 @@ impl Fixture {
     }
 
     fn project_id(&self) -> String {
-        omoikane::proyecto::de(&self.project).unwrap()
+        omoikane::proyecto::of_dir(&self.project).unwrap()
     }
 
     fn on_start(&self, session: &str) -> String {
-        let mut db = omoikane::db::abrir(&self.db).unwrap();
+        let mut db = omoikane::db::open(&self.db).unwrap();
         recall::on_session_start(&mut db, &self.project_id(), &HookInput { session_id: session.into(), ..Default::default() }).unwrap().unwrap()
     }
 
     fn on_prompt(&self, session: &str, prompt: &str) -> String {
-        let mut db = omoikane::db::abrir(&self.db).unwrap();
+        let mut db = omoikane::db::open(&self.db).unwrap();
         let e = HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() };
         recall::on_prompt(&mut db, &self.project_id(), &e, None).unwrap().unwrap_or_default()
     }
@@ -143,7 +143,7 @@ fn review_date_asks_for_reason_and_shows_at_start() {
 
     let id = p.id(json!({ "kind": "fact", "title": "Token de la API de mapas", "content": "El token de la API de mapas es del plan de prueba.", "tags": ["review:2020-01-15"], "review_reason": "el plan de prueba caduca: mira si ya hay que pagarlo" }));
     // Saved before its date (a memory touched after the date already counts as reviewed).
-    let db = omoikane::db::abrir(&p.db).unwrap();
+    let db = omoikane::db::open(&p.db).unwrap();
     db.execute("UPDATE memory SET created_at = '2019-12-01T10:00:00.000Z', updated_at = '2019-12-01T10:00:00.000Z' WHERE id = ?1", [&id]).unwrap();
     drop(db);
     let g = p.ok("get", json!({ "id": id }));

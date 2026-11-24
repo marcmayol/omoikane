@@ -98,7 +98,7 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     let notes = notes(notes_dir)?;
     let tmp = std::env::temp_dir().join(format!("omoi-fase4-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in &notes {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
@@ -368,7 +368,7 @@ fn production(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     let notes = notes(notes_dir)?;
     let tmp = std::env::temp_dir().join(format!("omoi-fase4p-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     // With a model, also the recall's by-meaning channel (as in the hook).
     let model = omoikane::modelos::abrir_actual()?;

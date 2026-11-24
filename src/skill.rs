@@ -229,7 +229,7 @@ fn read_header(text: &str) -> Option<Header> {
 
 /// The root of the project's repository, or an error if the session isn't in one.
 fn repo_root(project: &str) -> Result<PathBuf> {
-    if project.is_empty() || crate::proyecto::es_general(project) {
+    if project.is_empty() || crate::proyecto::is_general(project) {
         bail!(crate::tr!(
             "skills go in a repository: run it inside one (or pass --dir)",
             "las skills van en un repositorio: lánzalo dentro de uno (o pasa --dir)"
@@ -289,7 +289,7 @@ pub const MAX_SUGERENCIAS: usize = 5;
 /// look like they hold a secret. This is what gets them used: without it, you have to go and look up the id.
 pub fn sugerencias(db: &Connection, project: &str) -> Result<Vec<Sugerencia>> {
     repo_root(project)?;
-    let Some((pid, _)) = crate::proyecto::resolver(db, project)? else { return Ok(Vec::new()) };
+    let Some((pid, _)) = crate::proyecto::resolve(db, project)? else { return Ok(Vec::new()) };
     if pid == 0 {
         return Ok(Vec::new());
     }

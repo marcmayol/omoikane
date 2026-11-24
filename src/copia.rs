@@ -1,13 +1,13 @@
 //! Faithful copies (0.18.0): `omoi export` writes everything needed to rebuild the database
 //! (memories with their history, forget marks, verdicts and trash) and `omoi import` puts it back
-//! with the same rules as sync (`sync::Aplicador`): the same ids, dates and stamps, the newest wins
+//! with the same rules as sync (`sync::Applier`): the same ids, dates and stamps, the newest wins
 //! and what was forgotten doesn't come back. So an import is idempotent and works both to restore a
 //! database and to merge two.
 //!
 //! Format `omoi-export`, version 2: JSONL, one thing per line and streamed (one line in memory at a
 //! time, when writing and when reading). The first line is the header and the last the end line, with
 //! how many lines go in between and their SHA-256: a cut or tampered file isn't imported. The lines
-//! are sync's (`sync::Linea`) and grow just like them: a field this version doesn't know is kept and
+//! are sync's (`sync::Line`) and grow just like them: a field this version doesn't know is kept and
 //! exported again (`sync::Extra`), and a line of a type it doesn't know goes into the SHA, is counted
 //! (`unknown`) and skipped, instead of stopping the import. The format version only goes up with a
 //! change an old version can't read properly; adding doesn't bump it.
@@ -32,7 +32,7 @@
 
 use crate::embeber::Modelo;
 use crate::memoria::{self, Scope, COLUMNS, NCOL, from_row};
-use crate::sync::{self, Aplicador, Cifra, Linea, Resumen};
+use crate::sync::{self, Applier, Cipher, Line, SyncSummary};
 use crate::tr;
 use anyhow::{Context, Result, bail, ensure};
 use rusqlite::{Connection, OptionalExtension};
@@ -41,12 +41,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub const FORMATO: &str = "omoi-export";
+pub const FORMAT: &str = "omoi-export";
 pub const VERSION: u32 = 2;
 
 /// How many lines of each thing (for `--dry-run` and to count what was exported).
 #[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Cuenta {
+pub struct Counts {
     pub memories: usize,
     pub tombstones: usize,
     pub verdicts: usize,
@@ -66,7 +66,7 @@ pub struct Cuenta {
     pub untrusted_verified: usize,
 }
 
-impl Cuenta {
+impl Counts {
     pub fn total(&self) -> usize {
         self.memories + self.tombstones + self.verdicts + self.forgotten + self.projects + self.unknown
     }
@@ -85,16 +85,16 @@ enum Encryption {
     /// Without `--encrypt`.
     None,
     /// Everything with the keys of one repository: the scope's space's, or the general one.
-    Single(Cifra),
+    Single(Cipher),
     /// `--all`: each line with the keys of its space's repository (`""`: the general one). The end
     /// line, which belongs to no space (and carries nothing of any), goes with the general one's or,
     /// without it, with the first space's. A verdict of a memory of which nothing is left here is left out.
-    PerSpace(std::collections::BTreeMap<String, Cifra>),
+    PerSpace(std::collections::BTreeMap<String, Cipher>),
 }
 
 impl Encryption {
     /// The keys for a line of the space `space` (its key; `None`: of no particular one).
-    fn for_space(&self, space: Option<&str>) -> Option<&Cifra> {
+    fn for_space(&self, space: Option<&str>) -> Option<&Cipher> {
         match self {
             Encryption::None => None,
             Encryption::Single(c) => Some(c),
@@ -107,7 +107,7 @@ impl Encryption {
 
     fn encrypt(&self, space: Option<&str>, text: &str) -> Result<String> {
         match self.for_space(space) {
-            Some(c) => c.cifrar(text),
+            Some(c) => c.encrypt(text),
             None => Ok(text.to_string()),
         }
     }
@@ -128,7 +128,7 @@ fn spaces_of_everything(db: &Connection) -> Result<std::collections::BTreeSet<St
     }
     let mut q = db.prepare("SELECT memory FROM forgotten")?;
     for t in q.query_map([], |r| r.get::<_, String>(0))? {
-        v.insert(sync::espacio_de_papelera(db, &t?)?);
+        v.insert(sync::trash_space(db, &t?)?);
     }
     Ok(v)
 }
@@ -138,9 +138,9 @@ fn spaces_of_everything(db: &Connection) -> Result<std::collections::BTreeSet<St
 /// a client's stuff never goes with the personal key or with another client's.
 fn keys_per_space(db: &Connection, db_path: &Path) -> Result<Encryption> {
     let mut v = std::collections::BTreeMap::new();
-    let general = sync::rutas(db_path);
-    if general.clave.exists() {
-        v.insert(String::new(), sync::leer_claves(&general)?);
+    let general = sync::paths(db_path);
+    if general.key_file.exists() {
+        v.insert(String::new(), sync::read_keys(&general)?);
     }
     let mut missing = Vec::new();
     for space in spaces_of_everything(db)? {
@@ -150,9 +150,9 @@ fn keys_per_space(db: &Connection, db_path: &Path) -> Result<Encryption> {
             }
             continue;
         }
-        match sync::repo_de_espacio(db_path, &space).filter(|r| r.clave.exists()) {
+        match sync::space_repo(db_path, &space).filter(|r| r.key_file.exists()) {
             Some(r) => {
-                v.insert(space, sync::leer_claves(&r)?);
+                v.insert(space, sync::read_keys(&r)?);
             }
             None => missing.push(space),
         }
@@ -178,21 +178,21 @@ fn keys_per_space(db: &Connection, db_path: &Path) -> Result<Encryption> {
 /// The keys a copy of this scope is encrypted with: those of its space's repository (from an acme
 /// project, acme's: a client's copy isn't opened with the personal key) or, from something without a
 /// space, the general one's. With `--all`, each space's (`keys_per_space`).
-fn keys_for(db: &Connection, db_path: &Path, scope: &Scope) -> Result<Cifra> {
-    let space = crate::proyecto::clave_espacio(db, scope.space())?;
+fn keys_for(db: &Connection, db_path: &Path, scope: &Scope) -> Result<Cipher> {
+    let space = crate::proyecto::space_key(db, scope.space())?;
     if space.is_empty() {
-        let r = sync::rutas(db_path);
+        let r = sync::paths(db_path);
         ensure!(
-            r.clave.exists(),
+            r.key_file.exists(),
             tr!(
                 "encrypting needs the key of the general sync repository: set up `omoi sync init <git url>` (or `omoi sync join <code>`) first",
                 "para cifrar hace falta la clave del repositorio general de la sincronización: configura antes `omoi sync init <url de git>` (o `omoi sync join <código>`)"
             )
         );
-        return sync::leer_claves(&r);
+        return sync::read_keys(&r);
     }
-    match sync::repo_de_espacio(db_path, &space).filter(|r| r.clave.exists()) {
-        Some(r) => sync::leer_claves(&r),
+    match sync::space_repo(db_path, &space).filter(|r| r.key_file.exists()) {
+        Some(r) => sync::read_keys(&r),
         None => bail!(tr!(
             "encrypting a copy of the space {space} needs the key of its sync repository: set it up first with `omoi sync init <git url> --space {space}` (or `omoi sync join --space {space} <code>`)",
             "para cifrar una copia del espacio {space} hace falta la clave de su repositorio de sincronización: configúralo antes con `omoi sync init <url de git> --space {space}` (o `omoi sync join --space {space} <código>`)"
@@ -202,14 +202,14 @@ fn keys_for(db: &Connection, db_path: &Path, scope: &Scope) -> Result<Cifra> {
 
 /// All of this computer's keys (the general one's and each space's), to read a copy encrypted with
 /// any of them.
-fn all_keys(db_path: &Path) -> Result<Vec<Cifra>> {
-    let v: Vec<Cifra> = sync::repos(db_path).iter().filter(|r| r.clave.exists()).filter_map(|r| sync::leer_claves(r).ok()).collect();
+fn all_keys(db_path: &Path) -> Result<Vec<Cipher>> {
+    let v: Vec<Cipher> = sync::repos(db_path).iter().filter(|r| r.key_file.exists()).filter_map(|r| sync::read_keys(r).ok()).collect();
     ensure!(!v.is_empty(), tr!("the copy is encrypted and this computer has no sync key: set up `omoi sync` first", "la copia va cifrada y este equipo no tiene ninguna clave de sincronización: configura antes `omoi sync`"));
     Ok(v)
 }
 
 /// Writes the file. Returns how many lines go between the header and the end line.
-pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, out: &mut impl Write) -> Result<Cuenta> {
+pub fn export(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, out: &mut impl Write) -> Result<Counts> {
     let everything = matches!(scope, Scope::All);
     let encryption = match (encrypt, everything) {
         (false, _) => Encryption::None,
@@ -218,22 +218,22 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
     };
     // The same keys sync exports: those of the `project` table (a path that came from another computer
     // carries the key it came with, not one computed here).
-    let machine = crate::reloj::equipo(db)?;
-    let header = Linea::Header {
-        format: FORMATO.into(),
+    let machine = crate::reloj::machine_name(db)?;
+    let header = Line::Header {
+        format: FORMAT.into(),
         version: VERSION,
-        schema: crate::db::VERSION_ESQUEMA,
+        schema: crate::db::SCHEMA_VERSION,
         exported_at: db.query_row(&format!("SELECT {}", memoria::NOW), [], |r| r.get(0))?,
         machine: machine.clone(),
         encrypted: encrypt,
-        person: crate::db::persona_de(db),
+        person: crate::db::person_of(db),
     };
     serde_json::to_writer(&mut *out, &header)?;
     out.write_all(b"\n")?;
     let mut hash = Sha256::new();
-    let mut count = Cuenta::default();
+    let mut count = Counts::default();
     // Each line, with the keys of the space `space` (see `Encryption::for_space`).
-    let mut write = |l: &Linea, space: Option<&str>, out: &mut dyn Write| -> Result<()> {
+    let mut write = |l: &Line, space: Option<&str>, out: &mut dyn Write| -> Result<()> {
         let text = serde_json::to_string(l)?;
         hash.update(text.as_bytes());
         hash.update(b"\n");
@@ -257,12 +257,12 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
             with_copy.insert(id);
         }
     }
-    let scope_space = crate::proyecto::clave_espacio(db, scope.space())?;
+    let scope_space = crate::proyecto::space_key(db, scope.space())?;
     // First the forget marks (on import they are applied before the memories), then the memories
     // with their history, the trash and finally the verdicts, which need their memories (live or in
     // the trash).
     {
-        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {} FROM tombstone t ORDER BY t.id", sync::EXTRA_OLVIDO))?;
+        let mut q = db.prepare(&format!("SELECT t.id, t.deleted_at, t.hlc, t.space_key, {} FROM tombstone t ORDER BY t.id", sync::TOMBSTONE_EXTRA))?;
         let mut rows = q.query([])?;
         while let Some(row) = rows.next()? {
             let (id, space, extra): (String, String, String) = (row.get(0)?, row.get(3)?, row.get(4)?);
@@ -270,7 +270,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
             if !everything && !in_trash.contains(&id) && (with_copy.contains(&id) || space != scope_space) {
                 continue;
             }
-            let l = Linea::olvido(id, row.get(1)?, row.get(2)?, space.clone(), &machine, sync::extra_de(&extra));
+            let l = Line::tombstone(id, row.get(1)?, row.get(2)?, space.clone(), &machine, sync::extra_from(&extra));
             write(&l, Some(&space), out)?;
             count.tombstones += 1;
         }
@@ -289,7 +289,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
             let versions = if without_history.contains(&m.id) { Vec::new() } else { memoria::history(db, &m.id)? };
             going.insert(m.id.clone());
             let space = m.space.clone();
-            let l = sync::linea_de(m, hlc, content_hlc, &machine, versions, sync::extra_de(&extra));
+            let l = sync::line_of(m, hlc, content_hlc, &machine, versions, sync::extra_from(&extra));
             write(&l, Some(&space), out)?;
             count.memories += 1;
         }
@@ -304,8 +304,8 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
             }
             let (memory, versions_json): (String, String) = (row.get(1)?, row.get(2)?);
             let versions = serde_json::from_str(&versions_json).unwrap_or_default();
-            let space = if everything { sync::espacio_de_papelera(db, &memory)? } else { String::new() };
-            let Some(l) = Linea::papelera(db, id, &memory, versions, row.get(3)?, row.get(4)?, row.get(5)?)? else { continue };
+            let space = if everything { sync::trash_space(db, &memory)? } else { String::new() };
+            let Some(l) = Line::forgotten(db, id, &memory, versions, row.get(3)?, row.get(4)?, row.get(5)?)? else { continue };
             write(&l, Some(&space), out)?;
             count.forgotten += 1;
         }
@@ -322,11 +322,11 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
         if everything && space.is_none() && !matches!(encryption, Encryption::None) {
             continue;
         }
-        write(&Linea::veredicto(v, &machine), space.as_deref(), out)?;
+        write(&Line::verdict(v, &machine), space.as_deref(), out)?;
         count.verdicts += 1;
     }
     // The end line goes like the other lines (encrypted if they are), but doesn't enter the SHA.
-    let end = serde_json::to_string(&Linea::End { count: count.total(), sha256: hex(&hash.finalize()) })?;
+    let end = serde_json::to_string(&Line::End { count: count.total(), sha256: hex(&hash.finalize()) })?;
     out.write_all(encryption.encrypt(None, &end)?.as_bytes())?;
     out.write_all(b"\n")?;
     Ok(count)
@@ -336,7 +336,7 @@ pub fn exportar(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, o
 /// trash, or that of its forget mark (`tombstone.space_key`) if it was fully deleted. `None` if
 /// nothing of it is left here.
 fn verdict_space(db: &Connection, id: &str) -> Result<Option<String>> {
-    if let Some(e) = sync::espacio_aqui(db, id)? {
+    if let Some(e) = sync::local_space(db, id)? {
         return Ok(Some(e));
     }
     Ok(db.query_row("SELECT space_key FROM tombstone WHERE id = ?1", [id], |r| r.get(0)).optional()?)
@@ -346,11 +346,11 @@ fn verdict_space(db: &Connection, id: &str) -> Result<Option<String>> {
 /// project by key (or, in those from before schema 10, by path) or its space. One whose project or
 /// space no longer exists here belongs to no scope.
 fn trash_in_scope(db: &Connection, scope: &Scope, text: &str) -> Result<bool> {
-    let Some((m, _, _)) = sync::de_papelera(text) else { return Ok(false) };
+    let Some((m, _, _)) = sync::from_trash_json(text) else { return Ok(false) };
     let project = if !m.project_key.is_empty() {
         db.query_row("SELECT id FROM project WHERE key = ?1", [&m.project_key], |r| r.get::<_, i64>(0)).optional()?
     } else if !m.project.is_empty() {
-        crate::proyecto::resolver(db, &m.project)?.map(|(id, _)| id)
+        crate::proyecto::resolve(db, &m.project)?.map(|(id, _)| id)
     } else {
         Some(0)
     };
@@ -366,29 +366,29 @@ fn trash_in_scope(db: &Connection, scope: &Scope, text: &str) -> Result<bool> {
 }
 
 /// Whether the file starts with this format's header (anything else is the old export or engram's,
-/// which `importar` reads).
-pub fn es_propio(path: &Path) -> Result<bool> {
+/// which `import` reads).
+pub fn is_own_format(path: &Path) -> Result<bool> {
     let f = std::fs::File::open(path).with_context(|| format!("{}", path.display()))?;
     let mut first = String::new();
     BufReader::new(f).read_line(&mut first)?;
     let first = first.trim_start_matches('\u{feff}');
-    Ok(matches!(serde_json::from_str::<Linea>(first), Ok(Linea::Header { format, .. }) if format == FORMATO))
+    Ok(matches!(serde_json::from_str::<Line>(first), Ok(Line::Header { format, .. }) if format == FORMAT))
 }
 
 /// Reads the file line by line: the header, each line decrypted if needed, and checks the end line.
 /// `f` gets each line in between already parsed.
-fn read(db_path: &Path, path: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> Result<Cuenta> {
+fn read(db_path: &Path, path: &Path, mut f: impl FnMut(Line) -> Result<()>) -> Result<Counts> {
     let file = std::fs::File::open(path).with_context(|| format!("{}", path.display()))?;
     let mut lines = BufReader::new(file).lines();
     let first = lines.next().transpose()?.unwrap_or_default();
-    let header: Linea = serde_json::from_str(first.trim_start_matches('\u{feff}')).with_context(|| tr!("{} is not an omoi export", "{} no es una exportación de omoi", path.display()))?;
-    let Linea::Header { format, version, encrypted, .. } = header else {
+    let header: Line = serde_json::from_str(first.trim_start_matches('\u{feff}')).with_context(|| tr!("{} is not an omoi export", "{} no es una exportación de omoi", path.display()))?;
+    let Line::Header { format, version, encrypted, .. } = header else {
         bail!(tr!("{} is not an omoi export", "{} no es una exportación de omoi", path.display()));
     };
-    ensure!(format == FORMATO && version <= VERSION, tr!("{} comes from a newer omoi (export format {version}; this one reads up to {VERSION})", "{} viene de un omoi más nuevo (formato {version}, este entiende hasta el {VERSION})", path.display()));
+    ensure!(format == FORMAT && version <= VERSION, tr!("{} comes from a newer omoi (export format {version}; this one reads up to {VERSION})", "{} viene de un omoi más nuevo (formato {version}, este entiende hasta el {VERSION})", path.display()));
     let keys = if encrypted { all_keys(db_path)? } else { Vec::new() };
     let mut hash = Sha256::new();
-    let mut count = Cuenta::default();
+    let mut count = Counts::default();
     let mut end: Option<(usize, String)> = None;
     for (i, l) in lines.enumerate() {
         let l = l?;
@@ -398,7 +398,7 @@ fn read(db_path: &Path, path: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
         let plain = if encrypted {
             // With the first key that opens it; if none does, the first one's error.
             let mut failure = None;
-            let plain = keys.iter().find_map(|c| c.descifrar(&l).map_err(|e| failure.get_or_insert(e)).ok());
+            let plain = keys.iter().find_map(|c| c.decrypt(&l).map_err(|e| failure.get_or_insert(e)).ok());
             match plain {
                 Some(t) => t,
                 // (A copy of everything carries each space under the key of its repository: normally
@@ -418,27 +418,27 @@ fn read(db_path: &Path, path: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
         };
         // A line of a type this version doesn't know (from a newer omoi) counts for the end line and
         // is skipped; any other that can't be parsed is damaged.
-        if sync::de_tipo_nuevo(&plain) {
+        if sync::is_newer_line_type(&plain) {
             hash.update(plain.as_bytes());
             hash.update(b"\n");
             count.unknown += 1;
             continue;
         }
-        let x: Linea = serde_json::from_str(&plain).with_context(|| tr!("line {} can't be read", "la línea {} no se entiende", i + 2))?;
-        if let Linea::End { count, sha256 } = x {
+        let x: Line = serde_json::from_str(&plain).with_context(|| tr!("line {} can't be read", "la línea {} no se entiende", i + 2))?;
+        if let Line::End { count, sha256 } = x {
             end = Some((count, sha256));
             break;
         }
-        ensure!(x.valida(), tr!("line {} has an invalid id", "la línea {} lleva un id no válido", i + 2));
+        ensure!(x.is_valid(), tr!("line {} has an invalid id", "la línea {} lleva un id no válido", i + 2));
         hash.update(plain.as_bytes());
         hash.update(b"\n");
         match &x {
-            Linea::Memory(_) => count.memories += 1,
-            Linea::Tombstone { .. } => count.tombstones += 1,
-            Linea::Verdict { .. } => count.verdicts += 1,
-            Linea::Forgotten { .. } => count.forgotten += 1,
-            Linea::Project { .. } => count.projects += 1,
-            Linea::Header { .. } | Linea::End { .. } => {}
+            Line::Memory(_) => count.memories += 1,
+            Line::Tombstone { .. } => count.tombstones += 1,
+            Line::Verdict { .. } => count.verdicts += 1,
+            Line::Forgotten { .. } => count.forgotten += 1,
+            Line::Project { .. } => count.projects += 1,
+            Line::Header { .. } | Line::End { .. } => {}
         }
         f(x)?;
     }
@@ -449,13 +449,13 @@ fn read(db_path: &Path, path: &Path, mut f: impl FnMut(Linea) -> Result<()>) -> 
     Ok(count)
 }
 
-/// What is done with a file's verified stamps (see [`importar`]).
+/// What is done with a file's verified stamps (see [`import`]).
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Sellos {
-    /// Whoever imports is in an agent's shell (`verificado::shell_de_agente`): none is valid.
-    pub agente: bool,
+pub struct StampPolicy {
+    /// Whoever imports is in an agent's shell (`verificado::agent_shell`): none is valid.
+    pub agent: bool,
     /// `--trust-verified`: also those this person didn't set (they are signed as theirs).
-    pub confiar: bool,
+    pub trust: bool,
 }
 
 /// What happened to a line's stamp.
@@ -471,29 +471,29 @@ enum StampOutcome {
 
 /// A line's verified stamp (`extra.verified`, the memory's or that of the one going to the trash):
 /// it stays if this person set it (their signature is valid with their stamp key, see
-/// `verificado::Llaves`: their backup, what was exported on another of their computers with their
+/// `verificado::SealKeys`: their backup, what was exported on another of their computers with their
 /// general repository) or with `--trust-verified` (and then it's signed as theirs); otherwise, or in
 /// an agent's shell, it is removed.
-fn filter_stamp(l: &mut Linea, keys: &crate::verificado::Llaves, s: Sellos) -> StampOutcome {
+fn filter_stamp(l: &mut Line, keys: &crate::verificado::SealKeys, s: StampPolicy) -> StampOutcome {
     let (id, extra) = match l {
-        Linea::Memory(c) => (c.id.clone(), &mut c.extra),
-        Linea::Forgotten { memory, .. } => (memory.id.clone(), &mut memory.extra),
+        Line::Memory(c) => (c.id.clone(), &mut c.extra),
+        Line::Forgotten { memory, .. } => (memory.id.clone(), &mut memory.extra),
         _ => return StampOutcome::Kept,
     };
-    let Some(v) = extra.get_mut(crate::verificado::CLAVE) else { return StampOutcome::Kept };
-    if s.agente {
-        extra.remove(crate::verificado::CLAVE);
+    let Some(v) = extra.get_mut(crate::verificado::VERIFIED_KEY) else { return StampOutcome::Kept };
+    if s.agent {
+        extra.remove(crate::verificado::VERIFIED_KEY);
         return StampOutcome::Agent;
     }
-    if crate::verificado::sello_propio(keys, &id, v) {
+    if crate::verificado::is_own_seal(keys, &id, v) {
         return StampOutcome::Kept;
     }
-    if s.confiar {
+    if s.trust {
         // (In a dry run the key to sign it with isn't created: it stays as is, and isn't written.)
-        crate::verificado::resellar(keys, &id, v);
+        crate::verificado::reseal(keys, &id, v);
         return StampOutcome::Kept;
     }
-    extra.remove(crate::verificado::CLAVE);
+    extra.remove(crate::verificado::VERIFIED_KEY);
     StampOutcome::Foreign
 }
 
@@ -503,12 +503,12 @@ fn filter_stamp(l: &mut Linea, keys: &crate::verificado::Llaves, s: Sellos) -> S
 /// Verified-by-a-person stamps, with the same rule as `import --okf`: anyone may have written the
 /// file (and the stamp's fingerprint is computed from the text), so only those this person set
 /// (signed with their stamp key) stay and, with `--trust-verified`, the rest. From an agent's shell
-/// (`stamps.agente`), none: that would be an agent verifying itself. The removed ones are counted in
-/// `Cuenta::unverified` (agent) and `Cuenta::untrusted_verified` (someone else's) to warn. (Sync does
+/// (`stamps.agent`), none: that would be an agent verifying itself. The removed ones are counted in
+/// `Counts::unverified` (agent) and `Counts::untrusted_verified` (someone else's) to warn. (Sync does
 /// bring the stamps of the person's other computers, through their encrypted repository: see
 /// `sync::sello_de_otro`.)
-pub fn importar(db: &mut Connection, db_path: &Path, path: &Path, current: &str, model: Option<&Modelo>, dry_run: bool, stamps: Sellos) -> Result<(Cuenta, Resumen)> {
-    let keys = crate::verificado::llaves(db, stamps.confiar && !stamps.agente && !dry_run)?;
+pub fn import(db: &mut Connection, db_path: &Path, path: &Path, current: &str, model: Option<&Modelo>, dry_run: bool, stamps: StampPolicy) -> Result<(Counts, SyncSummary)> {
+    let keys = crate::verificado::seal_keys(db, stamps.trust && !stamps.agent && !dry_run)?;
     let (mut from_agent, mut foreign) = (0, 0);
     let mut count = read(db_path, path, |mut l| {
         match filter_stamp(&mut l, &keys, stamps) {
@@ -520,7 +520,7 @@ pub fn importar(db: &mut Connection, db_path: &Path, path: &Path, current: &str,
     })?;
     count.unverified = from_agent;
     count.untrusted_verified = foreign;
-    let mut r = Resumen::default();
+    let mut r = SyncSummary::default();
     if dry_run {
         return Ok((count, r));
     }
@@ -530,9 +530,9 @@ pub fn importar(db: &mut Connection, db_path: &Path, path: &Path, current: &str,
         && sync::repos(db_path).is_empty()
         && db.query_row("SELECT NOT EXISTS(SELECT 1 FROM memory) AND NOT EXISTS(SELECT 1 FROM forgotten)", [], |r| r.get::<_, bool>(0))?
     {
-        sync::adoptar_persona(db, db_path, &person)?;
+        sync::adopt_person(db, db_path, &person)?;
     }
-    let mut applier = Aplicador::nuevo(db, None, Some(current))?;
+    let mut applier = Applier::new(db, None, Some(current))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     read(db_path, path, |mut l| {
         filter_stamp(&mut l, &keys, stamps);
@@ -540,8 +540,8 @@ pub fn importar(db: &mut Connection, db_path: &Path, path: &Path, current: &str,
             "" => format!("import:{name}"),
             m => m.to_string(),
         };
-        if applier.aplicar(db, &origin, l, model, &mut r).is_err() {
-            r.ilegibles += 1;
+        if applier.apply(db, &origin, l, model, &mut r).is_err() {
+            r.unreadable += 1;
         }
         Ok(())
     })?;
@@ -556,8 +556,8 @@ fn copy_person(path: &Path) -> Result<Option<String>> {
     let f = std::fs::File::open(path).with_context(|| format!("{}", path.display()))?;
     let mut first = String::new();
     BufReader::new(f).read_line(&mut first)?;
-    Ok(match serde_json::from_str::<Linea>(first.trim_start_matches('\u{feff}')) {
-        Ok(Linea::Header { person, .. }) if !person.is_empty() => Some(person),
+    Ok(match serde_json::from_str::<Line>(first.trim_start_matches('\u{feff}')) {
+        Ok(Line::Header { person, .. }) if !person.is_empty() => Some(person),
         _ => None,
     })
 }
@@ -565,17 +565,17 @@ fn copy_person(path: &Path) -> Result<Option<String>> {
 // --- Daily copy ------------------------------------------------------------------------------------
 
 /// How many copies are kept (`OMOIKANE_BACKUPS`; 0 = none are made).
-pub fn copias_a_conservar() -> usize {
+pub fn backups_to_keep() -> usize {
     std::env::var("OMOIKANE_BACKUPS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(7)
 }
 
-pub fn carpeta_copias(db_path: &Path) -> PathBuf {
+pub fn backups_dir(db_path: &Path) -> PathBuf {
     db_path.parent().map(Path::to_path_buf).unwrap_or_default().join("backups")
 }
 
 /// The copies there are, newest to oldest: (path, bytes).
-pub fn copias(db_path: &Path) -> Vec<(PathBuf, u64)> {
-    let mut v: Vec<(PathBuf, u64)> = std::fs::read_dir(carpeta_copias(db_path))
+pub fn backups(db_path: &Path) -> Vec<(PathBuf, u64)> {
+    let mut v: Vec<(PathBuf, u64)> = std::fs::read_dir(backups_dir(db_path))
         .map(|d| {
             d.flatten()
                 .filter(|e| e.file_name().to_string_lossy().starts_with("omoikane-") && e.path().extension().is_some_and(|x| x == "db"))
@@ -588,8 +588,8 @@ pub fn copias(db_path: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 /// Makes today's copy (replaces today's if there was one already) and deletes the extra ones. Returns its path.
-pub fn copiar(db: &Connection, db_path: &Path) -> Result<PathBuf> {
-    let folder = carpeta_copias(db_path);
+pub fn make_backup(db: &Connection, db_path: &Path) -> Result<PathBuf> {
+    let folder = backups_dir(db_path);
     std::fs::create_dir_all(&folder)?;
     let today: String = db.query_row("SELECT strftime('%Y-%m-%d', 'now')", [], |r| r.get(0))?;
     let dest = folder.join(format!("omoikane-{today}.db"));
@@ -599,7 +599,7 @@ pub fn copiar(db: &Connection, db_path: &Path) -> Result<PathBuf> {
     db.execute("VACUUM INTO ?1", [tmp.to_string_lossy().as_ref()])?;
     let _ = std::fs::remove_file(&dest);
     std::fs::rename(&tmp, &dest)?;
-    for (path, _) in copias(db_path).into_iter().skip(copias_a_conservar().max(1)) {
+    for (path, _) in backups(db_path).into_iter().skip(backups_to_keep().max(1)) {
         let _ = std::fs::remove_file(path);
     }
     Ok(dest)
@@ -607,7 +607,7 @@ pub fn copiar(db: &Connection, db_path: &Path) -> Result<PathBuf> {
 
 /// When the first session of the day starts: the copy and the trash purge. Never fails nor repeats
 /// on the same day (it records it in `meta`).
-pub fn diaria(db: &Connection, db_path: &Path) -> Option<PathBuf> {
+pub fn daily_backup(db: &Connection, db_path: &Path) -> Option<PathBuf> {
     let today: String = db.query_row("SELECT strftime('%Y-%m-%d', 'now')", [], |r| r.get(0)).ok()?;
     let last: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'copia_dia'", [], |r| r.get(0)).optional().ok()?;
     if last.as_deref() == Some(today.as_str()) {
@@ -615,8 +615,8 @@ pub fn diaria(db: &Connection, db_path: &Path) -> Option<PathBuf> {
     }
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('copia_dia', ?1)", [&today]).ok()?;
     let _ = memoria::purge(db, memoria::trash_days());
-    if copias_a_conservar() == 0 {
+    if backups_to_keep() == 0 {
         return None;
     }
-    copiar(db, db_path).ok()
+    make_backup(db, db_path).ok()
 }

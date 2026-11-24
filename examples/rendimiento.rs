@@ -95,14 +95,14 @@ fn sentence(rng: &mut Rng, voc: &[String], words: usize) -> String {
 
 /// Creates the database in `db` with `n` memories; returns the folder of the first project (the one for the queries).
 fn create_db(db: &Path, folders: &Path, n: usize) -> Result<PathBuf> {
-    let mut c = omoikane::db::abrir(db)?;
+    let mut c = omoikane::db::open(db)?;
     // A throwaway database: no waiting for the disk on every memory (on a hard disk, minutes).
     c.execute_batch("PRAGMA synchronous=OFF;")?;
     let mut keys = Vec::new();
     for p in 0..PROJECTS {
         let d = folders.join(format!("p{p}"));
         std::fs::create_dir_all(&d)?;
-        keys.push(omoikane::proyecto::de(&d)?);
+        keys.push(omoikane::proyecto::of_dir(&d)?);
     }
     let kinds = [Kind::Fact, Kind::Decision, Kind::Gotcha, Kind::Fact, Kind::Preference, Kind::Fact];
     let save = |c: &mut rusqlite::Connection, project: String, kind: Kind, title: String, content: String| -> Result<()> {
@@ -299,10 +299,10 @@ fn main() -> Result<()> {
         None => {
             let v = match against {
                 Some(v) => v,
-                None => omoikane::actualizar::ultima().context("¿cuál es la última Release? (o --contra <versión>)")?,
+                None => omoikane::actualizar::latest().context("¿cuál es la última Release? (o --contra <versión>)")?,
             };
             eprintln!("bajando omoi {v} y comprobando su firma y su SHA-256…");
-            (omoikane::actualizar::bajar_version(&v, &tmp.join("antes"))?, format!("Release v{v}, signature and SHA-256 checked"))
+            (omoikane::actualizar::download_version(&v, &tmp.join("antes"))?, format!("Release v{v}, signature and SHA-256 checked"))
         }
     };
     let version = |b: &Path| -> String {

@@ -84,9 +84,9 @@ fn is_absolute(r: &str) -> bool {
 }
 
 /// Where a memory's path is on this computer: absolute, `~/…` or relative to its project. Never a
-/// network one (`\\server\…`, `//cdn…`): looking at it would open a connection (see `proyecto::ruta_de_red`).
+/// network one (`\\server\…`, `//cdn…`): looking at it would open a connection (see `proyecto::is_network_path`).
 fn on_disk(m: &Memory, path: &str) -> Option<PathBuf> {
-    if crate::proyecto::ruta_de_red(path) {
+    if crate::proyecto::is_network_path(path) {
         return None;
     }
     let d = if let Some(r) = path.strip_prefix("~/") {
@@ -98,7 +98,7 @@ fn on_disk(m: &Memory, path: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    crate::proyecto::ruta_local(&d).then_some(d)
+    crate::proyecto::is_local_path(&d).then_some(d)
 }
 
 /// The file paths a text names: words with a slash and an extension at the end
@@ -109,7 +109,7 @@ pub fn named_paths(text: &str) -> Vec<String> {
     for p in text.split(|c: char| c.is_whitespace() || "`'\"«»()[]{}<>,;|*".contains(c)) {
         let p = p.trim_end_matches(['.', ':', '!', '?']);
         // Neither web addresses nor network paths (`//cdn.example.com/x.js`, `\\server\share\a.py`).
-        if crate::proyecto::ruta_de_red(p) || p.contains("://") || p.starts_with("www.") || !(p.contains('/') || p.contains('\\')) || p.ends_with(['/', '\\']) {
+        if crate::proyecto::is_network_path(p) || p.contains("://") || p.starts_with("www.") || !(p.contains('/') || p.contains('\\')) || p.ends_with(['/', '\\']) {
             continue;
         }
         let name = p.rsplit(['/', '\\']).next().unwrap_or("");
@@ -400,7 +400,7 @@ fn launch_today(db: &Connection, today: &str) -> Result<()> {
     let is_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
     if let (true, Some(path)) = (is_omoi, db.path().filter(|p| !p.is_empty())) {
         db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [LAUNCHED_KEY, today])?;
-        crate::sync::lanzar(&["review", "--refresh-drift"], Some(Path::new(path)));
+        crate::sync::spawn_omoi(&["review", "--refresh-drift"], Some(Path::new(path)));
     }
     Ok(())
 }
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn the_cache_does_not_overwrite_newer_data() {
         let t = crate::comun::Temporal::nueva("deriva-cache");
-        let db = crate::db::abrir(&t.join("o.db")).unwrap();
+        let db = crate::db::open(&t.join("o.db")).unwrap();
         let mut old = Saved::new();
         old.insert("A".into(), ("2026-01-01".into(), String::new()));
         save_cache(&db, "2026-11-01", &old).unwrap();
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(raw(&db).unwrap(), now, "lo más nuevo se queda");
         assert!(save_if_unchanged(&db, now.as_deref(), "2026-11-08", &old).unwrap());
         // And `context` does not compute it the first time: with nothing stored, it does not wait.
-        let empty = crate::db::abrir(&t.join("v.db")).unwrap();
+        let empty = crate::db::open(&t.join("v.db")).unwrap();
         assert!(for_memories_no_wait(&empty, &[]).unwrap().is_empty());
         assert_eq!(raw(&empty).unwrap(), None);
     }

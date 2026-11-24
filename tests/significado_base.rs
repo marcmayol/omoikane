@@ -11,7 +11,7 @@ use omoikane::significado as s;
 fn open_db(name: &str) -> (comun::Temporal, rusqlite::Connection) {
     let dir = comun::Temporal::nueva(&format!("sigbase-{name}"));
     let path = dir.join("o.db");
-    let db = db::abrir(&path).unwrap();
+    let db = db::open(&path).unwrap();
     (dir, db)
 }
 
@@ -75,7 +75,7 @@ fn vectors_in_the_db() {
     // Another version of the vectors (another model, another computation): deleted on open.
     db.execute("UPDATE meta SET v = 'otro' WHERE k = 'sig_version'", []).unwrap();
     drop(db);
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     assert_eq!(s::cobertura(&db).unwrap(), (0, 2));
 }
 
@@ -84,16 +84,16 @@ fn vectors_in_the_db() {
 #[test]
 fn in_memory_scope_matches_sql() {
     let (_dir, mut db) = open_db("ambito");
-    let acme = omoikane::proyecto::crear_espacio(&db, "acme").unwrap();
-    let globex = omoikane::proyecto::crear_espacio(&db, "globex").unwrap();
+    let acme = omoikane::proyecto::create_space(&db, "acme").unwrap();
+    let globex = omoikane::proyecto::create_space(&db, "globex").unwrap();
     let mut ids = Vec::new();
     for (i, p) in ["/a1", "/a2", "/g1", "/suelto", ""].iter().enumerate() {
         let m = memoria::save(&mut db, new_fact(p, &format!("m{i}"), &format!("contenido {i}")), None).unwrap();
         ids.push(m.id);
     }
     for (p, s) in [("/a1", acme), ("/a2", acme), ("/g1", globex)] {
-        let id = omoikane::proyecto::resolver(&db, p).unwrap().unwrap().0;
-        omoikane::proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
+        let id = omoikane::proyecto::resolve(&db, p).unwrap().unwrap().0;
+        omoikane::proyecto::assign_space(&db, id, Some(s)).unwrap();
     }
     for (s, t) in [(acme, "de acme"), (globex, "de globex")] {
         let m = memoria::save(&mut db, NewMemory { space_id: Some(s), kind: Some(Kind::Fact), title: t.into(), content: t.into(), ..Default::default() }, None).unwrap();

@@ -11,9 +11,9 @@ use std::path::Path;
 fn setup(name: &str) -> (comun::Temporal, rusqlite::Connection, String) {
     let d = comun::Temporal::nueva(&format!("skill-{name}"));
     std::fs::create_dir_all(d.join("repo").join(".git")).unwrap();
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let db = db::abrir(&d.join("o.db")).unwrap();
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
     (d, db, repo)
 }
 

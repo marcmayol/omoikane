@@ -376,8 +376,8 @@ pub(crate) fn relativo(f: &str, root: &str) -> String {
 /// The real path of `p` (that of its nearest existing folder, if `p` is gone), without Windows'
 /// `\\?\`.
 fn real_path(p: &std::path::Path) -> Option<String> {
-    // A network path is not resolved: it would open an SMB connection (see `proyecto::ruta_de_red`).
-    if !crate::proyecto::ruta_local(p) {
+    // A network path is not resolved: it would open an SMB connection (see `proyecto::is_network_path`).
+    if !crate::proyecto::is_local_path(p) {
         return None;
     }
     let mut rest = Vec::new();
@@ -442,8 +442,8 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Opti
         return Ok(false);
     }
     crear_tabla(db)?;
-    let general = crate::proyecto::es_general(project);
-    let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0) };
+    let general = crate::proyecto::is_general(project);
+    let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
     let root = if general { "" } else { project };
     let mut reading = match conversation {
         Some(c) => leer(c, root)?,
@@ -698,8 +698,8 @@ pub fn apuntar_aplicadas(db: &Connection, project: &str, session: &str, conversa
         return Ok(0);
     }
     crear_tabla(db)?;
-    let general = crate::proyecto::es_general(project);
-    let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0) };
+    let general = crate::proyecto::is_general(project);
+    let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
     let key = params![session, project_id];
     let row: Option<(String, String)> =
         db.query_row("SELECT saved, applied FROM diary WHERE session = ?1 AND project_id = ?2", key, |f| Ok((f.get(0)?, f.get(1)?))).optional()?;

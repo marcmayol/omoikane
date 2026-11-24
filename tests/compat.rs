@@ -571,7 +571,7 @@ fn verification_and_provenance_pass_through_10() {
     // Without an agent shell's variables (if the tests run inside one, `verify` refuses).
     let without_agent = |args: &[&str], env: &[(&str, &str)]| -> serde_json::Value {
         let mut c = a.command(&a.dir);
-        for v in omoikane::verificado::DE_AGENTE {
+        for v in omoikane::verificado::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         for (k, x) in env {

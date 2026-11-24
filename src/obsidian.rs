@@ -63,8 +63,8 @@ pub fn exportar(db: &Connection, vault: &Path, what: Que) -> Result<Cuenta> {
 /// those in `keep` are neither written nor deleted (what the import couldn't bring in: notes without this
 /// database's signature that say something other than their memory, new notes that can't touch theirs).
 fn export_with(db: &Connection, vault: &Path, what: Que, overwrite: &BTreeSet<PathBuf>, keep: &BTreeSet<PathBuf>) -> Result<Cuenta> {
-    // A network folder is not looked at (see `proyecto::ruta_local`); one with a drive letter is.
-    crate::proyecto::exigir_local(vault)?;
+    // A network folder is not looked at (see `proyecto::is_local_path`); one with a drive letter is.
+    crate::proyecto::require_local(vault)?;
     let p = prepare(db, what)?;
     let root = vault.join(CARPETA);
     std::fs::create_dir_all(&root).with_context(|| tr!("could not create {}", "no se pudo crear {}", root.display()))?;
@@ -141,7 +141,7 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
     let mut names: HashMap<String, BTreeSet<String>> = HashMap::new();
     for m in &all {
         if m.project_id != 0 {
-            names.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
+            names.entry(crate::proyecto::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
     let group = |m: &Memory| -> Group {
@@ -153,7 +153,7 @@ fn prepare(db: &Connection, what: Que) -> Result<Prepared> {
                 Group { folder: format!("_{s}"), note: format!("espacio-{s}"), title: m.space.clone(), project_id: 0, space_id: space }
             };
         }
-        let name = crate::proyecto::nombre_de(&m.project, &m.project_key);
+        let name = crate::proyecto::name_of(&m.project, &m.project_key);
         let mut s = slug(&name, 40);
         if names.get(&name).is_some_and(|k| k.len() > 1) {
             s = format!("{s}-{}", corto(&m.project_key));
@@ -651,7 +651,7 @@ fn edited(l: &ReadNote) -> bool {
 fn scope_of(db: &Connection, what: Que) -> Result<String> {
     match what {
         Que::Personal => Ok(String::new()),
-        Que::Espacio(s) => crate::proyecto::clave_espacio(db, Some(s)),
+        Que::Espacio(s) => crate::proyecto::space_key(db, Some(s)),
     }
 }
 
@@ -984,7 +984,7 @@ fn note_key(rel: &str) -> String {
 /// Everything that comes in goes through secret redaction, like any write. Afterwards, if it's not a
 /// dry run, it exports again to bring the vault up to date.
 pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vault: &Path, what: Que, prefer: Preferir, dry_run: bool) -> Result<Resumen> {
-    crate::proyecto::exigir_local(vault)?;
+    crate::proyecto::require_local(vault)?;
     let root = vault.join(CARPETA);
     anyhow::ensure!(
         root.is_dir(),

@@ -40,19 +40,19 @@ fn is_on(name: &str) -> bool {
 ///
 /// `OMOIKANE_HOME` must be absolute: a relative one would depend on the folder each
 /// command runs in (each hook, each CI step would have its own database). `~` and `~/…` are expanded with the home
-/// folder; any other relative one is not valid (`None`, and `casa_mala` explains it).
-pub fn casa() -> Option<PathBuf> {
+/// folder; any other relative one is not valid (`None`, and `bad_home` explains it).
+pub fn home() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty()) {
         return home_from(&h.to_string_lossy());
     }
-    crate::proyecto::casa_local().map(|h| h.join(".omoikane"))
+    crate::proyecto::local_home().map(|h| h.join(".omoikane"))
 }
 
 /// `OMOIKANE_HOME` as a path: absolute as is, `~` or `~/…` from the home folder; anything else, `None`.
 /// Nor a network one (`\\servidor\recurso`, `//host/x`, `~/\\host\x`…): every command would open the database
-/// and the sync files there (see `proyecto::ruta_local`).
+/// and the sync files there (see `proyecto::is_local_path`).
 fn home_from(h: &str) -> Option<PathBuf> {
-    let user_home = crate::proyecto::casa_local;
+    let user_home = crate::proyecto::local_home;
     if h == "~" {
         return user_home();
     }
@@ -61,17 +61,17 @@ fn home_from(h: &str) -> Option<PathBuf> {
     } else {
         PathBuf::from(h)
     };
-    (p.is_absolute() && crate::proyecto::ruta_local(&p)).then_some(p)
+    (p.is_absolute() && crate::proyecto::is_local_path(&p)).then_some(p)
 }
 
 /// The error for an `OMOIKANE_HOME` that isn't valid (relative, or with `~` and no home folder); `None` if
 /// it isn't set or is valid.
-pub fn casa_mala() -> Option<String> {
+pub fn bad_home() -> Option<String> {
     let h = std::env::var_os("OMOIKANE_HOME").filter(|h| !h.is_empty())?;
     let h = h.to_string_lossy();
     home_from(&h).is_none().then(|| {
         let after_tilde = h.strip_prefix("~/").or_else(|| h.strip_prefix("~\\")).unwrap_or(&h);
-        let local = |r: &str| crate::proyecto::ruta_local(std::path::Path::new(r));
+        let local = |r: &str| crate::proyecto::is_local_path(std::path::Path::new(r));
         if !local(&h) || !local(after_tilde) {
             tr!(
                 "OMOIKANE_HOME must be a folder on this computer (it is «{h}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
@@ -88,8 +88,8 @@ pub fn casa_mala() -> Option<String> {
 
 /// The error for a database (`--db`, `OMOIKANE_DB`) or a models folder (`OMOIKANE_MODELS`) that isn't
 /// on this computer; `None` if it's valid. Checked before opening anything.
-pub fn ruta_mala(what: &str, p: &std::path::Path) -> Option<String> {
-    (!crate::proyecto::ruta_local(p)).then(|| {
+pub fn bad_path(what: &str, p: &std::path::Path) -> Option<String> {
+    (!crate::proyecto::is_local_path(p)).then(|| {
         tr!(
             "{what} must be on this computer (it is «{}»): Omoikane doesn't open network paths (\\\\server\\share, //host/x, \\\\?\\UNC\\…); map the share to a drive letter if you need it",
             "{what} tiene que estar en este equipo (es «{}»): Omoikane no abre rutas de red (\\\\servidor\\recurso, //host/x, \\\\?\\UNC\\…); si la necesitas, asígnale una letra de unidad",
@@ -99,12 +99,12 @@ pub fn ruta_mala(what: &str, p: &std::path::Path) -> Option<String> {
 }
 
 /// Whether there is somewhere to keep the database: `OMOIKANE_DB` or an Omoikane folder.
-pub fn hay_donde_guardar() -> bool {
-    std::env::var_os("OMOIKANE_DB").is_some_and(|d| !d.is_empty()) || casa().is_some()
+pub fn has_place_to_save() -> bool {
+    std::env::var_os("OMOIKANE_DB").is_some_and(|d| !d.is_empty()) || home().is_some()
 }
 
 /// The error for when there is no home folder nor variables saying where to save.
-pub fn sin_casa() -> String {
+pub fn no_home_error() -> String {
     tr!(
         "there is no home folder: set OMOIKANE_HOME to the folder Omoikane should use (or OMOIKANE_DB, or pass --db)",
         "no hay carpeta personal: pon en OMOIKANE_HOME la carpeta que debe usar Omoikane (u OMOIKANE_DB, o pasa --db)"
@@ -112,58 +112,58 @@ pub fn sin_casa() -> String {
 }
 
 /// `OMOIKANE_NONINTERACTIVE=1`: there is nobody in front.
-pub fn desatendido() -> bool {
+pub fn unattended() -> bool {
     is_on("OMOIKANE_NONINTERACTIVE")
 }
 
 /// The variable `omoi` uses to mark the processes it launches itself in the background (the
 /// background sync, the hooks' `--pull`): it's not for anyone outside.
-pub const DE_FONDO: &str = "OMOIKANE_INTERNAL_BACKGROUND";
+pub const BACKGROUND_VAR: &str = "OMOIKANE_INTERNAL_BACKGROUND";
 
-/// Whether this process was launched by `omoi` in the background (`DE_FONDO`): even if nobody is in front, nobody
+/// Whether this process was launched by `omoi` in the background (`BACKGROUND_VAR`): even if nobody is in front, nobody
 /// is waiting for its result.
-pub fn de_fondo() -> bool {
-    is_on(DE_FONDO)
+pub fn in_background() -> bool {
+    is_on(BACKGROUND_VAR)
 }
 
 /// Whether we can ask: there is a terminal on the input and nobody said there's no one there.
-pub fn puede_preguntar() -> bool {
+pub fn can_ask() -> bool {
     use std::io::IsTerminal;
-    !desatendido() && std::io::stdin().is_terminal()
+    !unattended() && std::io::stdin().is_terminal()
 }
 
 /// No downloads nobody asked for (the meaning model when the memory grows):
 /// `OMOIKANE_NONINTERACTIVE=1` or `OMOIKANE_NO_MODEL=1`.
-pub fn sin_descargas() -> bool {
-    desatendido() || is_on("OMOIKANE_NO_MODEL")
+pub fn no_downloads() -> bool {
+    unattended() || is_on("OMOIKANE_NO_MODEL")
 }
 
 /// The background sync after each change and every few minutes: `OMOIKANE_SYNC_AUTO=0` turns it off
 /// and `=1` turns it on; if unset, on unless nobody is in front (in a CI the background
 /// process would die with the job, or make it longer: there you sync with `omoi sync` at the end).
-pub fn sync_automatica() -> bool {
+pub fn auto_sync() -> bool {
     match value("OMOIKANE_SYNC_AUTO").as_deref() {
         Some("0") => false,
         Some("1") => true,
-        _ => !desatendido(),
+        _ => !unattended(),
     }
 }
 
 /// `OMOIKANE_AUTHOR`: who signs what is saved here.
-pub fn autor() -> Option<String> {
+pub fn author() -> Option<String> {
     value("OMOIKANE_AUTHOR")
 }
 
 /// The codes in `OMOIKANE_SYNC_CODE` (separated by spaces, commas or lines: one per repository,
 /// the general one and the spaces' ones).
-pub fn codigos_sync() -> Vec<String> {
+pub fn sync_codes() -> Vec<String> {
     value("OMOIKANE_SYNC_CODE")
         .map(|v| v.split(|c: char| c == ',' || c.is_whitespace()).filter(|x| !x.is_empty()).map(String::from).collect())
         .unwrap_or_default()
 }
 
 /// `OMOIKANE_SYNC_URL`: another URL for the code's repository (only with one code).
-pub fn url_sync() -> Option<String> {
+pub fn sync_url() -> Option<String> {
     value("OMOIKANE_SYNC_URL")
 }
 
@@ -202,7 +202,7 @@ mod tests {
     fn extended_path_of_a_drive_is_valid() {
         let h = r"\\?\C:\Users\alguien\.omoikane";
         assert_eq!(home_from(h), Some(std::path::PathBuf::from(h)));
-        assert_eq!(super::ruta_mala("--db", std::path::Path::new(r"\\?\C:\x\o.db")), None);
-        assert!(super::ruta_mala("--db", std::path::Path::new(r"\\?\UNC\10.255.255.1\x\o.db")).is_some());
+        assert_eq!(super::bad_path("--db", std::path::Path::new(r"\\?\C:\x\o.db")), None);
+        assert!(super::bad_path("--db", std::path::Path::new(r"\\?\UNC\10.255.255.1\x\o.db")).is_some());
     }
 }

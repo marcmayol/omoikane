@@ -597,7 +597,7 @@ fn setup_for_other_agents() {
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     std::fs::write(home.join(".gemini/settings.json"), r#"{"theme":"dark","mcpServers":{"otro":{"command":"x"}}}"#).unwrap();
     let h = home.to_str().unwrap();
-    for a in omoikane::agentes::AGENTES {
+    for a in omoikane::agentes::AGENTS {
         let o = e.omoi_with(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);
         assert!(o.status.success(), "{a}: {}", String::from_utf8_lossy(&o.stderr));
         let o = e.omoi_with(&["setup", a, "--yes"], None, &[("OMOIKANE_SETUP_HOME", h)]);

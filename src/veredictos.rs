@@ -133,7 +133,7 @@ pub fn set(db: &Connection, memory_id: &str, other_id: &str, relation: &str, rea
     // Later than the last text change of both: even if that change comes from a machine with its clock
     // far ahead (which doesn't push this clock forward), the verdict given now holds.
     let last: String = db.query_row("SELECT COALESCE(max(content_hlc), '') FROM memory WHERE id IN (?1, ?2)", params![id, other], |row| row.get(0))?;
-    let hlc = crate::reloj::sello_tras(db, &last)?;
+    let hlc = crate::reloj::stamp_after(db, &last)?;
     db.execute(
         &format!("INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author) VALUES (?1, ?2, ?3, {NOW}, ?4, ?5, ?6)"),
         params![id, other, relation, hlc, reason.trim(), author.trim()],
@@ -166,14 +166,14 @@ pub fn receive(db: &Connection, v: &Verdict) -> Result<bool> {
             |row| row.get(0),
         )
         .optional()?;
-    if local.as_deref().is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
+    if local.as_deref().is_some_and(|h| !crate::reloj::is_after(&v.hlc, h)) {
         return Ok(false);
     }
     db.execute(
         "INSERT OR REPLACE INTO verdict(memory_id, other_id, relation, at, hlc, reason, author, extra) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![v.memory_id, v.other_id, v.relation, v.at, v.hlc, v.reason, v.author, v.extra],
     )?;
-    crate::reloj::recibir(db, &v.hlc)?;
+    crate::reloj::receive(db, &v.hlc)?;
     Ok(true)
 }
 
@@ -190,7 +190,7 @@ pub fn pairs(db: &Connection) -> Result<HashMap<(String, String), Verdict>> {
     for (v, change_a, change_b) in rows {
         let k = pair_key(&v.memory_id, &v.other_id);
         // The newest wins even if it no longer holds: an old verdict doesn't come back because the new one expires.
-        if latest.get(&k).is_some_and(|h| !crate::reloj::mayor(&v.hlc, h)) {
+        if latest.get(&k).is_some_and(|h| !crate::reloj::is_after(&v.hlc, h)) {
             continue;
         }
         latest.insert(k.clone(), v.hlc.clone());

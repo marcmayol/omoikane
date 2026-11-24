@@ -1,4 +1,4 @@
-//! Tolerant project names (1.8.0): `proyecto::buscar` with accents, separators and one letter
+//! Tolerant project names (1.8.0): `proyecto::find` with accents, separators and one letter
 //! too many or too few; the review of duplicate projects; the recall with a misdictated name; and the
 //! worktrees of a repository without `origin`.
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 fn fresh_db(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("nombres-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -22,7 +22,7 @@ fn fresh_db(name: &str) -> (comun::Temporal, Connection) {
 fn project_dir(dir: &Path, name: &str) -> String {
     let c = dir.join("p").join(name);
     std::fs::create_dir_all(&c).unwrap();
-    proyecto::de(&c).unwrap()
+    proyecto::of_dir(&c).unwrap()
 }
 
 fn save(db: &mut Connection, project: &str, title: &str, content: &str) -> String {
@@ -54,12 +54,12 @@ fn search_ignores_accents_separators_and_one_letter() {
     save(&mut db, &social, "Nota", "Una nota de social.");
     save(&mut db, &omoikane, "Nota", "Una nota de omoikane.");
     let (c, s, o) = (id_of(&db, &cronicas), id_of(&db, &social), id_of(&db, &omoikane));
-    assert_eq!(proyecto::buscar(&db, "cronicas").unwrap(), c, "sin acento");
-    assert_eq!(proyecto::buscar(&db, "Social Publish").unwrap(), s, "con espacio");
-    assert_eq!(proyecto::buscar(&db, "social_publish").unwrap(), s, "con guion bajo");
-    assert_eq!(proyecto::buscar(&db, "Omoikae").unwrap(), o, "a una letra, si nada más encaja");
-    assert_eq!(proyecto::buscar(&db, "omoik").unwrap(), o, "un trozo sigue valiendo");
-    assert!(proyecto::buscar(&db, "Omoi-kamo").is_err(), "a dos letras, no");
+    assert_eq!(proyecto::find(&db, "cronicas").unwrap(), c, "sin acento");
+    assert_eq!(proyecto::find(&db, "Social Publish").unwrap(), s, "con espacio");
+    assert_eq!(proyecto::find(&db, "social_publish").unwrap(), s, "con guion bajo");
+    assert_eq!(proyecto::find(&db, "Omoikae").unwrap(), o, "a una letra, si nada más encaja");
+    assert_eq!(proyecto::find(&db, "omoik").unwrap(), o, "un trozo sigue valiendo");
+    assert!(proyecto::find(&db, "Omoi-kamo").is_err(), "a dos letras, no");
 }
 
 #[test]
@@ -70,10 +70,10 @@ fn search_still_asks_if_there_are_several() {
     save(&mut db, &a, "Nota", "Una.");
     save(&mut db, &b, "Nota", "Otra.");
     // Written exactly, it picks that one (the 1.7.2 rule).
-    assert_eq!(proyecto::buscar(&db, "social_publish").unwrap(), id_of(&db, &b));
-    assert_eq!(proyecto::buscar(&db, "social-publish").unwrap(), id_of(&db, &a));
+    assert_eq!(proyecto::find(&db, "social_publish").unwrap(), id_of(&db, &b));
+    assert_eq!(proyecto::find(&db, "social-publish").unwrap(), id_of(&db, &a));
     // Written another way that fits both, it asks.
-    let e = proyecto::buscar(&db, "Social Publish").unwrap_err().to_string();
+    let e = proyecto::find(&db, "Social Publish").unwrap_err().to_string();
     assert!(e.contains("several") || e.contains("varios"), "{e}");
     // Two at one letter, too.
     let (dir2, mut db2) = fresh_db("varios-letra");
@@ -81,7 +81,7 @@ fn search_still_asks_if_there_are_several() {
     let y = project_dir(&dir2, "tokimicha");
     save(&mut db2, &x, "Nota", "Una.");
     save(&mut db2, &y, "Nota", "Otra.");
-    assert!(proyecto::buscar(&db2, "tokimichu").is_err());
+    assert!(proyecto::find(&db2, "tokimichu").is_err());
 }
 
 #[test]
@@ -90,14 +90,14 @@ fn review_proposes_the_same_name_and_never_merges() {
     let big = project_dir(&dir, "Omoikane");
     let small = dir.join("q").join("omoikane");
     std::fs::create_dir_all(&small).unwrap();
-    let small = proyecto::de(&small).unwrap();
+    let small = proyecto::of_dir(&small).unwrap();
     for i in 0..4 {
         save(&mut db, &big, &format!("Nota {i}"), "Del repositorio.");
     }
     save(&mut db, &small, "Campaña", "De la campaña.");
     let v = proposals(&db);
     assert_eq!(pairs(&v), vec![(nombres::SAME_NAME, "omoikane".to_string(), "Omoikane".to_string())], "{v:?}");
-    // The command already written, with each project named so that `buscar` finds it.
+    // The command already written, with each project named so that `proyecto::find` finds it.
     assert_eq!(v[0].command, "omoi projects merge omoikane Omoikane");
     assert_eq!(v[0].dismiss, "omoi projects distinct omoikane Omoikane");
     // Nothing has been merged.
@@ -172,7 +172,7 @@ fn uploads_folder_is_not_a_project() {
     let (dir, mut db) = fresh_db("subidas");
     let up = dir.join("subidas").join("d35c0488-7e14-4d1e-ac3b-b60a8d6d8f39");
     std::fs::create_dir_all(&up).unwrap();
-    let up = proyecto::de(&up).unwrap();
+    let up = proyecto::of_dir(&up).unwrap();
     save(&mut db, &up, "Algo subido", "Una nota que no es de esa carpeta.");
     let v = proposals(&db);
     assert_eq!(pairs(&v), vec![(nombres::TEMP_FOLDER, "d35c0488-7e14-4d1e-ac3b-b60a8d6d8f39".to_string(), String::new())], "{v:?}");
@@ -196,7 +196,7 @@ fn the_notice_shows_at_start_once_a_day() {
     let up2 = project_dir(&dir2, "subida");
     save(&mut db2, &up2, "Algo subido", "Una nota.");
     let home = std::env::home_dir().unwrap();
-    let t = recall::on_session_start(&mut db2, &proyecto::de(&home).unwrap(), &HookInput { session_id: "s".into(), ..Default::default() }).unwrap().unwrap_or_default();
+    let t = recall::on_session_start(&mut db2, &proyecto::of_dir(&home).unwrap(), &HookInput { session_id: "s".into(), ..Default::default() }).unwrap().unwrap_or_default();
     assert!(t.contains("Projects review") && t.contains("omoi projects distinct"), "{t}");
 }
 
@@ -210,7 +210,7 @@ fn the_recall_understands_a_misdictated_name() {
     for i in 0..8 {
         save(&mut db, "", &format!("Relleno {i}"), &format!("Una nota global cualquiera sobre el tema {i} y otras cosas."));
     }
-    let home = proyecto::de(&std::env::home_dir().unwrap()).unwrap();
+    let home = proyecto::of_dir(&std::env::home_dir().unwrap()).unwrap();
     let ask = |db: &mut Connection, session: &str, prompt: &str| {
         recall::on_prompt(db, &home, &HookInput { session_id: session.into(), prompt: prompt.into(), ..Default::default() }, None).unwrap().unwrap_or_default()
     };
@@ -254,10 +254,10 @@ fn the_recall_doesnt_change_normal_words_nor_look_at_other_clients() {
     assert_eq!(nombres::misspelled(&db, &Scope::All, &t2, &[true]).unwrap(), vec![(0, vec!["faltis".to_string()])]);
     // A client's project: from what has no space its name isn't looked up; from its space or
     // from the general folder, it is.
-    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
+    let acme = proyecto::create_space(&db, "acme").unwrap();
     let kawa = project_dir(&dir, "Kawaneko");
     save(&mut db, &kawa, "Kawaneko guarda fotos", "En la caché.");
-    proyecto::asignar_espacio(&db, id_of(&db, &kawa), Some(acme)).unwrap();
+    proyecto::assign_space(&db, id_of(&db, &kawa), Some(acme)).unwrap();
     let t3: Vec<String> = ["kawaneco".to_string()].to_vec();
     let personal = Scope::Space(None);
     assert!(nombres::misspelled(&db, &personal, &t3, &[true]).unwrap().is_empty(), "de otro cliente, no");
@@ -265,28 +265,28 @@ fn the_recall_doesnt_change_normal_words_nor_look_at_other_clients() {
     assert_eq!(nombres::misspelled(&db, &Scope::All, &t3, &[true]).unwrap().len(), 1);
 }
 
-/// `proyecto::buscar_en` only searches among the projects of the scope's space, and its error doesn't name
+/// `proyecto::find_in` only searches among the projects of the scope's space, and its error doesn't name
 /// another client's.
 #[test]
 fn searching_a_project_doesnt_leave_the_space() {
     let (dir, mut db) = fresh_db("buscar-espacio");
-    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
-    let beta = proyecto::crear_espacio(&db, "beta").unwrap();
+    let acme = proyecto::create_space(&db, "acme").unwrap();
+    let beta = proyecto::create_space(&db, "beta").unwrap();
     let a = project_dir(&dir, "acme-app");
     let b = project_dir(&dir, "beta-app");
     save(&mut db, &a, "Nota", "De acme.");
     save(&mut db, &b, "Nota", "De beta.");
-    proyecto::asignar_espacio(&db, id_of(&db, &a), Some(acme)).unwrap();
-    proyecto::asignar_espacio(&db, id_of(&db, &b), Some(beta)).unwrap();
+    proyecto::assign_space(&db, id_of(&db, &a), Some(acme)).unwrap();
+    proyecto::assign_space(&db, id_of(&db, &b), Some(beta)).unwrap();
     let from_beta = Scope::Project { id: id_of(&db, &b), space: Some(beta) };
-    assert_eq!(proyecto::buscar_en(&db, "beta", &from_beta).unwrap(), id_of(&db, &b), "«beta» encaja solo con el suyo, aunque «app» también con acme");
-    let e = proyecto::buscar_en(&db, "acme-app", &from_beta).unwrap_err().to_string();
+    assert_eq!(proyecto::find_in(&db, "beta", &from_beta).unwrap(), id_of(&db, &b), "«beta» encaja solo con el suyo, aunque «app» también con acme");
+    let e = proyecto::find_in(&db, "acme-app", &from_beta).unwrap_err().to_string();
     let known = e.split_once("known:").map(|(_, l)| l.to_string()).unwrap_or_default();
     assert!(known.contains("beta-app") && !known.contains("acme"), "el error no nombra lo de otro cliente: {e}");
-    assert_eq!(proyecto::buscar_en(&db, "app", &from_beta).unwrap(), id_of(&db, &b), "«app» solo encaja con el suyo");
+    assert_eq!(proyecto::find_in(&db, "app", &from_beta).unwrap(), id_of(&db, &b), "«app» solo encaja con el suyo");
     // Not by its folder either.
-    assert!(proyecto::buscar_en(&db, &a, &from_beta).is_err());
-    assert_eq!(proyecto::buscar_en(&db, "acme-app", &Scope::All).unwrap(), id_of(&db, &a));
+    assert!(proyecto::find_in(&db, &a, &from_beta).is_err());
+    assert_eq!(proyecto::find_in(&db, "acme-app", &Scope::All).unwrap(), id_of(&db, &a));
 }
 
 /// Two worktrees of a repository without `origin`, in folders with different names, are the same
@@ -303,7 +303,7 @@ fn worktrees_without_remote_are_one_project() {
         let gitdir: PathBuf = main_dir.join(".git").join("worktrees").join(branch);
         std::fs::write(w.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
         std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
-        proyecto::de(&w).unwrap()
+        proyecto::of_dir(&w).unwrap()
     };
     let a = worktree("kumi-feature", "rama-a");
     let b = worktree("otra-cosa", "rama-b");
@@ -311,16 +311,16 @@ fn worktrees_without_remote_are_one_project() {
     save(&mut db, &a, "Desde A", "Una.");
     save(&mut db, &b, "Desde B", "Otra.");
     assert_eq!(id_of(&db, &a), id_of(&db, &b));
-    let person = db::persona_de(&db);
-    assert_eq!(proyecto::clave_de(&db, id_of(&db, &a)).unwrap(), format!("dir:{person}/kumi"));
+    let person = db::person_of(&db);
+    assert_eq!(proyecto::key_of(&db, id_of(&db, &a)).unwrap(), format!("dir:{person}/kumi"));
     // Then the main folder: also.
-    let p = proyecto::de(&main_dir).unwrap();
+    let p = proyecto::of_dir(&main_dir).unwrap();
     save(&mut db, &p, "Desde la principal", "Tres.");
     assert_eq!(id_of(&db, &p), id_of(&db, &a));
     // Another folder with the same name but a different repository is still another project.
     let other = dir.join("x").join("Kumi");
     std::fs::create_dir_all(other.join(".git")).unwrap();
-    let other = proyecto::de(&other).unwrap();
+    let other = proyecto::of_dir(&other).unwrap();
     save(&mut db, &other, "Otro Kumi", "Cuatro.");
     assert_ne!(id_of(&db, &other), id_of(&db, &p));
 }
@@ -333,15 +333,15 @@ fn new_worktree_of_an_already_recorded_main() {
     let main_dir = dir.join("repo");
     let gitdir = main_dir.join(".git").join("worktrees").join("w");
     std::fs::create_dir_all(&gitdir).unwrap();
-    let p = proyecto::de(&main_dir).unwrap();
+    let p = proyecto::of_dir(&main_dir).unwrap();
     save(&mut db, &p, "Principal", "Una.");
-    let key = proyecto::clave_de(&db, id_of(&db, &p)).unwrap();
+    let key = proyecto::key_of(&db, id_of(&db, &p)).unwrap();
     let w = dir.join("nombre-distinto");
     std::fs::create_dir_all(&w).unwrap();
     std::fs::write(w.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
     std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
-    let w = proyecto::de(&w).unwrap();
+    let w = proyecto::of_dir(&w).unwrap();
     save(&mut db, &w, "Worktree", "Dos.");
     assert_eq!(id_of(&db, &w), id_of(&db, &p));
-    assert_eq!(proyecto::clave_de(&db, id_of(&db, &p)).unwrap(), key);
+    assert_eq!(proyecto::key_of(&db, id_of(&db, &p)).unwrap(), key);
 }

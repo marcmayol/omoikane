@@ -3,7 +3,7 @@
 //!
 //! Almost everything in memory is written by an agent. A person saying "this is how it is" is worth
 //! more, and the agent that receives it must be able to tell. Verification is a seal in
-//! `memory.extra` under the key [`CLAVE`]: who, when and the fingerprint of the text they saw (kind,
+//! `memory.extra` under the key [`VERIFIED_KEY`]: who, when and the fingerprint of the text they saw (kind,
 //! title and content). No schema change and the same path as the data (`data`): it travels as a
 //! `verified` field of the line, and a 1.0–1.8 keeps it and forwards it without understanding it.
 //!
@@ -36,26 +36,26 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The seal's key in `memory.extra` (and the `verified` field of the line that travels).
-pub const CLAVE: &str = "verified";
+pub const VERIFIED_KEY: &str = "verified";
 
 /// The local mark (in `meta`, which doesn't travel) of another person's verified seal that arrived
 /// through a space's repository (`sync::sello_de_otro`): `sello_ajeno:<id>` with its `by` and `at` on
 /// two lines. While the memory carries that same seal, here it doesn't count as verified
 /// (`memoria::COLUMNS`); the seal stays in the memory, as is, for the others.
-pub const SELLO_AJENO: &str = "sello_ajeno:";
+pub const FOREIGN_SEAL_PREFIX: &str = "sello_ajeno:";
 
 /// When the person last removed the verification (`memory.extra`), so that reimporting an old
 /// bundle doesn't verify it again.
-pub const DESVERIFICADA: &str = "unverified_at";
+pub const UNVERIFIED_AT_KEY: &str = "unverified_at";
 
 /// What is shown: who verified it and when. Only if the verification still holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Verificada {
+pub struct Verified {
     pub by: String,
     pub at: String,
 }
 
-/// What is stored: the above, the fingerprint of the verified text and the signature of whoever put it ([`Llaves`]).
+/// What is stored: the above, the fingerprint of the verified text and the signature of whoever put it ([`SealKeys`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Seal {
     by: String,
@@ -86,10 +86,10 @@ struct Seal {
 // - Seal keys derived from a general repository of this person are recorded in
 //   `meta('sello_firma_antes')` (local, like its own): they still count for checking seals even when
 //   their key is gone (`sync off`, another general). They are never used to sign: only the current one.
-// - After the change ([`tras_cambio_de_claves`]), the seals this database considers its own (their
+// - After the change ([`after_key_change`]), the seals this database considers its own (their
 //   signature holds with one of its keys and they are not marked as another person's) are re-signed
 //   with the general's current key, so that machines that only have that one accept them (one that
-//   joins after rotating it). And those marked as another person's (`SELLO_AJENO`) are checked again
+//   joins after rotating it). And those marked as another person's (`FOREIGN_SEAL_PREFIX`) are checked again
 //   with the current keys: one signed with a key this machine just received (the new one from a
 //   rotation done on another machine) was theirs. None becomes theirs without a valid signature.
 // - Another person's general (`join --another-person`) gives no seal key: the other person also has
@@ -98,8 +98,8 @@ struct Seal {
 // - A machine that joined another person's general with 1.8.5 doesn't have the mark, and nothing in
 //   the database distinguishes it from a machine of the same person (with `--another-person` the
 //   configured person was already the local one): that general's keys are recorded like anyone's.
-//   Joining again with `--another-person` forgets the ones it recognizes ([`olvidar_las_del_general`])
-//   and `omoi sync forget-seal-keys` forgets them all ([`olvidar_claves_apuntadas`]).
+//   Joining again with `--another-person` forgets the ones it recognizes ([`forget_general_keys`])
+//   and `omoi sync forget-seal-keys` forgets them all ([`forget_recorded_keys`]).
 
 /// This database's key to sign seals without a general repository (hex, 32 bytes).
 const META_OWN_KEY: &str = "sello_firma";
@@ -111,7 +111,7 @@ const META_PREVIOUS: &str = "sello_firma_antes";
 const DERIVE: &[u8] = b"omoikane-verified-seal-key-1";
 
 /// This person's seal keys on this machine: which one signs and which ones are valid.
-pub(crate) struct Llaves {
+pub(crate) struct SealKeys {
     sign: Option<Vec<u8>>,
     valid: Vec<Vec<u8>>,
     /// Whether `sign` comes from the general repository (all the person's machines have it).
@@ -126,7 +126,7 @@ fn hmac(key: &[u8], text: &[u8]) -> Vec<u8> {
 /// (none without a general, or if it is another person's).
 fn general_keys(db: &Connection) -> Vec<Vec<u8>> {
     let Some(path) = db.path().filter(|p| !p.is_empty()) else { return Vec::new() };
-    if crate::sync::leer_config_de(&crate::sync::rutas(std::path::Path::new(path))).ok().flatten().is_some_and(|c| c.another_person) {
+    if crate::sync::read_config_from(&crate::sync::paths(std::path::Path::new(path))).ok().flatten().is_some_and(|c| c.another_person) {
         return Vec::new();
     }
     general_repo_keys(db)
@@ -135,19 +135,19 @@ fn general_keys(db: &Connection) -> Vec<Vec<u8>> {
 /// The seal keys that would come from this database's general repository, whoever it belongs to.
 fn general_repo_keys(db: &Connection) -> Vec<Vec<u8>> {
     let Some(path) = db.path().filter(|p| !p.is_empty()) else { return Vec::new() };
-    let r = crate::sync::rutas(std::path::Path::new(path));
-    if !crate::proyecto::existe(&r.clave) {
+    let r = crate::sync::paths(std::path::Path::new(path));
+    if !crate::proyecto::exists(&r.key_file) {
         return Vec::new();
     }
-    match crate::sync::leer_claves(&r) {
-        Ok(c) => c.por_orden().map(|k| hmac(k, DERIVE)).collect(),
+    match crate::sync::read_keys(&r) {
+        Ok(c) => c.in_order().map(|k| hmac(k, DERIVE)).collect(),
         Err(_) => Vec::new(),
     }
 }
 
 /// Forgets recorded seal keys ([`META_PREVIOUS`]): those matching `remove`. Returns how many. If it
 /// forgets any, the seals of a space's memories that no longer hold with the remaining keys become
-/// another person's ([`SELLO_AJENO`]), as if they had just arrived through the space's repository:
+/// another person's ([`FOREIGN_SEAL_PREFIX`]), as if they had just arrived through the space's repository:
 /// what was accepted with a forgotten key stops counting here.
 fn forget_recorded(db: &Connection, remove: impl Fn(&[u8]) -> bool) -> Result<usize> {
     let v = recorded(db)?;
@@ -162,7 +162,7 @@ fn forget_recorded(db: &Connection, remove: impl Fn(&[u8]) -> bool) -> Result<us
     } else {
         tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![META_PREVIOUS, remaining.join("\n")])?;
     }
-    let l = llaves(&tx, false)?;
+    let l = seal_keys(&tx, false)?;
     let rows: Vec<(String, String)> = {
         let mut q = tx.prepare(
             "SELECT m.id, m.extra FROM memory m WHERE instr(m.extra, '\"verified\"') > 0
@@ -171,12 +171,12 @@ fn forget_recorded(db: &Connection, remove: impl Fn(&[u8]) -> bool) -> Result<us
         q.query_map([], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (id, extra) in rows {
-        let Some(v) = serde_json::from_str::<serde_json::Value>(&extra).ok().and_then(|mut e| e.get_mut(CLAVE).map(serde_json::Value::take)) else { continue };
-        if sello_propio(&l, &id, &v) {
+        let Some(v) = serde_json::from_str::<serde_json::Value>(&extra).ok().and_then(|mut e| e.get_mut(VERIFIED_KEY).map(serde_json::Value::take)) else { continue };
+        if is_own_seal(&l, &id, &v) {
             continue;
         }
         let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-        tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![format!("{SELLO_AJENO}{id}"), format!("{}\n{}", text("by"), text("at"))])?;
+        tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", params![format!("{FOREIGN_SEAL_PREFIX}{id}"), format!("{}\n{}", text("by"), text("at"))])?;
     }
     tx.commit()?;
     Ok(n)
@@ -187,7 +187,7 @@ fn forget_recorded(db: &Connection, remove: impl Fn(&[u8]) -> bool) -> Result<us
 /// general's keys were recorded as this person's (when turning it off or rotating it) and the other
 /// person's seals kept counting here as one's own. This person's verifications signed only with one
 /// of them stop counting on this machine until verified again. Returns how many it forgot.
-pub fn olvidar_claves_apuntadas(db: &Connection) -> Result<usize> {
+pub fn forget_recorded_keys(db: &Connection) -> Result<usize> {
     forget_recorded(db, |_| true)
 }
 
@@ -195,7 +195,7 @@ pub fn olvidar_claves_apuntadas(db: &Connection) -> Result<usize> {
 /// (a machine that was joined to it with 1.8.5, without the mark, and turned it off to join again)
 /// are forgotten, and are not recorded again ([`general_keys`] gives none with the mark). Those from
 /// before a rotation this machine doesn't have are not recognized: that's `forget-seal-keys`.
-pub(crate) fn olvidar_las_del_general(db: &Connection) -> Result<usize> {
+pub(crate) fn forget_general_keys(db: &Connection) -> Result<usize> {
     let theirs = general_repo_keys(db);
     forget_recorded(db, |k| theirs.iter().any(|s| s == k))
 }
@@ -208,8 +208,8 @@ fn recorded(db: &Connection) -> Result<Vec<Vec<u8>>> {
 
 /// Records in [`META_PREVIOUS`] the seal keys of the current general repository not yet there: so
 /// they still count if its key goes away (`sync off`, another general). Called by `sync off` (before
-/// deleting the key) and [`tras_cambio_de_claves`].
-pub(crate) fn recordar(db: &Connection) -> Result<()> {
+/// deleting the key) and [`after_key_change`].
+pub(crate) fn record_keys(db: &Connection) -> Result<()> {
     let mut v = recorded(db)?;
     let n = v.len();
     for k in general_keys(db) {
@@ -228,8 +228,8 @@ pub(crate) fn recordar(db: &Connection) -> Result<()> {
 /// from before rotating it still count with the old ones), those of previous generals
 /// ([`META_PREVIOUS`], only for checking) and the database's own (which signs if there is no
 /// general repository). With `create`, the database's own is created if needed to sign.
-pub(crate) fn llaves(db: &Connection, create: bool) -> Result<Llaves> {
-    let mut l = Llaves { sign: None, valid: Vec::new(), from_general: false };
+pub(crate) fn seal_keys(db: &Connection, create: bool) -> Result<SealKeys> {
+    let mut l = SealKeys { sign: None, valid: Vec::new(), from_general: false };
     for d in general_keys(db) {
         l.valid.push(d.clone());
         l.sign = Some(d);
@@ -258,17 +258,17 @@ pub(crate) fn llaves(db: &Connection, create: bool) -> Result<Llaves> {
 }
 
 /// After changing the general repository's keys (see above): records the seal keys derived from it
-/// ([`recordar`]), removes the other-person mark ([`SELLO_AJENO`]) from seals whose signature now
+/// ([`record_keys`]), removes the other-person mark ([`FOREIGN_SEAL_PREFIX`]) from seals whose signature now
 /// holds with one of this database's keys, and re-signs with the general's current key the seals this
 /// database considers its own that were signed with another. Re-signing changes the memory's
 /// timestamp: the next sync carries it. Returns how many marks it removed and how many seals it signed.
-pub fn tras_cambio_de_claves(db: &Connection) -> Result<(usize, usize)> {
-    recordar(db)?;
-    let l = llaves(db, false)?;
+pub fn after_key_change(db: &Connection) -> Result<(usize, usize)> {
+    record_keys(db)?;
+    let l = seal_keys(db, false)?;
     let tx = db.unchecked_transaction()?;
     let seal_of = |id: &str| -> Result<Option<(serde_json::Value, Seal)>> {
         let extra: Option<String> = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
-        let v = extra.and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()).and_then(|mut e| e.get_mut(CLAVE).map(serde_json::Value::take));
+        let v = extra.and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()).and_then(|mut e| e.get_mut(VERIFIED_KEY).map(serde_json::Value::take));
         Ok(v.and_then(|v| serde_json::from_value::<Seal>(v.clone()).ok().map(|s| (v, s))))
     };
     // Other-person marks that no longer apply: their signature holds with the current keys.
@@ -279,14 +279,14 @@ pub fn tras_cambio_de_claves(db: &Connection) -> Result<(usize, usize)> {
     let mut removed = 0;
     let mut foreign = std::collections::HashSet::new();
     for (k, mark) in marks {
-        let id = k[SELLO_AJENO.len()..].to_string();
+        let id = k[FOREIGN_SEAL_PREFIX.len()..].to_string();
         let Some((v, s)) = seal_of(&id)? else { continue };
         if mark != format!("{}\n{}", s.by, s.at) {
             continue;
         }
         // Like `sync::sello_de_otro`: one older than when the person removed it here doesn't come back.
-        let unverified_after = desverificada_en(&tx, &id)?.is_some_and(|d| d > s.at);
-        if !unverified_after && sello_propio(&l, &id, &v) {
+        let unverified_after = unverified_at(&tx, &id)?.is_some_and(|d| d > s.at);
+        if !unverified_after && is_own_seal(&l, &id, &v) {
             tx.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
             removed += 1;
         } else {
@@ -308,7 +308,7 @@ pub fn tras_cambio_de_claves(db: &Connection) -> Result<(usize, usize)> {
             }
             let Some((v, mut s)) = seal_of(&id)? else { continue };
             // Only one still valid for its text, from this person and not yet with the current key.
-            if s.sha != huella(&kind, &title, &content) || !sello_propio(&l, &id, &v) {
+            if s.sha != fingerprint(&kind, &title, &content) || !is_own_seal(&l, &id, &v) {
                 continue;
             }
             if from_hex(&s.mac).is_some_and(|f| ring::hmac::verify(&current, mac_text(&id, &s).as_bytes(), &f).is_ok()) {
@@ -344,9 +344,9 @@ fn mac_text(id: &str, s: &Seal) -> String {
     t
 }
 
-/// Whether the seal (the value of [`CLAVE`] in `extra`) of memory `id` was put by this person: its
+/// Whether the seal (the value of [`VERIFIED_KEY`] in `extra`) of memory `id` was put by this person: its
 /// signature holds with one of their seal keys.
-pub(crate) fn sello_propio(l: &Llaves, id: &str, v: &serde_json::Value) -> bool {
+pub(crate) fn is_own_seal(l: &SealKeys, id: &str, v: &serde_json::Value) -> bool {
     let Ok(s) = serde_json::from_value::<Seal>(v.clone()) else { return false };
     let Some(f) = from_hex(&s.mac) else { return false };
     let text = mac_text(id, &s);
@@ -355,7 +355,7 @@ pub(crate) fn sello_propio(l: &Llaves, id: &str, v: &serde_json::Value) -> bool 
 
 /// Re-signs a seal with this person's key (when making it theirs: `omoi import <file>
 /// --trust-verified`). `false` if it isn't a seal or there is nothing to sign with.
-pub(crate) fn resellar(l: &Llaves, id: &str, v: &mut serde_json::Value) -> bool {
+pub(crate) fn reseal(l: &SealKeys, id: &str, v: &mut serde_json::Value) -> bool {
     let (Ok(mut s), Some(k)) = (serde_json::from_value::<Seal>(v.clone()), l.sign.as_ref()) else { return false };
     s.mac = to_hex(&hmac(k, mac_text(id, &s).as_bytes()));
     match serde_json::to_value(&s) {
@@ -368,7 +368,7 @@ pub(crate) fn resellar(l: &Llaves, id: &str, v: &mut serde_json::Value) -> bool 
 }
 
 /// The fingerprint of the verified text: kind, title and content (32 hex digits).
-pub(crate) fn huella(kind: &str, title: &str, content: &str) -> String {
+pub(crate) fn fingerprint(kind: &str, title: &str, content: &str) -> String {
     let mut h = Sha256::new();
     for part in [kind, title, content] {
         h.update(part.as_bytes());
@@ -378,19 +378,19 @@ pub(crate) fn huella(kind: &str, title: &str, content: &str) -> String {
 }
 
 /// The verification from its column in `memoria::COLUMNS` (the seal's JSON), if its fingerprint is that of the current text.
-pub(crate) fn de_columna(json: Option<&str>, kind: &str, title: &str, content: &str) -> Option<Verificada> {
+pub(crate) fn from_column(json: Option<&str>, kind: &str, title: &str, content: &str) -> Option<Verified> {
     let s: Seal = serde_json::from_str(json?).ok()?;
-    (!s.by.trim().is_empty() && s.sha == huella(kind, title, content)).then_some(Verificada { by: s.by, at: s.at })
+    (!s.by.trim().is_empty() && s.sha == fingerprint(kind, title, content)).then_some(Verified { by: s.by, at: s.at })
 }
 
 /// Who verifies if not given (`--by`, or the web view): this machine's author for that memory's
 /// scope (`OMOIKANE_AUTHOR` or the name used to join sync), and failing that, the system user.
-pub fn quien_por_defecto(db: &Connection, m: &Memory) -> Result<String> {
-    quien_aqui(db, &m.space)
+pub fn default_verifier(db: &Connection, m: &Memory) -> Result<String> {
+    verifier_here(db, &m.space)
 }
 
-/// [`quien_por_defecto`] for a space's content (its key; empty, no space).
-pub(crate) fn quien_aqui(db: &Connection, space: &str) -> Result<String> {
+/// [`default_verifier`] for a space's content (its key; empty, no space).
+pub(crate) fn verifier_here(db: &Connection, space: &str) -> Result<String> {
     let a = crate::memoria::author_in(db, space)?;
     if !a.trim().is_empty() {
         return Ok(a);
@@ -409,7 +409,7 @@ pub(crate) fn quien_aqui(db: &Connection, space: &str) -> Result<String> {
 /// `AIDER_*` (Aider sets none when running: they're all its configuration), not `CURSOR_TRACE_ID` or
 /// `TERM_PROGRAM` (also present in the person's terminal inside the editor). With one of those,
 /// `omoi verify` would refuse the person too.
-pub const DE_AGENTE: &[&str] = &[
+pub const AGENT_ENV_VARS: &[&str] = &[
     // Generic (agents.md): set by Claude Code, Copilot in VS Code, Devin, OpenCode, Crush, Amp,
     // Goose…
     "AI_AGENT",
@@ -457,20 +457,20 @@ pub const DE_AGENTE: &[&str] = &[
 ];
 
 /// The agent variable present in the environment, if any.
-pub fn shell_de_agente() -> Option<&'static str> {
-    DE_AGENTE.iter().copied().find(|v| std::env::var_os(v).is_some_and(|x| !x.is_empty()))
+pub fn agent_shell() -> Option<&'static str> {
+    AGENT_ENV_VARS.iter().copied().find(|v| std::env::var_os(v).is_some_and(|x| !x.is_empty()))
 }
 
 /// Marks memory `id` (full) as verified by `by`. Creates no version and doesn't change its date (like
 /// pinning it); changes its timestamp so sync carries it. Returns the memory.
-pub fn verificar(db: &mut Connection, id: &str, by: &str) -> Result<Memory> {
-    Ok(verificar_en(db, id, by, None)?.0)
+pub fn verify(db: &mut Connection, id: &str, by: &str) -> Result<Memory> {
+    Ok(verify_at(db, id, by, None)?.0)
 }
 
-/// Like [`verificar`], with the date it was verified if known (an ISO 8601 instant, the `at` of an
+/// Like [`verify`], with the date it was verified if known (an ISO 8601 instant, the `at` of an
 /// OKF `verified` when importing it; if not understood, now). If it already has that same seal and
 /// it holds, it doesn't put it again (doesn't change its timestamp): returns the memory and whether it put it.
-pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -> Result<(Memory, bool)> {
+pub fn verify_at(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -> Result<(Memory, bool)> {
     let by = by.split_whitespace().collect::<Vec<_>>().join(" ");
     ensure!(!by.is_empty(), tr!("who verifies it? Give --by <name>", "¿quién la verifica? Di --by <nombre>"));
     ensure!(by.chars().count() <= 100, tr!("--by: up to 100 characters", "--by: hasta 100 caracteres"));
@@ -496,43 +496,43 @@ pub fn verificar_en(db: &mut Connection, id: &str, by: &str, at: Option<&str>) -
     if before.verified.as_ref().is_some_and(|v| v.by == by && v.at == at) {
         return Ok((before, false));
     }
-    let mut seal = Seal { by, at, sha: huella(&kind, &title, &content), mac: String::new() };
-    // Signed with this person's seal key (see `Llaves`): so it counts as theirs on their other
+    let mut seal = Seal { by, at, sha: fingerprint(&kind, &title, &content), mac: String::new() };
+    // Signed with this person's seal key (see `SealKeys`): so it counts as theirs on their other
     // machines even if it arrives through a space's repository.
-    if let Some(k) = llaves(&tx, true)?.sign {
+    if let Some(k) = seal_keys(&tx, true)?.sign {
         seal.mac = to_hex(&hmac(&k, mac_text(id, &seal).as_bytes()));
     }
     set_seal(&tx, id, Some(serde_json::to_value(seal)?))?;
-    // If it was marked as another person's (`SELLO_AJENO`), no longer: now it's theirs.
-    tx.execute("DELETE FROM meta WHERE k = ?1", [format!("{SELLO_AJENO}{id}")])?;
+    // If it was marked as another person's (`FOREIGN_SEAL_PREFIX`), no longer: now it's theirs.
+    tx.execute("DELETE FROM meta WHERE k = ?1", [format!("{FOREIGN_SEAL_PREFIX}{id}")])?;
     let m = crate::memoria::read(&tx, id)?;
     tx.commit()?;
     Ok((m, true))
 }
 
-/// Removes its verification and records when ([`DESVERIFICADA`]): reimporting a bundle exported
+/// Removes its verification and records when ([`UNVERIFIED_AT_KEY`]): reimporting a bundle exported
 /// earlier doesn't verify it again. `false` if it had none.
-pub fn desverificar(db: &mut Connection, id: &str) -> Result<bool> {
+pub fn unverify(db: &mut Connection, id: &str) -> Result<bool> {
     let tx = crate::memoria::write_tx(db)?;
     let had = set_seal(&tx, id, None)?;
     if had {
         let extra: String = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
         let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
         let now: String = tx.query_row(&format!("SELECT {NOW}"), [], |f| f.get(0))?;
-        o.insert(DESVERIFICADA.into(), now.into());
+        o.insert(UNVERIFIED_AT_KEY.into(), now.into());
         tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
     }
     tx.commit()?;
     Ok(had)
 }
 
-/// When the person last removed its verification ([`desverificar`]), if known.
-pub(crate) fn desverificada_en(db: &Connection, id: &str) -> Result<Option<String>> {
+/// When the person last removed its verification ([`unverify`]), if known.
+pub(crate) fn unverified_at(db: &Connection, id: &str) -> Result<Option<String>> {
     let extra: Option<String> = db.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
     Ok(extra
-        .filter(|e| e.contains(DESVERIFICADA))
+        .filter(|e| e.contains(UNVERIFIED_AT_KEY))
         .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok())
-        .and_then(|v| v.get(DESVERIFICADA).and_then(|x| x.as_str()).map(str::to_string)))
+        .and_then(|v| v.get(UNVERIFIED_AT_KEY).and_then(|x| x.as_str()).map(str::to_string)))
 }
 
 /// Puts or removes the seal with a new timestamp. `false` if there was nothing to remove.
@@ -541,54 +541,54 @@ fn set_seal(tx: &Connection, id: &str, seal: Option<serde_json::Value>) -> Resul
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
     let changed = match seal {
         Some(s) => {
-            o.insert(CLAVE.into(), s);
+            o.insert(VERIFIED_KEY.into(), s);
             true
         }
-        None => o.remove(CLAVE).is_some(),
+        None => o.remove(VERIFIED_KEY).is_some(),
     };
     if !changed {
         return Ok(false);
     }
-    let hlc = crate::reloj::sello_tras(tx, &crate::memoria::hlc_of(tx, id)?)?;
+    let hlc = crate::reloj::stamp_after(tx, &crate::memoria::hlc_of(tx, id)?)?;
     tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
     Ok(true)
 }
 
-/// When the text is changed from here (`memoria::actualizar_en`, which already sets the timestamp):
-/// removes the verification, records when ([`DESVERIFICADA`], like [`desverificar`]) and returns the
+/// When the text is changed from here (`memoria::update_in`, which already sets the timestamp):
+/// removes the verification, records when ([`UNVERIFIED_AT_KEY`], like [`unverify`]) and returns the
 /// one it had, if it held. Without the date, the old seal would come back with a newer line carrying
 /// the old text (another machine of the person that hasn't seen the change yet, `import <file>`, an
 /// OKF bundle): with the old text, its fingerprint matches again.
-pub(crate) fn quitar_al_cambiar(tx: &Transaction, id: &str, before: &Memory) -> Result<Option<Verificada>> {
+pub(crate) fn remove_on_change(tx: &Transaction, id: &str, before: &Memory) -> Result<Option<Verified>> {
     let extra: Option<String> = tx.query_row("SELECT extra FROM memory WHERE id = ?1", [id], |f| f.get(0)).optional()?;
     let Some(extra) = extra.filter(|e| e.contains("\"verified\"")) else { return Ok(None) };
     let mut o: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&extra).unwrap_or_default();
-    if o.remove(CLAVE).is_none() {
+    if o.remove(VERIFIED_KEY).is_none() {
         return Ok(None);
     }
     let now: String = tx.query_row(&format!("SELECT {NOW}"), [], |f| f.get(0))?;
-    o.insert(DESVERIFICADA.into(), now.into());
+    o.insert(UNVERIFIED_AT_KEY.into(), now.into());
     tx.execute("UPDATE memory SET extra = ?2 WHERE id = ?1", params![id, serde_json::to_string(&o)?])?;
     Ok(before.verified.clone())
 }
 
 /// What arrives in a newer line (sync, `import <file>`) for a memory whose verification was removed
-/// here at `unverified_at` ([`DESVERIFICADA`]): the date is kept (the more recent of the two, for
+/// here at `unverified_at` ([`UNVERIFIED_AT_KEY`]): the date is kept (the more recent of the two, for
 /// next time) and, if `remove_seal`, a seal older than that date is removed. (Through a space's
 /// repository the seal stays in the line for the others and doesn't count here: see
 /// `sync::sello_de_otro`.)
-pub(crate) fn sin_sello_viejo(extra: &mut serde_json::Map<String, serde_json::Value>, unverified_at: &str, remove_seal: bool) {
-    if extra.get(DESVERIFICADA).and_then(|x| x.as_str()).is_none_or(|d| d < unverified_at) {
-        extra.insert(DESVERIFICADA.into(), unverified_at.into());
+pub(crate) fn drop_old_seal(extra: &mut serde_json::Map<String, serde_json::Value>, unverified_at: &str, remove_seal: bool) {
+    if extra.get(UNVERIFIED_AT_KEY).and_then(|x| x.as_str()).is_none_or(|d| d < unverified_at) {
+        extra.insert(UNVERIFIED_AT_KEY.into(), unverified_at.into());
     }
-    let old = extra.get(CLAVE).and_then(|v| v.get("at")).and_then(|x| x.as_str()).is_some_and(|at| at < unverified_at);
+    let old = extra.get(VERIFIED_KEY).and_then(|v| v.get("at")).and_then(|x| x.as_str()).is_some_and(|at| at < unverified_at);
     if old && remove_seal {
-        extra.remove(CLAVE);
+        extra.remove(VERIFIED_KEY);
     }
 }
 
 /// What is shown on a line: "verified by Marc, 2026-11-08".
-pub fn texto(v: &Verificada) -> String {
+pub fn text(v: &Verified) -> String {
     format!("verified by {}, {}", v.by, v.at.get(..10).unwrap_or(&v.at))
 }
 
@@ -598,16 +598,16 @@ mod tests {
 
     #[test]
     fn fingerprint_changes_with_text() {
-        let a = huella("decision", "T", "C");
+        let a = fingerprint("decision", "T", "C");
         assert_eq!(a.len(), 32);
-        assert_ne!(a, huella("fact", "T", "C"));
-        assert_ne!(a, huella("decision", "T", "C."));
+        assert_ne!(a, fingerprint("fact", "T", "C"));
+        assert_ne!(a, fingerprint("decision", "T", "C."));
         // The separator: "ab"+"c" is not "a"+"bc".
-        assert_ne!(huella("x", "ab", "c"), huella("x", "a", "bc"));
+        assert_ne!(fingerprint("x", "ab", "c"), fingerprint("x", "a", "bc"));
         let s = serde_json::json!({ "by": "Marc", "at": "2026-11-08T10:00:00.000Z", "sha": a }).to_string();
-        assert_eq!(de_columna(Some(&s), "decision", "T", "C").unwrap().by, "Marc");
-        assert!(de_columna(Some(&s), "decision", "T", "otro").is_none());
-        assert!(de_columna(Some(r#"{"by":"Marc","at":"x"}"#), "decision", "T", "C").is_none());
-        assert!(de_columna(None, "decision", "T", "C").is_none());
+        assert_eq!(from_column(Some(&s), "decision", "T", "C").unwrap().by, "Marc");
+        assert!(from_column(Some(&s), "decision", "T", "otro").is_none());
+        assert!(from_column(Some(r#"{"by":"Marc","at":"x"}"#), "decision", "T", "C").is_none());
+        assert!(from_column(None, "decision", "T", "C").is_none());
     }
 }

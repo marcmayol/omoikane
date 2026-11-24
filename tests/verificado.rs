@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 /// The variables of an agent's shell (Claude Code, Codex…) and of its session: removed, unless the
 /// test sets them, so nothing changes depending on where the tests are launched from.
 fn agent_vars() -> impl Iterator<Item = &'static str> {
-    omoikane::verificado::DE_AGENTE.iter().copied().chain(["OMOIKANE_SESSION"])
+    omoikane::verificado::AGENT_ENV_VARS.iter().copied().chain(["OMOIKANE_SESSION"])
 }
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";

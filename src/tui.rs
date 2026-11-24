@@ -16,7 +16,7 @@ use crate::buscar::{self, SearchOptions};
 use crate::embeber::Modelo;
 use crate::http::Mirador;
 use crate::memoria::{self, Scope, Changes, Memory, Forgotten, Version};
-use crate::proyecto::Espacio;
+use crate::proyecto::Space;
 use crate::tr;
 use anyhow::Result;
 use ratatui::Frame;
@@ -60,7 +60,7 @@ pub struct Estado {
     /// that space. Global memories are always shown, as on the web. Only one visible from here is valid.
     pub espacio: Option<Option<i64>>,
     /// The spaces visible from here (for the filter and the names).
-    pub espacios: Vec<Espacio>,
+    pub espacios: Vec<Space>,
     /// Whether it's looking from the user's folder (everything is visible).
     pub ve_todo: bool,
     /// The space key of the project being looked from (empty: none, or everything).
@@ -145,7 +145,7 @@ impl Estado {
         let m = self.viewpoint(db)?;
         self.ve_todo = m.todo;
         self.espacio_propio = m.espacio.clone();
-        self.espacios = crate::proyecto::espacios(db)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect();
+        self.espacios = crate::proyecto::spaces(db)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect();
         if let Some(f) = self.espacio
             && !m.abarca(&Scope::Space(f))
         {
@@ -169,7 +169,7 @@ impl Estado {
     fn load_trash(&mut self, db: &Connection, m: &Mirador) -> Result<()> {
         let before = self.elegida_papelera().map(|o| o.olvidada.id.clone());
         let space_filter = match self.espacio {
-            Some(f) => Some(crate::proyecto::clave_espacio(db, f)?),
+            Some(f) => Some(crate::proyecto::space_key(db, f)?),
             None => None,
         };
         let mut days_since = db.prepare("SELECT julianday('now') - julianday(?1)")?;

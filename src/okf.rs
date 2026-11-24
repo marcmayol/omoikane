@@ -92,7 +92,7 @@ struct Group {
 
 /// Exports to the bundle `dir` and returns what changed.
 pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
-    crate::proyecto::exigir_local(dir)?;
+    crate::proyecto::require_local(dir)?;
     for f in ["index.md", "log.md"] {
         let p = dir.join(f);
         if p.exists() && !is_our_index(&p) {
@@ -121,7 +121,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
     let mut names: HashMap<String, BTreeSet<String>> = HashMap::new();
     for m in &all_memories {
         if m.project_id != 0 {
-            names.entry(crate::proyecto::nombre_de(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
+            names.entry(crate::proyecto::name_of(&m.project, &m.project_key)).or_default().insert(m.project_key.clone());
         }
     }
     let group_of = |m: &Memory| -> Group {
@@ -132,7 +132,7 @@ pub fn exportar(db: &Connection, dir: &Path, what: Que) -> Result<Cuenta> {
                 Group { folder: format!("_{}", slug(&m.space, 40)), title: m.space.clone() }
             };
         }
-        let name = crate::proyecto::nombre_de(&m.project, &m.project_key);
+        let name = crate::proyecto::name_of(&m.project, &m.project_key);
         let mut s = slug(&name, 40);
         if names.get(&name).is_some_and(|k| k.len() > 1) {
             s = format!("{s}-{}", corto(&m.project_key));
@@ -643,7 +643,7 @@ fn render_concept(m: &Memory, concept_id: &str, project: &str, data: Option<&Val
     }
     // The fingerprint of the verified text: on import, the stamp only comes back if the text is still that one
     // (re-editing the Markdown doesn't keep the verification).
-    let sha = m.verified.as_ref().map(|_| crate::verificado::huella(m.kind_str(), &m.title, &m.content)).unwrap_or_default();
+    let sha = m.verified.as_ref().map(|_| crate::verificado::fingerprint(m.kind_str(), &m.title, &m.content)).unwrap_or_default();
     if !sha.is_empty() {
         o.insert("verified_sha".into(), json!(sha));
     }
@@ -1000,7 +1000,7 @@ pub(crate) fn sin_enlace(p: &Path) -> bool {
 
 fn read_with_limits(dir: &Path, limits: &Topes) -> Result<Bundle> {
     let (max_files, max_bytes) = (limits.ficheros, limits.bytes);
-    crate::proyecto::exigir_local(dir)?;
+    crate::proyecto::require_local(dir)?;
     if !dir.is_dir() {
         bail!(tr!("{} is not a folder", "{} no es una carpeta", dir.display()));
     }
@@ -1502,7 +1502,7 @@ fn find_by_key(db: &Connection, project: &str, project_id: Option<i64>, space: O
     let project_id = match (space, project_id) {
         (Some(_), _) => 0,
         (None, Some(p)) => p,
-        (None, None) => match crate::proyecto::resolver(db, project)? {
+        (None, None) => match crate::proyecto::resolve(db, project)? {
             Some((id, _)) => id,
             None => return Ok(None),
         },
@@ -1573,7 +1573,7 @@ pub fn importar_con(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, des
     // else's bundle (the `knowledge/` of their repository) does.
     if let Destino::Proyecto(p) = destination
         && b.conceptos.iter().any(|c| c.cabecera.contains_key("omoikane"))
-        && let Some((_, Some(_))) = crate::proyecto::resolver(db, p)?
+        && let Some((_, Some(_))) = crate::proyecto::resolve(db, p)?
     {
         bail!(tr!(
             "these are personal memories exported from Omoikane and this folder's project is in a space (a client's): import them from a personal project, or into a space with --space <name>",
@@ -1827,7 +1827,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     let own_id = match &e.id {
         Some(id) if is_alive(db, id)? => {
             let (_, space) = memoria::memory_placement(db, id)?.unwrap_or((false, String::new()));
-            let target_space = crate::proyecto::clave_espacio(db, space_id)?;
+            let target_space = crate::proyecto::space_key(db, space_id)?;
             (space == target_space).then(|| id.clone())
         }
         _ => None,
@@ -1895,10 +1895,10 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
         Some(_) if !own && !op.confiar_verificadas => Stamp::Foreign,
         Some((_, at)) => {
             let kind = e.memory.kind_text.clone().unwrap_or_else(|| e.memory.kind.unwrap_or(Kind::Fact).as_str().to_string());
-            let other_text = e.verified_sha.as_deref().is_some_and(|s| s != crate::verificado::huella(&kind, &e.memory.title, &e.memory.content));
+            let other_text = e.verified_sha.as_deref().is_some_and(|s| s != crate::verificado::fingerprint(&kind, &e.memory.title, &e.memory.content));
             // The person unverified it here after that verification (reimporting an old bundle).
             let unverified_later = match (&before, at) {
-                (Some((id, _)), Some(at)) => match crate::verificado::desverificada_en(db, id)? {
+                (Some((id, _)), Some(at)) => match crate::verificado::unverified_at(db, id)? {
                     Some(d) => is_after(db, &d, at)?,
                     None => false,
                 },
@@ -1992,7 +1992,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
         && let Some(sha) = &e.verified_sha
     {
         let m = memoria::get(db, &id)?;
-        if crate::verificado::huella(m.kind_str(), &m.title, &m.content) != *sha {
+        if crate::verificado::fingerprint(m.kind_str(), &m.title, &m.content) != *sha {
             u.stamp = Stamp::Stale;
         }
     }
@@ -2001,7 +2001,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     if u.stamp == Stamp::Set
         && let Some((by, at)) = &e.verified
     {
-        u.stamp = match crate::verificado::verificar_en(db, &id, by, at.as_deref()) {
+        u.stamp = match crate::verificado::verify_at(db, &id, by, at.as_deref()) {
             Ok((_, true)) => Stamp::Set,
             Ok((_, false)) => Stamp::Already,
             Err(err) => {

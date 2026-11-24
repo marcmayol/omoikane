@@ -966,7 +966,7 @@ mod tests {
     /// The database in its temporary folder, deleted at the end (the folder goes first: it is dropped later).
     fn database(name: &str) -> (crate::comun::Temporal, Connection) {
         let dir = crate::comun::Temporal::nueva(&format!("resumen-{name}"));
-        let db = crate::db::abrir(&dir.join("o.db")).unwrap();
+        let db = crate::db::open(&dir.join("o.db")).unwrap();
         (dir, db)
     }
 
@@ -1111,7 +1111,7 @@ mod tests {
         let (_, n) = save_memory(&mut db, "/p1", Kind::Fact, 99);
         set_vector(&db, n, &rng.vector(&centers));
         drop(db);
-        let db = crate::db::abrir(&path).unwrap();
+        let db = crate::db::open(&path).unwrap();
         assert_eq!(memoria::count(&db, &Scope::All).unwrap(), 31);
         assert!(read_summary(&db).unwrap().is_none());
         assert_eq!(up_to_date_summary(&db).unwrap().expect("resumen").cuantos, 31);

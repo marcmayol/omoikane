@@ -320,7 +320,7 @@ fn mark_seen(db: &Connection, project: i64, fixed: Option<bool>) -> Result<()> {
 /// hand (`set`). Only writes if something changes or it is the first time. Returns the trades that count.
 /// A folder that doesn't exist here changes nothing.
 pub fn al_dia(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
-    if project <= 0 || path.is_empty() || !crate::proyecto::es_carpeta(Path::new(path)) {
+    if project <= 0 || path.is_empty() || !crate::proyecto::is_dir(Path::new(path)) {
         return del_proyecto(db, project);
     }
     let e = estado(db, project)?;
@@ -350,17 +350,17 @@ pub fn al_dia_si_falta(db: &Connection, project: i64, path: &str) -> Result<Vec<
 /// nothing yet gets recorded if it has any (the memories of its trade already serve it), and one without
 /// trades isn't recorded. From a general folder, nothing.
 pub fn preparar(db: &Connection, path: &str) -> Result<()> {
-    if path.is_empty() || crate::proyecto::es_general(path) {
+    if path.is_empty() || crate::proyecto::is_general(path) {
         return Ok(());
     }
-    match crate::proyecto::resolver(db, path)? {
+    match crate::proyecto::resolve(db, path)? {
         Some((id, _)) if id > 0 => {
             al_dia_si_falta(db, id, path)?;
         }
         Some(_) => {}
         None => {
             if !detectar(Path::new(path)).is_empty() {
-                let id = crate::proyecto::registrar(db, path)?;
+                let id = crate::proyecto::register(db, path)?;
                 al_dia(db, id, path)?;
             }
         }
@@ -1074,7 +1074,7 @@ pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
         if !l.contains("://") && !l.contains('/') {
             continue;
         }
-        let n = crate::sync::normalizar_remoto(&l);
+        let n = crate::sync::normalize_remote(&l);
         if origins.iter().any(|o| n == *o || n.starts_with(&format!("{o}/"))) {
             put("repository", p.to_string());
         }
@@ -1299,8 +1299,8 @@ mod tests {
     #[test]
     fn a_leaks_field_is_by_words() {
         let t = crate::comun::Temporal::nueva("oficios-campo");
-        let db = crate::db::abrir(&t.join("o.db")).unwrap();
-        crate::proyecto::crear_espacio(&db, "QA").unwrap();
+        let db = crate::db::open(&t.join("o.db")).unwrap();
+        crate::proyecto::create_space(&db, "QA").unwrap();
         let fields = vec![("title", "Vuelos a Qatar".to_string()), ("content", "Lo vimos en QA ayer.".to_string())];
         let f = fugas_en(&db, &fields).unwrap();
         let qa = f.iter().find(|x| x.tipo == "space").unwrap();
@@ -1409,7 +1409,7 @@ mod tests {
         let t = crate::comun::Temporal::nueva("oficios-guardado");
         // The database, outside the folder being looked at (its files change).
         let tb = crate::comun::Temporal::nueva("oficios-guardado-db");
-        let db = crate::db::abrir(&tb.join("o.db")).unwrap();
+        let db = crate::db::open(&tb.join("o.db")).unwrap();
         let gradle = t.join("build.gradle");
         std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
         assert_eq!(detect_cached(&db, 7, &t), ["android"]);
@@ -1444,7 +1444,7 @@ mod tests {
         let t = crate::comun::Temporal::nueva("oficios-nube");
         // The database, outside the folder being looked at (its files change).
         let tb = crate::comun::Temporal::nueva("oficios-nube-db");
-        let db = crate::db::abrir(&tb.join("o.db")).unwrap();
+        let db = crate::db::open(&tb.join("o.db")).unwrap();
         let gradle = t.join("build.gradle");
         std::fs::write(&gradle, "plugins { id 'com.android.application' }").unwrap();
         std::fs::write(t.join("package.json"), r#"{"dependencies":{"astro":"5"}}"#).unwrap();

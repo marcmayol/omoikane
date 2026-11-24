@@ -402,8 +402,8 @@ fn run(name: &str, c: &Conf) -> Report {
     }
     // The remaining starting memories, through the library (much faster) and spread by project.
     if c.memories > 0 {
-        let mut db = omoikane::db::abrir(&e.db()).unwrap();
-        let projects: Vec<String> = (0..3).map(|i| omoikane::proyecto::de(&e.repo(i)).unwrap()).collect();
+        let mut db = omoikane::db::open(&e.db()).unwrap();
+        let projects: Vec<String> = (0..3).map(|i| omoikane::proyecto::of_dir(&e.repo(i)).unwrap()).collect();
         for j in 0..c.memories {
             let mut a = Rng(1 + j as u64);
             let n = omoikane::memoria::NewMemory {
@@ -450,7 +450,7 @@ fn run(name: &str, c: &Conf) -> Report {
 
     // What is there at the end, read through the library (the same open as `omoi`).
     let wal_kb = std::fs::metadata(dir.join("o.db-wal")).map(|m| m.len() / 1024).unwrap_or(0);
-    let db = omoikane::db::abrir(&e.db()).unwrap();
+    let db = omoikane::db::open(&e.db()).unwrap();
     let count = |sql: &str| -> i64 { db.query_row(sql, [], |f| f.get(0)).unwrap() };
     let mut lost = Vec::new();
     for w in &written {

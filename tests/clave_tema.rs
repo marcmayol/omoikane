@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 fn base(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("clave-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -125,7 +125,7 @@ fn several_processes_at_once_leave_just_one() {
             assert!(o.status.success(), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         }
     }
-    let db = db::abrir(&db_path).unwrap();
+    let db = db::open(&db_path).unwrap();
     assert_eq!(with_key(&db, "kumi-perfil"), 1, "una sola memoria con la clave");
     let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0)).unwrap();
     assert_eq!(total, 1);
@@ -193,12 +193,12 @@ fn kumis_route_on_three_levels() {
     use omoikane::proyecto;
     let (_dir, mut db) = base("niveles");
     let (disney, other_x, of_y) = ("/clientes/x/disney-countdown", "/clientes/x/tienda", "/clientes/y/web");
-    let x = proyecto::crear_espacio(&db, "Cliente X").unwrap();
-    let y = proyecto::crear_espacio(&db, "Cliente Y").unwrap();
+    let x = proyecto::create_space(&db, "Cliente X").unwrap();
+    let y = proyecto::create_space(&db, "Cliente Y").unwrap();
     // All three are websites: the trade layer is only seen by projects of that trade.
     for (p, s) in [(disney, x), (other_x, x), (of_y, y)] {
-        let id = proyecto::registrar(&db, p).unwrap();
-        proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
+        let id = proyecto::register(&db, p).unwrap();
+        proyecto::assign_space(&db, id, Some(s)).unwrap();
         omoikane::oficios::anadir(&db, id, &["web".to_string()]).unwrap();
     }
     let save = |db: &mut Connection, mut n: NewMemory, tags: &[&str], data: serde_json::Value| {

@@ -38,7 +38,7 @@ pub fn carpeta() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_MODELS").filter(|r| !r.is_empty()) {
         return PathBuf::from(r);
     }
-    crate::entorno::casa().unwrap_or_else(|| PathBuf::from(".omoikane")).join("models")
+    crate::entorno::home().unwrap_or_else(|| PathBuf::from(".omoikane")).join("models")
 }
 
 /// Folder of the model in use, if one is installed and complete.

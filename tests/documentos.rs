@@ -37,8 +37,8 @@ fn documentation(docs: &Path) {
 fn setup(name: &str) -> (comun::Temporal, String, rusqlite::Connection) {
     let base = dir(name);
     documentation(&base.join("repo").join("docs"));
-    let project = omoikane::proyecto::de(&base.join("repo")).unwrap();
-    let db = db::abrir(&base.join("o.db")).unwrap();
+    let project = omoikane::proyecto::of_dir(&base.join("repo")).unwrap();
+    let db = db::open(&base.join("o.db")).unwrap();
     (base, project, db)
 }
 
@@ -113,7 +113,7 @@ fn brings_the_matching_section_once_per_session() {
 
     // From another project, nothing: the folders belong to each project.
     std::fs::create_dir_all(base.join("otro").join(".git")).unwrap();
-    let other = omoikane::proyecto::de(&base.join("otro")).unwrap();
+    let other = omoikane::proyecto::of_dir(&base.join("otro")).unwrap();
     let e4 = HookInput { session_id: "s9".into(), prompt: "cómo hago el rollback de kubernetes si falla el despliegue".into(), ..Default::default() };
     assert_eq!(recall::on_prompt(&mut db, &other, &e4, None).unwrap(), None);
 }

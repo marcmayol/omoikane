@@ -158,7 +158,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 /// N memories spread over 10 projects plus 10 % global. Finds the 40 nearest of
 /// project 3 and the global ones, two ways, interleaved.
 fn vectors(n: usize) -> Result<()> {
-    omoikane::db::registrar_sqlite_vec();
+    omoikane::db::register_sqlite_vec();
     let path = std::env::temp_dir().join(format!("omoi-fase2-{}.db", std::process::id()));
     let mut db = rusqlite::Connection::open(&path)?;
     db.execute_batch(
@@ -229,7 +229,7 @@ fn search() -> Result<()> {
     let m = model()?;
     let dir = std::env::temp_dir().join(format!("omoi-fase2-busqueda-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut db = omoikane::db::abrir(&dir.join("o.db"))?;
+    let mut db = omoikane::db::open(&dir.join("o.db"))?;
     let mut keys = std::collections::HashMap::new();
     let mut queries: Vec<(String, String)> = Vec::new();
     for l in include_str!("../tests/busquedas.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
@@ -425,7 +425,7 @@ fn real(dir: &std::path::Path) -> Result<()> {
     // Search.
     let tmp = std::env::temp_dir().join(format!("omoi-real-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = std::collections::HashMap::new();
     for (f, t, c) in &notes {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
@@ -615,7 +615,7 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
 
     let tmp = std::env::temp_dir().join(format!("omoi-dupreal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut different = Vec::new(); // (highest similarity with the previous ones, file, with which)
     let mut id_of = std::collections::HashMap::new();
     for (f, t, c) in &notes {
@@ -754,7 +754,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
 
     let tmp = std::env::temp_dir().join(format!("omoi-dupcob-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     let mut tokens_of_id: HashMap<String, BTreeSet<String>> = HashMap::new();
     // different: candidates (cosine, coverage) of each note against the previous ones; all are false.
@@ -878,7 +878,7 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
     }
     let tmp = std::env::temp_dir().join(format!("omoi-dupprod-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     let (mut false_hits, mut times, mut different_with_rel) = (Vec::new(), Vec::new(), 0);
     for (f, t, c) in &notes {

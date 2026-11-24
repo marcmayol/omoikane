@@ -1014,8 +1014,8 @@ fn dismissed(db: &Connection) -> Result<BTreeSet<(String, String, String)>> {
 
 /// Where a memory's path is on this machine, if it can be known (relative to its project).
 fn path_on_disk(m: &Memory, path: &str) -> Option<std::path::PathBuf> {
-    // A network path is never checked (it would open an SMB connection: see `proyecto::ruta_de_red`).
-    if crate::proyecto::ruta_de_red(path) || from_other_os(path) {
+    // A network path is never checked (it would open an SMB connection: see `proyecto::is_network_path`).
+    if crate::proyecto::is_network_path(path) || from_other_os(path) {
         return None;
     }
     let p = std::path::Path::new(path.trim_start_matches("~/"));
@@ -1025,12 +1025,12 @@ fn path_on_disk(m: &Memory, path: &str) -> Option<std::path::PathBuf> {
         p.to_path_buf()
     } else {
         let root = std::path::Path::new(&m.project);
-        if m.project.is_empty() || !crate::proyecto::ruta_local(root) || !root.is_dir() {
+        if m.project.is_empty() || !crate::proyecto::is_local_path(root) || !root.is_dir() {
             return None;
         }
         root.join(p)
     };
-    crate::proyecto::ruta_local(&d).then_some(d)
+    crate::proyecto::is_local_path(&d).then_some(d)
 }
 
 /// A Windows path (`D:/…`, `C:\\…`) seen from macOS or Linux, or a Unix one (`/Users/…`) seen from
@@ -1409,7 +1409,7 @@ fn duplicates_lock(db_path: &std::path::Path) -> std::path::PathBuf {
 fn recompute_in_background(db: &Connection, fingerprint: &str) -> Result<()> {
     let Some(path) = db.path().filter(|p| !p.is_empty()).map(std::path::PathBuf::from) else { return Ok(()) };
     let is_omoi = std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s == "omoi");
-    if !is_omoi || crate::sync::Cerrojo::ocupado(&duplicates_lock(&path)) {
+    if !is_omoi || crate::sync::SyncLock::is_busy(&duplicates_lock(&path)) {
         return Ok(());
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -1421,7 +1421,7 @@ fn recompute_in_background(db: &Connection, fingerprint: &str) -> Result<()> {
         return Ok(());
     }
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, ?2)", [TRADE_DUPLICATES_LAUNCHED_KEY, &format!("{fingerprint}\t{now}")])?;
-    crate::sync::lanzar(&["review", "--refresh-trade-duplicates"], Some(&path));
+    crate::sync::spawn_omoi(&["review", "--refresh-trade-duplicates"], Some(&path));
     Ok(())
 }
 
@@ -1431,7 +1431,7 @@ fn recompute_in_background(db: &Connection, fingerprint: &str) -> Result<()> {
 /// every pair (the daily job). How many pairs.
 pub fn refresh_trade_duplicates(db: &Connection, from_scratch: bool) -> Result<Option<usize>> {
     let _lock = match db.path().filter(|p| !p.is_empty()) {
-        Some(path) => match crate::sync::Cerrojo::tomar_en(duplicates_lock(std::path::Path::new(path))) {
+        Some(path) => match crate::sync::SyncLock::take_at(duplicates_lock(std::path::Path::new(path))) {
             Some(c) => Some(c),
             None => return Ok(None),
         },

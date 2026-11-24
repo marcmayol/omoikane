@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 fn base(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("recall-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -351,7 +351,7 @@ fn recall_file_open_through_the_cli() {
     let (dir, mut db) = base("abrir-cli");
     let repo = dir.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let root = omoikane::proyecto::de(&repo).unwrap();
+    let root = omoikane::proyecto::of_dir(&repo).unwrap();
     let n = NewMemory { project: root.clone(), kind: Some(Kind::Gotcha), title: "Cuidado con el lector".into(), content: "Lee en NFC.".into(), paths: vec!["src/lector.rs".into()], ..Default::default() };
     memoria::save(&mut db, n, None).unwrap();
     drop(db);

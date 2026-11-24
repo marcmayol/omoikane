@@ -46,10 +46,10 @@ fn gotcha(db: &mut Connection, project: &str, title: &str, paths: &[&str]) {
 /// `src/db.rs` (short of 3) and a lone one with `README.md`.
 fn project(name: &str) -> (comun::Temporal, Connection, String, i64) {
     let d = dir(name);
-    let repo = omoikane::proyecto::de(&d.join("repo")).unwrap();
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
-    omoikane::proyecto::registrar(&db, &repo).unwrap();
-    let id = omoikane::proyecto::resolver(&db, &repo).unwrap().unwrap().0;
+    let repo = omoikane::proyecto::of_dir(&d.join("repo")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
+    omoikane::proyecto::register(&db, &repo).unwrap();
+    let id = omoikane::proyecto::resolve(&db, &repo).unwrap().unwrap().0;
     session(&db, "a", id, &repo, "2026-10-01", &["src/sync.rs", "tests/sync.rs", "CHANGELOG.md"]);
     session(&db, "b", id, &repo, "2026-10-08", &["src/sync.rs", "tests/sync.rs", "src/db.rs"]);
     session(&db, "c", id, &repo, "2026-10-15", &["src/sync.rs", "tests/sync.rs", "CHANGELOG.md", "src/db.rs"]);
@@ -113,8 +113,8 @@ fn no_file_in_message_skips_the_diary() {
     assert!(!exists, "sin nada que decir no se crea la tabla");
     // With no diary (new database), nothing either: not even an error.
     let d2 = dir("vacia");
-    let repo2 = omoikane::proyecto::de(&d2.join("repo")).unwrap();
-    let db2 = db::abrir(&d2.join("o.db")).unwrap();
+    let repo2 = omoikane::proyecto::of_dir(&d2.join("repo")).unwrap();
+    let db2 = db::open(&d2.join("o.db")).unwrap();
     assert!(riesgo::al_preguntar(&db2, &repo2, "s", "mira src/sync.rs").unwrap().is_none());
 }
 

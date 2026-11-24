@@ -27,13 +27,13 @@ fn output_text(o: &Output) -> String {
 }
 
 /// One installation step: what it does and with which command.
-pub struct Paso {
-    pub que: String,
+pub struct Step {
+    pub what: String,
     pub args: Vec<String>,
 }
 
 /// What is left to do on this machine (empty if everything is done).
-pub fn plan() -> Result<Vec<Paso>> {
+pub fn plan() -> Result<Vec<Step>> {
     let version = claude(&["--version"]);
     if !version.as_ref().is_ok_and(|o| o.status.success()) {
         bail!(tr!(
@@ -46,8 +46,8 @@ pub fn plan() -> Result<Vec<Paso>> {
     // Each marketplace shows up as «❯ name»; any source is fine (GitHub or a local folder).
     let has_marketplace = marketplaces.lines().any(|l| l.trim().trim_start_matches('❯').trim() == MARKETPLACE);
     if !has_marketplace {
-        steps.push(Paso {
-            que: tr!("add the marketplace {MARKETPLACE_REPO}", "añadir el marketplace {MARKETPLACE_REPO}"),
+        steps.push(Step {
+            what: tr!("add the marketplace {MARKETPLACE_REPO}", "añadir el marketplace {MARKETPLACE_REPO}"),
             args: ["plugin", "marketplace", "add", MARKETPLACE_REPO].map(String::from).to_vec(),
         });
     }
@@ -55,13 +55,13 @@ pub fn plan() -> Result<Vec<Paso>> {
     if !plugins.contains(&format!("{PLUGIN}@")) {
         if has_marketplace {
             // A `drac` marketplace added earlier can be a copy from before the plugin existed.
-            steps.push(Paso {
-                que: tr!("update the marketplace {MARKETPLACE}", "actualizar el marketplace {MARKETPLACE}"),
+            steps.push(Step {
+                what: tr!("update the marketplace {MARKETPLACE}", "actualizar el marketplace {MARKETPLACE}"),
                 args: ["plugin", "marketplace", "update", MARKETPLACE].map(String::from).to_vec(),
             });
         }
-        steps.push(Paso {
-            que: tr!(
+        steps.push(Step {
+            what: tr!(
                 "install the plugin {PLUGIN}@{MARKETPLACE} for your user (memory tools + automatic recall)",
                 "instalar el plugin {PLUGIN}@{MARKETPLACE} para tu usuario (herramientas de memoria + recall automático)"
             ),
@@ -107,11 +107,11 @@ pub fn auto_update(on: bool) -> Result<bool> {
 }
 
 /// Whether the Omoikane plugin is installed in Claude Code.
-pub fn instalado() -> bool {
+pub fn installed() -> bool {
     claude(&["plugin", "list"]).is_ok_and(|o| output_text(&o).contains(&format!("{PLUGIN}@")))
 }
 
-pub fn ejecutar(steps: &[Paso]) -> Result<()> {
+pub fn run(steps: &[Step]) -> Result<()> {
     for p in steps {
         let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
         let o = claude(&args)?;

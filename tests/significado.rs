@@ -89,19 +89,19 @@ fn semantic_service() {
     use omoikane::memoria::{self, Scope, NewMemory, Kind as Kind};
     let path = dir.join("o.db");
     {
-        let mut db = omoikane::db::abrir(&path).unwrap();
+        let mut db = omoikane::db::open(&path).unwrap();
         for (t, c) in [("Cargo yank", "Cargo yank --undo restores a yanked version so it can be used again."), ("Gradle", "Two Gradle daemons at once corrupt the build cache.")] {
             memoria::save(&mut db, NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
         }
     }
     let _ = s::vector_consulta(&path, "hola", Duration::from_secs(5));
     assert!(
-        wait_until(Duration::from_secs(120), || s::cobertura(&omoikane::db::abrir(&path).unwrap()).unwrap() == (2, 2)),
+        wait_until(Duration::from_secs(120), || s::cobertura(&omoikane::db::open(&path).unwrap()).unwrap() == (2, 2)),
         "el servicio no calculó los vectores de la base"
     );
 
     // And search finds what is asked in other words, which a word search does not find.
-    let mut db = omoikane::db::abrir(&path).unwrap();
+    let mut db = omoikane::db::open(&path).unwrap();
     let o = omoikane::buscar::SearchOptions { scope: Scope::from_project(&db, "/p").unwrap(), kind: None, tags: vec![], limit: 5 };
     let question = "how do I bring back a release I pulled from the registry?";
     let r = omoikane::buscar::search(&mut db, question, &o, None).unwrap();

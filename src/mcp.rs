@@ -407,10 +407,10 @@ fn limit_of(n: Option<usize>) -> usize {
 fn requested_scope(db: &Connection, session_project: &str, project: Option<&str>, space: Option<&str>, all: bool) -> Result<Scope> {
     let base = Scope::from_project(db, session_project)?;
     let requested = if let Some(s) = space.map(str::trim).filter(|s| !s.is_empty()) {
-        Scope::Space(Some(proyecto::buscar_espacio(db, s)?))
+        Scope::Space(Some(proyecto::find_space(db, s)?))
     } else if let Some(p) = project.map(str::trim).filter(|p| !p.is_empty()) {
-        let id = proyecto::buscar_en(db, p, &base)?;
-        Scope::Project { id, space: proyecto::espacio_de(db, id)? }
+        let id = proyecto::find_in(db, p, &base)?;
+        Scope::Project { id, space: proyecto::space_of(db, id)? }
     } else if all {
         base.widen()
     } else {
@@ -449,7 +449,7 @@ fn id_in_scope(db: &Connection, session_project: &str, id: &str, trash: bool) ->
     let base = Scope::from_project(db, session_project)?;
     if trash {
         // In the trash there are no trades to check: only its space.
-        let own = proyecto::clave_espacio(db, base.space())?;
+        let own = proyecto::space_key(db, base.space())?;
         return match memoria::memory_placement(db, &id)? {
             Some((global, space)) if !matches!(base, Scope::All) && !global && space != own => anyhow::bail!(
                 "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder"
@@ -490,7 +490,7 @@ fn requested_space(db: &Connection, session_project: &str, p: Option<EspacioPara
             anyhow::anyhow!("this project is not in a space: give the space's name, or put the project in one with `omoi space assign <space>`")
         })?,
         Some(EspacioParam::Nombre(n)) if n.trim().is_empty() => return Ok(None),
-        Some(EspacioParam::Nombre(n)) => proyecto::buscar_espacio(db, &n)?,
+        Some(EspacioParam::Nombre(n)) => proyecto::find_space(db, &n)?,
     };
     outside_space(&base, &Scope::Space(Some(id)))?;
     Ok(Some(id))
@@ -519,13 +519,13 @@ impl Servidor {
     ) -> Result<T> {
         let (path, dir, model) = (self.db.clone(), self.dir.clone(), self.model()?);
         tokio::task::spawn_blocking(move || {
-            let mut db = db::abrir(&path)?;
+            let mut db = db::open(&path)?;
             if let Some(m) = &model {
                 vectores::sincronizar(&mut db, m)?;
             }
             let session_project = match &dir {
-                Some(d) => proyecto::de(d)?,
-                None => proyecto::actual()?,
+                Some(d) => proyecto::of_dir(d)?,
+                None => proyecto::current()?,
             };
             // Its trades, if they were never checked: without them it wouldn't see its trade's memories. Optional.
             if let Err(e) = crate::oficios::preparar(&db, &session_project) {
@@ -573,10 +573,10 @@ impl Servidor {
                 let (project, paths) = match p.project.as_deref().map(str::trim) {
                     _ if is_trade || p.global.unwrap_or(false) || preference => (String::new(), p.paths.unwrap_or_default()),
                     Some("") => (String::new(), p.paths.unwrap_or_default()),
-                    Some(d) => (proyecto::de_carpeta(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
-                    None => proyecto::para_guardar(session_project, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
+                    Some(d) => (proyecto::of_given_folder(std::path::Path::new(d))?, p.paths.unwrap_or_default()),
+                    None => proyecto::for_saving(session_project, &p.paths.unwrap_or_default(), &format!("{} {}", p.title, p.content)),
                 };
-                let search_in = if !project.is_empty() && proyecto::es_general(session_project) { session_project.to_string() } else { project.clone() };
+                let search_in = if !project.is_empty() && proyecto::is_general(session_project) { session_project.to_string() } else { project.clone() };
                 let key = p.key.as_deref().map(str::trim).filter(|k| !k.is_empty()).map(str::to_string);
                 // With data and no text, the memory is mostly its data: its content is the title.
                 let content = if p.content.trim().is_empty() && p.data.as_ref().is_some_and(|d| !d.is_null()) { p.title.clone() } else { p.content.clone() };
@@ -605,9 +605,9 @@ impl Servidor {
                 // will go. If not, an error with no ids or names from another space, and the memory is not saved.
                 let global = project.is_empty() && space_id.is_none();
                 let its_space = match space_id {
-                    Some(s) => proyecto::clave_espacio(db, Some(s))?,
+                    Some(s) => proyecto::space_key(db, Some(s))?,
                     None if project.is_empty() => String::new(),
-                    None => proyecto::clave_espacio(db, Scope::from_project(db, &project)?.space())?,
+                    None => proyecto::space_key(db, Scope::from_project(db, &project)?.space())?,
                 };
                 let mut to_judge: [Vec<String>; 2] = [Vec::new(), Vec::new()];
                 for (i, list) in [&p.supersedes, &p.contradicts].into_iter().enumerate() {
@@ -770,7 +770,7 @@ impl Servidor {
             })
             .await;
         if r.as_ref().is_ok_and(|v| v["saved"] == true) {
-            crate::sync::programar(&self.db);
+            crate::sync::schedule(&self.db);
         }
         Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
@@ -793,7 +793,7 @@ impl Servidor {
                     id_in_scope(db, session_project, other, false)?;
                 }
                 if let Some(d) = p.project.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-                    outside_space(&base, &Scope::from_project(db, &proyecto::de_carpeta(std::path::Path::new(d))?)?)?;
+                    outside_space(&base, &Scope::from_project(db, &proyecto::of_given_folder(std::path::Path::new(d))?)?)?;
                 }
                 // The reason for the change is also that of the verdicts that come with it.
                 let reason = p.reason.clone().unwrap_or_default();
@@ -828,7 +828,7 @@ impl Servidor {
                     project: match p.project.as_deref().map(str::trim) {
                         None => None,
                         Some("") => Some(String::new()),
-                        Some(d) => Some(proyecto::de_carpeta(std::path::Path::new(d))?),
+                        Some(d) => Some(proyecto::of_given_folder(std::path::Path::new(d))?),
                     },
                     reason: p.reason,
                     replace: p.replace.unwrap_or_default().into_iter().map(|r| (r.find, r.with)).collect(),
@@ -953,7 +953,7 @@ impl Servidor {
             })
             .await;
         if r.is_ok() {
-            crate::sync::programar(&self.db);
+            crate::sync::schedule(&self.db);
         }
         Ok(r.map(|v| json(&v)).unwrap_or_else(failure))
     }
@@ -1032,7 +1032,7 @@ impl Servidor {
             })
             .await;
         if r.is_ok() {
-            crate::sync::programar(&self.db);
+            crate::sync::schedule(&self.db);
         }
         Ok(r.map(|m| json(&serde_json::json!({ "forgotten": m.id, "title": m.title }))).unwrap_or_else(failure))
     }
@@ -1080,7 +1080,7 @@ impl Servidor {
                 let review = crate::revisar::notices_without_waiting(db, &scope)?;
                 // Where it is: the project (or the general folder) and, of the others, only those in its space.
                 let current = match scope {
-                    Scope::Project { id, .. } if id > 0 => proyecto::lista(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
+                    Scope::Project { id, .. } if id > 0 => proyecto::list(db, Some(id), None, 1)?.into_iter().next().map(|mut x| {
                         x.path = session_project.to_string();
                         serde_json::to_value(x).unwrap_or_default()
                     }),
@@ -1091,7 +1091,7 @@ impl Servidor {
                     Scope::All => None,
                     a => Some(a.space()),
                 };
-                let projects = proyecto::lista(db, None, filter, 50)?;
+                let projects = proyecto::list(db, None, filter, 50)?;
                 let mut r = serde_json::json!({ "project": current, "projects": projects, "memories": memories, "review": review });
                 // Duplicated projects or ones in temporary folders: the agent proposes them with the command written out.
                 let proposals = crate::nombres::proposals(db, &scope)?;

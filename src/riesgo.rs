@@ -121,8 +121,8 @@ impl Historia {
 /// project recorded from one of its folders (or from this one, if it isn't a project yet or is a
 /// general folder). Each one, its last moment and its files.
 fn sessions(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>> {
-    let general = crate::proyecto::es_general(project);
-    let id = if general { 0 } else { crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0) };
+    let general = crate::proyecto::is_general(project);
+    let id = if general { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
     let mut folders: BTreeSet<String> = BTreeSet::from([crate::diario::carpeta_cmp(project)]);
     if id != 0 {
         let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1")?;
@@ -297,10 +297,10 @@ fn path_key(f: &str, project: &str) -> String {
 /// from their personal folder on several repositories would have no history without this.
 fn sessions_with_outside(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>> {
     let mut r = sessions(db, project)?;
-    if crate::proyecto::es_general(project) {
+    if crate::proyecto::is_general(project) {
         return Ok(r);
     }
-    let id = crate::proyecto::resolver(db, project)?.map(|(id, _)| id).unwrap_or(0);
+    let id = crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0);
     let folders: BTreeSet<String> = {
         let mut c = BTreeSet::from([crate::diario::carpeta_cmp(project)]);
         if id != 0 {

@@ -106,7 +106,7 @@ fn when_and_how_much_the_model_is_used() {
         std::env::remove_var("OMOIKANE_SEMANTIC");
     }
     let path = dir.join("o.db");
-    let mut db = omoikane::db::abrir(&path).unwrap();
+    let mut db = omoikane::db::open(&path).unwrap();
     let others = [
         ("Kubernetes probes", "Liveness probes restart the pod when the health endpoint hangs for thirty seconds."),
         ("Postgres vacuum", "Autovacuum falls behind on the events table; run vacuum analyze weekly."),

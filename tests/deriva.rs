@@ -73,11 +73,11 @@ fn repo(name: &str) -> (comun::Temporal, Connection, String) {
     let root = d.join("repo");
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "-q"], None);
-    let db = db::abrir(&d.join("o.db")).unwrap();
+    let db = db::open(&d.join("o.db")).unwrap();
     commit(&db, &root, "src/a.rs", &text(40, "uno"), Some("-20 days"));
     commit(&db, &root, "src/b.rs", &text(40, "uno"), Some("-20 days"));
-    let project = omoikane::proyecto::de(&root).unwrap();
-    omoikane::proyecto::registrar(&db, &project).unwrap();
+    let project = omoikane::proyecto::of_dir(&root).unwrap();
+    omoikane::proyecto::register(&db, &project).unwrap();
     (d, db, project)
 }
 
@@ -153,10 +153,10 @@ fn outside_git_the_diary_counts() {
     let root = d.join("carpeta");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("notas.md"), "hola\n").unwrap();
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
-    let project = omoikane::proyecto::de(&root).unwrap();
-    omoikane::proyecto::registrar(&db, &project).unwrap();
-    let pid = omoikane::proyecto::resolver(&db, &project).unwrap().unwrap().0;
+    let mut db = db::open(&d.join("o.db")).unwrap();
+    let project = omoikane::proyecto::of_dir(&root).unwrap();
+    omoikane::proyecto::register(&db, &project).unwrap();
+    let pid = omoikane::proyecto::resolve(&db, &project).unwrap().unwrap().0;
     let id = memory(&mut db, &project, "Las notas", "Lo de las notas.", &["notas.md"], "-10 days");
     omoikane::diario::crear_tabla(&db).unwrap();
     let session = |db: &Connection, n: usize, saved: &str| {

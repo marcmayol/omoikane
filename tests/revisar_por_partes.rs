@@ -32,7 +32,7 @@ impl Rng {
 
 fn base(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("por-partes-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     db.execute_batch("PRAGMA synchronous = OFF").unwrap();
     (dir, db)
 }
@@ -102,7 +102,7 @@ fn snapshot(db: &Connection) -> Snapshot {
 fn full_snapshot(db: &Connection, dir: &Path, k: usize) -> Snapshot {
     let copy = dir.join(format!("entera-{k}.db"));
     db.execute("VACUUM INTO ?1", [copy.to_string_lossy()]).unwrap();
-    let c = db::abrir(&copy).unwrap();
+    let c = db::open(&copy).unwrap();
     c.execute("DELETE FROM meta WHERE k = 'revision'", []).unwrap();
     revisar::refresh(&c).unwrap();
     snapshot(&c)

@@ -84,7 +84,7 @@ pub(crate) fn from_column(json: Option<&str>) -> Option<Provenance> {
 }
 
 /// The provenance of what is being saved now in the project folder `project` (the root, as given by
-/// `proyecto::de`; empty: global without a folder), or `None` if there is nothing to record.
+/// `proyecto::of_dir`; empty: global without a folder), or `None` if there is nothing to record.
 pub fn current(db: &Connection, project: &str) -> Option<Provenance> {
     let session = session(db, project).unwrap_or_default();
     let (commit, branch) = if project.is_empty() { None } else { head_commit(Path::new(project)) }.unwrap_or_default();
@@ -184,8 +184,8 @@ fn session(db: &Connection, project: &str) -> Option<String> {
 pub fn head_commit(root: &Path) -> Option<(String, String)> {
     // Every file opened costs (on Windows, ~0.1 ms): the minimum. A normal repository: HEAD
     // and its branch; a worktree: also `.git` and `commondir`.
-    // Local, or on the network share of the folder being worked in (`proyecto::legible`).
-    if !crate::proyecto::legible(root) {
+    // Local, or on the network share of the folder being worked in (`proyecto::readable`).
+    if !crate::proyecto::readable(root) {
         return None;
     }
     let dot_git = root.join(".git");
@@ -193,9 +193,9 @@ pub fn head_commit(root: &Path) -> Option<(String, String)> {
         // `.git` is a file: a worktree (or a submodule, without `commondir`). The common folder (the
         // main repository's) is where the branches are. Neither can be on another network share.
         Ok(t) => {
-            let gitdir = crate::proyecto::si_legible(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
+            let gitdir = crate::proyecto::if_readable(root.join(t.trim().strip_prefix("gitdir:")?.trim()))?;
             let common = std::fs::read_to_string(gitdir.join("commondir")).map(|c| gitdir.join(c.trim())).unwrap_or_else(|_| gitdir.clone());
-            let common = crate::proyecto::si_legible(common)?;
+            let common = crate::proyecto::if_readable(common)?;
             (gitdir, common)
         }
         Err(_) => (dot_git.clone(), dot_git),

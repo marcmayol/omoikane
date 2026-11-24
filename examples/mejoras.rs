@@ -59,7 +59,7 @@ fn search(dir: &Path, tsvs: &[String]) -> Result<()> {
     let m = model()?;
     let tmp = std::env::temp_dir().join(format!("omoi-mejoras-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in notes(dir)? {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t, content: c, ..Default::default() };
@@ -126,7 +126,7 @@ pub fn failures(dir: &Path, tsv: &str) -> Result<()> {
     let m = model()?;
     let tmp = std::env::temp_dir().join(format!("omoi-fallos-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let mut db = omoikane::db::abrir(&tmp.join("o.db"))?;
+    let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     for (f, t, c) in notes(dir)? {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t, content: c, ..Default::default() };

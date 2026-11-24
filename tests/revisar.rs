@@ -11,7 +11,7 @@ use rusqlite::Connection;
 
 fn base(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("revisar-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -178,7 +178,7 @@ fn broken_paths_do_not_repeat_the_notice_in_context() {
     std::fs::create_dir_all(&folder).unwrap();
     // The path as Omoikane resolves it: on Windows, the temporary folder can arrive with its short
     // name (`RUNNER~1`) and `context` resolves it with the long one.
-    let p = omoikane::proyecto::de(&folder).unwrap();
+    let p = omoikane::proyecto::of_dir(&folder).unwrap();
     long_ones(&mut db, 0, revisar::NOTICE_MIN);
     assert!(notice_at_start(&mut db, "s1").is_some(), "al empezar");
     for i in 0..6 {

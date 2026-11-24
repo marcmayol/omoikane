@@ -27,7 +27,7 @@ const CHECK_EVERY: u64 = 24 * 3600;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn home_dir() -> Option<PathBuf> {
-    crate::entorno::casa()
+    crate::entorno::home()
 }
 
 fn file(name: &str) -> Option<PathBuf> {
@@ -39,7 +39,7 @@ fn now() -> u64 {
 }
 
 /// What the user said (`omoi upgrade --on/--off`, or the question in `omoi setup claude`).
-pub fn preferencia() -> Option<bool> {
+pub fn preference() -> Option<bool> {
     let t = std::fs::read_to_string(file("auto-update")?).ok()?;
     match t.trim() {
         "on" => Some(true),
@@ -48,7 +48,7 @@ pub fn preferencia() -> Option<bool> {
     }
 }
 
-pub fn fijar(on: bool) -> Result<()> {
+pub fn set_preference(on: bool) -> Result<()> {
     let f = file("auto-update").context("no home folder")?;
     if let Some(d) = f.parent() {
         std::fs::create_dir_all(d)?;
@@ -60,12 +60,12 @@ pub fn fijar(on: bool) -> Result<()> {
 /// Only if the user said yes (`omoi upgrade --on` or the question in `omoi setup claude`). Without an
 /// answer, off: a binary that changes itself is the first thing someone who cares about security looks
 /// at, and it must not happen without anyone asking for it (0.19.0; before, it came on).
-pub fn activada() -> bool {
-    !std::env::var("OMOIKANE_AUTO_UPDATE").is_ok_and(|v| v.trim() == "0" || v.trim().eq_ignore_ascii_case("off")) && preferencia() == Some(true)
+pub fn enabled() -> bool {
+    !std::env::var("OMOIKANE_AUTO_UPDATE").is_ok_and(|v| v.trim() == "0" || v.trim().eq_ignore_ascii_case("off")) && preference() == Some(true)
 }
 
 /// If the binary is managed by another program, which one (then it isn't touched).
-pub fn gestor(exe: &Path) -> Option<&'static str> {
+pub fn package_manager(exe: &Path) -> Option<&'static str> {
     let p = exe.to_string_lossy().replace('\\', "/").to_lowercase();
     [
         ("/.cargo/bin/", "cargo"),
@@ -93,7 +93,7 @@ pub fn version(s: &str) -> Option<(u64, u64, u64)> {
 
 /// Whether it is worth going from `current` to `new`: higher and of the same major version (a major
 /// change may break things and is done by hand).
-pub fn conviene(current: &str, new: &str) -> bool {
+pub fn should_upgrade(current: &str, new: &str) -> bool {
     match (version(current), version(new)) {
         (Some(a), Some(n)) => n > a && n.0 == a.0,
         _ => false,
@@ -119,7 +119,7 @@ fn package() -> Option<&'static str> {
 
 /// Checks the Ed25519 signature of `data` with the Releases key (or, in tests, with
 /// `OMOIKANE_UPDATE_KEY` in hex, which only works in debug builds).
-pub fn firma_valida(data: &[u8], signature: &[u8]) -> bool {
+pub fn signature_valid(data: &[u8], signature: &[u8]) -> bool {
     let key = test_key().unwrap_or(RELEASE_KEY.to_vec());
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key).verify(data, signature).is_ok()
 }
@@ -156,7 +156,7 @@ fn download(url: &str) -> Result<Vec<u8>> {
 }
 
 /// The latest published version.
-pub fn ultima() -> Result<String> {
+pub fn latest() -> Result<String> {
     let url = match base() {
         Some(b) => format!("{b}/latest.json"),
         None => format!("https://api.github.com/repos/{REPO}/releases/latest"),
@@ -174,16 +174,16 @@ fn url_for(tag: &str, name: &str) -> String {
 
 /// What happened when checking.
 #[derive(Debug, PartialEq)]
-pub enum Resultado {
-    AlDia(String),
+pub enum CheckResult {
+    UpToDate(String),
     /// There is a new one but it isn't installed (another major version, another manager, turned off…), and why.
-    NoSeInstala(String, String),
-    Actualizado(String),
+    NotInstalled(String, String),
+    Updated(String),
 }
 
 /// That `SHA256SUMS` is signed with Omoikane's key and that `data` is the `name` it says.
-pub fn verificar(sums: &[u8], signature: &[u8], name: &str, data: &[u8]) -> Result<()> {
-    if !firma_valida(sums, signature) {
+pub fn verify(sums: &[u8], signature: &[u8], name: &str, data: &[u8]) -> Result<()> {
+    if !signature_valid(sums, signature) {
         bail!(tr!("the release signature doesn't match Omoikane's key: not installed", "la firma de la Release no es de la clave de Omoikane: no se instala"));
     }
     let expected = String::from_utf8_lossy(sums)
@@ -199,19 +199,19 @@ pub fn verificar(sums: &[u8], signature: &[u8], name: &str, data: &[u8]) -> Resu
 
 /// Downloads, checks and installs `new` in place of `exe`.
 fn install(exe: &Path, new: &str) -> Result<()> {
-    let new_bin = bajar_version(new, &home_dir().context("home")?.join("actualizacion"))?;
-    reemplazar(exe, &new_bin)
+    let new_bin = download_version(new, &home_dir().context("home")?.join("actualizacion"))?;
+    replace(exe, &new_bin)
 }
 
 /// Downloads the `omoi` of Release `new` for this system into `dir` (emptying it first), checks the
 /// signature of `SHA256SUMS` and the package checksum, unpacks it and returns the path of the binary,
 /// which says it is that version. Used by the update and by the performance guard (`examples/rendimiento.rs`).
-pub fn bajar_version(new: &str, dir: &Path) -> Result<PathBuf> {
+pub fn download_version(new: &str, dir: &Path) -> Result<PathBuf> {
     let name = package().context(tr!("no prebuilt binary for this system", "no hay binario para este sistema"))?;
     let sums = download(&url_for(new, "SHA256SUMS"))?;
     let signature = download(&url_for(new, "SHA256SUMS.sig")).context(tr!("the release isn't signed", "la Release no está firmada"))?;
     let data = download(&url_for(new, name))?;
-    verificar(&sums, &signature, name, &data)?;
+    verify(&sums, &signature, name, &data)?;
     // It's unpacked in its own folder with the system's tar (on Windows, the one in System32, which
     // also opens zip; not Git's, which may come earlier in the PATH).
     let _ = std::fs::remove_dir_all(dir);
@@ -237,7 +237,7 @@ pub fn bajar_version(new: &str, dir: &Path) -> Result<PathBuf> {
 
 /// Puts `new` in place of `exe`. On Windows an exe in use can't be overwritten but can be
 /// renamed: the old one stays as `omoi.viejo-<version>.exe` and is deleted in a later run.
-pub fn reemplazar(exe: &Path, new: &Path) -> Result<()> {
+pub fn replace(exe: &Path, new: &Path) -> Result<()> {
     let dir = exe.parent().context("dir")?;
     if cfg!(windows) {
         let old = dir.join(format!("omoi.viejo-{VERSION}-{}.exe", now()));
@@ -260,7 +260,7 @@ pub fn reemplazar(exe: &Path, new: &Path) -> Result<()> {
 }
 
 /// Deletes the `omoi.viejo-*` an update left behind (if no longer in use).
-pub fn limpiar_viejos() {
+pub fn clean_old() {
     let Ok(exe) = std::env::current_exe() else { return };
     let Some(dir) = exe.parent() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -272,42 +272,42 @@ pub fn limpiar_viejos() {
 }
 
 /// Checks and, if due, updates. `exe` is the binary being replaced.
-pub fn comprobar(exe: &Path, install_if_any: bool) -> Result<Resultado> {
-    let new = ultima()?;
+pub fn check(exe: &Path, install_if_any: bool) -> Result<CheckResult> {
+    let new = latest()?;
     if let Some(f) = file("actualizacion.json") {
         let _ = std::fs::write(f, serde_json::json!({ "checked_at": now(), "latest": new }).to_string());
     }
-    if !conviene(VERSION, &new) {
+    if !should_upgrade(VERSION, &new) {
         let other_major = version(&new).zip(version(VERSION)).is_some_and(|(n, a)| n.0 != a.0 && n > a);
         return Ok(if other_major {
-            Resultado::NoSeInstala(new, tr!("it's a new major version: update by hand", "es otra versión mayor: se actualiza a mano"))
+            CheckResult::NotInstalled(new, tr!("it's a new major version: update by hand", "es otra versión mayor: se actualiza a mano"))
         } else {
-            Resultado::AlDia(VERSION.into())
+            CheckResult::UpToDate(VERSION.into())
         });
     }
-    if let Some(g) = gestor(exe) {
-        return Ok(Resultado::NoSeInstala(new, tr!("this omoi is managed by {g}: update it there", "este omoi lo gestiona {g}: actualízalo ahí")));
+    if let Some(g) = package_manager(exe) {
+        return Ok(CheckResult::NotInstalled(new, tr!("this omoi is managed by {g}: update it there", "este omoi lo gestiona {g}: actualízalo ahí")));
     }
     if !install_if_any {
-        return Ok(Resultado::NoSeInstala(new, String::new()));
+        return Ok(CheckResult::NotInstalled(new, String::new()));
     }
     install(exe, &new)?;
     // The new one adds its part to the agents that already had Omoikane and leaves the notice for the next session.
     let _ = std::process::Command::new(exe).args(["upgrade", "--after", VERSION]).stdin(std::process::Stdio::null()).output();
-    Ok(Resultado::Actualizado(new))
+    Ok(CheckResult::Updated(new))
 }
 
 /// At the start of any command: if due (once a day, turned on, own binary), launches the check
 /// separately. Never waits or fails.
-pub fn quizas_en_segundo_plano() {
-    limpiar_viejos();
+pub fn maybe_in_background() {
+    clean_old();
     // With nobody in front (a CI, a server), the binary doesn't change itself even if it was turned on.
-    if !activada() || crate::entorno::desatendido() {
+    if !enabled() || crate::entorno::unattended() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
     // In debug, only against the test server.
-    if gestor(&exe).is_some() || package().is_none() || (cfg!(debug_assertions) && base().is_none()) {
+    if package_manager(&exe).is_some() || package().is_none() || (cfg!(debug_assertions) && base().is_none()) {
         return;
     }
     let Some(f) = file("actualizacion.json") else { return };
@@ -322,22 +322,22 @@ pub fn quizas_en_segundo_plano() {
     if std::fs::write(&f, serde_json::json!({ "checked_at": now() }).to_string()).is_err() {
         return;
     }
-    crate::sync::lanzar_aparte(&["upgrade", "--background"]);
+    crate::sync::spawn_detached(&["upgrade", "--background"]);
 }
 
 /// What the freshly installed binary does (`omoi upgrade --after <previous>`): add what's new to the
 /// agents that already had Omoikane and leave the notice for the next session.
-pub fn despues(previous: &str) -> Result<Vec<String>> {
+pub fn after_upgrade(previous: &str) -> Result<Vec<String>> {
     let mut done = Vec::new();
-    for a in crate::agentes::configurados() {
+    for a in crate::agentes::configured() {
         let changes = crate::agentes::plan(a)?;
         if !changes.is_empty() {
-            crate::agentes::aplicar(&changes)?;
+            crate::agentes::apply(&changes)?;
             done.push(a.to_string());
         }
     }
     // Claude Code's settings only if the user said yes (the question in `omoi setup claude`).
-    if preferencia() == Some(true) && crate::setup::instalado() && crate::setup::auto_update(true).unwrap_or(false) {
+    if preference() == Some(true) && crate::setup::installed() && crate::setup::auto_update(true).unwrap_or(false) {
         done.push("claude".into());
     }
     if let Some(f) = file("actualizado.json") {
@@ -347,7 +347,7 @@ pub fn despues(previous: &str) -> Result<Vec<String>> {
 }
 
 /// The notice of the last update, only once (deletes it on reading).
-pub fn aviso() -> Option<String> {
+pub fn notice() -> Option<String> {
     let f = file("actualizado.json")?;
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).ok()?).ok()?;
     let _ = std::fs::remove_file(&f);
@@ -366,23 +366,23 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert!(conviene("0.13.0", "0.14.0"));
-        assert!(conviene("0.13.0", "v0.13.1"));
-        assert!(!conviene("0.13.0", "0.13.0"));
-        assert!(!conviene("0.14.0", "0.13.9"));
-        assert!(!conviene("0.13.0", "1.0.0"), "otra versión mayor, a mano");
-        assert!(!conviene("0.13.0", "basura"));
+        assert!(should_upgrade("0.13.0", "0.14.0"));
+        assert!(should_upgrade("0.13.0", "v0.13.1"));
+        assert!(!should_upgrade("0.13.0", "0.13.0"));
+        assert!(!should_upgrade("0.14.0", "0.13.9"));
+        assert!(!should_upgrade("0.13.0", "1.0.0"), "otra versión mayor, a mano");
+        assert!(!should_upgrade("0.13.0", "basura"));
     }
 
     #[test]
     fn managers() {
-        assert_eq!(gestor(Path::new("C:\\Users\\a\\.cargo\\bin\\omoi.exe")), Some("cargo"));
-        assert_eq!(gestor(Path::new("/opt/homebrew/bin/omoi")), Some("Homebrew"));
-        assert_eq!(gestor(Path::new("/usr/bin/omoi")), Some("el sistema"));
-        assert_eq!(gestor(Path::new("C:\\Users\\a\\AppData\\Local\\Programs\\omoikane\\omoi.exe")), None);
-        assert_eq!(gestor(Path::new("/home/a/.local/bin/omoi")), None);
-        assert_eq!(gestor(Path::new("/home/a/.omoikane/bin/omoi")), None);
-        assert_eq!(gestor(Path::new("D:\\Omoikane\\target\\debug\\omoi.exe")), Some("cargo build"));
+        assert_eq!(package_manager(Path::new("C:\\Users\\a\\.cargo\\bin\\omoi.exe")), Some("cargo"));
+        assert_eq!(package_manager(Path::new("/opt/homebrew/bin/omoi")), Some("Homebrew"));
+        assert_eq!(package_manager(Path::new("/usr/bin/omoi")), Some("el sistema"));
+        assert_eq!(package_manager(Path::new("C:\\Users\\a\\AppData\\Local\\Programs\\omoikane\\omoi.exe")), None);
+        assert_eq!(package_manager(Path::new("/home/a/.local/bin/omoi")), None);
+        assert_eq!(package_manager(Path::new("/home/a/.omoikane/bin/omoi")), None);
+        assert_eq!(package_manager(Path::new("D:\\Omoikane\\target\\debug\\omoi.exe")), Some("cargo build"));
     }
 
     // The test key (`OMOIKANE_UPDATE_KEY`) only works in debug: in release only the Releases one
@@ -399,10 +399,10 @@ mod tests {
         let sum: String = Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect();
         let sums = format!("{sum}  omoi-x.zip\n0000  otro.tar.gz\n");
         let signature = pair.sign(sums.as_bytes());
-        assert!(verificar(sums.as_bytes(), signature.as_ref(), "omoi-x.zip", data).is_ok());
-        assert!(verificar(sums.as_bytes(), signature.as_ref(), "omoi-x.zip", b"otro binario").is_err(), "suma distinta");
-        assert!(verificar(sums.replace("otro", "Otro").as_bytes(), signature.as_ref(), "omoi-x.zip", data).is_err(), "sumas cambiadas tras firmar");
-        assert!(verificar(sums.as_bytes(), signature.as_ref(), "no-esta.zip", data).is_err());
+        assert!(verify(sums.as_bytes(), signature.as_ref(), "omoi-x.zip", data).is_ok());
+        assert!(verify(sums.as_bytes(), signature.as_ref(), "omoi-x.zip", b"otro binario").is_err(), "suma distinta");
+        assert!(verify(sums.replace("otro", "Otro").as_bytes(), signature.as_ref(), "omoi-x.zip", data).is_err(), "sumas cambiadas tras firmar");
+        assert!(verify(sums.as_bytes(), signature.as_ref(), "no-esta.zip", data).is_err());
         unsafe { std::env::remove_var("OMOIKANE_UPDATE_KEY") };
     }
 
@@ -413,7 +413,7 @@ mod tests {
         let new = d.join("nuevo");
         std::fs::write(&exe, "viejo").unwrap();
         std::fs::write(&new, "nuevo").unwrap();
-        reemplazar(&exe, &new).unwrap();
+        replace(&exe, &new).unwrap();
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "nuevo");
     }
 
@@ -421,11 +421,11 @@ mod tests {
     fn signatures() {
         use ring::signature::KeyPair;
         // The Releases key doesn't accept just any signature.
-        assert!(!firma_valida(b"sumas", &[0u8; 64]));
+        assert!(!signature_valid(b"sumas", &[0u8; 64]));
         // Nor a real signature with any other key (only Omoikane's works).
         let pair = ring::signature::Ed25519KeyPair::from_pkcs8(ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap().as_ref()).unwrap();
         let signature = pair.sign(b"sumas");
-        assert!(!firma_valida(b"sumas", signature.as_ref()));
+        assert!(!signature_valid(b"sumas", signature.as_ref()));
         let public = pair.public_key().as_ref().to_vec();
         assert!(ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public).verify(b"sumas", signature.as_ref()).is_ok());
     }

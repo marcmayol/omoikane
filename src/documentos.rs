@@ -29,7 +29,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, UNIX_EPOCH};
 
-/// `docs_folder`: which folders each project has (the text of `proyecto::de`, like `session.project`).
+/// `docs_folder`: which folders each project has (the text of `proyecto::of_dir`, like `session.project`).
 /// `docs_file`: each indexed file, by folder and relative path, with its date and size to know whether
 /// it changed, and how many chunks it has. `docs_fts`: the chunks; their `rowid` is `id << PART_BITS | part`,
 /// so a file's chunks are deleted and joined with it by `rowid` range, without scanning the table (an
@@ -112,11 +112,11 @@ fn write_tx(db: &Connection) -> Result<Transaction<'_>> {
 /// The folder as it is stored: the real path written like the projects' (without Windows' `\\?\`
 /// and with the drive letter in uppercase).
 fn normalize(folder: &Path) -> Result<String> {
-    Ok(crate::proyecto::texto(&real_dir(folder)?))
+    Ok(crate::proyecto::path_text(&real_dir(folder)?))
 }
 
 fn real_dir(folder: &Path) -> Result<PathBuf> {
-    let real = crate::proyecto::canonica(folder)?;
+    let real = crate::proyecto::canonical(folder)?;
     anyhow::ensure!(real.is_dir(), crate::tr!("{} is not a folder", "{} no es una carpeta", folder.display()));
     Ok(real)
 }
@@ -153,7 +153,7 @@ pub struct Refresco {
 /// root or the home folder (`demasiado_amplia`).
 pub fn anadir(db: &Connection, project: &str, folder: &Path) -> Result<(String, Refresco)> {
     let real = real_dir(folder)?;
-    let home = std::env::home_dir().and_then(|h| crate::proyecto::canonica(&h).ok());
+    let home = std::env::home_dir().and_then(|h| crate::proyecto::canonical(&h).ok());
     anyhow::ensure!(
         !demasiado_amplia(&real, home.as_deref()),
         crate::tr!(
@@ -162,7 +162,7 @@ pub fn anadir(db: &Connection, project: &str, folder: &Path) -> Result<(String, 
             real.display()
         )
     );
-    let folder = crate::proyecto::texto(&real);
+    let folder = crate::proyecto::path_text(&real);
     create(db)?;
     db.execute(&format!("INSERT OR IGNORE INTO docs_folder(project, folder, added_at) VALUES (?1, ?2, {NOW})"), params![project, folder])?;
     let r = refrescar(db, &folder)?;
@@ -636,7 +636,7 @@ pub fn refrescar_aparte(db: &Connection, project: &str, db_path: &Path) {
         )
         .is_ok_and(|n| n == 1);
     if taken {
-        crate::sync::lanzar(&["docs", "refresh", "--dir", project], Some(db_path));
+        crate::sync::spawn_omoi(&["docs", "refresh", "--dir", project], Some(db_path));
     }
 }
 
@@ -757,7 +757,7 @@ pub fn buscar(db: &Connection, project: &str, prompt: &str, seen: &BTreeSet<Stri
 fn display_path(project: &str, folder: &str, path: &str) -> String {
     let full = Path::new(folder).join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
     match full.strip_prefix(project) {
-        Ok(r) if !project.is_empty() && !crate::proyecto::es_general(project) => r.to_string_lossy().replace('\\', "/"),
+        Ok(r) if !project.is_empty() && !crate::proyecto::is_general(project) => r.to_string_lossy().replace('\\', "/"),
         _ => full.to_string_lossy().into_owned(),
     }
 }

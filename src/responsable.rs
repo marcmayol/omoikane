@@ -70,7 +70,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> R
     let warnings = revisar::notices(db, base)?;
     // The space being looked from (its key; empty: none) and whether everything is visible.
     let everything = matches!(base, Scope::All);
-    let own = proyecto::clave_espacio(db, base.space())?;
+    let own = proyecto::space_key(db, base.space())?;
     let visible = |key: &str| everything || key == own;
     let cutoff = ago(db, &format!("-{months} months"))?;
     let recent_cutoff = ago(db, &format!("-{RECENT_DAYS} days"))?;
@@ -79,7 +79,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> R
     if !everything {
         groups.entry(own.clone()).or_default();
     }
-    for e in proyecto::espacios(db)? {
+    for e in proyecto::spaces(db)? {
         if visible(&e.key) {
             groups.entry(e.key).or_default();
         }
@@ -102,18 +102,18 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> R
         }
     }
     // Paused projects, by key: they show in their card and in their space's list.
-    let pauses: HashMap<String, Value> = proyecto::en_pausa(db)?
+    let pauses: HashMap<String, Value> = proyecto::paused_projects(db)?
         .iter()
         .filter(|p| visible(&p.here))
         .map(|p| {
             let v = json!({
                 "name": p.name,
                 "key": p.key,
-                "machine": p.pausa.machine,
-                "space": p.pausa.space,
-                "text": crate::sync::texto_pausa(db_path, p),
-                "keep": crate::sync::orden_quedarse(p),
-                "accept": crate::sync::orden_aceptar(p),
+                "machine": p.pause.machine,
+                "space": p.pause.space,
+                "text": crate::sync::pause_text(db_path, p),
+                "keep": crate::sync::keep_command(p),
+                "accept": crate::sync::accept_command(p),
             });
             if let Some(g) = groups.get_mut(&p.here) {
                 g.pauses.push(v.clone());
@@ -128,7 +128,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> R
             statuses.entry(m.project_id).or_insert(m);
         }
     }
-    for p in proyecto::lista(db, None, None, usize::MAX)? {
+    for p in proyecto::list(db, None, None, usize::MAX)? {
         if !visible(&p.space) {
             continue;
         }
@@ -149,7 +149,7 @@ pub fn panorama(db: &Connection, db_path: &Path, base: &Scope, months: u32) -> R
         });
         groups.entry(p.space.clone()).or_default().projects.push(v);
     }
-    let names: HashMap<String, String> = proyecto::espacios(db)?.into_iter().map(|e| (e.key, e.name)).collect();
+    let names: HashMap<String, String> = proyecto::spaces(db)?.into_iter().map(|e| (e.key, e.name)).collect();
 
     // Spaces by name and, at the end, the projects without a space.
     let mut groups: Vec<(String, Group)> = groups.into_iter().collect();

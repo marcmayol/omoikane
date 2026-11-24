@@ -57,7 +57,7 @@ fn files(dir: &Path) -> BTreeSet<String> {
 #[test]
 fn round_trip_to_an_empty_database() {
     let dir = comun::Temporal::nueva("okf-ida");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let old = save(&mut a, "/p", Kind::Decision, "Las sesiones van por cookie", "La autenticación usa una cookie de sesión.", &[], &["src/auth.rs"]);
     let new = save(&mut a, "/p", Kind::Decision, "La autenticación va con JWT", "Se pasó a JWT. Ver `src/auth.rs`.", &["verified", "auth"], &["src/auth.rs", "/etc/hosts"]);
     veredictos::set(&a, &old, &new, veredictos::SUPERSEDED, "", "").unwrap();
@@ -67,7 +67,7 @@ fn round_trip_to_an_empty_database() {
     memoria::update(&mut a, &global, memoria::Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     let procedure = save(&mut a, "/p", Kind::Procedure, "Publicar", "1. Compilar.\n2. Subir.", &["index"], &[]);
     // Real verification: the seal (what `omoi verify` sets), not the `verified` tag.
-    let seal = verificado::verificar(&mut a, &new, "Marc Mayol").unwrap().verified.unwrap();
+    let seal = verificado::verify(&mut a, &new, "Marc Mayol").unwrap().verified.unwrap();
 
     let bundle = dir.join("knowledge");
     let n = okf::exportar(&a, &bundle, Que::Personal).unwrap();
@@ -96,7 +96,7 @@ fn round_trip_to_an_empty_database() {
     // with new ids and by each concept's key (`okf:<path>`, not its id or its key from here: with
     // them a foreign bundle rewrote whatever was already there), global goes to the destination and nothing comes in pinned;
     // the seal, only when trusting the bundle (`--trust-verified`).
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     let trusting = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
     let r = okf::importar_con(&mut z, None, &b, &Destino::Proyecto("/q".into()), trusting).unwrap();
     assert_eq!((r.concepts, r.created, r.updated, r.failed, r.verdicts, r.verified), (6, 6, 0, 0, 1, 1), "{r:?}");
@@ -159,7 +159,7 @@ fn someone_elses_bundle() {
     std::fs::write(root.join("architecture").join("layers.md"), "---\ntype: Architecture\nstatus: deprecated\n---\nFive layers. The token is ghp_abcdefghijklmnopqrstuvwxyz0123456789.\n").unwrap();
     std::fs::write(root.join("convention").join("style.md"), "---\ntype: Convention\ntitle: Go style\n---\n").unwrap();
 
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     // The repository folder works: its knowledge/ is read.
     let b = okf::leer(&dir.join("repo")).unwrap();
     assert_eq!(b.conceptos.len(), 3);
@@ -175,7 +175,7 @@ fn someone_elses_bundle() {
         assert!(g.tags.contains(&t.to_string()), "{t}: {:?}", g.tags);
     }
     // The person's `verified` is the seal, with its original date; neither a tag nor data.
-    assert_eq!(g.verified, Some(verificado::Verificada { by: "ahormati".into(), at: "2026-06-25T09:00:00.000Z".into() }));
+    assert_eq!(g.verified, Some(verificado::Verified { by: "ahormati".into(), at: "2026-06-25T09:00:00.000Z".into() }));
     assert!(!g.tags.iter().any(|t| t.starts_with("verified")), "{:?}", g.tags);
     assert!(g.content.starts_with("3-tier governance model.\n\n# Governance") && !g.content.contains('\r'), "la descripción, delante: {}", g.content);
     let d = &memoria::data_of(&db, &[g.id.as_str()]).unwrap()[&g.id];
@@ -203,19 +203,19 @@ fn someone_elses_bundle() {
     let c = read(&out.join("r/architecture/layers.md"));
     assert!(c.contains("type: Architecture") && c.contains("status: deprecated"), "el tipo original vuelve: {c}");
     // Without the seal, the person's `verified` no longer comes out (the process's one does).
-    assert!(verificado::desverificar(&mut db, &g.id).unwrap());
+    assert!(verificado::unverify(&mut db, &g.id).unwrap());
     okf::exportar(&db, &out, Que::Personal).unwrap();
     let t = read(&out.join("r/architecture/governance-model.md"));
     assert!(!t.contains("human:ahormati") && t.contains("process:nightly"), "{t}");
     // And changing the text removes it too: the person verified the previous text.
-    verificado::verificar(&mut db, &g.id, "ahormati").unwrap();
+    verificado::verify(&mut db, &g.id, "ahormati").unwrap();
     let changes = memoria::Changes { content: Some("Otro texto.".into()), reason: Some("x".into()), ..Default::default() };
     memoria::update(&mut db, &g.id, changes, None).unwrap();
     okf::exportar(&db, &out, Que::Personal).unwrap();
     assert!(!read(&out.join("r/architecture/governance-model.md")).contains("human:"));
 
     // From an agent's shell (`verificar` = false), the same but without the seal: it is counted to warn.
-    let mut other = db::abrir(&dir.join("agente.db")).unwrap();
+    let mut other = db::open(&dir.join("agente.db")).unwrap();
     let r = okf::importar(&mut other, None, &b, &Destino::Proyecto("/r".into()), false, false).unwrap();
     assert_eq!((r.created, r.verified, r.not_verified), (3, 0, 1), "{r:?}");
     let g = memoria::by_key(&other, &Scope::All, "okf:architecture/governance-model").unwrap().unwrap();
@@ -231,7 +231,7 @@ fn someone_elses_bundle() {
 #[test]
 fn a_tag_does_not_verify() {
     let dir = comun::Temporal::nueva("okf-etiqueta");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     // An agent can set tags: `verified` and `verified:<who>` are tags like any other.
     let id = save(&mut db, "/p", Kind::Fact, "Dice que está verificada", "Pero no lo está.", &["verified", "verified:marc"], &[]);
     let bundle = dir.join("b");
@@ -243,7 +243,7 @@ fn a_tag_does_not_verify() {
     let b = okf::leer(&bundle).unwrap();
     okf::importar(&mut db, None, &b, &Destino::Proyecto("/p".into()), false, true).unwrap();
     assert_eq!(memoria::get(&db, &id).unwrap().verified, None);
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     let r = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
     assert_eq!((r.created, r.verified), (1, 0), "{r:?}");
     let m = all_memories(&z).remove(0);
@@ -275,8 +275,8 @@ fn a_tag_does_not_verify() {
 #[test]
 fn spaces_go_separately() {
     let dir = comun::Temporal::nueva("okf-espacios");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
-    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
+    let acme = proyecto::create_space(&db, "acme").unwrap();
     save(&mut db, "/p", Kind::Fact, "Personal", "Mío.", &[], &[]);
     save(&mut db, "", Kind::Fact, "Global", "De todos.", &[], &[]);
     memoria::save(&mut db, NewMemory { space_id: Some(acme), kind: Some(Kind::Fact), title: "Del cliente".into(), content: "Solo de acme.".into(), ..Default::default() }, None).unwrap();
@@ -290,21 +290,21 @@ fn spaces_go_separately() {
     assert!(everything.contains("Solo de acme") && !everything.contains("Mío.") && !everything.contains("De todos."));
 
     // A space's memories don't come in without saying which space.
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     let b = okf::leer(&client).unwrap();
     let e = okf::importar(&mut z, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap_err();
     assert!(format!("{e}").contains("--space"), "{e}");
-    let other = proyecto::crear_espacio(&z, "acme").unwrap();
+    let other = proyecto::create_space(&z, "acme").unwrap();
     let r = okf::importar(&mut z, None, &b, &Destino::Espacio(other), false, true).unwrap();
     assert_eq!(r.created, 1);
     let m = all_memories(&z).remove(0);
     assert!(m.space_only() && m.space == "acme", "{m:?}");
 
     // And personal ones don't go into a client's project.
-    let mut w = db::abrir(&dir.join("w.db")).unwrap();
-    let id = proyecto::registrar(&w, "/cliente").unwrap();
-    let s = proyecto::crear_espacio(&w, "acme").unwrap();
-    proyecto::asignar_espacio(&w, id, Some(s)).unwrap();
+    let mut w = db::open(&dir.join("w.db")).unwrap();
+    let id = proyecto::register(&w, "/cliente").unwrap();
+    let s = proyecto::create_space(&w, "acme").unwrap();
+    proyecto::assign_space(&w, id, Some(s)).unwrap();
     let b = okf::leer(&personal).unwrap();
     assert!(okf::importar(&mut w, None, &b, &Destino::Proyecto("/cliente".into()), false, true).is_err());
 }
@@ -312,7 +312,7 @@ fn spaces_go_separately() {
 #[test]
 fn mirror_only_touches_its_own() {
     let dir = comun::Temporal::nueva("okf-espejo");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let a = save(&mut db, "/p", Kind::Fact, "Uno", "Primero.", &[], &[]);
     save(&mut db, "/p", Kind::Fact, "Dos", "Segundo.", &[], &[]);
     let bundle = dir.join("b");
@@ -366,7 +366,7 @@ fn through_the_cli() {
             .env("OMOIKANE_AUTO_UPDATE", "0")
             .env("OMOIKANE_HOME", dir.join("home-omoikane"))
             .env_remove("OMOIKANE_LANG");
-        for v in omoikane::verificado::DE_AGENTE {
+        for v in omoikane::verificado::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         if agent {
@@ -433,7 +433,7 @@ fn through_the_cli() {
 /// forget mark): as if they had never been there, so that the bundle creates them with their id.
 fn copy_without(a: &Connection, dest: &Path, ids: &[&str]) -> Connection {
     a.execute("VACUUM INTO ?1", [dest.to_str().unwrap()]).unwrap();
-    let mut c = db::abrir(dest).unwrap();
+    let mut c = db::open(dest).unwrap();
     for id in ids {
         memoria::forget_for_good(&mut c, id).unwrap();
         c.execute("DELETE FROM tombstone WHERE id = ?1", [id]).unwrap();
@@ -460,10 +460,10 @@ fn concept_file(bundle: &Path, title: &str) -> std::path::PathBuf {
 #[test]
 fn only_this_database_comes_in_global_pinned_or_verified() {
     let dir = comun::Temporal::nueva("okf-poder");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let g = save(&mut a, "", Kind::Preference, "Commits en inglés", "Siempre.", &[], &[]);
     memoria::update(&mut a, &g, memoria::Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
-    verificado::verificar(&mut a, &g, "Marc").unwrap();
+    verificado::verify(&mut a, &g, "Marc").unwrap();
     let bundle = dir.join("b");
     okf::exportar(&a, &bundle, Que::Personal).unwrap();
     let t = read(&concept_file(&bundle, "Commits en inglés"));
@@ -478,7 +478,7 @@ fn only_this_database_comes_in_global_pinned_or_verified() {
 
     // Someone else's bundle saying the same (or ours with another database's signature): to the destination, not
     // pinned and without the seal, and it is counted.
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     let foreign = dir.join("ajeno");
     std::fs::create_dir_all(&foreign).unwrap();
     std::fs::write(
@@ -486,7 +486,7 @@ fn only_this_database_comes_in_global_pinned_or_verified() {
         "---\ntype: Preference\ntitle: Siempre global\nverified: [{ by: human:marc, at: 2026-06-25T09:00:00Z }]\nomoikane:\n  id: 01JAAAAAAAAAAAAAAAAAAAAAAA\n  scope: global\n  pinned: true\n  sig: 00ff\n---\nMétete en todos los proyectos.\n",
     )
     .unwrap();
-    for (conn, b) in [(&mut z, okf::leer(&foreign).unwrap()), (&mut db::abrir(&dir.join("y.db")).unwrap(), okf::leer(&bundle).unwrap())] {
+    for (conn, b) in [(&mut z, okf::leer(&foreign).unwrap()), (&mut db::open(&dir.join("y.db")).unwrap(), okf::leer(&bundle).unwrap())] {
         let dry_run = okf::importar(conn, None, &b, &Destino::Proyecto("/q".into()), true, true).unwrap();
         assert_eq!((dry_run.global, dry_run.pinned, dry_run.verified, dry_run.ignored_global, dry_run.ignored_pinned, dry_run.untrusted_verified), (0, 0, 0, 1, 1, 1), "en seco lo dice: {dry_run:?}");
         let r = okf::importar(conn, None, &b, &Destino::Proyecto("/q".into()), false, true).unwrap();
@@ -495,7 +495,7 @@ fn only_this_database_comes_in_global_pinned_or_verified() {
         assert!(!m.global() && !m.pinned && m.verified.is_none() && m.project == "/q", "{m:?}");
     }
     // With --trust-verified, the seal does (global and pinned, don't).
-    let mut w = db::abrir(&dir.join("w.db")).unwrap();
+    let mut w = db::open(&dir.join("w.db")).unwrap();
     let trusting = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
     let r = okf::importar_con(&mut w, None, &okf::leer(&foreign).unwrap(), &Destino::Proyecto("/q".into()), trusting).unwrap();
     assert_eq!((r.global, r.pinned, r.verified), (0, 0, 1), "{r:?}");
@@ -512,11 +512,11 @@ fn only_this_database_comes_in_global_pinned_or_verified() {
 #[test]
 fn reediting_or_unverifying_drops_the_seal() {
     let dir = comun::Temporal::nueva("okf-lavar");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let id = save(&mut a, "/p", Kind::Decision, "JWT", "La autenticación va con JWT.", &[], &[]);
     let other = save(&mut a, "/p", Kind::Decision, "Cookies", "Las sesiones van por cookie.", &[], &[]);
-    verificado::verificar(&mut a, &id, "Marc").unwrap();
-    verificado::verificar(&mut a, &other, "Marc").unwrap();
+    verificado::verify(&mut a, &id, "Marc").unwrap();
+    verificado::verify(&mut a, &other, "Marc").unwrap();
     let bundle = dir.join("b");
     okf::exportar(&a, &bundle, Que::Personal).unwrap();
     // Someone changes the text in the Markdown (and leaves `verified` and the signature as they were): the signature
@@ -534,7 +534,7 @@ fn reediting_or_unverifying_drops_the_seal() {
     assert_eq!((r.created, r.verified, r.stale_verified), (0, 0, 1), "{r:?}");
 
     // The person unverifies the other one; reimporting the earlier bundle doesn't verify it again.
-    assert!(verificado::desverificar(&mut a, &other).unwrap());
+    assert!(verificado::unverify(&mut a, &other).unwrap());
     let r = okf::importar(&mut a, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/p".into()), false, true).unwrap();
     assert_eq!((r.verified, r.stale_verified, r.untrusted_verified), (0, 1, 1), "{r:?}");
     assert!(memoria::get(&a, &other).unwrap().verified.is_none());
@@ -546,8 +546,8 @@ fn reediting_or_unverifying_drops_the_seal() {
     let trusting = okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true };
     let r = okf::importar_con(&mut a, None, &okf::leer(&foreign).unwrap(), &Destino::Proyecto("/p".into()), trusting).unwrap();
     assert_eq!((r.created, r.verified, r.stale_verified), (1, 0, 1), "{r:?}");
-    assert!(verificado::verificar_en(&mut a, &id, "Marc", Some("2099-01-01T00:00:00Z")).is_err());
-    assert!(verificado::verificar_en(&mut a, &id, "Marc", Some("2026-01-01T00:00:00Z")).is_ok());
+    assert!(verificado::verify_at(&mut a, &id, "Marc", Some("2099-01-01T00:00:00Z")).is_err());
+    assert!(verificado::verify_at(&mut a, &id, "Marc", Some("2026-01-01T00:00:00Z")).is_ok());
 }
 
 /// Importing doesn't resurrect what was forgotten with its same id: neither what is in the trash nor what only
@@ -555,7 +555,7 @@ fn reediting_or_unverifying_drops_the_seal() {
 #[test]
 fn forgotten_does_not_come_back() {
     let dir = comun::Temporal::nueva("okf-olvido");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let trashed = save(&mut a, "/p", Kind::Fact, "A la papelera", "Uno.", &[], &[]);
     let purged = save(&mut a, "/p", Kind::Fact, "Del todo", "Dos.", &[], &[]);
     let alive = save(&mut a, "/p", Kind::Fact, "Viva", "Tres.", &[], &[]);
@@ -600,7 +600,7 @@ fn bundles_with_limits() {
         format!("---\ntype: Fact\ntitle: Con datos\nomoikane:\n  id: 01JBBBBBBBBBBBBBBBBBBBBBBB\n  data: {{ x: \"{}\" }}\n---\nD.\n", "y".repeat(70_000)),
     )
     .unwrap();
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let r = okf::importar(&mut db, None, &okf::leer(&data_dir).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
     assert_eq!((r.created, r.failed), (0, 1), "{r:?}");
     assert!(all_memories(&db).is_empty(), "sin memoria a medias");
@@ -625,7 +625,7 @@ fn from_home_and_what_would_come_in() {
             .env("USERPROFILE", &home)
             .env("HOME", &home)
             .env_remove("OMOIKANE_LANG");
-        for v in omoikane::verificado::DE_AGENTE {
+        for v in omoikane::verificado::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         let o = c.output().unwrap();
@@ -659,7 +659,7 @@ fn from_home_and_what_would_come_in() {
 #[test]
 fn a_foreign_concept_does_not_rewrite_local_by_id() {
     let dir = comun::Temporal::nueva("okf-por-id");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let global = save(&mut a, "", Kind::Preference, "Commits en inglés", "Siempre.", &[], &[]);
     memoria::update(&mut a, &global, memoria::Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     let other = save(&mut a, "/pa", Kind::Fact, "Del proyecto A", "Solo de A.", &[], &[]);
@@ -705,7 +705,7 @@ fn a_foreign_concept_does_not_rewrite_local_by_id() {
 #[test]
 fn the_signature_covers_the_text() {
     let dir = comun::Temporal::nueva("okf-firma-texto");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let g = save(&mut a, "", Kind::Preference, "Commits en inglés", "Siempre.", &[], &[]);
     memoria::update(&mut a, &g, memoria::Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     let bundle = dir.join("b");
@@ -729,7 +729,7 @@ fn the_signature_covers_the_text() {
 #[test]
 fn a_global_that_moved_is_not_duplicated() {
     let dir = comun::Temporal::nueva("okf-movida");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let g = memoria::save_by_key(&mut a, "estilo", NewMemory { kind: Some(Kind::Preference), title: "Estilo".into(), content: "Corto.".into(), ..Default::default() }, None, None).unwrap().memory.id;
     let bundle = dir.join("b");
     okf::exportar(&a, &bundle, Que::Personal).unwrap();
@@ -745,7 +745,7 @@ fn a_global_that_moved_is_not_duplicated() {
 #[test]
 fn an_imported_trade_memory_goes_through_leak_checks() {
     let dir = comun::Temporal::nueva("okf-fugas");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     save(&mut a, "/w/zentrix", Kind::Fact, "Del cliente", "Algo de Zentrix.", &[], &[]);
     let foreign = dir.join("ajeno");
     std::fs::create_dir_all(&foreign).unwrap();
@@ -768,7 +768,7 @@ fn an_imported_trade_memory_goes_through_leak_checks() {
 #[test]
 fn a_lowercase_id_is_the_same() {
     let dir = comun::Temporal::nueva("okf-minusculas");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let alive = save(&mut a, "/p", Kind::Fact, "Viva", "Uno.", &[], &[]);
     let forgotten = save(&mut a, "/p", Kind::Fact, "Olvidada", "Dos.", &[], &[]);
     let bundle = dir.join("b");
@@ -788,7 +788,7 @@ fn a_lowercase_id_is_the_same() {
 #[test]
 fn a_bundle_on_a_network_path_is_not_opened() {
     let dir = comun::Temporal::nueva("okf-red");
-    let a = db::abrir(&dir.join("a.db")).unwrap();
+    let a = db::open(&dir.join("a.db")).unwrap();
     for r in [r"\\10.255.255.1\x", "//10.255.255.1/x", r"\\?\UNC\10.255.255.1\x", r"\??\UNC\10.255.255.1\x", r"\\.\pipe\x"] {
         let t = std::time::Instant::now();
         let e = okf::leer(Path::new(r)).unwrap_err();
@@ -808,7 +808,7 @@ fn a_bundle_on_a_network_path_is_not_opened() {
 #[test]
 fn the_signature_covers_everything_applied() {
     let dir = comun::Temporal::nueva("okf-firma-todo");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let x = memoria::save_by_key(
         &mut a,
         "auth-jwt",
@@ -865,7 +865,7 @@ fn the_signature_covers_everything_applied() {
     // A signed verdict (from a concept of this database) whose target is replaced by a foreign concept with
     // the same path, and a foreign concept saying the local one is superseded by it or contradicts it:
     // no verdict.
-    let mut b2 = db::abrir(&dir.join("b2.db")).unwrap();
+    let mut b2 = db::open(&dir.join("b2.db")).unwrap();
     let old_one = save(&mut b2, "/p", Kind::Fact, "Puerto 80", "El servidor usa el 80.", &[], &[]);
     let new_one = save(&mut b2, "/p", Kind::Fact, "Puerto 443", "El servidor usa el 443.", &[], &[]);
     veredictos::set(&b2, &old_one, &new_one, veredictos::SUPERSEDED, "", "").unwrap();
@@ -888,10 +888,10 @@ fn the_signature_covers_everything_applied() {
 #[test]
 fn an_old_bundle_does_not_go_back() {
     let dir = comun::Temporal::nueva("okf-atras");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let x = save(&mut a, "/p", Kind::Decision, "JWT", "La autenticación va con JWT.", &["auth"], &[]);
     let y = save(&mut a, "/p", Kind::Decision, "Cookies", "Van por cookie.", &[], &[]);
-    verificado::verificar(&mut a, &x, "Marc").unwrap();
+    verificado::verify(&mut a, &x, "Marc").unwrap();
     veredictos::set(&a, &x, &y, veredictos::CONTRADICTS, "", "").unwrap();
     let old_one = dir.join("viejo");
     okf::exportar(&a, &old_one, Que::Personal).unwrap();
@@ -924,9 +924,9 @@ fn an_old_bundle_does_not_go_back() {
 #[test]
 fn a_crlf_bundle_is_still_from_this_database() {
     let dir = comun::Temporal::nueva("okf-crlf");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let m = save(&mut a, "/p", Kind::Decision, "Dos líneas", "Línea uno\nLínea dos, con ñ.", &["x"], &[]);
-    verificado::verificar(&mut a, &m, "Marc").unwrap();
+    verificado::verify(&mut a, &m, "Marc").unwrap();
     let crlf = save(&mut a, "/p", Kind::Fact, "Con CRLF", "Uno\r\nDos", &[], &[]);
     let bundle = dir.join("b");
     okf::exportar(&a, &bundle, Que::Personal).unwrap();
@@ -949,7 +949,7 @@ fn a_crlf_bundle_is_still_from_this_database() {
 #[test]
 fn accented_names_in_nfd() {
     let dir = comun::Temporal::nueva("okf-nfd");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     // «Café» with the accent separate (NFD), as a title pasted from a Mac would leave it.
     save(&mut db, "/p", Kind::Fact, "Cafe\u{301} con leche", "Sin azúcar.", &[], &[]);
     save(&mut db, "/p", Kind::Fact, "Té verde", "A 80 grados.", &[], &[]);
@@ -989,7 +989,7 @@ fn accented_names_in_nfd() {
 fn provenance_goes_in_sources() {
     use omoikane::procedencia::Provenance;
     let dir = comun::Temporal::nueva("okf-sources");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let p = Provenance {
         session: "2bd891d2-sesion".into(),
         commit: "9aa084b5c3d1e2f30000".into(),
@@ -1009,7 +1009,7 @@ fn provenance_goes_in_sources() {
     assert!(t.contains("resource: trace:0af7651916cd43dd8448eb211c80319c/b7ad6b7169203331,"), "{t}");
 
     // Another database: provenance comes back as is, and none of it stays in the data.
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     okf::importar(&mut z, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
     let m = all_memories(&z).remove(0);
     assert_eq!(m.provenance.as_ref(), Some(&p), "{m:?}");
@@ -1017,7 +1017,7 @@ fn provenance_goes_in_sources() {
 
     // Someone else's bundle's `sources` is saved and goes ahead of ours when exporting again.
     std::fs::write(&f, t.replacen("sources:\n", "sources:\n  - { id: wiki, resource: \"https://wiki.example/pagina\" }\n", 1)).unwrap();
-    let mut y = db::abrir(&dir.join("y.db")).unwrap();
+    let mut y = db::open(&dir.join("y.db")).unwrap();
     okf::importar(&mut y, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), false, true).unwrap();
     let m = all_memories(&y).remove(0);
     assert_eq!(m.provenance.as_ref(), Some(&p));
@@ -1036,7 +1036,7 @@ fn provenance_goes_in_sources() {
 fn evidence_travels_in_the_bundle() {
     use omoikane::evidencia::{EvidenceKind, Evidence};
     let dir = comun::Temporal::nueva("okf-evidencia");
-    let mut a = db::abrir(&dir.join("a.db")).unwrap();
+    let mut a = db::open(&dir.join("a.db")).unwrap();
     let ev = vec![
         Evidence { kind: EvidenceKind::Tested, detail: "cargo test: 83 passed".into(), url: None },
         Evidence { kind: EvidenceKind::Doc, detail: "la guía lo dice".into(), url: Some("https://docs.example/guia".into()) },
@@ -1047,7 +1047,7 @@ fn evidence_travels_in_the_bundle() {
     okf::exportar(&a, &bundle, Que::Personal).unwrap();
     let t = read(&concept_file(&bundle, "Con evidencia"));
     assert!(t.contains("evidence") && t.contains("cargo test: 83 passed"), "{t}");
-    let mut z = db::abrir(&dir.join("z.db")).unwrap();
+    let mut z = db::open(&dir.join("z.db")).unwrap();
     let r = okf::importar_con(&mut z, None, &okf::leer(&bundle).unwrap(), &Destino::Proyecto("/q".into()), okf::Opciones { en_seco: false, verificar: true, confiar_verificadas: true }).unwrap();
     assert_eq!(r.created, 1);
     assert_eq!(all_memories(&z).remove(0).evidence, ev);

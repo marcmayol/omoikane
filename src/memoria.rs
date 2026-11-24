@@ -100,7 +100,7 @@ pub struct Memory {
     /// Who verified it and when, if a person verified it and the text hasn't changed since
     /// (`verificado`, in `memory.extra`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verified: Option<crate::verificado::Verificada>,
+    pub verified: Option<crate::verificado::Verified>,
     /// In which session and at which commit it was written (`procedencia`, in `memory.extra`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<crate::procedencia::Provenance>,
@@ -113,7 +113,7 @@ pub struct Memory {
     /// The verification removed by this call's text change (`update`). Not stored nor in
     /// the JSON: it is so the caller can say so.
     #[serde(skip)]
-    pub unverified: Option<crate::verificado::Verificada>,
+    pub unverified: Option<crate::verificado::Verified>,
 }
 
 impl Memory {
@@ -221,7 +221,7 @@ pub struct Version {
 }
 
 /// Which memories are visible. From a project, its own, its space's and the global ones; never those of
-/// another space. From a general folder (the user's, see `proyecto::es_general`), all.
+/// another space. From a general folder (the user's, see `proyecto::is_general`), all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Scope {
     /// A project (`id`; -1 if it has nothing yet) and its space.
@@ -238,10 +238,10 @@ pub enum Scope {
 impl Scope {
     /// What is visible from a project's folder (without writing anything to the database).
     pub fn from_project(db: &Connection, project: &str) -> Result<Scope> {
-        if crate::proyecto::es_general(project) {
+        if crate::proyecto::is_general(project) {
             return Ok(Scope::All);
         }
-        let (id, space) = crate::proyecto::resolver(db, project)?.unwrap_or((-1, None));
+        let (id, space) = crate::proyecto::resolve(db, project)?.unwrap_or((-1, None));
         Ok(Scope::Project { id, space })
     }
 
@@ -290,7 +290,7 @@ impl Scope {
         Ok(match self {
             Scope::All => true,
             Scope::Project { id, space } => (project_id == *id || project_id == 0) && in_space(*space),
-            Scope::Space(s) => (project_id == 0 || crate::proyecto::espacio_de(db, project_id)? == *s) && in_space(*s),
+            Scope::Space(s) => (project_id == 0 || crate::proyecto::space_of(db, project_id)? == *s) && in_space(*s),
         })
     }
 
@@ -386,7 +386,7 @@ pub(crate) fn from_row(f: &Row) -> rusqlite::Result<Memory> {
     let kind: String = f.get(2)?;
     let parsed = kind.parse::<Kind>().ok();
     let (title, content): (String, String) = (f.get(3)?, f.get(4)?);
-    let verified = crate::verificado::de_columna(f.get::<_, Option<String>>(17)?.as_deref(), &kind, &title, &content);
+    let verified = crate::verificado::from_column(f.get::<_, Option<String>>(17)?.as_deref(), &kind, &title, &content);
     let tags = list(6)?;
     let project_id: i64 = f.get(14)?;
     // What it may carry depending on where it is now (a global one doesn't show a client's branch).
@@ -884,7 +884,7 @@ fn placement(tx: &Connection, project: &str, project_id: Option<i64>, space_id: 
     Ok(match (space_id, project_id) {
         (Some(s), _) => (0, Some(s)),
         (None, Some(p)) => (p, None),
-        (None, None) => (crate::proyecto::registrar(tx, project)?, None),
+        (None, None) => (crate::proyecto::register(tx, project)?, None),
     })
 }
 
@@ -902,7 +902,7 @@ pub(crate) fn hlc_of(db: &Connection, id: &str) -> Result<String> {
 /// none) of what was forgotten: the forget goes only to that space's repository.
 pub(crate) fn mark_forgotten(db: &Connection, id: &str, deleted_at: Option<&str>, hlc: &str, space_key: &str) -> Result<()> {
     let cur: Option<String> = db.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [id], |f| f.get(0)).optional()?;
-    if cur.is_none_or(|a| crate::reloj::mayor(hlc, &a)) {
+    if cur.is_none_or(|a| crate::reloj::is_after(hlc, &a)) {
         db.execute(
             &format!("INSERT OR REPLACE INTO tombstone(id, deleted_at, hlc, space_key) VALUES (?1, COALESCE(?2, {NOW}), ?3, ?4)"),
             params![id, deleted_at, hlc, space_key],
@@ -917,7 +917,7 @@ pub(crate) fn mark_forgotten(db: &Connection, id: &str, deleted_at: Option<&str>
 /// not, the one of the general repository (`meta` `autor`). So the name someone joined a
 /// client with never signs another client's things nor their own; empty = none.
 pub(crate) fn author_in(db: &Connection, space_key: &str) -> Result<String> {
-    if let Some(a) = crate::entorno::autor() {
+    if let Some(a) = crate::entorno::author() {
         return Ok(a);
     }
     if !space_key.is_empty()
@@ -930,14 +930,14 @@ pub(crate) fn author_in(db: &Connection, space_key: &str) -> Result<String> {
 
 /// The author of what is saved in this project or space (`author_in` with the space it belongs to).
 pub(crate) fn author_of(db: &Connection, project_id: i64, space_id: Option<i64>) -> Result<String> {
-    if crate::entorno::autor().is_some() {
+    if crate::entorno::author().is_some() {
         return author_in(db, "");
     }
     let space = match space_id {
         Some(s) => Some(s),
-        None => crate::proyecto::espacio_de(db, project_id)?,
+        None => crate::proyecto::space_of(db, project_id)?,
     };
-    author_in(db, &crate::proyecto::clave_espacio(db, space)?)
+    author_in(db, &crate::proyecto::space_key(db, space)?)
 }
 
 fn insert(db: &mut Connection, id: &str, new: NewMemory, origin: Option<&Origin>, model: Option<&Modelo>) -> Result<Memory> {
@@ -963,10 +963,10 @@ fn insert_in(tx: &Transaction, id: &str, new: NewMemory, origin: Option<&Origin>
     let (project_id, space_id) = placement(tx, &new.project, new.project_id, new.space_id)?;
     let (hlc, author) = match origin {
         Some(o) => {
-            crate::reloj::recibir(tx, o.hlc)?;
+            crate::reloj::receive(tx, o.hlc)?;
             (o.hlc.to_string(), o.author.to_string())
         }
-        None => (crate::reloj::sello(tx)?, author_of(tx, project_id, space_id)?),
+        None => (crate::reloj::stamp(tx)?, author_of(tx, project_id, space_id)?),
     };
     let content_hlc = match origin {
         Some(o) if !o.content_hlc.is_empty() => o.content_hlc.to_string(),
@@ -1041,8 +1041,8 @@ pub(crate) fn memory_placement(db: &Connection, id: &str) -> Result<Option<(bool
         return Ok(live);
     }
     let Some(text) = db.query_row("SELECT memory FROM forgotten WHERE id = ?1", [id], |f| f.get::<_, String>(0)).optional()? else { return Ok(None) };
-    let global = crate::sync::de_papelera(&text).is_some_and(|(m, _, _)| m.project_key.is_empty() && m.project.is_empty() && m.space.is_empty());
-    Ok(Some((global, crate::sync::espacio_de_papelera(db, &text)?)))
+    let global = crate::sync::from_trash_json(&text).is_some_and(|(m, _, _)| m.project_key.is_empty() && m.project.is_empty() && m.space.is_empty());
+    Ok(Some((global, crate::sync::trash_space(db, &text)?)))
 }
 
 /// Full id from the id or its start (what the CLI shows is enough).
@@ -1077,7 +1077,7 @@ pub fn in_scope(db: &Connection, base: &Scope, id: &str) -> Result<()> {
             "esa memoria es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
         ));
     }
-    let own = crate::proyecto::clave_espacio(db, base.space())?;
+    let own = crate::proyecto::space_key(db, base.space())?;
     match memory_placement(db, id)? {
         Some((global, space_key)) if !global && space_key != own => bail!(tr!(
             "that memory is not in this scope: it belongs to another space, and from this project you only reach its own space and the global memories; open the session in that project, or in the home folder",
@@ -1131,10 +1131,10 @@ fn update_in(tx: &Transaction, id: &str, c: Changes, origin: Option<&Origin>, mo
     // The change's stamp: the origin's, or a local one later than that of the version being changed.
     let hlc = match origin {
         Some(o) => {
-            crate::reloj::recibir(tx, o.hlc)?;
+            crate::reloj::receive(tx, o.hlc)?;
             o.hlc.to_string()
         }
-        None => crate::reloj::sello_tras(tx, &before_hlc)?,
+        None => crate::reloj::stamp_after(tx, &before_hlc)?,
     };
     let n: i64 = tx.query_row("SELECT n FROM memory WHERE id = ?1", [id], |f| f.get(0))?;
     // What comes from another computer brings the whole memory, including the fields this version doesn't
@@ -1217,7 +1217,7 @@ fn update_in(tx: &Transaction, id: &str, c: Changes, origin: Option<&Origin>, mo
     save_version(tx, id, &before, None, c.reason.as_deref())?;
     // The person verified the previous text, not this one: changing it from here removes the verification
     // (see `verificado`). What comes from another computer brings its own in `extra`.
-    let unverified = if origin.is_none() && judged_changed { crate::verificado::quitar_al_cambiar(tx, id, &before)? } else { None };
+    let unverified = if origin.is_none() && judged_changed { crate::verificado::remove_on_change(tx, id, &before)? } else { None };
     tx.execute(
         &format!(
             "UPDATE memory SET title = ?2, content = ?3, kind = ?4, paths = ?5, tags = ?6, pinned = ?7, project_id = ?8, space_id = ?11,
@@ -1520,12 +1520,12 @@ pub fn restore(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<
         tx.commit()?;
         bail!(tr!("{id} is not forgotten here (it came back from another computer); removed it from the trash", "{id} no está olvidada aquí (volvió desde otro equipo); la quito de la papelera"));
     }
-    let (m, extra, _) = crate::sync::de_papelera(&m).ok_or_else(|| anyhow!(tr!("{id} can't be read from the trash", "{id} no se entiende en la papelera")))?;
-    let extra = crate::sync::extra_a_texto(&extra);
+    let (m, extra, _) = crate::sync::from_trash_json(&m).ok_or_else(|| anyhow!(tr!("{id} can't be read from the trash", "{id} no se entiende en la papelera")))?;
+    let extra = crate::sync::extra_to_text(&extra);
     let forgotten_hlc = if m.content_hlc.is_empty() { forgotten_hlc } else { m.content_hlc.clone() };
     let versions: Vec<Version> = serde_json::from_str(&versions).unwrap_or_default();
     let mark: String = tx.query_row("SELECT hlc FROM tombstone WHERE id = ?1", [&id], |f| f.get(0)).optional()?.unwrap_or_default();
-    let hlc = crate::reloj::sello_tras(&tx, &mark)?;
+    let hlc = crate::reloj::stamp_after(&tx, &mark)?;
     let (project_id, space_id) = stored_placement(&tx, &m)?;
     let new = NewMemory {
         project: m.project.clone(),
@@ -1547,7 +1547,7 @@ pub fn restore(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<
     // had still hold).
     let o = Origin { created_at: &m.created_at, updated_at: &m.updated_at, hlc: &hlc, content_hlc: &forgotten_hlc, author: &m.author, extra: &extra };
     tx.execute("DELETE FROM tombstone WHERE id = ?1", [&id])?;
-    crate::sync::guardar_extra_olvido(&tx, &id, &Default::default())?;
+    crate::sync::save_tombstone_extra(&tx, &id, &Default::default())?;
     let r = insert_in(&tx, &id, new, Some(&o), model)?;
     for v in &versions {
         put_version(&tx, &id, v)?;
@@ -1561,20 +1561,20 @@ pub fn restore(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<
 /// in backups from before schema 10, by path), its space, or global.
 pub(crate) fn stored_placement(tx: &Connection, m: &Memory) -> Result<(i64, Option<i64>)> {
     if !m.project.is_empty() || !m.project_key.is_empty() {
-        let id = match crate::proyecto::resolver(tx, &m.project)? {
-            Some((id, _)) if m.project_key.is_empty() || crate::proyecto::clave_de(tx, id)? == m.project_key => id,
-            _ if !m.project_key.is_empty() => crate::proyecto::de_clave(tx, &m.project_key, &m.project, &crate::db::persona_de(tx), true)?,
-            _ => crate::proyecto::registrar(tx, &m.project)?,
+        let id = match crate::proyecto::resolve(tx, &m.project)? {
+            Some((id, _)) if m.project_key.is_empty() || crate::proyecto::key_of(tx, id)? == m.project_key => id,
+            _ if !m.project_key.is_empty() => crate::proyecto::of_key(tx, &m.project_key, &m.project, &crate::db::person_of(tx), true)?,
+            _ => crate::proyecto::register(tx, &m.project)?,
         };
         // As when receiving it through sync: a project with no space here takes the one it brings; one
         // with a space keeps its own.
-        if !m.space.is_empty() && crate::proyecto::espacio_de(tx, id)?.is_none() {
-            let s = crate::proyecto::espacio_de_clave(tx, &m.space)?;
+        if !m.space.is_empty() && crate::proyecto::space_of(tx, id)?.is_none() {
+            let s = crate::proyecto::space_of_key(tx, &m.space)?;
             tx.execute("UPDATE project SET space_id = ?2 WHERE id = ?1", params![id, s])?;
         }
         return Ok((id, None));
     }
-    Ok((0, crate::proyecto::espacio_de_clave(tx, &m.space)?))
+    Ok((0, crate::proyecto::space_of_key(tx, &m.space)?))
 }
 
 fn delete(db: &mut Connection, id: &str, mark: Option<(&str, &str, &str)>) -> Result<Memory> {
@@ -1590,10 +1590,10 @@ fn delete(db: &mut Connection, id: &str, mark: Option<(&str, &str, &str)>) -> Re
 fn delete_in(tx: &Transaction, id: &str, mark: Option<(&str, &str, &str)>) -> Result<Memory> {
     let (hlc, deleted_at): (String, Option<&str>) = match mark {
         Some((h, d, _)) => {
-            crate::reloj::recibir(tx, h)?;
+            crate::reloj::receive(tx, h)?;
             (h.to_string(), Some(d))
         }
-        None => (crate::reloj::sello_tras(tx, &hlc_of(tx, id)?)?, None),
+        None => (crate::reloj::stamp_after(tx, &hlc_of(tx, id)?)?, None),
     };
     let m = read(tx, id)?;
     mark_forgotten(tx, id, deleted_at, &hlc, &m.space)?;
@@ -1601,14 +1601,14 @@ fn delete_in(tx: &Transaction, id: &str, mark: Option<(&str, &str, &str)>) -> Re
     // computer that forgot it: another one (maybe another person) or this one.
     let who = match mark {
         Some((_, _, machine)) => machine.to_string(),
-        None => crate::reloj::equipo(tx)?,
+        None => crate::reloj::machine_name(tx)?,
     };
     let versions = history(tx, id)?;
     let mem_hlc = hlc_of(tx, id)?;
     let (content_hlc, extra): (String, String) = tx.query_row("SELECT content_hlc, extra FROM memory WHERE id = ?1", [id], |f| Ok((f.get(0)?, f.get(1)?)))?;
     let m = Memory { content_hlc, ..m };
     // It goes to the trash with its unknown fields: if it comes back (here or on another computer), they come back with it.
-    let text = crate::sync::a_papelera(&m, &crate::sync::extra_de(&extra), &Default::default())?;
+    let text = crate::sync::to_trash_json(&m, &crate::sync::extra_from(&extra), &Default::default())?;
     tx.execute(
         &format!("INSERT OR REPLACE INTO forgotten(id, memory, versions, hlc, deleted_at, by) VALUES (?1, ?2, ?3, ?4, COALESCE(?5, {NOW}), ?6)"),
         params![id, text, serde_json::to_string(&versions)?, mem_hlc, deleted_at, who],
@@ -2062,7 +2062,7 @@ fn set_data_in(tx: &Transaction, id: &str, data: Option<serde_json::Value>) -> R
         Some(d) => o.insert(DATA.into(), d),
         None => o.remove(DATA),
     };
-    let hlc = crate::reloj::sello_tras(tx, &hlc_of(tx, id)?)?;
+    let hlc = crate::reloj::stamp_after(tx, &hlc_of(tx, id)?)?;
     tx.execute(&format!("UPDATE memory SET extra = ?2, hlc = ?3, updated_at = {NOW} WHERE id = ?1"), params![id, serde_json::to_string(&o)?, hlc])?;
     Ok(true)
 }
@@ -2099,7 +2099,7 @@ pub fn set_review_reason(db: &mut Connection, id: &str, reason: &str) -> Result<
         return Ok(false);
     }
     o.insert(REVIEW_REASON_KEY.into(), reason.into());
-    let hlc = crate::reloj::sello_tras(&tx, &hlc_of(&tx, &id)?)?;
+    let hlc = crate::reloj::stamp_after(&tx, &hlc_of(&tx, &id)?)?;
     tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
     tx.commit()?;
     Ok(true)
@@ -2116,7 +2116,7 @@ pub fn add_evidence(db: &mut Connection, id: &str, new_ones: &[crate::evidencia:
     if !crate::evidencia::add(&mut o, new_ones) {
         return Ok(false);
     }
-    let hlc = crate::reloj::sello_tras(&tx, &hlc_of(&tx, &id)?)?;
+    let hlc = crate::reloj::stamp_after(&tx, &hlc_of(&tx, &id)?)?;
     tx.execute("UPDATE memory SET extra = ?2, hlc = ?3 WHERE id = ?1", params![id, serde_json::to_string(&o)?, hlc])?;
     tx.commit()?;
     Ok(true)
@@ -2204,11 +2204,11 @@ mod tests {
     #[test]
     fn all_same_as_through_the_index() {
         let dir = crate::comun::Temporal::nueva("todas-paralelo");
-        let mut db = crate::db::abrir(&dir.join("o.db")).unwrap();
+        let mut db = crate::db::open(&dir.join("o.db")).unwrap();
         db.execute_batch("PRAGMA synchronous = OFF").unwrap();
         let p = dir.join("p");
         std::fs::create_dir_all(&p).unwrap();
-        let key = crate::proyecto::de(&p).unwrap();
+        let key = crate::proyecto::of_dir(&p).unwrap();
         for i in 0..300 {
             let project = if i % 3 == 0 { String::new() } else { key.clone() };
             let kind = Some(if i % 4 == 0 { Kind::Decision } else { Kind::Fact });

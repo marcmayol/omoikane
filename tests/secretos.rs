@@ -271,7 +271,7 @@ fn measure() {
         eprintln!("OMOIKANE_MEDIR_DB no está: sin medida de Revisar");
         return;
     };
-    let db = omoikane::db::abrir(std::path::Path::new(&path)).unwrap();
+    let db = omoikane::db::open(std::path::Path::new(&path)).unwrap();
     let all = omoikane::memoria::recent(&db, &omoikane::memoria::Scope::All, None, usize::MAX >> 1).unwrap();
     omoikane::revisar::notices(&db, &omoikane::memoria::Scope::All).unwrap();
     let (mut scan, mut warnings) = (Vec::new(), Vec::new());
@@ -447,7 +447,7 @@ fn off_review_doctor_and_redact() {
     // «Redact» (what POST /api/redact does): the memory and its history, with the reason «redacted».
     e.omoi(&["update", &id, "--title", "Token de GitHub (CI)", "--reason", "título"], None, &redaction_off);
     {
-        let mut db = omoikane::db::abrir(&e.db_path()).unwrap();
+        let mut db = omoikane::db::open(&e.db_path()).unwrap();
         let m = omoikane::memoria::redact(&mut db, &id, None).unwrap();
         assert_eq!(m.redacted, vec!["github-token"]);
         assert_eq!(m.content, "export GH_TOKEN=[redacted:github-token]");

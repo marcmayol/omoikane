@@ -478,8 +478,8 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
     if id.is_empty() || id.contains(['/', '\\', '.', ':']) {
         return None;
     }
-    // The folders from the variables, only if they belong to this machine (see `proyecto::ruta_local`).
-    let home = crate::proyecto::casa_local()?;
+    // The folders from the variables, only if they belong to this machine (see `proyecto::is_local_path`).
+    let home = crate::proyecto::local_home()?;
     let from_var = |v: &str| std::env::var_os(v).map(std::path::PathBuf::from).and_then(crate::proyecto::local);
     let copilot = from_var("COPILOT_HOME").unwrap_or_else(|| home.join(".copilot"));
     [

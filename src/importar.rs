@@ -47,7 +47,7 @@ fn fix_up(mut n: NewMemory) -> NewMemory {
 fn identical(db: &Connection, n: &NewMemory) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM memory WHERE project_id = ?1 AND title = ?2 AND content = ?3)",
-        params![crate::proyecto::resolver(db, &n.project)?.map_or(-1, |(id, _)| id), n.title, n.content],
+        params![crate::proyecto::resolve(db, &n.project)?.map_or(-1, |(id, _)| id), n.title, n.content],
         |row| row.get(0),
     )?)
 }
@@ -131,7 +131,7 @@ fn kind_from_engram(t: &str) -> Kind {
 /// if it exists on this machine, and otherwise to `current`'s.
 pub fn leer(path: &Path, dir: Option<&Path>, current: &str) -> Result<(Vec<Entrante>, usize)> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
-    let forced = dir.map(proyecto::de).transpose()?;
+    let forced = dir.map(proyecto::of_dir).transpose()?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     // A single JSON object with `observations` is an engram export; if it can't be read,
     // say why (and not "it's neither one nor the other").
@@ -177,8 +177,8 @@ fn from_engram(e: EngramExport, forced: Option<&str>, current: &str) -> (Vec<Ent
             o.session_id
                 .as_ref()
                 .and_then(|s| dirs.get(s))
-                .filter(|d| proyecto::es_carpeta(Path::new(d)))
-                .and_then(|d| proyecto::de(Path::new(d)).ok())
+                .filter(|d| proyecto::is_dir(Path::new(d)))
+                .and_then(|d| proyecto::of_dir(Path::new(d)).ok())
                 .unwrap_or_else(|| current.to_string())
         };
         let kind = o.tipo.unwrap_or_default();

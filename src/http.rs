@@ -5,8 +5,8 @@
 //!   `/fuentes/*.woff2`, which the page loads from the binary)
 //! - `GET /api/memories` → the visible memories (see «Who sees what»), whole, newest to oldest, with
 //!   `versions` (how many previous versions its history keeps) and `links` (the ones it links with `[[…]]`)
-//! - `GET /api/projects` → the projects (`proyecto::lista`: key, space, folder and whether it is gone)
-//!   and the spaces (`proyecto::espacios`, with their name), to group and filter by space
+//! - `GET /api/projects` → the projects (`proyecto::list`: key, space, folder and whether it is gone)
+//!   and the spaces (`proyecto::spaces`, with their name), to group and filter by space
 //! - `GET /api/overview?months=…` → the owner view (`responsable::panorama`): per space, its
 //!   projects with their latest `status`, the pinned ones, the open decisions, who wrote what, what
 //!   `revisar` says, what is paused and what nobody has touched for `months` months (6). Only what
@@ -224,13 +224,13 @@ fn mirar(
     let Some(d) = requested.filter(|d| !d.trim().is_empty()) else {
         return Ok(Ok(server.clone()));
     };
-    // A network path is never looked at (`proyecto::de` rejects it before touching the disk): any website
+    // A network path is never looked at (`proyecto::of_dir` rejects it before touching the disk): any website
     // can request this URL with an `<img>`, and looking at it would open an SMB connection with the person's
     // NTLM hash.
-    if !crate::proyecto::ruta_local(std::path::Path::new(&d)) {
+    if !crate::proyecto::is_local_path(std::path::Path::new(&d)) {
         return Ok(Err(error(400, "dir: not a folder on this computer (network paths are never opened)")));
     }
-    let Ok(project) = crate::proyecto::de(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
+    let Ok(project) = crate::proyecto::of_dir(std::path::Path::new(&d)) else { return Ok(Err(error(400, "dir: no such folder"))) };
     let base = Scope::from_project(db, &project)?;
     if !server.abarca(&base) {
         return Ok(Err(error(
@@ -259,7 +259,7 @@ impl Mirador {
     pub(crate) fn nuevo(db: &rusqlite::Connection, dir: Option<PathBuf>, project: String) -> Result<Mirador> {
         let base = Scope::from_project(db, &project)?;
         let todo = matches!(base, Scope::All);
-        let espacio = crate::proyecto::clave_espacio(db, base.space())?;
+        let espacio = crate::proyecto::space_key(db, base.space())?;
         Ok(Mirador { dir, project, base, vista: base.widen(), todo, espacio })
     }
 
@@ -290,18 +290,18 @@ fn out_of_scope() -> Response<std::io::Cursor<Vec<u8>>> {
     error(403, "that memory is not in this scope: it belongs to another space; start `omoi serve` in that project, or in the home folder, to change it")
 }
 
-/// While serving, what other machines push arrives as in a session: every `cada_cuanto` (2
+/// While serving, what other machines push arrives as in a session: every `pull_interval` (2
 /// minutes) at most, with the same marker as the messages (so two don't pile up). It checks every
 /// quarter of the interval; without sync the database isn't even opened.
 fn spawn_periodic_pull(path: PathBuf) {
     std::thread::spawn(move || {
         loop {
-            if crate::sync::automatica(&path)
-                && let Ok(db) = db::abrir(&path)
+            if crate::sync::is_automatic(&path)
+                && let Ok(db) = db::open(&path)
             {
-                crate::sync::traer_si_toca(&db, &path);
+                crate::sync::pull_if_due(&db, &path);
             }
-            std::thread::sleep((crate::sync::cada_cuanto() / 4).max(std::time::Duration::from_secs(1)));
+            std::thread::sleep((crate::sync::pull_interval() / 4).max(std::time::Duration::from_secs(1)));
         }
     });
 }
@@ -359,8 +359,8 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
     spawn_periodic_pull(db.clone());
     // The project it started in: what each request sees depends on it (see «Who sees what»).
     let server_project = match &dir {
-        Some(d) => crate::proyecto::de(d)?,
-        None => crate::proyecto::actual()?,
+        Some(d) => crate::proyecto::of_dir(d)?,
+        None => crate::proyecto::current()?,
     };
     let view_token = new_view_token()?;
     let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
@@ -403,7 +403,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
             // Where it looks from: computed on every request, because a project can change
             // space while the server is running.
             let db_path = db.clone();
-            let mut base = db::abrir(&db)?;
+            let mut base = db::open(&db)?;
             let server = Mirador::nuevo(&base, dir.clone(), server_project.clone())?;
             let m = match mirar(&base, &server, param("dir"))? {
                 Ok(m) => m,
@@ -413,7 +413,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                 (Method::Get, "/api/memories") => {
                     // The view asks for this first: what fixes itself, before showing anything.
                     if crate::revisar::cleanup_quietly(&mut base) {
-                        crate::sync::programar(&db_path);
+                        crate::sync::schedule(&db_path);
                     }
                     let v = memoria::recent(&base, &m.vista, None, usize::MAX >> 1)?;
                     // How many previous versions each one has, for the view's timeline.
@@ -443,26 +443,26 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     let body = serde_json::json!({
                         // Where it looks from, so the view can say so.
                         "scope": m.json(&base)?,
-                        "projects": crate::proyecto::lista(&base, None, space, usize::MAX)?,
+                        "projects": crate::proyecto::list(&base, None, space, usize::MAX)?,
                         // Duplicates or in temp folders: they are proposed, never merged on their own.
                         "duplicates": crate::nombres::proposals(&base, &m.vista)?,
-                        "spaces": crate::proyecto::espacios(&base)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect::<Vec<_>>(),
+                        "spaces": crate::proyecto::spaces(&base)?.into_iter().filter(|e| m.ve_espacio(&e.key, false)).collect::<Vec<_>>(),
                         // The projects another machine has in another space, with what
                         // `sync status` says and the command that fixes it (only those that here belong to what is visible).
-                        "space_conflicts": crate::sync::choques(&db_path).iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
+                        "space_conflicts": crate::sync::clashes(&db_path).iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
-                            v["text"] = x.texto().into();
-                            v["command"] = x.orden().into();
+                            v["text"] = x.text().into();
+                            v["command"] = x.command().into();
                             v
                         }).collect::<Vec<_>>(),
                         // The paused ones (a `project` line says another space, or a local folder
                         // joined a space only because its repository says so), with the two
                         // commands that decide it.
-                        "paused": crate::proyecto::en_pausa(&base)?.iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
+                        "paused": crate::proyecto::paused_projects(&base)?.iter().filter(|x| m.ve_espacio(&x.here, false)).map(|x| {
                             let mut v = serde_json::to_value(x).unwrap_or_default();
-                            v["text"] = crate::sync::texto_pausa(&db_path, x).into();
-                            v["accept"] = crate::sync::orden_aceptar(x).into();
-                            v["keep"] = crate::sync::orden_quedarse(x).into();
+                            v["text"] = crate::sync::pause_text(&db_path, x).into();
+                            v["accept"] = crate::sync::accept_command(x).into();
+                            v["keep"] = crate::sync::keep_command(x).into();
                             v
                         }).collect::<Vec<_>>(),
                     });
@@ -520,7 +520,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     match crate::veredictos::resolve(&base, &a, &b, &keep, &field("reason"), crate::veredictos::USER) {
                         Ok(superseded) => {
                             crate::revisar::refresh_for(&base, &before, &[])?;
-                            crate::sync::programar(&db_path);
+                            crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::json!({ "resolved": true, "superseded": superseded }).to_string()))
                         }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
@@ -553,7 +553,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     match memoria::restore(&mut base, &id, None) {
                         Ok(r) => {
                             crate::revisar::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
-                            crate::sync::programar(&db_path);
+                            crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::to_string(&r)?))
                         }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
@@ -578,7 +578,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         Ok(r) => {
                             let ids: Vec<String> = r.iter().map(|x| x.id.clone()).collect();
                             crate::revisar::refresh_for(&base, &before, &ids)?;
-                            crate::sync::programar(&db_path);
+                            crate::sync::schedule(&db_path);
                             Ok(json(200, serde_json::to_string(&r)?))
                         }
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
@@ -598,7 +598,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         Ok(r) => {
                             if !r.redacted.is_empty() {
                                 crate::revisar::refresh_for(&base, &before, std::slice::from_ref(&r.id))?;
-                                crate::sync::programar(&db_path);
+                                crate::sync::schedule(&db_path);
                             }
                             let mut j = serde_json::to_value(&r)?;
                             j["redacted"] = r.redacted.len().into();
@@ -631,7 +631,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if !output.status.success() {
                         return Ok(error(400, if err.is_empty() { &out } else { &err }));
                     }
-                    crate::sync::programar(&db_path);
+                    crate::sync::schedule(&db_path);
                     Ok(json(200, serde_json::json!({ "ok": true, "output": if out.is_empty() { err } else { out } }).to_string()))
                 }
                 // The view's «Make skill» button (`skill`): it writes files into the repository of the
@@ -670,20 +670,20 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         return Ok(out_of_scope());
                     }
                     let r = if v["unverify"].as_bool().unwrap_or(false) {
-                        crate::verificado::desverificar(&mut base, &id)?;
+                        crate::verificado::unverify(&mut base, &id)?;
                         memoria::get(&base, &id)?
                     } else {
                         let current = memoria::get(&base, &id)?;
                         let by = match v["by"].as_str().map(str::trim).filter(|b| !b.is_empty()) {
                             Some(b) => b.to_string(),
-                            None => crate::verificado::quien_por_defecto(&base, &current)?,
+                            None => crate::verificado::default_verifier(&base, &current)?,
                         };
-                        match crate::verificado::verificar(&mut base, &id, &by) {
+                        match crate::verificado::verify(&mut base, &id, &by) {
                             Ok(r) => r,
                             Err(e) => return Ok(error(400, &format!("{e:#}"))),
                         }
                     };
-                    crate::sync::programar(&db_path);
+                    crate::sync::schedule(&db_path);
                     Ok(json(200, serde_json::to_string(&r)?))
                 }
                 (Method::Get, "/api/candidates") => {
@@ -721,25 +721,25 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     // author of the general one (the personal one) nor those of other spaces. From the user's
                     // folder or a project without a space, the general one.
                     let repo = if m.todo || m.espacio.is_empty() {
-                        Some(crate::sync::rutas(&db_path))
+                        Some(crate::sync::paths(&db_path))
                     } else {
-                        crate::sync::repo_de_espacio(&db_path, &m.espacio)
+                        crate::sync::space_repo(&db_path, &m.espacio)
                     };
                     let config = match &repo {
-                        Some(r) => crate::sync::leer_config_de(r)?,
+                        Some(r) => crate::sync::read_config_from(r)?,
                         None => None,
                     };
-                    let e = repo.as_ref().map(crate::sync::leer_estado_de).unwrap_or_default();
+                    let e = repo.as_ref().map(crate::sync::read_status_from).unwrap_or_default();
                     Ok(json(
                         200,
                         serde_json::json!({
                             "configured": config.is_some(),
-                            "url": config.as_ref().map(|c| crate::sync::sin_credenciales(&c.url)),
+                            "url": config.as_ref().map(|c| crate::sync::strip_credentials(&c.url)),
                             "author": config.and_then(|c| c.author),
-                            "last_ok": e.ultimo_ok,
-                            "last_error": e.ultimo_error.as_deref().map(crate::sync::sin_credenciales),
-                            "warning": e.aviso,
-                            "failing_since": e.error_desde,
+                            "last_ok": e.last_ok,
+                            "last_error": e.last_error.as_deref().map(crate::sync::strip_credentials),
+                            "warning": e.notice,
+                            "failing_since": e.failing_since,
                         })
                         .to_string(),
                     ))

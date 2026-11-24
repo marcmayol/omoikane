@@ -11,7 +11,7 @@ const STEPS: &str = "1. Subir la versión en Cargo.toml y plugin.json.\n2. `git 
 #[test]
 fn recipe_arrives_whole_when_asked_and_only_then() {
     let dir = comun::Temporal::nueva("recetas");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let n = NewMemory { project: "/p".into(), kind: Some(Kind::Procedure), title: "Publicar una versión de Lumbre".into(), content: STEPS.into(), ..Default::default() };
     let recipe = memoria::save(&mut db, n, None).unwrap();
     assert_eq!(recall::triggers(&recipe), ["publica", "publicar", "release", "saca version"]);
@@ -38,7 +38,7 @@ fn recipe_arrives_whole_when_asked_and_only_then() {
 #[test]
 fn a_lone_word_is_not_enough_outside_its_project() {
     let dir = comun::Temporal::nueva("recetas-sueltas");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let n = NewMemory { project: String::new(), kind: Some(Kind::Procedure), title: "Publicar una versión de Lumbre".into(), content: STEPS.into(), ..Default::default() };
     memoria::save(&mut db, n, None).unwrap();
     let asks = |db: &mut rusqlite::Connection, session: &str, p: &str| {

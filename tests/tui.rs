@@ -23,14 +23,14 @@ struct Fixture {
 /// preference; one forgotten memory in Acme and another in Globex.
 fn fixture(name: &str) -> Fixture {
     let dir = comun::Temporal::nueva(name);
-    let mut db = omoikane::db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = omoikane::db::open(&dir.join("o.db")).unwrap();
     let save = |db: &mut Connection, project: &str, space_id: Option<i64>, kind: Kind, title: &str| {
         let n = NewMemory { project: project.into(), space_id, kind: Some(kind), title: title.into(), content: format!("{title}."), ..Default::default() };
         memoria::save(db, n, None).unwrap().id
     };
     save(&mut db, "", None, Kind::Preference, "Respuestas cortas");
-    let acme = omoikane::proyecto::crear_espacio(&db, "Acme").unwrap();
-    let globex = omoikane::proyecto::crear_espacio(&db, "Globex").unwrap();
+    let acme = omoikane::proyecto::create_space(&db, "Acme").unwrap();
+    let globex = omoikane::proyecto::create_space(&db, "Globex").unwrap();
     save(&mut db, "/acme-api", None, Kind::Fact, "Acme usa Postgres");
     save(&mut db, "/acme-web", None, Kind::Fact, "Acme web en Astro");
     let trashed_acme = save(&mut db, "/acme-web", None, Kind::Fact, "Acme web: tirar");
@@ -39,8 +39,8 @@ fn fixture(name: &str) -> Fixture {
     let trashed_globex = save(&mut db, "/globex", None, Kind::Fact, "Globex: tirar");
     save(&mut db, "/notas", None, Kind::Fact, "Idea de blog");
     for (p, e) in [("/acme-api", acme), ("/acme-web", acme), ("/globex", globex)] {
-        let id = omoikane::proyecto::registrar(&db, p).unwrap();
-        omoikane::proyecto::asignar_espacio(&db, id, Some(e)).unwrap();
+        let id = omoikane::proyecto::register(&db, p).unwrap();
+        omoikane::proyecto::assign_space(&db, id, Some(e)).unwrap();
     }
     memoria::forget(&mut db, &trashed_acme).unwrap();
     memoria::forget(&mut db, &trashed_globex).unwrap();
@@ -76,7 +76,7 @@ fn assert_no_others(what: &str, text: &str) {
 }
 
 fn home() -> String {
-    omoikane::proyecto::de(&omoikane::proyecto::casa_local().unwrap()).unwrap()
+    omoikane::proyecto::of_dir(&omoikane::proyecto::local_home().unwrap()).unwrap()
 }
 
 #[test]

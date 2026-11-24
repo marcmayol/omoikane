@@ -13,7 +13,7 @@ use rusqlite::Connection;
 
 fn fixture(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("veredictos-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -177,7 +177,7 @@ fn old_dismissals_become_verdicts() {
     let a = "01JAAAAAAAAAAAAAAAAAAAAAAA";
     {
         // A schema 7 database with a «fine as is» in `review`.
-        let db = db::abrir_en_esquema(&dir.join("o.db"), 7).unwrap();
+        let db = db::open_at_schema(&dir.join("o.db"), 7).unwrap();
         insert_old_memory(&db, 1, a, "Uno", "Algo que nadie usa.", "2026-10-28T00:00:00.000Z");
         db.execute(
             "INSERT INTO review(memory_id, kind, other_id, detail, found_at, dismissed_at) VALUES (?1, 'unused', '', '', '2026-10-29T00:00:00.000Z', '2026-10-29T00:01:00.000Z')",
@@ -185,7 +185,7 @@ fn old_dismissals_become_verdicts() {
         )
         .unwrap();
     }
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     let v = veredictos::all(&db).unwrap();
     assert_eq!(v.len(), 1);
     assert_eq!((v[0].memory_id.as_str(), v[0].relation.as_str()), (a, "ok:unused"));
@@ -269,7 +269,7 @@ fn author_is_sync_person_or_client() {
     // The library is called in this process, which inherits the environment of whoever runs `cargo test`: if
     // it is an agent session with `OMOIKANE_AUTHOR`, that author signs above everything (and removing it
     // here would mean touching the environment of a process with several test threads).
-    let from_session = omoikane::entorno::autor();
+    let from_session = omoikane::entorno::author();
     let expected = |fallback: &str| from_session.clone().unwrap_or_else(|| fallback.to_string());
     assert_eq!(veredictos::author(&db, "mcp:claude-code", ""), expected("agent:claude-code"));
     assert_eq!(veredictos::author(&db, "mcp", ""), expected("agent"));
@@ -347,7 +347,7 @@ fn schema_8_verdicts_are_kept() {
     let (a, b) = ("01JAAAAAAAAAAAAAAAAAAAAAAA", "01JBBBBBBBBBBBBBBBBBBBBBBB");
     {
         // A schema 8 database: the `verdict` table without reason or author, and short-counter stamps.
-        let db = db::abrir_en_esquema(&dir.join("o.db"), 8).unwrap();
+        let db = db::open_at_schema(&dir.join("o.db"), 8).unwrap();
         insert_old_memory(&db, 1, a, "Uno", "El puerto es el 8080.", "2026-10-28T10:00:00.000Z");
         insert_old_memory(&db, 2, b, "Dos", "El puerto es el 9090.", "2026-10-28T11:00:00.000Z");
         db.execute_batch(&format!(
@@ -356,9 +356,9 @@ fn schema_8_verdicts_are_kept() {
         ))
         .unwrap();
     }
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     let v: i64 = db.query_row("PRAGMA user_version", [], |f| f.get(0)).unwrap();
-    assert_eq!(v, db::VERSION_ESQUEMA);
+    assert_eq!(v, db::SCHEMA_VERSION);
     // The stamps, in the current format.
     let stamp: String = db.query_row("SELECT hlc FROM verdict WHERE relation = 'superseded'", [], |f| f.get(0)).unwrap();
     assert_eq!(stamp, "1793188800000-0000000003-pc");

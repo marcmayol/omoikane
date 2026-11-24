@@ -11,7 +11,7 @@ use omoikane::revisar;
 #[test]
 fn broken_links_and_the_neighbour_in_recall() {
     let dir = comun::Temporal::nueva("enlaces");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let mut save = |kind, title: &str, content: &str, tag: &str| {
         let n = NewMemory { project: String::new(), kind: Some(kind), title: title.into(), content: content.into(), tags: vec![tag.into()], ..Default::default() };
         memoria::save(&mut db, n, None).unwrap().id

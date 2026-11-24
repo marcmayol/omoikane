@@ -1,5 +1,5 @@
 //! Project names that look alike: the same comparison for whoever types a name
-//! (`proyecto::buscar`), for the review (duplicate projects) and for recall (a name misheard
+//! (`proyecto::find`), for the review (duplicate projects) and for recall (a name misheard
 //! in dictation in the message).
 //!
 //! Two levels. **Equal**: the same name ignoring case, accents, hyphens, underscores, spaces
@@ -9,7 +9,7 @@
 //! never a bare resemblance (`Tokimichi` and `tokimichi-web` are different projects).
 
 use crate::memoria::Scope;
-use crate::proyecto::{self, Proyecto};
+use crate::proyecto::{self, Project};
 use crate::tr;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -222,12 +222,12 @@ fn distinct_pairs(db: &Connection) -> Result<BTreeSet<String>> {
 /// `omoi projects distinct A [B]`: the review stops proposing to merge A and B (or, without B, treating
 /// A's temporary folder as if it were not a project). It belongs to this computer: it does not travel.
 pub fn mark_distinct(db: &Connection, a: i64, b: Option<i64>) -> Result<()> {
-    let ka = proyecto::clave_de(db, a)?;
+    let ka = proyecto::key_of(db, a)?;
     anyhow::ensure!(!ka.is_empty(), tr!("global memories are not a project", "las memorias globales no son un proyecto"));
     let kb = match b {
         Some(b) => {
             anyhow::ensure!(b != a, tr!("it's the same project", "es el mismo proyecto"));
-            proyecto::clave_de(db, b)?
+            proyecto::key_of(db, b)?
         }
         None => String::new(),
     };
@@ -250,7 +250,7 @@ pub fn is_temp_folder(path: &str) -> bool {
     // The temp folder as is and in canonical form (with `TEMP` as a short name, `CLAUDE~1`, project
     // paths arrive in the long form).
     let tmp = std::env::temp_dir();
-    let canonical = proyecto::canonica(&tmp).map(|p| proyecto::texto(&p)).unwrap_or_default();
+    let canonical = proyecto::canonical(&tmp).map(|p| proyecto::path_text(&p)).unwrap_or_default();
     [tmp.to_string_lossy().into_owned(), canonical].iter().any(|t| {
         let t = t.replace('\\', "/").to_lowercase();
         let t = t.trim_end_matches('/');
@@ -258,15 +258,15 @@ pub fn is_temp_folder(path: &str) -> bool {
     })
 }
 
-/// How a project is named in a command: its name if `proyecto::buscar` finds only it,
+/// How a project is named in a command: its name if `proyecto::find` finds only it,
 /// and otherwise its folder (in quotes if it has spaces).
-fn in_command(db: &Connection, p: &Proyecto) -> String {
-    let t = if proyecto::buscar(db, &p.name).ok() == Some(p.id) { p.name.clone() } else { p.path.clone() };
+fn in_command(db: &Connection, p: &Project) -> String {
+    let t = if proyecto::find(db, &p.name).ok() == Some(p.id) { p.name.clone() } else { p.path.clone() };
     if t.contains([' ', '\'']) || t.is_empty() { format!("\"{t}\"") } else { t }
 }
 
 /// A project's git `origin`: the one in its `git:` key, or the one of any of its local folders.
-fn origin_of(db: &Connection, p: &Proyecto) -> Result<String> {
+fn origin_of(db: &Connection, p: &Project) -> Result<String> {
     if let Some(o) = p.key.strip_prefix("git:") {
         return Ok(o.to_string());
     }
@@ -305,9 +305,9 @@ pub fn proposals(db: &Connection, scope: &Scope) -> Result<Vec<Proposal>> {
     proposals_with(db, scope, &is_temp_folder)
 }
 
-/// `proposals` with the projects the caller already has: `proyecto::lista(db, None, space_filter(scope),
+/// `proposals` with the projects the caller already has: `proyecto::list(db, None, space_filter(scope),
 /// usize::MAX)` (`omoi review` lists them first, and each list walks the memory table).
-pub fn proposals_for(db: &Connection, all: &[Proyecto]) -> Result<Vec<Proposal>> {
+pub fn proposals_for(db: &Connection, all: &[Project]) -> Result<Vec<Proposal>> {
     proposals_among(db, all, &is_temp_folder)
 }
 
@@ -318,17 +318,17 @@ pub fn space_filter(scope: &Scope) -> Option<Option<i64>> {
 
 /// `proposals`, with another way of telling which folder is temporary (tests live in `%TEMP%`).
 pub fn proposals_with(db: &Connection, scope: &Scope, is_temp: &dyn Fn(&str) -> bool) -> Result<Vec<Proposal>> {
-    proposals_among(db, &proyecto::lista(db, None, space_filter(scope), usize::MAX)?, is_temp)
+    proposals_among(db, &proyecto::list(db, None, space_filter(scope), usize::MAX)?, is_temp)
 }
 
-fn proposals_among(db: &Connection, all: &[Proyecto], is_temp: &dyn Fn(&str) -> bool) -> Result<Vec<Proposal>> {
+fn proposals_among(db: &Connection, all: &[Project], is_temp: &dyn Fn(&str) -> bool) -> Result<Vec<Proposal>> {
     let dismissed = distinct_pairs(db)?;
     let created = creation_dates(db)?;
-    let space: HashMap<i64, Option<i64>> = all.iter().map(|p| Ok((p.id, proyecto::espacio_de(db, p.id)?))).collect::<Result<_>>()?;
+    let space: HashMap<i64, Option<i64>> = all.iter().map(|p| Ok((p.id, proyecto::space_of(db, p.id)?))).collect::<Result<_>>()?;
     let mut r: Vec<Proposal> = Vec::new();
     let mut seen: BTreeSet<(i64, i64)> = BTreeSet::new();
     let temporary: BTreeSet<i64> = all.iter().filter(|p| p.key.starts_with("dir:") && is_temp(&p.path)).map(|p| p.id).collect();
-    let mut propose = |db: &Connection, kind: &'static str, from: &Proyecto, into: &Proyecto, detail: String, r: &mut Vec<Proposal>| {
+    let mut propose = |db: &Connection, kind: &'static str, from: &Project, into: &Project, detail: String, r: &mut Vec<Proposal>| {
         let pair = (from.id.min(into.id), from.id.max(into.id));
         if !seen.insert(pair) || dismissed.contains(&pair_key(&from.key, &into.key)) {
             return;
@@ -347,8 +347,8 @@ fn proposals_among(db: &Connection, all: &[Proyecto], is_temp: &dyn Fn(&str) -> 
         });
     };
     // Which one disappears when merging: the one that is gone, otherwise the one with fewer memories, otherwise the newer one.
-    let order = |a: &Proyecto, b: &Proyecto| -> bool {
-        let key = |p: &Proyecto| (!p.gone, p.memories, std::cmp::Reverse(created.get(&p.id).cloned().unwrap_or_default()));
+    let order = |a: &Project, b: &Project| -> bool {
+        let key = |p: &Project| (!p.gone, p.memories, std::cmp::Reverse(created.get(&p.id).cloned().unwrap_or_default()));
         key(a) < key(b)
     };
     for (i, a) in all.iter().enumerate() {
@@ -363,7 +363,7 @@ fn proposals_among(db: &Connection, all: &[Proyecto], is_temp: &dyn Fn(&str) -> 
                 }
                 Some(Similarity::OneLetter) => {
                     let (oa, ob) = (origin_of(db, a)?, origin_of(db, b)?);
-                    let new_and_small = |x: &Proyecto, y: &Proyecto| x.memories <= FEW && x.memories < y.memories && created.get(&x.id) > created.get(&y.id);
+                    let new_and_small = |x: &Project, y: &Project| x.memories <= FEW && x.memories < y.memories && created.get(&x.id) > created.get(&y.id);
                     let signal = if a.gone || b.gone {
                         Some("one letter apart, and one folder no longer exists".to_string())
                     } else if !oa.is_empty() && oa == ob {
@@ -388,7 +388,7 @@ fn proposals_among(db: &Connection, all: &[Proyecto], is_temp: &dyn Fn(&str) -> 
             continue;
         }
         let naming = mentions(db, &word)?;
-        let candidates: Vec<&Proyecto> = all
+        let candidates: Vec<&Project> = all
             .iter()
             .filter(|p| {
                 p.id != old.id
@@ -501,6 +501,6 @@ mod tests {
         assert!(is_temp_folder(&t.to_string_lossy()));
         // And as a project's path arrives: canonical (on Windows, with the long name).
         let d = crate::comun::Temporal::nueva("temporal");
-        assert!(is_temp_folder(&proyecto::de(&d).unwrap()));
+        assert!(is_temp_folder(&proyecto::of_dir(&d).unwrap()));
     }
 }

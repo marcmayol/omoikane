@@ -13,28 +13,28 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Schema version this version of omoi can create and read.
-pub const VERSION_ESQUEMA: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The oldest schema that can read a database of this schema, stored in `meta('lector_minimo')`.
 /// A version of omoi opens a database of a schema newer than its own if `lector_minimo` doesn't go
 /// past its own: a change that only adds (a table, a column with a default value) doesn't raise it,
 /// and the database keeps opening with the previous version. Schema 10 changes the `memory` table (the
 /// project goes from path to id), so it sets it to 10.
-pub const LECTOR_MINIMO: i64 = 10;
+pub const MIN_READER: i64 = 10;
 
 /// `OMOIKANE_DB`, or `omoikane.db` in Omoikane's folder (`OMOIKANE_HOME` or `~/.omoikane`). Without
-/// either, relative as before: the CLI has already refused earlier (`entorno::sin_casa`).
-pub fn ruta_por_defecto() -> PathBuf {
+/// either, relative as before: the CLI has already refused earlier (`entorno::no_home_error`).
+pub fn default_path() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_DB").filter(|r| !r.is_empty()) {
         // Absolute, like `--db`: sync uses it from other folders.
         let r = PathBuf::from(r);
         return std::path::absolute(&r).unwrap_or(r);
     }
-    crate::entorno::casa().unwrap_or_else(|| PathBuf::from(".omoikane")).join("omoikane.db")
+    crate::entorno::home().unwrap_or_else(|| PathBuf::from(".omoikane")).join("omoikane.db")
 }
 
 /// Registers sqlite-vec in every connection opened afterwards. Once per process is enough.
-pub fn registrar_sqlite_vec() {
+pub fn register_sqlite_vec() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
@@ -49,13 +49,13 @@ pub fn registrar_sqlite_vec() {
 }
 
 /// The longest a connection waits for another to release the database before giving `database is locked`.
-pub const ESPERA_MAXIMA: Duration = Duration::from_secs(5);
+pub const MAX_WAIT: Duration = Duration::from_secs(5);
 
 /// Microseconds this process has spent waiting for another connection (see `wait_turn`).
 static WAITED_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How long this process has waited for another to release the database. Shown by the trace (`OMOIKANE_TRAZA`).
-pub fn esperado() -> Duration {
+pub fn waited() -> Duration {
     Duration::from_micros(WAITED_US.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -64,7 +64,7 @@ pub fn esperado() -> Duration {
 /// whoever was waiting arrived late to the gaps. With 20 agents at once (`tests/concurrencia.rs`), the
 /// mean wait of a `remember` went down from 200-300 ms to 150, that of each message's recall from
 /// 95-170 to 50, and its P99 from 1.4-2.1 s to 0.8-1.2 s. Here it retries after 0.1-2 ms (with some
-/// randomness, so they don't all wake up at once), up to `ESPERA_MAXIMA` from the first attempt.
+/// randomness, so they don't all wake up at once), up to `MAX_WAIT` from the first attempt.
 fn wait_turn(attempts: i32) -> bool {
     thread_local! {
         static SINCE: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
@@ -73,7 +73,7 @@ fn wait_turn(attempts: i32) -> bool {
     if attempts == 0 {
         SINCE.with(|d| d.set(now));
     }
-    if now.duration_since(SINCE.with(|d| d.get())) >= ESPERA_MAXIMA {
+    if now.duration_since(SINCE.with(|d| d.get())) >= MAX_WAIT {
         return false;
     }
     let cap = (100u64 << attempts.clamp(0, 5)).min(2_000);
@@ -90,14 +90,14 @@ fn wait_turn(attempts: i32) -> bool {
 /// If, when opening, another connection has the database and SQLite gives `SQLITE_BUSY` without going
 /// through `wait_turn` (it happens, rarely, when several processes create a new database at once: 2
 /// of about 1,500 opens in the tests, and one was a `remember` that failed with `database is locked`),
-/// it is opened again from the start, up to `ESPERA_MAXIMA`. Everything the open does can be repeated:
+/// it is opened again from the start, up to `MAX_WAIT`. Everything the open does can be repeated:
 /// each step first checks whether it's already done, and what it writes goes in transactions.
-pub fn abrir(path: &Path) -> Result<Connection> {
+pub fn open(path: &Path) -> Result<Connection> {
     let since = std::time::Instant::now();
     let mut attempt = 0u32;
     loop {
         match open_once(path) {
-            Err(e) if ocupada(&e) && since.elapsed() < ESPERA_MAXIMA => {
+            Err(e) if is_busy(&e) && since.elapsed() < MAX_WAIT => {
                 if std::env::var_os("OMOIKANE_TRAZA").is_some_and(|v| !v.is_empty()) {
                     eprintln!("TRAZA abrir_reintento {}", serde_json::json!({ "error": format!("{e:#}") }));
                 }
@@ -110,7 +110,7 @@ pub fn abrir(path: &Path) -> Result<Connection> {
 }
 
 /// Whether the error is that another connection had the database (`SQLITE_BUSY` or `SQLITE_LOCKED`).
-pub fn ocupada(e: &anyhow::Error) -> bool {
+pub fn is_busy(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
         c.downcast_ref::<rusqlite::Error>()
             .and_then(|r| r.sqlite_error_code())
@@ -119,7 +119,7 @@ pub fn ocupada(e: &anyhow::Error) -> bool {
 }
 
 fn open_once(path: &Path) -> Result<Connection> {
-    registrar_sqlite_vec();
+    register_sqlite_vec();
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| tr!("can't create {}", "no se puede crear {}", dir.display()))?;
     }
@@ -268,20 +268,20 @@ fn min_reader(db: &Connection, v: i64) -> i64 {
 fn check_reader(db: &Connection, v: i64) -> Result<()> {
     let minimum = min_reader(db, v);
     anyhow::ensure!(
-        minimum <= VERSION_ESQUEMA,
+        minimum <= SCHEMA_VERSION,
         tr!(
-            "the database comes from a newer omoi (schema {v}, readable from schema {minimum}; this one reads up to {VERSION_ESQUEMA}): update omoi",
-            "la base es de una versión más nueva de omoi (esquema {v}, legible desde el esquema {minimum}; esta entiende hasta {VERSION_ESQUEMA}): actualiza omoi"
+            "the database comes from a newer omoi (schema {v}, readable from schema {minimum}; this one reads up to {SCHEMA_VERSION}): update omoi",
+            "la base es de una versión más nueva de omoi (esquema {v}, legible desde el esquema {minimum}; esta entiende hasta {SCHEMA_VERSION}): actualiza omoi"
         )
     );
     Ok(())
 }
 
 /// The local person: the one that goes in `dir:` keys (`dir:<person>/<folder>`), so that Ana's
-/// `notas` folder and Carlos's aren't the same project. It lives in `meta('persona')`, which `abrir`
-/// always sets; when setting up sync, sync's person is adopted (`sync::adoptar_persona`) if it's the
+/// `notas` folder and Carlos's aren't the same project. It lives in `meta('persona')`, which `open`
+/// always sets; when setting up sync, sync's person is adopted (`sync::adopt_person`) if it's the
 /// same person on another computer.
-pub fn persona_de(db: &Connection) -> String {
+pub fn person_of(db: &Connection) -> String {
     db.query_row("SELECT v FROM meta WHERE k = 'persona'", [], |r| r.get::<_, String>(0))
         .ok()
         .filter(|p| !p.is_empty())
@@ -294,7 +294,7 @@ pub fn persona_de(db: &Connection) -> String {
 fn initial_person(db: &Connection) -> String {
     if let Some(path) = db.path().filter(|p| !p.is_empty()).map(PathBuf::from) {
         for r in crate::sync::repos(&path) {
-            if let Ok(Some(c)) = crate::sync::leer_config_de(&r)
+            if let Ok(Some(c)) = crate::sync::read_config_from(&r)
                 && !c.person.is_empty()
             {
                 return c.person;
@@ -318,7 +318,7 @@ fn ensure_person(db: &Connection) -> Result<String> {
         if !has {
             db.execute_batch("ALTER TABLE tombstone ADD COLUMN space_key TEXT NOT NULL DEFAULT ''")?;
         }
-        crate::proyecto::cambiar_persona(db, "", &person)?;
+        crate::proyecto::change_person(db, "", &person)?;
     }
     Ok(person)
 }
@@ -360,15 +360,15 @@ fn update_schema_10(db: &Connection) -> Result<()> {
 }
 
 fn migrate(db: &mut Connection) -> Result<()> {
-    migrate_to(db, VERSION_ESQUEMA)
+    migrate_to(db, SCHEMA_VERSION)
 }
 
 /// A database at an old schema (`target`), without migrating further: to test the migrations with
 /// databases like the ones people have. Not for real use: this version only knows how to work with
 /// the latest.
 #[doc(hidden)]
-pub fn abrir_en_esquema(path: &Path, target: i64) -> Result<Connection> {
-    registrar_sqlite_vec();
+pub fn open_at_schema(path: &Path, target: i64) -> Result<Connection> {
+    register_sqlite_vec();
     let mut db = Connection::open(path)?;
     db.busy_handler(Some(wait_turn))?;
     migrate_to(&mut db, target)?;
@@ -376,7 +376,7 @@ pub fn abrir_en_esquema(path: &Path, target: i64) -> Result<Connection> {
 }
 
 fn migrate_to(db: &mut Connection, target: i64) -> Result<()> {
-    let backup = db.path().filter(|p| !p.is_empty()).map(|r| format!("{r}.antes-del-esquema-{VERSION_ESQUEMA}"));
+    let backup = db.path().filter(|p| !p.is_empty()).map(|r| format!("{r}.antes-del-esquema-{SCHEMA_VERSION}"));
     migrate_with_backup(db, target, backup)
 }
 
@@ -386,7 +386,7 @@ fn migrate_with_backup(db: &mut Connection, target: i64, backup: Option<String>)
     if before == target {
         return Ok(());
     }
-    if before > VERSION_ESQUEMA {
+    if before > SCHEMA_VERSION {
         return check_reader(db, before);
     }
     // Before migrating a database that already had data, a copy: an old version doesn't open the new
@@ -401,8 +401,8 @@ fn migrate_with_backup(db: &mut Connection, target: i64, backup: Option<String>)
         let _ = std::fs::remove_file(&tmp);
         let failure = || {
             tr!(
-                "can't copy the database to {backup} before updating it to schema {VERSION_ESQUEMA}; nothing was changed",
-                "no se puede copiar la base en {backup} antes de pasarla al esquema {VERSION_ESQUEMA}; no se ha cambiado nada"
+                "can't copy the database to {backup} before updating it to schema {SCHEMA_VERSION}; nothing was changed",
+                "no se puede copiar la base en {backup} antes de pasarla al esquema {SCHEMA_VERSION}; no se ha cambiado nada"
             )
         };
         db.execute("VACUUM INTO ?1", [&tmp]).with_context(failure)?;
@@ -410,7 +410,7 @@ fn migrate_with_backup(db: &mut Connection, target: i64, backup: Option<String>)
     }
     // Foreign keys, turned off before the BEGIN (they can't be changed inside a transaction): with them
     // on, schema 10's `DROP TABLE memory` would cascade-delete the history, the paths and the vectors.
-    // `abrir` turns them back on at the end.
+    // `open` turns them back on at the end.
     db.pragma_update(None, "foreign_keys", false)?;
     // IMMEDIATE: if two processes open a new database at once, only one creates the schema.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -628,12 +628,12 @@ fn schema_10(tx: &Connection, person: &str) -> Result<()> {
     normalize_stamps(tx)?;
     move_to_projects(tx, person)?;
     tx.execute_batch(SCHEMA_10_MEMORY)?;
-    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', ?1)", [LECTOR_MINIMO.to_string()])?;
+    tx.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', ?1)", [MIN_READER.to_string()])?;
     Ok(())
 }
 
 /// Schema 5's stamps carry the counter with 4 digits (`%013d-0000-`); today's, with 10. They compared
-/// fine with `reloj::comparar`, but not as text (`max(hlc)`, `w.hlc > v.hlc`): now they all have the
+/// fine with `reloj::compare`, but not as text (`max(hlc)`, `w.hlc > v.hlc`): now they all have the
 /// same width and comparing as text is comparing stamps.
 fn normalize_stamps(tx: &Connection) -> Result<()> {
     // (table, columns that identify the row)
@@ -644,13 +644,13 @@ fn normalize_stamps(tx: &Connection) -> Result<()> {
         };
         let mut u = tx.prepare(&format!("UPDATE {table} SET hlc = ?2 WHERE CAST({key} AS TEXT) = ?1"))?;
         for (k, hlc) in rows {
-            if let Some(new) = crate::reloj::normalizado(&hlc) {
+            if let Some(new) = crate::reloj::normalized(&hlc) {
                 u.execute(rusqlite::params![k, new])?;
             }
         }
     }
     let last: Option<String> = tx.query_row("SELECT v FROM meta WHERE k = 'hlc'", [], |r| r.get(0)).ok();
-    if let Some(new) = last.as_deref().and_then(crate::reloj::normalizado) {
+    if let Some(new) = last.as_deref().and_then(crate::reloj::normalized) {
         tx.execute("UPDATE meta SET v = ?1 WHERE k = 'hlc'", [new])?;
     }
     Ok(())
@@ -658,12 +658,12 @@ fn normalize_stamps(tx: &Connection) -> Result<()> {
 
 /// Each path in `memory.project` becomes a project with its key:
 /// - if it came from another computer (`remote_project`), the key it came with, as a foreign path;
-/// - if it exists on disk, the usual one (`sync::clave`: git's `origin`, or `dir:<person>/<folder>`);
+/// - if it exists on disk, the usual one (`sync::project_key_for`: git's `origin`, or `dir:<person>/<folder>`);
 /// - if it no longer exists, the `dir:` one (without the `origin` nothing more can be known), and it's
 ///   left without `last_seen`: it's a project that "is gone" (Review shows it with `omoi projects move`).
 ///
 /// Paths with the same `git:` key are the same project (clones, worktrees); with the same `dir:`, only
-/// one local path keeps the key (the one that exists; foreign ones join it, as `sync::adoptar` did),
+/// one local path keeps the key (the one that exists; foreign ones join it, as `sync::adopt` did),
 /// and the others, different folders with the same name, get `~2`, `~3`…
 fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
     tx.execute_batch("CREATE TEMP TABLE mig_proyecto (path TEXT PRIMARY KEY, project_id INTEGER NOT NULL);")?;
@@ -688,8 +688,8 @@ fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
         let r = match remotes.get(&path) {
             Some(k) => PathInfo { key: k.clone(), foreign: true, exists: false, origin: String::new(), path },
             None => {
-                let exists = crate::proyecto::es_carpeta(Path::new(&path));
-                PathInfo { key: crate::sync::clave(&path, person), foreign: false, exists, origin: crate::proyecto::origen(&path), path }
+                let exists = crate::proyecto::is_dir(Path::new(&path));
+                PathInfo { key: crate::sync::project_key_for(&path, person), foreign: false, exists, origin: crate::proyecto::origin(&path), path }
             }
         };
         match groups.iter_mut().find(|(k, _)| *k == r.key) {
@@ -720,7 +720,7 @@ fn move_to_projects(tx: &Connection, person: &str) -> Result<()> {
         }
         for (k, rs) in projects {
             let main = rs.iter().find(|r| !r.foreign && r.exists).or_else(|| rs.iter().find(|r| !r.foreign)).or(rs.first()).map(|r| r.path.clone()).unwrap_or_default();
-            let name = crate::proyecto::nombre_de(&main, &k);
+            let name = crate::proyecto::name_of(&main, &k);
             tx.execute(
                 "INSERT INTO project(key, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![k, name, main, now],
@@ -787,7 +787,7 @@ fn move_dismissals(tx: &Connection) -> Result<()> {
     };
     for (id, kind, other, at) in rows {
         let relation = if other.is_empty() { format!("ok:{kind}") } else { "compatible".to_string() };
-        let hlc = crate::reloj::sello(tx)?;
+        let hlc = crate::reloj::stamp(tx)?;
         tx.execute("INSERT OR IGNORE INTO verdict(memory_id, other_id, relation, at, hlc) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, other, relation, at, hlc])?;
     }
     tx.execute("DELETE FROM review WHERE dismissed_at IS NOT NULL", [])?;
@@ -972,8 +972,8 @@ mod tests {
             )
             .unwrap();
         }
-        let db = abrir(&path).unwrap();
-        assert_eq!(schema_version(&db).unwrap(), VERSION_ESQUEMA);
+        let db = open(&path).unwrap();
+        assert_eq!(schema_version(&db).unwrap(), SCHEMA_VERSION);
         let count = |q: &str| -> i64 {
             db.query_row("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?1", [q], |r| r.get(0)).unwrap()
         };
@@ -987,17 +987,17 @@ mod tests {
     fn without_a_prior_copy_it_does_not_migrate() {
         let dir = crate::comun::Temporal::nueva("db-sin-copia");
         let path = dir.join("o.db");
-        abrir_en_esquema(&path, 9).unwrap();
+        open_at_schema(&path, 9).unwrap();
         let mut db = Connection::open(&path).unwrap();
         // A copy that can't be written (its folder doesn't exist): the database stays as it was.
         let impossible = dir.join("no-existe").join("copia.db").display().to_string();
-        let e = migrate_with_backup(&mut db, VERSION_ESQUEMA, Some(impossible)).unwrap_err();
+        let e = migrate_with_backup(&mut db, SCHEMA_VERSION, Some(impossible)).unwrap_err();
         assert!(format!("{e:#}").contains("copia") || format!("{e:#}").contains("copy"), "{e:#}");
         assert_eq!(schema_version(&db).unwrap(), 9);
         drop(db);
         // With the copy possible, it does.
-        let db = abrir(&path).unwrap();
-        assert_eq!(schema_version(&db).unwrap(), VERSION_ESQUEMA);
+        let db = open(&path).unwrap();
+        assert_eq!(schema_version(&db).unwrap(), SCHEMA_VERSION);
         assert!(dir.join("o.db.antes-del-esquema-10").exists());
         drop(db);
     }
@@ -1006,12 +1006,12 @@ mod tests {
     fn redoes_a_half_written_prior_copy() {
         let dir = crate::comun::Temporal::nueva("db-copia-medias");
         let path = dir.join("o.db");
-        abrir_en_esquema(&path, 9).unwrap().execute_batch("INSERT INTO meta(k, v) VALUES ('marca', 'de la 9')").unwrap();
+        open_at_schema(&path, 9).unwrap().execute_batch("INSERT INTO meta(k, v) VALUES ('marca', 'de la 9')").unwrap();
         // A cut copy (from a version that copied straight to the final name): no tables.
         let backup = dir.join("o.db.antes-del-esquema-10");
         std::fs::write(&backup, b"").unwrap();
-        let db = abrir(&path).unwrap();
-        assert_eq!(schema_version(&db).unwrap(), VERSION_ESQUEMA);
+        let db = open(&path).unwrap();
+        assert_eq!(schema_version(&db).unwrap(), SCHEMA_VERSION);
         drop(db);
         let c = Connection::open(&backup).unwrap();
         assert_eq!(schema_version(&c).unwrap(), 9, "la copia es la base de antes");
@@ -1024,10 +1024,10 @@ mod tests {
     fn creates_and_reopens() {
         let dir = crate::comun::Temporal::nueva("db");
         let path = dir.join("sub").join("o.db");
-        let db = abrir(&path).unwrap();
-        assert_eq!(schema_version(&db).unwrap(), VERSION_ESQUEMA);
+        let db = open(&path).unwrap();
+        assert_eq!(schema_version(&db).unwrap(), SCHEMA_VERSION);
         drop(db);
-        let db = abrir(&path).unwrap();
+        let db = open(&path).unwrap();
         let mode: String = db.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
         assert_eq!(mode, "wal");
         drop(db);
@@ -1039,12 +1039,12 @@ mod tests {
     fn closing_does_not_checkpoint_the_wal() {
         let dir = crate::comun::Temporal::nueva("db-wal");
         let path = dir.join("o.db");
-        let db = abrir(&path).unwrap();
+        let db = open(&path).unwrap();
         assert!(db.db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE).unwrap());
         db.execute("INSERT INTO meta(k, v) VALUES ('prueba-wal', 'sí')", []).unwrap();
         drop(db);
         assert!(dir.join("o.db-wal").metadata().unwrap().len() > 0);
-        let db = abrir(&path).unwrap();
+        let db = open(&path).unwrap();
         let v: String = db.query_row("SELECT v FROM meta WHERE k = 'prueba-wal'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, "sí");
         drop(db);

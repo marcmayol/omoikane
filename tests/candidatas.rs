@@ -144,7 +144,7 @@ fn extracts_decisions_preferences_and_milestones_without_secrets() {
 #[test]
 fn proposed_once_in_the_next_session_and_not_what_is_already_saved() {
     let d = dir("propone");
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
     // Already saved: not proposed again.
     let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Preference), title: "Commits en inglés".into(), content: "Prefiere que los commits vayan en inglés.".into(), ..Default::default() };
     memoria::save(&mut db, saved, None).unwrap();
@@ -171,7 +171,7 @@ fn proposed_once_in_the_next_session_and_not_what_is_already_saved() {
 #[test]
 fn sets_aside_each_subagents_report() {
     let d = dir("subagentes");
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
     let session = conversation(&d);
     let sub = d.join("sesion").join("subagents");
     std::fs::create_dir_all(&sub).unwrap();
@@ -226,7 +226,7 @@ fn sets_aside_each_subagents_report() {
     let t = recall::on_session_start(&mut db, "/web", &HookInput { session_id: "s2".into(), ..Default::default() }).unwrap().unwrap();
     assert!(t.contains("[subagent] Eres el agente «velocidad»") && t.contains("checkpoint del WAL"), "{t}");
     // A report already saved as a memory isn't proposed again.
-    let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
+    let mut db2 = db::open(&d.join("o2.db")).unwrap();
     let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Gotcha), title: "El recall lento era el checkpoint del WAL".into(), content: report.into(), ..Default::default() };
     memoria::save(&mut db2, saved, None).unwrap();
     candidatas::apartar(&db2, "/web", "s1", &session).unwrap();

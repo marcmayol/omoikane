@@ -52,7 +52,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub const AGENTES: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", "kiro", "copilot", "windsurf", "antigravity", "kimi", "pi", "amp", "kilo", "grok"];
+pub const AGENTS: &[&str] = &["codex", "gemini", "cursor", "opencode", "qwen", "kiro", "copilot", "windsurf", "antigravity", "kimi", "pi", "amp", "kilo", "grok"];
 
 const BEGIN_MARK: &str = "<!-- omoikane -->";
 const END_MARK: &str = "<!-- /omoikane -->";
@@ -60,12 +60,12 @@ const INSTRUCTIONS: &str = "## Long-term memory (Omoikane)\n\nYou have the `omoi
 
 /// A file that changes: which one, why and how it ends up.
 #[derive(Debug)]
-pub struct Cambio {
-    pub fichero: PathBuf,
-    pub que: String,
-    pub contenido: String,
+pub struct FileChange {
+    pub file: PathBuf,
+    pub what: String,
+    pub content: String,
     /// Delete the file instead of writing it (the command with its old name).
-    pub borrar: bool,
+    pub delete: bool,
 }
 
 /// The home folder; `OMOIKANE_SETUP_HOME` changes it (for the tests).
@@ -74,8 +74,8 @@ fn home() -> Result<PathBuf> {
         Some(h) => PathBuf::from(h),
         None => std::env::home_dir().context(tr!("can't find the home folder", "no se encuentra la carpeta personal"))?,
     };
-    // A network home folder isn't looked at (see `proyecto::ruta_local`).
-    crate::proyecto::exigir_local(&h)?;
+    // A network home folder isn't looked at (see `proyecto::is_local_path`).
+    crate::proyecto::require_local(&h)?;
     Ok(h)
 }
 
@@ -171,9 +171,9 @@ fn timed_hook(root: &mut Value, event: &str, matcher: Option<&str>, command: &st
 }
 
 /// The change to a JSON file, if `f` changes something.
-fn json_change(file: PathBuf, what: String, f: &dyn Fn(&mut Value) -> Result<bool>) -> Result<Option<Cambio>> {
+fn json_change(file: PathBuf, what: String, f: &dyn Fn(&mut Value) -> Result<bool>) -> Result<Option<FileChange>> {
     let mut j = read_json(&file)?;
-    Ok(if f(&mut j)? { Some(Cambio { contenido: pretty(&j)?, fichero: file, que: what, borrar: false }) } else { None })
+    Ok(if f(&mut j)? { Some(FileChange { content: pretty(&j)?, file, what, delete: false }) } else { None })
 }
 
 fn pretty(v: &Value) -> Result<String> {
@@ -191,7 +191,7 @@ fn with_instructions(f: &Path) -> Result<Option<String>> {
 }
 
 /// What would have to change for `agent` (empty if everything is done).
-pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
+pub fn plan(agent: &str) -> Result<Vec<FileChange>> {
     let h = home()?;
     let omoi = binary_path()?;
     let mut v = Vec::new();
@@ -211,7 +211,7 @@ pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
             }
             mcp_toml(&mut v, d.join("config.toml"), &omoi)?;
             if let Some(c) = with_instructions(&d.join("AGENTS.md"))? {
-                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
+                v.push(FileChange { file: d.join("AGENTS.md"), what: tr!("instructions", "instrucciones"), content: c, delete: false });
             }
             // Codex shows them as `/prompts:omoikane` and `/prompts:omoikane-web`.
             commands_in(&mut v, d.join("prompts"), Format::Md(true), &omoi);
@@ -234,7 +234,7 @@ pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
                 v.push(c);
             }
             if let Some(c) = with_instructions(&d.join("GEMINI.md"))? {
-                v.push(Cambio { fichero: d.join("GEMINI.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
+                v.push(FileChange { file: d.join("GEMINI.md"), what: tr!("instructions", "instrucciones"), content: c, delete: false });
             }
             commands_in(&mut v, d.join("commands"), Format::Toml, &omoi);
         }
@@ -292,10 +292,10 @@ pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
             let current = std::fs::read_to_string(&plugin).ok();
             // Only if there's none or it's an earlier one from Omoikane (it carries its header): someone else's isn't touched.
             if current.as_deref().is_none_or(|t| t.starts_with("// Omoikane: recall automático en OpenCode") && t != new_plugin) {
-                v.push(Cambio { fichero: plugin, que: tr!("plugin: recall on each prompt and setting aside at the end", "plugin: recall en cada mensaje y apartar al cerrar"), contenido: new_plugin, borrar: false });
+                v.push(FileChange { file: plugin, what: tr!("plugin: recall on each prompt and setting aside at the end", "plugin: recall en cada mensaje y apartar al cerrar"), content: new_plugin, delete: false });
             }
             if let Some(c) = with_instructions(&d.join("AGENTS.md"))? {
-                v.push(Cambio { fichero: d.join("AGENTS.md"), que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
+                v.push(FileChange { file: d.join("AGENTS.md"), what: tr!("instructions", "instrucciones"), content: c, delete: false });
             }
             commands_in(&mut v, d.join("commands"), Format::Md(true), &omoi);
         }
@@ -464,7 +464,7 @@ pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
         other => bail!(tr!(
             "unknown agent «{other}»: claude, {}",
             "agente «{other}» desconocido: claude, {}",
-            AGENTES.join(", ")
+            AGENTS.join(", ")
         )),
     }
     Ok(v)
@@ -472,7 +472,7 @@ pub fn plan(agent: &str) -> Result<Vec<Cambio>> {
 
 /// The agents that already have Omoikane on this computer: their MCP file names it. The automatic
 /// update adds to them whatever the new version brings (7.6).
-pub fn configurados() -> Vec<&'static str> {
+pub fn configured() -> Vec<&'static str> {
     let Ok(h) = home() else { return Vec::new() };
     let opencode = from_env_var("XDG_CONFIG_HOME").map_or_else(|| h.join(".config").join("opencode"), |x| x.join("opencode"));
     let files: [(&str, Vec<PathBuf>); 14] = [
@@ -504,7 +504,7 @@ fn grok_folder(h: &Path) -> PathBuf {
 }
 
 /// The MCP server in a `config.toml` with `[mcp_servers.<name>]` (Codex and Grok).
-fn mcp_toml(v: &mut Vec<Cambio>, toml: PathBuf, omoi: &str) -> Result<()> {
+fn mcp_toml(v: &mut Vec<FileChange>, toml: PathBuf, omoi: &str) -> Result<()> {
     let current = if toml.exists() { std::fs::read_to_string(&toml)? } else { String::new() };
     // Also if it's already there as an inline table (`omoikane = {…}` inside `[mcp_servers]`):
     // repeating it would leave the file unreadable.
@@ -512,13 +512,13 @@ fn mcp_toml(v: &mut Vec<Cambio>, toml: PathBuf, omoi: &str) -> Result<()> {
     if !already {
         let sep = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
         let content = format!("{current}{sep}\n[mcp_servers.omoikane]\ncommand = {}\nargs = [\"mcp\"]\n", toml_string(omoi));
-        v.push(Cambio { fichero: toml, que: tr!("MCP server", "servidor MCP"), contenido: content, borrar: false });
+        v.push(FileChange { file: toml, what: tr!("MCP server", "servidor MCP"), content, delete: false });
     }
     Ok(())
 }
 
 /// Registers the MCP server as `entry` under `root` (`mcpServers`, `mcp`, `amp.mcpServers`…).
-fn mcp_in(v: &mut Vec<Cambio>, file: PathBuf, root: &str, entry: Value) -> Result<()> {
+fn mcp_in(v: &mut Vec<FileChange>, file: PathBuf, root: &str, entry: Value) -> Result<()> {
     let root = root.to_string();
     if let Some(c) = json_change(file, tr!("MCP server", "servidor MCP"), &move |j| {
         let servers = object_at(j, &root)?;
@@ -533,18 +533,18 @@ fn mcp_in(v: &mut Vec<Cambio>, file: PathBuf, root: &str, entry: Value) -> Resul
     Ok(())
 }
 
-fn instructions_in(v: &mut Vec<Cambio>, file: PathBuf) -> Result<()> {
+fn instructions_in(v: &mut Vec<FileChange>, file: PathBuf) -> Result<()> {
     if let Some(c) = with_instructions(&file)? {
-        v.push(Cambio { fichero: file, que: tr!("instructions", "instrucciones"), contenido: c, borrar: false });
+        v.push(FileChange { file, what: tr!("instructions", "instrucciones"), content: c, delete: false });
     }
     Ok(())
 }
 
 /// The name of the command that opens the web view. Up to 0.9 it was `/omoikane`, which sounded like
 /// «Omoikane, note this down»: since 0.15 that name is the command that saves.
-pub const ORDEN: &str = "omoikane-web";
+pub const WEB_COMMAND: &str = "omoikane-web";
 /// The command that makes the agent save what it learned in the session.
-pub const ORDEN_GUARDAR: &str = "omoikane";
+pub const SAVE_COMMAND: &str = "omoikane";
 
 /// What the `/omoikane-web` command does: in these agents a command is a text for the model, so it
 /// asks it to start the web view with its terminal.
@@ -560,7 +560,7 @@ const WEB_COMMAND_DESCRIPTION: &str = "Open the Omoikane memory view in the brow
 /// What the `/omoikane` command does. Whatever the user writes after it reaches the model with the text
 /// (agents append it at the end when the command doesn't place it), so `$ARGUMENTS` isn't needed.
 /// It's the same text the Claude Code mod sends (`hooks/omoikane.ts`).
-pub const TEXTO_GUARDAR: &str = "Save to Omoikane now, with its `remember` and `update` tools. If the user wrote something after the command, that is what to save: one memory, in their words. Otherwise go over this session and save what is worth knowing next time and is not saved yet: decisions and their reasons (kind decision), non-obvious traps with the files they affect (gotcha), how the user wants things done (preference), steps they repeat (procedure), and how something works (fact); a decision that is the user's to make and still unanswered goes as kind decision with the tag `open` (the question, the options, what you assumed meanwhile), plus the tag `blocking` if the work can't go on without the answer; a trap of the stack itself that would help any project of the same trade (android, web, wordpress…), with nothing of this project or its client in it, goes with `trade` instead of in the project. `search` first, and `update` a memory instead of saving a near copy. Then update the project's memory tagged `status` (or save one) with where the work was left: what is done and what is next. Write each memory in the language the user writes to you in. Finish with one short line per memory saved or updated, or say that nothing new was worth saving.";
+pub const SAVE_COMMAND_TEXT: &str = "Save to Omoikane now, with its `remember` and `update` tools. If the user wrote something after the command, that is what to save: one memory, in their words. Otherwise go over this session and save what is worth knowing next time and is not saved yet: decisions and their reasons (kind decision), non-obvious traps with the files they affect (gotcha), how the user wants things done (preference), steps they repeat (procedure), and how something works (fact); a decision that is the user's to make and still unanswered goes as kind decision with the tag `open` (the question, the options, what you assumed meanwhile), plus the tag `blocking` if the work can't go on without the answer; a trap of the stack itself that would help any project of the same trade (android, web, wordpress…), with nothing of this project or its client in it, goes with `trade` instead of in the project. `search` first, and `update` a memory instead of saving a near copy. Then update the project's memory tagged `status` (or save one) with where the work was left: what is done and what is next. Write each memory in the language the user writes to you in. Finish with one short line per memory saved or updated, or say that nothing new was worth saving.";
 
 const SAVE_COMMAND_DESCRIPTION: &str = "Save to Omoikane what this session learned (or what you write after it)";
 
@@ -582,24 +582,24 @@ fn command_file(fmt: &Format, description: &str, body: &str) -> String {
 /// The two commands in `folder`, if they don't exist yet: `/omoikane` saves and `/omoikane-web` opens the web
 /// view. A `/omoikane` from before 0.15, which opened the web view and was written by Omoikane, is replaced
 /// by the one that saves; one the user wrote isn't touched.
-fn commands_in(v: &mut Vec<Cambio>, folder: PathBuf, fmt: Format, omoi: &str) {
+fn commands_in(v: &mut Vec<FileChange>, folder: PathBuf, fmt: Format, omoi: &str) {
     let ext = if matches!(fmt, Format::Toml) { "toml" } else { "md" };
     let web = command_file(&fmt, WEB_COMMAND_DESCRIPTION, &web_command_text(omoi));
-    own_file(v, folder.join(format!("{ORDEN}.{ext}")), tr!("/omoikane-web command (opens the web view)", "orden /omoikane-web (abre la vista web)"), web);
-    let file = folder.join(format!("{ORDEN_GUARDAR}.{ext}"));
-    let save = command_file(&fmt, SAVE_COMMAND_DESCRIPTION, TEXTO_GUARDAR);
+    own_file(v, folder.join(format!("{WEB_COMMAND}.{ext}")), tr!("/omoikane-web command (opens the web view)", "orden /omoikane-web (abre la vista web)"), web);
+    let file = folder.join(format!("{SAVE_COMMAND}.{ext}"));
+    let save = command_file(&fmt, SAVE_COMMAND_DESCRIPTION, SAVE_COMMAND_TEXT);
     if std::fs::read_to_string(&file).is_ok_and(|t| t.contains(WEB_COMMAND_DESCRIPTION)) {
         let what = tr!("/omoikane command: now it saves (it used to open the web view)", "orden /omoikane: ahora guarda (antes abría la vista web)");
-        v.push(Cambio { fichero: file, que: what, contenido: save, borrar: false });
+        v.push(FileChange { file, what, content: save, delete: false });
     } else {
         own_file(v, file, tr!("/omoikane command (saves what the session learned)", "orden /omoikane (guarda lo aprendido en la sesión)"), save);
     }
 }
 
 /// A whole file that belongs only to Omoikane (if it doesn't exist yet).
-fn own_file(v: &mut Vec<Cambio>, file: PathBuf, what: String, content: String) {
+fn own_file(v: &mut Vec<FileChange>, file: PathBuf, what: String, content: String) {
     if !file.exists() {
-        v.push(Cambio { fichero: file, que: what, contenido: content, borrar: false });
+        v.push(FileChange { file, what, content, delete: false });
     }
 }
 
@@ -685,22 +685,22 @@ export const Omoikane = async ({{ $, client, directory }}) => ({{
 }
 
 /// Writes the changes, with a copy of the original the first time.
-pub fn aplicar(changes: &[Cambio]) -> Result<()> {
+pub fn apply(changes: &[FileChange]) -> Result<()> {
     for c in changes {
-        if c.borrar {
-            std::fs::remove_file(&c.fichero).with_context(|| format!("{}", c.fichero.display()))?;
+        if c.delete {
+            std::fs::remove_file(&c.file).with_context(|| format!("{}", c.file.display()))?;
             continue;
         }
-        if let Some(d) = c.fichero.parent() {
+        if let Some(d) = c.file.parent() {
             std::fs::create_dir_all(d)?;
         }
-        if c.fichero.exists() {
-            let backup = c.fichero.with_file_name(format!("{}.antes-de-omoikane", c.fichero.file_name().unwrap_or_default().to_string_lossy()));
+        if c.file.exists() {
+            let backup = c.file.with_file_name(format!("{}.antes-de-omoikane", c.file.file_name().unwrap_or_default().to_string_lossy()));
             if !backup.exists() {
-                std::fs::copy(&c.fichero, &backup)?;
+                std::fs::copy(&c.file, &backup)?;
             }
         }
-        std::fs::write(&c.fichero, &c.contenido).with_context(|| format!("{}", c.fichero.display()))?;
+        std::fs::write(&c.file, &c.content).with_context(|| format!("{}", c.file.display()))?;
     }
     Ok(())
 }

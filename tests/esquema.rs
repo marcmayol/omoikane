@@ -16,11 +16,11 @@ fn temp_dir(name: &str) -> comun::Temporal {
     comun::Temporal::nueva(&format!("esquema-{name}"))
 }
 
-/// A fake git repository with its `origin` (what `sync::clave` reads).
+/// A fake git repository with its `origin` (what `sync::project_key_for` reads).
 fn repo(dir: &Path, url: &str) -> String {
     std::fs::create_dir_all(dir.join(".git")).unwrap();
     std::fs::write(dir.join(".git").join("config"), format!("[core]\n\tbare = false\n[remote \"origin\"]\n\turl = {url}\n")).unwrap();
-    proyecto::de(dir).unwrap()
+    proyecto::of_dir(dir).unwrap()
 }
 
 /// A worktree of `main_dir` at `dir` (`.git` is a file pointing to the repository).
@@ -30,12 +30,12 @@ fn worktree(main_dir: &Path, dir: &Path) -> String {
     std::fs::write(internal.join("commondir"), "../..\n").unwrap();
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join(".git"), format!("gitdir: {}\n", internal.display())).unwrap();
-    proyecto::de(dir).unwrap()
+    proyecto::of_dir(dir).unwrap()
 }
 
 fn loose_dir(dir: &Path) -> String {
     std::fs::create_dir_all(dir).unwrap();
-    proyecto::de(dir).unwrap()
+    proyecto::of_dir(dir).unwrap()
 }
 
 fn save(db: &mut Connection, project: &str, kind: Kind, title: &str, content: &str) -> String {
@@ -81,7 +81,7 @@ fn migrates_a_schema_9_database_without_losing_anything() {
     let path = dir.join("o.db");
     let ids: Vec<String> = (1..=8).map(|i| format!("01J{i:0>23}")).collect();
     {
-        let db = db::abrir_en_esquema(&path, 9).unwrap();
+        let db = db::open_at_schema(&path, 9).unwrap();
         memory_9(&db, 1, &ids[0], &web_a, "fact", "Despliegue de la web", "Se publica con el script zafiro.", "1793181600000-0000-");
         memory_9(&db, 2, &ids[1], &web_b, "gotcha", "El clon tiene otra caché", "La caché zafiro del clon.", "1793181600001-0002-pc-a");
         memory_9(&db, 3, &ids[2], &notes, "decision", "Notas en markdown", "Todo en markdown.", "1793181600002-0000000000-pc-a");
@@ -110,9 +110,9 @@ fn migrates_a_schema_9_database_without_losing_anything() {
         ))
         .unwrap();
     }
-    let db = db::abrir(&path).unwrap();
+    let db = db::open(&path).unwrap();
     assert!(Path::new(&format!("{}.antes-del-esquema-10", path.display())).exists(), "copia antes de migrar");
-    assert_eq!(one(&db, "PRAGMA user_version"), db::VERSION_ESQUEMA);
+    assert_eq!(one(&db, "PRAGMA user_version"), db::SCHEMA_VERSION);
     let ok: String = db.query_row("PRAGMA integrity_check", [], |f| f.get(0)).unwrap();
     assert_eq!(ok, "ok");
     assert!(db.prepare("PRAGMA foreign_key_check").unwrap().query([]).unwrap().next().unwrap().is_none());
@@ -148,7 +148,7 @@ fn migrates_a_schema_9_database_without_losing_anything() {
         .query_row("SELECT p.key, pp.is_foreign FROM project p JOIN project_path pp ON pp.project_id = p.id WHERE p.id = ?1", [pid(&ids[4])], |f| Ok((f.get(0)?, f.get(1)?)))
         .unwrap();
     assert_eq!((foreign_key.as_str(), is_foreign), ("git:github.com/ana/app", true));
-    let list = proyecto::lista(&db, None, None, 50).unwrap();
+    let list = proyecto::list(&db, None, None, 50).unwrap();
     assert!(list.iter().any(|p| p.path == gone_path && p.gone), "{list:?}");
     assert!(!list.iter().any(|p| p.path == foreign && p.gone), "lo de otro equipo no «ya no está»");
     assert_eq!(memoria::get(&db, &ids[0]).unwrap().project, web_a);
@@ -180,13 +180,13 @@ fn a_newer_schema_database_opens_if_its_min_reader_allows_it() {
     let dir = temp_dir("lector");
     let path = dir.join("o.db");
     {
-        let mut db = db::abrir(&path).unwrap();
+        let mut db = db::open(&path).unwrap();
         save(&mut db, "", Kind::Fact, "Una", "Algo.");
         // A future version that only adds: schema 11, readable from 10.
         db.execute_batch("PRAGMA user_version = 11; CREATE TABLE futura (x); INSERT OR REPLACE INTO meta(k, v) VALUES ('lector_minimo', '10');").unwrap();
     }
     {
-        let db = db::abrir(&path).unwrap();
+        let db = db::open(&path).unwrap();
         assert_eq!(memoria::recent(&db, &Scope::All, None, 10).unwrap().len(), 1);
         assert_eq!(one(&db, "PRAGMA user_version"), 11, "no la baja ni la toca");
     }
@@ -195,14 +195,14 @@ fn a_newer_schema_database_opens_if_its_min_reader_allows_it() {
         let db = Connection::open(&path).unwrap();
         db.execute_batch("PRAGMA user_version = 12; UPDATE meta SET v = '12' WHERE k = 'lector_minimo';").unwrap();
     }
-    let e = db::abrir(&path).expect_err("no se abre");
+    let e = db::open(&path).expect_err("no se abre");
     assert!(format!("{e:#}").contains("12"), "{e:#}");
     {
         // One from before schema 10 with a newer schema (without `lector_minimo`): not either.
         let db = Connection::open(&path).unwrap();
         db.execute_batch("DELETE FROM meta WHERE k = 'lector_minimo'; PRAGMA user_version = 11;").unwrap();
     }
-    assert!(db::abrir(&path).is_err());
+    assert!(db::open(&path).is_err());
 }
 
 // --- Spaces --------------------------------------------------------------------------------------
@@ -225,17 +225,17 @@ fn clients(name: &str) -> Clients {
     let a_app = loose_dir(&dir.join("acme-app"));
     let b_web = loose_dir(&dir.join("globex-web"));
     let loose = loose_dir(&dir.join("personal"));
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     save(&mut db, &a_web, Kind::Fact, "Acme web: puerto zafiro", "El servidor zafiro de Acme escucha en el 7741.");
     save(&mut db, &a_app, Kind::Fact, "Acme app: build zafiro", "La app de Acme compila con el perfil zafiro.");
     save(&mut db, &b_web, Kind::Fact, "Globex web: puerto zafiro", "El servidor zafiro de Globex escucha en el 9931.");
     save(&mut db, &loose, Kind::Fact, "Personal: zafiro", "Mi script zafiro de copias.");
     save(&mut db, "", Kind::Preference, "Global: respuestas zafiro", "Respuestas cortas, también con zafiro.");
-    let acme = proyecto::crear_espacio(&db, "Acme").unwrap();
-    let globex = proyecto::crear_espacio(&db, "Globex").unwrap();
+    let acme = proyecto::create_space(&db, "Acme").unwrap();
+    let globex = proyecto::create_space(&db, "Globex").unwrap();
     for (p, s) in [(&a_web, acme), (&a_app, acme), (&b_web, globex)] {
-        let id = proyecto::registrar(&db, p).unwrap();
-        proyecto::asignar_espacio(&db, id, Some(s)).unwrap();
+        let id = proyecto::register(&db, p).unwrap();
+        proyecto::assign_space(&db, id, Some(s)).unwrap();
     }
     for (s, t) in [(acme, "Acme espacio: VPN zafiro"), (globex, "Globex espacio: VPN zafiro")] {
         let n = NewMemory { space_id: Some(s), kind: Some(Kind::Gotcha), title: t.into(), content: "La VPN zafiro del cliente.".into(), ..Default::default() };
@@ -329,13 +329,13 @@ fn an_exact_name_picks_between_two_that_differ_only_in_case() {
     let repo_path = repo(&dir.join("codigo").join("Omoikane"), "git@github.com:acme/omoikane.git");
     let campaign = dir.join("campana").join("omoikane");
     std::fs::create_dir_all(&campaign).unwrap();
-    let db = db::abrir(&dir.join("o.db")).unwrap();
-    let (a, b) = (proyecto::registrar(&db, &repo_path).unwrap(), proyecto::registrar(&db, &campaign.display().to_string()).unwrap());
+    let db = db::open(&dir.join("o.db")).unwrap();
+    let (a, b) = (proyecto::register(&db, &repo_path).unwrap(), proyecto::register(&db, &campaign.display().to_string()).unwrap());
     assert_ne!(a, b);
-    assert_eq!(proyecto::buscar(&db, "Omoikane").unwrap(), a);
-    assert_eq!(proyecto::buscar(&db, "omoikane").unwrap(), b);
+    assert_eq!(proyecto::find(&db, "Omoikane").unwrap(), a);
+    assert_eq!(proyecto::find(&db, "omoikane").unwrap(), b);
     // With other casing there's no way to know which: it keeps asking to be told.
-    let e = proyecto::buscar(&db, "OMOIKANE").unwrap_err().to_string();
+    let e = proyecto::find(&db, "OMOIKANE").unwrap_err().to_string();
     assert!(e.contains("Omoikane") && e.contains("omoikane"), "{e}");
 }
 
@@ -347,9 +347,9 @@ fn two_clones_and_a_worktree_are_one_project() {
     let a = repo(&dir.join("web"), "git@github.com:acme/web.git");
     let b = repo(&dir.join("web-2"), "https://github.com/acme/web.git");
     let w = worktree(&dir.join("web"), &dir.join("web-rama"));
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     save(&mut db, &a, Kind::Gotcha, "La caché del build", "Borrar target al cambiar de rama.");
-    let (pa, pb, pw) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap(), proyecto::registrar(&db, &w).unwrap());
+    let (pa, pb, pw) = (proyecto::register(&db, &a).unwrap(), proyecto::register(&db, &b).unwrap(), proyecto::register(&db, &w).unwrap());
     assert_eq!((pa, pa), (pb, pw));
     assert_eq!(one(&db, "SELECT count(*) FROM project_path"), 3);
     // It's visible from any of the three, and doesn't show up as «from another project».
@@ -366,14 +366,14 @@ fn a_moved_folder_is_still_its_project() {
     let dir = temp_dir("movida");
     let old_path = repo(&dir.join("app"), "git@github.com:acme/app.git");
     let no_git = loose_dir(&dir.join("notas"));
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let id = save(&mut db, &old_path, Kind::Fact, "La app usa Kotlin", "Y Compose.");
     let notes_id = save(&mut db, &no_git, Kind::Fact, "Notas en markdown", "Todo en .md.");
     let key: String = db.query_row("SELECT key FROM project", [], |f| f.get(0)).unwrap_or_default();
     let _ = key;
     // With `origin`: the folder moves and the project follows it by itself (same key, the main path changes).
     std::fs::rename(dir.join("app"), dir.join("app-nueva")).unwrap();
-    let new_id = proyecto::de(&dir.join("app-nueva")).unwrap();
+    let new_id = proyecto::of_dir(&dir.join("app-nueva")).unwrap();
     assert_eq!(memoria::recent(&db, &Scope::from_project(&db, &new_id).unwrap(), None, 10).unwrap().len(), 1, "ya se ve antes de apuntarla");
     // When the session starts there, it's recorded and announced once.
     let e = HookInput { session_id: "s".into(), ..Default::default() };
@@ -386,19 +386,19 @@ fn a_moved_folder_is_still_its_project() {
     // else); the old one shows up as «gone», and `projects move` takes it.
     std::fs::rename(dir.join("notas"), dir.join("notas-2026")).unwrap();
     std::fs::create_dir_all(dir.join("otra").join("notas")).unwrap();
-    let other = proyecto::de(&dir.join("otra").join("notas")).unwrap();
-    let other_pid = proyecto::registrar(&db, &other).unwrap();
+    let other = proyecto::of_dir(&dir.join("otra").join("notas")).unwrap();
+    let other_pid = proyecto::register(&db, &other).unwrap();
     assert_ne!(other_pid, memoria::get(&db, &notes_id).unwrap().project_id, "mismo nombre, otra carpeta");
-    assert!(proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.path == no_git && p.gone));
-    let moved = proyecto::de(&dir.join("notas-2026")).unwrap();
+    assert!(proyecto::list(&db, None, None, 50).unwrap().iter().any(|p| p.path == no_git && p.gone));
+    let moved = proyecto::of_dir(&dir.join("notas-2026")).unwrap();
     let pid = memoria::get(&db, &notes_id).unwrap().project_id;
-    proyecto::mover(&mut db, pid, &moved, false).unwrap();
+    proyecto::move_to(&mut db, pid, &moved, false).unwrap();
     let m = memoria::get(&db, &notes_id).unwrap();
     assert_eq!((m.project_id, m.project.as_str()), (pid, moved.as_str()));
-    assert!(!proyecto::lista(&db, None, None, 50).unwrap().iter().any(|p| p.gone));
+    assert!(!proyecto::list(&db, None, None, 50).unwrap().iter().any(|p| p.gone));
     // `projects prune`: the other «notas» folder's project, without memories, goes away.
-    assert_eq!(proyecto::podar(&db).unwrap(), 1);
-    assert_eq!(proyecto::resolver(&db, &other).unwrap(), None);
+    assert_eq!(proyecto::prune(&db).unwrap(), 1);
+    assert_eq!(proyecto::resolve(&db, &other).unwrap(), None);
 }
 
 #[test]
@@ -406,19 +406,19 @@ fn merging_two_projects_keeps_ids_and_leaves_the_newest_status() {
     let dir = temp_dir("fundir");
     let a = loose_dir(&dir.join("viejo"));
     let b = loose_dir(&dir.join("nuevo"));
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let ea = memoria::save(&mut db, NewMemory { project: a.clone(), kind: Some(Kind::Fact), title: "Estado viejo".into(), content: "Iba por la 1.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
     let other = save(&mut db, &a, Kind::Fact, "Una del viejo", "Algo.");
     memoria::update(&mut db, &other, Changes { content: Some("Algo más.".into()), ..Default::default() }, None).unwrap();
     let eb = memoria::save(&mut db, NewMemory { project: b.clone(), kind: Some(Kind::Fact), title: "Estado nuevo".into(), content: "Voy por la 2.0.".into(), tags: vec!["status".into()], ..Default::default() }, None).unwrap().id;
-    let (pa, pb) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap());
-    assert_eq!(proyecto::fundir(&mut db, pa, pb, false).unwrap(), 2);
+    let (pa, pb) = (proyecto::register(&db, &a).unwrap(), proyecto::register(&db, &b).unwrap());
+    assert_eq!(proyecto::merge(&mut db, pa, pb, false).unwrap(), 2);
     for id in [&ea, &other, &eb] {
         assert_eq!(memoria::get(&db, id).unwrap().project_id, pb);
     }
     assert_eq!(memoria::history(&db, &other).unwrap().len(), 1, "con su historial");
     assert_eq!(veredictos::last_in_chain(&db, &ea).unwrap().map(|x| x.0), Some(eb.clone()), "el estado viejo, sustituido por el nuevo");
-    assert_eq!(proyecto::resolver(&db, &a).unwrap().map(|x| x.0), Some(pb), "la carpeta vieja ya es del nuevo");
+    assert_eq!(proyecto::resolve(&db, &a).unwrap().map(|x| x.0), Some(pb), "la carpeta vieja ya es del nuevo");
 }
 
 // --- Verdicts by logical clock and unknown kinds ---------------------------------------------------
@@ -428,18 +428,18 @@ fn merging_two_projects_keeps_ids_and_leaves_the_newest_status() {
 #[test]
 fn a_verdict_holds_even_with_skewed_wall_clocks() {
     let dir = temp_dir("relojes");
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let a = save(&mut db, "/p", Kind::Fact, "El puerto es el 8080", "Del servidor.");
     let b = save(&mut db, "/p", Kind::Fact, "El puerto es el 9090", "Del servidor.");
     // What sync leaves: the other computer's change with its (ahead) time and its stamp.
     let future_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 30 * 60 * 1000;
-    let stamp = omoikane::reloj::formato(future_ms, 0, "pc-adelantado");
+    let stamp = omoikane::reloj::format_stamp(future_ms, 0, "pc-adelantado");
     db.execute(
         "UPDATE memory SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+30 minutes'), hlc = ?2, content_hlc = ?2 WHERE id = ?1",
         params![a, stamp],
     )
     .unwrap();
-    omoikane::reloj::recibir(&db, &stamp).unwrap();
+    omoikane::reloj::receive(&db, &stamp).unwrap();
     veredictos::set(&db, &a, &b, veredictos::SUPERSEDED, "la nueva", "user").unwrap();
     assert!(veredictos::pairs(&db).unwrap().contains_key(&veredictos::pair_key(&a, &b)), "vale ya");
     assert_eq!(veredictos::last_in_chain(&db, &a).unwrap().map(|x| x.0), Some(b.clone()));
@@ -458,7 +458,7 @@ fn a_verdict_holds_even_with_skewed_wall_clocks() {
 fn an_unknown_kind_is_kept() {
     let dir = temp_dir("tipo");
     let path = dir.join("o.db");
-    let mut db = db::abrir(&path).unwrap();
+    let mut db = db::open(&path).unwrap();
     let id = save(&mut db, "", Kind::Fact, "Una idea", "Para más adelante.");
     db.execute("UPDATE memory SET kind = 'insight' WHERE id = ?1", [&id]).unwrap();
     let m = memoria::get(&db, &id).unwrap();
@@ -468,15 +468,15 @@ fn an_unknown_kind_is_kept() {
     let kind: String = db.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
     let mut out = Vec::new();
-    omoikane::copia::exportar(&db, &path, &Scope::All, false, &mut out).unwrap();
+    omoikane::copia::export(&db, &path, &Scope::All, false, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("\"kind\":\"insight\""), "{text}");
     // And it goes into another database the same.
     let file = dir.join("copia.jsonl");
     std::fs::write(&file, &text).unwrap();
     let path2 = dir.join("otra.db");
-    let mut other = db::abrir(&path2).unwrap();
-    omoikane::copia::importar(&mut other, &path2, &file, "", None, false, Default::default()).unwrap();
+    let mut other = db::open(&path2).unwrap();
+    omoikane::copia::import(&mut other, &path2, &file, "", None, false, Default::default()).unwrap();
     let kind: String = other.query_row("SELECT kind FROM memory WHERE id = ?1", [&id], |f| f.get(0)).unwrap();
     assert_eq!(kind, "insight");
 }
@@ -489,9 +489,9 @@ fn usage_from_each_project_is_summarized() {
     let dir = temp_dir("uso");
     let a = loose_dir(&dir.join("balua"));
     let b = loose_dir(&dir.join("lumbre"));
-    let mut db = db::abrir(&dir.join("o.db")).unwrap();
+    let mut db = db::open(&dir.join("o.db")).unwrap();
     let id = save(&mut db, "", Kind::Gotcha, "bitsandbytes 4-bit rompe la visión en la RTX 5070 Ti", "Cuantizar a 8 bits.");
-    let (pa, pb) = (proyecto::registrar(&db, &a).unwrap(), proyecto::registrar(&db, &b).unwrap());
+    let (pa, pb) = (proyecto::register(&db, &a).unwrap(), proyecto::register(&db, &b).unwrap());
     let e = HookInput { session_id: "s1".into(), prompt: "la visión con bitsandbytes 4-bit en la RTX 5070 Ti falla".into(), ..Default::default() };
     let r = recall::on_prompt(&mut db, &a, &e, None).unwrap().unwrap_or_default();
     assert!(r.contains("bitsandbytes"), "{r}");
@@ -528,21 +528,21 @@ fn the_migration_puts_a_person_in_dir_keys() {
         let notes = loose_dir(&dir.join("notas"));
         let path = dir.join("o.db");
         {
-            let db = db::abrir_en_esquema(&path, 9).unwrap();
+            let db = db::open_at_schema(&path, 9).unwrap();
             memory_9(&db, 1, "01J00000000000000000000001", &notes, "fact", "Notas", "En markdown.", "1793181600000-0000000000-pc-a");
         }
         if let Some(p) = sync {
             std::fs::write(dir.join("o.sync.json"), serde_json::json!({ "url": "x", "kinds": [], "global": true, "person": p }).to_string()).unwrap();
         }
-        let db = db::abrir(&path).unwrap();
-        let person = db::persona_de(&db);
+        let db = db::open(&path).unwrap();
+        let person = db::person_of(&db);
         match sync {
             Some(p) => assert_eq!(person, p),
             None => assert!(person.starts_with("u-") && person.len() == 10, "{person}"),
         }
         assert_eq!(the_key(&db), format!("dir:{person}/notas"));
         drop(db);
-        assert_eq!(db::persona_de(&db::abrir(&path).unwrap()), person, "estable");
+        assert_eq!(db::person_of(&db::open(&path).unwrap()), person, "estable");
     }
 }
 
@@ -555,14 +555,14 @@ fn a_schema_10_database_without_a_person_is_brought_up_to_date() {
     let notes = loose_dir(&dir.join("notas"));
     let path = dir.join("o.db");
     {
-        let mut db = db::abrir(&path).unwrap();
+        let mut db = db::open(&path).unwrap();
         save(&mut db, &notes, Kind::Fact, "Notas", "En markdown.");
         let other = save(&mut db, &notes, Kind::Fact, "Otra", "Para olvidar.");
         memoria::forget(&mut db, &other).unwrap();
         db.execute_batch("DELETE FROM meta WHERE k = 'persona'; UPDATE project SET key = 'dir:/notas' WHERE id != 0; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc;").unwrap();
     }
-    let db = db::abrir(&path).unwrap();
-    let person = db::persona_de(&db);
+    let db = db::open(&path).unwrap();
+    let person = db::person_of(&db);
     assert!(person.starts_with("u-"), "{person}");
     assert_eq!(the_key(&db), format!("dir:{person}/notas"));
     assert_eq!(one(&db, "SELECT count(*) FROM tombstone WHERE space_key = ''"), 1);
@@ -579,7 +579,7 @@ fn an_old_schema_10_database_opened_concurrently() {
         let notes = loose_dir(&dir.join("notas"));
         let path = dir.join("o.db");
         {
-            let mut db = db::abrir(&path).unwrap();
+            let mut db = db::open(&path).unwrap();
             save(&mut db, &notes, Kind::Fact, "Notas", "En markdown.");
             db.execute_batch("DELETE FROM meta WHERE k = 'persona'; ALTER TABLE tombstone DROP COLUMN space_key; ALTER TABLE project DROP COLUMN hlc; ALTER TABLE project DROP COLUMN paused;").unwrap();
         }
@@ -589,13 +589,13 @@ fn an_old_schema_10_database_opened_concurrently() {
                 let (path, out) = (path.clone(), out.clone());
                 std::thread::spawn(move || {
                     out.wait();
-                    db::abrir(&path).map(|db| db::persona_de(&db)).map_err(|e| format!("{e:#}"))
+                    db::open(&path).map(|db| db::person_of(&db)).map_err(|e| format!("{e:#}"))
                 })
             })
             .collect();
         let persons: Vec<String> = threads.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
         assert!(persons.iter().all(|p| *p == persons[0]), "{persons:?}");
-        let db = db::abrir(&path).unwrap();
+        let db = db::open(&path).unwrap();
         assert_eq!(one(&db, "SELECT count(*) FROM project WHERE hlc = '' AND paused = ''"), 2);
     }
 }
@@ -653,7 +653,7 @@ fn by_id_spaces_do_not_cross_either() {
     assert!(error && t.contains("different spaces"), "{t}");
     let (t, error) = call(&home, "update", serde_json::json!({ "id": acme, "absorb": [globex], "content": "Juntas." }));
     assert!(error && t.contains("different spaces"), "{t}");
-    let db = db::abrir(&path).unwrap();
+    let db = db::open(&path).unwrap();
     assert_eq!(one(&db, "SELECT count(*) FROM verdict"), 0);
     assert!(memoria::get(&db, &globex).is_ok(), "no se absorbió");
     drop(db);
@@ -692,7 +692,7 @@ fn remember_neither_judges_nor_names_another_space() {
         assert!(error, "{args}: {t}");
         let l = t.to_lowercase();
         assert!(!l.contains(&globex.to_lowercase()) && !l.contains(&globex[..10].to_lowercase()) && !l.contains("globex") && !l.contains("acme"), "{args}: {t}");
-        let db = db::abrir(&path).unwrap();
+        let db = db::open(&path).unwrap();
         assert_eq!(one(&db, "SELECT count(*) FROM memory"), before, "nada guardado: {args}");
         assert_eq!(one(&db, "SELECT count(*) FROM verdict"), 0);
     }
@@ -704,24 +704,24 @@ fn remember_neither_judges_nor_names_another_space() {
     assert!(!error && t.contains("\"judged\": 1"), "{t}");
 }
 
-/// `fundir` and `mover` between projects of different spaces: an error (from which space to which)
+/// `merge` and `move_to` between projects of different spaces: an error (from which space to which)
 /// unless `forzar`; an empty one does merge (the folder that registered itself on passing through it).
 #[test]
 fn merging_across_spaces_requires_force() {
     let Clients { dir, mut db, a_web, a_app, b_web, loose } = clients("fundir-espacios");
-    let id = |p: &str| proyecto::resolver(&db, p).unwrap().unwrap().0;
+    let id = |p: &str| proyecto::resolve(&db, p).unwrap().unwrap().0;
     let (pa, papp, pb, ps) = (id(&a_web), id(&a_app), id(&b_web), id(&loose));
-    let e = proyecto::fundir(&mut db, pb, pa, false).unwrap_err().to_string();
+    let e = proyecto::merge(&mut db, pb, pa, false).unwrap_err().to_string();
     assert!(e.contains("«globex» → «acme»"), "{e}");
-    let e = proyecto::fundir(&mut db, ps, pa, false).unwrap_err().to_string();
+    let e = proyecto::merge(&mut db, ps, pa, false).unwrap_err().to_string();
     assert!(e.contains("no space → «acme»"), "{e}");
-    let e = proyecto::mover(&mut db, pa, &b_web, false).unwrap_err().to_string();
+    let e = proyecto::move_to(&mut db, pa, &b_web, false).unwrap_err().to_string();
     assert!(e.contains("«globex» → «acme»"), "{e}");
     // Within the same space, just like that.
-    assert_eq!(proyecto::fundir(&mut db, papp, pa, false).unwrap(), 1);
+    assert_eq!(proyecto::merge(&mut db, papp, pa, false).unwrap(), 1);
     // A folder without memories (the one that registered itself on passing through it) merges without forcing.
     let empty_dir = loose_dir(&dir.join("vacia"));
-    let pv = proyecto::registrar(&db, &empty_dir).unwrap();
-    assert_eq!(proyecto::fundir(&mut db, pv, pa, false).unwrap(), 0);
-    assert_eq!(proyecto::fundir(&mut db, pb, pa, true).unwrap(), 1);
+    let pv = proyecto::register(&db, &empty_dir).unwrap();
+    assert_eq!(proyecto::merge(&mut db, pv, pa, false).unwrap(), 0);
+    assert_eq!(proyecto::merge(&mut db, pb, pa, true).unwrap(), 1);
 }

@@ -13,7 +13,7 @@ use std::process::{Command, Output, Stdio};
 
 fn database(name: &str) -> (comun::Temporal, Connection) {
     let dir = comun::Temporal::nueva(&format!("llegada-{name}"));
-    let db = db::abrir(&dir.join("o.db")).unwrap();
+    let db = db::open(&dir.join("o.db")).unwrap();
     (dir, db)
 }
 
@@ -39,11 +39,11 @@ fn save(db: &mut Connection, (project, space): (&str, Option<i64>), kind: Kind, 
 
 /// A client (acme) with three projects and another client (globex) that must never show up.
 fn two_clients(db: &mut Connection) {
-    let acme = proyecto::crear_espacio(db, "acme").unwrap();
-    let globex = proyecto::crear_espacio(db, "globex").unwrap();
+    let acme = proyecto::create_space(db, "acme").unwrap();
+    let globex = proyecto::create_space(db, "globex").unwrap();
     for (p, e) in [("/acme/web", acme), ("/acme/api", acme), ("/acme/app", acme), ("/globex/erp", globex)] {
-        let id = proyecto::registrar(db, p).unwrap();
-        proyecto::asignar_espacio(db, id, Some(e)).unwrap();
+        let id = proyecto::register(db, p).unwrap();
+        proyecto::assign_space(db, id, Some(e)).unwrap();
     }
     save(db, ("/acme/web", None), Kind::Decision, ("Los importes van en céntimos", "Enteros, nunca coma flotante."), &[], "Ana");
     save(db, ("/acme/api", None), Kind::Fact, ("API: migrando a JWT", "Login hecho; faltan los refresh tokens."), &["status"], "Ana");
@@ -94,18 +94,18 @@ fn without_space_or_team_there_is_no_welcome() {
     let t = recall::on_session_start(&mut db, "/solo", &input("s1", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
     // A space with a single project and only this person's work: there is nothing from the team to tell.
-    let mine = proyecto::crear_espacio(&db, "mio").unwrap();
-    let id = proyecto::registrar(&db, "/mio/uno").unwrap();
-    proyecto::asignar_espacio(&db, id, Some(mine)).unwrap();
+    let mine = proyecto::create_space(&db, "mio").unwrap();
+    let id = proyecto::register(&db, "/mio/uno").unwrap();
+    proyecto::assign_space(&db, id, Some(mine)).unwrap();
     save(&mut db, ("/mio/uno", None), Kind::Fact, ("Lo de uno", "Solo mío."), &[], "");
     let t = recall::on_session_start(&mut db, "/mio/uno", &input("s2", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
     // Whoever already worked in the project before putting it in a space doesn't get it.
-    let old = proyecto::registrar(&db, "/viejo").unwrap();
+    let old = proyecto::register(&db, "/viejo").unwrap();
     save(&mut db, ("/viejo", None), Kind::Fact, ("De antes", "Ya trabajaba aquí."), &[], "Ana");
     recall::on_session_start(&mut db, "/viejo", &input("s3", "startup")).unwrap();
-    let acme = proyecto::espacio_de_clave(&db, &proyecto::clave_de_espacio("acme")).unwrap();
-    proyecto::asignar_espacio(&db, old, acme).unwrap();
+    let acme = proyecto::space_of_key(&db, &proyecto::space_key_from_name("acme")).unwrap();
+    proyecto::assign_space(&db, old, acme).unwrap();
     let t = recall::on_session_start(&mut db, "/viejo", &input("s4", "startup")).unwrap().unwrap();
     assert!(!t.contains("First session"), "{t}");
 }
@@ -216,10 +216,10 @@ fn whoever_joins_the_space_knows_what_arrived_and_their_agent_has_it() {
 fn what_nobody_signed_counts_as_the_teams() {
     let (_dir, mut db) = database("sin-firma");
     db.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('autor', 'Bea')", []).unwrap();
-    let acme = proyecto::crear_espacio(&db, "acme").unwrap();
+    let acme = proyecto::create_space(&db, "acme").unwrap();
     for p in ["/acme/web", "/acme/api", "/acme/app"] {
-        let id = proyecto::registrar(&db, p).unwrap();
-        proyecto::asignar_espacio(&db, id, Some(acme)).unwrap();
+        let id = proyecto::register(&db, p).unwrap();
+        proyecto::assign_space(&db, id, Some(acme)).unwrap();
     }
     // Bea writes a lot in web; api's arrived without an author (from before its author synced).
     save(&mut db, ("/acme/web", None), Kind::Fact, ("Lo de Bea", "Suyo."), &[], "Bea");
@@ -228,7 +228,7 @@ fn what_nobody_signed_counts_as_the_teams() {
     assert!(t.contains("First session in this project") && t.contains("- api (1 memories): API: a medias"), "{t}");
     // «the user» is whoever signs here. This test calls the library in its process: from the session of
     // an agent with `OMOIKANE_AUTHOR`, whoever signs is that agent and not Bea.
-    let session_author = omoikane::entorno::autor();
+    let session_author = omoikane::entorno::author();
     let bea = if session_author.as_deref().is_some_and(|a| a != "Bea") { "Bea (1)." } else { "Bea (1, the user)." };
     assert!(t.contains(&format!("Who writes in this space (memories each): {bea}")), "{t}");
     // If everything in the space belongs to whoever signs here, there is no welcome.

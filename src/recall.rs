@@ -569,7 +569,7 @@ fn location(m: &Memory, current: i64) -> String {
     } else if m.space_only() {
         format!(" [space {}]", m.space)
     } else if m.project_id != current {
-        format!(" [project {}]", crate::proyecto::nombre_de(&m.project, &m.project_key))
+        format!(" [project {}]", crate::proyecto::name_of(&m.project, &m.project_key))
     } else {
         String::new()
     }
@@ -577,7 +577,7 @@ fn location(m: &Memory, current: i64) -> String {
 
 /// The id of the session's project (-1 if it has nothing yet; never 0: global is not a session).
 fn current_project(db: &Connection, project: &str) -> i64 {
-    match crate::proyecto::resolver(db, project) {
+    match crate::proyecto::resolve(db, project) {
         Ok(Some((id, _))) if !project.is_empty() => id,
         _ => -1,
     }
@@ -637,7 +637,7 @@ fn own_author(db: &Connection, current: i64) -> Option<String> {
         return Some(a);
     }
     let path = db.path().filter(|p| !p.is_empty())?;
-    crate::sync::leer_config(std::path::Path::new(path)).ok().flatten().and_then(|c| c.author)
+    crate::sync::read_config(std::path::Path::new(path)).ok().flatten().and_then(|c| c.author)
 }
 
 pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Result<Option<String>> {
@@ -645,10 +645,10 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     // resolved by their task) and then the warnings and links up to date (after updating, or what sync brought).
     crate::revisar::cleanup_quietly(db);
     crate::revisar::refresh(db)?;
-    let update_notice = crate::actualizar::aviso();
+    let update_notice = crate::actualizar::notice();
     // The session's project gets recorded (with its key, computed once) and its `origin` up to date. If
     // it is the new folder of a project that moved (same `origin`), it is said once.
-    let moved = if crate::proyecto::es_general(project) { None } else { crate::proyecto::registrar_avisando(db, project)?.1 };
+    let moved = if crate::proyecto::is_general(project) { None } else { crate::proyecto::register_reporting(db, project)?.1 };
     let scope = Scope::from_project(db, project)?;
     // Its trades, looking at its files (root and one level down): with them come the trade memories.
     // Optional: if it fails, the session starts without them.
@@ -703,14 +703,14 @@ pub fn on_session_start(db: &mut Connection, project: &str, e: &HookInput) -> Re
     )?;
     let mut s = String::from("<omoikane>\n");
     // A paused project isn't synced until the person decides: don't let it be forgotten.
-    if let Some(p) = crate::sync::aviso_de_pausa_agente(db) {
+    if let Some(p) = crate::sync::agent_pause_notice(db) {
         s.push_str(&p);
         s.push('\n');
     }
     if let Some(old) = &moved {
         s.push_str(&format!("This project used to be in {old}, which no longer exists: its memories follow this folder now (same git origin). Tell the user once.\n"));
     }
-    if crate::proyecto::es_general(project) {
+    if crate::proyecto::is_general(project) {
         s.push_str(&format!(
             "Long-term memory (Omoikane) holds {total} memories across all projects. Use the omoikane tools: `search` before working on something, `remember` what is worth knowing next time.\nThis folder is not a project, so search covers every project. When a memory is about one project, pass its folder as `project` (or put its absolute paths in `paths`); otherwise it is saved as global.\n"
         ));
@@ -979,7 +979,7 @@ fn matching_procedure(db: &Connection, project: &str, prompt: &str) -> Result<Op
         let roots: BTreeSet<String> = triggers.iter().filter(|w| !w.contains(' ')).map(|w| root(w)).collect();
         let is_trigger = |p: &str| roots.iter().any(|r| p.starts_with(r.as_str()));
         let about: BTreeSet<String> = {
-            let name = if m.project_id > 0 { crate::proyecto::nombre_de(&m.project, &m.project_key) } else { String::new() };
+            let name = if m.project_id > 0 { crate::proyecto::name_of(&m.project, &m.project_key) } else { String::new() };
             let only_name = Memory { content: name, paths: vec![], ..m.clone() };
             words_of(&only_name).into_iter().filter(|p| !is_trigger(p)).collect()
         };

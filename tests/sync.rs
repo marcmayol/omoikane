@@ -99,7 +99,7 @@ impl Machine {
             .stdin(Stdio::null());
         comun::sin_la_sesion(&mut c);
         // Without the variables of an agent's shell (if the tests run in one, `verify` refuses).
-        for v in omoikane::verificado::DE_AGENTE {
+        for v in omoikane::verificado::AGENT_ENV_VARS {
             c.env_remove(v);
         }
         for (k, v) in env {

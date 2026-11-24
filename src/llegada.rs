@@ -70,7 +70,7 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
     }
     let wide = Scope::Space(Some(space));
     // The space's other projects, most active first, with their latest `status`.
-    let mut others = crate::proyecto::lista(db, None, Some(Some(space)), PROYECTOS + 2)?;
+    let mut others = crate::proyecto::list(db, None, Some(Some(space)), PROYECTOS + 2)?;
     others.retain(|p| p.id != id);
     let statuses = memoria::statuses(db, &wide, PROYECTOS + 3)?;
     // The open decisions of the other projects (this one's, the space's and the global ones already show).
@@ -112,7 +112,7 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
                 .query_row("SELECT name FROM project WHERE id = ?1", [m.project_id], |r| r.get(0))
                 .optional()?
                 .filter(|n: &String| !n.is_empty())
-                .unwrap_or_else(|| crate::proyecto::nombre_de(&m.project, &m.project_key));
+                .unwrap_or_else(|| crate::proyecto::name_of(&m.project, &m.project_key));
             let mark = if m.is_blocking() { "BLOCKING " } else { "" };
             s.push_str(&format!("- {mark}[project {p}] {} (id {})\n", m.title, m.id.chars().take(12).collect::<String>()));
         }
@@ -136,7 +136,7 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
 /// projects, what is pinned and the open decisions, and that the agent's next session in those
 /// projects will already have it. Nothing if the space isn't there or arrived empty.
 pub fn al_unirse(db: &Connection, space: &str) -> Result<Option<String>> {
-    let Some(s) = crate::proyecto::espacio_de_clave(db, &crate::proyecto::clave_de_espacio(space))? else { return Ok(None) };
+    let Some(s) = crate::proyecto::space_of_key(db, &crate::proyecto::space_key_from_name(space))? else { return Ok(None) };
     let (memories, pinned): (i64, i64) = db.query_row(
         "SELECT count(*), COALESCE(sum(pinned), 0) FROM memory
          WHERE space_id = ?1 OR project_id IN (SELECT id FROM project WHERE space_id = ?1)",
@@ -147,7 +147,7 @@ pub fn al_unirse(db: &Connection, space: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let open = memoria::open_decisions(db, &Scope::Space(Some(s)), usize::MAX)?.into_iter().filter(|m| !m.global()).count();
-    let projects: Vec<String> = crate::proyecto::lista(db, None, Some(Some(s)), 50)?.into_iter().map(|p| p.name).collect();
+    let projects: Vec<String> = crate::proyecto::list(db, None, Some(Some(s)), 50)?.into_iter().map(|p| p.name).collect();
     let names = if projects.len() > 6 { format!("{}, …", projects[..6].join(", ")) } else { projects.join(", ") };
     let mut t = tr!(
         "  From {space}: {memories} memories in {} project(s) ({names}), {pinned} pinned, {open} open decision(s).",

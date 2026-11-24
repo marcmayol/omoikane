@@ -32,7 +32,7 @@ fn conversation(d: &std::path::Path, name: &str, commands: &[&str]) -> PathBuf {
 #[test]
 fn proposes_once_what_repeats_and_not_what_is_already_saved() {
     let d = dir("propone");
-    let mut db = db::abrir(&d.join("o.db")).unwrap();
+    let mut db = db::open(&d.join("o.db")).unwrap();
     let review_prs = ["git fetch origin", "git status --short", "gh issue list -R x/y", "gh pr view 3 -R x/y --json state"];
     for i in 0..recetas::MIN_SESIONES - 1 {
         let c = conversation(&d, &format!("s{i}"), &review_prs);
@@ -57,7 +57,7 @@ fn proposes_once_what_repeats_and_not_what_is_already_saved() {
 
     // Another sequence, already covered by a saved recipe: not proposed.
     let publish = ["cargo test -q", "git tag -a v1 -m 1", "git push origin v1", "cargo publish"];
-    let mut db2 = db::abrir(&d.join("o2.db")).unwrap();
+    let mut db2 = db::open(&d.join("o2.db")).unwrap();
     let recipe = NewMemory {
         project: "/web".into(),
         kind: Some(Kind::Procedure),
