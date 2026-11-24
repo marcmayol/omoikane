@@ -158,7 +158,7 @@ fn outside_git_the_diary_counts() {
     omoikane::proyecto::register(&db, &project).unwrap();
     let pid = omoikane::proyecto::resolve(&db, &project).unwrap().unwrap().0;
     let id = memory(&mut db, &project, "Las notas", "Lo de las notas.", &["notas.md"], "-10 days");
-    omoikane::diario::crear_tabla(&db).unwrap();
+    omoikane::diario::create_table(&db).unwrap();
     let session = |db: &Connection, n: usize, saved: &str| {
         let f = date(db, &format!("-{} days", n + 1));
         db.execute(

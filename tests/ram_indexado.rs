@@ -4,7 +4,7 @@
 
 mod comun;
 
-use omoikane::significado::{self as s, OrigenRam, RAM_MINIMA_MB, RAM_POR_DEFECTO_MB};
+use omoikane::significado::{self as s, RamSource, MIN_RAM_MB, DEFAULT_RAM_MB};
 use std::process::Command;
 
 fn omoi(home: &std::path::Path, args: &[&str], ram: Option<&str>) -> String {
@@ -26,22 +26,22 @@ fn ram_cap() {
         std::env::set_var("OMOIKANE_HOME", &home);
         std::env::remove_var("OMOIKANE_SEMANTIC_RAM");
     }
-    const { assert!(RAM_MINIMA_MB <= RAM_POR_DEFECTO_MB) };
+    const { assert!(MIN_RAM_MB <= DEFAULT_RAM_MB) };
     // With the minimum the longest memory fits on its own.
-    assert_eq!(s::tope_ram(), (RAM_POR_DEFECTO_MB, OrigenRam::PorDefecto));
-    assert_eq!(s::fijar_ram(Some(1)).unwrap(), RAM_MINIMA_MB);
-    assert!(s::tokens_por_lote() >= omoikane::gemma::MAX_TOKENS);
-    assert_eq!(s::fijar_ram(Some(500)).unwrap(), 500);
-    assert_eq!(s::tope_ram(), (500, OrigenRam::Elegido));
-    let more = s::tokens_por_lote();
+    assert_eq!(s::ram_cap(), (DEFAULT_RAM_MB, RamSource::BuiltIn));
+    assert_eq!(s::set_ram_cap(Some(1)).unwrap(), MIN_RAM_MB);
+    assert!(s::tokens_per_batch() >= omoikane::gemma::MAX_TOKENS);
+    assert_eq!(s::set_ram_cap(Some(500)).unwrap(), 500);
+    assert_eq!(s::ram_cap(), (500, RamSource::Chosen));
+    let more = s::tokens_per_batch();
     assert!(more > omoikane::gemma::MAX_TOKENS * 3, "{more}");
     // The variable rules over what was chosen (and doesn't go below the minimum either).
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC_RAM", "200") };
-    assert_eq!(s::tope_ram(), (200, OrigenRam::Entorno));
+    assert_eq!(s::ram_cap(), (200, RamSource::Env));
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC_RAM", "3") };
-    assert_eq!(s::tope_ram(), (RAM_MINIMA_MB, OrigenRam::Entorno));
+    assert_eq!(s::ram_cap(), (MIN_RAM_MB, RamSource::Env));
     unsafe { std::env::remove_var("OMOIKANE_SEMANTIC_RAM") };
-    assert_eq!(s::fijar_ram(None).unwrap(), RAM_POR_DEFECTO_MB);
+    assert_eq!(s::set_ram_cap(None).unwrap(), DEFAULT_RAM_MB);
 
     // From the command line.
     let j: serde_json::Value = serde_json::from_str(&omoi(&home, &["--json", "model", "semantic", "--ram", "300"], None)).unwrap();
@@ -50,5 +50,5 @@ fn ram_cap() {
     assert_eq!((j["indexing_ram_mb"].as_u64(), j["indexing_ram_from"].as_str()), (Some(150), Some("env")));
     assert!(omoi(&home, &["model", "semantic"], None).contains("indexing RAM: up to 300 MB"));
     let j: serde_json::Value = serde_json::from_str(&omoi(&home, &["--json", "model", "semantic", "--ram", "0"], None)).unwrap();
-    assert_eq!((j["indexing_ram_mb"].as_u64(), j["indexing_ram_from"].as_str()), (Some(RAM_POR_DEFECTO_MB), Some("default")));
+    assert_eq!((j["indexing_ram_mb"].as_u64(), j["indexing_ram_from"].as_str()), (Some(DEFAULT_RAM_MB), Some("default")));
 }

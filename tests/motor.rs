@@ -7,7 +7,7 @@
 
 mod comun;
 
-use omoikane::gemma::{Gemma, Tipo};
+use omoikane::gemma::{Gemma, TextKind};
 use std::path::PathBuf;
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -20,13 +20,13 @@ fn compact(dir: &std::path::Path) -> Option<PathBuf> {
     let model = PathBuf::from(std::env::var_os("OMOIKANE_SEMANTIC_MODEL").filter(|m| !m.is_empty())?);
     std::fs::create_dir_all(dir).unwrap();
     let dest = dir.join("compacto");
-    if omoikane::gemma::es_compacto(&model) {
+    if omoikane::gemma::is_compact(&model) {
         std::fs::create_dir_all(&dest).unwrap();
-        for f in omoikane::gemma::FICHEROS_COMPACTO {
+        for f in omoikane::gemma::COMPACT_FILES {
             std::fs::copy(model.join(f), dest.join(f)).unwrap();
         }
     } else {
-        omoikane::gemma::compactar(&model, &dest).unwrap();
+        omoikane::gemma::compact(&model, &dest).unwrap();
     }
     Some(dest)
 }
@@ -73,11 +73,11 @@ fn engine_and_tokenizer() {
     }
 
     // The three engines, the same vector.
-    let candle = Gemma::cargar_candle(&m).unwrap();
-    let fast = Gemma::cargar_rapido(&m, 4, omoikane::engine::simd_available()).unwrap();
-    let generic = Gemma::cargar_rapido(&m, 4, false).unwrap();
-    assert!(fast.tokenizer_compilado() && fast.es_rapido() && !candle.es_rapido());
-    let kinds = [Tipo::Pregunta, Tipo::Documento];
+    let candle = Gemma::load_candle(&m).unwrap();
+    let fast = Gemma::load_fast(&m, 4, omoikane::engine::simd_available()).unwrap();
+    let generic = Gemma::load_fast(&m, 4, false).unwrap();
+    assert!(fast.compiled_tokenizer() && fast.is_fast() && !candle.is_fast());
+    let kinds = [TextKind::Query, TextKind::Document];
     let mut singles = Vec::new();
     for (i, t) in texts.iter().enumerate() {
         let kind = kinds[i % 2];
@@ -89,11 +89,11 @@ fn engine_and_tokenizer() {
     }
     // In batches, the same as one at a time (bit for bit on the same path).
     let docs: Vec<&str> = texts.iter().step_by(2).copied().collect();
-    let batch = fast.vectores(&docs, Tipo::Pregunta).unwrap();
+    let batch = fast.vectors(&docs, TextKind::Query).unwrap();
     for (l, s) in batch.iter().zip(singles.iter().step_by(2)) {
         assert_eq!(l, s);
     }
-    let generic_batch = generic.vectores(&docs, Tipo::Pregunta).unwrap();
+    let generic_batch = generic.vectors(&docs, TextKind::Query).unwrap();
     for (l, s) in generic_batch.iter().zip(singles.iter().step_by(2)) {
         assert!(cosine(l, s) > 0.9999);
     }

@@ -6,7 +6,7 @@
 //! `~/.omoikane/significado.json` once the model is loaded. It shuts itself down after a while without
 //! requests (`OMOIKANE_SEMANTIC_IDLE` seconds, 30 min by default).
 //!
-//! The caller (`vectores`) has a time budget: if there is no service, or it takes longer, it carries on
+//! The caller (`vectors`) has a time budget: if there is no service, or it takes longer, it carries on
 //! without meaning, as before, and leaves the service starting for next time. It never waits for
 //! it to load.
 //!
@@ -14,7 +14,7 @@
 //! `{"token":…,"tipo":"pregunta"|"documento","textos":[…]}` → `{"vectores":[[…]…]}` or `{"error":…}`;
 //! `{"token":…,"ping":true}` → `{"pid":…,"modelo":…}`.
 
-use crate::gemma::{Gemma, Tipo};
+use crate::gemma::{Gemma, TextKind};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -27,34 +27,39 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const REGISTRY_FILE: &str = "significado.json";
 const STARTING_FILE: &str = "significado.arrancando";
 /// Model folder inside `~/.omoikane/models`.
-pub const NOMBRE_MODELO: &str = "embeddinggemma-300m";
+pub const MODEL_NAME: &str = "embeddinggemma-300m";
 const DEFAULT_IDLE_SECS: u64 = 30 * 60;
 /// After launching the service, it is not launched again until this has passed (more than its load time).
 const START_RETRY_SECS: u64 = 60;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Registro {
-    pub puerto: u16,
+pub struct Registry {
+    #[serde(rename = "puerto")]
+    pub port: u16,
     pub token: String,
     pub pid: u32,
-    pub modelo: String,
+    #[serde(rename = "modelo")]
+    pub model: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 struct Request {
     token: String,
     #[serde(default)]
-    tipo: Option<String>,
+    #[serde(rename = "tipo")]
+    kind: Option<String>,
     #[serde(default)]
-    textos: Vec<String>,
+    #[serde(rename = "textos")]
+    texts: Vec<String>,
     #[serde(default)]
     ping: bool,
     /// The caller's database: the service computes its missing vectors in the background.
     #[serde(default)]
     db: Option<String>,
-    /// Search in the service (`parecidas`) instead of asking for vectors.
+    /// Search in the service (`similar`) instead of asking for vectors.
     #[serde(default)]
-    buscar: Option<SearchRequest>,
+    #[serde(rename = "buscar")]
+    search: Option<SearchRequest>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -64,7 +69,7 @@ fn home() -> Option<PathBuf> {
 const PREFERENCE_FILE: &str = "semantic";
 
 /// What the user chose with `omoi model semantic --on/--off` (`None`: chose nothing).
-pub fn preferencia() -> Option<bool> {
+pub fn preference() -> Option<bool> {
     match std::fs::read_to_string(home()?.join(PREFERENCE_FILE)).ok()?.trim() {
         "on" => Some(true),
         "off" => Some(false),
@@ -75,7 +80,7 @@ pub fn preferencia() -> Option<bool> {
 /// Saves the choice: `Some(true)` (`--on`), `Some(false)` (`--off`) or `None` (`--auto`: memory size
 /// decides). Turning it off also closes the service if it is running: the watchdog sees that the
 /// registry is no longer its own and exits. With it off everything works as before 1.2: only words and potion.
-pub fn fijar(choice: Option<bool>) -> Result<()> {
+pub fn set_preference(choice: Option<bool>) -> Result<()> {
     let c = home().context("no home folder")?;
     std::fs::create_dir_all(&c)?;
     match choice {
@@ -107,69 +112,69 @@ pub fn fijar(choice: Option<bool>) -> Result<()> {
 /// projects, and the database would be half indexed. Also, from a general folder recall and search
 /// see all of them, and in a large database word noise also rises inside each project (global
 /// memories drag it in). It costs one read of `memory_cuenta` (microseconds).
-pub const UMBRAL_MEMORIAS: usize = 1000;
+pub const MEMORY_THRESHOLD: usize = 1000;
 
-pub fn umbral() -> usize {
-    std::env::var("OMOIKANE_SEMANTIC_THRESHOLD").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(UMBRAL_MEMORIAS)
+pub fn threshold() -> usize {
+    std::env::var("OMOIKANE_SEMANTIC_THRESHOLD").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(MEMORY_THRESHOLD)
 }
 
 /// Why the model is on or off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Porque {
+pub enum Reason {
     /// `OMOIKANE_SEMANTIC=0`/`1`.
     Env,
     /// `omoi model semantic --on/--off`.
     Chosen,
-    /// Nobody chose anything: memory size decides (`UMBRAL_MEMORIAS`).
+    /// Nobody chose anything: memory size decides (`MEMORY_THRESHOLD`).
     Size,
 }
 
 /// What state the meaning model is in for a database, and why.
 #[derive(Clone, Copy, Debug, Serialize)]
-pub struct Estado {
+pub struct Status {
     pub on: bool,
-    pub reason: Porque,
+    pub reason: Reason,
     pub memories: usize,
     pub threshold: usize,
 }
 
 /// Has someone forbidden it? `OMOIKANE_SEMANTIC=0` or `--off`. It does not say whether it is on (that also
-/// depends on the size, see `estado`): the service and whoever starts it only look at this.
-pub fn permitido() -> bool {
+/// depends on the size, see `status`): the service and whoever starts it only look at this.
+pub fn allowed() -> bool {
     match std::env::var("OMOIKANE_SEMANTIC") {
         Ok(v) if !v.is_empty() => v != "0",
-        _ => preferencia() != Some(false),
+        _ => preference() != Some(false),
     }
 }
 
 /// `OMOIKANE_SEMANTIC` rules; otherwise, what the user chose; and if nothing was chosen, the size: from
-/// `umbral()` memories in the database on, it is on.
-pub fn estado(db: &rusqlite::Connection) -> Estado {
+/// `threshold()` memories in the database on, it is on.
+pub fn status(db: &rusqlite::Connection) -> Status {
     let memories = crate::memoria::count(db, &crate::memoria::Scope::All).unwrap_or(0).max(0) as usize;
-    let threshold = umbral();
+    let threshold = threshold();
     let (on, reason) = match std::env::var("OMOIKANE_SEMANTIC") {
-        Ok(v) if !v.is_empty() => (v != "0", Porque::Env),
-        _ => match preferencia() {
-            Some(p) => (p, Porque::Chosen),
-            None => (memories >= threshold, Porque::Size),
+        Ok(v) if !v.is_empty() => (v != "0", Reason::Env),
+        _ => match preference() {
+            Some(p) => (p, Reason::Chosen),
+            None => (memories >= threshold, Reason::Size),
         },
     };
-    Estado { on, reason, memories, threshold }
+    Status { on, reason, memories, threshold }
 }
 
-/// Is the model used with this database? On (`estado`) and installed.
-pub fn en_uso(db: &rusqlite::Connection) -> bool {
-    permitido() && modelo().is_some() && estado(db).on
+/// Is the model used with this database? On (`status`) and installed.
+pub fn in_use(db: &rusqlite::Connection) -> bool {
+    allowed() && model_dir().is_some() && status(db).on
 }
 
-/// `en_uso` with the database path (opens a connection only if the model is installed and allowed).
-pub fn en_uso_en(path: &std::path::Path) -> bool {
-    if !permitido() || modelo().is_none() || !path.exists() {
+/// `in_use` with the database path (opens a connection only if the model is installed and allowed).
+pub fn in_use_at(path: &std::path::Path) -> bool {
+    if !allowed() || model_dir().is_none() || !path.exists() {
         return false;
     }
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    rusqlite::Connection::open_with_flags(path, flags).is_ok_and(|c| estado(&c).on)
+    rusqlite::Connection::open_with_flags(path, flags).is_ok_and(|c| status(&c).on)
 }
 
 const DOWNLOADING_FILE: &str = "significado.descargando";
@@ -178,7 +183,7 @@ const NOTICE_SENT_FILE: &str = "significado.avisado";
 const DOWNLOAD_RETRY_SECS: u64 = 3600;
 
 /// Is a model download in progress (launched less than `DOWNLOAD_RETRY_SECS` ago)?
-pub fn descargando() -> bool {
+pub fn downloading() -> bool {
     home()
         .and_then(|c| std::fs::read_to_string(c.join(DOWNLOADING_FILE)).ok())
         .and_then(|t| t.trim().parse::<u64>().ok())
@@ -187,10 +192,10 @@ pub fn descargando() -> bool {
 
 /// Launches `omoi model install --semantic` separately for `db` (which, when done, leaves the service indexing
 /// that database), unless a download is already in progress. Does not wait.
-pub fn descargar_aparte(db: &std::path::Path) {
+pub fn download_in_background(db: &std::path::Path) {
     // With nobody at the keyboard (or `OMOIKANE_NO_MODEL=1`), no 450 MB nobody asked for: the model is
     // installed by hand (`omoi model install --semantic`) and, meanwhile, everything goes by words.
-    if !permitido() || modelo().is_some() || descargando() || crate::entorno::no_downloads() {
+    if !allowed() || model_dir().is_some() || downloading() || crate::entorno::no_downloads() {
         return;
     }
     let Some(c) = home() else { return };
@@ -202,7 +207,7 @@ pub fn descargar_aparte(db: &std::path::Path) {
 }
 
 /// The download finished (successfully): removes the marker.
-pub fn descarga_hecha() {
+pub fn download_done() {
     if let Some(c) = home() {
         let _ = std::fs::remove_file(c.join(DOWNLOADING_FILE));
     }
@@ -211,22 +216,22 @@ pub fn descarga_hecha() {
 /// At session start: if the model is on for this database and missing, downloads it in the
 /// background; if it is there and the database does not have its vectors yet, leaves the service indexing it. Returns the notice
 /// for the agent the first time it turns itself on because of size (once per user).
-pub fn al_empezar(db: &rusqlite::Connection) -> Option<String> {
-    if !permitido() {
+pub fn on_session_start(db: &rusqlite::Connection) -> Option<String> {
+    if !allowed() {
         return None;
     }
-    let e = estado(db);
+    let e = status(db);
     let path = db.path().filter(|p| !p.is_empty()).map(PathBuf::from)?;
     if !e.on {
         return None;
     }
-    if modelo().is_none() {
+    if model_dir().is_none() {
         if crate::entorno::no_downloads() {
             return None;
         }
-        descargar_aparte(&path);
+        download_in_background(&path);
         let c = home()?;
-        if e.reason == Porque::Size && !c.join(NOTICE_SENT_FILE).exists() && std::fs::write(c.join(NOTICE_SENT_FILE), now_secs().to_string()).is_ok() {
+        if e.reason == Reason::Size && !c.join(NOTICE_SENT_FILE).exists() && std::fs::write(c.join(NOTICE_SENT_FILE), now_secs().to_string()).is_ok() {
             return Some(format!(
                 "Omoikane now holds {} memories (from {} on, words alone bring more noise): it is downloading its meaning model (EmbeddingGemma, about 450 MB) in the background and will then index the memories, so searches find what is asked with other words and recall injects less noise. Until it finishes everything works as before. `omoi model semantic --off` stops it for good. Tell the user once.",
                 e.memories, e.threshold
@@ -234,32 +239,32 @@ pub fn al_empezar(db: &rusqlite::Connection) -> Option<String> {
         }
         return None;
     }
-    if !listo(db) {
-        avisar(&path);
+    if !ready(db) {
+        notify_changed(&path);
     }
     None
 }
 
 /// The EmbeddingGemma folder if installed: `OMOIKANE_SEMANTIC_MODEL`, or
 /// `~/.omoikane/models/embeddinggemma-300m`.
-pub fn modelo() -> Option<PathBuf> {
+pub fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("OMOIKANE_SEMANTIC_MODEL")
         .filter(|r| !r.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::modelos::carpeta().join(NOMBRE_MODELO));
-    crate::gemma::es_modelo(&dir).then_some(dir)
+        .unwrap_or_else(|| crate::modelos::dir().join(MODEL_NAME));
+    crate::gemma::is_model(&dir).then_some(dir)
 }
 
-/// Where the compact format (`gemma::compactar`) is downloaded from, in order. `OMOIKANE_SEMANTIC_SOURCE`
+/// Where the compact format (`gemma::compact`) is downloaded from, in order. `OMOIKANE_SEMANTIC_SOURCE`
 /// replaces them (one or several, comma-separated).
-pub const ORIGENES: [&str; 2] = [
+pub const SOURCES: [&str; 2] = [
     "https://huggingface.co/natzx94/embeddinggemma-300m-omoikane/resolve/main",
     "https://github.com/marcmayol/omoikane/releases/download/modelo-embeddinggemma-300m-v1",
 ];
 
 /// SHA-256 of each file of the published compact format: what is downloaded must be
 /// exactly this, whichever mirror it comes from.
-const SUMAS: [(&str, &str); 5] = [
+const CHECKSUMS: [(&str, &str); 5] = [
     ("config.json", "8f863f76e2d9c710cc833dc92efa898c9adfd41031c786507cc6b0e49c2e3e68"),
     ("tokenizer.json", "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e"),
     ("tokens.escala", "ffba8e813e1ce38f96a360df3f70f7c2dd14b30c462c5a869da5def52abd5e1a"),
@@ -277,12 +282,12 @@ Its use is restricted by the Gemma Prohibited Use Policy: ai.google.dev/gemma/pr
 /// compact format (about 450 MB) and checks its SHA-256; with `source`, takes it from a folder, in
 /// compact format or sentence-transformers (which it converts). If already installed, does nothing.
 /// Returns the folder.
-pub fn instalar(source: Option<&std::path::Path>, notify: &mut dyn FnMut(&str)) -> Result<PathBuf> {
+pub fn install(source: Option<&std::path::Path>, notify: &mut dyn FnMut(&str)) -> Result<PathBuf> {
     use crate::gemma;
     use crate::tr;
-    let base = crate::modelos::carpeta();
-    let dest = base.join(NOMBRE_MODELO);
-    if gemma::es_modelo(&dest) {
+    let base = crate::modelos::dir();
+    let dest = base.join(MODEL_NAME);
+    if gemma::is_model(&dest) {
         return Ok(dest);
     }
     std::fs::create_dir_all(&base)?;
@@ -290,26 +295,26 @@ pub fn instalar(source: Option<&std::path::Path>, notify: &mut dyn FnMut(&str)) 
     let _ = std::fs::remove_dir_all(&tmp);
     let result = (|| -> Result<()> {
         match source {
-            Some(d) if gemma::es_compacto(d) => {
+            Some(d) if gemma::is_compact(d) => {
                 std::fs::create_dir_all(&tmp)?;
-                for f in gemma::FICHEROS_COMPACTO {
+                for f in gemma::COMPACT_FILES {
                     std::fs::copy(d.join(f), tmp.join(f))?;
                 }
             }
-            Some(d) if gemma::es_sentence_transformers(d) => {
+            Some(d) if gemma::is_sentence_transformers(d) => {
                 notify(&tr!("converting the model to the compact format (a few seconds)", "convirtiendo el modelo al formato compacto (unos segundos)"));
-                gemma::compactar(d, &tmp)?;
+                gemma::compact(d, &tmp)?;
             }
             Some(d) => bail!(tr!("{}: no EmbeddingGemma there", "{}: ahí no hay EmbeddingGemma", d.display())),
             None => {
                 let sources: Vec<String> = match std::env::var("OMOIKANE_SEMANTIC_SOURCE") {
                     Ok(o) if !o.trim().is_empty() => o.split(',').map(|x| x.trim().trim_end_matches('/').to_string()).filter(|x| !x.is_empty()).collect(),
-                    _ => ORIGENES.iter().map(|o| o.to_string()).collect(),
+                    _ => SOURCES.iter().map(|o| o.to_string()).collect(),
                 };
                 let mut failures = Vec::new();
                 for o in sources {
-                    let r = crate::modelos::descargar_ficheros(&o, &gemma::FICHEROS_COMPACTO, &tmp, notify)
-                        .and_then(|()| crate::modelos::comprobar_sumas(&tmp, &SUMAS));
+                    let r = crate::modelos::download_files(&o, &gemma::COMPACT_FILES, &tmp, notify)
+                        .and_then(|()| crate::modelos::check_sums(&tmp, &CHECKSUMS));
                     match r {
                         Ok(()) => {
                             failures.clear();
@@ -331,7 +336,7 @@ pub fn instalar(source: Option<&std::path::Path>, notify: &mut dyn FnMut(&str)) 
         // SHA-256 do not change. If it failed, it is compiled the first time the model is loaded.
         let _ = crate::bpe::compile(&tmp.join("tokenizer.json"), &tmp.join(crate::bpe::FILE));
         // If another process installed it at the same time, theirs is fine.
-        if std::fs::rename(&tmp, &dest).is_err() && !gemma::es_modelo(&dest) {
+        if std::fs::rename(&tmp, &dest).is_err() && !gemma::is_model(&dest) {
             bail!(tr!("can't move the model into {}", "no se puede mover el modelo a {}", dest.display()));
         }
         Ok(())
@@ -351,7 +356,7 @@ const TABLE: &str = "CREATE TABLE IF NOT EXISTS memory_sig (id TEXT PRIMARY KEY,
 /// Which model and which computation made the stored vectors: if it changes, they are deleted and recomputed.
 const VECTORS_VERSION: &str = "embeddinggemma-300m/2048";
 
-pub fn crear_tabla(db: &rusqlite::Connection) -> Result<()> {
+pub fn create_table(db: &rusqlite::Connection) -> Result<()> {
     db.execute_batch(TABLE)?;
     let done: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'sig_version'", [], |f| f.get(0)).ok();
     if done.as_deref() != Some(VECTORS_VERSION) {
@@ -390,28 +395,28 @@ fn cosine(q: &[f32], b: &[u8]) -> f32 {
 }
 
 /// The text that becomes a vector: title and content, as in the benchmark that measured it.
-pub fn texto_de(title: &str, content: &str) -> String {
+pub fn text_of(title: &str, content: &str) -> String {
     format!("{title}\n{content}")
 }
 
 /// Up to `max` memories without a vector (or whose text changed since it was computed): `(id, hlc, text)`.
-pub fn pendientes(db: &rusqlite::Connection, max: usize) -> Result<Vec<(String, String, String)>> {
+pub fn pending(db: &rusqlite::Connection, max: usize) -> Result<Vec<(String, String, String)>> {
     let mut q = db.prepare(
         "SELECT m.id, m.content_hlc, m.title, m.content FROM memory m LEFT JOIN memory_sig s ON s.id = m.id
          WHERE s.id IS NULL OR s.hlc <> m.content_hlc LIMIT ?1",
     )?;
-    let rows = q.query_map([max as i64], |f| Ok((f.get(0)?, f.get(1)?, texto_de(&f.get::<_, String>(2)?, &f.get::<_, String>(3)?))))?;
+    let rows = q.query_map([max as i64], |f| Ok((f.get(0)?, f.get(1)?, text_of(&f.get::<_, String>(2)?, &f.get::<_, String>(3)?))))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn guardar(db: &rusqlite::Connection, id: &str, hlc: &str, v: &[f32]) -> Result<()> {
+pub fn save(db: &rusqlite::Connection, id: &str, hlc: &str, v: &[f32]) -> Result<()> {
     db.execute("INSERT OR REPLACE INTO memory_sig(id, hlc, v) VALUES (?1, ?2, ?3)", rusqlite::params![id, hlc, to_blob(v)])?;
     Ok(())
 }
 
 /// How many memories have an up-to-date vector, and how many there are. Along the way it deletes those of memories that
 /// no longer exist (forgotten or purged).
-pub fn cobertura(db: &rusqlite::Connection) -> Result<(usize, usize)> {
+pub fn coverage(db: &rusqlite::Connection) -> Result<(usize, usize)> {
     let _ = db.execute("DELETE FROM memory_sig WHERE id NOT IN (SELECT id FROM memory)", []);
     let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0))?;
     let done: i64 = db.query_row("SELECT count(*) FROM memory_sig s JOIN memory m ON m.id = s.id AND m.content_hlc = s.hlc", [], |f| f.get(0))?;
@@ -420,7 +425,7 @@ pub fn cobertura(db: &rusqlite::Connection) -> Result<(usize, usize)> {
 
 /// Are there vectors for almost everything? While indexing (the first minutes after installing the model),
 /// mixing meaning with memories without a vector would sink them: it carries on as before.
-pub fn listo(db: &rusqlite::Connection) -> bool {
+pub fn ready(db: &rusqlite::Connection) -> bool {
     let total: i64 = db.query_row("SELECT count(*) FROM memory", [], |f| f.get(0)).unwrap_or(0);
     if total == 0 {
         return false;
@@ -430,7 +435,7 @@ pub fn listo(db: &rusqlite::Connection) -> bool {
 }
 
 /// The cosine of `query` with each memory in the scope that has a vector, highest first.
-pub fn cosenos(db: &rusqlite::Connection, query: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>) -> Result<Vec<(String, f32)>> {
+pub fn cosines(db: &rusqlite::Connection, query: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>) -> Result<Vec<(String, f32)>> {
     let mut q = db.prepare(&format!(
         "SELECT s.id, s.v FROM memory_sig s JOIN memory m ON m.id = s.id WHERE {} AND (?1 IS NULL OR m.kind = ?1)",
         scope.sql()
@@ -453,60 +458,60 @@ pub fn cosenos(db: &rusqlite::Connection, query: &[f32], scope: &crate::memoria:
 const KB_PER_TOKEN: u64 = 40;
 /// Default cap on indexing RAM: batches of about 3,300 tokens (25-30 short notes, or 2-5
 /// long memories). More is no faster (measured with batches of 1,024 to 4,096 tokens).
-pub const RAM_POR_DEFECTO_MB: u64 = 128;
+pub const DEFAULT_RAM_MB: u64 = 128;
 /// The minimum: what the longest memory (2,048 tokens) needs to be computed alone. With less, some
 /// could not be indexed.
-pub const RAM_MINIMA_MB: u64 = (crate::gemma::MAX_TOKENS as u64 * KB_PER_TOKEN).div_ceil(1024);
+pub const MIN_RAM_MB: u64 = (crate::gemma::MAX_TOKENS as u64 * KB_PER_TOKEN).div_ceil(1024);
 const RAM_FILE: &str = "semantic-ram";
 
 /// Where the RAM cap in use comes from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
-pub enum OrigenRam {
+pub enum RamSource {
     /// `OMOIKANE_SEMANTIC_RAM`.
     #[serde(rename = "env")]
-    Entorno,
+    Env,
     /// `omoi model semantic --ram`.
     #[serde(rename = "chosen")]
-    Elegido,
+    Chosen,
     #[serde(rename = "default")]
-    PorDefecto,
+    BuiltIn,
 }
 
 /// The indexing RAM cap in MB and where it comes from: `OMOIKANE_SEMANTIC_RAM` rules; otherwise, what
-/// was chosen with `omoi model semantic --ram`; otherwise, `RAM_POR_DEFECTO_MB`. Never below
-/// `RAM_MINIMA_MB`.
-pub fn tope_ram() -> (u64, OrigenRam) {
+/// was chosen with `omoi model semantic --ram`; otherwise, `DEFAULT_RAM_MB`. Never below
+/// `MIN_RAM_MB`.
+pub fn ram_cap() -> (u64, RamSource) {
     let parse = |s: &str| s.trim().parse::<u64>().ok().filter(|&n| n > 0);
     let (mb, origin) = if let Some(n) = std::env::var("OMOIKANE_SEMANTIC_RAM").ok().as_deref().and_then(parse) {
-        (n, OrigenRam::Entorno)
+        (n, RamSource::Env)
     } else if let Some(n) = home().and_then(|c| std::fs::read_to_string(c.join(RAM_FILE)).ok()).as_deref().and_then(parse) {
-        (n, OrigenRam::Elegido)
+        (n, RamSource::Chosen)
     } else {
-        (RAM_POR_DEFECTO_MB, OrigenRam::PorDefecto)
+        (DEFAULT_RAM_MB, RamSource::BuiltIn)
     };
-    (mb.max(RAM_MINIMA_MB), origin)
+    (mb.max(MIN_RAM_MB), origin)
 }
 
 /// Saves the cap (`None`: back to the default). Indexing reads it before each round: no
 /// need to restart the service. Returns the one left in use (raised to the minimum if needed).
-pub fn fijar_ram(mb: Option<u64>) -> Result<u64> {
+pub fn set_ram_cap(mb: Option<u64>) -> Result<u64> {
     let c = home().context("no home folder")?;
     std::fs::create_dir_all(&c)?;
     match mb {
-        Some(mb) => std::fs::write(c.join(RAM_FILE), format!("{}\n", mb.max(RAM_MINIMA_MB)))?,
+        Some(mb) => std::fs::write(c.join(RAM_FILE), format!("{}\n", mb.max(MIN_RAM_MB)))?,
         None => {
             let _ = std::fs::remove_file(c.join(RAM_FILE));
         }
     }
-    Ok(tope_ram().0)
+    Ok(ram_cap().0)
 }
 
 /// Tokens per batch when indexing with the RAM cap in use. Several memories in a single pass of the
 /// model: each multiplication is done at once for all of them (faster than one by one, and the same
 /// vector). The cap bounds the RAM and how long a query arriving mid-batch waits (at
 /// most one step of the batch: see `yield_to_queries`). A memory longer than the batch goes alone.
-pub fn tokens_por_lote() -> usize {
-    (tope_ram().0 * 1024 / KB_PER_TOKEN) as usize
+pub fn tokens_per_batch() -> usize {
+    (ram_cap().0 * 1024 / KB_PER_TOKEN) as usize
 }
 
 /// Queries the service is serving right now: while there is any, indexing pauses
@@ -521,18 +526,18 @@ fn yield_to_queries() {
 }
 
 /// Computes the vectors missing in `db`, reading `batch` memories at a time and in batches of up to
-/// `tokens_por_lote` tokens, until done or until `keep_going` says no. `progress` receives how many
+/// `tokens_per_batch` tokens, until done or until `keep_going` says no. `progress` receives how many
 /// so far. Returns how many it computed.
-pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, batch: usize, keep_going: &mut dyn FnMut() -> bool, progress: &mut dyn FnMut(usize)) -> Result<usize> {
+pub fn index(db: &rusqlite::Connection, gemma: &Gemma, batch: usize, keep_going: &mut dyn FnMut() -> bool, progress: &mut dyn FnMut(usize)) -> Result<usize> {
     let mut done = 0;
     loop {
         // Each round checks the cap again: `omoi model semantic --ram` applies without restarting.
-        let cap = tokens_por_lote();
-        let p = pendientes(db, batch)?;
+        let cap = tokens_per_batch();
+        let p = pending(db, batch)?;
         if p.is_empty() {
             return Ok(done);
         }
-        let ids = p.iter().map(|(_, _, t)| gemma.ids(t, Tipo::Documento)).collect::<Result<Vec<_>>>()?;
+        let ids = p.iter().map(|(_, _, t)| gemma.ids(t, TextKind::Document)).collect::<Result<Vec<_>>>()?;
         let mut i = 0;
         while i < p.len() {
             if !keep_going() {
@@ -543,8 +548,8 @@ pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, batch: usize, keep_goin
                 sum += ids[j].len();
                 j += 1;
             }
-            for ((id, hlc, _), v) in p[i..j].iter().zip(gemma.vectores_de_ids(&ids[i..j], &yield_to_queries)?) {
-                guardar(db, id, hlc, &v)?;
+            for ((id, hlc, _), v) in p[i..j].iter().zip(gemma.vectors_from_ids(&ids[i..j], &yield_to_queries)?) {
+                save(db, id, hlc, &v)?;
                 done += 1;
                 progress(done);
             }
@@ -556,7 +561,7 @@ pub fn indexar(db: &rusqlite::Connection, gemma: &Gemma, batch: usize, keep_goin
 // ------------------------------------------------------------------ searching inside the service
 
 /// Memories with their cosine, highest first.
-pub type Cosenos = Vec<(String, f32)>;
+pub type Cosines = Vec<(String, f32)>;
 
 /// What the service keeps in memory for a database to compare without reading it on every message: each
 /// recall is a new process, and reading the vectors of all memories (77 MB with 100,000) cost it
@@ -615,7 +620,7 @@ impl Index {
     }
 
     /// The `k` closest to `q` in the scope (highest first) and the cosine of `requested`.
-    fn search(&self, q: &[f32], a: &crate::memoria::Scope, kind: Option<&str>, k: usize, requested: &[String]) -> (Cosenos, Cosenos) {
+    fn search(&self, q: &[f32], a: &crate::memoria::Scope, kind: Option<&str>, k: usize, requested: &[String]) -> (Cosines, Cosines) {
         let mut all: Vec<(usize, f32)> = self
             .rows
             .iter()
@@ -640,8 +645,8 @@ impl Index {
 }
 
 /// What the service would answer for vector `q`, without the service: loads the index of `db` and searches
-/// (for the tests, which compare with `cosenos`, which filters the scope in SQL).
-pub fn parecidas_en_base(db: &rusqlite::Connection, q: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>, k: usize) -> Result<Vec<(String, f32)>> {
+/// (for the tests, which compare with `cosines`, which filters the scope in SQL).
+pub fn similar_in_db(db: &rusqlite::Connection, q: &[f32], scope: &crate::memoria::Scope, kind: Option<crate::memoria::Kind>, k: usize) -> Result<Vec<(String, f32)>> {
     let i = Index::load(db)?;
     Ok(i.search(q, scope, kind.map(|k| k.as_str()), k, &[]).0)
 }
@@ -655,18 +660,20 @@ fn indexes() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (ru
 /// What the service answers to a search: if the database has vectors for almost everything, the `k`
 /// closest and the cosine of the requested memories.
 #[derive(Serialize, Deserialize, Debug, Default)]
-pub struct Parecidas {
-    pub listo: bool,
+pub struct Similar {
+    #[serde(rename = "listo")]
+    pub ready: bool,
     #[serde(default)]
     pub top: Vec<(String, f32)>,
     #[serde(default)]
-    pub pedidas: Vec<(String, f32)>,
+    #[serde(rename = "pedidas")]
+    pub requested: Vec<(String, f32)>,
 }
 
-fn search_in_service(gemma: &Gemma, b: &SearchRequest) -> Result<Parecidas> {
+fn search_in_service(gemma: &Gemma, b: &SearchRequest) -> Result<Similar> {
     let path = PathBuf::from(&b.db);
     // The query vector first, without the lock: it is what takes longest.
-    let q = gemma.vector(&b.texto, Tipo::Pregunta)?;
+    let q = gemma.vector(&b.text, TextKind::Query)?;
     let mut ix = indexes().lock().map_err(|_| anyhow!("index lock"))?;
     if !ix.contains_key(&path) {
         let c = crate::db::open(&path)?;
@@ -678,17 +685,19 @@ fn search_in_service(gemma: &Gemma, b: &SearchRequest) -> Result<Parecidas> {
         *i = Index::load(c)?;
     }
     if !i.ready() {
-        return Ok(Parecidas::default());
+        return Ok(Similar::default());
     }
-    let (top, pedidas) = i.search(&q, &b.ambito, b.kind.as_deref(), b.k, &b.ids);
-    Ok(Parecidas { listo: true, top, pedidas })
+    let (top, requested) = i.search(&q, &b.scope, b.kind.as_deref(), b.k, &b.ids);
+    Ok(Similar { ready: true, top, requested })
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct SearchRequest {
     db: String,
-    texto: String,
-    ambito: crate::memoria::Scope,
+    #[serde(rename = "texto")]
+    text: String,
+    #[serde(rename = "ambito")]
+    scope: crate::memoria::Scope,
     #[serde(default)]
     kind: Option<String>,
     k: usize,
@@ -698,27 +707,27 @@ struct SearchRequest {
 
 /// Why the service did not give the closest memories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fallo {
+pub enum Failure {
     /// Off (`--off`, `OMOIKANE_SEMANTIC=0`) or not installed.
-    Apagado,
+    Off,
     /// No service (or not listening): it is left starting for next time.
-    SinServicio,
+    NoService,
     /// It did not answer within the budget (busy CPU, long text).
-    Tarde,
+    Timeout,
     /// The database does not have vectors for almost everything yet (indexing).
-    Indexando,
+    Indexing,
     /// Any other error (broken answer, token…).
     Error,
 }
 
-impl Fallo {
-    pub fn como_texto(self) -> &'static str {
+impl Failure {
+    pub fn as_str(self) -> &'static str {
         match self {
-            Fallo::Apagado => "off",
-            Fallo::SinServicio => "no_service",
-            Fallo::Tarde => "timeout",
-            Fallo::Indexando => "indexing",
-            Fallo::Error => "error",
+            Failure::Off => "off",
+            Failure::NoService => "no_service",
+            Failure::Timeout => "timeout",
+            Failure::Indexing => "indexing",
+            Failure::Error => "error",
         }
     }
 }
@@ -727,8 +736,8 @@ impl Fallo {
 /// and the vectors in memory), and the cosine of `ids`. `None` if the model is off or not
 /// installed, the service is not there or does not answer within `budget`, or the database does not have vectors
 /// for almost everything yet: then it carries on by words. The caller decides beforehand whether the model is
-/// on for this database (`en_uso`): here it only checks it is not forbidden.
-pub fn parecidas(
+/// on for this database (`in_use`): here it only checks it is not forbidden.
+pub fn similar(
     db: &std::path::Path,
     text: &str,
     scope: &crate::memoria::Scope,
@@ -736,12 +745,12 @@ pub fn parecidas(
     k: usize,
     ids: &[String],
     budget: Duration,
-) -> Option<Parecidas> {
-    parecidas_o_fallo(db, text, scope, kind, k, ids, budget).ok()
+) -> Option<Similar> {
+    similar_or_failure(db, text, scope, kind, k, ids, budget).ok()
 }
 
-/// `parecidas`, saying why they did not arrive.
-pub fn parecidas_o_fallo(
+/// `similar`, saying why they did not arrive.
+pub fn similar_or_failure(
     db: &std::path::Path,
     text: &str,
     scope: &crate::memoria::Scope,
@@ -749,21 +758,21 @@ pub fn parecidas_o_fallo(
     k: usize,
     ids: &[String],
     budget: Duration,
-) -> std::result::Result<Parecidas, Fallo> {
-    if !permitido() || modelo().is_none() {
-        return Err(Fallo::Apagado);
+) -> std::result::Result<Similar, Failure> {
+    if !allowed() || model_dir().is_none() {
+        return Err(Failure::Off);
     }
-    let Some(r) = registro() else {
-        arrancar(Some(db));
-        return Err(Fallo::SinServicio);
+    let Some(r) = registry() else {
+        start(Some(db));
+        return Err(Failure::NoService);
     };
     let p = Request {
         token: r.token.clone(),
         db: Some(db.to_string_lossy().into_owned()),
-        buscar: Some(SearchRequest {
+        search: Some(SearchRequest {
             db: db.to_string_lossy().into_owned(),
-            texto: text.to_string(),
-            ambito: *scope,
+            text: text.to_string(),
+            scope: *scope,
             kind: kind.map(|k| k.as_str().to_string()),
             k,
             ids: ids.to_vec(),
@@ -771,18 +780,18 @@ pub fn parecidas_o_fallo(
         ..Default::default()
     };
     match send_request(&r, &p, budget) {
-        Ok(v) => match serde_json::from_value::<Parecidas>(v) {
-            Ok(p) if p.listo => Ok(p),
-            Ok(_) => Err(Fallo::Indexando),
-            Err(_) => Err(Fallo::Error),
+        Ok(v) => match serde_json::from_value::<Similar>(v) {
+            Ok(p) if p.ready => Ok(p),
+            Ok(_) => Err(Failure::Indexing),
+            Err(_) => Err(Failure::Error),
         },
         Err(e) => match e.downcast_ref::<std::io::Error>().map(|e| e.kind()) {
             Some(std::io::ErrorKind::ConnectionRefused) => {
-                arrancar(Some(db));
-                Err(Fallo::SinServicio)
+                start(Some(db));
+                Err(Failure::NoService)
             }
-            Some(std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Err(Fallo::Tarde),
-            _ => Err(Fallo::Error),
+            Some(std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Err(Failure::Timeout),
+            _ => Err(Failure::Error),
         },
     }
 }
@@ -794,32 +803,32 @@ fn requested_dbs() -> &'static std::sync::Mutex<std::collections::BTreeSet<PathB
 }
 
 /// The vector of a query to search in `db` (which the service notes down to index it).
-pub fn vector_consulta(db: &std::path::Path, text: &str, budget: Duration) -> Option<Vec<f32>> {
-    vectors_in(Some(db), &[text], Tipo::Pregunta, budget)?.into_iter().next()
+pub fn query_vector(db: &std::path::Path, text: &str, budget: Duration) -> Option<Vec<f32>> {
+    vectors_in(Some(db), &[text], TextKind::Query, budget)?.into_iter().next()
 }
 
 /// Tells the service that `db` has changed so it computes the missing vectors, without waiting
 /// (starts it if it is not running). For `remember`, `update`, `import` and sync.
-pub fn avisar(db: &std::path::Path) {
-    // With nobody at the keyboard, nothing left indexing after the process (`arrancar`).
-    if crate::entorno::unattended() || !en_uso_en(db) {
+pub fn notify_changed(db: &std::path::Path) {
+    // With nobody at the keyboard, nothing left indexing after the process (`start`).
+    if crate::entorno::unattended() || !in_use_at(db) {
         return;
     }
-    let _ = vectors_in(Some(db), &[], Tipo::Documento, Duration::from_millis(100));
+    let _ = vectors_in(Some(db), &[], TextKind::Document, Duration::from_millis(100));
 }
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-pub fn registro() -> Option<Registro> {
+pub fn registry() -> Option<Registry> {
     serde_json::from_str(&std::fs::read_to_string(home()?.join(REGISTRY_FILE)).ok()?).ok()
 }
 
 /// Sends `p` and reads one line of response, without exceeding `budget` in total.
-fn send_request(r: &Registro, p: &Request, budget: Duration) -> Result<serde_json::Value> {
+fn send_request(r: &Registry, p: &Request, budget: Duration) -> Result<serde_json::Value> {
     let start = Instant::now();
-    let addr = SocketAddr::from(([127, 0, 0, 1], r.puerto));
+    let addr = SocketAddr::from(([127, 0, 0, 1], r.port));
     let s = TcpStream::connect_timeout(&addr, budget)?;
     let remaining = || budget.saturating_sub(start.elapsed()).max(Duration::from_millis(1));
     s.set_nodelay(true)?;
@@ -838,8 +847,8 @@ fn send_request(r: &Registro, p: &Request, budget: Duration) -> Result<serde_jso
 }
 
 /// Does the service answer? Returns its registry if so.
-pub fn vivo(budget: Duration) -> Option<Registro> {
-    let r = registro()?;
+pub fn alive(budget: Duration) -> Option<Registry> {
+    let r = registry()?;
     let v = send_request(&r, &Request { token: r.token.clone(), ping: true, ..Default::default() }, budget).ok()?;
     (v.get("pid").and_then(|p| p.as_u64()) == Some(r.pid as u64)).then_some(r)
 }
@@ -850,8 +859,8 @@ pub fn vivo(budget: Duration) -> Option<Registro> {
 /// With nobody at the keyboard (`OMOIKANE_NONINTERACTIVE=1`) it does not launch it: it would outlive the process by half an hour
 /// (in CI, stretching the job or dying with it). If one is already running, it is used; if not, everything goes
 /// by words.
-pub fn arrancar(db: Option<&std::path::Path>) {
-    if !permitido() || modelo().is_none() || crate::entorno::unattended() {
+pub fn start(db: Option<&std::path::Path>) {
+    if !allowed() || model_dir().is_none() || crate::entorno::unattended() {
         return;
     }
     let Some(c) = home() else { return };
@@ -871,25 +880,25 @@ pub fn arrancar(db: Option<&std::path::Path>) {
 
 /// The vectors of `texts`, if the service gives them within `budget`. If there is no service, it
 /// leaves it starting and returns `None`: the caller carries on without meaning.
-pub fn vectores(texts: &[&str], kind: Tipo, budget: Duration) -> Option<Vec<Vec<f32>>> {
+pub fn vectors(texts: &[&str], kind: TextKind, budget: Duration) -> Option<Vec<Vec<f32>>> {
     vectors_in(None, texts, kind, budget)
 }
 
-fn vectors_in(db: Option<&std::path::Path>, texts: &[&str], kind: Tipo, budget: Duration) -> Option<Vec<Vec<f32>>> {
-    if !permitido() || modelo().is_none() {
+fn vectors_in(db: Option<&std::path::Path>, texts: &[&str], kind: TextKind, budget: Duration) -> Option<Vec<Vec<f32>>> {
+    if !allowed() || model_dir().is_none() {
         return None;
     }
-    let Some(r) = registro() else {
-        arrancar(db);
+    let Some(r) = registry() else {
+        start(db);
         return None;
     };
     let p = Request {
         token: r.token.clone(),
-        tipo: Some(if kind == Tipo::Pregunta { "pregunta" } else { "documento" }.into()),
-        textos: texts.iter().map(|t| t.to_string()).collect(),
+        kind: Some(if kind == TextKind::Query { "pregunta" } else { "documento" }.into()),
+        texts: texts.iter().map(|t| t.to_string()).collect(),
         ping: false,
         db: db.map(|d| d.to_string_lossy().into_owned()),
-        buscar: None,
+        search: None,
     };
     match send_request(&r, &p, budget) {
         Ok(v) => serde_json::from_value(v.get("vectores")?.clone()).ok(),
@@ -898,7 +907,7 @@ fn vectors_in(db: Option<&std::path::Path>, texts: &[&str], kind: Tipo, budget: 
             // again. A timeout is just slowness: no other one is launched.
             let down = e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused);
             if down {
-                arrancar(db);
+                start(db);
             }
             None
         }
@@ -934,7 +943,7 @@ fn handle(s: TcpStream, model: &Gemma, token: &str, model_name: &str, last_use: 
                 if let Some(db) = &p.db {
                     requested_dbs().lock().map(|mut b| b.insert(PathBuf::from(db))).ok();
                 }
-                if let Some(b) = &p.buscar {
+                if let Some(b) = &p.search {
                     let r = match search_in_service(model, b) {
                         Ok(r) => serde_json::to_value(r).unwrap_or_default(),
                         Err(e) => serde_json::json!({ "error": e.to_string() }),
@@ -945,8 +954,8 @@ fn handle(s: TcpStream, model: &Gemma, token: &str, model_name: &str, last_use: 
                     line.clear();
                     continue;
                 }
-                let kind = if p.tipo.as_deref() == Some("documento") { Tipo::Documento } else { Tipo::Pregunta };
-                match p.textos.iter().map(|t| model.vector(t, kind)).collect::<Result<Vec<_>>>() {
+                let kind = if p.kind.as_deref() == Some("documento") { TextKind::Document } else { TextKind::Query };
+                match p.texts.iter().map(|t| model.vector(t, kind)).collect::<Result<Vec<_>>>() {
                     Ok(v) => serde_json::json!({ "vectores": v }),
                     Err(e) => serde_json::json!({ "error": e.to_string() }),
                 }
@@ -962,27 +971,27 @@ fn handle(s: TcpStream, model: &Gemma, token: &str, model_name: &str, last_use: 
 
 /// The service (`omoi model serve-semantic`). If one is already answering, it exits without doing anything. `db`:
 /// the database that started it, to index it as soon as the model loads.
-pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
-    if !permitido() {
+pub fn serve(db: Option<&std::path::Path>) -> Result<()> {
+    if !allowed() {
         bail!("the meaning model is off (`omoi model semantic --on` turns it on)");
     }
-    if vivo(Duration::from_millis(500)).is_some() {
+    if alive(Duration::from_millis(500)).is_some() {
         return Ok(());
     }
-    let dir = modelo().context("EmbeddingGemma is not installed")?;
+    let dir = model_dir().context("EmbeddingGemma is not installed")?;
     let c = home().context("no home folder")?;
     std::fs::create_dir_all(&c)?;
-    let gemma = Arc::new(Gemma::cargar(&dir)?);
+    let gemma = Arc::new(Gemma::load(&dir)?);
     {
         let g = gemma.clone();
-        std::thread::spawn(move || g.precalentar());
+        std::thread::spawn(move || g.prewarm());
     }
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let me = Registro {
-        puerto: listener.local_addr()?.port(),
+    let me = Registry {
+        port: listener.local_addr()?.port(),
         token: new_token()?,
         pid: std::process::id(),
-        modelo: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        model: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
     };
     // First to a temp file and then rename: a reader never sees a half-written registry.
     let tmp = c.join(format!("{REGISTRY_FILE}.{}", me.pid));
@@ -1001,7 +1010,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_secs(1));
-                let still_mine = registro().is_some_and(|r| r.pid == me.pid && r.puerto == me.puerto);
+                let still_mine = registry().is_some_and(|r| r.pid == me.pid && r.port == me.port);
                 if !still_mine {
                     std::process::exit(0);
                 }
@@ -1014,7 +1023,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
     }
     {
         // Indexer: computes the missing vectors in the databases that have asked something, only when
-        // a second has passed without requests (they share the CPU), in batches (`indexar`), and pausing between
+        // a second has passed without requests (they share the CPU), in batches (`index`), and pausing between
         // steps if a query comes in (`yield_to_queries`). While it has work left, it counts as use: the
         // service does not shut down halfway.
         let (gemma, last_use) = (gemma.clone(), last_use.clone());
@@ -1044,7 +1053,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
                     let mut on_done = |_| {
                         last_use.fetch_max(now_secs().saturating_sub(1), Ordering::Relaxed);
                     };
-                    match indexar(db, &gemma, 64, &mut keep_going, &mut on_done) {
+                    match index(db, &gemma, 64, &mut keep_going, &mut on_done) {
                         Ok(0) => {
                             // Up to date: removed from the list until someone asks something again.
                             requested_dbs().lock().map(|mut b| b.remove(&path)).ok();
@@ -1061,7 +1070,7 @@ pub fn servir(db: Option<&std::path::Path>) -> Result<()> {
         });
     }
     for s in listener.incoming().flatten() {
-        let (gemma, token, model_name, last_use) = (gemma.clone(), me.token.clone(), me.modelo.clone(), last_use.clone());
+        let (gemma, token, model_name, last_use) = (gemma.clone(), me.token.clone(), me.model.clone(), last_use.clone());
         std::thread::spawn(move || {
             let _ = handle(s, &gemma, &token, &model_name, &last_use);
         });

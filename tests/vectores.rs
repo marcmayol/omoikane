@@ -4,7 +4,7 @@
 mod comun;
 
 use omoikane::buscar::{self, SearchOptions};
-use omoikane::embeber::{Modelo, compilar};
+use omoikane::embeber::{Model, compile};
 use omoikane::memoria::{self, Scope, Changes, NewMemory, Kind};
 use omoikane::{db, vectores};
 use rusqlite::Connection;
@@ -14,14 +14,14 @@ use std::sync::Mutex;
 /// The model compiled once for this file's tests that run at the same time. Its temporary folder
 /// is deleted when the last one releases it (mapped files can't be deleted earlier on Windows); if
 /// another one asks for it later, it is compiled again.
-struct WithModel(Option<Modelo>);
+struct WithModel(Option<Model>);
 
 static COMPILED: Mutex<Option<(comun::Temporal, usize)>> = Mutex::new(None);
 
 impl std::ops::Deref for WithModel {
-    type Target = Modelo;
+    type Target = Model;
 
-    fn deref(&self) -> &Modelo {
+    fn deref(&self) -> &Model {
         self.0.as_ref().unwrap()
     }
 }
@@ -52,11 +52,11 @@ fn model() -> Option<WithModel> {
     let mut c = COMPILED.lock().unwrap_or_else(|e| e.into_inner());
     if c.is_none() {
         let dir = comun::Temporal::nueva("test-modelo");
-        compilar(&int8, &dir.join("modelo-test")).expect("compilar");
+        compile(&int8, &dir.join("modelo-test")).expect("compilar");
         *c = Some((dir, 0));
     }
     let (dir, uses) = c.as_mut().unwrap();
-    let m = Modelo::abrir(&dir.join("modelo-test")).expect("abrir");
+    let m = Model::open(&dir.join("modelo-test")).expect("abrir");
     *uses += 1;
     Some(WithModel(Some(m)))
 }
@@ -84,20 +84,20 @@ fn vectors_follow_the_memories() {
     memoria::save(&mut db, new_memory("/p", "Dos", "segundo"), None).unwrap();
     memoria::save(&mut db, new_memory("/p", "Tres", "tercero"), Some(&m)).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 1);
-    // sincronizar fills in the missing ones and records the model; the second time it does nothing.
-    assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 3);
-    assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 0);
+    // `sync` fills in the missing ones and records the model; the second time it does nothing.
+    assert_eq!(vectores::sync(&mut db, &m).unwrap(), 3);
+    assert_eq!(vectores::sync(&mut db, &m).unwrap(), 0);
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 3);
-    // Changing the text without a model invalidates its vector; sincronizar rebuilds it.
+    // Changing the text without a model invalidates its vector; `sync` rebuilds it.
     memoria::update(&mut db, &a.id, Changes { content: Some("otro".into()), ..Default::default() }, None).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 2);
-    assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 1);
+    assert_eq!(vectores::sync(&mut db, &m).unwrap(), 1);
     // Pinning doesn't change the text: the vector stays.
     memoria::update(&mut db, &a.id, Changes { pinned: Some(true), ..Default::default() }, None).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 3);
     // If the vectors are from another model, they are all rebuilt.
     db.execute("UPDATE meta SET v = 'otro-modelo' WHERE k = 'modelo'", []).unwrap();
-    assert_eq!(vectores::sincronizar(&mut db, &m).unwrap(), 3);
+    assert_eq!(vectores::sync(&mut db, &m).unwrap(), 3);
     // Forgetting takes the vector with it.
     memoria::forget(&mut db, &a.id).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), 2);
@@ -110,7 +110,7 @@ fn the_vector_is_the_new_texts() {
     let a = memoria::save(&mut db, new_memory("/p", "Puerto", "El servidor escucha en el 8765."), Some(&m)).unwrap();
     let c = Changes { content: Some("La tortilla lleva cebolla.".into()), ..Default::default() };
     memoria::update(&mut db, &a.id, c, Some(&m)).unwrap();
-    let p = vectores::parecidas(&db, &m, &vectores::texto("Puerto", "La tortilla lleva cebolla."), None, None, -1.0, 1).unwrap();
+    let p = vectores::similar(&db, &m, &vectores::text("Puerto", "La tortilla lleva cebolla."), None, None, -1.0, 1).unwrap();
     assert!(p[0].1 > 0.999, "similitud {}", p[0].1);
 }
 
@@ -125,14 +125,14 @@ fn duplicates_in_the_same_scope() {
         memoria::save(&mut db, new_memory("/p", t, c), Some(&m)).unwrap();
     }
     // The same memory said another way, in the same project: it is detected.
-    let d = vectores::duplicada(&db, &m, "/p", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap();
+    let d = vectores::duplicate(&db, &m, "/p", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap();
     assert!(d.is_some());
     // Same topic, different thing: no.
-    let d = vectores::duplicada(&db, &m, "/p", "Los tokens se firman con RS256", "La clave pública está en el servicio de auth.").unwrap();
+    let d = vectores::duplicate(&db, &m, "/p", "Los tokens se firman con RS256", "La clave pública está en el servicio de auth.").unwrap();
     assert!(d.is_none(), "{d:?}");
     // In another project it doesn't count, and being global it is only compared with the global ones.
-    assert!(vectores::duplicada(&db, &m, "/otro", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
-    assert!(vectores::duplicada(&db, &m, "", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
+    assert!(vectores::duplicate(&db, &m, "/otro", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
+    assert!(vectores::duplicate(&db, &m, "", "El token de auth caduca demasiado pronto", "El middleware compara la hora local con la caducidad del token, que va en UTC.").unwrap().is_none());
 }
 
 fn pairs() -> Vec<(String, String, String)> {
@@ -146,12 +146,12 @@ fn pairs() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// The duplicate warning, through the real path (`vectores::duplicada`: centered vector and
+/// The duplicate warning, through the real path (`vectores::duplicate`: centered vector and
 /// words): no false warning with the calibration pairs (neither from its pair nor from another sentence in
 /// the database) and at least a third of the duplicates detected, pointing to their pair. These pairs are
 /// short paraphrases with other words, the hardest for the rule: only the vector catches them (from
 /// 0.78). With 0.70 a few more were caught, but on real notes it warned falsely 3.9 % of the time
-/// and a third of the notes saved twice slipped through (see vectores::SIMILITUD_DUPLICADO).
+/// and a third of the notes saved twice slipped through (see vectores::DUPLICATE_SIMILARITY).
 #[test]
 fn duplicate_threshold() {
     let Some(m) = model() else { return };
@@ -165,7 +165,7 @@ fn duplicate_threshold() {
     }
     let (mut hits, mut duplicates, mut false_positives) = (0, 0, Vec::new());
     for (class, a, b) in &pairs {
-        let d = vectores::duplicada(&db, &m, "/p", b, b).unwrap();
+        let d = vectores::duplicate(&db, &m, "/p", b, b).unwrap();
         if class == "dup" {
             duplicates += 1;
             hits += usize::from(d.as_ref().is_some_and(|(mem, _)| &mem.title == a));
@@ -199,7 +199,7 @@ fn search_quality() {
         }
     }
     let o = SearchOptions { scope: Scope::All, kind: None, tags: vec![], limit: 5 };
-    let mut measure = |with: Option<&Modelo>| {
+    let mut measure = |with: Option<&Model>| {
         let (mut top1, mut noise) = (0, 0);
         for (key, q) in &queries {
             let r = buscar::search(&mut db, q, &o, with).unwrap();
@@ -244,14 +244,14 @@ fn consistency_with_vectors() {
             _ => {}
         }
     }
-    vectores::sincronizar(&mut db, &m).unwrap();
+    vectores::sync(&mut db, &m).unwrap();
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec"), count(&db, "SELECT count(*) FROM memory"));
     assert_eq!(count(&db, "SELECT count(*) FROM memory_vec WHERE n NOT IN (SELECT n FROM memory)"), 0);
 }
 
 /// 1.8.6: duplicates among trade memories. From the global scope trade ones aren't visible, so
-/// `duplicada` didn't find them: the same thing promoted or saved from two clients ended up twice.
-/// `duplicada_de_oficio` compares with those of its trades, and the review proposes merging the ones already there.
+/// `duplicate` didn't find them: the same thing promoted or saved from two clients ended up twice.
+/// `trade_duplicate` compares with those of its trades, and the review proposes merging the ones already there.
 #[test]
 fn duplicates_among_trade_memories() {
     let Some(m) = model() else { return };
@@ -265,12 +265,12 @@ fn duplicates_among_trade_memories() {
     memoria::save(&mut db, new_memory("/cliente", "Cerrar el emulador", "Con taskkill el AVD queda bloqueado."), Some(&m)).unwrap();
     let (t, c) = ("El emulador no se mata con taskkill", "Con taskkill el AVD se queda bloqueado: cerrarlo con adb emu kill.");
     // Before: from the global scope, nothing.
-    assert!(vectores::duplicada(&db, &m, "", t, c).unwrap().is_none());
-    let d = vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, None).unwrap();
+    assert!(vectores::duplicate(&db, &m, "", t, c).unwrap().is_none());
+    let d = vectores::trade_duplicate(&db, &m, &["android".to_string()], t, c, None).unwrap();
     assert_eq!(d.map(|x| x.0.id), Some(old.clone()));
     // Another trade doesn't see it; and when promoting, the one it comes from doesn't count.
-    assert!(vectores::duplicada_de_oficio(&db, &m, &["web".to_string()], t, c, None).unwrap().is_none());
-    assert!(vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, Some(&old)).unwrap().is_none());
+    assert!(vectores::trade_duplicate(&db, &m, &["web".to_string()], t, c, None).unwrap().is_none());
+    assert!(vectores::trade_duplicate(&db, &m, &["android".to_string()], t, c, Some(&old)).unwrap().is_none());
 
     // If there are already two (saved with `force`, or from before 1.8.6), the review proposes merging them.
     let new_id = memoria::save(&mut db, trade_memory("android", t, c), Some(&m)).unwrap().id;
@@ -288,7 +288,7 @@ fn duplicates_among_trade_memories() {
     assert!(omoikane::revisar::trade_duplicates(&db, &Scope::All).unwrap().is_empty());
 }
 
-/// 1.8.6: `duplicada_de_oficio` took the 50 most similar of the whole database and then kept the
+/// 1.8.6: `trade_duplicate` took the 50 most similar of the whole database and then kept the
 /// global ones and those of its trades. With many similar project memories, the truly duplicated trade one
 /// was left out of those 50. Now it searches only among the ones that count.
 #[test]
@@ -308,6 +308,6 @@ fn the_trade_duplicate_is_not_hidden_by_project_ones() {
     }
     let n = NewMemory { tags: vec!["trade:android".into()], ..new_memory("", "No mates el emulador con taskkill", "Cerrarlo con taskkill deja el AVD bloqueado; usa adb emu kill.") };
     let old = memoria::save(&mut db, n, Some(&m)).unwrap().id;
-    let d = vectores::duplicada_de_oficio(&db, &m, &["android".to_string()], t, c, None).unwrap();
+    let d = vectores::trade_duplicate(&db, &m, &["android".to_string()], t, c, None).unwrap();
     assert_eq!(d.map(|x| x.0.id), Some(old));
 }

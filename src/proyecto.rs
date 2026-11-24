@@ -802,10 +802,10 @@ fn main_if_needed(db: &Connection, id: i64, path: &str) -> Result<Option<String>
 /// `omoi projects prune`: projects without memories (and their registered folders) are deleted. The
 /// one for a folder that is worked in again is created again by itself. Returns how many.
 pub fn prune(db: &Connection) -> Result<usize> {
-    crate::diario::antes_de_podar(db)?;
+    crate::diario::before_prune(db)?;
     db.execute("DELETE FROM project_path WHERE project_id != 0 AND project_id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
     let n = db.execute("DELETE FROM project WHERE id != 0 AND id NOT IN (SELECT DISTINCT project_id FROM memory)", [])?;
-    crate::diario::soltar_podados(db)?;
+    crate::diario::release_pruned(db)?;
     Ok(n)
 }
 
@@ -970,7 +970,7 @@ pub fn list(db: &Connection, only: Option<i64>, space: Option<Option<i64>>, limi
         let tag = crate::memoria::STATUS;
         q.query_map(params![format!("%\"{tag}\"%"), tag], |f| Ok((f.get(0)?, f.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
-    let mut trades = crate::oficios::de_proyectos(db)?;
+    let mut trades = crate::oficios::of_projects(db)?;
     Ok(v.into_iter()
         .map(|(mut p, foreign, _)| {
             p.gone = !foreign && !p.path.is_empty() && readable(Path::new(&p.path)) && !Path::new(&p.path).is_dir();
@@ -1496,7 +1496,7 @@ fn join(db: &Connection, from: i64, to: i64) -> Result<usize> {
     let n = db.execute("UPDATE memory SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
     db.execute("UPDATE project_path SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
     db.execute("UPDATE recall_log SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
-    crate::diario::mover(db, from, to)?;
+    crate::diario::move_project(db, from, to)?;
     db.execute(
         "INSERT INTO memory_use(memory_id, project_id, veces, ultima) SELECT memory_id, ?2, veces, ultima FROM memory_use WHERE project_id = ?1
          ON CONFLICT(memory_id, project_id) DO UPDATE SET veces = veces + excluded.veces, ultima = max(ultima, excluded.ultima)",

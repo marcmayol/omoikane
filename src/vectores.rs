@@ -14,7 +14,7 @@
 //! result is the same as comparing with all the vectors. It is kept up to date by the triggers
 //! of `memory_vec` (they record what changes in `vec_cambio`) and `up_to_date_summary`, which applies it when used.
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{Scope, COLUMNS, Memory, Kind, from_row};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -24,21 +24,21 @@ use serde::{Deserialize, Serialize};
 /// words. Calibrated in phase 2 with `tests/busquedas.tsv` and 127 real notes: from 0.25
 /// queries without an answer return nothing. With a static model the rescue rarely
 /// contributes: it is there for when the similarity is really high.
-pub const SIMILITUD_BUSQUEDA: f32 = 0.25;
+pub const SEARCH_SIMILARITY: f32 = 0.25;
 
 /// When saving proposes updating the memory that already exists: if the similarity (centered vectors)
-/// reaches `SIMILITUD_DUPLICADO`, or if it reaches `SIMILITUD_DUPLICADO_CON_PALABRAS` and the words of the
-/// new one are in the existing one (`COBERTURA_DUPLICADO` of its IDF weight, as in recall). The vector
+/// reaches `DUPLICATE_SIMILARITY`, or if it reaches `DUPLICATE_SIMILARITY_WITH_WORDS` and the words of the
+/// new one are in the existing one (`DUPLICATE_COVERAGE` of its IDF weight, as in recall). The vector
 /// alone didn't separate: with 0.70, 3.9 % of 127 distinct real notes warned falsely and only
 /// 66 % of those notes saved again as an agent would (another title, the start of the text) were
 /// detected. With both signals: 0 % false warnings (notes and short sentences) and 89 %
 /// detected (`examples/fase2.rs dupcob`). What is lost: short paraphrases with other words.
-pub const SIMILITUD_DUPLICADO: f32 = 0.78;
-pub const SIMILITUD_DUPLICADO_CON_PALABRAS: f32 = 0.40;
-pub const COBERTURA_DUPLICADO: f64 = 0.60;
+pub const DUPLICATE_SIMILARITY: f32 = 0.78;
+pub const DUPLICATE_SIMILARITY_WITH_WORDS: f32 = 0.40;
+pub const DUPLICATE_COVERAGE: f64 = 0.60;
 
 /// What is turned into a vector: the title and the content.
-pub fn texto(title: &str, content: &str) -> String {
+pub fn text(title: &str, content: &str) -> String {
     format!("{title}\n{content}")
 }
 
@@ -46,8 +46,8 @@ fn bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-pub(crate) fn guardar(tx: &Transaction, n: i64, model: &Modelo, title: &str, content: &str) -> Result<()> {
-    let v = model.vector(&texto(title, content))?;
+pub(crate) fn save(tx: &Transaction, n: i64, model: &Model, title: &str, content: &str) -> Result<()> {
+    let v = model.vector(&text(title, content))?;
     tx.execute("INSERT OR REPLACE INTO memory_vec(n, e) VALUES (?1, ?2)", params![n, bytes(&v)])?;
     Ok(())
 }
@@ -55,7 +55,7 @@ pub(crate) fn guardar(tx: &Transaction, n: i64, model: &Modelo, title: &str, con
 /// Brings the vectors up to date with `model`: if they were computed with another, redoes them all; if
 /// some are missing (memories saved without a model installed), adds them. Returns how many it computed. With
 /// thousands of memories it's milliseconds (a vector costs ~0.03 ms).
-pub fn sincronizar(db: &mut Connection, model: &Modelo) -> Result<usize> {
+pub fn sync(db: &mut Connection, model: &Model) -> Result<usize> {
     let stored: Option<String> =
         db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
     if stored.as_deref() == Some(model.id()) && missing_count(db)? == 0 {
@@ -67,7 +67,7 @@ pub fn sincronizar(db: &mut Connection, model: &Modelo) -> Result<usize> {
     if stored.as_deref() != Some(model.id()) {
         // Before deleting: without a summary, the triggers don't record each old vector in `vec_cambio`.
         if has_local_tables(&tx)? {
-            olvidar_resumen(&tx)?;
+            forget_summary(&tx)?;
         }
         tx.execute("DELETE FROM memory_vec", [])?;
         tx.execute(
@@ -82,7 +82,7 @@ pub fn sincronizar(db: &mut Connection, model: &Modelo) -> Result<usize> {
         q.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (n, t, c) in &pending {
-        guardar(&tx, *n, model, t, c)?;
+        save(&tx, *n, model, t, c)?;
     }
     tx.commit()?;
     Ok(pending.len())
@@ -104,7 +104,7 @@ fn dot(b: &[u8], v: &[f32]) -> f32 {
 
 /// Mean of a generic corpus (the tests' one: code, documentation and sentences in many languages)
 /// with this model. Computed once per model (~50 ms) and stored in `meta`.
-fn generic_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
+fn generic_mean(db: &Connection, model: &Model) -> Result<Vec<f32>> {
     let key = format!("media:{}", model.id());
     if let Some(t) = db.query_row("SELECT v FROM meta WHERE k = ?1", [&key], |row| row.get::<_, String>(0)).optional()? {
         return Ok(serde_json::from_str(&t)?);
@@ -122,7 +122,7 @@ fn generic_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
 
 /// The mean used for centering: that of the database's memories, with the generic one as if it were
 /// `GENERIC_MEAN_WEIGHT` more memories.
-fn centering_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
+fn centering_mean(db: &Connection, model: &Model) -> Result<Vec<f32>> {
     let mut sum: Vec<f32> = generic_mean(db, model)?.iter().map(|x| x * GENERIC_MEAN_WEIGHT).collect();
     let mut n = GENERIC_MEAN_WEIGHT;
     let mut q = db.prepare("SELECT e FROM memory_vec")?;
@@ -137,10 +137,10 @@ fn centering_mean(db: &Connection, model: &Modelo) -> Result<Vec<f32>> {
 }
 
 /// The same mean, with the summary's sum (in `f64`: it doesn't depend on the order it was summed in).
-fn mean_from_summary(db: &Connection, model: &Modelo, r: &Summary) -> Result<Vec<f32>> {
+fn mean_from_summary(db: &Connection, model: &Model, r: &Summary) -> Result<Vec<f32>> {
     let generic = generic_mean(db, model)?;
-    let n = f64::from(GENERIC_MEAN_WEIGHT) + r.cuantos as f64;
-    Ok(generic.iter().zip(&r.suma).map(|(g, s)| ((f64::from(*g) * f64::from(GENERIC_MEAN_WEIGHT) + s) / n) as f32).collect())
+    let n = f64::from(GENERIC_MEAN_WEIGHT) + r.count as f64;
+    Ok(generic.iter().zip(&r.sum).map(|(g, s)| ((f64::from(*g) * f64::from(GENERIC_MEAN_WEIGHT) + s) / n) as f32).collect())
 }
 
 // --- The summary ----------------------------------------------------------------------------------
@@ -156,8 +156,10 @@ const SLACK: f32 = 1e-3;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Summary {
     dim: usize,
-    cuantos: i64,
-    suma: Vec<f64>,
+    #[serde(rename = "cuantos")]
+    count: i64,
+    #[serde(rename = "suma")]
+    sum: Vec<f64>,
 }
 
 /// What each vector takes in a block: scale (`f32`), how far it is from the real one (`f32`, the
@@ -234,7 +236,7 @@ fn write_summary(db: &Connection, r: &Summary) -> Result<()> {
 }
 
 /// Deletes the summary: it will be fully rebuilt when used. Called by `db::locales` when (re)creating its tables.
-pub(crate) fn olvidar_resumen(db: &Connection) -> Result<()> {
+pub(crate) fn forget_summary(db: &Connection) -> Result<()> {
     db.execute("DELETE FROM meta WHERE k = ?1", [SUMMARY_KEY])?;
     db.execute_batch("DELETE FROM vec_bloque; DELETE FROM vec_cambio;")?;
     Ok(())
@@ -243,7 +245,7 @@ pub(crate) fn olvidar_resumen(db: &Connection) -> Result<()> {
 /// The summary built again with all the vectors. `None` if they don't all have the same dimension
 /// (halfway through a model change): then it compares with all, as without a summary.
 fn rebuild(db: &Connection) -> Result<Option<Summary>> {
-    olvidar_resumen(db)?;
+    forget_summary(db)?;
     let mut r: Option<Summary> = None;
     let mut block: Option<(i64, Block)> = None;
     let mut insert = db.prepare("INSERT INTO vec_bloque(b, ns, datos) VALUES (?1, ?2, ?3)")?;
@@ -252,13 +254,13 @@ fn rebuild(db: &Connection) -> Result<Option<Summary>> {
     while let Some(row) = rows.next()? {
         let n: i64 = row.get(0)?;
         let e = to_f32(row.get_ref(1)?.as_blob()?);
-        let r = r.get_or_insert_with(|| Summary { dim: e.len(), cuantos: 0, suma: vec![0.0; e.len()] });
+        let r = r.get_or_insert_with(|| Summary { dim: e.len(), count: 0, sum: vec![0.0; e.len()] });
         if e.len() != r.dim || r.dim == 0 {
-            olvidar_resumen(db)?;
+            forget_summary(db)?;
             return Ok(None);
         }
-        r.cuantos += 1;
-        r.suma.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
+        r.count += 1;
+        r.sum.iter_mut().zip(&e).for_each(|(s, x)| *s += f64::from(*x));
         let b = n >> BLOCK_BITS;
         if let Some((current, done)) = block.take_if(|(current, _)| *current != b) {
             insert.execute(params![current, done.ns_bytes(), done.data])?;
@@ -271,7 +273,7 @@ fn rebuild(db: &Connection) -> Result<Option<Summary>> {
         insert.execute(params![b, done.ns_bytes(), done.data])?;
     }
     // Without vectors there is also a summary: empty, and the dimension is set by the first one to arrive.
-    let r = r.unwrap_or(Summary { dim: 0, cuantos: 0, suma: Vec::new() });
+    let r = r.unwrap_or(Summary { dim: 0, count: 0, sum: Vec::new() });
     write_summary(db, &r)?;
     Ok(Some(r))
 }
@@ -283,7 +285,7 @@ fn apply_changes(db: &Connection, mut r: Summary) -> Result<Option<Summary>> {
         q.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
     };
     // Many changes (another model, a large import): better to rebuild it.
-    if changes.len() as i64 > (r.cuantos / 4).max(1000) {
+    if changes.len() as i64 > (r.count / 4).max(1000) {
         return Ok(None);
     }
     let mut current = db.prepare("SELECT e FROM memory_vec WHERE n = ?1")?;
@@ -295,20 +297,20 @@ fn apply_changes(db: &Connection, mut r: Summary) -> Result<Option<Summary>> {
             if v.len() != r.dim {
                 return Ok(None);
             }
-            r.cuantos -= 1;
-            r.suma.iter_mut().zip(&v).for_each(|(s, x)| *s -= f64::from(*x));
+            r.count -= 1;
+            r.sum.iter_mut().zip(&v).for_each(|(s, x)| *s -= f64::from(*x));
         }
         let now: Option<Vec<f32>> = current.query_row([n], |row| Ok(to_f32(row.get_ref(0)?.as_blob()?))).optional()?;
         if let Some(e) = &now {
-            if r.cuantos == 0 && r.dim == 0 {
+            if r.count == 0 && r.dim == 0 {
                 r.dim = e.len();
-                r.suma = vec![0.0; e.len()];
+                r.sum = vec![0.0; e.len()];
             }
             if e.len() != r.dim || r.dim == 0 {
                 return Ok(None);
             }
-            r.cuantos += 1;
-            r.suma.iter_mut().zip(e).for_each(|(s, x)| *s += f64::from(*x));
+            r.count += 1;
+            r.sum.iter_mut().zip(e).for_each(|(s, x)| *s += f64::from(*x));
         }
         let b = n >> BLOCK_BITS;
         let block = match blocks.entry(b) {
@@ -322,7 +324,7 @@ fn apply_changes(db: &Connection, mut r: Summary) -> Result<Option<Summary>> {
         };
         block.set(n, now.as_deref(), r.dim);
     }
-    if r.cuantos < 0 {
+    if r.count < 0 {
         return Ok(None);
     }
     for (b, block) in &blocks {
@@ -616,9 +618,9 @@ fn bounds_of(
 
 /// Memories most similar to `text`, from most to least, with their similarity (cosine of the centered
 /// vectors). `project` as in `Scope`: `Some(p)` = those of `p` plus the globals; `None` = all.
-pub fn parecidas(
+pub fn similar(
     db: &Connection,
-    model: &Modelo,
+    model: &Model,
     text: &str,
     project: Option<&str>,
     kind: Option<Kind>,
@@ -629,28 +631,28 @@ pub fn parecidas(
         Some(p) => Scope::from_project(db, p)?,
         None => Scope::All,
     };
-    parecidas_en(db, model, text, &scope, kind, min, limit)
+    similar_in(db, model, text, &scope, kind, min, limit)
 }
 
-/// Like `parecidas`, in an already resolved scope.
-pub fn parecidas_en(
+/// Like `similar`, in an already resolved scope.
+pub fn similar_in(
     db: &Connection,
-    model: &Modelo,
+    model: &Model,
     text: &str,
     scope: &Scope,
     kind: Option<Kind>,
     min: f32,
     limit: usize,
 ) -> Result<Vec<(Memory, f32)>> {
-    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
+    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.count == 0);
     let mean = match &summary {
-        Some(r) if r.cuantos > 0 => mean_from_summary(db, model, r)?,
+        Some(r) if r.count > 0 => mean_from_summary(db, model, r)?,
         Some(_) => generic_mean(db, model)?,
         None => centering_mean(db, model)?,
     };
     let query = normalized(model.vector(text)?.iter().zip(&mean).map(|(x, m)| x - m).collect());
     let sims = match &summary {
-        Some(r) if r.cuantos == 0 => Vec::new(),
+        Some(r) if r.count == 0 => Vec::new(),
         Some(r) => with_summary(db, &query, &mean, scope, kind, min, limit, r.dim)?,
         None => linear(db, &query, &mean, scope, kind, min, limit)?,
     };
@@ -710,23 +712,23 @@ fn linear_where(
 /// If there is already an almost identical memory in the same scope (the project and the globals, or only the
 /// globals if the new one is global; all if `project` is a general folder), returns it with its
 /// similarity.
-pub fn duplicada(db: &Connection, model: &Modelo, project: &str, title: &str, content: &str) -> Result<Option<(Memory, f32)>> {
-    let new = texto(title, content);
+pub fn duplicate(db: &Connection, model: &Model, project: &str, title: &str, content: &str) -> Result<Option<(Memory, f32)>> {
+    let new = text(title, content);
     let scope = Scope::from_project(db, project)?;
-    let v = parecidas_en(db, model, &new, &scope, None, SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    let v = similar_in(db, model, &new, &scope, None, DUPLICATE_SIMILARITY_WITH_WORDS, 5)?;
     the_duplicate(db, &scope, &new, v)
 }
 
-/// Like [`duplicada`], for a trade memory (`trades`, without the prefix): from global the trade ones
+/// Like [`duplicate`], for a trade memory (`trades`, without the prefix): from global the trade ones
 /// aren't seen (no project of the scope has trades), so it compares with the globals and with
 /// the trade ones that share any of its trades, whoever they are for (`trade-for:`). That's what
 /// happens when promoting the same thing from two clients. `exclude`: the memory it comes from (when promoting).
 ///
 /// It only searches among those: before, the 50 most similar of the whole database were taken and then
 /// filtered, and with many similar project memories the real duplicate was left out. The
-/// words weigh with the IDF of the whole database, as in [`duplicadas_entre`].
-pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], title: &str, content: &str, exclude: Option<&str>) -> Result<Option<(Memory, f32)>> {
-    let new = texto(title, content);
+/// words weigh with the IDF of the whole database, as in [`duplicates_among`].
+pub fn trade_duplicate(db: &Connection, model: &Model, trades: &[String], title: &str, content: &str, exclude: Option<&str>) -> Result<Option<(Memory, f32)>> {
+    let new = text(title, content);
     let mut candidates: Vec<i64> = Vec::new();
     {
         let mut q = db.prepare("SELECT m.n, m.id, m.tags FROM memory m WHERE m.project_id = 0 AND m.space_id IS NULL")?;
@@ -734,7 +736,7 @@ pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], t
         while let Some(row) = rows.next()? {
             let id: String = row.get(1)?;
             let tags: Vec<String> = serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default();
-            let its_trades = crate::oficios::de_etiquetas(&tags);
+            let its_trades = crate::oficios::from_tags(&tags);
             if Some(id.as_str()) != exclude && (its_trades.is_empty() || its_trades.iter().any(|o| trades.contains(o))) {
                 candidates.push(row.get(0)?);
             }
@@ -744,16 +746,16 @@ pub fn duplicada_de_oficio(db: &Connection, model: &Modelo, trades: &[String], t
         return Ok(None);
     }
     let list = candidates.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let v = similar_where(db, model, &new, &format!("m.n IN ({list})"), SIMILITUD_DUPLICADO_CON_PALABRAS, 5)?;
+    let v = similar_where(db, model, &new, &format!("m.n IN ({list})"), DUPLICATE_SIMILARITY_WITH_WORDS, 5)?;
     the_duplicate(db, &Scope::All, &new, v)
 }
 
 /// The most similar to `text` among the memories that meet `condition` (SQL over `memory m`),
 /// comparing with all their vectors: for a set that isn't a scope.
-fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, min: f32, limit: usize) -> Result<Vec<(Memory, f32)>> {
-    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.cuantos == 0);
+fn similar_where(db: &Connection, model: &Model, text: &str, condition: &str, min: f32, limit: usize) -> Result<Vec<(Memory, f32)>> {
+    let summary = up_to_date_summary(db)?.filter(|r| r.dim == model.dim() || r.count == 0);
     let mean = match &summary {
-        Some(r) if r.cuantos == 0 => return Ok(Vec::new()),
+        Some(r) if r.count == 0 => return Ok(Vec::new()),
         Some(r) => mean_from_summary(db, model, r)?,
         None => centering_mean(db, model)?,
     };
@@ -763,18 +765,18 @@ fn similar_where(db: &Connection, model: &Modelo, text: &str, condition: &str, m
     sims.into_iter().map(|(n, s)| Ok((q.query_row([n], from_row)?, s))).collect()
 }
 
-/// Of the similar ones (from most to least), the duplicate: the first if it reaches `SIMILITUD_DUPLICADO`
-/// and, if not, the one that best covers the new one's words (at least `COBERTURA_DUPLICADO`, with the IDF of
+/// Of the similar ones (from most to least), the duplicate: the first if it reaches `DUPLICATE_SIMILARITY`
+/// and, if not, the one that best covers the new one's words (at least `DUPLICATE_COVERAGE`, with the IDF of
 /// `scope`).
 fn the_duplicate(db: &Connection, scope: &Scope, new: &str, mut v: Vec<(Memory, f32)>) -> Result<Option<(Memory, f32)>> {
-    if v.first().is_some_and(|x| x.1 >= SIMILITUD_DUPLICADO) {
+    if v.first().is_some_and(|x| x.1 >= DUPLICATE_SIMILARITY) {
         return Ok(Some(v.swap_remove(0)));
     }
     if v.is_empty() {
         return Ok(None);
     }
     let coverages = crate::recall::coverage_in(db, scope, new, v.iter().map(|x| &x.0))?;
-    let best = coverages.iter().enumerate().filter(|(_, c)| **c >= COBERTURA_DUPLICADO).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
+    let best = coverages.iter().enumerate().filter(|(_, c)| **c >= DUPLICATE_COVERAGE).max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i);
     Ok(best.map(|i| v.swap_remove(i)))
 }
 
@@ -782,7 +784,7 @@ fn the_duplicate(db: &Connection, scope: &Scope, new: &str, mut v: Vec<(Memory, 
 /// the generic one stored in `meta` when the model was used. `None` without vectors.
 fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
     let (mut sum, mut n): (Vec<f64>, f64) = match read_summary(db)? {
-        Some(r) if r.cuantos > 0 => (r.suma, r.cuantos as f64),
+        Some(r) if r.count > 0 => (r.sum, r.count as f64),
         _ => {
             let mut sum: Vec<f64> = Vec::new();
             let mut n = 0.0;
@@ -819,12 +821,12 @@ fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
     Ok(Some(sum.iter().map(|s| (s / n) as f32).collect()))
 }
 
-/// The pairs of `memories` (by position, `i < j`) that [`duplicada`] would have taken as duplicates
+/// The pairs of `memories` (by position, `i < j`) that [`duplicate`] would have taken as duplicates
 /// when saving the second, with their similarity: with the vectors already stored, without loading the model (for
 /// the review). Only those of the same group in `groups` are compared (positions in `memories`: those of
 /// each trade), and each pair comes out once even if they share several. The newer one has the say
 /// against the older, as when saving. A memory without a vector (without a model) is compared only by
-/// words, and then both have to cover each other (`COBERTURA_DUPLICADO` in both
+/// words, and then both have to cover each other (`DUPLICATE_COVERAGE` in both
 /// directions).
 ///
 /// Words weigh with the IDF of the whole database (`Scope::All`): trade ones aren't seen from
@@ -835,7 +837,7 @@ fn stored_mean(db: &Connection) -> Result<Option<Vec<f32>>> {
 ///
 /// With `only`, only the pairs involving one of those (the ones that changed since the last
 /// computation): the others were already judged then.
-pub fn duplicadas_entre(db: &Connection, memories: &[&Memory], groups: &[Vec<usize>], only: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
+pub fn duplicates_among(db: &Connection, memories: &[&Memory], groups: &[Vec<usize>], only: Option<&std::collections::HashSet<usize>>) -> Result<Vec<(usize, usize, f32)>> {
     use std::collections::{BTreeSet, HashMap};
     let counts = |i: &usize| only.is_none_or(|s| s.contains(i));
     let groups: Vec<&Vec<usize>> = groups.iter().filter(|g| g.len() >= 2 && g.iter().any(counts)).collect();
@@ -868,7 +870,7 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memory], groups: &[Vec<usi
                 }
                 _ => None,
             };
-            let weights = crate::recall::Weights::of(&texto(&m.title, &m.content), &mut frequencies)?;
+            let weights = crate::recall::Weights::of(&text(&m.title, &m.content), &mut frequencies)?;
             per_memory.insert(i, PerMemory { centered, weights, tokens: crate::recall::words_of(m) });
         }
         for (x, &i) in g.iter().enumerate() {
@@ -882,14 +884,14 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memory], groups: &[Vec<usi
                 let is_dup = match (&per_memory[&i].centered, &per_memory[&j].centered) {
                     (Some(a), Some(b)) => {
                         let sim: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-                        let dup = sim >= SIMILITUD_DUPLICADO || (sim >= SIMILITUD_DUPLICADO_CON_PALABRAS && covers(new, old) >= COBERTURA_DUPLICADO);
+                        let dup = sim >= DUPLICATE_SIMILARITY || (sim >= DUPLICATE_SIMILARITY_WITH_WORDS && covers(new, old) >= DUPLICATE_COVERAGE);
                         dup.then_some(sim)
                     }
                     _ => {
                         // The second only if the first reaches it.
                         let c = covers(new, old);
-                        let c = if c >= COBERTURA_DUPLICADO { c.min(covers(old, new)) } else { c };
-                        (c >= COBERTURA_DUPLICADO).then_some(c as f32)
+                        let c = if c >= DUPLICATE_COVERAGE { c.min(covers(old, new)) } else { c };
+                        (c >= DUPLICATE_COVERAGE).then_some(c as f32)
                     }
                 };
                 if let Some(sim) = is_dup {
@@ -904,9 +906,9 @@ pub fn duplicadas_entre(db: &Connection, memories: &[&Memory], groups: &[Vec<usi
 /// Memories that may be about the same as a just-saved one without being duplicates: those that
 /// score best by BM25 with any word of the title and share at least two title words
 /// with it (or the only one, if both titles have one). It blocks nothing: they are returned so
-/// the agent decides whether to merge them. This also catches the 10 % of duplicates that `duplicada` lets
+/// the agent decides whether to merge them. This also catches the 10 % of duplicates that `duplicate` lets
 /// through, without false warnings upfront.
-pub fn relacionadas(db: &Connection, project: &str, title: &str, exclude: &str, limit: usize) -> Result<Vec<Memory>> {
+pub fn related(db: &Connection, project: &str, title: &str, exclude: &str, limit: usize) -> Result<Vec<Memory>> {
     let Some(query) = crate::buscar::fts_query(title) else { return Ok(Vec::new()) };
     let own: std::collections::BTreeSet<String> = crate::recall::useful_terms(title).into_iter().collect();
     let mut q = db.prepare(&format!(
@@ -930,7 +932,7 @@ pub fn relacionadas(db: &Connection, project: &str, title: &str, exclude: &str, 
 }
 
 /// For `doctor`: which model the vectors were computed with and how many there are.
-pub fn estado(db: &Connection) -> Result<(Option<String>, i64)> {
+pub fn status(db: &Connection) -> Result<(Option<String>, i64)> {
     let model = db.query_row("SELECT v FROM meta WHERE k = 'modelo'", [], |row| row.get(0)).optional()?;
     let n = db.query_row("SELECT count(*) FROM memory_vec", [], |row| row.get(0))?;
     Ok((model, n))
@@ -1008,8 +1010,8 @@ mod tests {
         let mut rng = Rng(0x9e3779b97f4a7c15);
         let (_dir, db, centers) = with_vectors("igual", 1200, &mut rng);
         let r = up_to_date_summary(&db).unwrap().expect("resumen");
-        assert_eq!(r.cuantos, 1200);
-        let mean: Vec<f32> = r.suma.iter().map(|s| (*s / r.cuantos as f64) as f32).collect();
+        assert_eq!(r.count, 1200);
+        let mean: Vec<f32> = r.sum.iter().map(|s| (*s / r.count as f64) as f32).collect();
         let scopes = [Scope::All, Scope::from_project(&db, "/p1").unwrap(), Scope::from_project(&db, "/p2").unwrap(), Scope::Space(None)];
         let (mut non_empty, mut cut_off) = (0, 0);
         for _ in 0..12 {
@@ -1060,9 +1062,9 @@ mod tests {
         let incremental = blocks(&db);
         // The same as rebuilding it fully.
         let full = rebuild(&db).unwrap().expect("resumen");
-        assert_eq!(r.cuantos, full.cuantos);
-        assert_eq!(r.cuantos, count(&db, "SELECT count(*) FROM memory_vec"));
-        for (a, b) in r.suma.iter().zip(&full.suma) {
+        assert_eq!(r.count, full.count);
+        assert_eq!(r.count, count(&db, "SELECT count(*) FROM memory_vec"));
+        for (a, b) in r.sum.iter().zip(&full.sum) {
             assert!((a - b).abs() < 1e-9, "{a} {b}");
         }
         assert_eq!(incremental, blocks(&db));
@@ -1114,6 +1116,6 @@ mod tests {
         let db = crate::db::open(&path).unwrap();
         assert_eq!(memoria::count(&db, &Scope::All).unwrap(), 31);
         assert!(read_summary(&db).unwrap().is_none());
-        assert_eq!(up_to_date_summary(&db).unwrap().expect("resumen").cuantos, 31);
+        assert_eq!(up_to_date_summary(&db).unwrap().expect("resumen").count, 31);
     }
 }

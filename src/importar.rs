@@ -4,7 +4,7 @@
 //! the database is skipped, unless `force`. From Omoikane's export only the current version comes in,
 //! without the history.
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{self, NewMemory, Kind};
 use crate::{proyecto, vectores};
 use anyhow::{Context, Result, bail};
@@ -209,14 +209,14 @@ fn from_engram(e: EngramExport, forced: Option<&str>, current: &str) -> (Vec<Ent
 }
 
 /// Saves the memories read, skipping those already present (unless `force`), with their dates.
-pub fn guardar(db: &mut Connection, model: Option<&Modelo>, incoming: Vec<Entrante>, force: bool) -> Result<Resumen> {
+pub fn guardar(db: &mut Connection, model: Option<&Model>, incoming: Vec<Entrante>, force: bool) -> Result<Resumen> {
     let mut r = Resumen::default();
     for e in incoming {
         let new = fix_up(e.nueva);
         // Without a model, at least the identical ones: reimporting the same file must not duplicate everything.
         let repeated = match model {
             _ if force => false,
-            Some(m) => vectores::duplicada(db, m, &new.project, &new.title, &new.content)?.is_some(),
+            Some(m) => vectores::duplicate(db, m, &new.project, &new.title, &new.content)?.is_some(),
             None => identical(db, &new)?,
         };
         if repeated {

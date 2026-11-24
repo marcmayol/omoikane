@@ -5,7 +5,7 @@
 //!   cargo run --release --example fase05 -- equivalencia D… ids and vectors against tokenizers and model2vec-rs
 
 use anyhow::{Result, anyhow};
-use omoikane::embeber::{Modelo, compilar};
+use omoikane::embeber::{Model, compile};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("compilar") => {
             let t = Instant::now();
-            compilar(&int8, &fast)?;
+            compile(&int8, &fast)?;
             println!("compilado en {:.0} ms → {}", ms(t), fast.display());
             for f in std::fs::read_dir(&fast)? {
                 let f = f?;
@@ -35,7 +35,7 @@ fn main() -> Result<()> {
         Some("abrir") => {
             let dir = args.get(1).map_or(fast, PathBuf::from);
             let t = Instant::now();
-            let m = Modelo::abrir(&dir)?;
+            let m = Model::open(&dir)?;
             let open_ms = ms(t);
             let t = Instant::now();
             let v = m.vector("el middleware de autenticación no se ejecuta en /health")?;
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
         }
         Some("residente") => {
             // Opens, encodes a corpus and stays alive so its memory can be measured from outside.
-            let m = Modelo::abrir(&fast)?;
+            let m = Model::open(&fast)?;
             let sentences = corpus(&args[2..]);
             let t = Instant::now();
             for f in &sentences {
@@ -131,7 +131,7 @@ fn equivalence(int8: &Path, fast: &Path, dirs: &[String]) -> Result<()> {
 
     let reference = tokenizers::Tokenizer::from_file(int8.join("tokenizer.json")).map_err(|e| anyhow!("{e}"))?;
     let original = model2vec_rs::model::StaticModel::from_pretrained(int8, None, None, None)?;
-    let new_model = Modelo::abrir(fast)?;
+    let new_model = Model::open(fast)?;
 
     let mut differing_ids = 0;
     let mut worst = 1.0f32;

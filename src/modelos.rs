@@ -6,25 +6,25 @@
 //! overwriting it in place would silently corrupt whoever has it open), so installing a new one is:
 //! compile into a separate folder, rename it and switch `actual` atomically.
 
-use crate::embeber::{Modelo, compilar};
+use crate::embeber::{Model, compile};
 use crate::tr;
 use anyhow::{Context, Result, bail};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const NOMBRE: &str = "potion-multilingual-128M-int8";
+pub const NAME: &str = "potion-multilingual-128M-int8";
 /// Where the int8 version of potion-multilingual-128M (The Minish Lab) is downloaded from, in order:
 /// Hugging Face and, if that fails, Omoikane's GitHub Release with the same files.
 /// `OMOIKANE_MODEL_SOURCE` replaces them (one or several separated by commas: your own mirror, or
 /// to try a specific one).
-pub const ORIGENES: [&str; 2] = [
+pub const SOURCES: [&str; 2] = [
     "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main",
     "https://github.com/marcmayol/omoikane/releases/download/modelo-potion-int8-v1",
 ];
 const FILES: [&str; 3] = ["model.safetensors", "tokenizer.json", "config.json"];
 /// SHA-256 of each published file of the light model: what is downloaded must be exactly this,
-/// whatever mirror it comes from (like `significado::SUMAS`). Checked on 8-Nov-2026 by downloading the
+/// whatever mirror it comes from (like `significado::CHECKSUMS`). Checked on 8-Nov-2026 by downloading the
 /// Hugging Face ones, against the `lfs.oid` of its API and the `digest` of the GitHub Release.
 const CHECKSUMS: [(&str, &str); 3] = [
     ("model.safetensors", "8cadee28bbc4c52ec36c33af1e6ee8ffcb0e40beb195d29d1b8304d74872df96"),
@@ -34,7 +34,7 @@ const CHECKSUMS: [(&str, &str); 3] = [
 const CURRENT_FILE: &str = "actual";
 
 /// `OMOIKANE_MODELS`, or `models` in Omoikane's folder (`OMOIKANE_HOME` or `~/.omoikane`).
-pub fn carpeta() -> PathBuf {
+pub fn dir() -> PathBuf {
     if let Some(r) = std::env::var_os("OMOIKANE_MODELS").filter(|r| !r.is_empty()) {
         return PathBuf::from(r);
     }
@@ -42,8 +42,8 @@ pub fn carpeta() -> PathBuf {
 }
 
 /// Folder of the model in use, if one is installed and complete.
-pub fn actual() -> Option<PathBuf> {
-    let base = carpeta();
+pub fn current() -> Option<PathBuf> {
+    let base = dir();
     let name = std::fs::read_to_string(base.join(CURRENT_FILE)).ok()?;
     let dir = base.join(name.trim());
     dir.join("meta.json").exists().then_some(dir)
@@ -51,8 +51,8 @@ pub fn actual() -> Option<PathBuf> {
 
 /// The model in use, opened. `None` if there is none: everything works the same, without search by
 /// meaning.
-pub fn abrir_actual() -> Result<Option<Modelo>> {
-    actual().map(|d| Modelo::abrir(&d)).transpose()
+pub fn open_current() -> Result<Option<Model>> {
+    current().map(|d| Model::open(&d)).transpose()
 }
 
 /// 64-bit FNV-1a: to name the folder by its content, not for security.
@@ -80,7 +80,7 @@ fn sources() -> Vec<String> {
         Ok(o) if !o.trim().is_empty() => {
             o.split(',').map(|x| x.trim().trim_end_matches('/').to_string()).filter(|x| !x.is_empty()).collect()
         }
-        _ => ORIGENES.iter().map(|o| o.to_string()).collect(),
+        _ => SOURCES.iter().map(|o| o.to_string()).collect(),
     }
 }
 
@@ -104,15 +104,15 @@ fn download(dest: &Path, notify: &mut dyn FnMut(&str)) -> Result<()> {
 
 /// `notify` gets one line per file. What is downloaded must match `CHECKSUMS`.
 fn download_from(source: &str, dest: &Path, notify: &mut dyn FnMut(&str)) -> Result<()> {
-    descargar_ficheros(source, &FILES, dest, notify)?;
-    comprobar_sumas(dest, &CHECKSUMS)
+    download_files(source, &FILES, dest, notify)?;
+    check_sums(dest, &CHECKSUMS)
 }
 
 /// That each file in `dest` has its SHA-256. If one doesn't match, all are deleted: whatever comes
 /// from the next mirror isn't mixed with this.
-pub(crate) fn comprobar_sumas(dest: &Path, sums: &[(&str, &str)]) -> Result<()> {
+pub(crate) fn check_sums(dest: &Path, sums: &[(&str, &str)]) -> Result<()> {
     for (f, expected) in sums {
-        let s = suma(&dest.join(f))?;
+        let s = sha256_of(&dest.join(f))?;
         if s != *expected {
             for (f, _) in sums {
                 let _ = std::fs::remove_file(dest.join(f));
@@ -124,7 +124,7 @@ pub(crate) fn comprobar_sumas(dest: &Path, sums: &[(&str, &str)]) -> Result<()> 
 }
 
 /// A file's SHA-256, in hexadecimal.
-pub(crate) fn suma(f: &Path) -> Result<String> {
+pub(crate) fn sha256_of(f: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     let mut r = std::fs::File::open(f).with_context(|| f.display().to_string())?;
@@ -143,13 +143,13 @@ pub(crate) fn suma(f: &Path) -> Result<String> {
 /// and not only the Mozilla ones ureq ships. On a company network that inspects HTTPS, its root
 /// certificate is in the system store (that's why Git and PowerShell connect) and not in Mozilla's
 /// list. Updates are still checked by their Ed25519 signature.
-fn client(system: bool, t: Tiempos) -> ureq::Agent {
+fn client(system: bool, t: Timeouts) -> ureq::Agent {
     let mut c = ureq::Agent::config_builder()
-        .timeout_resolve(Some(t.conexion))
-        .timeout_connect(Some(t.conexion))
-        .timeout_send_request(Some(t.respuesta))
-        .timeout_recv_response(Some(t.respuesta))
-        .timeout_recv_body(Some(t.cuerpo));
+        .timeout_resolve(Some(t.connect))
+        .timeout_connect(Some(t.connect))
+        .timeout_send_request(Some(t.response))
+        .timeout_recv_response(Some(t.response))
+        .timeout_recv_body(Some(t.body));
     if system {
         c = c.tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build());
     }
@@ -160,26 +160,26 @@ fn client(system: bool, t: Tiempos) -> ureq::Agent {
 /// answer, a WiFi that drops without closing the connection) left `omoi model install` or the
 /// background update waiting forever.
 #[derive(Clone, Copy, Debug)]
-pub struct Tiempos {
+pub struct Timeouts {
     /// To connect: DNS, TCP and TLS, each.
-    pub conexion: Duration,
+    pub connect: Duration,
     /// To send the request and get the response header.
-    pub respuesta: Duration,
+    pub response: Duration,
     /// For the whole body (ureq counts it from start to end, not per read).
-    pub cuerpo: Duration,
-    /// The longest that can pass without any body byte arriving (`descargar_ficheros`): a hang
+    pub body: Duration,
+    /// The longest that can pass without any body byte arriving (`download_files`): a hang
     /// halfway is cut here, not by the total.
-    pub inactividad: Duration,
+    pub idle: Duration,
 }
 
 /// The models' ones. A whole file can take long on a slow connection (the meaning one is hundreds of
 /// MB: at 100 KB/s, over an hour; with the previous 60-minute total limit it never finished), so what
 /// cuts a hang is inactivity: 120 s without receiving anything. The total (24 h) is only there so the
 /// reading thread doesn't stay forever if nobody is waiting for it anymore.
-pub(crate) const TIEMPOS_MODELO: Tiempos =
-    Tiempos { conexion: Duration::from_secs(30), respuesta: Duration::from_secs(60), cuerpo: Duration::from_secs(24 * 60 * 60), inactividad: Duration::from_secs(120) };
+pub(crate) const MODEL_TIMEOUTS: Timeouts =
+    Timeouts { connect: Duration::from_secs(30), response: Duration::from_secs(60), body: Duration::from_secs(24 * 60 * 60), idle: Duration::from_secs(120) };
 /// The updates' ones (the binary, `SHA256SUMS`, the latest version): a few MB, the total is enough.
-pub(crate) const TIEMPOS_PEQUENO: Tiempos = Tiempos { cuerpo: Duration::from_secs(10 * 60), ..TIEMPOS_MODELO };
+pub(crate) const SMALL_TIMEOUTS: Timeouts = Timeouts { body: Duration::from_secs(10 * 60), ..MODEL_TIMEOUTS };
 
 /// Copies `reader` into `out` and fails (`TimedOut`) if `idle` passes without any byte arriving. ureq
 /// has no maximum time per read (the body one is for the whole body), so a separate thread reads and
@@ -223,33 +223,33 @@ fn copy_with_idle_timeout(reader: impl std::io::Read + Send + 'static, out: &mut
 /// GET with the system's certificates and, if it fails without the server ever answering, again
 /// with Mozilla's list: a minimal Linux without `ca-certificates` has no system store. A timeout
 /// isn't retried (it would mean waiting as long again): it gives its error.
-pub fn get(url: &str, t: Tiempos) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+pub fn get(url: &str, t: Timeouts) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
     let ua = format!("omoi/{}", env!("CARGO_PKG_VERSION"));
     match client(true, t).get(url).header("User-Agent", &ua).call() {
-        Err(e) if !matches!(e, ureq::Error::StatusCode(_)) && !es_tiempo_agotado(&e) => client(false, t).get(url).header("User-Agent", &ua).call(),
+        Err(e) if !matches!(e, ureq::Error::StatusCode(_)) && !is_timeout(&e) => client(false, t).get(url).header("User-Agent", &ua).call(),
         r => r,
     }
 }
 
 /// Whether an I/O error from a download is a timeout (ureq wraps it in `io::Error`).
-pub(crate) fn es_cuelgue(e: &std::io::Error) -> bool {
+pub(crate) fn is_stall(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::TimedOut || e.get_ref().and_then(|x| x.downcast_ref::<ureq::Error>()).is_some_and(|x| matches!(x, ureq::Error::Timeout(_)))
 }
 
 /// The same with a ureq error.
-pub(crate) fn es_tiempo_agotado(e: &ureq::Error) -> bool {
+pub(crate) fn is_timeout(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::Timeout(_) => true,
-        ureq::Error::Io(io) => es_cuelgue(io),
+        ureq::Error::Io(io) => is_stall(io),
         _ => false,
     }
 }
 
 /// The error from `get`, made clear if it was a timeout.
-pub(crate) fn error_de_get(e: ureq::Error, url: &str) -> anyhow::Error {
+pub(crate) fn get_error(e: ureq::Error, url: &str) -> anyhow::Error {
     let host = url.split('/').nth(2).unwrap_or(url);
     match e {
-        e if es_tiempo_agotado(&e) => anyhow::anyhow!(tr!(
+        e if is_timeout(&e) => anyhow::anyhow!(tr!(
             "{host} didn't answer in time ({e}): check the network or the proxy and try again",
             "{host} no contestó a tiempo ({e}): mira la red o el proxy y vuelve a probar"
         )),
@@ -259,17 +259,17 @@ pub(crate) fn error_de_get(e: ureq::Error, url: &str) -> anyhow::Error {
 
 /// Downloads `files` from `source` to `dest` (each one to `.part` and renamed once it's complete; if
 /// it fails or hangs, the `.part` is deleted and nothing half-done is left with the good name).
-pub(crate) fn descargar_ficheros(source: &str, files: &[&str], dest: &Path, notify: &mut dyn FnMut(&str)) -> Result<()> {
-    download_files_with(source, files, dest, notify, TIEMPOS_MODELO)
+pub(crate) fn download_files(source: &str, files: &[&str], dest: &Path, notify: &mut dyn FnMut(&str)) -> Result<()> {
+    download_files_with(source, files, dest, notify, MODEL_TIMEOUTS)
 }
 
-/// `descargar_ficheros` with other maximum times (for the tests).
-fn download_files_with(source: &str, files: &[&str], dest: &Path, notify: &mut dyn FnMut(&str), times: Tiempos) -> Result<()> {
+/// `download_files` with other maximum times (for the tests).
+fn download_files_with(source: &str, files: &[&str], dest: &Path, notify: &mut dyn FnMut(&str), times: Timeouts) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let host = source.split('/').nth(2).unwrap_or(source);
     for &f in files {
         let url = format!("{source}/{f}");
-        let resp = get(&url, times).map_err(|e| error_de_get(e, &url))?;
+        let resp = get(&url, times).map_err(|e| get_error(e, &url))?;
         let total: Option<u64> =
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
         notify(&match total {
@@ -279,8 +279,8 @@ fn download_files_with(source: &str, files: &[&str], dest: &Path, notify: &mut d
         let part = dest.join(format!("{f}.part"));
         let r = (|| -> Result<()> {
             let mut out = std::fs::File::create(&part)?;
-            let copied = copy_with_idle_timeout(resp.into_body().into_reader(), &mut out, times.inactividad).map_err(|e| {
-                if es_cuelgue(&e) {
+            let copied = copy_with_idle_timeout(resp.into_body().into_reader(), &mut out, times.idle).map_err(|e| {
+                if is_stall(&e) {
                     anyhow::anyhow!(tr!(
                         "the download of {f} from {host} stalled or took too long ({e}); nothing was left half-written",
                         "la descarga de {f} de {host} se colgó o tardó demasiado ({e}); no queda nada a medias"
@@ -309,8 +309,8 @@ fn download_files_with(source: &str, files: &[&str], dest: &Path, notify: &mut d
 
 /// Installs the model and makes it `actual`. Without `from`, downloads it from Hugging Face; with
 /// `from`, takes it from a folder with the int8 (no network). Returns the folder's name.
-pub fn instalar(from: Option<&Path>, notify: &mut dyn FnMut(&str)) -> Result<String> {
-    let base = carpeta();
+pub fn install(from: Option<&Path>, notify: &mut dyn FnMut(&str)) -> Result<String> {
+    let base = dir();
     std::fs::create_dir_all(&base).with_context(|| tr!("can't create {}", "no se puede crear {}", base.display()))?;
     let staging = base.join(format!(".instalando-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
@@ -323,12 +323,12 @@ pub fn instalar(from: Option<&Path>, notify: &mut dyn FnMut(&str)) -> Result<Str
                 d
             }
         };
-        let id = format!("{NOMBRE}-{}", fingerprint(&FILES.map(|f| source.join(f)))?);
+        let id = format!("{NAME}-{}", fingerprint(&FILES.map(|f| source.join(f)))?);
         let dest = base.join(&id);
         if !dest.join("meta.json").exists() {
             notify(&tr!("compiling the model (a few seconds, only once)", "compilando el modelo (unos segundos, solo una vez)"));
             let compiled = staging.join("compilado");
-            compilar(&source, &compiled)?;
+            compile(&source, &compiled)?;
             // If another process installed it at the same time, theirs is just as good: same content, same name.
             if std::fs::rename(&compiled, &dest).is_err() && !dest.join("meta.json").exists() {
                 bail!(tr!("can't move the model into {}", "no se puede mover el modelo a {}", dest.display()));
@@ -345,9 +345,9 @@ pub fn instalar(from: Option<&Path>, notify: &mut dyn FnMut(&str)) -> Result<Str
 }
 
 /// Installed models: (name, is it the current one?).
-pub fn instalados() -> Vec<(String, bool)> {
-    let current = actual().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
-    let mut v: Vec<(String, bool)> = std::fs::read_dir(carpeta())
+pub fn installed() -> Vec<(String, bool)> {
+    let current = current().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let mut v: Vec<(String, bool)> = std::fs::read_dir(dir())
         .into_iter()
         .flatten()
         .flatten()
@@ -364,10 +364,10 @@ pub fn instalados() -> Vec<(String, bool)> {
 
 /// Deletes the models that aren't the current one and the leftovers of interrupted installs. Whatever
 /// is still open by another session (Windows doesn't let you delete it) stays for next time.
-pub fn limpiar() -> Vec<String> {
-    let current = actual().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+pub fn clean() -> Vec<String> {
+    let current = current().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
     let mut deleted = Vec::new();
-    for e in std::fs::read_dir(carpeta()).into_iter().flatten().flatten() {
+    for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if !e.path().is_dir() || Some(&name) == current.as_ref() {
             continue;
@@ -417,8 +417,8 @@ mod tests {
     }
 
     /// The body total, more than enough: what cuts a hang is inactivity.
-    fn fast() -> Tiempos {
-        Tiempos { conexion: Duration::from_secs(2), respuesta: Duration::from_millis(800), cuerpo: Duration::from_secs(60), inactividad: Duration::from_millis(800) }
+    fn fast() -> Timeouts {
+        Timeouts { connect: Duration::from_secs(2), response: Duration::from_millis(800), body: Duration::from_secs(60), idle: Duration::from_millis(800) }
     }
 
     fn test_folder(name: &str) -> PathBuf {
@@ -488,13 +488,13 @@ mod tests {
         for (f, _) in CHECKSUMS {
             std::fs::write(d.join(f), b"no es el modelo").unwrap();
         }
-        let e = format!("{:#}", comprobar_sumas(&d, &CHECKSUMS).unwrap_err());
+        let e = format!("{:#}", check_sums(&d, &CHECKSUMS).unwrap_err());
         assert!(e.contains("SHA-256"), "{e}");
         // Nothing is left of what didn't match.
         assert!(CHECKSUMS.iter().all(|(f, _)| !d.join(f).exists()));
         // And what matches passes: `abc` has a known SHA-256.
         std::fs::write(d.join("abc"), b"abc").unwrap();
-        comprobar_sumas(&d, &[("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")]).unwrap();
+        check_sums(&d, &[("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")]).unwrap();
         assert!(CHECKSUMS.iter().all(|(f, s)| FILES.contains(f) && s.len() == 64));
         let _ = std::fs::remove_dir_all(&d);
     }

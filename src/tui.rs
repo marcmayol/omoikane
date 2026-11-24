@@ -13,7 +13,7 @@
 //! don't show up, and aren't touched even if you have their id.
 
 use crate::buscar::{self, SearchOptions};
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::http::Mirador;
 use crate::memoria::{self, Scope, Changes, Memory, Forgotten, Version};
 use crate::proyecto::Space;
@@ -141,7 +141,7 @@ impl Estado {
     }
 
     /// Reloads the list (recent or search) and the trash, keeping the selection if it's still there.
-    pub fn cargar(&mut self, db: &mut Connection, model: Option<&Modelo>) -> Result<()> {
+    pub fn cargar(&mut self, db: &mut Connection, model: Option<&Model>) -> Result<()> {
         let m = self.viewpoint(db)?;
         self.ve_todo = m.todo;
         self.espacio_propio = m.espacio.clone();
@@ -195,7 +195,7 @@ impl Estado {
 
     /// Restores memory `id` (full) from the trash, if visible from here: the same as
     /// `POST /api/restore` and `omoi restore`. The outcome goes in the notice.
-    pub fn restaurar(&mut self, db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<bool> {
+    pub fn restaurar(&mut self, db: &mut Connection, id: &str, model: Option<&Model>) -> Result<bool> {
         if !self.viewpoint(db)?.ve(db, id)? {
             self.aviso = out_of_scope();
             return Ok(false);
@@ -241,7 +241,7 @@ impl Estado {
     }
 
     /// One key press. Returns whether the list must be reloaded.
-    pub fn tecla(&mut self, k: KeyEvent, db: &mut Connection, model: Option<&Modelo>) -> Result<bool> {
+    pub fn tecla(&mut self, k: KeyEvent, db: &mut Connection, model: Option<&Model>) -> Result<bool> {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             self.salir = true;
             return Ok(false);
@@ -653,7 +653,7 @@ fn draw_trash(f: &mut Frame, e: &mut Estado, area: Rect) {
 }
 
 /// The terminal loop.
-pub fn ejecutar(db: &mut Connection, model: Option<&Modelo>, project: String, all: bool) -> Result<()> {
+pub fn ejecutar(db: &mut Connection, model: Option<&Model>, project: String, all: bool) -> Result<()> {
     let mut e = Estado::nuevo(project);
     e.todos = all;
     e.cargar(db, model)?;

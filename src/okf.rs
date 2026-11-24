@@ -37,7 +37,7 @@
 //! process `verified` entries, `governance`…) is kept in the memory's data (`data.okf`) and comes
 //! out the same on export.
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{self, Scope, Changes, Memory, NewMemory, Kind};
 use crate::obsidian::{Que, corto};
 use crate::{tr, veredictos};
@@ -1546,7 +1546,7 @@ pub struct Opciones {
 }
 
 /// Imports a bundle already read, without trusting the `verified` of someone else's bundle (see [`importar_con`]).
-pub fn importar(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, destination: &Destino, dry_run: bool, verify: bool) -> Result<Resumen> {
+pub fn importar(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destino, dry_run: bool, verify: bool) -> Result<Resumen> {
     importar_con(db, model, b, destination, Opciones { en_seco: dry_run, verificar: verify, confiar_verificadas: false })
 }
 
@@ -1557,12 +1557,12 @@ pub fn importar(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, destina
 /// database: it carries its signature, which also covers its text (see `firma`). From someone else's bundle (or from one
 /// of our own touched up, also in the text) it goes to the requested destination as a new memory, by the concept's
 /// key, unpinned and without a stamp (the stamp, with `confiar_verificadas`, yes). What ends up as a
-/// trade memory goes through `oficios::fugas`. And even with the signature, the stamp only comes back if the text is the one that was
+/// trade memory goes through `oficios::leaks`. And even with the signature, the stamp only comes back if the text is the one that was
 /// verified (`omoikane.verified_sha`), the person didn't unverify it here afterwards and the date isn't in the
 /// future. What was forgotten here (in the trash or with its forget mark) doesn't come back: it is skipped and
 /// counted in `skipped_forgotten` (as in sync, where a forget stops the incoming memory;
 /// to bring it back, `omoi restore`).
-pub fn importar_con(db: &mut Connection, model: Option<&Modelo>, b: &Bundle, destination: &Destino, op: Opciones) -> Result<Resumen> {
+pub fn importar_con(db: &mut Connection, model: Option<&Model>, b: &Bundle, destination: &Destino, op: Opciones) -> Result<Resumen> {
     if let (Destino::Proyecto(_), Some(s)) = (destination, espacio_de(b)) {
         bail!(tr!(
             "this bundle was exported from the space «{s}»: import it with --space <name>, so it doesn't mix with personal memories",
@@ -1706,7 +1706,7 @@ struct ConceptResult {
 }
 
 /// Error if the entry leaves (or creates) a trade memory —global, with `trade:`— with something from a
-/// project or a client (`oficios::fugas`): in its text, its paths, its tags, its key or its
+/// project or a client (`oficios::leaks`): in its text, its paths, its tags, its key or its
 /// data. `global` is whether the memory stays global; `before`, the one being updated (its tags and paths
 /// are merged with the new ones). What that one already had while being a trade memory (saved maybe with `allow_leaks`)
 /// doesn't stop it again: only what's new.
@@ -1724,23 +1724,23 @@ fn check_trade(db: &Connection, e: &Entry, global: bool, before: Option<&str>, k
         tags.extend(v.tags.iter().cloned());
         paths.extend(v.paths.iter().cloned());
     }
-    if !crate::oficios::lleva_oficio(&tags) {
+    if !crate::oficios::has_trade(&tags) {
         return Ok(());
     }
     let joined_paths = paths.join(" ");
-    let fields = crate::oficios::campos_para_fugas(&[("title", &e.memory.title), ("content", &e.memory.content), ("paths", &joined_paths)], &tags, Some(key), e.data.as_ref());
-    let mut leaks = crate::oficios::fugas_en(db, &fields)?;
-    if let Some(v) = old.filter(|v| v.global() && crate::oficios::lleva_oficio(&v.tags)) {
+    let fields = crate::oficios::leak_fields(&[("title", &e.memory.title), ("content", &e.memory.content), ("paths", &joined_paths)], &tags, Some(key), e.data.as_ref());
+    let mut leaks = crate::oficios::leaks_in(db, &fields)?;
+    if let Some(v) = old.filter(|v| v.global() && crate::oficios::has_trade(&v.tags)) {
         let data = memoria::data_of(db, &[v.id.as_str()])?.remove(&v.id);
         let joined_paths = v.paths.join(" ");
-        let already = crate::oficios::campos_para_fugas(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memoria::key_of(&v), data.as_ref());
-        let already: BTreeSet<String> = crate::oficios::fugas_en(db, &already)?.into_iter().map(|f| f.text.to_lowercase()).collect();
+        let already = crate::oficios::leak_fields(&[("title", &v.title), ("content", &v.content), ("paths", &joined_paths)], &v.tags, memoria::key_of(&v), data.as_ref());
+        let already: BTreeSet<String> = crate::oficios::leaks_in(db, &already)?.into_iter().map(|f| f.text.to_lowercase()).collect();
         leaks.retain(|f| !already.contains(&f.text.to_lowercase()));
     }
     if leaks.is_empty() {
         return Ok(());
     }
-    let list: Vec<String> = leaks.iter().map(|f| if f.campo.is_empty() { format!("{} «{}»", f.tipo, f.text) } else { format!("{} «{}» ({})", f.tipo, f.text, f.campo) }).collect();
+    let list: Vec<String> = leaks.iter().map(|f| if f.field.is_empty() { format!("{} «{}»", f.kind, f.text) } else { format!("{} «{}» ({})", f.kind, f.text, f.field) }).collect();
     bail!(tr!(
         "it would be a trade memory (global with trade:), which reaches every project of that trade of every client, and it names what looks like a project or a client: {}. Remove it from the concept, or import it into a project instead of --global",
         "sería una memoria de oficio (global con trade:), que llega a todos los proyectos de ese oficio de todos los clientes, y nombra algo que parece de un proyecto o de un cliente: {}. Quítalo del concepto, o impórtalo en un proyecto en vez de con --global",
@@ -1766,7 +1766,7 @@ fn is_after(db: &Connection, a: &str, b: &str) -> Result<bool> {
 }
 
 /// Imports a concept: what happened and its entry.
-fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destination: &Destino, op: Opciones, key: Option<&[u8]>, touched: &mut BTreeSet<String>) -> Result<(ConceptResult, Entry)> {
+fn import_one(db: &mut Connection, model: Option<&Model>, c: &Concepto, destination: &Destino, op: Opciones, key: Option<&[u8]>, touched: &mut BTreeSet<String>) -> Result<(ConceptResult, Entry)> {
     let mut e = to_entry(c)?;
     // Did it come from this database? Its signature covers everything applied from it (see `firma` and `signed_text`):
     // a field changed, removed or added leaves it unsigned.
@@ -1911,7 +1911,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
             if other_text || unverified_later || future { Stamp::Stale } else { Stamp::Set }
         }
     };
-    // A trade memory created or changed on import goes through `oficios::fugas`, as in
+    // A trade memory created or changed on import goes through `oficios::leaks`, as in
     // `remember` and `update` (without `allow_leaks`: whatever it flags is fixed in the bundle or imported into a
     // project). Before writing anything, also in a dry run.
     check_trade(db, &e, u.global, before.as_ref().map(|(id, _)| id.as_str()), by_own_key.as_ref().map_or(e.key.as_str(), |(k, _)| k.as_str()))?;
@@ -1922,7 +1922,7 @@ fn import_one(db: &mut Connection, model: Option<&Modelo>, c: &Concepto, destina
     }
     // Whatever looks like a secret is covered by `memoria` when saving (also in the data); here it's only
     // noted to report it.
-    let secret = crate::secretos::activo() && !crate::secretos::hallazgos(&format!("{}\n{}", e.memory.title, e.memory.content)).is_empty();
+    let secret = crate::secretos::enabled() && !crate::secretos::findings(&format!("{}\n{}", e.memory.title, e.memory.content)).is_empty();
     let (id, created, redactions) = match &own_id {
         Some(id) => {
             let m = memoria::get(db, id)?;

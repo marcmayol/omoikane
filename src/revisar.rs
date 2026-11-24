@@ -1170,7 +1170,7 @@ fn notices_with(db: &Connection, scope: &Scope, wait: bool) -> Result<Vec<Notice
         if !is_dismissed(SECRET) {
             let hs = secrets_of(m);
             if !hs.is_empty() {
-                r.push(make_notice(m, SECRET, None, format!("looks like a secret: {}; redact it", crate::secretos::resumen(&hs))));
+                r.push(make_notice(m, SECRET, None, format!("looks like a secret: {}; redact it", crate::secretos::summary(&hs))));
             }
         }
         let len = m.content.chars().count();
@@ -1340,7 +1340,7 @@ fn trade_duplicates_with(db: &Connection, scope: &Scope, from_scratch: bool) -> 
     let mut pairs: Vec<ComputedPair> = before.pairs.into_iter().filter(|p| unchanged(&p.newer) && unchanged(&p.older)).collect();
     let mut by_trade: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, m) in all.iter().enumerate() {
-        for o in crate::oficios::de_etiquetas(&m.tags) {
+        for o in crate::oficios::from_tags(&m.tags) {
             by_trade.entry(o).or_default().push(i);
         }
     }
@@ -1348,7 +1348,7 @@ fn trade_duplicates_with(db: &Connection, scope: &Scope, from_scratch: bool) -> 
     let trades: Vec<&String> = by_trade.keys().collect();
     let groups: Vec<Vec<usize>> = by_trade.values().cloned().collect();
     if !changed.is_empty() {
-        for (i, j, sim) in crate::vectores::duplicadas_entre(db, &refs, &groups, Some(&changed))? {
+        for (i, j, sim) in crate::vectores::duplicates_among(db, &refs, &groups, Some(&changed))? {
             let (a, b) = (&all[i], &all[j]);
             // The first trade they share, for the detail.
             let trade = groups.iter().position(|g| g.contains(&i) && g.contains(&j)).map(|k| trades[k].as_str()).unwrap_or_default();
@@ -1474,8 +1474,8 @@ fn filter_duplicates(db: &Connection, scope: &Scope, pairs: Vec<ComputedPair>) -
 
 /// The kinds of what looks like a secret in a memory's title and content, one per finding.
 pub fn secrets_of(m: &Memory) -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = crate::secretos::hallazgos(&m.title).iter().map(|h| h.tipo).collect();
-    v.extend(crate::secretos::hallazgos(&m.content).iter().map(|h| h.tipo));
+    let mut v: Vec<&'static str> = crate::secretos::findings(&m.title).iter().map(|h| h.kind).collect();
+    v.extend(crate::secretos::findings(&m.content).iter().map(|h| h.kind));
     v
 }
 

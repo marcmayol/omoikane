@@ -111,8 +111,8 @@ pub fn clean(v: Vec<Evidence>) -> Result<Vec<Evidence>> {
             ));
         }
         // A user quote or a command's output may carry a secret, like the content.
-        if crate::secretos::activo() {
-            e.detail = crate::secretos::redactar(&e.detail).0;
+        if crate::secretos::enabled() {
+            e.detail = crate::secretos::redact(&e.detail).0;
         }
         if e.detail.chars().count() > MAX_DETAIL_LEN {
             e.detail = e.detail.chars().take(MAX_DETAIL_LEN - 1).collect::<String>() + "…";

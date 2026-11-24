@@ -6,7 +6,7 @@
 //!   cargo run --release --example fase2 -- dupreal DIR  the duplicate warning, with the production code and real notes
 
 use anyhow::{Result, anyhow};
-use omoikane::embeber::Modelo;
+use omoikane::embeber::Model;
 use std::time::Instant;
 
 fn main() -> Result<()> {
@@ -94,7 +94,7 @@ fn summary(name: &str, v: &[(String, f32)]) {
 
 fn duplicates() -> Result<()> {
     let dir = std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi");
-    let m = Modelo::abrir(&dir)?;
+    let m = Model::open(&dir)?;
     let pairs: Vec<(String, String, String)> = include_str!("../tests/pares_duplicados.tsv")
         .lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
@@ -217,8 +217,8 @@ fn vectors(n: usize) -> Result<()> {
     Ok(())
 }
 
-fn model() -> Result<Modelo> {
-    Modelo::abrir(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))
+fn model() -> Result<Model> {
+    Model::open(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))
 }
 
 /// Saves the memories of tests/busquedas.tsv and measures, for each threshold, how many queries bring their
@@ -293,7 +293,7 @@ similitud (coseno) consulta → memoria esperada, y lo más alto en las sin resp
     let mut expected = Vec::new();
     let mut unrelated = Vec::new();
     for (key, q) in &queries {
-        let p = omoikane::vectores::parecidas(&db, &m, q, None, None, -1.0, 50)?;
+        let p = omoikane::vectores::similar(&db, &m, q, None, None, -1.0, 50)?;
         if key == "-" {
             unrelated.push(p.first().map_or(0.0, |x| x.1));
         } else if let Some((_, s)) = p.iter().find(|(mem, _)| &keys[&mem.id] == key) {
@@ -404,7 +404,7 @@ fn real(dir: &std::path::Path) -> Result<()> {
     println!("{} notas, {} consultas (resúmenes del índice)", notes.len(), queries.len());
 
     // Duplicates: every pair of different notes.
-    let vs: Vec<Vec<f32>> = notes.iter().map(|n| m.vector(&omoikane::vectores::texto(&n.1, &n.2))).collect::<Result<_>>()?;
+    let vs: Vec<Vec<f32>> = notes.iter().map(|n| m.vector(&omoikane::vectores::text(&n.1, &n.2))).collect::<Result<_>>()?;
     let mut pairs = Vec::new();
     for i in 0..vs.len() {
         for j in i + 1..vs.len() {
@@ -577,7 +577,7 @@ fn configs() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
     v
 }
 
-/// The duplicate warning as `vectores::parecidas` gives it (centering included), with real notes
+/// The duplicate warning as `vectores::similar` gives it (centering included), with real notes
 /// from `dir` (those of `real`; not committed). Three measures:
 /// - different: each note, before saving it, against those already saved. None is a duplicate of another,
 ///   so every warning is a false positive.
@@ -586,7 +586,7 @@ fn configs() -> Vec<(String, bool, f32, omoikane::buscar::Fusion)> {
 /// - the hand-written pairs of tests/pares_duplicados.tsv, in the same database.
 fn dupreal(dir: &std::path::Path) -> Result<()> {
     use omoikane::memoria::{self, NewMemory, Kind};
-    use omoikane::vectores::{parecidas, texto};
+    use omoikane::vectores::{similar, text};
     let m = model()?;
     let mut notes: Vec<(String, String, String)> = Vec::new();
     for e in std::fs::read_dir(dir)?.flatten() {
@@ -619,7 +619,7 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
     let mut different = Vec::new(); // (highest similarity with the previous ones, file, with which)
     let mut id_of = std::collections::HashMap::new();
     for (f, t, c) in &notes {
-        let p = parecidas(&db, &m, &texto(t, c), Some("/p"), None, -1.0, 1)?;
+        let p = similar(&db, &m, &text(t, c), Some("/p"), None, -1.0, 1)?;
         if let Some((other, s)) = p.first() {
             different.push((*s, f.clone(), other.title.chars().take(50).collect::<String>()));
         }
@@ -630,7 +630,7 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
     for (f, _, c) in &notes {
         let Some(title) = summary_of.get(f) else { continue };
         let start: String = c.chars().take(300).collect();
-        let p = parecidas(&db, &m, &texto(title, &start), Some("/p"), None, -1.0, 200)?;
+        let p = similar(&db, &m, &text(title, &start), Some("/p"), None, -1.0, 200)?;
         let own = p.iter().find(|(x, _)| &id_of[&x.id] == f).map_or(-1.0, |x| x.1);
         let other = p.iter().find(|(x, _)| &id_of[&x.id] != f).map_or(-1.0, |x| x.1);
         resaved.push((own, other));
@@ -641,7 +641,7 @@ fn dupreal(dir: &std::path::Path) -> Result<()> {
         let project = format!("/cal{i}");
         let n = NewMemory { project: project.clone(), kind: Some(Kind::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
         let a = memoria::save(&mut db, n, Some(&m))?.id;
-        let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&project), None, -1.0, 50)?;
+        let p = similar(&db, &m, &text(c[2], c[2]), Some(&project), None, -1.0, 50)?;
         by_hand.push((c[0].to_string(), p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1)));
     }
 
@@ -688,7 +688,7 @@ type Candidate = (f32, (f64, usize));
 /// same as recall's). Rule: duplicate if cosine ≥ a, or if cosine ≥ b and coverage ≥ k.
 fn dupcob(dir: &std::path::Path) -> Result<()> {
     use omoikane::memoria::{self, NewMemory, Kind};
-    use omoikane::vectores::{parecidas, texto};
+    use omoikane::vectores::{similar, text};
     use std::collections::{BTreeSet, HashMap};
     let m = model()?;
     let tokens = |s: &str| -> BTreeSet<String> {
@@ -732,7 +732,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
         summary_of.insert(format!("{}.md", &l[i + 2..j]), format!("{title}: {gist}"));
     }
     // df over all the notes.
-    let note_tokens: HashMap<String, BTreeSet<String>> = notes.iter().map(|(f, t, c)| (f.clone(), tokens(&texto(t, c)))).collect();
+    let note_tokens: HashMap<String, BTreeSet<String>> = notes.iter().map(|(f, t, c)| (f.clone(), tokens(&text(t, c)))).collect();
     let mut df: HashMap<String, f64> = HashMap::new();
     for fs in note_tokens.values() {
         for t in fs {
@@ -761,7 +761,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
     let mut different: Vec<Vec<Candidate>> = Vec::new();
     for (f, t, c) in &notes {
         let new = &note_tokens[f];
-        let p = parecidas(&db, &m, &texto(t, c), Some("/p"), None, -1.0, 5)?;
+        let p = similar(&db, &m, &text(t, c), Some("/p"), None, -1.0, 5)?;
         different.push(p.iter().map(|(x, s)| (*s, coverage(new, &tokens_of_id[&x.id]))).collect());
         let nn = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
         let id = memoria::save(&mut db, nn, Some(&m))?.id;
@@ -773,9 +773,9 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
     for (f, _, c) in &notes {
         let Some(title) = summary_of.get(f) else { continue };
         let start: String = c.chars().take(300).collect();
-        let txt = texto(title, &start);
+        let txt = text(title, &start);
         let new = tokens(&txt);
-        let p = parecidas(&db, &m, &txt, Some("/p"), None, -1.0, 5)?;
+        let p = similar(&db, &m, &txt, Some("/p"), None, -1.0, 5)?;
         let mut own = None;
         let mut others = Vec::new();
         for (x, s) in &p {
@@ -791,7 +791,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
         let project = format!("/cal{i}");
         let nn = NewMemory { project: project.clone(), kind: Some(Kind::Fact), title: c[1].into(), content: c[1].into(), ..Default::default() };
         let a = memoria::save(&mut db, nn, Some(&m))?.id;
-        let p = parecidas(&db, &m, &texto(c[2], c[2]), Some(&project), None, -1.0, 50)?;
+        let p = similar(&db, &m, &text(c[2], c[2]), Some(&project), None, -1.0, 50)?;
         let s = p.iter().find(|(x, _)| x.id == a).map_or(-1.0, |x| x.1);
         by_hand.push((c[0].to_string(), s, coverage(&tokens(c[2]), &tokens(c[1]))));
     }
@@ -801,7 +801,7 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
     for l in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         for sentence in l.split('\t').skip(1) {
             let new = tokens(sentence);
-            let p = parecidas(&db, &m, &texto(sentence, sentence), Some("/p"), None, -1.0, 5)?;
+            let p = similar(&db, &m, &text(sentence, sentence), Some("/p"), None, -1.0, 5)?;
             short.push(p.iter().filter(|(x, _)| tokens_of_id.contains_key(&x.id)).map(|(x, s)| (*s, coverage(&new, &tokens_of_id[&x.id]))).collect());
         }
     }
@@ -844,12 +844,12 @@ fn dupcob(dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// The production duplicate warning (`vectores::duplicada`) with the real notes of `dir`:
+/// The production duplicate warning (`vectores::duplicate`) with the real notes of `dir`:
 /// different (each note before saving it: every warning is false), re-saved (each note said again:
 /// it must warn, and about its own) and short sentences of the pairs against the notes (every warning is false).
 fn dupprod(dir: &std::path::Path) -> Result<()> {
     use omoikane::memoria::{self, NewMemory, Kind};
-    use omoikane::vectores::{duplicada, relacionadas};
+    use omoikane::vectores::{duplicate, related};
     use std::collections::HashMap;
     use std::time::Instant;
     let m = model()?;
@@ -883,9 +883,9 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
     let (mut false_hits, mut times, mut different_with_rel) = (Vec::new(), Vec::new(), 0);
     for (f, t, c) in &notes {
         let now = Instant::now();
-        if let Some((other, s)) = duplicada(&db, &m, "/p", t, c)? {
+        if let Some((other, s)) = duplicate(&db, &m, "/p", t, c)? {
             false_hits.push(format!("{s:.3} {f} ~ {}", other.title.chars().take(50).collect::<String>()));
-        } else if !relacionadas(&db, "/p", t, "", 3)?.is_empty() {
+        } else if !related(&db, "/p", t, "", 3)?.is_empty() {
             different_with_rel += 1;
         }
         times.push(now.elapsed().as_secs_f64() * 1000.0);
@@ -897,11 +897,11 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
         let Some(title) = summary_of.get(f) else { continue };
         total += 1;
         let start: String = c.chars().take(300).collect();
-        match duplicada(&db, &m, "/p", title, &start)? {
+        match duplicate(&db, &m, "/p", title, &start)? {
             Some((x, _)) if &file_of[&x.id] == f => own += 1,
             Some(_) => other += 1,
             None => {
-                in_rel += usize::from(relacionadas(&db, "/p", title, "", 3)?.iter().any(|x| &file_of[&x.id] == f));
+                in_rel += usize::from(related(&db, "/p", title, "", 3)?.iter().any(|x| &file_of[&x.id] == f));
             }
         }
     }
@@ -909,9 +909,9 @@ fn dupprod(dir: &std::path::Path) -> Result<()> {
     for l in include_str!("../tests/pares_duplicados.tsv").lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         for sentence in l.split('\t').skip(1) {
             short += 1;
-            if let Some((x, s)) = duplicada(&db, &m, "/p", sentence, sentence)? {
+            if let Some((x, s)) = duplicate(&db, &m, "/p", sentence, sentence)? {
                 false_short.push(format!("{s:.3} «{sentence}» ~ {}", x.title.chars().take(40).collect::<String>()));
-            } else if !relacionadas(&db, "/p", sentence, "", 3)?.is_empty() {
+            } else if !related(&db, "/p", sentence, "", 3)?.is_empty() {
                 short_with_rel += 1;
             }
         }

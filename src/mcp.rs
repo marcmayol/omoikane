@@ -5,7 +5,7 @@
 //! model is opened once and shared; if it was not installed, it is checked again on every call.
 
 use crate::buscar::{self, SearchOptions};
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{self, Scope, Changes, Memory, NewMemory, Kind};
 use crate::{db, modelos, proyecto, vectores, veredictos};
 use anyhow::Result;
@@ -45,7 +45,7 @@ Call `context` at the start of a session to get the user's preferences and pinne
 pub struct Servidor {
     db: PathBuf,
     dir: Option<PathBuf>,
-    modelo: Arc<Mutex<Option<Arc<Modelo>>>>,
+    modelo: Arc<Mutex<Option<Arc<Model>>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -322,10 +322,10 @@ fn compact(m: Memory, with_project: bool, similarity: Option<f32>) -> Compact {
     } else {
         flat
     };
-    let trade = crate::oficios::de_memoria(&m);
+    let trade = crate::oficios::of_memory(&m);
     Compact {
         global: m.global() && trade.is_empty(),
-        para: if trade.is_empty() { None } else { crate::oficios::para_de(&m.tags) },
+        para: if trade.is_empty() { None } else { crate::oficios::for_whom_of(&m.tags) },
         trade,
         project: (with_project && !m.project.is_empty()).then(|| m.project.clone()),
         space: ((m.space_only() || with_project) && !m.space.is_empty()).then(|| m.space.clone()),
@@ -380,7 +380,7 @@ fn with_redacted(r: &mut serde_json::Value, m: &Memory) {
         return;
     }
     r["redacted"] = serde_json::json!(m.redacted.len());
-    r["redacted_types"] = serde_json::json!(crate::secretos::tipos_distintos(&m.redacted));
+    r["redacted_types"] = serde_json::json!(crate::secretos::distinct_kinds(&m.redacted));
     r["redacted_hint"] = serde_json::json!("What looked like a secret was replaced by [redacted:<type>] before saving. Tell the user; never save credentials in memory.");
 }
 
@@ -466,19 +466,19 @@ fn id_in_scope(db: &Connection, session_project: &str, id: &str, trash: bool) ->
 fn requested_trades(trade: Option<&str>, tags: Vec<String>) -> Result<(Vec<String>, Vec<String>)> {
     let tags: Vec<String> = tags
         .into_iter()
-        .map(|t| if t.trim().to_lowercase().starts_with(crate::oficios::PREFIJO) { t.trim().to_lowercase() } else { t })
+        .map(|t| if t.trim().to_lowercase().starts_with(crate::oficios::PREFIX) { t.trim().to_lowercase() } else { t })
         .collect();
     let mut v = match trade.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => crate::oficios::lista(t)?,
+        Some(t) => crate::oficios::list(t)?,
         None => Vec::new(),
     };
-    for o in crate::oficios::de_etiquetas(&tags) {
-        let o = crate::oficios::nombre(&o)?;
+    for o in crate::oficios::from_tags(&tags) {
+        let o = crate::oficios::valid_name(&o)?;
         if !v.contains(&o) {
             v.push(o);
         }
     }
-    Ok((v, crate::oficios::sin_oficio(tags)))
+    Ok((v, crate::oficios::without_trade(tags)))
 }
 
 /// The space of `remember` (`space: true` or its name) or of `update` (`space: "<name>"`).
@@ -503,10 +503,10 @@ impl Servidor {
         Servidor { db, dir, modelo: Arc::new(Mutex::new(None)), tool_router: Self::tool_router() }
     }
 
-    fn model(&self) -> Result<Option<Arc<Modelo>>> {
+    fn model(&self) -> Result<Option<Arc<Model>>> {
         let mut m = self.modelo.lock().expect("modelo");
         if m.is_none() {
-            *m = modelos::abrir_actual()?.map(Arc::new);
+            *m = modelos::open_current()?.map(Arc::new);
         }
         Ok(m.clone())
     }
@@ -515,20 +515,20 @@ impl Servidor {
     /// to date, and the current project.
     async fn with_db<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut Connection, Option<&Modelo>, &str) -> Result<T> + Send + 'static,
+        f: impl FnOnce(&mut Connection, Option<&Model>, &str) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let (path, dir, model) = (self.db.clone(), self.dir.clone(), self.model()?);
         tokio::task::spawn_blocking(move || {
             let mut db = db::open(&path)?;
             if let Some(m) = &model {
-                vectores::sincronizar(&mut db, m)?;
+                vectores::sync(&mut db, m)?;
             }
             let session_project = match &dir {
                 Some(d) => proyecto::of_dir(d)?,
                 None => proyecto::current()?,
             };
             // Its trades, if they were never checked: without them it wouldn't see its trade's memories. Optional.
-            if let Err(e) = crate::oficios::preparar(&db, &session_project) {
+            if let Err(e) = crate::oficios::prepare(&db, &session_project) {
                 eprintln!("omoikane: trades: {e:#}");
             }
             f(&mut db, model.as_deref(), &session_project)
@@ -545,8 +545,8 @@ impl Servidor {
                 let space_id = requested_space(db, session_project, p.space)?;
                 // Trade memory: `trade`, or the `trade:` tags the agent sets by hand.
                 let para = match p.para.as_deref() {
-                    Some(x) => crate::oficios::para(x)?,
-                    None => crate::oficios::para_de(p.tags.as_deref().unwrap_or_default()),
+                    Some(x) => crate::oficios::parse_for_whom(x)?,
+                    None => crate::oficios::for_whom_of(p.tags.as_deref().unwrap_or_default()),
                 };
                 let (trades, tags) = requested_trades(p.trade.as_deref(), p.tags.unwrap_or_default())?;
                 let review_reason = review_reason_for(crate::revisar::review_date_of(&tags).is_some(), p.review_reason.as_deref())?;
@@ -561,10 +561,10 @@ impl Servidor {
                     // for duplicates); `allow_leaks`, only what may be a false positive.
                     let paths = p.paths.as_deref().unwrap_or_default().join(" ");
                     let review_text = review_reason.as_deref().unwrap_or_default();
-                    let fields = crate::oficios::campos_para_fugas(&[("title", &p.title), ("content", &p.content), ("paths", &paths), ("review_reason", review_text)], &tags, p.key.as_deref(), p.data.as_ref());
-                    let leaks = crate::oficios::bloquean(crate::oficios::fugas_en(db, &fields)?, p.allow_leaks.unwrap_or(false));
+                    let fields = crate::oficios::leak_fields(&[("title", &p.title), ("content", &p.content), ("paths", &paths), ("review_reason", review_text)], &tags, p.key.as_deref(), p.data.as_ref());
+                    let leaks = crate::oficios::blocking_leaks(crate::oficios::leaks_in(db, &fields)?, p.allow_leaks.unwrap_or(false));
                     if !leaks.is_empty() {
-                        return Ok(serde_json::json!({ "saved": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS }));
+                        return Ok(serde_json::json!({ "saved": false, "trade_leaks": leaks, "hint": crate::oficios::LEAKS_NOTICE }));
                     }
                 }
                 // Preferences belong to the person, not to a project or a client: global unless
@@ -585,9 +585,9 @@ impl Servidor {
                     && let Some(m) = model
                     && let Some((existing, sim)) = if is_trade {
                         // Among those of its trade, which can't be seen from the global ones.
-                        vectores::duplicada_de_oficio(db, m, &trades, &p.title, &p.content, None)?
+                        vectores::trade_duplicate(db, m, &trades, &p.title, &p.content, None)?
                     } else {
-                        vectores::duplicada(db, m, &search_in, &p.title, &p.content)?
+                        vectores::duplicate(db, m, &search_in, &p.title, &p.content)?
                     }
                 {
                     return Ok(serde_json::json!({
@@ -638,7 +638,7 @@ impl Servidor {
                     title: p.title,
                     content,
                     paths,
-                    tags: if is_trade { crate::oficios::etiquetas_de_oficio(tags, &trades, para.as_deref()) } else { tags },
+                    tags: if is_trade { crate::oficios::trade_tags(tags, &trades, para.as_deref()) } else { tags },
                     pinned: p.pinned.unwrap_or(false),
                     source: source.clone(),
                     provenance,
@@ -699,7 +699,7 @@ impl Servidor {
                     None => {}
                 }
                 if is_trade && let Some(here) = Scope::from_project(db, session_project)?.project() {
-                    let own = crate::oficios::del_proyecto(db, here)?;
+                    let own = crate::oficios::of_project(db, here)?;
                     let foreign: Vec<&String> = trades.iter().filter(|o| !own.contains(o)).collect();
                     if !foreign.is_empty() {
                         r["trade_hint"] = serde_json::json!(format!(
@@ -712,7 +712,7 @@ impl Servidor {
                 }
                 with_redacted(&mut r, &m);
                 if !hidden.is_empty() {
-                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
+                    r["data_redacted"] = serde_json::json!(crate::secretos::distinct_kinds(&hidden));
                 }
                 if judged > 0 {
                     r["judged"] = serde_json::json!(judged);
@@ -725,7 +725,7 @@ impl Servidor {
                         r["key_hint"] = serde_json::json!("New key, but these keys already exist here: if you meant one of them, save with that key and forget this memory.");
                     }
                 }
-                let related = if by_key.is_some() { Vec::new() } else { vectores::relacionadas(db, &search_in, &m.title, &m.id, 3)? };
+                let related = if by_key.is_some() { Vec::new() } else { vectores::related(db, &search_in, &m.title, &m.id, 3)? };
                 if !related.is_empty() {
                     r["related"] = serde_json::json!(related.into_iter().map(|x| compact(x, false, None)).collect::<Vec<_>>());
                     r["related_hint"] = serde_json::json!("Saved. These memories may be about the same thing: if one already says this, merge them (`update` that one and `forget` the new one); if not, ignore this.");
@@ -800,7 +800,7 @@ impl Servidor {
                 let space_id = requested_space(db, session_project, p.space.map(EspacioParam::Nombre))?;
                 // Trades: make it a trade memory (promote it), stop being one, who it is for, or take it out of
                 // its trade by moving it to a project or a space. What is new in a trade memory goes
-                // through `oficios::fugas`.
+                // through `oficios::leaks`.
                 let current = memoria::get(db, &id)?;
                 // A new review date asks what to check that day; a reason alone, that there is a date.
                 let new_date = p.tags.as_deref().and_then(crate::revisar::review_date_of).is_some_and(|f| crate::revisar::review_date_of(&current.tags) != Some(f));
@@ -810,11 +810,11 @@ impl Servidor {
                 let review_reason = review_reason_for(new_date, p.review_reason.as_deref())?.or_else(|| p.review_reason.as_deref().and_then(memoria::clean_review_reason));
                 // In a trade memory (or one that will be), the reason goes through the leak check like the text.
                 if let Some(x) = &review_reason
-                    && (!crate::oficios::de_etiquetas(&current.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
+                    && (!crate::oficios::from_tags(&current.tags).is_empty() || p.trade.as_deref().is_some_and(|t| !t.trim().is_empty()))
                 {
-                    let leaks = crate::oficios::bloquean(crate::oficios::fugas_en(db, &crate::oficios::campos_para_fugas(&[("review_reason", x)], &[], None, None))?, p.allow_leaks.unwrap_or(false));
+                    let leaks = crate::oficios::blocking_leaks(crate::oficios::leaks_in(db, &crate::oficios::leak_fields(&[("review_reason", x)], &[], None, None))?, p.allow_leaks.unwrap_or(false));
                     if !leaks.is_empty() {
-                        return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS }));
+                        return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::LEAKS_NOTICE }));
                     }
                 }
                 let mut c = Changes {
@@ -835,23 +835,23 @@ impl Servidor {
                     append: p.append,
                     ..Default::default()
                 };
-                let request = crate::oficios::PedidoCambio {
+                let request = crate::oficios::ChangeRequest {
                     trade: p.trade.as_deref(),
-                    para: p.para.as_deref(),
-                    cambios: &c,
-                    datos: p.data.as_ref().map(|d| d.as_ref().filter(|d| !d.is_null())),
-                    permitir_fugas: p.allow_leaks.unwrap_or(false),
+                    for_whom: p.para.as_deref(),
+                    changes: &c,
+                    data: p.data.as_ref().map(|d| d.as_ref().filter(|d| !d.is_null())),
+                    allow_leaks: p.allow_leaks.unwrap_or(false),
                 };
-                let plan = match crate::oficios::al_cambiar(db, &current, request)? {
+                let plan = match crate::oficios::on_update(db, &current, request)? {
                     Ok(plan) => plan,
-                    Err(leaks) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS })),
+                    Err(leaks) => return Ok(serde_json::json!({ "updated": false, "trade_leaks": leaks, "hint": crate::oficios::LEAKS_NOTICE })),
                 };
                 c.tags = plan.tags.clone();
                 let absorb = p.absorb.filter(|ids| !ids.is_empty());
                 // Absorbing takes the history, tags and paths of the absorbed ones: a client's things
                 // can't end up in a memory everyone sees (global or trade).
                 if let Some(ids) = &absorb {
-                    let stays_global = (current.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.hacer_global;
+                    let stays_global = (current.global() && c.project.as_deref().is_none_or(str::is_empty) && c.space_id.is_none()) || plan.make_global;
                     for other in ids {
                         let o = memoria::get(db, other)?;
                         anyhow::ensure!(
@@ -862,10 +862,10 @@ impl Servidor {
                     }
                 }
                 // From a client to a trade: a new memory, and the client's one stays as it was.
-                if plan.nueva {
+                if plan.create_new {
                     anyhow::ensure!(absorb.is_none(), "a client's memory becomes a new trade memory: promote it first, without `absorb`");
                     let tags = c.tags.clone().unwrap_or_else(|| current.tags.clone());
-                    let m = crate::oficios::crear_de_oficio(db, &current, &c, tags, &source, model)?;
+                    let m = crate::oficios::create_trade_memory(db, &current, &c, tags, &source, model)?;
                     let hidden = match p.data {
                         Some(d) => memoria::set_data(db, &m.id, d)?,
                         None => Vec::new(),
@@ -876,21 +876,21 @@ impl Servidor {
                     with_redacted(&mut r, &m);
                     r["created"] = serde_json::json!(true);
                     r["promoted_from"] = serde_json::json!(current.id);
-                    r["promoted_hint"] = serde_json::json!(crate::oficios::AVISO_PROMOVIDA);
+                    r["promoted_hint"] = serde_json::json!(crate::oficios::PROMOTED_NOTICE);
                     // The same thing promoted from another client: not prevented (the promotion is done), just reported.
                     if let Some(mo) = model
-                        && let Some((other, sim)) = vectores::duplicada_de_oficio(db, mo, &crate::oficios::de_etiquetas(&m.tags), &m.title, &m.content, Some(&m.id))?
+                        && let Some((other, sim)) = vectores::trade_duplicate(db, mo, &crate::oficios::from_tags(&m.tags), &m.title, &m.content, Some(&m.id))?
                     {
                         r["duplicate_of"] = serde_json::to_value(compact(other, false, None))?;
                         r["similarity"] = serde_json::json!((sim * 1000.0).round() / 1000.0);
-                        r["duplicate_hint"] = serde_json::json!(crate::oficios::AVISO_DUPLICADA);
+                        r["duplicate_hint"] = serde_json::json!(crate::oficios::DUPLICATE_NOTICE);
                     }
                     if !hidden.is_empty() {
-                        r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
+                        r["data_redacted"] = serde_json::json!(crate::secretos::distinct_kinds(&hidden));
                     }
                     return Ok(r);
                 }
-                if plan.hacer_global && c.project.is_none() {
+                if plan.make_global && c.project.is_none() {
                     c.project = Some(String::new());
                 }
                 // Verdicts only: the memory doesn't change (nor gets an empty version in its history).
@@ -919,7 +919,7 @@ impl Servidor {
                     Some(d) => memoria::set_data(db, &m.id, d)?,
                     None => Vec::new(),
                 };
-                if !evidence.is_empty() && crate::oficios::de_etiquetas(&m.tags).is_empty() && memoria::add_evidence(db, &m.id, &evidence)? {
+                if !evidence.is_empty() && crate::oficios::from_tags(&m.tags).is_empty() && memoria::add_evidence(db, &m.id, &evidence)? {
                     m = memoria::get(db, &m.id)?;
                 }
                 if let Some(x) = &review_reason
@@ -933,7 +933,7 @@ impl Servidor {
                 let mut r = serde_json::to_value(compact(m.clone(), false, None))?;
                 with_redacted(&mut r, &m);
                 if !hidden.is_empty() {
-                    r["data_redacted"] = serde_json::json!(crate::secretos::tipos_distintos(&hidden));
+                    r["data_redacted"] = serde_json::json!(crate::secretos::distinct_kinds(&hidden));
                 }
                 if !changed.is_empty() {
                     r["changed"] = serde_json::json!(changed);
@@ -1044,16 +1044,16 @@ impl Servidor {
                 let force = p.force.unwrap_or(false);
                 let dry_run = p.dry_run.unwrap_or(false);
                 if p.suggest.unwrap_or(false) {
-                    return Ok(serde_json::to_value(crate::skill::sugerencias(db, session_project)?)?);
+                    return Ok(serde_json::to_value(crate::skill::suggestions(db, session_project)?)?);
                 }
                 Ok(match (p.id.as_deref(), p.refresh.unwrap_or(false)) {
                     (Some(wanted), _) => {
-                        let id = crate::skill::resolver(db, session_project, wanted)?;
+                        let id = crate::skill::resolve(db, session_project, wanted)?;
                         let id = id_in_scope(db, session_project, &id, false)?;
-                        serde_json::to_value(crate::skill::escribir(db, session_project, &id, crate::skill::Destino::de(p.to.as_deref())?, force, dry_run)?)?
+                        serde_json::to_value(crate::skill::write(db, session_project, &id, crate::skill::Target::parse(p.to.as_deref())?, force, dry_run)?)?
                     }
-                    (None, true) => serde_json::to_value(crate::skill::refrescar(db, session_project, dry_run)?)?,
-                    (None, false) => serde_json::to_value(crate::skill::listar(db, session_project)?)?,
+                    (None, true) => serde_json::to_value(crate::skill::refresh(db, session_project, dry_run)?)?,
+                    (None, false) => serde_json::to_value(crate::skill::list(db, session_project)?)?,
                 })
             })
             .await;
@@ -1072,7 +1072,7 @@ impl Servidor {
             .with_db(|db, _, session_project| {
                 // Its trades, looking at its files again (`with_db` only looks the first time).
                 if let Some(id) = Scope::from_project(db, session_project)?.project() {
-                    crate::oficios::al_dia(db, id, session_project)?;
+                    crate::oficios::refresh(db, id, session_project)?;
                 }
                 let scope = Scope::from_project(db, session_project)?;
                 let v = memoria::context(db, &scope, 30)?;
@@ -1110,7 +1110,7 @@ impl Servidor {
                 }
                 // What was set aside when other sessions closed: in agents with no recall at start (Grok,
                 // Windsurf…) it only arrives here. Shown once, as in recall.
-                let set_aside = crate::candidatas::para_empezar(db, session_project, "")?;
+                let set_aside = crate::candidatas::for_session_start(db, session_project, "")?;
                 if !set_aside.is_empty() {
                     r["set_aside"] = serde_json::json!(set_aside.iter().map(|c| format!("[{}] {}", c.kind, c.text.chars().take(900).collect::<String>())).collect::<Vec<_>>());
                     r["set_aside_hint"] = serde_json::json!("From earlier sessions here, possibly worth keeping (picked without understanding them): save the ones worth it with `remember`, in the user's words and language, merging into existing memories where they fit; ignore the rest, they won't come back.");
@@ -1128,14 +1128,14 @@ impl Servidor {
                 let scope = requested_scope(db, session_project, p.project.as_deref(), p.space.as_deref(), p.all_projects.unwrap_or(false))?;
                 let wide = !matches!(scope, Scope::Project { .. });
                 if p.sessions.unwrap_or(false) {
-                    let filter = crate::diario::Filtro {
-                        desde: p.since.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
-                        hasta: p.until.as_deref().map(|d| crate::diario::fecha(db, d)).transpose()?,
-                        fichero: p.file,
-                        carpeta: p.project.is_none().then(|| session_project.to_string()),
-                        limite: limit_of(p.limit),
+                    let filter = crate::diario::Filter {
+                        since: p.since.as_deref().map(|d| crate::diario::parse_date(db, d)).transpose()?,
+                        until: p.until.as_deref().map(|d| crate::diario::parse_date(db, d)).transpose()?,
+                        file: p.file,
+                        folder: p.project.is_none().then(|| session_project.to_string()),
+                        limit: limit_of(p.limit),
                     };
-                    return Ok(serde_json::to_value(crate::diario::lineas(db, &scope, &filter)?)?);
+                    return Ok(serde_json::to_value(crate::diario::entries(db, &scope, &filter)?)?);
                 }
                 if let Some(tags) = p.tags.filter(|t| !t.is_empty()) {
                     // By tag: all of them (at most `limit`, 200 if not given), with their data.
@@ -1187,7 +1187,7 @@ impl Servidor {
                     let before = crate::revisar::before(db)?;
                     let m = match memoria::resolve_decision(db, &id, &answer, p.reason, p.allow_leaks.unwrap_or(false))? {
                         Ok(m) => m,
-                        Err(leaks) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": leaks, "hint": crate::oficios::AVISO_FUGAS })),
+                        Err(leaks) => return Ok(serde_json::json!({ "resolved": false, "trade_leaks": leaks, "hint": crate::oficios::LEAKS_NOTICE })),
                     };
                     crate::revisar::refresh_for(db, &before, std::slice::from_ref(&m.id))?;
                     return Ok(serde_json::json!({ "resolved": true, "memory": compact(m, false, None) }));

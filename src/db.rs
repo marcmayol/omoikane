@@ -140,8 +140,8 @@ fn open_once(path: &Path) -> Result<Connection> {
     migrate(&mut db)?;
     update_on_open(&mut db)?;
     ensure_locals(&mut db)?;
-    crate::significado::crear_tabla(&db)?;
-    crate::oficios::crear_tabla(&db)?;
+    crate::significado::create_table(&db)?;
+    crate::oficios::create_table(&db)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }
@@ -161,7 +161,7 @@ fn open_once(path: &Path) -> Result<Connection> {
 /// - `memory_cuenta`: how many memories there are per project and space, kept up to date by triggers;
 ///   counting a scope's no longer scans the table.
 /// - `vec_cambio`: which vectors have changed since the vector summary was last brought up to date
-///   (`vectores::al_dia`), with the previous vector. The triggers fill it, whoever writes (also a 1.0
+///   (`vectores::up_to_date_summary`), with the previous vector. The triggers fill it, whoever writes (also a 1.0
 ///   or sync).
 ///
 /// If any of the pieces is missing (a new database, a 1.0 one or one whose `memory` a migration
@@ -244,7 +244,7 @@ fn ensure_locals(db: &mut Connection) -> Result<()> {
             }
         }
         tx.execute_batch(LOCALS)?;
-        crate::vectores::olvidar_resumen(&tx)?;
+        crate::vectores::forget_summary(&tx)?;
     }
     tx.commit()?;
     Ok(())

@@ -5,12 +5,12 @@
 //! here there is only an index to find them.
 //!
 //! - Each `.md` is split by its headings (`#`, `##`, `###`, outside code blocks), into chunks of at
-//!   most `TROZO_MAX` characters, in an FTS5 table with the same tokenizer as the memories.
+//!   most `CHUNK_MAX` characters, in an FTS5 table with the same tokenizer as the memories.
 //! - The index is brought up to date when the session starts, separately (`omoi docs refresh`, without
 //!   waiting for it and with a per-project lock in `meta` so two don't run): only what changed in size
 //!   or date, and what is gone is deleted. An error never stops startup. `omoi docs add` indexes right away.
 //! - Only regular files are read: symbolic links (to files or folders) are not followed, and
-//!   nothing goes past `MAX_BYTES_FICHERO`, because what is indexed reaches the agent.
+//!   nothing goes past `MAX_FILE_BYTES`, because what is indexed reaches the agent.
 //! - On each message, the same criterion as the memories (useful words, rare words, coverage of the
 //!   message's IDF weight), with the documentation's frequencies: at most one chunk, once per
 //!   session (`docs_seen`, separate from `recall_log`, which feeds `memory_use` and the diary).
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS docs_seen (
 ";
 
 /// Bits of the `docs_fts` `rowid` for the chunk number within the file; a file doesn't go past
-/// `MAX_BYTES_FICHERO` and comes nowhere near 2^20 chunks.
+/// `MAX_FILE_BYTES` and comes nowhere near 2^20 chunks.
 const PART_BITS: i64 = 20;
 /// The file of a chunk, in SQL.
 const FILE_OF_CHUNK: &str = "(docs_fts.rowid >> 20)";
@@ -72,20 +72,20 @@ const FILE_OF_CHUNK: &str = "(docs_fts.rowid >> 20)";
 /// Maximum size of a chunk. A longer section is split by paragraphs: a very long chunk contains
 /// almost any word and «covers» any message (same as `recall::RECALL_LEN` with the
 /// memories, which are shorter than a documentation section).
-pub const TROZO_MAX: usize = 2000;
+pub const CHUNK_MAX: usize = 2000;
 /// How much of the chunk reaches the agent; it reads the rest from the file if it needs to.
-pub const FRAGMENTO: usize = 700;
+pub const EXCERPT_CHARS: usize = 700;
 /// Files looked at at most in each folder, and the size from which a file isn't
 /// indexed (a dump, not documentation).
-pub const MAX_FICHEROS: usize = 5000;
-pub const MAX_BYTES_FICHERO: u64 = 2 << 20;
+pub const MAX_FILES: usize = 5000;
+pub const MAX_FILE_BYTES: u64 = 2 << 20;
 /// Share of the message's IDF weight a chunk has to cover. More than for memories
 /// (`recall::MIN_COVERAGE`, 0.50): a section is longer than a memory and contains more words.
 /// Checked with Omoikane's documentation alone and with 785 more `.md` (14,548 chunks), over 302 real
 /// messages and 9 hand-written ones: with 0.50, 3 of the real ones and 1 of the 4 written ones not about
 /// the documentation brought something, all noise (0.52 to 0.56); with 0.60, 1 of the real ones remains (0.68-0.70, and doubtful:
 /// «tema claro, tema oscuro» brings the web view part) and all those that were relevant still come (0.62 to 1.00).
-pub const COBERTURA_MIN: f64 = 0.60;
+pub const MIN_COVERAGE: f64 = 0.60;
 /// Files per transaction when indexing.
 const BATCH: usize = 20;
 /// How many BM25 candidates are looked at before measuring their coverage.
@@ -123,13 +123,13 @@ fn real_dir(folder: &Path) -> Result<PathBuf> {
 
 /// Whether the folder is too broad to be documentation: a drive root, or the home folder (or one
 /// above it). It would index everything there is, and every session would walk it.
-pub fn demasiado_amplia(real: &Path, home: Option<&Path>) -> bool {
+pub fn too_broad(real: &Path, home: Option<&Path>) -> bool {
     real.parent().is_none() || home.is_some_and(|c| c.starts_with(real))
 }
 
 /// A project's documentation folder, with what it has indexed.
 #[derive(Debug, Clone, Serialize)]
-pub struct Carpeta {
+pub struct Folder {
     pub folder: String,
     pub added_at: String,
     pub files: i64,
@@ -138,24 +138,24 @@ pub struct Carpeta {
 
 /// What a refresh did.
 #[derive(Debug, Default, Clone, Serialize, PartialEq)]
-pub struct Refresco {
+pub struct Refresh {
     /// Files indexed again (new or changed).
     pub indexed: usize,
     /// Files that are gone and leave the index.
     pub removed: usize,
     /// Unchanged files.
     pub unchanged: usize,
-    /// Files that aren't indexed (too big, unreadable or beyond `MAX_FICHEROS`).
+    /// Files that aren't indexed (too big, unreadable or beyond `MAX_FILES`).
     pub skipped: usize,
 }
 
 /// `omoi docs add`: records the folder in the project and indexes it now. Doesn't accept a drive
-/// root or the home folder (`demasiado_amplia`).
-pub fn anadir(db: &Connection, project: &str, folder: &Path) -> Result<(String, Refresco)> {
+/// root or the home folder (`too_broad`).
+pub fn add(db: &Connection, project: &str, folder: &Path) -> Result<(String, Refresh)> {
     let real = real_dir(folder)?;
     let home = std::env::home_dir().and_then(|h| crate::proyecto::canonical(&h).ok());
     anyhow::ensure!(
-        !demasiado_amplia(&real, home.as_deref()),
+        !too_broad(&real, home.as_deref()),
         crate::tr!(
             "{} is a drive root or your home folder: point to the documentation folder itself (for example docs/)",
             "{} es la raíz de una unidad o tu carpeta personal: indica la carpeta de la documentación (por ejemplo docs/)",
@@ -165,13 +165,13 @@ pub fn anadir(db: &Connection, project: &str, folder: &Path) -> Result<(String, 
     let folder = crate::proyecto::path_text(&real);
     create(db)?;
     db.execute(&format!("INSERT OR IGNORE INTO docs_folder(project, folder, added_at) VALUES (?1, ?2, {NOW})"), params![project, folder])?;
-    let r = refrescar(db, &folder)?;
+    let r = refresh(db, &folder)?;
     Ok((folder, r))
 }
 
 /// `omoi docs remove`: removes the folder from the project and, if no other project uses it, its index.
 /// Returns whether it was there. Accepts the path as given or as it appears in `omoi docs list`.
-pub fn quitar(db: &Connection, project: &str, folder_arg: &str) -> Result<bool> {
+pub fn remove(db: &Connection, project: &str, folder_arg: &str) -> Result<bool> {
     if !has_table(db, "docs_folder") {
         return Ok(false);
     }
@@ -188,7 +188,7 @@ pub fn quitar(db: &Connection, project: &str, folder_arg: &str) -> Result<bool> 
 }
 
 /// The project's folders.
-pub fn carpetas(db: &Connection, project: &str) -> Result<Vec<String>> {
+pub fn folders(db: &Connection, project: &str) -> Result<Vec<String>> {
     if !has_table(db, "docs_folder") {
         return Ok(Vec::new());
     }
@@ -198,7 +198,7 @@ pub fn carpetas(db: &Connection, project: &str) -> Result<Vec<String>> {
 }
 
 /// `omoi docs list`: the project's folders with how many files and chunks they have indexed.
-pub fn listar(db: &Connection, project: &str) -> Result<Vec<Carpeta>> {
+pub fn list(db: &Connection, project: &str) -> Result<Vec<Folder>> {
     if !has_table(db, "docs_folder") {
         return Ok(Vec::new());
     }
@@ -209,7 +209,7 @@ pub fn listar(db: &Connection, project: &str) -> Result<Vec<Carpeta>> {
          FROM docs_folder d WHERE d.project = ?1 ORDER BY d.folder",
     )?;
     let v = q
-        .query_map([project], |row| Ok(Carpeta { folder: row.get(0)?, added_at: row.get(1)?, files: row.get(2)?, chunks: row.get::<_, f64>(3)? as i64 }))?
+        .query_map([project], |row| Ok(Folder { folder: row.get(0)?, added_at: row.get(1)?, files: row.get(2)?, chunks: row.get::<_, f64>(3)? as i64 }))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
@@ -220,7 +220,7 @@ type Seen = (String, i64, u64);
 /// The `.md` and `.markdown` files of the folder, without entering hidden folders (`.git`, `.obsidian`)
 /// or `SKIP`, and without following symbolic links, to files or folders: an `a.md` pointing to
 /// `/dev/zero` or to `~/.ssh/id_rsa` is not documentation. The second value, how many are left out for
-/// going past `MAX_FICHEROS`.
+/// going past `MAX_FILES`.
 fn walk(root: &Path) -> Result<(Vec<Seen>, usize)> {
     let mut v = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -248,7 +248,7 @@ fn walk(root: &Path) -> Result<(Vec<Seen>, usize)> {
             if !matches!(ext.as_deref(), Some("md" | "markdown")) {
                 continue;
             }
-            if v.len() >= MAX_FICHEROS {
+            if v.len() >= MAX_FILES {
                 left_out += 1;
                 continue;
             }
@@ -262,7 +262,7 @@ fn walk(root: &Path) -> Result<(Vec<Seen>, usize)> {
 }
 
 /// Reads a documentation file, or nothing if it isn't a regular file or goes past
-/// `MAX_BYTES_FICHERO`. Between the walk and the read it may have been changed into a link: it is opened
+/// `MAX_FILE_BYTES`. Between the walk and the read it may have been changed into a link: it is opened
 /// without following it (on Unix, `O_NOFOLLOW`, and `O_NONBLOCK` so a pipe doesn't leave us waiting; on
 /// Windows, the reparse point itself), what was opened is checked and never more than the cap is read.
 fn read_file(path: &Path) -> Option<String> {
@@ -285,8 +285,8 @@ fn read_file(path: &Path) -> Option<String> {
         return None;
     }
     let mut b = Vec::new();
-    f.take(MAX_BYTES_FICHERO + 1).read_to_end(&mut b).ok()?;
-    if b.len() as u64 > MAX_BYTES_FICHERO {
+    f.take(MAX_FILE_BYTES + 1).read_to_end(&mut b).ok()?;
+    if b.len() as u64 > MAX_FILE_BYTES {
         return None;
     }
     Some(String::from_utf8_lossy(&b).into_owned())
@@ -294,15 +294,15 @@ fn read_file(path: &Path) -> Option<String> {
 
 /// A chunk: the section title (with the ones above: «Sync › Spaces») and its text.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Trozo {
-    pub titulo: String,
-    pub texto: String,
+pub struct Chunk {
+    pub title: String,
+    pub text: String,
 }
 
 /// Splits a Markdown by its `#`, `##` and `###` headings (those inside a code block don't
-/// count), and each section into chunks of at most `TROZO_MAX` characters by paragraphs. What comes
+/// count), and each section into chunks of at most `CHUNK_MAX` characters by paragraphs. What comes
 /// before the first heading gets the file name. Obsidian's YAML front matter (`---`) isn't indexed.
-pub fn trocear(name: &str, md: &str) -> Vec<Trozo> {
+pub fn chunk(name: &str, md: &str) -> Vec<Chunk> {
     let md = md.strip_prefix('\u{feff}').unwrap_or(md);
     let body = match md.strip_prefix("---\n").or_else(|| md.strip_prefix("---\r\n")) {
         Some(rest) => match rest.find("\n---") {
@@ -340,8 +340,8 @@ pub fn trocear(name: &str, md: &str) -> Vec<Trozo> {
         if text.trim().is_empty() {
             continue;
         }
-        for part in split(text.trim(), TROZO_MAX) {
-            v.push(Trozo { titulo: title.clone(), texto: part });
+        for part in split(text.trim(), CHUNK_MAX) {
+            v.push(Chunk { title: title.clone(), text: part });
         }
     }
     v
@@ -394,7 +394,7 @@ fn save_batch(db: &Connection, folder: &str, batch: Vec<Indexed>) -> Result<()> 
     if !tx.query_row("SELECT EXISTS(SELECT 1 FROM docs_folder WHERE folder = ?1)", [folder], |row| row.get::<_, bool>(0))? {
         return Ok(());
     }
-    let mut with_id: Vec<(i64, Vec<Trozo>)> = Vec::with_capacity(batch.len());
+    let mut with_id: Vec<(i64, Vec<Chunk>)> = Vec::with_capacity(batch.len());
     for f in batch {
         let id: i64 = tx.query_row(
             "INSERT INTO docs_file(folder, path, mtime, size, chunks) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -412,7 +412,7 @@ fn save_batch(db: &Connection, folder: &str, batch: Vec<Indexed>) -> Result<()> 
         let mut ins = tx.prepare_cached("INSERT INTO docs_fts(rowid, title, body) VALUES (?1, ?2, ?3)")?;
         for (id, chunks) in &with_id {
             for (i, t) in chunks.iter().enumerate() {
-                ins.execute(params![(id << PART_BITS) | i as i64, t.titulo, t.texto])?;
+                ins.execute(params![(id << PART_BITS) | i as i64, t.title, t.text])?;
             }
         }
     }
@@ -429,7 +429,7 @@ struct Indexed {
     path: String,
     mtime: i64,
     size: i64,
-    chunks: Vec<Trozo>,
+    chunks: Vec<Chunk>,
 }
 
 /// Deletes the chunks of file `id` (by `rowid` range).
@@ -515,14 +515,14 @@ impl Drop for Lock<'_> {
 
 /// `omoi docs refresh` (the one session start launches, or by hand): brings all the project's folders
 /// up to date and removes the orphan index. `None` if there is already another refresh of the project running.
-pub fn refrescar_proyecto(db: &Connection, project: &str) -> Result<Option<Vec<(String, Refresco)>>> {
+pub fn refresh_project(db: &Connection, project: &str) -> Result<Option<Vec<(String, Refresh)>>> {
     if !has_table(db, "docs_folder") {
         return Ok(Some(Vec::new()));
     }
     let Some(lock) = Lock::take(db, project)? else { return Ok(None) };
     remove_orphans(db)?;
     let mut v = Vec::new();
-    for folder in carpetas(db, project)? {
+    for folder in folders(db, project)? {
         let r = refresh_with(db, &folder, Some(&lock))?;
         v.push((folder, r));
     }
@@ -531,13 +531,13 @@ pub fn refrescar_proyecto(db: &Connection, project: &str) -> Result<Option<Vec<(
 
 /// Brings a folder's index up to date: indexes what is new or changed (by date and size) and removes
 /// what is gone.
-pub fn refrescar(db: &Connection, folder: &str) -> Result<Refresco> {
+pub fn refresh(db: &Connection, folder: &str) -> Result<Refresh> {
     refresh_with(db, folder, None)
 }
 
-fn refresh_with(db: &Connection, folder: &str, lock: Option<&Lock>) -> Result<Refresco> {
+fn refresh_with(db: &Connection, folder: &str, lock: Option<&Lock>) -> Result<Refresh> {
     let root = PathBuf::from(folder);
-    let mut r = Refresco::default();
+    let mut r = Refresh::default();
     // A folder that isn't there (a disk that isn't mounted) isn't touched: its index still serves.
     if !root.is_dir() {
         return Ok(r);
@@ -573,11 +573,11 @@ fn refresh_with(db: &Connection, folder: &str, lock: Option<&Lock>) -> Result<Re
             save_batch(db, folder, std::mem::take(&mut batch))?;
             heartbeat();
         }
-        let text = if *size > MAX_BYTES_FICHERO { None } else { read_file(&root.join(rel)) };
+        let text = if *size > MAX_FILE_BYTES { None } else { read_file(&root.join(rel)) };
         // A file that can't be read or is too big is recorded with its date and without
         // chunks, so it isn't retried on every session.
         let name = Path::new(rel.as_str()).file_stem().map_or_else(|| rel.clone(), |s| s.to_string_lossy().into_owned());
-        let mut chunks = text.as_deref().map(|t| trocear(&name, t)).unwrap_or_default();
+        let mut chunks = text.as_deref().map(|t| chunk(&name, t)).unwrap_or_default();
         chunks.truncate(1 << PART_BITS);
         if text.is_some() {
             r.indexed += 1;
@@ -605,8 +605,8 @@ fn refresh_with(db: &Connection, folder: &str, lock: Option<&Lock>) -> Result<Re
 
 /// When the session starts (or after compacting): what was brought in it may come again. Without
 /// folders it does nothing; it never fails or stops startup. The index isn't brought up to date here, but
-/// separately ([`refrescar_aparte`]): with hundreds of changed files (another branch) it took almost a second.
-pub fn al_empezar(db: &Connection, _project: &str, session: &str) {
+/// separately ([`refresh_in_background`]): with hundreds of changed files (another branch) it took almost a second.
+pub fn on_session_start(db: &Connection, _project: &str, session: &str) {
     if !has_table(db, "docs_folder") {
         return;
     }
@@ -622,8 +622,8 @@ const REFRESH_EVERY: i64 = 60;
 /// separately, without waiting for it, like the sync download. At most once per minute and project
 /// (several sessions at once launch one), and none if the previous one hasn't finished yet (`Lock`).
 /// Meanwhile recall uses whatever index there is.
-pub fn refrescar_aparte(db: &Connection, project: &str, db_path: &Path) {
-    if !has_table(db, "docs_folder") || carpetas(db, project).map(|v| v.is_empty()).unwrap_or(true) || Lock::busy(db, project) {
+pub fn refresh_in_background(db: &Connection, project: &str, db_path: &Path) {
+    if !has_table(db, "docs_folder") || folders(db, project).map(|v| v.is_empty()).unwrap_or(true) || Lock::busy(db, project) {
         return;
     }
     let now = seconds();
@@ -642,16 +642,16 @@ pub fn refrescar_aparte(db: &Connection, project: &str, db_path: &Path) {
 
 /// The documentation chunk a message brings.
 #[derive(Debug, Clone, Serialize)]
-pub struct Encontrado {
+pub struct DocHit {
     /// The file path: relative to the project if inside it, full otherwise.
     pub path: String,
     pub title: String,
-    /// The excerpt that reaches the agent (at most `FRAGMENTO` characters).
+    /// The excerpt that reaches the agent (at most `EXCERPT_CHARS` characters).
     pub excerpt: String,
     pub coverage: f64,
     /// For `docs_seen`.
     #[serde(skip)]
-    pub clave: String,
+    pub key: String,
 }
 
 /// Lowercase, without accents, split by what isn't a letter or digit (like `recall::words_of`).
@@ -678,8 +678,8 @@ fn contains_term(t: &str, tokens: &BTreeSet<String>) -> bool {
 /// The project documentation chunk related to `prompt`, with the same criterion as the
 /// memories (`recall::relevant`): at least `MIN_TERMS` useful words, `MIN_RARE` rare ones in
 /// the documentation and `MIN_COVERAGE` (a bit more than with memories) of the message's IDF weight. Not counting those in `seen`.
-pub fn buscar(db: &Connection, project: &str, prompt: &str, seen: &BTreeSet<String>) -> Result<Option<Encontrado>> {
-    let folders = carpetas(db, project)?;
+pub fn search(db: &Connection, project: &str, prompt: &str, seen: &BTreeSet<String>) -> Result<Option<DocHit>> {
+    let folders = folders(db, project)?;
     if folders.is_empty() {
         return Ok(None);
     }
@@ -717,7 +717,7 @@ pub fn buscar(db: &Connection, project: &str, prompt: &str, seen: &BTreeSet<Stri
     ))?;
     let rows: Vec<(String, String, i64, String, String)> =
         q.query_map([o], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
-    let mut best: Option<(f64, usize, Encontrado)> = None;
+    let mut best: Option<(f64, usize, DocHit)> = None;
     for (title, body, part, folder, path) in rows {
         let key = format!("{folder}/{path}#{part}");
         if seen.contains(&key) {
@@ -736,17 +736,17 @@ pub fn buscar(db: &Connection, project: &str, prompt: &str, seen: &BTreeSet<Stri
         // of the section that is exactly about the topic. With everything equal, the first by BM25.
         let title_words = words(&format!("{title} {path}"));
         let in_title = terms.iter().filter(|t| contains_term(t, &title_words)).count();
-        if rare_count < recall::MIN_RARE || coverage < COBERTURA_MIN || best.as_ref().is_some_and(|m| (m.0, m.1) >= (coverage, in_title)) {
+        if rare_count < recall::MIN_RARE || coverage < MIN_COVERAGE || best.as_ref().is_some_and(|m| (m.0, m.1) >= (coverage, in_title)) {
             continue;
         }
         // The rarest word of the message that is in the chunk: the excerpt starts at its paragraph.
         let anchor = terms.iter().zip(&idf).filter(|(t, _)| contains_term(t, &words(&body))).max_by(|a, b| a.1.total_cmp(b.1)).map(|(t, _)| t.clone());
-        let e = Encontrado {
+        let e = DocHit {
             path: display_path(project, &folder, &path),
             title,
-            excerpt: excerpt(&body, anchor.as_deref(), FRAGMENTO),
+            excerpt: excerpt(&body, anchor.as_deref(), EXCERPT_CHARS),
             coverage,
-            clave: key,
+            key,
         };
         best = Some((coverage, in_title, e));
     }
@@ -793,7 +793,7 @@ fn excerpt(body: &str, anchor: Option<&str>, n: usize) -> String {
 
 /// On each message: the recall block with the matching chunk, or `None`. Without folders it costs one
 /// query to `sqlite_schema`; it never fails (an error only leaves the message without documentation).
-pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str) -> Option<String> {
+pub fn on_prompt(db: &Connection, project: &str, session: &str, prompt: &str) -> Option<String> {
     if prompt.trim().is_empty() || !has_table(db, "docs_folder") {
         return None;
     }
@@ -802,9 +802,9 @@ pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str)
             let mut q = db.prepare("SELECT chunk FROM docs_seen WHERE session = ?1")?;
             q.query_map([session], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
         };
-        let Some(e) = buscar(db, project, prompt, &seen)? else { return Ok(None) };
+        let Some(e) = search(db, project, prompt, &seen)? else { return Ok(None) };
         if !session.is_empty() {
-            db.execute(&format!("INSERT OR IGNORE INTO docs_seen(session, chunk, at) VALUES (?1, ?2, {NOW})"), params![session, e.clave])?;
+            db.execute(&format!("INSERT OR IGNORE INTO docs_seen(session, chunk, at) VALUES (?1, ?2, {NOW})"), params![session, e.key])?;
         }
         // What comes from the files, quoted: it can't close the `<omoikane>` block or open another.
         let excerpt = recall::quoted(&e.excerpt).lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n");

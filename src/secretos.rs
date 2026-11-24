@@ -23,49 +23,51 @@ use serde::Serialize;
 
 /// A piece of the text that looks like a secret: what it looks like and where it is (bytes of the original text).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Hallazgo {
+pub struct Finding {
     /// `github-token`, `openai-key`, `anthropic-key`, `aws-key`, `slack-token`, `gitlab-token`,
     /// `google-key`, `stripe-key`, `slack-webhook`, `private-key`, `jwt`, `omoikane-sync-code`, `url-credentials`, `private`,
     /// `password` (a password typed by hand: «password: hunter2», «la contraseña es Xy7#…») or
     /// `token` (a long string that looks random).
     #[serde(rename = "type")]
-    pub tipo: &'static str,
-    pub inicio: usize,
-    pub fin: usize,
+    pub kind: &'static str,
+    #[serde(rename = "inicio")]
+    pub start: usize,
+    #[serde(rename = "fin")]
+    pub end: usize,
 }
 
 /// Turned off only with `OMOIKANE_REDACT=0`.
-pub fn activo() -> bool {
+pub fn enabled() -> bool {
     std::env::var("OMOIKANE_REDACT").ok().is_none_or(|v| v.trim() != "0")
 }
 
 /// The text with each finding replaced by `[redacted:<type>]`, and the findings (positions in the
 /// original text). Without findings it returns the same text. Running it again changes nothing.
-pub fn redactar(text: &str) -> (String, Vec<Hallazgo>) {
-    let found = hallazgos(text);
+pub fn redact(text: &str) -> (String, Vec<Finding>) {
+    let found = findings(text);
     if found.is_empty() {
         return (text.to_string(), found);
     }
     let mut s = String::with_capacity(text.len());
     let mut i = 0;
     for h in &found {
-        s.push_str(&text[i..h.inicio]);
+        s.push_str(&text[i..h.start]);
         s.push_str("[redacted:");
-        s.push_str(h.tipo);
+        s.push_str(h.kind);
         s.push(']');
-        i = h.fin;
+        i = h.end;
     }
     s.push_str(&text[i..]);
     (s, found)
 }
 
 /// The distinct types of a list of findings, in the order they appear.
-pub fn tipos(found: &[Hallazgo]) -> Vec<&'static str> {
-    tipos_distintos(&found.iter().map(|h| h.tipo).collect::<Vec<_>>())
+pub fn kinds(found: &[Finding]) -> Vec<&'static str> {
+    distinct_kinds(&found.iter().map(|h| h.kind).collect::<Vec<_>>())
 }
 
 /// The same from the loose types (`Memory::redacted`, one per finding).
-pub fn tipos_distintos(ts: &[&'static str]) -> Vec<&'static str> {
+pub fn distinct_kinds(ts: &[&'static str]) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = Vec::new();
     for t in ts {
         if !v.contains(t) {
@@ -76,13 +78,13 @@ pub fn tipos_distintos(ts: &[&'static str]) -> Vec<&'static str> {
 }
 
 /// «2 (github-token, token)»: for the CLI and the warnings.
-pub fn resumen(ts: &[&'static str]) -> String {
-    format!("{} ({})", ts.len(), tipos_distintos(ts).join(", "))
+pub fn summary(ts: &[&'static str]) -> String {
+    format!("{} ({})", ts.len(), distinct_kinds(ts).join(", "))
 }
 
 /// What looks like a secret, sorted and without overlaps: the one that starts first wins (so `<private>…`
 /// and a PEM block take what they contain), and with the same start, the longest.
-pub fn hallazgos(text: &str) -> Vec<Hallazgo> {
+pub fn findings(text: &str) -> Vec<Finding> {
     let mut v = Vec::new();
     private_tags(text, &mut v);
     pem(text, &mut v);
@@ -92,18 +94,18 @@ pub fn hallazgos(text: &str) -> Vec<Hallazgo> {
     slack_webhook(text, &mut v);
     passwords(text, &mut v);
     words(text, &mut v);
-    v.sort_by(|a, b| a.inicio.cmp(&b.inicio).then(b.fin.cmp(&a.fin)));
-    let mut r: Vec<Hallazgo> = Vec::with_capacity(v.len());
+    v.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    let mut r: Vec<Finding> = Vec::with_capacity(v.len());
     for h in v {
-        if r.last().is_none_or(|u| h.inicio >= u.fin) {
+        if r.last().is_none_or(|u| h.start >= u.end) {
             r.push(h);
         }
     }
     r
 }
 
-fn finding(kind: &'static str, start: usize, end: usize) -> Hallazgo {
-    Hallazgo { tipo: kind, inicio: start, fin: end }
+fn finding(kind: &'static str, start: usize, end: usize) -> Finding {
+    Finding { kind, start, end }
 }
 
 // --- Detectors -------------------------------------------------------------------------------------
@@ -113,7 +115,7 @@ fn finding(kind: &'static str, start: usize, end: usize) -> Hallazgo {
 
 /// `<private>…</private>`, tags included. Without a closing tag it isn't touched: someone may be
 /// talking about the tag.
-fn private_tags(t: &str, v: &mut Vec<Hallazgo>) {
+fn private_tags(t: &str, v: &mut Vec<Finding>) {
     const OPEN: &str = "<private>";
     const CLOSE: &str = "</private>";
     let mut i = 0;
@@ -128,7 +130,7 @@ fn private_tags(t: &str, v: &mut Vec<Hallazgo>) {
 
 /// `-----BEGIN … PRIVATE KEY-----` up to its `-----END … PRIVATE KEY-----` (or the end of the text if
 /// there isn't one: half a key is still a key).
-fn pem(t: &str, v: &mut Vec<Hallazgo>) {
+fn pem(t: &str, v: &mut Vec<Finding>) {
     const BEGIN: &str = "-----BEGIN ";
     const END: &str = "-----END ";
     let mut i = 0;
@@ -166,7 +168,7 @@ fn run_end(b: &[u8], from: usize, class: fn(u8) -> bool) -> usize {
 
 /// A JWT: `eyJ…`, dot, `eyJ…`, dot, signature; all three parts 10 or more long. Header and payload are
 /// base64url JSON, and JSON starts with `{"`, which encoded is `eyJ`.
-fn jwt(t: &str, v: &mut Vec<Hallazgo>) {
+fn jwt(t: &str, v: &mut Vec<Finding>) {
     let b = t.as_bytes();
     let mut i = 0;
     while let Some(k) = t[i..].find("eyJ") {
@@ -193,7 +195,7 @@ fn jwt(t: &str, v: &mut Vec<Hallazgo>) {
 
 /// A code from `omoi sync code` (`omoi1.` and base64url): it carries the key of a memory repository.
 /// An agent with no person in front has it in `OMOIKANE_SYNC_CODE` and might want to note it down.
-fn sync_code(t: &str, v: &mut Vec<Hallazgo>) {
+fn sync_code(t: &str, v: &mut Vec<Finding>) {
     const PREFIX: &str = "omoi1.";
     let b = t.as_bytes();
     let mut i = 0;
@@ -211,7 +213,7 @@ fn sync_code(t: &str, v: &mut Vec<Hallazgo>) {
 
 /// `scheme://user:password@host`: `user:password` is redacted. User only (`ssh://git@…`) is not
 /// a secret, and neither is `host:port` without `@`.
-fn url_credentials(t: &str, v: &mut Vec<Hallazgo>) {
+fn url_credentials(t: &str, v: &mut Vec<Finding>) {
     let mut i = 0;
     while let Some(k) = t[i..].find("://") {
         let start = i + k + 3;
@@ -229,7 +231,7 @@ fn url_credentials(t: &str, v: &mut Vec<Hallazgo>) {
 }
 
 /// `hooks.slack.com/services/T…/B…/…`: whoever has the URL writes to the channel. The path is redacted.
-fn slack_webhook(t: &str, v: &mut Vec<Hallazgo>) {
+fn slack_webhook(t: &str, v: &mut Vec<Finding>) {
     const BASE: &str = "hooks.slack.com/services/";
     let b = t.as_bytes();
     let mut i = 0;
@@ -274,7 +276,7 @@ fn is_letter_or_digit(c: u8) -> bool {
 /// redacted. To avoid taking normal prose for a password («la contraseña se guarda en el llavero»,
 /// «password reset flow», «the password is required») the value has to look like one: see
 /// `looks_like_password`.
-fn passwords(t: &str, v: &mut Vec<Hallazgo>) {
+fn passwords(t: &str, v: &mut Vec<Finding>) {
     let l = t.to_ascii_lowercase(); // the same bytes at the same positions
     let b = l.as_bytes();
     for &(name, in_prose) in PASSWORD_NAMES {
@@ -491,7 +493,7 @@ const PREFIXES: &[Prefix] = &[
 
 /// Word by word (runs of letters, digits, `_` and `-`): known prefixes at the start of the
 /// word, AWS keys, and the general rule of the string that looks random.
-fn words(t: &str, v: &mut Vec<Hallazgo>) {
+fn words(t: &str, v: &mut Vec<Finding>) {
     let b = t.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -540,13 +542,13 @@ fn words(t: &str, v: &mut Vec<Hallazgo>) {
         for (k, c) in b[i..end].iter().enumerate() {
             let pos = i + k;
             if *c == b'_' || *c == b'-' {
-                if parece_aleatoria(&t[chunk_start..pos]) {
+                if looks_random(&t[chunk_start..pos]) {
                     v.push(finding("token", chunk_start, pos));
                 }
                 chunk_start = pos + 1;
             }
         }
-        if parece_aleatoria(&t[chunk_start..end]) {
+        if looks_random(&t[chunk_start..end]) {
             v.push(finding("token", chunk_start, end));
         }
         i = end;
@@ -558,7 +560,7 @@ fn words(t: &str, v: &mut Vec<Hallazgo>) {
 /// identifier (`Llama4ForConditionalGeneration`: Llama·4·For·Conditional·Generation, 6 per chunk)
 /// doesn't switch that much; a token (`q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0`, 26 chunks in 33) does. An
 /// uppercase letter followed by lowercase counts as a single word. Without lowercase (a ULID) or without uppercase (a hash) it doesn't count.
-pub fn parece_aleatoria(w: &str) -> bool {
+pub fn looks_random(w: &str) -> bool {
     let b = w.as_bytes();
     if b.len() < 20 || !b.iter().all(u8::is_ascii_alphanumeric) {
         return false;
@@ -591,50 +593,50 @@ mod tests {
 
     #[test]
     fn redacts_and_positions() {
-        let (s, found) = redactar("token ghp_abcdefghijklmnopqrstuvwxyz0123456789 y ya");
+        let (s, found) = redact("token ghp_abcdefghijklmnopqrstuvwxyz0123456789 y ya");
         assert_eq!(s, "token [redacted:github-token] y ya");
         assert_eq!(found.len(), 1);
-        assert_eq!(&"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 y ya"[found[0].inicio..found[0].fin], "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
-        assert_eq!(redactar(&s).0, s);
+        assert_eq!(&"token ghp_abcdefghijklmnopqrstuvwxyz0123456789 y ya"[found[0].start..found[0].end], "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+        assert_eq!(redact(&s).0, s);
     }
 
     #[test]
     fn sync_code_is_redacted() {
         // A whole `omoi sync code` code: `omoi1.` and the JSON in base64url (starts with `eyJ`).
         let code = "omoi1.eyJ1cmwiOiJnaXRAeDp5L3ouZ2l0Iiwia2V5IjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYifQ";
-        let (s, found) = redactar(&format!("OMOIKANE_SYNC_CODE={code} en la CI"));
+        let (s, found) = redact(&format!("OMOIKANE_SYNC_CODE={code} en la CI"));
         assert_eq!(s, "OMOIKANE_SYNC_CODE=[redacted:omoikane-sync-code] en la CI");
-        assert_eq!(tipos(&found), vec!["omoikane-sync-code"]);
+        assert_eq!(kinds(&found), vec!["omoikane-sync-code"]);
         // Talking about the format is not a secret.
-        assert!(hallazgos("los códigos empiezan por omoi1. y llevan la clave").is_empty());
+        assert!(findings("los códigos empiezan por omoi1. y llevan la clave").is_empty());
     }
 
     #[test]
     fn the_one_that_starts_first_wins() {
-        let (s, found) = redactar("<private>clave ghp_abcdefghijklmnopqrstuvwxyz0123456789</private> fin");
+        let (s, found) = redact("<private>clave ghp_abcdefghijklmnopqrstuvwxyz0123456789</private> fin");
         assert_eq!(s, "[redacted:private] fin");
-        assert_eq!(tipos(&found), vec!["private"]);
+        assert_eq!(kinds(&found), vec!["private"]);
     }
 
     #[test]
     fn random_versus_identifier() {
-        assert!(parece_aleatoria("q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0"));
-        assert!(!parece_aleatoria("Llama4ForConditionalGeneration"));
-        assert!(!parece_aleatoria("01K8ZQ4V9N3X2M7P6R5T8W1Y0A")); // ULID
-        assert!(!parece_aleatoria("3f9a1c2b4d5e6f7a8b9c0d1e2f3a4b5c")); // hash
-        assert!(!parece_aleatoria("corto1A"));
+        assert!(looks_random("q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0"));
+        assert!(!looks_random("Llama4ForConditionalGeneration"));
+        assert!(!looks_random("01K8ZQ4V9N3X2M7P6R5T8W1Y0A")); // ULID
+        assert!(!looks_random("3f9a1c2b4d5e6f7a8b9c0d1e2f3a4b5c")); // hash
+        assert!(!looks_random("corto1A"));
     }
 
     /// 1.8.6: what comes before «password» may be a multi-byte character; checking whether it is `--`
     /// must not cut it in half.
     #[test]
     fn password_after_multibyte_character() {
-        assert!(hallazgos("—password x1").is_empty());
-        assert!(hallazgos("x…password: abc").is_empty());
-        assert_eq!(redactar("“password: x1”").0, "“password: x1”");
-        assert_eq!(redactar("“password: Xy7#k2”").0, "“password: [redacted:password]”");
-        assert_eq!(redactar("“password: Xy7#k2”.").0, "“password: [redacted:password]”.");
-        assert_eq!(redactar("(password: Xy7#k2”),").0, "(password: [redacted:password]”),");
-        assert_eq!(redactar("—password=Xy7#k2").0, "—password=[redacted:password]");
+        assert!(findings("—password x1").is_empty());
+        assert!(findings("x…password: abc").is_empty());
+        assert_eq!(redact("“password: x1”").0, "“password: x1”");
+        assert_eq!(redact("“password: Xy7#k2”").0, "“password: [redacted:password]”");
+        assert_eq!(redact("“password: Xy7#k2”.").0, "“password: [redacted:password]”.");
+        assert_eq!(redact("(password: Xy7#k2”),").0, "(password: [redacted:password]”),");
+        assert_eq!(redact("—password=Xy7#k2").0, "—password=[redacted:password]");
     }
 }

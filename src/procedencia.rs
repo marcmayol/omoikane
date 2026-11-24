@@ -108,7 +108,7 @@ pub fn session_only(db: &Connection, project: &str) -> Option<Provenance> {
 /// all of it if it is a project's. Works for what was saved before trimming it and for what is moved later.
 pub(crate) fn for_memory(p: Option<Provenance>, project_id: i64, tags: &[String]) -> Option<Provenance> {
     let mut p = p?;
-    if tags.iter().any(|t| t.starts_with(crate::oficios::PREFIJO)) {
+    if tags.iter().any(|t| t.starts_with(crate::oficios::PREFIX)) {
         return None;
     }
     if project_id == 0 {
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(p.text(), "trace 4bf92f3577b34da6a3ce929d0e0e4736/00f067aa0ba902b7");
         // A global one keeps it (they are ids with nothing from the project); a trade one, no.
         assert_eq!(for_memory(Some(p.clone()), 0, &[]), Some(p.clone()));
-        assert_eq!(for_memory(Some(p), 3, &[format!("{}android", crate::oficios::PREFIJO)]), None);
+        assert_eq!(for_memory(Some(p), 3, &[format!("{}android", crate::oficios::PREFIX)]), None);
     }
 
     #[test]

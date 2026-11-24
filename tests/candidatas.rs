@@ -107,7 +107,7 @@ fn reads_each_agents_conversation() {
     for (name, lines) in formats {
         let path = d.join(format!("{name}.jsonl"));
         std::fs::write(&path, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
-        let cs = candidatas::de_conversacion(&path).unwrap();
+        let cs = candidatas::from_transcript(&path).unwrap();
         let all: Vec<String> = cs.iter().map(|c| format!("[{}] {}", c.kind, c.text)).collect();
         assert!(all.iter().any(|t| t.ends_with(&expected)), "{name}: {all:?}");
         // What the agent injects (context, skills, git status) doesn't come out as a decision.
@@ -122,14 +122,14 @@ fn reads_each_agents_conversation() {
     // Gemini before June 2026: a whole JSON with `messages`.
     let path = d.join("gemini-viejo.json");
     std::fs::write(&path, json!({"sessionId": "s", "messages": [{"type": "gemini", "content": question}, {"type": "user", "content": answer}]}).to_string()).unwrap();
-    let cs = candidatas::de_conversacion(&path).unwrap();
+    let cs = candidatas::from_transcript(&path).unwrap();
     assert!(cs.iter().any(|c| c.text.ends_with(&expected)), "{cs:?}");
 }
 
 #[test]
 fn extracts_decisions_preferences_and_milestones_without_secrets() {
     let d = dir("saca");
-    let cs = candidatas::de_conversacion(&conversation(&d)).unwrap();
+    let cs = candidatas::from_transcript(&conversation(&d)).unwrap();
     let texts: Vec<String> = cs.iter().map(|c| format!("[{}] {}", c.kind, c.text)).collect();
     let all = texts.join("\n");
     // The preference first; the decision goes with its question; the AskUserQuestion answer too.
@@ -148,13 +148,13 @@ fn proposed_once_in_the_next_session_and_not_what_is_already_saved() {
     // Already saved: not proposed again.
     let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Preference), title: "Commits en inglés".into(), content: "Prefiere que los commits vayan en inglés.".into(), ..Default::default() };
     memoria::save(&mut db, saved, None).unwrap();
-    let n = candidatas::apartar(&db, "/web", "s1", &conversation(&d)).unwrap();
-    let all = candidatas::todas(&db).unwrap();
+    let n = candidatas::set_aside(&db, "/web", "s1", &conversation(&d)).unwrap();
+    let all = candidatas::all(&db).unwrap();
     assert_eq!(n, all.len());
     assert!(!all.iter().any(|c| c.text.contains("commits vayan en inglés")), "{all:?}");
     // Repeating (PreCompact and then SessionEnd) doesn't duplicate.
-    candidatas::apartar(&db, "/web", "s1", &conversation(&d)).unwrap();
-    assert_eq!(candidatas::todas(&db).unwrap().len(), n);
+    candidatas::set_aside(&db, "/web", "s1", &conversation(&d)).unwrap();
+    assert_eq!(candidatas::all(&db).unwrap().len(), n);
     // In the same session they don't show up; in the next one, they do, and only once.
     let e = |s: &str| HookInput { session_id: s.into(), ..Default::default() };
     let t = recall::on_session_start(&mut db, "/web", &e("s1")).unwrap().unwrap();
@@ -198,37 +198,37 @@ fn sets_aside_each_subagents_report() {
     asks["message"]["stop_reason"] = json!("tool_use");
     let running = [side(user("Revisa el sync")), side(asks)];
     std::fs::write(sub.join("agent-a3.jsonl"), running.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
-    assert!(candidatas::de_subagente(&sub.join("agent-a3.jsonl")).unwrap().is_none(), "uno que no ha acabado no se aparta");
+    assert!(candidatas::from_subagent(&sub.join("agent-a3.jsonl")).unwrap().is_none(), "uno que no ha acabado no se aparta");
     // A big one (here 1 MB of tools in the middle): only the start and the end are read.
     let filler = side(tool_result("b1", &"x".repeat(1000)));
     let mut big = vec![side(user("Revisa el benchmark entero")), side(tool("b1", "Bash", json!({"command": "ls"})))];
     big.extend(std::iter::repeat_n(filler, 1000));
     big.push(side(assistant("Hecho: el benchmark da 89 %.")));
     std::fs::write(sub.join("agent-a4.jsonl"), big.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
-    let (g, _) = candidatas::de_subagente(&sub.join("agent-a4.jsonl")).unwrap().unwrap();
+    let (g, _) = candidatas::from_subagent(&sub.join("agent-a4.jsonl")).unwrap().unwrap();
     assert_eq!(g.text, "Revisa el benchmark entero → Hecho: el benchmark da 89 %.");
     std::fs::remove_file(sub.join("agent-a4.jsonl")).unwrap();
 
-    let (c, only) = candidatas::de_subagente(&sub.join("agent-a1.jsonl")).unwrap().unwrap();
-    assert_eq!(c.kind, candidatas::SUBAGENTE);
+    let (c, only) = candidatas::from_subagent(&sub.join("agent-a1.jsonl")).unwrap().unwrap();
+    assert_eq!(c.kind, candidatas::SUBAGENT);
     assert_eq!(c.text, format!("Eres el agente «velocidad» de una revisión. → {report}"));
     assert_eq!(only, report);
-    assert!(candidatas::de_subagente(&sub.join("agent-a2.jsonl")).unwrap().is_none(), "con un secreto no se aparta");
+    assert!(candidatas::from_subagent(&sub.join("agent-a2.jsonl")).unwrap().is_none(), "con un secreto no se aparta");
 
-    candidatas::apartar(&db, "/web", "s1", &session).unwrap();
-    let all = candidatas::todas(&db).unwrap();
+    candidatas::set_aside(&db, "/web", "s1", &session).unwrap();
+    let all = candidatas::all(&db).unwrap();
     assert_eq!(all.iter().filter(|c| c.kind == "subagent").count(), 1, "{all:?}");
     assert!(all.iter().any(|c| c.text.contains("sin el fondo verde")), "lo de la sesión principal sigue: {all:?}");
     // PreCompact and then SessionEnd: it isn't duplicated.
     let n = all.len();
-    candidatas::apartar(&db, "/web", "s1", &session).unwrap();
-    assert_eq!(candidatas::todas(&db).unwrap().len(), n);
+    candidatas::set_aside(&db, "/web", "s1", &session).unwrap();
+    assert_eq!(candidatas::all(&db).unwrap().len(), n);
     let t = recall::on_session_start(&mut db, "/web", &HookInput { session_id: "s2".into(), ..Default::default() }).unwrap().unwrap();
     assert!(t.contains("[subagent] Eres el agente «velocidad»") && t.contains("checkpoint del WAL"), "{t}");
     // A report already saved as a memory isn't proposed again.
     let mut db2 = db::open(&d.join("o2.db")).unwrap();
     let saved = NewMemory { project: "/web".into(), kind: Some(Kind::Gotcha), title: "El recall lento era el checkpoint del WAL".into(), content: report.into(), ..Default::default() };
     memoria::save(&mut db2, saved, None).unwrap();
-    candidatas::apartar(&db2, "/web", "s1", &session).unwrap();
-    assert!(!candidatas::todas(&db2).unwrap().iter().any(|c| c.kind == "subagent"));
+    candidatas::set_aside(&db2, "/web", "s1", &session).unwrap();
+    assert!(!candidatas::all(&db2).unwrap().iter().any(|c| c.kind == "subagent"));
 }

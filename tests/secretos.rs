@@ -1,4 +1,4 @@
-//! 0.19.0, secrets: the detector (`secretos::redactar`) gets 3 seeded secrets of each kind right
+//! 0.19.0, secrets: the detector (`secretos::redact`) gets 3 seeded secrets of each kind right
 //! and gives no false positives with what a memory really holds: ULIDs, git hashes, paths, URLs,
 //! memory ids, file names, camelCase identifiers and the 1,836 lines of `corpus.txt`.
 //! And through the CLI: `remember` and `update` redact (and say so), `OMOIKANE_REDACT=0` turns it off, Review and
@@ -9,7 +9,7 @@
 
 mod comun;
 
-use omoikane::secretos::{self, hallazgos, tipos};
+use omoikane::secretos::{self, findings, kinds};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -20,18 +20,18 @@ fn unmark(t: &str) -> String {
     t.replace('~', "")
 }
 
-fn redact(t: &str) -> (String, Vec<secretos::Hallazgo>) {
-    secretos::redactar(&unmark(t))
+fn redact(t: &str) -> (String, Vec<secretos::Finding>) {
+    secretos::redact(&unmark(t))
 }
 
 fn kinds_of(t: &str) -> Vec<&'static str> {
-    tipos(&hallazgos(&unmark(t)))
+    kinds(&findings(&unmark(t)))
 }
 
 fn assert_clean(t: &str) {
     let t = unmark(t);
-    let hs = hallazgos(&t);
-    assert!(hs.is_empty(), "falso positivo en «{t}»: {:?} → «{}»", hs, secretos::redactar(&t).0);
+    let hs = findings(&t);
+    assert!(hs.is_empty(), "falso positivo en «{t}»: {:?} → «{}»", hs, secretos::redact(&t).0);
 }
 
 #[test]
@@ -227,9 +227,9 @@ fn corpus_has_no_false_positives() {
     let corpus = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus.txt")).unwrap();
     let mut with_findings = Vec::new();
     for l in corpus.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
-        let hs = hallazgos(l);
+        let hs = findings(l);
         if !hs.is_empty() {
-            with_findings.push((l.to_string(), tipos(&hs)));
+            with_findings.push((l.to_string(), kinds(&hs)));
         }
     }
     assert_eq!(with_findings.len(), 2, "{with_findings:#?}");
@@ -239,7 +239,7 @@ fn corpus_has_no_false_positives() {
     }
 }
 
-/// What it costs: `redactar` over 6,000 characters (what the recall reads from a memory), with no
+/// What it costs: `redact` over 6,000 characters (what the recall reads from a memory), with no
 /// secrets and with four, and the scan `revisar::notices` does when reading, over a database (a COPY)
 /// with `OMOIKANE_MEDIR_DB`, interleaved with the whole `notices`. In release:
 /// `OMOIKANE_MEDIR_DB=<copy.db> cargo test --release --test secretos measure -- --ignored --nocapture`.
@@ -305,15 +305,15 @@ fn audit_db() {
     let mut n = 0;
     let t0 = std::time::Instant::now();
     for (id, title, content) in &rows {
-        let mut hs = hallazgos(title);
-        hs.extend(hallazgos(content).into_iter().map(|h| omoikane::secretos::Hallazgo { inicio: h.inicio + title.len(), fin: h.fin + title.len(), ..h }));
+        let mut hs = findings(title);
+        hs.extend(findings(content).into_iter().map(|h| omoikane::secretos::Finding { start: h.start + title.len(), end: h.end + title.len(), ..h }));
         if !hs.is_empty() {
             n += 1;
             let all_text = format!("{title}{content}");
             eprintln!("{id}  «{}»", title.chars().take(70).collect::<String>());
             for h in &hs {
-                let snippet: String = all_text[h.inicio..h.fin].chars().take(60).collect();
-                eprintln!("    {:<16} {snippet}", h.tipo);
+                let snippet: String = all_text[h.start..h.end].chars().take(60).collect();
+                eprintln!("    {:<16} {snippet}", h.kind);
             }
         }
     }
@@ -549,7 +549,7 @@ fn linkedin_rcm_is_not_a_secret() {
 #[test]
 fn passwords_after_multibyte_chars() {
     for t in ["—password x1", "x…password: abc", "“password: x1”", "éé--password Xy7#k2"] {
-        let _ = hallazgos(t);
+        let _ = findings(t);
     }
     assert_eq!(redact("“password: Xy7#k2”").0, "“password: [redacted:password]”");
     assert_eq!(redact("éé --password Xy7#k2").0, "éé --password [redacted:password]");

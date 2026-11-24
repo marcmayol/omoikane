@@ -8,7 +8,7 @@
 
 use anyhow::{Result, anyhow};
 use omoikane::buscar::{self, SearchOptions, SearchResult};
-use omoikane::embeber::Modelo;
+use omoikane::embeber::Model;
 use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use std::collections::HashMap;
 use std::path::Path;
@@ -94,7 +94,7 @@ fn choose(r: &[SearchResult], min_words: usize, sim: f32, max: usize) -> Vec<&Se
 }
 
 fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
-    let m = Modelo::abrir(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))?;
+    let m = Model::open(&std::env::home_dir().unwrap().join(".omoikane/models/potion-multilingual-128M-omoi"))?;
     let notes = notes(notes_dir)?;
     let tmp = std::env::temp_dir().join(format!("omoi-fase4-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
@@ -104,7 +104,7 @@ fn recall(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
         file_of.insert(memoria::save(&mut db, n, Some(&m))?.id, f.clone());
     }
-    omoikane::vectores::sincronizar(&mut db, &m)?;
+    omoikane::vectores::sync(&mut db, &m)?;
     let index = std::fs::read_to_string(notes_dir.join("MEMORY.md"))?;
     let positives: Vec<(String, String)> = index
         .lines()
@@ -371,7 +371,7 @@ fn production(notes_dir: &Path, transcripts_dir: &Path) -> Result<()> {
     let mut db = omoikane::db::open(&tmp.join("o.db"))?;
     let mut file_of = HashMap::new();
     // With a model, also the recall's by-meaning channel (as in the hook).
-    let model = omoikane::modelos::abrir_actual()?;
+    let model = omoikane::modelos::open_current()?;
     for (f, t, c) in &notes {
         let n = NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.clone(), content: c.clone(), ..Default::default() };
         file_of.insert(memoria::save(&mut db, n, model.as_ref())?.id, f.clone());

@@ -16,7 +16,7 @@
 //!   a time, bit for bit: every product is summed in the same order.
 //! - **Without AVX2** (old CPUs, ARM): the generic path (`simd = false`) does the same row by row,
 //!   with 8-lane sums the compiler vectorizes (SSE2, NEON). It gives the same vector (cosine
-//!   ≥0.9999 against candle; test `motor`) but is slower than candle, so `Gemma::cargar` uses candle
+//!   ≥0.9999 against candle; test `motor`) but is slower than candle, so `Gemma::load` uses candle
 //!   on those CPUs and this path only with `OMOIKANE_GEMMA_RAPIDO=1`.
 
 use rayon::prelude::*;

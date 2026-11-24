@@ -1,10 +1,10 @@
 //! Memory for newcomers (1.7.0). When someone joins a client's space, their agent already got, at
 //! start, what belongs to the project the session opens in, what is pinned, the space's preferences
 //! and the global stuff; but not what happens in the client's other projects nor who writes. Here:
-//! - `bienvenida`: the first session of this database in a project of a space (and its compactions)
+//! - `welcome`: the first session of this database in a project of a space (and its compactions)
 //!   carries a short block with the space's other projects and where they stand, their open
 //!   decisions and who writes. Once: later sessions don't repeat it.
-//! - `al_unirse`: what `omoi sync join --space` just brought, told to the person.
+//! - `on_join`: what `omoi sync join --space` just brought, told to the person.
 //!
 //! Everything is looked up with `Scope::Space(Some(s))`: nothing from another space ever leaks.
 
@@ -14,17 +14,17 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// How many of the space's other projects are shown (of the rest, how many there are).
-pub const PROYECTOS: usize = 8;
+pub const MAX_PROJECTS: usize = 8;
 /// How many open decisions from the other projects are shown.
-pub const ABIERTAS: usize = 5;
+pub const MAX_OPEN: usize = 5;
 /// How many authors are named.
-pub const AUTORES: usize = 6;
+pub const MAX_AUTHORS: usize = 6;
 /// Slice of each project's `status`: just enough to know where it stands.
 const SNIPPET: usize = 160;
 
 /// Whether this is the first session of this database in this project, in any of its folders. The
 /// `current` session doesn't count: after compacting, the agent lost the block and gets it again.
-pub fn primera_sesion(db: &Connection, project: i64, current: &str) -> Result<bool> {
+pub fn first_session(db: &Connection, project: i64, current: &str) -> Result<bool> {
     Ok(db.query_row(
         "SELECT NOT EXISTS(SELECT 1 FROM session s JOIN project_path pp ON pp.path = s.project
                             WHERE pp.project_id = ?1 AND s.session <> ?2)",
@@ -48,7 +48,7 @@ fn authors(db: &Connection, space: i64) -> Result<Vec<(String, i64)>> {
          GROUP BY m.author ORDER BY count(*) DESC, m.author LIMIT ?1",
         Scope::Space(Some(space)).sql()
     ))?;
-    let v = q.query_map([AUTORES as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let v = q.query_map([MAX_AUTHORS as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
@@ -63,16 +63,16 @@ fn snippet(text: &str, n: usize) -> String {
 /// of the start doesn't show (other projects, their open decisions or other people who write) and the
 /// person didn't write all of it themselves.
 /// `own` is this computer's author. Called before recording the session.
-pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&str>) -> Result<Option<String>> {
+pub fn welcome(db: &Connection, scope: &Scope, session: &str, own: Option<&str>) -> Result<Option<String>> {
     let Scope::Project { id, space: Some(space) } = *scope else { return Ok(None) };
-    if id <= 0 || !primera_sesion(db, id, session)? {
+    if id <= 0 || !first_session(db, id, session)? {
         return Ok(None);
     }
     let wide = Scope::Space(Some(space));
     // The space's other projects, most active first, with their latest `status`.
-    let mut others = crate::proyecto::list(db, None, Some(Some(space)), PROYECTOS + 2)?;
+    let mut others = crate::proyecto::list(db, None, Some(Some(space)), MAX_PROJECTS + 2)?;
     others.retain(|p| p.id != id);
-    let statuses = memoria::statuses(db, &wide, PROYECTOS + 3)?;
+    let statuses = memoria::statuses(db, &wide, MAX_PROJECTS + 3)?;
     // The open decisions of the other projects (this one's, the space's and the global ones already show).
     let open: Vec<_> = memoria::open_decisions(db, &wide, usize::MAX)?.into_iter().filter(|m| m.project_id != 0 && m.project_id != id).collect();
     let authors = authors(db, space)?;
@@ -93,20 +93,20 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
     );
     if !others.is_empty() {
         s.push_str("Other projects of the space (most active first, with where work was left):\n");
-        for p in others.iter().take(PROYECTOS) {
+        for p in others.iter().take(MAX_PROJECTS) {
             s.push_str(&format!("- {} ({} memories)", p.name, p.memories));
             if let Some(m) = statuses.iter().find(|m| m.project_id == p.id) {
                 s.push_str(&format!(": {} — {} (id {})", m.title, snippet(&m.content, SNIPPET), m.id.chars().take(12).collect::<String>()));
             }
             s.push('\n');
         }
-        if others.len() > PROYECTOS {
+        if others.len() > MAX_PROJECTS {
             s.push_str("…and more (`context` lists them).\n");
         }
     }
     if !open.is_empty() {
         s.push_str("Decisions still open in those projects (the user's to make):\n");
-        for m in open.iter().take(ABIERTAS) {
+        for m in open.iter().take(MAX_OPEN) {
             // By its name: a project that hasn't been opened here yet has no folder.
             let p: String = db
                 .query_row("SELECT name FROM project WHERE id = ?1", [m.project_id], |r| r.get(0))
@@ -116,14 +116,14 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
             let mark = if m.is_blocking() { "BLOCKING " } else { "" };
             s.push_str(&format!("- {mark}[project {p}] {} (id {})\n", m.title, m.id.chars().take(12).collect::<String>()));
         }
-        if open.len() > ABIERTAS {
-            s.push_str(&format!("…and {} more (`search` with the tag `open` and `space`).\n", open.len() - ABIERTAS));
+        if open.len() > MAX_OPEN {
+            s.push_str(&format!("…and {} more (`search` with the tag `open` and `space`).\n", open.len() - MAX_OPEN));
         }
     }
     if !authors.is_empty() {
         let v: Vec<String> = authors
             .iter()
-            .take(AUTORES)
+            .take(MAX_AUTHORS)
             .map(|(a, n)| if own == Some(a.as_str()) { format!("{a} ({n}, the user)") } else { format!("{a} ({n})") })
             .collect();
         s.push_str(&format!("Who writes in this space (memories each): {}.\n", v.join(", ")));
@@ -135,7 +135,7 @@ pub fn bienvenida(db: &Connection, scope: &Scope, session: &str, own: Option<&st
 /// What just arrived from a space on joining its repository, to tell the person: its memories, its
 /// projects, what is pinned and the open decisions, and that the agent's next session in those
 /// projects will already have it. Nothing if the space isn't there or arrived empty.
-pub fn al_unirse(db: &Connection, space: &str) -> Result<Option<String>> {
+pub fn on_join(db: &Connection, space: &str) -> Result<Option<String>> {
     let Some(s) = crate::proyecto::space_of_key(db, &crate::proyecto::space_key_from_name(space))? else { return Ok(None) };
     let (memories, pinned): (i64, i64) = db.query_row(
         "SELECT count(*), COALESCE(sum(pinned), 0) FROM memory

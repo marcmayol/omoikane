@@ -7,7 +7,7 @@
 
 use anyhow::{Result, anyhow};
 use omoikane::buscar::{Fusion, SearchOptions, search_with};
-use omoikane::embeber::Modelo;
+use omoikane::embeber::Model;
 use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -21,8 +21,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn model() -> Result<Modelo> {
-    omoikane::modelos::abrir_actual()?.ok_or_else(|| anyhow!("sin modelo: omoi model install"))
+fn model() -> Result<Model> {
+    omoikane::modelos::open_current()?.ok_or_else(|| anyhow!("sin modelo: omoi model install"))
 }
 
 pub fn notes(dir: &Path) -> Result<Vec<(String, String, String)>> {
@@ -87,7 +87,7 @@ fn search(dir: &Path, tsvs: &[String]) -> Result<()> {
                 if f == "-" {
                     continue;
                 }
-                let r = search_with(&mut db, q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, *fusion)?;
+                let r = search_with(&mut db, q, &o, Some(&m), omoikane::vectores::SEARCH_SIMILARITY, *fusion)?;
                 let pos = r.iter().position(|x| &file_of[&x.memory.id] == f);
                 let e = per_kind.entry(kind).or_default();
                 e.0 += usize::from(pos == Some(0));
@@ -137,7 +137,7 @@ pub fn failures(dir: &Path, tsv: &str) -> Result<()> {
         if f == "-" {
             continue;
         }
-        let r = search_with(&mut db, &q, &o, Some(&m), omoikane::vectores::SIMILITUD_BUSQUEDA, Fusion::Fallback)?;
+        let r = search_with(&mut db, &q, &o, Some(&m), omoikane::vectores::SEARCH_SIMILARITY, Fusion::Fallback)?;
         let pos = r.iter().position(|x| file_of[&x.memory.id] == f);
         if pos != Some(0) {
             let first = r.first().map_or("(nada)".to_string(), |x| file_of[&x.memory.id].clone());

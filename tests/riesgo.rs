@@ -16,9 +16,9 @@ fn dir(name: &str) -> comun::Temporal {
     d
 }
 
-/// One diary line, by hand: what `diario::apuntar` would leave when the session closes.
+/// One diary line, by hand: what `diario::record` would leave when the session closes.
 fn session(db: &Connection, name: &str, project_id: i64, folder: &str, day: &str, files: &[&str]) {
-    diario::crear_tabla(db).unwrap();
+    diario::create_table(db).unwrap();
     db.execute(
         "INSERT INTO diary(session, project_id, folder, first_at, last_at, files) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         rusqlite::params![name, project_id, folder, format!("{day}T10:00:00.000Z"), serde_json::to_string(files).unwrap()],
@@ -95,18 +95,18 @@ fn one_line_with_what_changes_together() {
 fn not_enough_sessions_says_nothing() {
     let (_d, db, repo, _) = project("umbral");
     // `README.md`: 2 sessions, below 3.
-    assert!(riesgo::historias(&db, &repo, "cambia README.md").unwrap().is_empty());
+    assert!(riesgo::histories(&db, &repo, "cambia README.md").unwrap().is_empty());
     // `src/db.rs`: 3 sessions, but nothing changes with it in 3; its gotcha does count.
-    let h = riesgo::historias(&db, &repo, "cambia src/db.rs").unwrap();
+    let h = riesgo::histories(&db, &repo, "cambia src/db.rs").unwrap();
     assert_eq!(h.len(), 1);
-    assert_eq!((h[0].sesiones, h[0].juntos.len(), h[0].gotchas), (3, 0, 1));
-    assert_eq!(h[0].linea(), "History of `src/db.rs`: changed in 3 sessions (last 2026-10-21); 1 gotcha mentions it.");
+    assert_eq!((h[0].sessions, h[0].together.len(), h[0].gotchas), (3, 0, 1));
+    assert_eq!(h[0].line(), "History of `src/db.rs`: changed in 3 sessions (last 2026-10-21); 1 gotcha mentions it.");
 }
 
 #[test]
 fn no_file_in_message_skips_the_diary() {
     let (_d, mut db, repo, _) = project("nada");
-    assert!(!riesgo::parece_nombrar("qué tal ha ido la sincronización de ayer"));
+    assert!(!riesgo::may_name_a_file("qué tal ha ido la sincronización de ayer"));
     let t = recall::on_prompt(&mut db, &repo, &entry("s1", "qué tal ha ido la sincronización de ayer"), None).unwrap().unwrap_or_default();
     assert!(!t.contains("History of"), "{t}");
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'diary_hint')", [], |f| f.get(0)).unwrap();
@@ -115,7 +115,7 @@ fn no_file_in_message_skips_the_diary() {
     let d2 = dir("vacia");
     let repo2 = omoikane::proyecto::of_dir(&d2.join("repo")).unwrap();
     let db2 = db::open(&d2.join("o.db")).unwrap();
-    assert!(riesgo::al_preguntar(&db2, &repo2, "s", "mira src/sync.rs").unwrap().is_none());
+    assert!(riesgo::on_prompt(&db2, &repo2, "s", "mira src/sync.rs").unwrap().is_none());
 }
 
 #[test]
@@ -129,8 +129,8 @@ fn only_this_projects_sessions() {
         session(&db, &format!("h{i}"), 0, &other_dir, day, &["src/sync.rs"]);
     }
     session(&db, "suelta", 0, &repo, "2026-11-05", &["src/sync.rs"]);
-    let h = riesgo::historias(&db, &repo, "src/sync.rs").unwrap();
-    assert_eq!((h[0].sesiones, h[0].ultima.as_str()), (6, "2026-11-05"));
+    let h = riesgo::histories(&db, &repo, "src/sync.rs").unwrap();
+    assert_eq!((h[0].sessions, h[0].last.as_str()), (6, "2026-11-05"));
 }
 
 #[test]
@@ -140,12 +140,12 @@ fn by_name_only_the_busiest() {
         session(&db, &format!("t{i}"), id, &repo, day, &["tools/sync.rs"]);
     }
     // By name, only `src/sync.rs` (5 sessions versus 3).
-    let h = riesgo::historias(&db, &repo, "mira sync.rs").unwrap();
-    assert_eq!(h.iter().map(|x| x.fichero.as_str()).collect::<Vec<_>>(), ["src/sync.rs"]);
+    let h = riesgo::histories(&db, &repo, "mira sync.rs").unwrap();
+    assert_eq!(h.iter().map(|x| x.file.as_str()).collect::<Vec<_>>(), ["src/sync.rs"]);
     // With the full path, that one; and both if both are named.
-    let h = riesgo::historias(&db, &repo, "mira tools/sync.rs").unwrap();
-    assert_eq!(h.iter().map(|x| x.fichero.as_str()).collect::<Vec<_>>(), ["tools/sync.rs"]);
-    let h = riesgo::historias(&db, &repo, "compara tools/sync.rs con src/sync.rs").unwrap();
+    let h = riesgo::histories(&db, &repo, "mira tools/sync.rs").unwrap();
+    assert_eq!(h.iter().map(|x| x.file.as_str()).collect::<Vec<_>>(), ["tools/sync.rs"]);
+    let h = riesgo::histories(&db, &repo, "compara tools/sync.rs con src/sync.rs").unwrap();
     assert_eq!(h.len(), 2);
 }
 
@@ -155,7 +155,7 @@ fn by_name_only_the_busiest() {
 fn if_history_fails_recall_goes_on() {
     let (_d, mut db, repo, _) = project("falla");
     db.execute_batch("CREATE TABLE diary_hint (otra TEXT)").unwrap();
-    assert!(riesgo::al_preguntar(&db, &repo, "s1", "mira src/sync.rs").is_err(), "la tabla rota hace fallar el historial");
+    assert!(riesgo::on_prompt(&db, &repo, "s1", "mira src/sync.rs").is_err(), "la tabla rota hace fallar el historial");
     let t = recall::on_prompt(&mut db, &repo, &entry("s1", "mira src/sync.rs"), None).unwrap().expect("las memorias siguen llegando");
     assert!(t.contains("El push de sync pierde el orden"), "{t}");
     assert!(!t.contains("History of"), "{t}");

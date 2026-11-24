@@ -10,8 +10,8 @@
 //! It is local, like `recall_log` or `memory_sig`: it does not travel with sync nor with `omoi export`
 //! (file paths belong to this machine and say a lot about what is being done; history belongs to
 //! each machine). A 1.0 opens the database and does not see it, and it does not raise `lector_minimo`. The table appears with the
-//! first line (`crear_tabla`), not when opening the database. It weighs a few hundred bytes per session; it is
-//! kept for a year (`DIAS`).
+//! first line (`create_table`), not when opening the database. It weighs a few hundred bytes per session; it is
+//! kept for a year (`DAYS`).
 
 use crate::memoria::{NOW, Scope};
 use anyhow::Result;
@@ -40,20 +40,20 @@ CREATE INDEX IF NOT EXISTS diary_last ON diary(last_at);
 ";
 
 /// How many files are noted per session (the first ones touched).
-pub const MAX_FICHEROS: usize = 50;
+pub const MAX_FILES: usize = 50;
 /// How many days a line is kept. With a few hundred bytes per session, a year of ten sessions a
 /// day is a couple of MB: it fits easily, and beyond that almost nobody asks.
-pub const DIAS: i64 = 365;
+pub const DAYS: i64 = 365;
 /// From how many of the session's subagents the files and memories are read (the most recent), and up to
 /// what size: the close hook has little more than a second and afterwards still sets aside candidates.
-pub const MAX_SUBAGENTES: usize = 10;
-pub const MAX_BYTES_SUBAGENTE: u64 = 16 << 20;
+pub const MAX_SUBAGENTS: usize = 10;
+pub const MAX_BYTES_PER_SUBAGENT: u64 = 16 << 20;
 /// And all the subagents of a session together.
 const MAX_BYTES_ALL_SUBAGENTS: u64 = 32 * 1024 * 1024;
 
 /// The table is created when writing the first line, not when opening the database: the per-message recall
 /// does not even do that much extra.
-pub fn crear_tabla(db: &Connection) -> Result<()> {
+pub fn create_table(db: &Connection) -> Result<()> {
     db.execute_batch(TABLE)?;
     // `applied` (1.10): an older table does not have it. An earlier version names its columns when
     // writing and reading, so the extra column does not bother it.
@@ -68,21 +68,21 @@ fn has_applied_column(db: &Connection) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('diary') WHERE name = 'applied')", [], |f| f.get(0))?)
 }
 
-pub(crate) fn hay_tabla(db: &Connection) -> Result<bool> {
+pub(crate) fn has_table(db: &Connection) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'diary')", [], |f| f.get(0))?)
 }
 
 /// What is extracted from the conversation.
 #[derive(Debug, Default, PartialEq)]
-pub struct Lectura {
+pub struct Reading {
     /// The files that were edited or written, in the order they were touched, without repeats.
-    pub ficheros: Vec<String>,
+    pub files: Vec<String>,
     /// The ids returned by `remember` (saved) or `update`.
-    pub guardadas: Vec<String>,
+    pub saved: Vec<String>,
     /// The ids (or their prefix) passed to an `update` whose response was not found.
-    pub pedidas: Vec<String>,
+    pub requested: Vec<String>,
     /// The first time in the conversation, if it says (UTC, like `memoria::NOW`).
-    pub primera: Option<String>,
+    pub first_at: Option<String>,
 }
 
 /// Tools that write files, in lowercase: Claude Code (Edit, Write, MultiEdit,
@@ -212,7 +212,7 @@ fn id_from_result(v: &serde_json::Value, which: Omoi, depth: usize) -> Option<St
 }
 
 struct Reader {
-    l: Lectura,
+    l: Reading,
     /// Calls to `remember`/`update` with no response yet, by their id, with the id passed to
     /// `update` (for when its response does not show up).
     pending: HashMap<String, (Omoi, Option<String>)>,
@@ -231,7 +231,7 @@ impl Reader {
                 {
                     // No id in the response (an error, a duplicate): nothing was saved.
                     let id = RESULT_KEYS.iter().filter_map(|k| o.get(*k)).find_map(|x| id_from_result(x, which, 0));
-                    self.l.guardadas.extend(id);
+                    self.l.saved.extend(id);
                     return;
                 }
                 for x in o.values() {
@@ -248,7 +248,7 @@ impl Reader {
         if let Some(which) = omoikane_tool(name) {
             // The response may come inside the same call (Gemini) or in another line, by its id.
             if let Some(id) = ["result", "response", "output"].iter().filter_map(|k| o.get(*k)).find_map(|x| id_from_result(x, which, 0)) {
-                self.l.guardadas.push(id);
+                self.l.saved.push(id);
                 return;
             }
             let requested = args.as_ref().and_then(|a| a["id"].as_str()).filter(|_| which == Omoi::Update).map(String::from);
@@ -256,7 +256,7 @@ impl Reader {
                 Some(id) => {
                     self.pending.insert(id.to_string(), (which, requested));
                 }
-                None => self.l.pedidas.extend(requested),
+                None => self.l.requested.extend(requested),
             }
             return;
         }
@@ -283,14 +283,14 @@ impl Reader {
                     strings(other, &mut |s| from_patch(s, &mut r));
                 }
             }
-            self.l.ficheros.extend(r);
+            self.l.files.extend(r);
             return;
         }
         if !is_edit(name) || args["command"].as_str() == Some("view") {
             return;
         }
         if let Some(p) = PATH_KEYS.iter().find_map(|k| args[*k].as_str()).filter(|p| !p.trim().is_empty()) {
-            self.l.ficheros.push(p.trim().to_string());
+            self.l.files.push(p.trim().to_string());
         }
     }
 }
@@ -319,16 +319,16 @@ fn time_of(line: &str) -> Option<String> {
 
 /// What the conversation says: the files touched and the memories saved or changed. `root` is
 /// the project folder: files inside it are made relative to it.
-pub fn leer(path: &Path, root: &str) -> Result<Lectura> {
+pub fn read(path: &Path, root: &str) -> Result<Reading> {
     // Without requiring UTF-8: a conversation cut in the middle of a character (the agent is still writing) is read anyway.
     let bytes = std::fs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
-    let mut reader = Reader { l: Lectura::default(), pending: HashMap::new() };
+    let mut reader = Reader { l: Reading::default(), pending: HashMap::new() };
     // Gemini CLI before June 2026: a whole JSON with `messages`.
     if let Ok(whole) = serde_json::from_str::<serde_json::Value>(&text)
         && whole["messages"].is_array()
     {
-        reader.l.primera = time_of(&text);
+        reader.l.first_at = time_of(&text);
         reader.visit(&whole["messages"]);
     } else {
         // Claude Code (and Cursor) only call with `"tool_use"`: one pass per line instead of all of them.
@@ -336,8 +336,8 @@ pub fn leer(path: &Path, root: &str) -> Result<Lectura> {
         let claude = text[..cut].contains("\"parentUuid\"");
         let markers = if claude { &MARKERS[..1] } else { MARKERS };
         for (i, line) in text.lines().enumerate() {
-            if reader.l.primera.is_none() && i < 50 {
-                reader.l.primera = time_of(line);
+            if reader.l.first_at.is_none() && i < 50 {
+                reader.l.first_at = time_of(line);
             }
             let relevant = markers.iter().any(|m| line.contains(m)) && names_one(line)
                 || reader.pending.keys().any(|id| line.contains(id.as_str()));
@@ -350,23 +350,23 @@ pub fn leer(path: &Path, root: &str) -> Result<Lectura> {
         }
     }
     let mut l = reader.l;
-    l.pedidas.extend(reader.pending.into_values().filter_map(|(_, requested)| requested));
+    l.requested.extend(reader.pending.into_values().filter_map(|(_, requested)| requested));
     let mut seen = BTreeSet::new();
-    l.ficheros = l.ficheros.iter().map(|f| relativo(f, root)).filter(|f| seen.insert(f.clone())).take(MAX_FICHEROS).collect();
+    l.files = l.files.iter().map(|f| relative(f, root)).filter(|f| seen.insert(f.clone())).take(MAX_FILES).collect();
     Ok(l)
 }
 
 /// `f` relative to `root` if it falls inside, with `/`; otherwise as is (with `/`). First comparing the
 /// text; if it does not match, with the real paths on disk, because the same folder may arrive written in
 /// another form: on Windows with its short name (`C:/Users/RUNNER~1/…`), or through a link.
-pub(crate) fn relativo(f: &str, root: &str) -> String {
-    let r = relativo_texto(f, root);
+pub(crate) fn relative(f: &str, root: &str) -> String {
+    let r = relative_text(f, root);
     if r != f.replace('\\', "/") || root.is_empty() || !std::path::Path::new(f).is_absolute() {
         return r;
     }
     match (real_path(std::path::Path::new(f)), real_path(std::path::Path::new(root))) {
         (Some(rf), Some(rr)) => {
-            let x = relativo_texto(&rf, &rr);
+            let x = relative_text(&rf, &rr);
             if x != rf.replace('\\', "/") { x } else { r }
         }
         _ => r,
@@ -395,8 +395,8 @@ fn real_path(p: &std::path::Path) -> Option<String> {
     }
 }
 
-/// `relativo` without touching the disk: text only.
-pub(crate) fn relativo_texto(f: &str, root: &str) -> String {
+/// `relative` without touching the disk: text only.
+pub(crate) fn relative_text(f: &str, root: &str) -> String {
     let f = f.replace('\\', "/");
     let root = root.replace('\\', "/");
     let root = root.trim_end_matches('/');
@@ -426,7 +426,7 @@ fn merge(old: Vec<String>, new: Vec<String>, max: usize) -> Vec<String> {
 }
 
 /// The session's key in the diary: its id or, without one, the conversation file's name.
-pub fn nombre_sesion(session: &str, conversation: Option<&Path>) -> String {
+pub fn session_name(session: &str, conversation: Option<&Path>) -> String {
     match session.trim() {
         "" => conversation.and_then(|c| c.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         s => s.to_string(),
@@ -436,33 +436,33 @@ pub fn nombre_sesion(session: &str, conversation: Option<&Path>) -> String {
 /// On close or compaction: writes (or completes) the session's line in the project. `conversation` is
 /// the conversation's path, if the agent gives it; without it, only what the database knows (the memories
 /// received). Without a session id, the conversation file's name.
-pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Option<&Path>) -> Result<bool> {
-    let session_key = nombre_sesion(session, conversation);
+pub fn record(db: &Connection, project: &str, session: &str, conversation: Option<&Path>) -> Result<bool> {
+    let session_key = session_name(session, conversation);
     if session_key.is_empty() {
         return Ok(false);
     }
-    crear_tabla(db)?;
+    create_table(db)?;
     let general = crate::proyecto::is_general(project);
     let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
     let root = if general { "" } else { project };
     let mut reading = match conversation {
-        Some(c) => leer(c, root)?,
-        None => Lectura::default(),
+        Some(c) => read(c, root)?,
+        None => Reading::default(),
     };
     // What its subagents did (Claude Code keeps them separately): their files and memories belong to
     // the session. One that cannot be read does not spoil the line.
     let mut read_bytes = 0u64;
-    for sub in conversation.map(crate::candidatas::subagentes_de).unwrap_or_default().into_iter().take(MAX_SUBAGENTES) {
+    for sub in conversation.map(crate::candidatas::subagent_transcripts).unwrap_or_default().into_iter().take(MAX_SUBAGENTS) {
         let len = std::fs::metadata(&sub).map(|m| m.len()).unwrap_or(u64::MAX);
         // Each one with its cap, and all together with another: the close hook has little more than a second.
-        if len > MAX_BYTES_SUBAGENTE || read_bytes + len > MAX_BYTES_ALL_SUBAGENTS {
+        if len > MAX_BYTES_PER_SUBAGENT || read_bytes + len > MAX_BYTES_ALL_SUBAGENTS {
             continue;
         }
         read_bytes += len;
-        if let Ok(l) = leer(&sub, root) {
-            reading.ficheros = merge(std::mem::take(&mut reading.ficheros), l.ficheros, MAX_FICHEROS);
-            reading.guardadas.extend(l.guardadas);
-            reading.pedidas.extend(l.pedidas);
+        if let Ok(l) = read(&sub, root) {
+            reading.files = merge(std::mem::take(&mut reading.files), l.files, MAX_FILES);
+            reading.saved.extend(l.saved);
+            reading.requested.extend(l.requested);
         }
     }
     // Those received by relevance: preferences and pinned ones arrive in every session and
@@ -474,22 +474,22 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Opti
     let recalled: Vec<String> = q.query_map([&session_key], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
     // Those saved or changed, only if they exist (a response from another database, or already forgotten, does not count).
     let mut saved = Vec::new();
-    for id in &reading.guardadas {
+    for id in &reading.saved {
         if db.query_row("SELECT 1 FROM memory WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some() {
             saved.push(id.clone());
         }
     }
-    for p in &reading.pedidas {
+    for p in &reading.requested {
         if let Ok(id) = crate::memoria::resolve_id(db, p) {
             saved.push(id);
         }
     }
     let key = params![session_key, project_id];
-    let files = merge(json_list(db, "SELECT files FROM diary WHERE session = ?1 AND project_id = ?2", key)?, reading.ficheros, MAX_FICHEROS);
+    let files = merge(json_list(db, "SELECT files FROM diary WHERE session = ?1 AND project_id = ?2", key)?, reading.files, MAX_FILES);
     let recalled = merge(json_list(db, "SELECT recalled FROM diary WHERE session = ?1 AND project_id = ?2", key)?, recalled, usize::MAX);
     let saved = merge(json_list(db, "SELECT saved FROM diary WHERE session = ?1 AND project_id = ?2", key)?, saved, usize::MAX);
     let started: Option<String> = db.query_row("SELECT started_at FROM session WHERE session = ?1", [&session_key], |f| f.get(0)).optional()?;
-    let first = [started, reading.primera].into_iter().flatten().min();
+    let first = [started, reading.first_at].into_iter().flatten().min();
     db.execute(
         &format!(
             "INSERT INTO diary(session, project_id, folder, first_at, last_at, files, recalled, saved)
@@ -500,13 +500,13 @@ pub fn apuntar(db: &Connection, project: &str, session: &str, conversation: Opti
         ),
         params![session_key, project_id, project, first, serde_json::to_string(&files)?, serde_json::to_string(&recalled)?, serde_json::to_string(&saved)?],
     )?;
-    db.execute(&format!("DELETE FROM diary WHERE julianday({NOW}) - julianday(last_at) > {DIAS}"), [])?;
+    db.execute(&format!("DELETE FROM diary WHERE julianday({NOW}) - julianday(last_at) > {DAYS}"), [])?;
     Ok(true)
 }
 
 /// A memory named in a line, with its title if it still exists.
 #[derive(Clone, Debug, Serialize)]
-pub struct Nombrada {
+pub struct NamedMemory {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -514,36 +514,36 @@ pub struct Nombrada {
 
 /// A diary line, for reading.
 #[derive(Clone, Debug, Serialize)]
-pub struct Linea {
+pub struct SessionEntry {
     pub session: String,
     /// The project folder (or the session's, if it was not a project).
     pub project: String,
     pub first_at: String,
     pub last_at: String,
     pub files: Vec<String>,
-    pub recalled: Vec<Nombrada>,
-    pub saved: Vec<Nombrada>,
+    pub recalled: Vec<NamedMemory>,
+    pub saved: Vec<NamedMemory>,
     /// Those the agent said it followed, citing their id (1.10): which memories the work was done with.
-    pub applied: Vec<Nombrada>,
+    pub applied: Vec<NamedMemory>,
 }
 
 /// Which lines to read.
 #[derive(Default)]
-pub struct Filtro {
+pub struct Filter {
     /// From this day or moment (`2026-11-03`, `2026-11-03T10`): those that ended then or later.
-    pub desde: Option<String>,
+    pub since: Option<String>,
     /// Until this day or moment: those that started then or earlier.
-    pub hasta: Option<String>,
+    pub until: Option<String>,
     /// Those that touched a file whose path contains this.
-    pub fichero: Option<String>,
+    pub file: Option<String>,
     /// The folder it is looked at from, if it is that of the requested project: its lines without a project (the
     /// folder was not one yet when the session closed, or the project was pruned) are also its own.
-    pub carpeta: Option<String>,
-    pub limite: usize,
+    pub folder: Option<String>,
+    pub limit: usize,
 }
 
 /// `7d`, `2w` or a date (`2026-11-03`, with or without time), as the start of a UTC moment.
-pub fn fecha(db: &Connection, text: &str) -> Result<String> {
+pub fn parse_date(db: &Connection, text: &str) -> Result<String> {
     let t = text.trim();
     if let Some(n) = t.strip_suffix('d').or_else(|| t.strip_suffix('w')).and_then(|n| n.parse::<i64>().ok()) {
         let days = if t.ends_with('w') { n * 7 } else { n };
@@ -561,7 +561,7 @@ pub fn fecha(db: &Connection, text: &str) -> Result<String> {
 fn where_clause(scope: &Scope) -> String {
     match scope {
         Scope::All => "1".into(),
-        // Those with `project_id` 0, only if they belong to one of its folders (checked later, in `lineas`).
+        // Those with `project_id` 0, only if they belong to one of its folders (checked later, in `entries`).
         Scope::Project { id, .. } => format!("d.project_id IN ({id}, 0)"),
         Scope::Space(Some(s)) => format!("d.project_id IN (SELECT id FROM project WHERE space_id = {s})"),
         Scope::Space(None) => "(d.project_id = 0 OR d.project_id IN (SELECT id FROM project WHERE space_id IS NULL))".into(),
@@ -569,21 +569,21 @@ fn where_clause(scope: &Scope) -> String {
 }
 
 /// How a line's folder is compared with a project's.
-pub(crate) fn carpeta_cmp(path: &str) -> String {
+pub(crate) fn folder_cmp(path: &str) -> String {
     crate::proyecto::comparable(path.replace('\\', "/").trim_end_matches('/'))
 }
 
 /// The diary lines visible from `scope`, from most recent to oldest.
-pub fn lineas(db: &Connection, scope: &Scope, f: &Filtro) -> Result<Vec<Linea>> {
-    if !hay_tabla(db)? {
+pub fn entries(db: &Connection, scope: &Scope, f: &Filter) -> Result<Vec<SessionEntry>> {
+    if !has_table(db)? {
         return Ok(Vec::new());
     }
     // From a project, the lines without a project that belong to its folders (or to the folder it is
     // looked at from, if it is not a project yet).
     let folders: Option<BTreeSet<String>> = match scope {
         Scope::Project { id, .. } if *id != 0 => {
-            let mut c: BTreeSet<String> = column_list(db, "SELECT path FROM project_path WHERE project_id = ?1", [id])?.iter().map(|p| carpeta_cmp(p)).collect();
-            c.extend(f.carpeta.as_deref().filter(|x| !x.is_empty()).map(carpeta_cmp));
+            let mut c: BTreeSet<String> = column_list(db, "SELECT path FROM project_path WHERE project_id = ?1", [id])?.iter().map(|p| folder_cmp(p)).collect();
+            c.extend(f.folder.as_deref().filter(|x| !x.is_empty()).map(folder_cmp));
             Some(c)
         }
         _ => None,
@@ -597,25 +597,25 @@ pub fn lineas(db: &Connection, scope: &Scope, f: &Filtro) -> Result<Vec<Linea>> 
         where_clause(scope)
     );
     let mut values: Vec<String> = Vec::new();
-    if let Some(d) = &f.desde {
+    if let Some(d) = &f.since {
         values.push(d.clone());
         sql.push_str(&format!(" AND substr(d.last_at, 1, length(?{n})) >= ?{n}", n = values.len()));
     }
-    if let Some(h) = &f.hasta {
+    if let Some(h) = &f.until {
         values.push(h.clone());
         sql.push_str(&format!(" AND substr(d.first_at, 1, length(?{n})) <= ?{n}", n = values.len()));
     }
     // The file and the limit, here and not in SQL: SQLite's `lower()` only knows ASCII, and the limit
     // goes after the filter so that `-n` gives as many as there are.
     sql.push_str(" ORDER BY d.last_at DESC");
-    let file = f.fichero.as_deref().map(|x| x.trim().replace('\\', "/").to_lowercase()).filter(|x| !x.is_empty());
-    let limit = f.limite.max(1);
+    let file = f.file.as_deref().map(|x| x.trim().replace('\\', "/").to_lowercase()).filter(|x| !x.is_empty());
+    let limit = f.limit.max(1);
     let mut q = db.prepare(&sql)?;
     let mut rows = q.query(rusqlite::params_from_iter(values.iter()))?;
     let mut title = db.prepare("SELECT title FROM memory WHERE id = ?1")?;
-    let mut name_all = |text: &str| -> Result<Vec<Nombrada>> {
+    let mut name_all = |text: &str| -> Result<Vec<NamedMemory>> {
         let ids: Vec<String> = serde_json::from_str(text).unwrap_or_default();
-        ids.into_iter().map(|id| Ok(Nombrada { title: title.query_row([&id], |r| r.get(0)).optional()?, id })).collect()
+        ids.into_iter().map(|id| Ok(NamedMemory { title: title.query_row([&id], |r| r.get(0)).optional()?, id })).collect()
     };
     let mut r = Vec::new();
     while r.len() < limit
@@ -624,7 +624,7 @@ pub fn lineas(db: &Connection, scope: &Scope, f: &Filtro) -> Result<Vec<Linea>> 
         let (project_id, folder): (i64, String) = (row.get(1)?, row.get(2)?);
         if project_id == 0
             && let Some(c) = &folders
-            && !c.contains(&carpeta_cmp(&folder))
+            && !c.contains(&folder_cmp(&folder))
         {
             continue;
         }
@@ -635,7 +635,7 @@ pub fn lineas(db: &Connection, scope: &Scope, f: &Filtro) -> Result<Vec<Linea>> 
         {
             continue;
         }
-        r.push(Linea {
+        r.push(SessionEntry {
             session: row.get(0)?,
             project: row.get(3)?,
             first_at: row.get(4)?,
@@ -657,7 +657,7 @@ const MAX_CITED: usize = 200;
 /// ULID alphabet (uppercase without I, L, O or U, and digits), starting with 0-7 and mixing letters and
 /// digits: that way uppercase words («README») and numbers do not count. A unique prefix is enough (the
 /// recall shows the first 12).
-pub fn citadas<'a>(db: &Connection, texts: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
+pub fn cited<'a>(db: &Connection, texts: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
     let mut seen = BTreeSet::new();
     let mut r = Vec::new();
     let mut checked = 0;
@@ -692,12 +692,12 @@ fn looks_like_id(w: &str) -> bool {
 /// Writes in the session's line the memories the agent said it followed (`ids`, already resolved), without
 /// those it saved or changed in it: citing the one it just wrote is not applying it. Adds to whatever
 /// was there (after compacting, the conversation continues and is read again in full). Without a line, nothing.
-pub fn apuntar_aplicadas(db: &Connection, project: &str, session: &str, conversation: Option<&Path>, ids: &[String]) -> Result<usize> {
-    let session = nombre_sesion(session, conversation);
-    if ids.is_empty() || session.is_empty() || !hay_tabla(db)? {
+pub fn record_applied(db: &Connection, project: &str, session: &str, conversation: Option<&Path>, ids: &[String]) -> Result<usize> {
+    let session = session_name(session, conversation);
+    if ids.is_empty() || session.is_empty() || !has_table(db)? {
         return Ok(0);
     }
-    crear_tabla(db)?;
+    create_table(db)?;
     let general = crate::proyecto::is_general(project);
     let project_id = if general || project.is_empty() { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
     let key = params![session, project_id];
@@ -712,8 +712,8 @@ pub fn apuntar_aplicadas(db: &Connection, project: &str, session: &str, conversa
 }
 
 /// How many diary sessions applied memory `id` and when the last one was (empty if none).
-pub fn aplicada(db: &Connection, id: &str) -> Result<(i64, Option<String>)> {
-    if !hay_tabla(db)? || !has_applied_column(db)? {
+pub fn applied(db: &Connection, id: &str) -> Result<(i64, Option<String>)> {
+    if !has_table(db)? || !has_applied_column(db)? {
         return Ok((0, None));
     }
     // The full id goes in quotes in the JSON list: `LIKE` with it does not confuse one with another.
@@ -734,8 +734,8 @@ fn column_list(db: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<V
 /// (and are still visible from their folder). If they kept their id, a new project that
 /// reused it (without `AUTOINCREMENT`, SQLite may hand out the id again) would inherit lines that are not
 /// its own, perhaps from another space.
-pub fn soltar_podados(db: &Connection) -> Result<()> {
-    if !hay_tabla(db)? {
+pub fn release_pruned(db: &Connection) -> Result<()> {
+    if !has_table(db)? {
         return Ok(());
     }
     let orphans = "project_id != 0 AND project_id NOT IN (SELECT id FROM project)";
@@ -747,8 +747,8 @@ pub fn soltar_podados(db: &Connection) -> Result<()> {
 
 /// Before pruning: the lines of a space's projects that are about to be deleted are deleted with them.
 /// Without a project they would be visible from the personal space, and the diary never crosses from one client to another.
-pub fn antes_de_podar(db: &Connection) -> Result<()> {
-    if !hay_tabla(db)? {
+pub fn before_prune(db: &Connection) -> Result<()> {
+    if !has_table(db)? {
         return Ok(());
     }
     db.execute(
@@ -759,8 +759,8 @@ pub fn antes_de_podar(db: &Connection) -> Result<()> {
 }
 
 /// When merging two projects (`proyecto::juntar`): the lines of `from` move to `to`.
-pub fn mover(db: &Connection, from: i64, to: i64) -> Result<()> {
-    if !hay_tabla(db)? {
+pub fn move_project(db: &Connection, from: i64, to: i64) -> Result<()> {
+    if !has_table(db)? {
         return Ok(());
     }
     db.execute("UPDATE OR IGNORE diary SET project_id = ?2 WHERE project_id = ?1", params![from, to])?;
@@ -783,14 +783,14 @@ mod tests {
 
     #[test]
     fn relative_paths() {
-        assert_eq!(relativo("/w/repo/src/a.rs", "/w/repo"), "src/a.rs");
-        assert_eq!(relativo("/w/repo2/a.rs", "/w/repo"), "/w/repo2/a.rs");
-        assert_eq!(relativo("src/a.rs", "/w/repo"), "src/a.rs");
-        assert_eq!(relativo(r"D:\Omoikane\src\sync.rs", r"D:\Omoikane"), "src/sync.rs");
+        assert_eq!(relative("/w/repo/src/a.rs", "/w/repo"), "src/a.rs");
+        assert_eq!(relative("/w/repo2/a.rs", "/w/repo"), "/w/repo2/a.rs");
+        assert_eq!(relative("src/a.rs", "/w/repo"), "src/a.rs");
+        assert_eq!(relative(r"D:\Omoikane\src\sync.rs", r"D:\Omoikane"), "src/sync.rs");
         // Characters that change size when lowercased (`İ` takes 2 bytes, `i̇` 3): no panic.
-        assert_eq!(relativo("/w/İİ/a.rs", "/w/ii"), "/w/İİ/a.rs");
-        assert_eq!(relativo("/w/ii/a.rs", "/w/İİ"), "/w/ii/a.rs");
-        assert_eq!(relativo("/w/ña/a.rs", "/w/ña"), "a.rs");
+        assert_eq!(relative("/w/İİ/a.rs", "/w/ii"), "/w/İİ/a.rs");
+        assert_eq!(relative("/w/ii/a.rs", "/w/İİ"), "/w/ii/a.rs");
+        assert_eq!(relative("/w/ña/a.rs", "/w/ña"), "a.rs");
     }
 
     #[test]
@@ -801,8 +801,8 @@ mod tests {
         // With multi-byte letters where the time goes: not a time, and does not break.
         assert_eq!(time_of(r#"{"timestamp":"2026-11-04T10:00:00.12ñZ"}"#), None);
         let db = Connection::open_in_memory().unwrap();
-        assert_eq!(fecha(&db, "2026-11-03").unwrap(), "2026-11-03");
-        assert_eq!(fecha(&db, "7d").unwrap().len(), 10);
-        assert!(fecha(&db, "martes").is_err());
+        assert_eq!(parse_date(&db, "2026-11-03").unwrap(), "2026-11-03");
+        assert_eq!(parse_date(&db, "7d").unwrap().len(), 10);
+        assert!(parse_date(&db, "martes").is_err());
     }
 }

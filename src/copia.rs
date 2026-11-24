@@ -30,7 +30,7 @@
 //! (7; 0 = off), and along the way the trash is emptied of whatever has been there longer than
 //! `OMOIKANE_TRASH_DAYS` (30; 0 = never).
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{self, Scope, COLUMNS, NCOL, from_row};
 use crate::sync::{self, Applier, Cipher, Line, SyncSummary};
 use crate::tr;
@@ -279,7 +279,7 @@ pub fn export(db: &Connection, db_path: &Path, scope: &Scope, encrypt: bool, out
     let mut going = in_trash.clone();
     // The history of those that a pre-1.8.0 version promoted from a client with its id was the
     // client's text: it only goes in the copy of everything (as in `memoria::history_in`).
-    let without_history = if everything { Default::default() } else { crate::oficios::historiales_solo_aqui(db)? };
+    let without_history = if everything { Default::default() } else { crate::oficios::local_only_histories(db)? };
     {
         let mut q = db.prepare(&format!("SELECT {COLUMNS}, m.hlc, m.content_hlc, m.extra FROM memory m WHERE {} ORDER BY m.id", scope.sql()))?;
         let mut rows = q.query([])?;
@@ -507,7 +507,7 @@ fn filter_stamp(l: &mut Line, keys: &crate::verificado::SealKeys, s: StampPolicy
 /// `Counts::unverified` (agent) and `Counts::untrusted_verified` (someone else's) to warn. (Sync does
 /// bring the stamps of the person's other computers, through their encrypted repository: see
 /// `sync::sello_de_otro`.)
-pub fn import(db: &mut Connection, db_path: &Path, path: &Path, current: &str, model: Option<&Modelo>, dry_run: bool, stamps: StampPolicy) -> Result<(Counts, SyncSummary)> {
+pub fn import(db: &mut Connection, db_path: &Path, path: &Path, current: &str, model: Option<&Model>, dry_run: bool, stamps: StampPolicy) -> Result<(Counts, SyncSummary)> {
     let keys = crate::verificado::seal_keys(db, stamps.trust && !stamps.agent && !dry_run)?;
     let (mut from_agent, mut foreign) = (0, 0);
     let mut count = read(db_path, path, |mut l| {

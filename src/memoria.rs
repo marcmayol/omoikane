@@ -3,7 +3,7 @@
 //! Every write touches `memory`, `memory_fts` and `memory_path` in a single `IMMEDIATE` transaction:
 //! there is never an unindexed memory nor an index pointing to a deleted memory.
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::{tr, vectores};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
@@ -297,17 +297,17 @@ impl Scope {
     /// The SQL condition on memory `m` (with `m.project_id IN (…)`, which goes through the
     /// `memory_scope` index). The ids are database integers: they go in the text, no parameter needed.
     /// Without the trade memories of the trades no project in the scope has (see
-    /// `oficios::ocultas`): a global one with `trade:android` doesn't reach a web project.
+    /// `oficios::hidden_sql`): a global one with `trade:android` doesn't reach a web project.
     pub(crate) fn sql(&self) -> String {
         let base = self.sql_without_trades();
-        match crate::oficios::ocultas(self) {
+        match crate::oficios::hidden_sql(self) {
             Some(o) => format!("({base} AND (m.project_id <> 0 OR m.space_id IS NOT NULL OR m.n NOT IN ({o})))"),
             None => base,
         }
     }
 
     /// `sql` counting trade memories as global: for `memory_cuenta` (which doesn't have the
-    /// tags); the caller subtracts `oficios::cuantas_ocultas`.
+    /// tags); the caller subtracts `oficios::hidden_count`.
     fn sql_without_trades(&self) -> String {
         let space_cond = |s: Option<i64>| match s {
             Some(s) => format!("(m.project_id <> 0 OR m.space_id IS NULL OR m.space_id = {s})"),
@@ -346,7 +346,7 @@ pub(crate) fn sees_all(db: &Connection, scope: &Scope) -> bool {
             Scope::All => all,
             a => {
                 let n: i64 = db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", a.sql_without_trades()), [], |f| f.get(0)).ok()?;
-                n - crate::oficios::cuantas_ocultas(db, a).ok()?
+                n - crate::oficios::hidden_count(db, a).ok()?
             }
         };
         Some(here == all && fts_row_count(db)? == all)
@@ -435,13 +435,13 @@ fn clean_title(t: &str) -> Result<String> {
 }
 
 /// What is written here (not what comes from sync nor what comes back from the trash) goes
-/// through `secretos::redactar`, unless `OMOIKANE_REDACT=0`. Records the kind of each one in `found`.
+/// through `secretos::redact`, unless `OMOIKANE_REDACT=0`. Records the kind of each one in `found`.
 fn strip_secrets(text: &str, found: &mut Vec<&'static str>) -> String {
-    if !crate::secretos::activo() {
+    if !crate::secretos::enabled() {
         return text.to_string();
     }
-    let (s, hs) = crate::secretos::redactar(text);
-    found.extend(hs.iter().map(|h| h.tipo));
+    let (s, hs) = crate::secretos::redact(text);
+    found.extend(hs.iter().map(|h| h.kind));
     s
 }
 
@@ -524,8 +524,8 @@ fn apply_edit(content: &mut String, c: &Changes) -> Result<Vec<AppliedChange>> {
 }
 
 /// The title and content `m` would have with these changes (`title`, `content`, `replace`, `append`),
-/// without writing anything: to look at the final text before saving it (`oficios::al_cambiar`) or to
-/// save it in another memory (`oficios::crear_de_oficio`).
+/// without writing anything: to look at the final text before saving it (`oficios::on_update`) or to
+/// save it in another memory (`oficios::create_trade_memory`).
 pub fn text_after(m: &Memory, c: &Changes) -> Result<(String, String)> {
     let new_title = match &c.title {
         Some(t) => clean_title(t)?,
@@ -560,15 +560,15 @@ fn unindex_memory(tx: &Transaction, n: i64) -> Result<()> {
 
 // --- Operations ------------------------------------------------------------------------------------
 
-/// Saves without checking whether a similar one already exists: that is `vectores::duplicada`, beforehand, so the
+/// Saves without checking whether a similar one already exists: that is `vectores::duplicate`, beforehand, so the
 /// caller decides. With `model`, the vector goes in the same transaction.
-pub fn save(db: &mut Connection, new: NewMemory, model: Option<&Modelo>) -> Result<Memory> {
+pub fn save(db: &mut Connection, new: NewMemory, model: Option<&Model>) -> Result<Memory> {
     insert(db, &ulid::Ulid::generate().to_string(), new, None, model)
 }
 
 /// Like [`save`], but with the id it brings (a memory coming back from an OKF bundle exported from
 /// Omoikane, `okf::importar`): goes through secret redaction and gets a stamp from here.
-pub(crate) fn save_with_its_id(db: &mut Connection, id: &str, new: NewMemory, model: Option<&Modelo>) -> Result<Memory> {
+pub(crate) fn save_with_its_id(db: &mut Connection, id: &str, new: NewMemory, model: Option<&Model>) -> Result<Memory> {
     let id = ulid::Ulid::from_string(id).map_err(|e| anyhow!("{id}: {e}"))?.to_string();
     insert(db, &id, new, None, model)
 }
@@ -615,7 +615,7 @@ pub fn key_of(m: &Memory) -> Option<&str> {
 /// duplicates: the key already says which one it is. The `data`, if given, go to `memory.extra` like those of
 /// [`set_data`] and in the same transaction (without them, whatever it had stays); as there, changing
 /// only the data doesn't create a version, and the same thing again (text and data) changes nothing.
-pub fn save_by_key(db: &mut Connection, key: &str, mut new: NewMemory, data: Option<serde_json::Value>, model: Option<&Modelo>) -> Result<SavedByKey> {
+pub fn save_by_key(db: &mut Connection, key: &str, mut new: NewMemory, data: Option<serde_json::Value>, model: Option<&Model>) -> Result<SavedByKey> {
     let key = topic_key(key)?;
     let mut redacted_kinds = Vec::new();
     let data = ready_data(data, &mut redacted_kinds)?;
@@ -711,14 +711,14 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// The tags that give the trade scope of a keyed memory, sorted: its trades
 /// (`trade:web`, …) and who for (`trade-for:client`).
 fn trade_scope(tags: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIJO) || t.starts_with(crate::oficios::PARA)).cloned().collect();
+    let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIX) || t.starts_with(crate::oficios::FOR_PREFIX)).cloned().collect();
     v.sort();
     v
 }
 
 /// The trade tags of a list of tags, sorted (`trade:web`, …).
 fn trade_tags(tags: &[String]) -> Vec<String> {
-    let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIJO)).cloned().collect();
+    let mut v: Vec<String> = tags.iter().filter(|t| t.starts_with(crate::oficios::PREFIX)).cloned().collect();
     v.sort();
     v
 }
@@ -739,7 +739,7 @@ pub fn level_of(m: &Memory) -> Level {
         Level::Project
     } else if m.space_only() {
         Level::Space
-    } else if crate::oficios::lleva_oficio(&m.tags) {
+    } else if crate::oficios::has_trade(&m.tags) {
         Level::Trade
     } else {
         Level::Global
@@ -842,7 +842,7 @@ pub fn key_layers(db: &Connection, scope: &Scope, key: &str) -> Result<Vec<Layer
                 Level::Global => "global".to_string(),
                 Level::Trade => format!(
                     "trade:{}",
-                    crate::oficios::de_etiquetas(&trade_tags(&m.tags)).join(",")
+                    crate::oficios::from_tags(&trade_tags(&m.tags)).join(",")
                 ),
             };
             Layer {
@@ -889,7 +889,7 @@ fn placement(tx: &Connection, project: &str, project_id: Option<i64>, space_id: 
 }
 
 /// For sync: the same memory, with the same id, dates, stamp and author as on its computer.
-pub(crate) fn save_with_id(db: &mut Connection, id: &str, new: NewMemory, o: &Origin, model: Option<&Modelo>) -> Result<Memory> {
+pub(crate) fn save_with_id(db: &mut Connection, id: &str, new: NewMemory, o: &Origin, model: Option<&Model>) -> Result<Memory> {
     insert(db, id, new, Some(o), model)
 }
 
@@ -940,7 +940,7 @@ pub(crate) fn author_of(db: &Connection, project_id: i64, space_id: Option<i64>)
     author_in(db, &crate::proyecto::space_key(db, space)?)
 }
 
-fn insert(db: &mut Connection, id: &str, new: NewMemory, origin: Option<&Origin>, model: Option<&Modelo>) -> Result<Memory> {
+fn insert(db: &mut Connection, id: &str, new: NewMemory, origin: Option<&Origin>, model: Option<&Model>) -> Result<Memory> {
     let tx = write_tx(db)?;
     let m = insert_in(&tx, id, new, origin, model)?;
     tx.commit()?;
@@ -948,7 +948,7 @@ fn insert(db: &mut Connection, id: &str, new: NewMemory, origin: Option<&Origin>
 }
 
 /// `insert` inside an already open transaction (the caller commits).
-fn insert_in(tx: &Transaction, id: &str, new: NewMemory, origin: Option<&Origin>, model: Option<&Modelo>) -> Result<Memory> {
+fn insert_in(tx: &Transaction, id: &str, new: NewMemory, origin: Option<&Origin>, model: Option<&Model>) -> Result<Memory> {
     let kind = new.kind.with_context(|| tr!("missing kind: fact, decision, gotcha, preference or procedure", "falta el tipo: fact, decision, gotcha, preference o procedure"))?;
     // Redacted before validating: what counts for the title's 200 characters is what is stored.
     let mut redacted = Vec::new();
@@ -1014,7 +1014,7 @@ fn insert_in(tx: &Transaction, id: &str, new: NewMemory, origin: Option<&Origin>
     let m = read(tx, id)?;
     index_memory(tx, n, &m)?;
     if let Some(model) = model {
-        vectores::guardar(tx, n, model, &m.title, &m.content)?;
+        vectores::save(tx, n, model, &m.title, &m.content)?;
     }
     Ok(Memory { redacted, ..m })
 }
@@ -1071,7 +1071,7 @@ pub fn in_scope(db: &Connection, base: &Scope, id: &str) -> Result<()> {
     if matches!(base, Scope::All) {
         return Ok(());
     }
-    if crate::oficios::oculta(db, &base.widen(), id)? {
+    if crate::oficios::is_hidden(db, &base.widen(), id)? {
         bail!(tr!(
             "that memory is a trade memory of a trade no project here has (see `context`): it is not in this scope",
             "esa memoria es de un oficio que no tiene ningún proyecto de aquí (ver `context`): no es de este ámbito"
@@ -1089,33 +1089,33 @@ pub fn in_scope(db: &Connection, base: &Scope, id: &str) -> Result<()> {
 
 /// The history of a memory seen from `base`: error if the memory isn't visible from there
 /// ([`in_scope`]); empty if it is one of those that a pre-1.8.0 version promoted from a client
-/// with the same id (its history was client text, `oficios::historiales_solo_aqui`) and it isn't
+/// with the same id (its history was client text, `oficios::local_only_histories`) and it isn't
 /// viewed from a general folder.
 pub fn history_in(db: &Connection, base: &Scope, id: &str) -> Result<Vec<Version>> {
     let id = resolve_id(db, id)?;
     in_scope(db, base, &id)?;
-    if !matches!(base, Scope::All) && crate::oficios::historial_solo_aqui(db, &id)? {
+    if !matches!(base, Scope::All) && crate::oficios::history_local_only(db, &id)? {
         return Ok(Vec::new());
     }
     history(db, &id)
 }
 
-pub fn update(db: &mut Connection, id: &str, c: Changes, model: Option<&Modelo>) -> Result<Memory> {
+pub fn update(db: &mut Connection, id: &str, c: Changes, model: Option<&Model>) -> Result<Memory> {
     Ok(update_with_changes(db, id, c, model)?.0)
 }
 
 /// Like `update`, and also returns what `replace` and `append` changed, with their context.
-pub fn update_with_changes(db: &mut Connection, id: &str, c: Changes, model: Option<&Modelo>) -> Result<(Memory, Vec<AppliedChange>)> {
+pub fn update_with_changes(db: &mut Connection, id: &str, c: Changes, model: Option<&Model>) -> Result<(Memory, Vec<AppliedChange>)> {
     update_from(db, id, c, None, model)
 }
 
 /// For sync: the change coming from another computer, with its dates, stamp and author, all in
 /// the same transaction (the local version stays in the history).
-pub(crate) fn update_with_origin(db: &mut Connection, id: &str, c: Changes, o: &Origin, model: Option<&Modelo>) -> Result<Memory> {
+pub(crate) fn update_with_origin(db: &mut Connection, id: &str, c: Changes, o: &Origin, model: Option<&Model>) -> Result<Memory> {
     Ok(update_from(db, id, c, Some(o), model)?.0)
 }
 
-fn update_from(db: &mut Connection, id: &str, c: Changes, origin: Option<&Origin>, model: Option<&Modelo>) -> Result<(Memory, Vec<AppliedChange>)> {
+fn update_from(db: &mut Connection, id: &str, c: Changes, origin: Option<&Origin>, model: Option<&Model>) -> Result<(Memory, Vec<AppliedChange>)> {
     let id = resolve_id(db, id)?;
     let tx = write_tx(db)?;
     let r = update_in(&tx, &id, c, origin, model)?;
@@ -1125,7 +1125,7 @@ fn update_from(db: &mut Connection, id: &str, c: Changes, origin: Option<&Origin
 
 /// `update` inside an already open transaction (the caller commits), with the
 /// id already resolved.
-fn update_in(tx: &Transaction, id: &str, c: Changes, origin: Option<&Origin>, model: Option<&Modelo>) -> Result<(Memory, Vec<AppliedChange>)> {
+fn update_in(tx: &Transaction, id: &str, c: Changes, origin: Option<&Origin>, model: Option<&Model>) -> Result<(Memory, Vec<AppliedChange>)> {
     let before = read(tx, id)?;
     let before_hlc = hlc_of(tx, id)?;
     // The change's stamp: the origin's, or a local one later than that of the version being changed.
@@ -1250,8 +1250,8 @@ fn update_in(tx: &Transaction, id: &str, c: Changes, origin: Option<&Origin>, mo
     index_memory(tx, n, &m)?;
     if after.title != before.title || after.content != before.content {
         match model {
-            Some(model) => vectores::guardar(tx, n, model, &m.title, &m.content)?,
-            // Without a model, the old vector is no longer valid: it is deleted and `sincronizar` will redo it.
+            Some(model) => vectores::save(tx, n, model, &m.title, &m.content)?,
+            // Without a model, the old vector is no longer valid: it is deleted and `sync` will redo it.
             None => {
                 tx.execute("DELETE FROM memory_vec WHERE n = ?1", [n])?;
             }
@@ -1307,7 +1307,7 @@ fn save_version(tx: &Transaction, id: &str, m: &Memory, changed_at: Option<&str>
 /// that reached them by tag now resolve to this one) and their history hangs from that of the
 /// one that stays, with the reason «absorbed from <id>». All in one transaction. Returns the one that stays,
 /// what `replace`/`append` changed and the absorbed ids.
-pub fn absorb(db: &mut Connection, id: &str, ids: &[String], mut c: Changes, model: Option<&Modelo>) -> Result<(Memory, Vec<AppliedChange>, Vec<String>)> {
+pub fn absorb(db: &mut Connection, id: &str, ids: &[String], mut c: Changes, model: Option<&Model>) -> Result<(Memory, Vec<AppliedChange>, Vec<String>)> {
     ensure!(
         c.content.is_some(),
         tr!(
@@ -1362,10 +1362,10 @@ pub fn absorb(db: &mut Connection, id: &str, ids: &[String], mut c: Changes, mod
 /// their secrets, with the reason «redacted» on the previous version, and its history too (otherwise the
 /// secret would remain in the earlier version). The person asks for it, so it is done even with
 /// `OMOIKANE_REDACT=0`. With nothing to remove, it leaves it as it is (`redacted` empty).
-pub fn redact(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<Memory> {
+pub fn redact(db: &mut Connection, id: &str, model: Option<&Model>) -> Result<Memory> {
     let m = get(db, id)?;
-    let (title, ht) = crate::secretos::redactar(&m.title);
-    let (content, hc) = crate::secretos::redactar(&m.content);
+    let (title, ht) = crate::secretos::redact(&m.title);
+    let (content, hc) = crate::secretos::redact(&m.content);
     if ht.is_empty() && hc.is_empty() {
         return Ok(m);
     }
@@ -1382,13 +1382,13 @@ pub fn redact(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<M
         q.query_map([&m.id], |f| Ok((f.get(0)?, f.get(1)?, f.get(2)?)))?.collect::<rusqlite::Result<_>>()?
     };
     for (version, v_title, v_content) in versions {
-        let (t, c) = (crate::secretos::redactar(&v_title).0, crate::secretos::redactar(&v_content).0);
+        let (t, c) = (crate::secretos::redact(&v_title).0, crate::secretos::redact(&v_content).0);
         if t != v_title || c != v_content {
             tx.execute("UPDATE memory_version SET title = ?3, content = ?4 WHERE memory_id = ?1 AND version = ?2", params![m.id, version, t, c])?;
         }
     }
     tx.commit()?;
-    Ok(Memory { redacted: ht.iter().chain(&hc).map(|h| h.tipo).collect(), ..r })
+    Ok(Memory { redacted: ht.iter().chain(&hc).map(|h| h.kind).collect(), ..r })
 }
 
 /// Rebuilds the word index from the table. Returns how many memories it indexed.
@@ -1496,7 +1496,7 @@ pub fn trash(db: &Connection) -> Result<Vec<Forgotten>> {
 /// Brings a memory back from the trash (forgotten here or on another computer), with a stamp later than the
 /// forget: so it also comes back to the other computers on the next sync. Its previous history
 /// is kept.
-pub fn restore(db: &mut Connection, id: &str, model: Option<&Modelo>) -> Result<Memory> {
+pub fn restore(db: &mut Connection, id: &str, model: Option<&Model>) -> Result<Memory> {
     // The id as in the other commands: uppercase, and a prefix that matches several is an error.
     let id = id.trim().to_uppercase();
     // At least 4 characters, like `get` and `forget` (`resolve_id`): with just one you could pull out of
@@ -1890,7 +1890,7 @@ pub const RESOLVED: &str = "resolved";
 /// Resolves an open decision: appends the answer at the end of the content («Answer (date): …»),
 /// removes [`OPEN`] and [`BLOCKING`] and adds [`RESOLVED`]. With a version and reason, like `update`.
 /// One already resolved isn't resolved again (error). In a trade decision the answer goes through
-/// `oficios::fugas` like any new text (except what `allow_leaks` lets through): if it names
+/// `oficios::leaks` like any new text (except what `allow_leaks` lets through): if it names
 /// something of a project or a client it isn't saved and the leaks come back (`Ok(Err(…))`).
 /// Splits a memory that is too long into several (the «Partir» / Split button in Review, 1.12.1): the first part
 /// stays in the original memory (its id, history, links and pinning), and each of the others is
@@ -1937,7 +1937,7 @@ pub fn resolve_decision(
     answer: &str,
     reason: Option<String>,
     allow_leaks: bool,
-) -> Result<std::result::Result<Memory, Vec<crate::oficios::Fuga>>> {
+) -> Result<std::result::Result<Memory, Vec<crate::oficios::Leak>>> {
     let m = get(db, id)?;
     ensure!(m.kind == Kind::Decision, tr!("{} is not a decision", "{} no es una decisión", m.id));
     ensure!(
@@ -1950,8 +1950,8 @@ pub fn resolve_decision(
     );
     let answer = answer.trim();
     ensure!(!answer.is_empty(), tr!("the answer can't be empty", "la respuesta no puede estar vacía"));
-    if !crate::oficios::de_memoria(&m).is_empty() {
-        let f = crate::oficios::bloquean(crate::oficios::fugas_en(db, &[("answer", answer.to_string())])?, allow_leaks);
+    if !crate::oficios::of_memory(&m).is_empty() {
+        let f = crate::oficios::blocking_leaks(crate::oficios::leaks_in(db, &[("answer", answer.to_string())])?, allow_leaks);
         if !f.is_empty() {
             return Ok(Err(f));
         }
@@ -2078,8 +2078,8 @@ pub fn clean_review_reason(t: &str) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    if crate::secretos::activo() {
-        t = crate::secretos::redactar(&t).0;
+    if crate::secretos::enabled() {
+        t = crate::secretos::redact(&t).0;
     }
     if t.chars().count() > MAX_REVIEW_REASON {
         t = t.chars().take(MAX_REVIEW_REASON - 1).collect::<String>() + "…";
@@ -2190,7 +2190,7 @@ pub fn context(db: &Connection, scope: &Scope, limit: usize) -> Result<Vec<Memor
 /// triggers (`db::LOCALES`), without scanning the table; by counting, on a connection without it.
 pub fn count(db: &Connection, scope: &Scope) -> Result<i64> {
     match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", scope.sql_without_trades()), [], |f| f.get::<_, i64>(0)) {
-        Ok(n) => Ok(n - crate::oficios::cuantas_ocultas(db, scope)?),
+        Ok(n) => Ok(n - crate::oficios::hidden_count(db, scope)?),
         Err(_) => Ok(db.query_row(&format!("SELECT count(*) FROM memory m WHERE {}", scope.sql()), [], |f| f.get(0))?),
     }
 }

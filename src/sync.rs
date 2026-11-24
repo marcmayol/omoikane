@@ -43,7 +43,7 @@
 //! (`trabajo.sync.json`, `trabajo.sync-spaces/`…), so that two databases in the same folder don't
 //! share sync.
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{self, COLUMNS, Changes, Memory, NCOL, NewMemory, Origin, Kind, from_row};
 use crate::{reloj, tr};
 use aes_siv::KeyInit;
@@ -254,7 +254,7 @@ impl Config {
     fn shares(&self, m: &Memory) -> bool {
         // A trade memory (global with `trade:`) belongs to the person or the factory: it never goes through a
         // client's repository (being global it wouldn't anyway; this makes it explicit).
-        self.admits(m.kind_str(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::de_memoria(m).is_empty())
+        self.admits(m.kind_str(), &m.project_key, &m.space) && !(self.space.is_some() && !crate::oficios::of_memory(m).is_empty())
     }
 }
 
@@ -1425,7 +1425,7 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
     let mut histories = crate::memoria::histories(db)?;
     // What a version before 1.8.0 moved from a client to a trade with its id doesn't carry its
     // history (it was the client's text). Since that now creates a new memory, none is recorded any more.
-    for id in crate::oficios::historiales_solo_aqui(db)? {
+    for id in crate::oficios::local_only_histories(db)? {
         histories.remove(&id);
     }
     // A paused project's memories go to no repository until the person decides.
@@ -1451,8 +1451,8 @@ fn export(db: &Connection, clone_dir: &Path, machine: &str, config: &Config, cip
         // Second layer: what was saved before 0.19.0 (or with `OMOIKANE_REDACT=0` at some other time)
         // doesn't leave the machine with its secret, neither in the memory nor in its versions. Here it stays as
         // it is, with its notice in Review.
-        let (m, versions) = if crate::secretos::activo() {
-            let redact = |t: &str| crate::secretos::redactar(t).0;
+        let (m, versions) = if crate::secretos::enabled() {
+            let redact = |t: &str| crate::secretos::redact(t).0;
             let versions = versions.into_iter().map(|v| crate::memoria::Version { title: redact(&v.title), content: redact(&v.content), ..v }).collect();
             (Memory { title: redact(&m.title), content: redact(&m.content), ..m }, versions)
         } else {
@@ -1971,7 +1971,7 @@ impl<'a> Applier<'a> {
 
     /// Applies a line. `Err` is a line that couldn't be applied (it is counted and we carry on).
     /// Tombstones are best applied before memories, and verdicts after.
-    pub(crate) fn apply(&mut self, db: &mut Connection, source: &str, l: Line, model: Option<&Modelo>, r: &mut SyncSummary) -> Result<()> {
+    pub(crate) fn apply(&mut self, db: &mut Connection, source: &str, l: Line, model: Option<&Model>, r: &mut SyncSummary) -> Result<()> {
         match l {
             Line::Header { .. } | Line::End { .. } => Ok(()),
             Line::Project { key, name, space_key, hlc, moved, extra, .. } => {
@@ -2110,7 +2110,7 @@ impl<'a> Applier<'a> {
                 if let Some(c) = self.config {
                     // A client repository doesn't bring trade memories (global with `trade:`): the
                     // projects of that trade across all clients would see them.
-                    if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::oficios::lleva_oficio(&tags) {
+                    if c.space.is_some() && project_key.is_empty() && space_key.is_empty() && crate::oficios::has_trade(&tags) {
                         r.space_conflicts += 1;
                         return Ok(());
                     }
@@ -2330,7 +2330,7 @@ impl<'a> Applier<'a> {
 /// Reads other machines' files and applies their lines. A line that isn't understood (from a future
 /// version, another key, or damaged) is skipped and counted, without stopping the sync.
 #[allow(clippy::too_many_arguments)]
-fn import(db: &mut Connection, clone_dir: &Path, files: &[PathBuf], config: &Config, cipher: &Cipher, current: Option<&str>, model: Option<&Modelo>, r: &mut SyncSummary) -> Result<()> {
+fn import(db: &mut Connection, clone_dir: &Path, files: &[PathBuf], config: &Config, cipher: &Cipher, current: Option<&str>, model: Option<&Model>, r: &mut SyncSummary) -> Result<()> {
     let mut applier = Applier::new(db, Some(config), current)?;
     applier.with_opaque(db, cipher)?;
     // (source machine, file, line)
@@ -2421,7 +2421,7 @@ fn not_configured() -> String {
 /// A full sync of each repository on this machine (the general one and each space's):
 /// pull, merge, write this machine's memories, commit and push. Records how each one went in its status;
 /// if one fails, the others sync anyway and the first error is returned.
-pub fn sync_all(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Modelo>) -> Result<SyncSummary> {
+pub fn sync_all(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Model>) -> Result<SyncSummary> {
     let repos = repos(db_path);
     ensure!(!repos.is_empty(), not_configured());
     let mut total = SyncSummary { machine: reloj::machine_name(db)?, ..Default::default() };
@@ -2454,7 +2454,7 @@ pub fn sync_all(db: &mut Connection, db_path: &Path, current: Option<&str>, mode
 /// Syncs a repository. With `rotate`, before writing anything it starts using that key: it gives it the id
 /// after the highest the repository knows, records it in `omoikane.check` as current and
 /// encrypts with it everything from this machine. Returns the keys it used.
-fn sync_repo(db: &mut Connection, r: &SyncPaths, config: &Config, current: Option<&str>, model: Option<&Modelo>, rotate_to: Option<&[u8]>) -> Result<(SyncSummary, Cipher)> {
+fn sync_repo(db: &mut Connection, r: &SyncPaths, config: &Config, current: Option<&str>, model: Option<&Model>, rotate_to: Option<&[u8]>) -> Result<(SyncSummary, Cipher)> {
     let base = read_keys(r)?;
     ensure!(r.clone_dir.join(".git").exists(), tr!("the sync clone is missing: run `omoi sync init` again", "falta el clon de la sincronización: vuelve a hacer `omoi sync init`"));
     if let Some(a) = current {
@@ -2831,7 +2831,7 @@ pub fn change_url(db_path: &Path, space: Option<&str>, url: &str) -> Result<Opti
 /// old one), commits and pushes, and stores it here next to the old ones. From then on `omoi sync code` gives
 /// the new one's code; whoever only has the old one no longer reads what is written with it. Returns the
 /// new key's id.
-pub fn rotate(db: &mut Connection, db_path: &Path, space: Option<&str>, current: Option<&str>, model: Option<&Modelo>) -> Result<(u32, SyncSummary)> {
+pub fn rotate(db: &mut Connection, db_path: &Path, space: Option<&str>, current: Option<&str>, model: Option<&Model>) -> Result<(u32, SyncSummary)> {
     let _c = SyncLock::wait_for(db_path, Duration::from_secs(60)).context(another_running())?;
     let r = paths_for(db_path, space);
     let config = read_config_from(&r)?.context(not_configured())?;
@@ -3094,7 +3094,7 @@ pub fn notice(db_path: &Path) -> Option<String> {
 pub fn schedule(db_path: &Path) {
     // What changed also needs its meaning vector (if the model is there): let the
     // service compute it now, in the background.
-    crate::significado::avisar(db_path);
+    crate::significado::notify_changed(db_path);
     let r = paths(db_path);
     // `OMOIKANE_SYNC_AUTO=0` (or nobody at the keyboard without `=1`): only by hand (`omoi sync`).
     if (!r.config.exists() && spaces(db_path).is_empty()) || !crate::entorno::auto_sync() {
@@ -3358,7 +3358,7 @@ fn mark_done(r: &SyncPaths, mark: Option<&str>) {
 /// `omoi sync --background`: waits a few seconds to batch changes, syncs, and repeats if
 /// more arrived meanwhile. If another one is already running, it leaves (that one will see the new marker). `open`
 /// doesn't need to load the model: whatever arrives without a vector is completed by the next command that opens it.
-pub fn run_in_background(db_path: &Path, open_db: impl Fn() -> Result<(Connection, Option<Modelo>)>) -> Result<()> {
+pub fn run_in_background(db_path: &Path, open_db: impl Fn() -> Result<(Connection, Option<Model>)>) -> Result<()> {
     let Some(_lock) = SyncLock::take(db_path) else { return Ok(()) };
     let r = paths(db_path);
     for _ in 0..20 {
@@ -3385,7 +3385,7 @@ pub fn run_in_background(db_path: &Path, open_db: impl Fn() -> Result<(Connectio
 }
 
 /// `omoi sync` by hand: waits for a background one to finish if there is one, and records the result.
-pub fn sync_now(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Modelo>) -> Result<SyncSummary> {
+pub fn sync_now(db: &mut Connection, db_path: &Path, current: Option<&str>, model: Option<&Model>) -> Result<SyncSummary> {
     let _c = SyncLock::wait_for(db_path, Duration::from_secs(60)).context(another_running())?;
     let r = paths(db_path);
     // A change made meanwhile launches a background sync that leaves right away (this one holds

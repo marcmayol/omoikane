@@ -1,6 +1,6 @@
 //! Search: words (FTS5 with BM25) and, as a fallback, meaning (centered vectors).
 
-use crate::embeber::Modelo;
+use crate::embeber::Model;
 use crate::memoria::{NOW, Scope, COLUMNS, Memory, Kind, from_row, scope_index_hint, sees_all};
 use crate::vectores;
 use anyhow::Result;
@@ -183,8 +183,8 @@ fn coverage(terms: &[String], m: &Memory) -> f64 {
 
 /// Search: the order by words (BM25) rules; the vector adds behind what is very similar and
 /// the words didn't find. Then pinned and recency weigh in. Without a model, only words.
-pub fn search(db: &mut Connection, text: &str, o: &SearchOptions, model: Option<&Modelo>) -> Result<Vec<SearchResult>> {
-    search_base(db, text, o, model, vectores::SIMILITUD_BUSQUEDA, FUSION, true, true)
+pub fn search(db: &mut Connection, text: &str, o: &SearchOptions, model: Option<&Model>) -> Result<Vec<SearchResult>> {
+    search_base(db, text, o, model, vectores::SEARCH_SIMILARITY, FUSION, true, true)
 }
 
 /// How the list by words and the list by meaning are combined.
@@ -217,20 +217,20 @@ const STEM_MIN_LEN: usize = 6;
 /// Only by words and without counting the results as recalled: for whoever filters afterwards (the
 /// recall), which records only what it really uses.
 pub fn search_without_recording(db: &mut Connection, text: &str, o: &SearchOptions) -> Result<Vec<SearchResult>> {
-    search_base(db, text, o, None, vectores::SIMILITUD_BUSQUEDA, FUSION, false, false)
+    search_base(db, text, o, None, vectores::SEARCH_SIMILARITY, FUSION, false, false)
 }
 
 /// `search` with another minimum similarity and another fusion (to calibrate them).
 /// Like `search`, without counting the results as recalled: for looking (the viewer).
-pub fn search_without_recording_with(db: &mut Connection, text: &str, o: &SearchOptions, model: Option<&Modelo>) -> Result<Vec<SearchResult>> {
-    search_base(db, text, o, model, vectores::SIMILITUD_BUSQUEDA, FUSION, false, true)
+pub fn search_without_recording_with(db: &mut Connection, text: &str, o: &SearchOptions, model: Option<&Model>) -> Result<Vec<SearchResult>> {
+    search_base(db, text, o, model, vectores::SEARCH_SIMILARITY, FUSION, false, true)
 }
 
 pub fn search_with(
     db: &mut Connection,
     text: &str,
     o: &SearchOptions,
-    model: Option<&Modelo>,
+    model: Option<&Model>,
     min_similarity: f32,
     chosen_fusion: Fusion,
 ) -> Result<Vec<SearchResult>> {
@@ -242,7 +242,7 @@ fn search_base(
     db: &mut Connection,
     text: &str,
     o: &SearchOptions,
-    model: Option<&Modelo>,
+    model: Option<&Model>,
     min_similarity: f32,
     chosen_fusion: Fusion,
     record: bool,
@@ -258,7 +258,7 @@ fn search_base(
         return rank(db, v, o, record);
     }
     let meaning_hits: Vec<(Memory, f32)> = match model {
-        Some(model) if !text.trim().is_empty() => vectores::parecidas_en(
+        Some(model) if !text.trim().is_empty() => vectores::similar_in(
             db,
             model,
             text,
@@ -376,13 +376,13 @@ const MEANING_BUDGET: std::time::Duration = std::time::Duration::from_millis(150
 /// The service compares them, as it has the model and the vectors in memory: the `CANDIDATES` most
 /// similar and the cosine of those the words brought (`ids`).
 fn cosines_for(db: &Connection, text: &str, o: &SearchOptions, ids: &[String]) -> Option<Vec<(String, f32)>> {
-    if text.trim().is_empty() || !crate::significado::en_uso(db) {
+    if text.trim().is_empty() || !crate::significado::in_use(db) {
         return None;
     }
     let path = db.path().filter(|r| !r.is_empty()).map(std::path::PathBuf::from)?;
-    let p = crate::significado::parecidas(&path, text, &o.scope, o.kind, CANDIDATES.max(o.limit), ids, MEANING_BUDGET)?;
+    let p = crate::significado::similar(&path, text, &o.scope, o.kind, CANDIDATES.max(o.limit), ids, MEANING_BUDGET)?;
     let mut v = p.top;
-    for x in p.pedidas {
+    for x in p.requested {
         if !v.iter().any(|y| y.0 == x.0) {
             v.push(x);
         }

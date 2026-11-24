@@ -1,8 +1,8 @@
 //! Static embeddings (model2vec) that load in milliseconds.
 //!
 //! `tokenizers` takes 1.3 s to build the 500,000-piece Unigram vocabulary every time it is
-//! loaded. Here that work is done once (`compilar`) and saved in flat files that are then only
-//! memory-mapped (`Modelo::abrir`): the double-array trie, the scores, the int8 table and
+//! loaded. Here that work is done once (`compile`) and saved in flat files that are then only
+//! memory-mapped (`Model::open`): the double-array trie, the scores, the int8 table and
 //! the per-token weights. From `tokenizer.json` only the normalizer and the pre-tokenizer are kept, without
 //! the vocabulary, which loads in 3 ms.
 //!
@@ -17,7 +17,7 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::path::Path;
 use tokenizers::models::ModelWrapper;
-use tokenizers::{Model, OffsetReferential, OffsetType, PreTokenizer, Tokenizer};
+use tokenizers::{Model as _, OffsetReferential, OffsetType, PreTokenizer, Tokenizer};
 
 // The model files are written and read in little-endian (x86-64 and ARM64, Apple Silicon
 // included). On a big-endian machine they would silently give garbage vectors: better not to compile.
@@ -50,20 +50,24 @@ const FREE: Node = Node { base: 0, parent: NONE, token: NONE };
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Meta {
-    formato: u32,
-    filas: usize,
+    #[serde(rename = "formato")]
+    format: u32,
+    #[serde(rename = "filas")]
+    rows: usize,
     dim: usize,
     unk_id: u32,
-    unk_puntuacion: f64,
+    #[serde(rename = "unk_puntuacion")]
+    unk_score: f64,
     byte_fallback: bool,
-    normalizar: bool,
+    #[serde(rename = "normalizar")]
+    normalize: bool,
 }
 
 // --- Compile (once, when installing the model) ---------------------------------------------------
 
 /// Converts a model2vec model (int8 with `weights`, like the one in `examples/fase0.rs`) to the format
-/// that `Modelo::abrir` loads without building anything.
-pub fn compilar(src: &Path, dest: &Path) -> Result<()> {
+/// that `Model::open` loads without building anything.
+pub fn compile(src: &Path, dest: &Path) -> Result<()> {
     let tok_b = std::fs::read(src.join("tokenizer.json"))?;
     let tok = Tokenizer::from_bytes(&tok_b).map_err(|e| anyhow!("tokenizer.json: {e}"))?;
     let ModelWrapper::Unigram(uni) = tok.get_model() else {
@@ -108,13 +112,13 @@ pub fn compilar(src: &Path, dest: &Path) -> Result<()> {
 
     let config: serde_json::Value = serde_json::from_slice(&std::fs::read(src.join("config.json"))?)?;
     let meta = Meta {
-        formato: FORMAT_VERSION,
-        filas: rows,
+        format: FORMAT_VERSION,
+        rows,
         dim,
         unk_id,
-        unk_puntuacion: uni.min_score - UNK_PENALTY,
+        unk_score: uni.min_score - UNK_PENALTY,
         byte_fallback: uni.byte_fallback(),
-        normalizar: config.get("normalize").and_then(|v| v.as_bool()).unwrap_or(true),
+        normalize: config.get("normalize").and_then(|v| v.as_bool()).unwrap_or(true),
     };
 
     let trie_b: Vec<u8> = trie.iter().flat_map(|n| [n.base, n.parent, n.token]).flat_map(u32::to_le_bytes).collect();
@@ -222,7 +226,7 @@ fn build_trie(mut pieces: Vec<(Vec<u8>, u32)>) -> Vec<Node> {
 
 /// Model ready to encode. Everything big is mapped, not copied: the system only reads from
 /// disk the rows that are used.
-pub struct Modelo {
+pub struct Model {
     /// Name of its folder: identifies which model some vectors were computed with.
     id: String,
     normalizer: Tokenizer,
@@ -246,20 +250,20 @@ const NO_STEP: Step = Step { score: 0.0, start: NONE, token: 0 };
 
 fn map_file(path: &Path) -> Result<Mmap> {
     let f = File::open(path).with_context(|| tr!("can't open {}", "no se puede abrir {}", path.display()))?;
-    // SAFETY: the model files are only written by `compilar`; nobody changes them while in use.
+    // SAFETY: the model files are only written by `compile`; nobody changes them while in use.
     Ok(unsafe { Mmap::map(&f)? })
 }
 
-impl Modelo {
-    pub fn abrir(dir: &Path) -> Result<Modelo> {
+impl Model {
+    pub fn open(dir: &Path) -> Result<Model> {
         let meta: Meta = serde_json::from_slice(&std::fs::read(dir.join(F_META)).with_context(|| tr!("the model is not compiled: {}", "el modelo no está compilado: {}", dir.display()))?)?;
-        let version = meta.formato;
+        let version = meta.format;
         ensure!(
             version == FORMAT_VERSION,
             tr!("model format {version} (expected {FORMAT_VERSION})", "formato de modelo {version} (se esperaba {FORMAT_VERSION})")
         );
         let normalizer = Tokenizer::from_file(dir.join(F_NORMALIZER)).map_err(|e| anyhow!("normalizador.json: {e}"))?;
-        let m = Modelo {
+        let m = Model {
             id: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             normalizer,
             trie: map_file(&dir.join(F_TRIE))?,
@@ -271,9 +275,9 @@ impl Modelo {
         };
         let corrupt = |f: &str| tr!("{f} doesn't match meta.json: recompile the model", "{f} no cuadra con meta.json: hay que recompilar el modelo");
         ensure!(m.trie.len().is_multiple_of(12), corrupt(F_TRIE));
-        ensure!(m.table.len() == m.meta.filas * m.meta.dim, corrupt(F_TABLE));
-        ensure!(m.weights.len() == m.meta.filas * 4, corrupt(F_WEIGHTS));
-        ensure!(m.scores.len() == m.meta.filas * 8, corrupt(F_SCORES));
+        ensure!(m.table.len() == m.meta.rows * m.meta.dim, corrupt(F_TABLE));
+        ensure!(m.weights.len() == m.meta.rows * 4, corrupt(F_WEIGHTS));
+        ensure!(m.scores.len() == m.meta.rows * 8, corrupt(F_SCORES));
         // Each token reads a single 256-byte row of the table: without this hint, Linux reads 128 KB
         // around each page fault. With a cold cache on a SATA SSD, the first vector drops
         // from ~50 to ~44 ms and the next ten from ~170 to ~130 ms (interleaved A/B). Not worth it
@@ -373,7 +377,7 @@ impl Modelo {
                 }
             }
             if !has_single_char {
-                relax(&mut best[pos + char_len], self.meta.unk_puntuacion + so_far, pos, self.meta.unk_id);
+                relax(&mut best[pos + char_len], self.meta.unk_score + so_far, pos, self.meta.unk_id);
             }
             pos += char_len;
         }
@@ -430,7 +434,7 @@ impl Modelo {
         }
         let d = n.max(1) as f32;
         sum.iter_mut().for_each(|x| *x /= d);
-        if self.meta.normalizar {
+        if self.meta.normalize {
             let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
             sum.iter_mut().for_each(|x| *x /= norm);
         }

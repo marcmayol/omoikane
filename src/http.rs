@@ -15,7 +15,7 @@
 //!   `{memory_id, kind, other_id}` for «fine as is»
 //! - `POST /api/contradiction` with `{a, b, keep, reason}` → which of two contradicting ones holds (1.14):
 //!   `keep` is the id of the one that holds (the other becomes superseded) or `both`
-//! - `GET /api/candidates` → what was set aside from conversations (`candidatas::todas`), and
+//! - `GET /api/candidates` → what was set aside from conversations (`candidatas::all`), and
 //!   `POST /api/candidates/dismiss` with `{id}` to drop it
 //! - `GET /api/trash` → the trash (`memoria::trash`), and `POST /api/restore` with `{id}` to
 //!   bring a memory back
@@ -205,7 +205,7 @@ impl Mirador {
     pub(crate) fn ve(&self, db: &rusqlite::Connection, id: &str) -> Result<bool> {
         // A trade memory, only if some visible project has that trade.
         Ok(self.todo
-            || (memoria::memory_placement(db, id)?.is_none_or(|(global, key)| self.ve_espacio(&key, global)) && !crate::oficios::oculta(db, &self.vista, id)?))
+            || (memoria::memory_placement(db, id)?.is_none_or(|(global, key)| self.ve_espacio(&key, global)) && !crate::oficios::is_hidden(db, &self.vista, id)?))
     }
 
     /// Whether a requested scope is visible: from everything, any; otherwise, one that isn't everything and is in its same space.
@@ -649,10 +649,10 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                         return Ok(out_of_scope());
                     }
                     let mem = memoria::get(&base, &id)?;
-                    if mem.project.is_empty() || !crate::oficios::de_memoria(&mem).is_empty() {
+                    if mem.project.is_empty() || !crate::oficios::of_memory(&mem).is_empty() {
                         return Ok(error(400, "a skill belongs to a repository: only a project's memories become skills"));
                     }
-                    match crate::skill::escribir(&base, &mem.project, &id, crate::skill::Destino::Ambas, v["force"].as_bool().unwrap_or(false), false) {
+                    match crate::skill::write(&base, &mem.project, &id, crate::skill::Target::Both, v["force"].as_bool().unwrap_or(false), false) {
                         Ok(r) => Ok(json(200, serde_json::to_string(&r)?)),
                         Err(e) => Ok(error(400, &format!("{e:#}"))),
                     }
@@ -690,7 +690,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     // What was set aside carries its session's folder: only those of visible projects.
                     let mut scopes: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
                     let mut v = Vec::new();
-                    for c in crate::candidatas::todas(&base)? {
+                    for c in crate::candidatas::all(&base)? {
                         let shown = match scopes.get(&c.project) {
                             Some(s) => *s,
                             None => {
@@ -713,7 +713,7 @@ pub fn servir(db: PathBuf, dir: Option<PathBuf>, port: u16, open: bool, memory: 
                     if !m.abarca(&Scope::from_project(&base, &project)?) {
                         return Ok(error(403, "that candidate is from a project outside this scope"));
                     }
-                    crate::candidatas::descartar(&base, id)?;
+                    crate::candidatas::dismiss(&base, id)?;
                     Ok(json(200, serde_json::json!({ "dismissed": true }).to_string()))
                 }
                 (Method::Get, "/api/sync") => {

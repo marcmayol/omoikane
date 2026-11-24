@@ -8,7 +8,7 @@
 
 mod comun;
 
-use omoikane::gemma::Tipo;
+use omoikane::gemma::TextKind;
 use omoikane::significado as s;
 use std::path::PathBuf;
 use std::process::Command;
@@ -43,7 +43,7 @@ fn semantic_service() {
 
     // No model: no vector, no waiting and nothing launched.
     let t = Instant::now();
-    assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
+    assert!(s::vectors(&["hola"], TextKind::Query, Duration::from_secs(5)).is_none());
     assert!(t.elapsed() < Duration::from_millis(200));
     assert!(!dir.join("significado.arrancando").exists());
 
@@ -57,20 +57,20 @@ fn semantic_service() {
     }
 
     // Off: no vector either, even though the model is there.
-    s::fijar(Some(false)).unwrap();
-    assert!(!s::permitido());
-    assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
-    s::fijar(Some(true)).unwrap();
-    assert!(s::permitido());
+    s::set_preference(Some(false)).unwrap();
+    assert!(!s::allowed());
+    assert!(s::vectors(&["hola"], TextKind::Query, Duration::from_secs(5)).is_none());
+    s::set_preference(Some(true)).unwrap();
+    assert!(s::allowed());
 
     // On and no service: the caller does not wait for it to load (2 s); the service is started by the
-    // binary (in tests `current_exe` is the test, so it is launched by hand as `arrancar` would).
+    // binary (in tests `current_exe` is the test, so it is launched by hand as `start` would).
     let t = Instant::now();
-    assert!(s::vectores(&["hola"], Tipo::Pregunta, Duration::from_secs(5)).is_none());
+    assert!(s::vectors(&["hola"], TextKind::Query, Duration::from_secs(5)).is_none());
     assert!(t.elapsed() < Duration::from_millis(200), "no debe esperar a que cargue el modelo");
     assert!(dir.join("significado.arrancando").exists(), "deja el servicio arrancando");
     let mut child = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
-    assert!(wait_until(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()), "el servicio no arrancó");
+    assert!(wait_until(Duration::from_secs(60), || s::alive(Duration::from_millis(200)).is_some()), "el servicio no arrancó");
     assert!(!dir.join("significado.arrancando").exists());
 
     // A second service sees the first one and exits without loading anything.
@@ -79,8 +79,8 @@ fn semantic_service() {
 
     // The vector is the sentence-transformers one: query-document cosine 0.6904 (computed with
     // `SentenceTransformer("google/embeddinggemma-300m")`, encode_query / encode_document).
-    let q = s::vectores(&["How do I undo a cargo yank?"], Tipo::Pregunta, Duration::from_secs(5)).expect("vector de la pregunta");
-    let d = s::vectores(&["Cargo yank --undo restores a yanked version so it can be used again."], Tipo::Documento, Duration::from_secs(5)).expect("vector del documento");
+    let q = s::vectors(&["How do I undo a cargo yank?"], TextKind::Query, Duration::from_secs(5)).expect("vector de la pregunta");
+    let d = s::vectors(&["Cargo yank --undo restores a yanked version so it can be used again."], TextKind::Document, Duration::from_secs(5)).expect("vector del documento");
     assert_eq!(q[0].len(), omoikane::gemma::DIM);
     let c = cosine(&q[0], &d[0]);
     assert!((c - 0.6904).abs() < 0.002, "coseno {c}");
@@ -94,9 +94,9 @@ fn semantic_service() {
             memoria::save(&mut db, NewMemory { project: "/p".into(), kind: Some(Kind::Fact), title: t.into(), content: c.into(), ..Default::default() }, None).unwrap();
         }
     }
-    let _ = s::vector_consulta(&path, "hola", Duration::from_secs(5));
+    let _ = s::query_vector(&path, "hola", Duration::from_secs(5));
     assert!(
-        wait_until(Duration::from_secs(120), || s::cobertura(&omoikane::db::open(&path).unwrap()).unwrap() == (2, 2)),
+        wait_until(Duration::from_secs(120), || s::coverage(&omoikane::db::open(&path).unwrap()).unwrap() == (2, 2)),
         "el servicio no calculó los vectores de la base"
     );
 
@@ -114,8 +114,8 @@ fn semantic_service() {
     drop(db);
 
     // A wrong token gets no vectors.
-    let r = s::registro().unwrap();
-    let mut tcp = std::net::TcpStream::connect(("127.0.0.1", r.puerto)).unwrap();
+    let r = s::registry().unwrap();
+    let mut tcp = std::net::TcpStream::connect(("127.0.0.1", r.port)).unwrap();
     use std::io::{BufRead, Write};
     tcp.write_all(b"{\"token\":\"x\",\"textos\":[\"hola\"]}\n").unwrap();
     let mut l = String::new();
@@ -123,21 +123,21 @@ fn semantic_service() {
     assert!(l.contains("bad token"), "{l}");
 
     // `--off` shuts it down.
-    s::fijar(Some(false)).unwrap();
+    s::set_preference(Some(false)).unwrap();
     assert!(wait_until(Duration::from_secs(5), || child.try_wait().unwrap().is_some()), "--off no cerró el servicio");
-    s::fijar(Some(true)).unwrap();
+    s::set_preference(Some(true)).unwrap();
 
     // And when unused it shuts itself down (here, after 4 s) and deletes its registration.
     let mut child = Command::new(env!("CARGO_BIN_EXE_omoi")).args(["model", "serve-semantic"]).spawn().unwrap();
-    assert!(wait_until(Duration::from_secs(60), || s::vivo(Duration::from_millis(200)).is_some()));
+    assert!(wait_until(Duration::from_secs(60), || s::alive(Duration::from_millis(200)).is_some()));
     assert!(wait_until(Duration::from_secs(15), || child.try_wait().unwrap().is_some()), "no se cerró sin uso");
-    assert!(s::registro().is_none());
+    assert!(s::registry().is_none());
     // The compact format (the one that gets installed) gives the same vector as the sentence-transformers one.
     let compact = dir.join("compacto");
-    omoikane::gemma::compactar(&model, &compact).unwrap();
-    assert!(omoikane::gemma::es_compacto(&compact));
-    let (g1, g2) = (omoikane::gemma::Gemma::cargar(&model).unwrap(), omoikane::gemma::Gemma::cargar(&compact).unwrap());
-    for (t, kind) in [("How do I undo a cargo yank?", Tipo::Pregunta), ("Two Gradle daemons at once corrupt the build cache.", Tipo::Documento)] {
+    omoikane::gemma::compact(&model, &compact).unwrap();
+    assert!(omoikane::gemma::is_compact(&compact));
+    let (g1, g2) = (omoikane::gemma::Gemma::load(&model).unwrap(), omoikane::gemma::Gemma::load(&compact).unwrap());
+    for (t, kind) in [("How do I undo a cargo yank?", TextKind::Query), ("Two Gradle daemons at once corrupt the build cache.", TextKind::Document)] {
         let c = cosine(&g1.vector(t, kind).unwrap(), &g2.vector(t, kind).unwrap());
         assert!(c > 0.9999, "compacto: coseno {c}");
     }

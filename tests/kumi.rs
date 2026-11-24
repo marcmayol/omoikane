@@ -180,7 +180,7 @@ fn cli_and_tool_give_the_same_json() {
 // --- file-history ---------------------------------------------------------------------------------
 
 fn session(db: &Connection, name: &str, project_id: i64, folder: &str, day: &str, files: &[&str]) {
-    diario::crear_tabla(db).unwrap();
+    diario::create_table(db).unwrap();
     db.execute(
         "INSERT INTO diary(session, project_id, folder, first_at, last_at, files) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         rusqlite::params![name, project_id, folder, format!("{day}T10:00:00.000Z"), serde_json::to_string(files).unwrap()],
@@ -237,7 +237,7 @@ fn history_of_the_diff_files() {
     let db = db::open(&d.join("o.db")).unwrap();
     let requested: Vec<String> =
         ["src/sync.rs", "./src/sync.rs", &format!("{r}/src/sync.rs"), r"tests\sync.rs", "nuevo.rs", ""].iter().map(|s| s.to_string()).collect();
-    let i = riesgo::de_ficheros(&db, &r, &requested).unwrap();
+    let i = riesgo::for_files(&db, &r, &requested).unwrap();
     assert_eq!(i.sessions, 7);
     // No repeats: relative, with `./`, absolute and with `\` are the same file.
     let names: Vec<&str> = i.files.iter().map(|f| f.file.as_str()).collect();
@@ -245,7 +245,7 @@ fn history_of_the_diff_files() {
     let s = &i.files[0];
     // Only this project's sessions, not the other's.
     assert_eq!((s.sessions, s.last.as_deref()), (6, Some("2026-11-06")));
-    assert_eq!(s.changes_with, [riesgo::Junto { file: "tests/sync.rs".into(), sessions: 5 }, riesgo::Junto { file: "CHANGELOG.md".into(), sessions: 2 }]);
+    assert_eq!(s.changes_with, [riesgo::CoChange { file: "tests/sync.rs".into(), sessions: 5 }, riesgo::CoChange { file: "CHANGELOG.md".into(), sessions: 2 }]);
     let mut expected = gotchas.clone();
     expected.sort();
     assert_eq!((s.gotchas, &s.gotcha_ids), (2, &expected));
@@ -258,7 +258,7 @@ fn history_of_the_diff_files() {
     let d2 = comun::Temporal::nueva("kumi-sin-diario");
     let r2 = repo(&d2.join("repo"));
     let db2 = db::open(&d2.join("o.db")).unwrap();
-    let i = riesgo::de_ficheros(&db2, &r2, &["src/a.rs".to_string()]).unwrap();
+    let i = riesgo::for_files(&db2, &r2, &["src/a.rs".to_string()]).unwrap();
     assert_eq!((i.sessions, i.files[0].sessions), (0, 0));
 }
 

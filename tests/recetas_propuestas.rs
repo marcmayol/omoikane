@@ -1,4 +1,4 @@
-//! 1.5: proposing recipes (the `procedure` ones saved by hand are in `recetas.rs`). A sequence of commands that worked and repeats in `MIN_SESIONES`
+//! 1.5: proposing recipes (the `procedure` ones saved by hand are in `recetas.rs`). A sequence of commands that worked and repeats in `MIN_SESSIONS`
 //! sessions comes out as a candidate once; one already covered by a saved recipe, no.
 
 mod comun;
@@ -34,23 +34,23 @@ fn proposes_once_what_repeats_and_not_what_is_already_saved() {
     let d = dir("propone");
     let mut db = db::open(&d.join("o.db")).unwrap();
     let review_prs = ["git fetch origin", "git status --short", "gh issue list -R x/y", "gh pr view 3 -R x/y --json state"];
-    for i in 0..recetas::MIN_SESIONES - 1 {
+    for i in 0..recetas::MIN_SESSIONS - 1 {
         let c = conversation(&d, &format!("s{i}"), &review_prs);
-        recetas::apuntar(&db, &format!("s{i}"), &recetas::pasos(&c).unwrap()).unwrap();
-        assert!(!recetas::proponer(&db, "/web", &format!("s{i}"), &recetas::pasos(&c).unwrap()).unwrap(), "con {} sesiones aún no", i + 1);
+        recetas::record(&db, &format!("s{i}"), &recetas::steps(&c).unwrap()).unwrap();
+        assert!(!recetas::propose(&db, "/web", &format!("s{i}"), &recetas::steps(&c).unwrap()).unwrap(), "con {} sesiones aún no", i + 1);
     }
     let c = conversation(&d, "ultima", &review_prs);
-    let steps = recetas::pasos(&c).unwrap();
+    let steps = recetas::steps(&c).unwrap();
     assert_eq!(steps, ["git fetch", "gh issue", "gh pr"], "sin lo que solo mira ni lo que falló");
-    recetas::apuntar(&db, "ultima", &steps).unwrap();
-    assert!(recetas::proponer(&db, "/web", "ultima", &steps).unwrap());
+    recetas::record(&db, "ultima", &steps).unwrap();
+    assert!(recetas::propose(&db, "/web", "ultima", &steps).unwrap());
     // Once: the next session that ends doesn't propose it again.
-    recetas::apuntar(&db, "otra", &steps).unwrap();
-    assert!(!recetas::proponer(&db, "/web", "otra", &steps).unwrap());
-    let all = candidatas::todas(&db).unwrap();
-    let r: Vec<_> = all.iter().filter(|c| c.kind == recetas::RECETA).collect();
+    recetas::record(&db, "otra", &steps).unwrap();
+    assert!(!recetas::propose(&db, "/web", "otra", &steps).unwrap());
+    let all = candidatas::all(&db).unwrap();
+    let r: Vec<_> = all.iter().filter(|c| c.kind == recetas::RECIPE).collect();
     assert_eq!(r.len(), 1, "{all:?}");
-    assert!(r[0].text.contains("`git fetch` → `gh issue` → `gh pr`") && r[0].text.contains(&format!("{} sessions", recetas::MIN_SESIONES)), "{}", r[0].text);
+    assert!(r[0].text.contains("`git fetch` → `gh issue` → `gh pr`") && r[0].text.contains(&format!("{} sessions", recetas::MIN_SESSIONS)), "{}", r[0].text);
     // It reaches the next session, like the other candidates.
     let t = recall::on_session_start(&mut db, "/web", &HookInput { session_id: "nueva".into(), ..Default::default() }).unwrap().unwrap();
     assert!(t.contains("[recipe] steps repeated"), "{t}");
@@ -66,9 +66,9 @@ fn proposes_once_what_repeats_and_not_what_is_already_saved() {
         ..Default::default()
     };
     memoria::save(&mut db2, recipe, None).unwrap();
-    for i in 0..recetas::MIN_SESIONES {
+    for i in 0..recetas::MIN_SESSIONS {
         let c = conversation(&d, &format!("p{i}"), &publish);
-        recetas::apuntar(&db2, &format!("p{i}"), &recetas::pasos(&c).unwrap()).unwrap();
+        recetas::record(&db2, &format!("p{i}"), &recetas::steps(&c).unwrap()).unwrap();
     }
-    assert!(!recetas::proponer(&db2, "/web", "p", &recetas::pasos(&conversation(&d, "p0", &publish)).unwrap()).unwrap(), "la cubre la receta guardada: {:?}", candidatas::todas(&db2).unwrap());
+    assert!(!recetas::propose(&db2, "/web", "p", &recetas::steps(&conversation(&d, "p0", &publish)).unwrap()).unwrap(), "la cubre la receta guardada: {:?}", candidatas::all(&db2).unwrap());
 }

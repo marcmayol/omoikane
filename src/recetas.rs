@@ -1,7 +1,7 @@
 //! Proposing recipes (1.5): the command sequences that worked and repeat across several sessions
 //! are recipe candidates (a `procedure` memory). When each session closes its steps are noted, in a
 //! local table (`session_steps`, like the journal: it doesn't travel nor show up in `omoi export`); if some
-//! sequence already shows up in `MIN_SESIONES` sessions, no saved recipe covers it and it wasn't proposed
+//! sequence already shows up in `MIN_SESSIONS` sessions, no saved recipe covers it and it wasn't proposed
 //! before, it is set aside as a candidate for the next session. The agent decides with the user:
 //! Omoikane doesn't know if it is really a procedure.
 //!
@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// In how many different sessions a sequence has to show up.
-pub const MIN_SESIONES: usize = 5;
+pub const MIN_SESSIONS: usize = 5;
 /// How many days of sessions are looked at (and kept).
 const DAYS: i64 = 90;
 /// Length of the sequences, in steps.
@@ -27,7 +27,7 @@ const MAX_STEPS: usize = 6;
 const MAX_SESSION_STEPS: usize = 300;
 
 /// The kind of the candidates it proposes.
-pub const RECETA: &str = "recipe";
+pub const RECIPE: &str = "recipe";
 
 /// Programs that say nothing about a procedure: looking, moving files, the shell itself.
 const TRIVIAL: &[&str] = &[
@@ -148,7 +148,7 @@ const ENV_TAKES_VALUE: &[&str] = &["-u", "-C", "-S", "--unset", "--chdir", "--sp
 
 /// The steps of a command: the program and its subcommand (`cargo build --release && git tag -a v1` →
 /// `cargo build`, `git tag`), without the trivial ones nor those that only look.
-pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
+pub fn command_steps(cmd: &str) -> Vec<String> {
     // A multi-line script is usually single-use; of a heredoc, only its first
     // line counts (the rest is what gets passed to it).
     let cmd = if cmd.contains("<<") { cmd.lines().next().unwrap_or("") } else { cmd };
@@ -214,16 +214,16 @@ pub fn pasos_de_orden(cmd: &str) -> Vec<String> {
 }
 
 /// The steps of a conversation, in order, without repeating the same one in a row.
-pub fn pasos(path: &Path) -> Result<Vec<String>> {
-    Ok(pasos_de_turnos(&crate::candidatas::turnos(path)?))
+pub fn steps(path: &Path) -> Result<Vec<String>> {
+    Ok(steps_from_turns(&crate::candidatas::turns(path)?))
 }
 
-/// `pasos` with the turns already read.
-pub fn pasos_de_turnos(turns: &[crate::candidatas::Turno]) -> Vec<String> {
+/// `steps` with the turns already read.
+pub fn steps_from_turns(turns: &[crate::candidatas::Turn]) -> Vec<String> {
     let mut r: Vec<String> = Vec::new();
     for t in turns {
-        if let crate::candidatas::Turno::Comando(c) = t {
-            for p in pasos_de_orden(c) {
+        if let crate::candidatas::Turn::Command(c) = t {
+            for p in command_steps(c) {
                 if r.last() != Some(&p) {
                     r.push(p);
                 }
@@ -240,7 +240,7 @@ fn create_table(db: &Connection) -> Result<()> {
 }
 
 /// On close or compaction: notes the session's steps (if it has any) and deletes those older than `DAYS`.
-pub fn apuntar(db: &Connection, session: &str, steps: &[String]) -> Result<()> {
+pub fn record(db: &Connection, session: &str, steps: &[String]) -> Result<()> {
     if session.is_empty() || steps.is_empty() {
         return Ok(());
     }
@@ -259,10 +259,10 @@ fn words(t: &str) -> std::collections::HashSet<String> {
 }
 
 /// Of the sequences in `current` (the steps of the session being closed), the one most repeated in the
-/// saved sessions (in at least `MIN_SESIONES`, with two or more different programs), that no saved
+/// saved sessions (in at least `MIN_SESSIONS`, with two or more different programs), that no saved
 /// recipe covers and that wasn't proposed before, with how many sessions it shows up in. Only this session's
 /// are looked at: that way the cost doesn't grow with the history and the proposal lands in the project where it happens.
-pub fn propuesta(db: &Connection, current: &[String]) -> Result<Option<(Vec<String>, usize)>> {
+pub fn proposal(db: &Connection, current: &[String]) -> Result<Option<(Vec<String>, usize)>> {
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
     if !exists || current.len() < MIN_STEPS {
         return Ok(None);
@@ -293,7 +293,7 @@ pub fn propuesta(db: &Connection, current: &[String]) -> Result<Option<(Vec<Stri
             }
         }
     }
-    let mut v: Vec<(Vec<String>, BTreeSet<usize>)> = counts.into_iter().filter(|(_, s)| s.len() >= MIN_SESIONES).collect();
+    let mut v: Vec<(Vec<String>, BTreeSet<usize>)> = counts.into_iter().filter(|(_, s)| s.len() >= MIN_SESSIONS).collect();
     // Drop the ones contained in a longer one that shows up in the same sessions.
     let all = v.clone();
     v.retain(|(w, s)| !all.iter().any(|(o, so)| o.len() > w.len() && so == s && o.windows(w.len()).any(|x| x == w.as_slice())));
@@ -319,27 +319,27 @@ pub fn propuesta(db: &Connection, current: &[String]) -> Result<Option<(Vec<Stri
 
 /// On close: if among this session's steps there is a sequence to propose, sets it aside as a
 /// candidate for the next session in `project` (and doesn't propose it again). Returns whether it set one aside.
-pub fn proponer(db: &Connection, project: &str, session: &str, current: &[String]) -> Result<bool> {
-    let Some((w, n)) = propuesta(db, current)? else { return Ok(false) };
+pub fn propose(db: &Connection, project: &str, session: &str, current: &[String]) -> Result<bool> {
+    let Some((w, n)) = proposal(db, current)? else { return Ok(false) };
     let text = format!(
         "steps repeated in {n} sessions: `{}`. If it is a procedure the user follows, ask them and save it as a recipe (kind procedure, numbered steps and a `when:` line); if not, ignore it",
         w.join("` → `")
     );
-    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {NOW})"), params![project, session, RECETA, text])?;
+    db.execute(&format!("INSERT OR IGNORE INTO candidate(project, session, kind, text, created_at) VALUES (?1, ?2, ?3, ?4, {NOW})"), params![project, session, RECIPE, text])?;
     let key = format!("receta_propuesta:{}", w.join(" > "));
     db.execute(&format!("INSERT OR REPLACE INTO meta(k, v) VALUES (?1, {NOW})"), [&key])?;
     Ok(true)
 }
 
 /// The sequences that were proposed (for the view and for checking).
-pub fn propuestas(db: &Connection) -> Result<Vec<String>> {
+pub fn proposals(db: &Connection) -> Result<Vec<String>> {
     let mut q = db.prepare("SELECT substr(k, 18) FROM meta WHERE k LIKE 'receta_propuesta:%' ORDER BY v DESC")?;
     let v = q.query_map([], |f| f.get(0))?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
 /// What was noted for a session (for the tests).
-pub fn de_sesion(db: &Connection, session: &str) -> Result<Option<Vec<String>>> {
+pub fn for_session(db: &Connection, session: &str) -> Result<Option<Vec<String>>> {
     let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'session_steps')", [], |f| f.get(0))?;
     if !exists {
         return Ok(None);
@@ -354,62 +354,62 @@ mod tests {
 
     #[test]
     fn steps_of_a_command() {
-        assert_eq!(pasos_de_orden("cargo build --release 2>&1 && git tag -a v1.4.1 -m \"1.4.1\" && git push origin v1.4.1"), ["cargo build", "git tag", "git push"]);
-        assert_eq!(pasos_de_orden("git status --short | head; cargo test -q 2>&1 | grep -E \"FAILED|panicked\""), ["cargo test"]);
-        assert_eq!(pasos_de_orden("cd D:/x && ls"), Vec::<String>::new());
-        assert_eq!(pasos_de_orden("C:/Users/m/.cargo/bin/omoi.exe recall --session-end"), ["omoi recall"]);
-        assert_eq!(pasos_de_orden("id=$(gh run list -L 5) && gh release view v1"), ["gh release"]);
-        assert_eq!(pasos_de_orden("insert_content"), Vec::<String>::new());
+        assert_eq!(command_steps("cargo build --release 2>&1 && git tag -a v1.4.1 -m \"1.4.1\" && git push origin v1.4.1"), ["cargo build", "git tag", "git push"]);
+        assert_eq!(command_steps("git status --short | head; cargo test -q 2>&1 | grep -E \"FAILED|panicked\""), ["cargo test"]);
+        assert_eq!(command_steps("cd D:/x && ls"), Vec::<String>::new());
+        assert_eq!(command_steps("C:/Users/m/.cargo/bin/omoi.exe recall --session-end"), ["omoi recall"]);
+        assert_eq!(command_steps("id=$(gh run list -L 5) && gh release view v1"), ["gh release"]);
+        assert_eq!(command_steps("insert_content"), Vec::<String>::new());
         // What the 1.5.0 review found.
-        assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
-        assert_eq!(pasos_de_orden("bash -lc cargo test && git push"), ["cargo test", "git push"]);
-        assert_eq!(pasos_de_orden("cmd /c npm run build"), ["npm run"]);
-        assert!(pasos_de_orden(r#"powershell -Command "Remove-Item -Recurse D:\tmp\build""#).is_empty());
-        assert!(pasos_de_orden(r#"bash -c "cargo test --manifest-path a/Cargo.toml""#).is_empty());
-        assert_eq!(pasos_de_orden("git -C D:/Omoikane diff && gh -R o/r pr list"), ["gh pr"]);
-        assert_eq!(pasos_de_orden("python - <<'EOF'\nimport json\nEOF"), Vec::<String>::new());
-        assert_eq!(pasos_de_orden("\"/c/Program Files/GitHub CLI/gh.exe\" pr list"), ["gh pr"]);
-        assert_eq!(pasos_de_orden("git commit -m \"say \\\" ; docker push x\""), ["git commit"]);
-        assert_eq!(pasos_de_orden("x=`git rev-parse HEAD` && cargo build"), ["git rev-parse", "cargo build"]);
-        assert_eq!(pasos_de_orden("GIT.EXE tag v1"), ["git tag"]);
+        assert_eq!(command_steps("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
+        assert_eq!(command_steps("bash -lc cargo test && git push"), ["cargo test", "git push"]);
+        assert_eq!(command_steps("cmd /c npm run build"), ["npm run"]);
+        assert!(command_steps(r#"powershell -Command "Remove-Item -Recurse D:\tmp\build""#).is_empty());
+        assert!(command_steps(r#"bash -c "cargo test --manifest-path a/Cargo.toml""#).is_empty());
+        assert_eq!(command_steps("git -C D:/Omoikane diff && gh -R o/r pr list"), ["gh pr"]);
+        assert_eq!(command_steps("python - <<'EOF'\nimport json\nEOF"), Vec::<String>::new());
+        assert_eq!(command_steps("\"/c/Program Files/GitHub CLI/gh.exe\" pr list"), ["gh pr"]);
+        assert_eq!(command_steps("git commit -m \"say \\\" ; docker push x\""), ["git commit"]);
+        assert_eq!(command_steps("x=`git rev-parse HEAD` && cargo build"), ["git rev-parse", "cargo build"]);
+        assert_eq!(command_steps("GIT.EXE tag v1"), ["git tag"]);
     }
 
     /// 1.8.6: PowerShell cmdlets are commands (with their whole name, no subcommand), and the ones that
     /// only look or move files are dropped like `ls` or `rm`.
     #[test]
     fn powershell_cmdlets() {
-        assert_eq!(pasos_de_orden("Invoke-Pester -Path tests; git push"), ["invoke-pester", "git push"]);
-        assert_eq!(pasos_de_orden("Restart-Service omoikane"), ["restart-service"]);
-        assert_eq!(pasos_de_orden("Install-Module PSReadLine -Scope CurrentUser"), ["install-module"]);
-        assert_eq!(pasos_de_orden("Publish-Module -Name Omoi -NuGetApiKey $k"), ["publish-module"]);
-        assert_eq!(pasos_de_orden("cargo build --release; Compress-Archive -Path target/release/omoi.exe -DestinationPath omoi.zip"), ["cargo build", "compress-archive"]);
-        assert_eq!(pasos_de_orden("Register-ScheduledTask -TaskName vigilante -Xml (Get-Content x.xml | Out-String)"), ["register-scheduledtask"]);
-        assert_eq!(pasos_de_orden("Update-Help"), ["update-help"]);
-        assert_eq!(pasos_de_orden(r"unblock-file .\omoi.exe"), ["unblock-file"]);
+        assert_eq!(command_steps("Invoke-Pester -Path tests; git push"), ["invoke-pester", "git push"]);
+        assert_eq!(command_steps("Restart-Service omoikane"), ["restart-service"]);
+        assert_eq!(command_steps("Install-Module PSReadLine -Scope CurrentUser"), ["install-module"]);
+        assert_eq!(command_steps("Publish-Module -Name Omoi -NuGetApiKey $k"), ["publish-module"]);
+        assert_eq!(command_steps("cargo build --release; Compress-Archive -Path target/release/omoi.exe -DestinationPath omoi.zip"), ["cargo build", "compress-archive"]);
+        assert_eq!(command_steps("Register-ScheduledTask -TaskName vigilante -Xml (Get-Content x.xml | Out-String)"), ["register-scheduledtask"]);
+        assert_eq!(command_steps("Update-Help"), ["update-help"]);
+        assert_eq!(command_steps(r"unblock-file .\omoi.exe"), ["unblock-file"]);
         // What only looks, moves files or shapes the output, out.
-        assert!(pasos_de_orden("Get-ChildItem -Recurse src | Select-Object -First 5").is_empty());
-        assert!(pasos_de_orden(r"Remove-Item -Recurse -Force D:\tmp\x; Set-Location D:\x; New-Item -ItemType Directory y").is_empty());
-        assert!(pasos_de_orden("Invoke-WebRequest -Uri https://x -OutFile y; Start-Sleep 2; Start-Process notepad").is_empty());
-        assert!(pasos_de_orden("get-content a.txt | where-object { $_ -match 'x' }").is_empty());
-        assert_eq!(pasos_de_orden("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
+        assert!(command_steps("Get-ChildItem -Recurse src | Select-Object -First 5").is_empty());
+        assert!(command_steps(r"Remove-Item -Recurse -Force D:\tmp\x; Set-Location D:\x; New-Item -ItemType Directory y").is_empty());
+        assert!(command_steps("Invoke-WebRequest -Uri https://x -OutFile y; Start-Sleep 2; Start-Process notepad").is_empty());
+        assert!(command_steps("get-content a.txt | where-object { $_ -match 'x' }").is_empty());
+        assert_eq!(command_steps("cargo test 2>&1 | Select-Object -Last 20"), ["cargo test"]);
         // Linux ones shaped like a cmdlet, in lowercase, are still programs.
-        assert_eq!(pasos_de_orden("update-grub"), ["update-grub"]);
-        assert_eq!(pasos_de_orden("docker-compose up -d"), ["docker-compose up"]);
-        assert_eq!(pasos_de_orden("pre-commit run --all-files"), ["pre-commit run"]);
+        assert_eq!(command_steps("update-grub"), ["update-grub"]);
+        assert_eq!(command_steps("docker-compose up -d"), ["docker-compose up"]);
+        assert_eq!(command_steps("pre-commit run --all-files"), ["pre-commit run"]);
     }
 
     /// 1.8.6: `sudo -u <user> <command>` is `<command>`, not the user.
     #[test]
     fn sudo_with_user() {
-        assert_eq!(pasos_de_orden("sudo -u postgres psql -c 'select 1'"), ["psql"]);
-        assert_eq!(pasos_de_orden("sudo -u www-data git -C /srv/app pull"), ["git pull"]);
-        assert_eq!(pasos_de_orden("sudo -E -u marc docker compose up -d"), ["docker compose"]);
-        assert_eq!(pasos_de_orden("sudo --user=marc systemctl restart caddy"), ["systemctl restart"]);
-        assert_eq!(pasos_de_orden("sudo -g docker -u marc cargo build"), ["cargo build"]);
-        assert_eq!(pasos_de_orden("sudo systemctl restart caddy"), ["systemctl restart"]);
-        assert_eq!(pasos_de_orden("doas -u marc make install"), ["make install"]);
-        assert_eq!(pasos_de_orden("env -u RUST_LOG cargo test"), ["cargo test"]);
+        assert_eq!(command_steps("sudo -u postgres psql -c 'select 1'"), ["psql"]);
+        assert_eq!(command_steps("sudo -u www-data git -C /srv/app pull"), ["git pull"]);
+        assert_eq!(command_steps("sudo -E -u marc docker compose up -d"), ["docker compose"]);
+        assert_eq!(command_steps("sudo --user=marc systemctl restart caddy"), ["systemctl restart"]);
+        assert_eq!(command_steps("sudo -g docker -u marc cargo build"), ["cargo build"]);
+        assert_eq!(command_steps("sudo systemctl restart caddy"), ["systemctl restart"]);
+        assert_eq!(command_steps("doas -u marc make install"), ["make install"]);
+        assert_eq!(command_steps("env -u RUST_LOG cargo test"), ["cargo test"]);
         // Another command's `-u` swallows nothing: `git push -u origin main` is still `git push`.
-        assert_eq!(pasos_de_orden("git push -u origin main"), ["git push"]);
+        assert_eq!(command_steps("git push -u origin main"), ["git push"]);
     }
 }

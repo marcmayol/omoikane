@@ -7,11 +7,11 @@
 //!
 //! Only with at least `MIN_SESSIONS` sessions (with fewer it says nothing), once per file and session
 //! (local table `diary_hint`, separate from `recall_log`: it's not a memory and must not count as
-//! received) and at most `MAX_POR_MENSAJE` files per message. The gotchas themselves already arrive
+//! received) and at most `MAX_PER_MESSAGE` files per message. The gotchas themselves already arrive
 //! through `recall::by_paths`; here they are only counted.
 //!
 //! Cost: normally the message names no file, and that is decided without touching the database
-//! (`parece_nombrar`). Only if it seems to does it check for a diary and read the project's lines.
+//! (`may_name_a_file`). Only if it seems to does it check for a diary and read the project's lines.
 
 use crate::memoria::{NOW, Scope};
 use anyhow::Result;
@@ -19,15 +19,15 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeSet, HashMap};
 
 /// Minimum sessions with the file to say anything: with fewer, the line is noise.
-pub const SESIONES_MIN: usize = 3;
+pub const MIN_SESSIONS: usize = 3;
 /// A file "changes together" if it matches in at least this many sessions…
-pub const JUNTOS_MIN: usize = 3;
+pub const MIN_TOGETHER: usize = 3;
 /// …and in at least this share of the file's sessions.
-pub const JUNTOS_PARTE: f64 = 0.4;
+pub const MIN_TOGETHER_SHARE: f64 = 0.4;
 /// How many of those that change together are named.
-pub const JUNTOS_MAX: usize = 3;
+pub const MAX_TOGETHER: usize = 3;
 /// How many files are talked about in a single message.
-pub const MAX_POR_MENSAJE: usize = 2;
+pub const MAX_PER_MESSAGE: usize = 2;
 /// How many days it remembers it already said it (after compacting it forgets sooner: `on_session_start`).
 const HINT_DAYS: i64 = 7;
 
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS diary_hint (
 
 /// Whether `path` shows up in `text` (already lowercase and with `/`): the whole path, or the file
 /// name if it has at least 5 characters. The same rule as `recall::by_paths`.
-pub fn nombra(text: &str, path: &str) -> bool {
+pub fn names_path(text: &str, path: &str) -> bool {
     let path = path.to_lowercase().replace('\\', "/");
     let name = path.rsplit('/').next().unwrap_or(&path);
     text.contains(&path) || (name.chars().count() >= 5 && text.contains(name))
@@ -54,7 +54,7 @@ pub fn nombra(text: &str, path: &str) -> bool {
 /// digits (`sync.rs`, `src/x`, `a\b`). Without looking at the database: so a normal message costs
 /// nothing. Leaves out names without extension written alone (`Makefile`); with their folder
 /// (`ci/Makefile`) they count.
-pub fn parece_nombrar(prompt: &str) -> bool {
+pub fn may_name_a_file(prompt: &str) -> bool {
     let b = prompt.as_bytes();
     b.iter().enumerate().any(|(i, c)| match c {
         b'/' | b'\\' => true,
@@ -65,7 +65,7 @@ pub fn parece_nombrar(prompt: &str) -> bool {
 
 /// When the session starts or compacts: what was said before is no longer in its context, it can be
 /// repeated. And whatever is older than `HINT_DAYS` days is deleted.
-pub fn al_empezar(db: &Connection, session: &str) -> Result<()> {
+pub fn on_session_start(db: &Connection, session: &str) -> Result<()> {
     if !has_table(db)? {
         return Ok(());
     }
@@ -79,26 +79,26 @@ fn has_table(db: &Connection) -> Result<bool> {
 
 /// What the diary knows about a file.
 #[derive(Debug, PartialEq)]
-pub struct Historia {
-    pub fichero: String,
-    pub sesiones: usize,
+pub struct History {
+    pub file: String,
+    pub sessions: usize,
     /// The last day (UTC) of the most recent session that touched it.
-    pub ultima: String,
+    pub last: String,
     /// The ones that change together, with in how many of its sessions.
-    pub juntos: Vec<(String, usize)>,
+    pub together: Vec<(String, usize)>,
     pub gotchas: usize,
 }
 
-impl Historia {
+impl History {
     /// The line for the agent.
-    pub fn linea(&self) -> String {
-        let mut s = format!("History of `{}`: changed in {} sessions (last {})", self.fichero, self.sesiones, self.ultima);
-        if !self.juntos.is_empty() {
+    pub fn line(&self) -> String {
+        let mut s = format!("History of `{}`: changed in {} sessions (last {})", self.file, self.sessions, self.last);
+        if !self.together.is_empty() {
             let parts: Vec<String> = self
-                .juntos
+                .together
                 .iter()
                 .enumerate()
-                .map(|(i, (f, n))| if i == 0 { format!("`{f}` ({n} of {})", self.sesiones) } else { format!("`{f}` ({n})") })
+                .map(|(i, (f, n))| if i == 0 { format!("`{f}` ({n} of {})", self.sessions) } else { format!("`{f}` ({n})") })
                 .collect();
             let list = match parts.as_slice() {
                 [a] => a.clone(),
@@ -123,11 +123,11 @@ impl Historia {
 fn sessions(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>> {
     let general = crate::proyecto::is_general(project);
     let id = if general { 0 } else { crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0) };
-    let mut folders: BTreeSet<String> = BTreeSet::from([crate::diario::carpeta_cmp(project)]);
+    let mut folders: BTreeSet<String> = BTreeSet::from([crate::diario::folder_cmp(project)]);
     if id != 0 {
         let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1")?;
         for p in q.query_map([id], |r| r.get::<_, String>(0))? {
-            folders.insert(crate::diario::carpeta_cmp(&p?));
+            folders.insert(crate::diario::folder_cmp(&p?));
         }
     }
     let mut q = db.prepare("SELECT project_id, folder, last_at, files FROM diary WHERE project_id IN (?1, 0)")?;
@@ -135,7 +135,7 @@ fn sessions(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>
     let mut r = Vec::new();
     while let Some(row) = rows.next()? {
         let (pid, folder): (i64, String) = (row.get(0)?, row.get(1)?);
-        if pid == 0 && !folders.contains(&crate::diario::carpeta_cmp(&folder)) {
+        if pid == 0 && !folders.contains(&crate::diario::folder_cmp(&folder)) {
             continue;
         }
         let files: Vec<String> = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default();
@@ -148,7 +148,7 @@ fn sessions(db: &Connection, project: &str) -> Result<Vec<(String, Vec<String>)>
 
 /// Whether two paths are the same file: equal (ignoring case and slashes), or one ends in the other
 /// at a folder boundary (`D:/repo/src/a.rs` and `src/a.rs`: memories keep the path as the agent gave it).
-pub(crate) fn misma(a: &str, b: &str) -> bool {
+pub(crate) fn same_file(a: &str, b: &str) -> bool {
     let (a, b) = (a.to_lowercase().replace('\\', "/"), b.to_lowercase().replace('\\', "/"));
     let (long, short) = if a.len() >= b.len() { (&a, &b) } else { (&b, &a) };
     long == short || (!short.is_empty() && long.ends_with(short.as_str()) && long.as_bytes()[long.len() - short.len() - 1] == b'/')
@@ -157,8 +157,8 @@ pub(crate) fn misma(a: &str, b: &str) -> bool {
 /// The history of the files the message names (those above `MIN_SESSIONS`), without checking whether
 /// it was already said. Those named with their whole path first; of those named only by name, for each
 /// name the one that moved the most (`main.rs` isn't every `main.rs` in the repository).
-pub fn historias(db: &Connection, project: &str, prompt: &str) -> Result<Vec<Historia>> {
-    if project.is_empty() || !parece_nombrar(prompt) || !crate::diario::hay_tabla(db)? {
+pub fn histories(db: &Connection, project: &str, prompt: &str) -> Result<Vec<History>> {
+    if project.is_empty() || !may_name_a_file(prompt) || !crate::diario::has_table(db)? {
         return Ok(Vec::new());
     }
     let text = prompt.to_lowercase().replace('\\', "/");
@@ -167,20 +167,20 @@ pub fn historias(db: &Connection, project: &str, prompt: &str) -> Result<Vec<His
     let mut seen: HashMap<&str, Option<(usize, &str)>> = HashMap::new();
     for (last, files) in &lines {
         for f in files {
-            if let Some((n, u)) = seen.entry(f.as_str()).or_insert_with(|| nombra(&text, f).then_some((0, ""))) {
+            if let Some((n, u)) = seen.entry(f.as_str()).or_insert_with(|| names_path(&text, f).then_some((0, ""))) {
                 *n += 1;
                 *u = (*u).max(last.as_str());
             }
         }
     }
-    let mut chosen: Vec<(&str, usize, &str)> = seen.into_iter().filter_map(|(f, x)| x.filter(|(n, _)| *n >= SESIONES_MIN).map(|(n, u)| (f, n, u))).collect();
+    let mut chosen: Vec<(&str, usize, &str)> = seen.into_iter().filter_map(|(f, x)| x.filter(|(n, _)| *n >= MIN_SESSIONS).map(|(n, u)| (f, n, u))).collect();
     let whole = |f: &str| text.contains(&f.to_lowercase());
     chosen.sort_by(|a, b| whole(b.0).cmp(&whole(a.0)).then(b.1.cmp(&a.1)).then(a.0.cmp(b.0)));
     // Named whole, the name is already taken: `src/recall.rs` doesn't also bring `tests/recall.rs`.
     let name = |f: &str| f.to_lowercase().rsplit('/').next().unwrap_or("").to_string();
     let mut names: BTreeSet<String> = chosen.iter().filter(|x| whole(x.0)).map(|x| name(x.0)).collect();
     chosen.retain(|(f, _, _)| whole(f) || names.insert(name(f)));
-    chosen.truncate(MAX_POR_MENSAJE);
+    chosen.truncate(MAX_PER_MESSAGE);
     if chosen.is_empty() {
         return Ok(Vec::new());
     }
@@ -199,19 +199,19 @@ pub fn historias(db: &Connection, project: &str, prompt: &str) -> Result<Vec<His
             }
         }
         let mut together: Vec<(String, usize)> =
-            together.into_iter().filter(|(_, k)| *k >= JUNTOS_MIN && *k as f64 >= JUNTOS_PARTE * n as f64).map(|(f, k)| (f.to_string(), k)).collect();
+            together.into_iter().filter(|(_, k)| *k >= MIN_TOGETHER && *k as f64 >= MIN_TOGETHER_SHARE * n as f64).map(|(f, k)| (f.to_string(), k)).collect();
         together.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        together.truncate(JUNTOS_MAX);
-        let ids: BTreeSet<&str> = gotchas.iter().filter(|(_, p)| misma(p, file)).map(|(id, _)| id.as_str()).collect();
-        r.push(Historia { fichero: file.to_string(), sesiones: n, ultima: last.chars().take(10).collect(), juntos: together, gotchas: ids.len() });
+        together.truncate(MAX_TOGETHER);
+        let ids: BTreeSet<&str> = gotchas.iter().filter(|(_, p)| same_file(p, file)).map(|(id, _)| id.as_str()).collect();
+        r.push(History { file: file.to_string(), sessions: n, last: last.chars().take(10).collect(), together, gotchas: ids.len() });
     }
     Ok(r)
 }
 
 /// What the recall for this message adds (one line per file), or nothing. Records what was said so
 /// as not to repeat it in the session.
-pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str) -> Result<Option<String>> {
-    let mut hs = historias(db, project, prompt)?;
+pub fn on_prompt(db: &Connection, project: &str, session: &str, prompt: &str) -> Result<Option<String>> {
+    let mut hs = histories(db, project, prompt)?;
     if hs.is_empty() {
         return Ok(None);
     }
@@ -220,7 +220,7 @@ pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str)
             let mut q = db.prepare("SELECT 1 FROM diary_hint WHERE session = ?1 AND file = ?2")?;
             let mut fresh = Vec::new();
             for h in hs {
-                if q.query_row(params![session, h.fichero], |_| Ok(())).optional()?.is_none() {
+                if q.query_row(params![session, h.file], |_| Ok(())).optional()?.is_none() {
                     fresh.push(h);
                 }
             }
@@ -231,10 +231,10 @@ pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str)
         }
         db.execute_batch(TABLE)?;
         for h in &hs {
-            db.execute(&format!("INSERT OR IGNORE INTO diary_hint(session, file, at) VALUES (?1, ?2, {NOW})"), params![session, h.fichero])?;
+            db.execute(&format!("INSERT OR IGNORE INTO diary_hint(session, file, at) VALUES (?1, ?2, {NOW})"), params![session, h.file])?;
         }
     }
-    Ok(Some(hs.iter().map(Historia::linea).collect::<Vec<_>>().join("\n")))
+    Ok(Some(hs.iter().map(History::line).collect::<Vec<_>>().join("\n")))
 }
 
 // --- For other programs: `omoi file-history` -----------------------------------------------------
@@ -244,26 +244,26 @@ pub fn al_preguntar(db: &Connection, project: &str, session: &str, prompt: &str)
 // limit: the caller sets its own thresholds.
 
 /// How many of those that change together are given per file.
-pub const JUNTOS_INFORME: usize = 10;
+pub const REPORT_TOGETHER: usize = 10;
 
 /// A file that usually changes with another, and in how many sessions it did.
 #[derive(Debug, PartialEq, serde::Serialize)]
-pub struct Junto {
+pub struct CoChange {
     pub file: String,
     pub sessions: usize,
 }
 
 /// A file's history according to this computer's diary.
 #[derive(Debug, PartialEq, serde::Serialize)]
-pub struct HistoriaFichero {
+pub struct FileHistory {
     /// Relative to the repository, with `/` (absolute if it falls outside).
     pub file: String,
     /// In how many sessions it changed.
     pub sessions: usize,
     /// The last day (UTC) of the most recent session that touched it; `None` if none.
     pub last: Option<String>,
-    /// Those that changed in the same sessions, most first (at most [`JUNTOS_INFORME`]).
-    pub changes_with: Vec<Junto>,
+    /// Those that changed in the same sessions, most first (at most [`REPORT_TOGETHER`]).
+    pub changes_with: Vec<CoChange>,
     /// How many gotchas (of the project, its space and the global ones) name it in their paths, and which.
     pub gotchas: usize,
     pub gotcha_ids: Vec<String>,
@@ -271,19 +271,19 @@ pub struct HistoriaFichero {
 
 /// The history of several files of a project.
 #[derive(Debug, serde::Serialize)]
-pub struct Informe {
+pub struct Report {
     /// The project's folder.
     pub project: String,
     /// How many sessions with files this project's diary has: to put things in proportion.
     pub sessions: usize,
-    pub files: Vec<HistoriaFichero>,
+    pub files: Vec<FileHistory>,
 }
 
 /// A path as the diary stores it: relative to the repository if it falls inside (also if it comes
 /// absolute), with `/` and without a leading `./`.
 fn path_key(f: &str, project: &str) -> String {
     let f = f.trim();
-    let r = if std::path::Path::new(f).is_absolute() { crate::diario::relativo(f, project) } else { f.replace('\\', "/") };
+    let r = if std::path::Path::new(f).is_absolute() { crate::diario::relative(f, project) } else { f.replace('\\', "/") };
     let mut r = r.as_str();
     while let Some(x) = r.strip_prefix("./") {
         r = x;
@@ -302,11 +302,11 @@ fn sessions_with_outside(db: &Connection, project: &str) -> Result<Vec<(String, 
     }
     let id = crate::proyecto::resolve(db, project)?.map(|(id, _)| id).unwrap_or(0);
     let folders: BTreeSet<String> = {
-        let mut c = BTreeSet::from([crate::diario::carpeta_cmp(project)]);
+        let mut c = BTreeSet::from([crate::diario::folder_cmp(project)]);
         if id != 0 {
             let mut q = db.prepare("SELECT path FROM project_path WHERE project_id = ?1")?;
             for p in q.query_map([id], |r| r.get::<_, String>(0))? {
-                c.insert(crate::diario::carpeta_cmp(&p?));
+                c.insert(crate::diario::folder_cmp(&p?));
             }
         }
         c
@@ -319,7 +319,7 @@ fn sessions_with_outside(db: &Connection, project: &str) -> Result<Vec<(String, 
     let mut rows = q.query(rusqlite::params![id, pattern])?;
     while let Some(row) = rows.next()? {
         let (pid, folder): (i64, String) = (row.get(0)?, row.get(1)?);
-        if pid == 0 && folders.contains(&crate::diario::carpeta_cmp(&folder)) {
+        if pid == 0 && folders.contains(&crate::diario::folder_cmp(&folder)) {
             continue;
         }
         let files: Vec<String> = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default();
@@ -327,7 +327,7 @@ fn sessions_with_outside(db: &Connection, project: &str) -> Result<Vec<(String, 
             .iter()
             .filter_map(|x| {
                 let x = x.replace('\\', "/");
-                let rel = crate::diario::relativo_texto(&x, &folder_path);
+                let rel = crate::diario::relative_text(&x, &folder_path);
                 (rel != x).then_some(rel)
             })
             .collect();
@@ -340,7 +340,7 @@ fn sessions_with_outside(db: &Connection, project: &str) -> Result<Vec<(String, 
 
 /// The history of `files` (paths relative to the repository or absolute) in the project of the folder
 /// `project`, in the order asked and without repeats. Read-only: the diary is local, this computer's.
-pub fn de_ficheros(db: &Connection, project: &str, files: &[String]) -> Result<Informe> {
+pub fn for_files(db: &Connection, project: &str, files: &[String]) -> Result<Report> {
     let mut keys: Vec<String> = Vec::new();
     for f in files.iter().filter(|f| !f.trim().is_empty()) {
         let k = path_key(f, project);
@@ -348,7 +348,7 @@ pub fn de_ficheros(db: &Connection, project: &str, files: &[String]) -> Result<I
             keys.push(k);
         }
     }
-    let lines = if crate::diario::hay_tabla(db)? { sessions_with_outside(db, project)? } else { Vec::new() };
+    let lines = if crate::diario::has_table(db)? { sessions_with_outside(db, project)? } else { Vec::new() };
     // Each session with its files already comparable, once.
     let lines: Vec<(&str, Vec<(String, &str)>)> = lines
         .iter()
@@ -375,11 +375,11 @@ pub fn de_ficheros(db: &Connection, project: &str, files: &[String]) -> Result<I
                 *together.entry(*f).or_default() += 1;
             }
         }
-        let mut together: Vec<Junto> = together.into_iter().map(|(f, s)| Junto { file: f.replace('\\', "/"), sessions: s }).collect();
+        let mut together: Vec<CoChange> = together.into_iter().map(|(f, s)| CoChange { file: f.replace('\\', "/"), sessions: s }).collect();
         together.sort_by(|a, b| b.sessions.cmp(&a.sessions).then(a.file.cmp(&b.file)));
-        together.truncate(JUNTOS_INFORME);
-        let ids: BTreeSet<&str> = gotchas.iter().filter(|(_, p)| misma(p, &k)).map(|(id, _)| id.as_str()).collect();
-        out.push(HistoriaFichero {
+        together.truncate(REPORT_TOGETHER);
+        let ids: BTreeSet<&str> = gotchas.iter().filter(|(_, p)| same_file(p, &k)).map(|(id, _)| id.as_str()).collect();
+        out.push(FileHistory {
             sessions: n,
             last: (n > 0).then(|| last.chars().take(10).collect()),
             changes_with: together,
@@ -388,7 +388,7 @@ pub fn de_ficheros(db: &Connection, project: &str, files: &[String]) -> Result<I
             file: k,
         });
     }
-    Ok(Informe { project: project.to_string(), sessions: lines.len(), files: out })
+    Ok(Report { project: project.to_string(), sessions: lines.len(), files: out })
 }
 
 #[cfg(test)]
@@ -397,41 +397,41 @@ mod tests {
 
     #[test]
     fn looks_like_a_file() {
-        assert!(parece_nombrar("mira sync.rs"));
-        assert!(parece_nombrar("el fallo de src/sync"));
-        assert!(parece_nombrar(r"en D:\repo"));
-        assert!(!parece_nombrar("como ha ido todo? bien. 1.5 o 2"));
-        assert!(!parece_nombrar("termina. Ahora sigue"));
-        assert!(!parece_nombrar(""));
+        assert!(may_name_a_file("mira sync.rs"));
+        assert!(may_name_a_file("el fallo de src/sync"));
+        assert!(may_name_a_file(r"en D:\repo"));
+        assert!(!may_name_a_file("como ha ido todo? bien. 1.5 o 2"));
+        assert!(!may_name_a_file("termina. Ahora sigue"));
+        assert!(!may_name_a_file(""));
     }
 
     #[test]
     fn same_paths() {
-        assert!(misma("src/a.rs", "SRC/a.rs"));
-        assert!(misma("D:/repo/src/a.rs", "src/a.rs"));
-        assert!(misma(r"src\a.rs", "D:/repo/src/a.rs"));
-        assert!(!misma("src/data.rs", "a.rs"));
-        assert!(!misma("src/a.rs", "tests/a.rs"));
+        assert!(same_file("src/a.rs", "SRC/a.rs"));
+        assert!(same_file("D:/repo/src/a.rs", "src/a.rs"));
+        assert!(same_file(r"src\a.rs", "D:/repo/src/a.rs"));
+        assert!(!same_file("src/data.rs", "a.rs"));
+        assert!(!same_file("src/a.rs", "tests/a.rs"));
     }
 
     #[test]
     fn the_line() {
-        let mut h = Historia {
-            fichero: "src/sync.rs".into(),
-            sesiones: 14,
-            ultima: "2026-11-04".into(),
-            juntos: vec![("tests/sync.rs".into(), 9), ("CHANGELOG.md".into(), 7)],
+        let mut h = History {
+            file: "src/sync.rs".into(),
+            sessions: 14,
+            last: "2026-11-04".into(),
+            together: vec![("tests/sync.rs".into(), 9), ("CHANGELOG.md".into(), 7)],
             gotchas: 3,
         };
         assert_eq!(
-            h.linea(),
+            h.line(),
             "History of `src/sync.rs`: changed in 14 sessions (last 2026-11-04); it usually changes together with `tests/sync.rs` (9 of 14) and `CHANGELOG.md` (7); 3 gotchas mention it."
         );
-        h.juntos.push(("docs/x.md".into(), 6));
+        h.together.push(("docs/x.md".into(), 6));
         h.gotchas = 1;
-        assert!(h.linea().contains("(9 of 14), `CHANGELOG.md` (7) and `docs/x.md` (6); 1 gotcha mentions it."));
-        h.juntos.clear();
+        assert!(h.line().contains("(9 of 14), `CHANGELOG.md` (7) and `docs/x.md` (6); 1 gotcha mentions it."));
+        h.together.clear();
         h.gotchas = 0;
-        assert_eq!(h.linea(), "History of `src/sync.rs`: changed in 14 sessions (last 2026-11-04).");
+        assert_eq!(h.line(), "History of `src/sync.rs`: changed in 14 sessions (last 2026-11-04).");
     }
 }

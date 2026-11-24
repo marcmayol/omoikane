@@ -199,7 +199,7 @@ fn kumis_route_on_three_levels() {
     for (p, s) in [(disney, x), (other_x, x), (of_y, y)] {
         let id = proyecto::register(&db, p).unwrap();
         proyecto::assign_space(&db, id, Some(s)).unwrap();
-        omoikane::oficios::anadir(&db, id, &["web".to_string()]).unwrap();
+        omoikane::oficios::add(&db, id, &["web".to_string()]).unwrap();
     }
     let save = |db: &mut Connection, mut n: NewMemory, tags: &[&str], data: serde_json::Value| {
         n.tags = tags.iter().map(|t| t.to_string()).collect();

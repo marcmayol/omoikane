@@ -17,7 +17,7 @@
 //! cannot be compiled, `tokenizers` (1.3-1.6 s to read `tokenizer.json`).
 //!
 //! Reads two model formats. The sentence-transformers one (1.2 GB in float32), for testing and for
-//! converting. And the compact one, the one that gets installed (`compactar`): the 262,144-token table, which is
+//! converting. And the compact one, the one that gets installed (`compact`): the 262,144-token table, which is
 //! 805 of the 1,200 MB, in int8 with one scale per row and mapped from disk (only the rows of
 //! the tokens that appear are read); the rest of the weights, in float16.
 
@@ -37,16 +37,16 @@ const DOCUMENT_PROMPT: &str = "title: none | text: ";
 pub const MAX_TOKENS: usize = 2048;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tipo {
-    Pregunta,
-    Documento,
+pub enum TextKind {
+    Query,
+    Document,
 }
 
-impl Tipo {
+impl TextKind {
     fn prompt(self) -> &'static str {
         match self {
-            Tipo::Pregunta => QUERY_PROMPT,
-            Tipo::Documento => DOCUMENT_PROMPT,
+            TextKind::Query => QUERY_PROMPT,
+            TextKind::Document => DOCUMENT_PROMPT,
         }
     }
 }
@@ -161,7 +161,7 @@ enum Backend {
 }
 
 pub struct Gemma {
-    /// `pesos.safetensors` mapped, if the fast engine reads from it (for `precalentar`).
+    /// `pesos.safetensors` mapped, if the fast engine reads from it (for `prewarm`).
     map: Option<Arc<memmap2::Mmap>>,
     tokens: Table,
     tok: Tok,
@@ -178,20 +178,20 @@ pub struct Gemma {
 }
 
 /// Does `dir` have EmbeddingGemma, in the sentence-transformers format or in the compact one?
-pub fn es_modelo(dir: &Path) -> bool {
-    es_sentence_transformers(dir) || es_compacto(dir)
+pub fn is_model(dir: &Path) -> bool {
+    is_sentence_transformers(dir) || is_compact(dir)
 }
 
-pub fn es_sentence_transformers(dir: &Path) -> bool {
+pub fn is_sentence_transformers(dir: &Path) -> bool {
     ["config.json", "model.safetensors", "tokenizer.json", "2_Dense/model.safetensors", "3_Dense/model.safetensors"].iter().all(|f| dir.join(f).is_file())
 }
 
-pub fn es_compacto(dir: &Path) -> bool {
+pub fn is_compact(dir: &Path) -> bool {
     ["config.json", "tokenizer.json", WEIGHTS_FILE, TABLE_FILE, SCALES_FILE].iter().all(|f| dir.join(f).is_file())
 }
 
 /// The files of the compact format, in download order.
-pub const FICHEROS_COMPACTO: [&str; 5] = ["config.json", "tokenizer.json", SCALES_FILE, WEIGHTS_FILE, TABLE_FILE];
+pub const COMPACT_FILES: [&str; 5] = ["config.json", "tokenizer.json", SCALES_FILE, WEIGHTS_FILE, TABLE_FILE];
 
 /// The sentence-transformers weights with the compact format's names: the model's as they are
 /// and the two dense layers as `densa1.weight` and `densa2.weight`.
@@ -208,8 +208,8 @@ fn sentence_transformers_weights(dir: &Path) -> Result<HashMap<String, Tensor>> 
 /// Writes the compact format into `dest` from the sentence-transformers folder `source`:
 /// `config.json` and `tokenizer.json` as they are, the token table in int8 (per-row, symmetric scale)
 /// and the rest in float16. Each file is written as `.part` and renamed when done.
-pub fn compactar(source: &Path, dest: &Path) -> Result<()> {
-    ensure!(es_sentence_transformers(source), "{}: not a sentence-transformers EmbeddingGemma folder", source.display());
+pub fn compact(source: &Path, dest: &Path) -> Result<()> {
+    ensure!(is_sentence_transformers(source), "{}: not a sentence-transformers EmbeddingGemma folder", source.display());
     std::fs::create_dir_all(dest)?;
     let mut weights = sentence_transformers_weights(source)?;
     let table = weights.remove("embed_tokens.weight").ok_or_else(|| anyhow!("model.safetensors: missing embed_tokens.weight"))?.to_dtype(DType::F32)?;
@@ -367,19 +367,19 @@ impl Gemma {
     /// candle: the fast engine's generic path gives the same vector but is slower than candle (measured:
     /// 56 versus 42 ms with 16 tokens, twice that with long texts). `OMOIKANE_GEMMA_RAPIDO=0` forces
     /// candle and `=1` the fast one (generic, if there is no AVX2).
-    pub fn cargar(dir: &Path) -> Result<Self> {
+    pub fn load(dir: &Path) -> Result<Self> {
         let simd = crate::engine::simd_available();
         match std::env::var("OMOIKANE_GEMMA_RAPIDO").as_deref() {
-            Ok("0") => Self::cargar_candle(dir),
-            Ok("1") => Self::cargar_rapido(dir, Self::hilos_por_defecto(), simd),
-            _ if simd => Self::cargar_rapido(dir, Self::hilos_por_defecto(), true),
-            _ => Self::cargar_candle(dir),
+            Ok("0") => Self::load_candle(dir),
+            Ok("1") => Self::load_fast(dir, Self::default_threads(), simd),
+            _ if simd => Self::load_fast(dir, Self::default_threads(), true),
+            _ => Self::load_candle(dir),
         }
     }
 
     /// Reads the mapped weights once, so the first query does not pay for the page faults
     /// (~30 ms with the disk in cache). The service calls it on a separate thread right after loading.
-    pub fn precalentar(&self) {
+    pub fn prewarm(&self) {
         if let Some(m) = &self.map {
             let mut s = 0u8;
             for i in (0..m.len()).step_by(4096) {
@@ -390,7 +390,7 @@ impl Gemma {
     }
 
     /// Threads of the fast engine: `OMOIKANE_GEMMA_HILOS` or the CPU's.
-    pub fn hilos_por_defecto() -> usize {
+    pub fn default_threads() -> usize {
         std::env::var("OMOIKANE_GEMMA_HILOS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -399,12 +399,12 @@ impl Gemma {
     }
 
     /// Is it running with the fast engine?
-    pub fn es_rapido(&self) -> bool {
+    pub fn is_fast(&self) -> bool {
         matches!(self.backend, Backend::Fast(..))
     }
 
     /// Does it use the compiled tokenizer?
-    pub fn tokenizer_compilado(&self) -> bool {
+    pub fn compiled_tokenizer(&self) -> bool {
         matches!(self.tok, Tok::Bpe(_))
     }
 
@@ -435,11 +435,11 @@ impl Gemma {
     }
 
     /// The fast engine with `threads` threads; `simd` with AVX2/FMA/F16C (`engine::simd_available`).
-    pub fn cargar_rapido(dir: &Path, threads: usize, simd: bool) -> Result<Self> {
+    pub fn load_fast(dir: &Path, threads: usize, simd: bool) -> Result<Self> {
         use crate::engine::{Engine, Layer, rope_table};
-        ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
+        ensure!(is_model(dir), "{}: not an EmbeddingGemma folder", dir.display());
         let cfg = Cfg::read(dir)?;
-        let compact = !es_sentence_transformers(dir);
+        let compact = !is_sentence_transformers(dir);
         let mut f = if compact { Source::mapped(&dir.join(WEIGHTS_FILE))? } else { Source::Tensors(sentence_transformers_weights(dir)?) };
         let mut layers = Vec::with_capacity(cfg.locals.len());
         for (i, &local) in cfg.locals.iter().enumerate() {
@@ -488,11 +488,11 @@ impl Gemma {
     }
 
     /// With candle, in f32 (as up to 1.2.0).
-    pub fn cargar_candle(dir: &Path) -> Result<Self> {
-        ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
+    pub fn load_candle(dir: &Path) -> Result<Self> {
+        ensure!(is_model(dir), "{}: not an EmbeddingGemma folder", dir.display());
         let dev = Device::Cpu;
         let cfg = Cfg::read(dir)?;
-        let compact = !es_sentence_transformers(dir);
+        let compact = !is_sentence_transformers(dir);
         let mut weights = if compact { candle_core::safetensors::load(dir.join(WEIGHTS_FILE), &dev)? } else { sentence_transformers_weights(dir)? };
         let mut take = |k: String| -> Result<Tensor> { Ok(weights.remove(&k).ok_or_else(|| anyhow!("model.safetensors: missing {k}"))?.to_dtype(DType::F32)?) };
         let mut layers = Vec::with_capacity(cfg.locals.len());
@@ -521,26 +521,26 @@ impl Gemma {
     }
 
     /// The ids of `text` with its kind's prompt (with `<bos>` and `<eos>`, up to `MAX_TOKENS`).
-    pub fn ids(&self, text: &str, kind: Tipo) -> Result<Vec<u32>> {
+    pub fn ids(&self, text: &str, kind: TextKind) -> Result<Vec<u32>> {
         self.tok.ids(&format!("{}{text}", kind.prompt()))
     }
 
     /// The vector (768, normalized) of `text`, with its kind's prompt.
-    pub fn vector(&self, text: &str, kind: Tipo) -> Result<Vec<f32>> {
+    pub fn vector(&self, text: &str, kind: TextKind) -> Result<Vec<f32>> {
         let ids = self.ids(text, kind)?;
-        Ok(self.vectores_de_ids(&[ids], &|| {})?.pop().unwrap_or_default())
+        Ok(self.vectors_from_ids(&[ids], &|| {})?.pop().unwrap_or_default())
     }
 
     /// The vectors of several texts (with the fast engine, all at once: the same result as one
     /// by one, faster).
-    pub fn vectores(&self, texts: &[&str], kind: Tipo) -> Result<Vec<Vec<f32>>> {
+    pub fn vectors(&self, texts: &[&str], kind: TextKind) -> Result<Vec<Vec<f32>>> {
         let ids = texts.iter().map(|t| self.ids(t, kind)).collect::<Result<Vec<_>>>()?;
-        self.vectores_de_ids(&ids, &|| {})
+        self.vectors_from_ids(&ids, &|| {})
     }
 
     /// The vectors of already tokenized texts (`ids`). `yield_now` is called between steps: the
     /// indexer uses it to let a query go first.
-    pub fn vectores_de_ids(&self, ids: &[Vec<u32>], yield_now: &dyn Fn()) -> Result<Vec<Vec<f32>>> {
+    pub fn vectors_from_ids(&self, ids: &[Vec<u32>], yield_now: &dyn Fn()) -> Result<Vec<Vec<f32>>> {
         match &self.backend {
             Backend::Fast(r, pool) => {
                 let all: Vec<u32> = ids.iter().flatten().copied().collect();

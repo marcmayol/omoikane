@@ -9,7 +9,7 @@
 //! cargo run --release --example motor_igual -- carga  <modelo> <rapido|candle>
 //! ```
 
-use omoikane::gemma::{Gemma, Tipo};
+use omoikane::gemma::{Gemma, TextKind};
 use std::time::Instant;
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -29,31 +29,31 @@ fn texts(f: &str) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> 
 fn main() -> anyhow::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let dir = std::path::Path::new(&a[1]);
-    let threads = Gemma::hilos_por_defecto();
+    let threads = Gemma::default_threads();
     match a[0].as_str() {
         "carga" => {
             let t = Instant::now();
-            let g = if a[2] == "candle" { Gemma::cargar_candle(dir)? } else { Gemma::cargar_rapido(dir, threads, omoikane::engine::simd_available())? };
+            let g = if a[2] == "candle" { Gemma::load_candle(dir)? } else { Gemma::load_fast(dir, threads, omoikane::engine::simd_available())? };
             let load = t.elapsed().as_secs_f64() * 1000.0;
             let t = Instant::now();
-            g.vector("How do I undo a cargo yank?", Tipo::Pregunta)?;
+            g.vector("How do I undo a cargo yank?", TextKind::Query)?;
             let first = t.elapsed().as_secs_f64() * 1000.0;
             let t = Instant::now();
-            g.vector("How do I undo a cargo yank?", Tipo::Pregunta)?;
+            g.vector("How do I undo a cargo yank?", TextKind::Query)?;
             println!(
                 "{{\"carga_ms\": {load:.1}, \"primer_vector_ms\": {first:.1}, \"segundo_ms\": {:.1}, \"bpe\": {}}}",
                 t.elapsed().as_secs_f64() * 1000.0,
-                g.tokenizer_compilado()
+                g.compiled_tokenizer()
             );
         }
         "igual" => {
             let step: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let c = Gemma::cargar_candle(dir)?;
-            let r = Gemma::cargar_rapido(dir, threads, true)?;
-            let generic = Gemma::cargar_rapido(dir, threads, false)?;
-            println!("tokenizer compilado: candle {} rápido {}", c.tokenizer_compilado(), r.tokenizer_compilado());
+            let c = Gemma::load_candle(dir)?;
+            let r = Gemma::load_fast(dir, threads, true)?;
+            let generic = Gemma::load_fast(dir, threads, false)?;
+            println!("tokenizer compilado: candle {} rápido {}", c.compiled_tokenizer(), r.compiled_tokenizer());
             for (g, v) in texts(&a[2])? {
-                let kind = if g == "preguntas" || g == "mensajes" { Tipo::Pregunta } else { Tipo::Documento };
+                let kind = if g == "preguntas" || g == "mensajes" { TextKind::Query } else { TextKind::Document };
                 let ts: Vec<&str> = v.as_array().unwrap().iter().step_by(step).map(|t| t.as_str().unwrap()).collect();
                 let (mut min_cr, mut min_cg, mut min_rg, mut max_batch, mut errors) = (1f32, 1f32, 1f32, 0f32, 0);
                 let mut good = Vec::new();
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 // In batches of 8 texts: bit for bit the same as one at a time.
                 for (chunk, singles) in good.chunks(8).zip(one_by_one.chunks(8)) {
-                    for (x, y) in r.vectores(chunk, kind)?.iter().zip(singles) {
+                    for (x, y) in r.vectors(chunk, kind)?.iter().zip(singles) {
                         max_batch = max_batch.max(x.iter().zip(y).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max));
                     }
                 }
@@ -87,20 +87,20 @@ fn main() -> anyhow::Result<()> {
         "tiempo" => {
             let long_texts: Vec<String> = serde_json::from_slice(&std::fs::read(&a[2])?)?;
             let rounds: usize = a[3].parse()?;
-            let c = Gemma::cargar_candle(dir)?;
-            let r = Gemma::cargar_rapido(dir, threads, true)?;
-            let generic = Gemma::cargar_rapido(dir, threads, false)?;
+            let c = Gemma::load_candle(dir)?;
+            let r = Gemma::load_fast(dir, threads, true)?;
+            let generic = Gemma::load_fast(dir, threads, false)?;
             let gs = [&c, &r, &generic];
             println!("tokens\tcandle\trapido\tgenerico (ms, mediana de {rounds}, intercalados)");
             for t in &long_texts {
-                let n = r.ids(t, Tipo::Documento)?.len();
+                let n = r.ids(t, TextKind::Document)?.len();
                 let mut ms = [Vec::new(), Vec::new(), Vec::new()];
                 for i in 0..=rounds {
                     // The order rotates each round; the first doesn't count.
                     for k in 0..3 {
                         let j = (i + k) % 3;
                         let t0 = Instant::now();
-                        gs[j].vector(t, Tipo::Documento)?;
+                        gs[j].vector(t, TextKind::Document)?;
                         if i > 0 {
                             ms[j].push(t0.elapsed().as_secs_f64() * 1000.0);
                         }
@@ -119,27 +119,27 @@ fn main() -> anyhow::Result<()> {
             let ts: Vec<&str> = all[group.as_str()].as_array().unwrap().iter().take(n).map(|t| t.as_str().unwrap()).collect();
             let elapsed = match variant {
                 "candle" => {
-                    let g = Gemma::cargar_candle(dir)?;
+                    let g = Gemma::load_candle(dir)?;
                     let t0 = Instant::now();
                     for t in &ts {
-                        g.vector(t, Tipo::Documento)?;
+                        g.vector(t, TextKind::Document)?;
                     }
                     t0.elapsed()
                 }
                 "uno" => {
-                    let g = Gemma::cargar_rapido(dir, threads, true)?;
+                    let g = Gemma::load_fast(dir, threads, true)?;
                     let t0 = Instant::now();
                     for t in &ts {
-                        g.vector(t, Tipo::Documento)?;
+                        g.vector(t, TextKind::Document)?;
                     }
                     t0.elapsed()
                 }
                 v if v.starts_with("lote") => {
                     // lote<N>: batches of up to N tokens (a longer text goes alone).
                     let cap: usize = v[4..].parse()?;
-                    let g = Gemma::cargar_rapido(dir, threads, true)?;
+                    let g = Gemma::load_fast(dir, threads, true)?;
                     let t0 = Instant::now();
-                    let ids: Vec<Vec<u32>> = ts.iter().map(|t| g.ids(t, Tipo::Documento)).collect::<anyhow::Result<_>>()?;
+                    let ids: Vec<Vec<u32>> = ts.iter().map(|t| g.ids(t, TextKind::Document)).collect::<anyhow::Result<_>>()?;
                     let mut i = 0;
                     while i < ids.len() {
                         let (mut j, mut sum) = (i, 0);
@@ -147,14 +147,14 @@ fn main() -> anyhow::Result<()> {
                             sum += ids[j].len();
                             j += 1;
                         }
-                        g.vectores_de_ids(&ids[i..j], &|| {})?;
+                        g.vectors_from_ids(&ids[i..j], &|| {})?;
                         i = j;
                     }
                     t0.elapsed()
                 }
                 "nucleos" => {
                     // One memory per core, each with its own single-thread engine (the mapped weights are shared).
-                    let gs: Vec<Gemma> = (0..threads).map(|_| Gemma::cargar_rapido(dir, 1, true)).collect::<anyhow::Result<_>>()?;
+                    let gs: Vec<Gemma> = (0..threads).map(|_| Gemma::load_fast(dir, 1, true)).collect::<anyhow::Result<_>>()?;
                     let t0 = Instant::now();
                     let next = std::sync::atomic::AtomicUsize::new(0);
                     std::thread::scope(|s| {
@@ -166,7 +166,7 @@ fn main() -> anyhow::Result<()> {
                                     if i >= ts.len() {
                                         break;
                                     }
-                                    g.vector(ts[i], Tipo::Documento).unwrap();
+                                    g.vector(ts[i], TextKind::Document).unwrap();
                                 }
                             });
                         }

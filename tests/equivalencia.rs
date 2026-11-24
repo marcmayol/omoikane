@@ -7,7 +7,7 @@
 
 mod comun;
 
-use omoikane::embeber::{Modelo, compilar};
+use omoikane::embeber::{Model, compile};
 use std::path::PathBuf;
 
 /// Cases that don't fit in one corpus line.
@@ -32,8 +32,8 @@ fn ids_and_vectors_same_as_reference() {
         return;
     };
     let dest = comun::Temporal::nueva("equivalencia");
-    compilar(&int8, &dest).expect("compilar");
-    let compiled = Modelo::abrir(&dest).expect("abrir");
+    compile(&int8, &dest).expect("compilar");
+    let compiled = Model::open(&dest).expect("abrir");
 
     let corpus = include_str!("corpus.txt");
     let sentences: Vec<String> = corpus

@@ -966,7 +966,7 @@ fn note_key(rel: &str) -> String {
 ///   [`signed_text`]): an id is not a secret (it travels in sync, in bundles and in other
 ///   vaults), and without a signature nobody can point a note at a memory. It never changes project or
 ///   space, nor makes it global, pinned or verified; changing a verified memory's text removes its
-///   verification, like `update`. A trade memory goes through `oficios::fugas`.
+///   verification, like `update`. A trade memory goes through `oficios::leaks`.
 /// - Not edited (its fingerprint is the one in `base`) or already imported: nothing.
 /// - Edited and also changed in Omoikane after exporting it (`updated` is no longer the
 ///   memory's): conflict. Without `prefer`, neither is touched and it's reported; the export
@@ -983,7 +983,7 @@ fn note_key(rel: &str) -> String {
 ///
 /// Everything that comes in goes through secret redaction, like any write. Afterwards, if it's not a
 /// dry run, it exports again to bring the vault up to date.
-pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vault: &Path, what: Que, prefer: Preferir, dry_run: bool) -> Result<Resumen> {
+pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Model>, vault: &Path, what: Que, prefer: Preferir, dry_run: bool) -> Result<Resumen> {
     crate::proyecto::require_local(vault)?;
     let root = vault.join(CARPETA);
     anyhow::ensure!(
@@ -1106,12 +1106,12 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
             reason: Some("obsidian import".into()),
             ..Default::default()
         };
-        // A trade memory: the new content goes through `oficios::fugas`, as in `update`.
-        if crate::oficios::lleva_oficio(&m.tags) {
-            let request = crate::oficios::PedidoCambio { trade: None, para: None, cambios: &changes, datos: None, permitir_fugas: false };
-            match crate::oficios::al_cambiar(db, m, request)? {
+        // A trade memory: the new content goes through `oficios::leaks`, as in `update`.
+        if crate::oficios::has_trade(&m.tags) {
+            let request = crate::oficios::ChangeRequest { trade: None, for_whom: None, changes: &changes, data: None, allow_leaks: false };
+            match crate::oficios::on_update(db, m, request)? {
                 Err(leaks) => {
-                    let list: Vec<String> = leaks.iter().map(|f| format!("{} «{}»", f.tipo, f.text)).collect();
+                    let list: Vec<String> = leaks.iter().map(|f| format!("{} «{}»", f.kind, f.text)).collect();
                     r.failed.push(Saltada {
                         note: rel,
                         reason: tr!(
@@ -1122,7 +1122,7 @@ pub fn importar(db: &mut Connection, model: Option<&crate::embeber::Modelo>, vau
                     });
                     continue;
                 }
-                Ok(plan) if plan.hacer_global || plan.nueva => {
+                Ok(plan) if plan.make_global || plan.create_new => {
                     r.failed.push(Saltada { note: rel, reason: tr!("it would change where the memory belongs", "cambiaría dónde está la memoria") });
                     continue;
                 }

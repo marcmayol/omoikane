@@ -12,7 +12,7 @@
 //! release). Nothing that looks like a secret, nothing already saved, at most 5 (plus milestones).
 //!
 //! Reads the transcripts of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI and Cursor, and a generic
-//! JSONL (Kiro, the OpenCode plugin): see `turnos`.
+//! JSONL (Kiro, the OpenCode plugin): see `turns`.
 
 use crate::memoria::{NOW, Scope};
 use anyhow::Result;
@@ -21,26 +21,26 @@ use serde::Serialize;
 use std::path::Path;
 
 pub const DECISION: &str = "decision";
-pub const PREFERENCIA: &str = "preference";
-pub const HITO: &str = "milestone";
+pub const PREFERENCE: &str = "preference";
+pub const MILESTONE: &str = "milestone";
 /// A subagent's final report (1.4).
-pub const SUBAGENTE: &str = "subagent";
+pub const SUBAGENT: &str = "subagent";
 /// Up to how many characters of a subagent's report go into the candidate.
 const REPORT_MAX: usize = 700;
 
 /// How many are proposed per session (not counting milestones).
-pub const MAXIMO: usize = 5;
+pub const MAX_PER_SESSION: usize = 5;
 /// Days they wait for the next session before expiring.
-pub const DIAS: i64 = 7;
+pub const EXPIRY_DAYS: i64 = 7;
 /// From this coverage by an existing memory on, it is already saved.
 const ALREADY_SAVED: f64 = 0.6;
 
 #[derive(Clone, Debug, Serialize)]
-pub struct Candidata {
+pub struct Candidate {
     pub kind: &'static str,
     pub text: String,
     #[serde(skip)]
-    puntos: f64,
+    score: f64,
 }
 
 fn normal(s: &str) -> String {
@@ -77,9 +77,9 @@ const REQUESTS: &[&str] = &[
 const TRIVIAL_REPLIES: &[&str] = &["si", "sí", "vale", "ok", "okay", "claro", "perfecto", "genial", "gracias", "adelante", "dale", "continua", "sigue", "hazlo", "venga", "bien", "no", "yes", "go", "sure", "thanks"];
 
 /// Known secret formats, or a long «word» mixing lowercase, uppercase and digits.
-pub fn parece_secreto(t: &str) -> bool {
+pub fn looks_secret(t: &str) -> bool {
     // What `secretos` would redact (prefixed tokens, PEM keys, JWT, strings that look random…).
-    if !crate::secretos::hallazgos(t).is_empty() {
+    if !crate::secretos::findings(t).is_empty() {
         return true;
     }
     // And, for setting aside, also whatever talks about a key even if the token's shape isn't visible.
@@ -143,13 +143,13 @@ fn one_line(s: &str) -> String {
 
 /// A turn of the conversation, whichever agent it comes from.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Turno {
-    Usuario(String),
-    Agente(String),
+pub enum Turn {
+    User(String),
+    Agent(String),
     /// A question with options and what the user answered (Claude Code's `AskUserQuestion`).
-    Respuesta(String, String),
+    Answer(String, String),
     /// A command that ran fine (for milestones: commit, tag, release).
-    Comando(String),
+    Command(String),
 }
 
 fn parts_text(v: &serde_json::Value) -> String {
@@ -200,7 +200,7 @@ fn cursor_query(t: &str) -> Option<String> {
 /// The turns of a conversation from any of the known agents (Claude Code, Codex,
 /// Gemini CLI, Qwen Code, Copilot CLI, Cursor), or from a generic JSONL with `role`/`type` and
 /// `text`/`content`/`parts` (Kiro, the one the OpenCode plugin writes, new formats).
-pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
+pub fn turns(path: &Path) -> Result<Vec<Turn>> {
     // As bytes: when compacting, the transcript may be cut in the middle of a character.
     let text = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
     // Gemini CLI before June 2026: a whole JSON with `messages`.
@@ -214,9 +214,9 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
         return Ok(r);
     }
     // (id, turn): Gemini repeats the same message with the same id while it grows; the last one counts.
-    let mut r: Vec<(Option<String>, Turno)> = Vec::new();
+    let mut r: Vec<(Option<String>, Turn)> = Vec::new();
     let mut tools: std::collections::HashMap<String, (String, serde_json::Value)> = std::collections::HashMap::new();
-    let put = |r: &mut Vec<(Option<String>, Turno)>, id: Option<String>, t: Turno| {
+    let put = |r: &mut Vec<(Option<String>, Turn)>, id: Option<String>, t: Turn| {
         if let Some(id) = &id
             && let Some(slot) = r.iter_mut().find(|(x, _)| x.as_deref() == Some(id.as_str()))
         {
@@ -239,7 +239,7 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
                     if b["type"] == "tool_use" {
                         tools.insert(b["id"].as_str().unwrap_or_default().to_string(), (b["name"].as_str().unwrap_or_default().to_string(), b["input"].clone()));
                     } else if let Some(t) = b["text"].as_str().filter(|t| b["type"] == "text" && !t.trim().is_empty()) {
-                        put(&mut r, None, Turno::Agente(t.to_string()));
+                        put(&mut r, None, Turn::Agent(t.to_string()));
                     }
                 }
                 continue;
@@ -252,17 +252,17 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
                     let output = parts_text(&b["content"]);
                     if name == "AskUserQuestion" {
                         for (p, answer) in parse_answers(&output) {
-                            put(&mut r, None, Turno::Respuesta(p, answer));
+                            put(&mut r, None, Turn::Answer(p, answer));
                         }
                     }
                     let failed = b["is_error"] == true || output.contains("Exit code ") && !output.contains("Exit code 0");
                     if !failed && let Some(c) = command_of(input) {
-                        put(&mut r, None, Turno::Comando(c));
+                        put(&mut r, None, Turn::Command(c));
                     }
                 }
                 continue;
             }
-            put(&mut r, None, Turno::Usuario(parts_text(&m["content"])));
+            put(&mut r, None, Turn::User(parts_text(&m["content"])));
             continue;
         }
         // Codex: `response_item` with the message or the call inside `payload`.
@@ -270,13 +270,13 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
             let p = &d["payload"];
             match p["type"].as_str().unwrap_or_default() {
                 "message" => match p["role"].as_str() {
-                    Some("user") => put(&mut r, None, Turno::Usuario(parts_text(&p["content"]))),
-                    Some("assistant") => put(&mut r, None, Turno::Agente(parts_text(&p["content"]))),
+                    Some("user") => put(&mut r, None, Turn::User(parts_text(&p["content"]))),
+                    Some("assistant") => put(&mut r, None, Turn::Agent(parts_text(&p["content"]))),
                     _ => {}
                 },
                 "function_call" | "custom_tool_call" | "local_shell_call" => {
                     if let Some(c) = command_of(&p["arguments"]).or_else(|| command_of(&p["input"])).or_else(|| command_of(&p["action"])) {
-                        put(&mut r, None, Turno::Comando(c));
+                        put(&mut r, None, Turn::Command(c));
                     }
                 }
                 _ => {}
@@ -286,19 +286,19 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
         // Copilot CLI: `events.jsonl`.
         if kind == "user.message" {
             if !d["data"]["source"].as_str().is_some_and(|s| s.starts_with("skill-")) {
-                put(&mut r, None, Turno::Usuario(d["data"]["content"].as_str().unwrap_or_default().to_string()));
+                put(&mut r, None, Turn::User(d["data"]["content"].as_str().unwrap_or_default().to_string()));
             }
             continue;
         }
         if kind == "assistant.message" {
             if d["data"]["parentToolCallId"].is_null() {
-                put(&mut r, None, Turno::Agente(d["data"]["content"].as_str().unwrap_or_default().to_string()));
+                put(&mut r, None, Turn::Agent(d["data"]["content"].as_str().unwrap_or_default().to_string()));
             }
             continue;
         }
         if kind == "tool.execution_start" {
             if let Some(c) = command_of(&d["data"]["arguments"]) {
-                put(&mut r, None, Turno::Comando(c));
+                put(&mut r, None, Turn::Command(c));
             }
             continue;
         }
@@ -320,16 +320,16 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
             for b in d["message"]["content"].as_array().into_iter().flatten() {
                 if b["type"] == "tool_use" {
                     if let Some(c) = command_of(&b["input"]) {
-                        put(&mut r, None, Turno::Comando(c));
+                        put(&mut r, None, Turn::Command(c));
                     }
                 } else if let Some(t) = b["text"].as_str() {
                     match role {
                         "user" => {
                             if let Some(q) = cursor_query(t) {
-                                put(&mut r, None, Turno::Usuario(q));
+                                put(&mut r, None, Turn::User(q));
                             }
                         }
-                        "assistant" => put(&mut r, None, Turno::Agente(t.to_string())),
+                        "assistant" => put(&mut r, None, Turn::Agent(t.to_string())),
                         _ => {}
                     }
                 }
@@ -342,17 +342,17 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
         if d.get("id").is_none() && d.get("message").is_none() {
             if kind == "user" && d["content"][0]["type"] == "text" {
                 if d["synthetic_reason"].as_str().is_none_or(|s| s == "interjection") {
-                    put(&mut r, None, Turno::Usuario(parts_text(&d["content"])));
+                    put(&mut r, None, Turn::User(parts_text(&d["content"])));
                 }
                 continue;
             }
             if kind == "assistant" && d["content"].is_string() {
                 if let Some(t) = d["content"].as_str().filter(|t| !t.trim().is_empty()) {
-                    put(&mut r, None, Turno::Agente(t.to_string()));
+                    put(&mut r, None, Turn::Agent(t.to_string()));
                 }
                 for c in d["tool_calls"].as_array().into_iter().flatten() {
                     if let Some(c) = command_of(&c["arguments"]) {
-                        put(&mut r, None, Turno::Comando(c));
+                        put(&mut r, None, Turn::Command(c));
                     }
                 }
                 continue;
@@ -370,10 +370,10 @@ pub fn turnos(path: &Path) -> Result<Vec<Turno>> {
 
 /// A record with a role (`role`, `type`, `author` or `sender`) and text (`text`, `content`, `message`
 /// or `parts[].text`), or a command (`command`).
-fn generic_turn(d: &serde_json::Value, r: &mut Vec<Turno>) {
+fn generic_turn(d: &serde_json::Value, r: &mut Vec<Turn>) {
     let role = ["role", "type", "author", "sender"].iter().find_map(|k| d[k].as_str()).unwrap_or_default();
     if let Some(c) = command_of(d).filter(|_| matches!(role, "tool" | "command" | "shell")) {
-        r.push(Turno::Comando(c));
+        r.push(Turn::Command(c));
         return;
     }
     let Some(is_user) = is_user_role(role) else { return };
@@ -387,34 +387,34 @@ fn generic_turn(d: &serde_json::Value, r: &mut Vec<Turno>) {
     // Qwen: tool calls go in `message.parts[].functionCall`.
     for p in d["message"]["parts"].as_array().into_iter().flatten() {
         if let Some(c) = command_of(&p["functionCall"]["args"]) {
-            r.push(Turno::Comando(c));
+            r.push(Turn::Command(c));
         }
     }
     if !t.trim().is_empty() {
-        r.push(if is_user { Turno::Usuario(t) } else { Turno::Agente(t) });
+        r.push(if is_user { Turn::User(t) } else { Turn::Agent(t) });
     }
 }
 
 /// The candidates of a conversation, from most to least promising.
-pub fn de_conversacion(path: &Path) -> Result<Vec<Candidata>> {
-    Ok(de_turnos(turnos(path)?))
+pub fn from_transcript(path: &Path) -> Result<Vec<Candidate>> {
+    Ok(from_turns(turns(path)?))
 }
 
-/// `de_conversacion` with the turns already read (on close they are read once for everything).
-pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
-    let mut r: Vec<Candidata> = Vec::new();
+/// `from_transcript` with the turns already read (on close they are read once for everything).
+pub fn from_turns(turns: Vec<Turn>) -> Vec<Candidate> {
+    let mut r: Vec<Candidate> = Vec::new();
     let mut last_agent_text = String::new();
     let mut commit = None;
     let mut published = None;
     for turn in turns {
         match turn {
-            Turno::Agente(t) => {
+            Turn::Agent(t) => {
                 if !t.trim().is_empty() {
                     last_agent_text = t;
                 }
             }
-            Turno::Respuesta(p, answer) => r.push(Candidata { kind: DECISION, text: one_line(&format!("{p} → {answer}")), puntos: 2.5 }),
-            Turno::Comando(cmd) => {
+            Turn::Answer(p, answer) => r.push(Candidate { kind: DECISION, text: one_line(&format!("{p} → {answer}")), score: 2.5 }),
+            Turn::Command(cmd) => {
                 if let Some(i) = cmd.find("git commit") {
                     let rest = &cmd[i..];
                     if let Some(j) = rest.find("-m \"").or_else(|| rest.find("-m '")) {
@@ -430,7 +430,7 @@ pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
                     published = Some("cargo publish".into());
                 }
             }
-            Turno::Usuario(t) => {
+            Turn::User(t) => {
                 if is_noise(&t) {
                     continue;
                 }
@@ -439,7 +439,7 @@ pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
                 let question = (!last_agent_text.is_empty()).then(|| last_question(&last_agent_text)).flatten();
                 let with_question = |p: &Option<String>| p.as_ref().map(|q| format!("{q} → {t}")).unwrap_or_else(|| t.to_string());
                 if contains_phrase(&n, PREFERENCE_PHRASES) {
-                    r.push(Candidata { kind: PREFERENCIA, text: one_line(&with_question(&question)), puntos: 3.0 });
+                    r.push(Candidate { kind: PREFERENCE, text: one_line(&with_question(&question)), score: 3.0 });
                 } else if let Some(q) = &question {
                     let trivial = TRIVIAL_REPLIES.contains(&n.trim_matches(|c: char| !c.is_alphanumeric()));
                     if !trivial && t.chars().count() < 600 {
@@ -447,7 +447,7 @@ pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
                         let task = if REQUESTS.contains(&first_word) { -1.5 } else { 0.0 };
                         let opinion = if contains_phrase(&n, OPINION) { 1.0 } else { 0.0 } + task;
                         let size = (t.chars().count() as f64 / 200.0).min(1.0);
-                        r.push(Candidata { kind: DECISION, text: one_line(&format!("{q} → {t}")), puntos: 1.0 + opinion + size });
+                        r.push(Candidate { kind: DECISION, text: one_line(&format!("{q} → {t}")), score: 1.0 + opinion + size });
                     }
                 }
                 last_agent_text.clear();
@@ -455,16 +455,16 @@ pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
         }
     }
     let mut seen = std::collections::BTreeSet::new();
-    let mut r: Vec<Candidata> = r.into_iter().filter(|c| !parece_secreto(&c.text) && seen.insert(c.text.clone())).collect();
+    let mut r: Vec<Candidate> = r.into_iter().filter(|c| !looks_secret(&c.text) && seen.insert(c.text.clone())).collect();
     // Best first, and on ties, the most recent (the last thing decided is usually what holds).
 
-    let mut ordered: Vec<(usize, Candidata)> = r.drain(..).enumerate().collect();
-    ordered.sort_by(|(ia, a), (ib, b)| b.puntos.total_cmp(&a.puntos).then(ib.cmp(ia)));
-    let mut output: Vec<Candidata> = ordered.into_iter().map(|(_, c)| c).collect();
-    output.truncate(MAXIMO);
+    let mut ordered: Vec<(usize, Candidate)> = r.drain(..).enumerate().collect();
+    ordered.sort_by(|(ia, a), (ib, b)| b.score.total_cmp(&a.score).then(ib.cmp(ia)));
+    let mut output: Vec<Candidate> = ordered.into_iter().map(|(_, c)| c).collect();
+    output.truncate(MAX_PER_SESSION);
     for h in [commit.map(|c| format!("last commit: {c}")), published.map(|p| format!("published: {p}"))].into_iter().flatten() {
-        if !parece_secreto(&h) {
-            output.push(Candidata { kind: HITO, text: h, puntos: 0.0 });
+        if !looks_secret(&h) {
+            output.push(Candidate { kind: MILESTONE, text: h, score: 0.0 });
         }
     }
     output
@@ -472,7 +472,7 @@ pub fn de_turnos(turns: Vec<Turno>) -> Vec<Candidata> {
 
 /// Where a session's transcript is when the hook doesn't give the path (Copilot on `sessionEnd`,
 /// Kiro on `Stop`): by its id, in the folders each one uses.
-pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
+pub fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     let id = session_id.trim();
     // No folders or drives (`C:x`): the id comes from the hook and is joined to a folder.
     if id.is_empty() || id.contains(['/', '\\', '.', ':']) {
@@ -498,7 +498,7 @@ pub fn buscar_conversacion(session_id: &str) -> Option<std::path::PathBuf> {
 
 /// The subagents of a Claude Code session, which stores their transcripts next to the session's
 /// (`<folder>/<session id>/subagents/*.jsonl`), from newest to oldest.
-pub fn subagentes_de(transcript: &Path) -> Vec<std::path::PathBuf> {
+pub fn subagent_transcripts(transcript: &Path) -> Vec<std::path::PathBuf> {
     let (Some(dir), Some(id)) = (transcript.parent(), transcript.file_stem()) else { return Vec::new() };
     let Ok(rd) = std::fs::read_dir(dir.join(id).join("subagents")) else { return Vec::new() };
     let mut v: Vec<(std::time::SystemTime, std::path::PathBuf)> = rd
@@ -516,7 +516,7 @@ pub fn subagentes_de(transcript: &Path) -> Vec<std::path::PathBuf> {
 /// command fails and then the same one works», didn't show up once (and with the same program and other
 /// arguments, twice, both noise), so it is not used. Returns the candidate and what is proposed
 /// from the report, to compare with what is already saved.
-pub fn de_subagente(path: &Path) -> Result<Option<(Candidata, String)>> {
+pub fn from_subagent(path: &Path) -> Result<Option<(Candidate, String)>> {
     // Only its first and last messages are needed: the start and end of the file are read, not
     // the whole thing (some are 50 MB, and SessionEnd has little more than a second).
     let (head, tail) = ends_of(path)?;
@@ -532,14 +532,14 @@ pub fn de_subagente(path: &Path) -> Result<Option<(Candidata, String)>> {
     });
     let Some(report) = report.map(|t| one_line(&t)) else { return Ok(None) };
     let task: String = task.as_deref().unwrap_or("").lines().map(|l| l.trim_matches(|c: char| "*_`#> ".contains(c))).find(|l| !l.is_empty()).unwrap_or("").chars().take(120).collect();
-    if parece_secreto(&report) || parece_secreto(&task) {
+    if looks_secret(&report) || looks_secret(&task) {
         return Ok(None);
     }
     let short: String = if report.chars().count() > REPORT_MAX { format!("{}…", report.chars().take(REPORT_MAX).collect::<String>()) } else { report.clone() };
     // What is already saved is compared with what is proposed (the start of the report), not with the whole
     // report: it is cheaper and a memory summarizing it looks more like that.
     let text = if task.is_empty() { short.clone() } else { format!("{task} → {short}") };
-    Ok(Some((Candidata { kind: SUBAGENTE, text, puntos: 0.0 }, short)))
+    Ok(Some((Candidate { kind: SUBAGENT, text, score: 0.0 }, short)))
 }
 
 /// How much of the end of a subagent's transcript is read to find its last message.
@@ -570,27 +570,27 @@ fn ends_of(path: &Path) -> Result<(String, String)> {
 
 /// On close or compact: sets aside the transcript's candidates and its subagents' reports
 /// that are not already saved.
-pub fn apartar(db: &Connection, project: &str, session: &str, path: &Path) -> Result<usize> {
-    apartar_con(db, project, session, path, turnos(path)?)
+pub fn set_aside(db: &Connection, project: &str, session: &str, path: &Path) -> Result<usize> {
+    set_aside_turns(db, project, session, path, turns(path)?)
 }
 
-/// `apartar` with the transcript's turns already read.
-pub fn apartar_con(db: &Connection, project: &str, session: &str, path: &Path, turns: Vec<Turno>) -> Result<usize> {
-    let mut cs: Vec<(Candidata, String)> = de_turnos(turns)
+/// `set_aside` with the transcript's turns already read.
+pub fn set_aside_turns(db: &Connection, project: &str, session: &str, path: &Path, turns: Vec<Turn>) -> Result<usize> {
+    let mut cs: Vec<(Candidate, String)> = from_turns(turns)
         .into_iter()
         .map(|c| {
             let answer = c.text.rsplit(" → ").next().unwrap_or(&c.text).to_string();
             (c, answer)
         })
         .collect();
-    // The `MAXIMO` most recent reports from subagents that have finished, looking at most at twice as many
+    // The `MAX_PER_SESSION` most recent reports from subagents that have finished, looking at most at twice as many
     // transcripts (SessionEnd has little more than a second).
     let mut reports = 0;
-    for s in subagentes_de(path).into_iter().take(2 * MAXIMO) {
-        if reports == MAXIMO {
+    for s in subagent_transcripts(path).into_iter().take(2 * MAX_PER_SESSION) {
+        if reports == MAX_PER_SESSION {
             break;
         }
-        if let Ok(Some(c)) = de_subagente(&s) {
+        if let Ok(Some(c)) = from_subagent(&s) {
             cs.push(c);
             reports += 1;
         }
@@ -599,7 +599,7 @@ pub fn apartar_con(db: &Connection, project: &str, session: &str, path: &Path, t
     let mut n = 0;
     for (c, answer) in cs {
         let coverage = crate::recall::coverage(db, project, &answer, memories.iter())?.into_iter().fold(0.0, f64::max);
-        if c.kind != HITO && coverage >= ALREADY_SAVED {
+        if c.kind != MILESTONE && coverage >= ALREADY_SAVED {
             continue;
         }
         n += db.execute(
@@ -608,12 +608,12 @@ pub fn apartar_con(db: &Connection, project: &str, session: &str, path: &Path, t
         )?;
     }
     // The ones nobody looked at expire.
-    db.execute(&format!("DELETE FROM candidate WHERE julianday({NOW}) - julianday(created_at) > {DIAS}"), [])?;
+    db.execute(&format!("DELETE FROM candidate WHERE julianday({NOW}) - julianday(created_at) > {EXPIRY_DAYS}"), [])?;
     Ok(n)
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct Apartada {
+pub struct StoredCandidate {
     pub id: i64,
     pub project: String,
     pub session: String,
@@ -623,19 +623,19 @@ pub struct Apartada {
     pub shown_at: Option<String>,
 }
 
-fn from_row(f: &rusqlite::Row) -> rusqlite::Result<Apartada> {
-    Ok(Apartada { id: f.get(0)?, project: f.get(1)?, session: f.get(2)?, kind: f.get(3)?, text: f.get(4)?, created_at: f.get(5)?, shown_at: f.get(6)? })
+fn from_row(f: &rusqlite::Row) -> rusqlite::Result<StoredCandidate> {
+    Ok(StoredCandidate { id: f.get(0)?, project: f.get(1)?, session: f.get(2)?, kind: f.get(3)?, text: f.get(4)?, created_at: f.get(5)?, shown_at: f.get(6)? })
 }
 
 /// When a session starts in `project`: those from previous sessions not shown yet (and they are
 /// marked as shown: they don't come out to the agent again, only in the view).
-pub fn para_empezar(db: &Connection, project: &str, session: &str) -> Result<Vec<Apartada>> {
+pub fn for_session_start(db: &Connection, project: &str, session: &str) -> Result<Vec<StoredCandidate>> {
     let mut q = db.prepare(&format!(
         "SELECT id, project, session, kind, text, created_at, shown_at FROM candidate
-         WHERE project = ?1 AND session != ?2 AND shown_at IS NULL AND julianday({NOW}) - julianday(created_at) <= {DIAS}
+         WHERE project = ?1 AND session != ?2 AND shown_at IS NULL AND julianday({NOW}) - julianday(created_at) <= {EXPIRY_DAYS}
          ORDER BY CASE kind WHEN 'preference' THEN 0 WHEN 'decision' THEN 1 ELSE 2 END, id DESC LIMIT ?3"
     ))?;
-    let v: Vec<Apartada> = q.query_map(params![project, session, (MAXIMO + 2) as i64], from_row)?.collect::<rusqlite::Result<_>>()?;
+    let v: Vec<StoredCandidate> = q.query_map(params![project, session, (MAX_PER_SESSION + 2) as i64], from_row)?.collect::<rusqlite::Result<_>>()?;
     for c in &v {
         db.execute(&format!("UPDATE candidate SET shown_at = {NOW} WHERE id = ?1"), [c.id])?;
     }
@@ -643,16 +643,16 @@ pub fn para_empezar(db: &Connection, project: &str, session: &str) -> Result<Vec
 }
 
 /// All the waiting ones (for the view and the CLI).
-pub fn todas(db: &Connection) -> Result<Vec<Apartada>> {
+pub fn all(db: &Connection) -> Result<Vec<StoredCandidate>> {
     let mut q = db.prepare(&format!(
         "SELECT id, project, session, kind, text, created_at, shown_at FROM candidate
-         WHERE julianday({NOW}) - julianday(created_at) <= {DIAS} ORDER BY id DESC"
+         WHERE julianday({NOW}) - julianday(created_at) <= {EXPIRY_DAYS} ORDER BY id DESC"
     ))?;
     let v = q.query_map([], from_row)?.collect::<rusqlite::Result<_>>()?;
     Ok(v)
 }
 
-pub fn descartar(db: &Connection, id: i64) -> Result<()> {
+pub fn dismiss(db: &Connection, id: i64) -> Result<()> {
     db.execute("DELETE FROM candidate WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -663,11 +663,11 @@ mod tests {
 
     #[test]
     fn secrets() {
-        assert!(parece_secreto("export GH=ghp_abcdefghijklmnopqrstuvwxyz0123"));
-        assert!(parece_secreto("echo \"q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0\" > /tmp/s"));
-        assert!(parece_secreto("password: hunter2"));
-        assert!(!parece_secreto("Me gusta mucho la 1C, pero no la veo como portada"));
-        assert!(!parece_secreto("D:\\Omoikane\\src\\recall.rs y potion-multilingual-128M-int8"));
+        assert!(looks_secret("export GH=ghp_abcdefghijklmnopqrstuvwxyz0123"));
+        assert!(looks_secret("echo \"q7XbP2mZr9KdT4wLs8NcV1hY6fJa3GeU0\" > /tmp/s"));
+        assert!(looks_secret("password: hunter2"));
+        assert!(!looks_secret("Me gusta mucho la 1C, pero no la veo como portada"));
+        assert!(!looks_secret("D:\\Omoikane\\src\\recall.rs y potion-multilingual-128M-int8"));
     }
 
     #[test]

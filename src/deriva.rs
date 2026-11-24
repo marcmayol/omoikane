@@ -614,7 +614,7 @@ fn compute_pending(db: &Connection, pending: &mut [Pending]) -> Result<HashMap<S
 /// saved in it). Relative files are relative to the project folder of the line.
 fn sessions(db: &Connection) -> Result<ByFile> {
     let mut r: ByFile = HashMap::new();
-    if !crate::diario::hay_tabla(db)? {
+    if !crate::diario::has_table(db)? {
         return Ok(r);
     }
     let mut q = db.prepare(

@@ -10,7 +10,7 @@ mod comun;
 
 use omoikane::memoria::{self, Scope, NewMemory, Kind};
 use omoikane::recall::{self, HookInput};
-use omoikane::significado::{self as s, Porque};
+use omoikane::significado::{self as s, Reason};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -64,7 +64,7 @@ fn with_vectors(db: &rusqlite::Connection) {
     let rows: Vec<(String, String)> = db.prepare("SELECT id, content_hlc FROM memory").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
     let v = vec![0.1f32; omoikane::gemma::DIM];
     for (id, hlc) in rows {
-        s::guardar(db, &id, &hlc, &v).unwrap();
+        s::save(db, &id, &hlc, &v).unwrap();
     }
 }
 
@@ -90,7 +90,7 @@ fn when_and_how_much_the_model_is_used() {
     let (home, model) = (dir.join("home"), dir.join("modelo"));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&model).unwrap();
-    for f in omoikane::gemma::FICHEROS_COMPACTO {
+    for f in omoikane::gemma::COMPACT_FILES {
         std::fs::write(model.join(f), b"").unwrap();
     }
     // SAFETY: it's the only test in this file (a separate process) and nobody else reads the environment at the same time.
@@ -133,9 +133,9 @@ fn when_and_how_much_the_model_is_used() {
 
     // 1. Small (12 memories, threshold 1,000) and nothing chosen: light, like 1.1. The service isn't
     // asked, neither in the recall nor in the search.
-    let e0 = s::estado(&db);
-    assert!(!e0.on && e0.reason == Porque::Size && e0.memories == 12 && e0.threshold == 1000, "{e0:?}");
-    assert!(!s::en_uso(&db));
+    let e0 = s::status(&db);
+    assert!(!e0.on && e0.reason == Reason::Size && e0.memories == 12 && e0.threshold == 1000, "{e0:?}");
+    assert!(!s::in_use(&db));
     let t = recall::on_prompt(&mut db, "/p", &e("s1", question), None).unwrap().expect("las palabras traen algo");
     assert!(t.contains("Gradle daemons") && t.contains("Offline builds"), "{t}");
     let o = omoikane::buscar::SearchOptions { scope: Scope::from_project(&db, "/p").unwrap(), kind: None, tags: vec![], limit: 5 };
@@ -146,9 +146,9 @@ fn when_and_how_much_the_model_is_used() {
     // 2. Over the threshold: it's used. The veto removes the fact (it isn't among the 3 most similar)
     // and keeps the preference, which applies without resembling the message.
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC_THRESHOLD", "10") };
-    let e1 = s::estado(&db);
-    assert!(e1.on && e1.reason == Porque::Size, "{e1:?}");
-    assert!(s::en_uso(&db));
+    let e1 = s::status(&db);
+    assert!(e1.on && e1.reason == Reason::Size, "{e1:?}");
+    assert!(s::in_use(&db));
     let t = recall::on_prompt(&mut db, "/p", &e("s2", question), None).unwrap().expect("la preferencia");
     assert!(!t.contains("Gradle daemons") && t.contains("Offline builds"), "{t}");
     assert_eq!(fake.questions.load(Ordering::SeqCst), 1);
@@ -186,15 +186,15 @@ fn when_and_how_much_the_model_is_used() {
     assert_eq!(r.iter().map(|x| x.memory.id.as_str()).collect::<Vec<_>>(), [ids[0].as_str()], "{r:?}");
 
     // 6. What the user chooses overrides the size, and `--auto` hands it back to the size.
-    s::fijar(Some(false)).unwrap();
-    assert!(!s::estado(&db).on && s::estado(&db).reason == Porque::Chosen && !s::permitido());
+    s::set_preference(Some(false)).unwrap();
+    assert!(!s::status(&db).on && s::status(&db).reason == Reason::Chosen && !s::allowed());
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC_THRESHOLD", "1000") };
-    s::fijar(Some(true)).unwrap();
-    assert!(s::estado(&db).on && s::estado(&db).reason == Porque::Chosen);
-    s::fijar(None).unwrap();
-    assert!(!s::estado(&db).on && s::estado(&db).reason == Porque::Size);
+    s::set_preference(Some(true)).unwrap();
+    assert!(s::status(&db).on && s::status(&db).reason == Reason::Chosen);
+    s::set_preference(None).unwrap();
+    assert!(!s::status(&db).on && s::status(&db).reason == Reason::Size);
     unsafe { std::env::set_var("OMOIKANE_SEMANTIC", "1") };
-    assert!(s::estado(&db).on && s::estado(&db).reason == Porque::Env);
+    assert!(s::status(&db).on && s::status(&db).reason == Reason::Env);
     unsafe { std::env::remove_var("OMOIKANE_SEMANTIC") };
     drop(db);
     let _ = std::fs::remove_file(home.join("significado.json"));

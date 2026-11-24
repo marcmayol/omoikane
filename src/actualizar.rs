@@ -141,10 +141,10 @@ fn base() -> Option<String> {
 /// and leaves nothing written (what was downloaded is written later, only if signature and checksum match).
 fn download(url: &str) -> Result<Vec<u8>> {
     use crate::modelos;
-    let r = modelos::get(url, modelos::TIEMPOS_PEQUENO).map_err(|e| modelos::error_de_get(e, url))?;
+    let r = modelos::get(url, modelos::SMALL_TIMEOUTS).map_err(|e| modelos::get_error(e, url))?;
     match r.into_body().with_config().limit(200 * 1024 * 1024).read_to_vec() {
         Ok(v) => Ok(v),
-        Err(e) if modelos::es_tiempo_agotado(&e) => {
+        Err(e) if modelos::is_timeout(&e) => {
             let name = url.rsplit('/').next().unwrap_or(url);
             bail!(tr!(
                 "the download of {name} stalled or took too long ({e}); nothing was installed",

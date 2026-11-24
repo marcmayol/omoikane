@@ -14,16 +14,16 @@
 //!   in its folder, and a correction belongs to whoever makes it. Like those in `db::LOCALES`, a 1.0 ignores them.
 //!
 //! From a project you see the memories of the trades it has; from a space, those of the trades
-//! of its projects; from the user's folder, all of them (`Scope::sql`, with [`ocultas`]).
+//! of its projects; from the user's folder, all of them (`Scope::sql`, with [`hidden_sql`]).
 //!
 //! The most important thing is that nothing of a client gets out through here: when saving a trade memory,
-//! [`fugas`] warns if it names projects, spaces (clients), absolute paths, repositories or domains
+//! [`leaks`] warns if it names projects, spaces (clients), absolute paths, repositories or domains
 //! that only appear in a client's memories (in the text, paths, tags, key and
 //! data), and it isn't saved except for the false positives the `allow_leaks` permission lets through (never a
 //! path or a repository). Promoting a client's memory to a trade creates a new memory
-//! ([`crear_de_oficio`]): its history and verdicts stay with the client. And through sync
+//! ([`create_trade_memory`]): its history and verdicts stay with the client. And through sync
 //! they only go through the general repository (they are global: `sync::va_al_repo` no longer lets them go to a space one),
-//! and a client repository doesn't bring them (`sync`, with [`lleva_oficio`]).
+//! and a client repository doesn't bring them (`sync`, with [`has_trade`]).
 
 use crate::memoria::{Scope, Memory};
 use crate::tr;
@@ -34,7 +34,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 /// The tag of a trade memory is this prefix and the trade: `trade:android`.
-pub const PREFIJO: &str = "trade:";
+pub const PREFIX: &str = "trade:";
 
 /// The trades detected automatically. The names are those of Kumi's factories (`android`, `web`,
 /// `rust`, `plugin-claude`, `python`, `escritorio-node`, `alexa`), so no equivalence table is
@@ -92,7 +92,7 @@ const REMOVED: &str = "off";
 
 /// Creates the trade tables and the partial index of trade memories (`memory_oficio`: only
 /// the globals with the tag, to list them without scanning the table). Normally they already exist.
-pub fn crear_tabla(db: &Connection) -> Result<()> {
+pub fn create_table(db: &Connection) -> Result<()> {
     let existing: i64 = db.query_row(
         "SELECT count(*) FROM sqlite_schema WHERE name IN ('project_trade', 'project_trade_seen', 'memory_oficio')",
         [],
@@ -107,38 +107,38 @@ pub fn crear_tabla(db: &Connection) -> Result<()> {
 // --- Trade memories -------------------------------------------------------------------------------
 
 /// The tag of a trade.
-pub fn etiqueta(trade: &str) -> String {
-    format!("{PREFIJO}{trade}")
+pub fn tag(trade: &str) -> String {
+    format!("{PREFIX}{trade}")
 }
 
 /// The trades of some tags (`trade:<trade>`).
-pub fn de_etiquetas(tags: &[String]) -> Vec<String> {
-    tags.iter().filter_map(|t| t.strip_prefix(PREFIJO)).filter(|t| !t.is_empty()).map(String::from).collect()
+pub fn from_tags(tags: &[String]) -> Vec<String> {
+    tags.iter().filter_map(|t| t.strip_prefix(PREFIX)).filter(|t| !t.is_empty()).map(String::from).collect()
 }
 
 /// Whether some tags carry any trade.
-pub fn lleva_oficio(tags: &[String]) -> bool {
-    tags.iter().any(|t| t.starts_with(PREFIJO))
+pub fn has_trade(tags: &[String]) -> bool {
+    tags.iter().any(|t| t.starts_with(PREFIX))
 }
 
 /// The tags without the trade ones.
-pub fn sin_oficio(tags: Vec<String>) -> Vec<String> {
-    tags.into_iter().filter(|t| !t.starts_with(PREFIJO) && !t.starts_with(PARA)).collect()
+pub fn without_trade(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter().filter(|t| !t.starts_with(PREFIX) && !t.starts_with(FOR_PREFIX)).collect()
 }
 
 /// Who a trade memory is for, if not for everyone: `trade-for:client` (only a client's projects,
 /// those in a space) or `trade-for:personal` (only those in none).
 /// Without the tag, for both. Nothing new is needed in the project: the space already says it.
-pub const PARA: &str = "trade-for:";
-pub const CLIENTE: &str = "client";
+pub const FOR_PREFIX: &str = "trade-for:";
+pub const CLIENT: &str = "client";
 pub const PERSONAL: &str = "personal";
 
 /// `for` of `remember` and `update`: `client`, `personal` or nothing (`""`, `both`: for both).
-pub fn para(text: &str) -> Result<Option<String>> {
+pub fn parse_for_whom(text: &str) -> Result<Option<String>> {
     let t = text.trim().to_lowercase();
     Ok(match t.as_str() {
         "" | "both" | "all" | "any" => None,
-        "client" | "clients" | "cliente" => Some(CLIENTE.to_string()),
+        "client" | "clients" | "cliente" => Some(CLIENT.to_string()),
         "personal" | "own" | "propio" => Some(PERSONAL.to_string()),
         _ => anyhow::bail!(tr!(
             "«{}» is not valid for `for`: client (projects in a space), personal (projects in no space) or both",
@@ -149,24 +149,24 @@ pub fn para(text: &str) -> Result<Option<String>> {
 }
 
 /// Who a trade memory is for, by its tags (`None`: for everyone).
-pub fn para_de(tags: &[String]) -> Option<String> {
-    tags.iter().find_map(|t| t.strip_prefix(PARA)).filter(|p| *p == CLIENTE || *p == PERSONAL).map(String::from)
+pub fn for_whom_of(tags: &[String]) -> Option<String> {
+    tags.iter().find_map(|t| t.strip_prefix(FOR_PREFIX)).filter(|p| *p == CLIENT || *p == PERSONAL).map(String::from)
 }
 
 /// The tags of a trade memory: its own (without the trade ones), its trades and who it is for.
-pub fn etiquetas_de_oficio(tags: Vec<String>, trades: &[String], for_whom: Option<&str>) -> Vec<String> {
-    sin_oficio(tags).into_iter().chain(trades.iter().map(|o| etiqueta(o))).chain(for_whom.map(|p| format!("{PARA}{p}"))).collect()
+pub fn trade_tags(tags: Vec<String>, trades: &[String], for_whom: Option<&str>) -> Vec<String> {
+    without_trade(tags).into_iter().chain(trades.iter().map(|o| tag(o))).chain(for_whom.map(|p| format!("{FOR_PREFIX}{p}"))).collect()
 }
 
 /// A memory's trades: those of its tags if it is global; none if it belongs to a project or a
 /// space (there the tag doesn't count).
-pub fn de_memoria(m: &Memory) -> Vec<String> {
-    if m.global() { de_etiquetas(&m.tags) } else { Vec::new() }
+pub fn of_memory(m: &Memory) -> Vec<String> {
+    if m.global() { from_tags(&m.tags) } else { Vec::new() }
 }
 
 /// A valid trade name: lowercase, letters, digits, `-`, `+`, `.` and `#` (`c#`, `c++`), up to 32.
-pub fn nombre(text: &str) -> Result<String> {
-    let n = text.trim().trim_start_matches(PREFIJO).trim().to_lowercase();
+pub fn valid_name(text: &str) -> Result<String> {
+    let n = text.trim().trim_start_matches(PREFIX).trim().to_lowercase();
     ensure!(
         !n.is_empty()
             && n.chars().count() <= 32
@@ -182,10 +182,10 @@ pub fn nombre(text: &str) -> Result<String> {
 }
 
 /// The trades of a text like «android, web» (separated by commas or spaces), validated and without repeats.
-pub fn lista(text: &str) -> Result<Vec<String>> {
+pub fn list(text: &str) -> Result<Vec<String>> {
     let mut v: Vec<String> = Vec::new();
     for t in text.split([',', ' ']).filter(|t| !t.trim().is_empty()) {
-        let n = nombre(t)?;
+        let n = valid_name(t)?;
         if !v.contains(&n) {
             v.push(n);
         }
@@ -205,9 +205,9 @@ fn projects_sql(a: &Scope) -> Option<String> {
 
 /// The trade memories (by `n`) not seen from `a`: those of trades no project of the scope has
 /// (client ones if `trade-for:client`, personal ones if `trade-for:personal`). `None` from everything. It is an uncorrelated subquery: SQLite runs it once
-/// per query, through the partial index `memory_oficio` (which `crear_tabla` always creates; without `INDEXED BY`,
+/// per query, through the partial index `memory_oficio` (which `create_table` always creates; without `INDEXED BY`,
 /// SQLite preferred `memory_scope` and read all the globals), and then checks each global by its `n`.
-pub(crate) fn ocultas(a: &Scope) -> Option<String> {
+pub(crate) fn hidden_sql(a: &Scope) -> Option<String> {
     let ps = projects_sql(a)?;
     Some(format!(
         "SELECT o.n FROM memory o INDEXED BY memory_oficio WHERE o.project_id = 0 AND o.space_id IS NULL AND instr(o.tags, '\"trade:') > 0
@@ -219,16 +219,16 @@ pub(crate) fn ocultas(a: &Scope) -> Option<String> {
 }
 
 /// Whether a memory (by its id) is a trade one not seen from `a`.
-pub(crate) fn oculta(db: &Connection, a: &Scope, id: &str) -> Result<bool> {
-    match ocultas(a) {
+pub(crate) fn is_hidden(db: &Connection, a: &Scope, id: &str) -> Result<bool> {
+    match hidden_sql(a) {
         None => Ok(false),
         Some(q) => Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memory m WHERE m.id = ?1 AND m.n IN ({q}))"), [id], |row| row.get(0))?),
     }
 }
 
 /// How many trade memories aren't seen from `a`.
-pub(crate) fn cuantas_ocultas(db: &Connection, a: &Scope) -> Result<i64> {
-    match ocultas(a) {
+pub(crate) fn hidden_count(db: &Connection, a: &Scope) -> Result<i64> {
+    match hidden_sql(a) {
         None => Ok(0),
         Some(q) => Ok(db.query_row(&format!("SELECT count(*) FROM ({q})"), [], |row| row.get(0))?),
     }
@@ -237,13 +237,13 @@ pub(crate) fn cuantas_ocultas(db: &Connection, a: &Scope) -> Result<i64> {
 // --- A project's trades ---------------------------------------------------------------------------
 
 /// A project's trades (detected or set by hand, without the removed ones), in alphabetical order.
-pub fn del_proyecto(db: &Connection, project: i64) -> Result<Vec<String>> {
+pub fn of_project(db: &Connection, project: i64) -> Result<Vec<String>> {
     let mut q = db.prepare_cached("SELECT trade FROM project_trade WHERE project_id = ?1 AND how <> 'off' ORDER BY trade")?;
     Ok(q.query_map([project], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The trades of all projects, by id.
-pub fn de_proyectos(db: &Connection) -> Result<HashMap<i64, Vec<String>>> {
+pub fn of_projects(db: &Connection) -> Result<HashMap<i64, Vec<String>>> {
     let mut q = db.prepare("SELECT project_id, trade FROM project_trade WHERE how <> 'off' ORDER BY project_id, trade")?;
     let mut m: HashMap<i64, Vec<String>> = HashMap::new();
     for row in q.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))? {
@@ -255,7 +255,7 @@ pub fn de_proyectos(db: &Connection) -> Result<HashMap<i64, Vec<String>>> {
 
 /// What is known about a project's trades, for `omoi trades`.
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct Estado {
+pub struct TradeStatus {
     /// The ones that count.
     pub trades: Vec<String>,
     /// Detected in its files.
@@ -271,8 +271,8 @@ pub struct Estado {
     pub seen_at: Option<String>,
 }
 
-pub fn estado(db: &Connection, project: i64) -> Result<Estado> {
-    let mut e = Estado::default();
+pub fn status(db: &Connection, project: i64) -> Result<TradeStatus> {
+    let mut e = TradeStatus::default();
     let mut q = db.prepare("SELECT trade, how FROM project_trade WHERE project_id = ?1 ORDER BY trade")?;
     for row in q.query_map([project], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
         let (t, how) = row?;
@@ -319,11 +319,11 @@ fn mark_seen(db: &Connection, project: i64, fixed: Option<bool>) -> Result<()> {
 /// Looks at the project's files (in `path`) and records what it detects, unless they were fixed by
 /// hand (`set`). Only writes if something changes or it is the first time. Returns the trades that count.
 /// A folder that doesn't exist here changes nothing.
-pub fn al_dia(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+pub fn refresh(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
     if project <= 0 || path.is_empty() || !crate::proyecto::is_dir(Path::new(path)) {
-        return del_proyecto(db, project);
+        return of_project(db, project);
     }
-    let e = estado(db, project)?;
+    let e = status(db, project)?;
     if e.fixed {
         return Ok(e.trades);
     }
@@ -337,31 +337,31 @@ pub fn al_dia(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> 
             mark_seen(db, project, None)
         })?;
     }
-    del_proyecto(db, project)
+    of_project(db, project)
 }
 
-/// Like `al_dia`, but only if it was never looked at (for places that mustn't look at the disk every time).
-pub fn al_dia_si_falta(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+/// Like `refresh`, but only if it was never looked at (for places that mustn't look at the disk every time).
+pub fn refresh_if_missing(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
     let seen: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM project_trade_seen WHERE project_id = ?1)", [project], |row| row.get(0))?;
-    if seen { del_proyecto(db, project) } else { al_dia(db, project, path) }
+    if seen { of_project(db, project) } else { refresh(db, project, path) }
 }
 
 /// Before looking from a folder (MCP, CLI): its trades, if never looked at. A project that has
 /// nothing yet gets recorded if it has any (the memories of its trade already serve it), and one without
 /// trades isn't recorded. From a general folder, nothing.
-pub fn preparar(db: &Connection, path: &str) -> Result<()> {
+pub fn prepare(db: &Connection, path: &str) -> Result<()> {
     if path.is_empty() || crate::proyecto::is_general(path) {
         return Ok(());
     }
     match crate::proyecto::resolve(db, path)? {
         Some((id, _)) if id > 0 => {
-            al_dia_si_falta(db, id, path)?;
+            refresh_if_missing(db, id, path)?;
         }
         Some(_) => {}
         None => {
-            if !detectar(Path::new(path)).is_empty() {
+            if !detect(Path::new(path)).is_empty() {
                 let id = crate::proyecto::register(db, path)?;
-                al_dia(db, id, path)?;
+                refresh(db, id, path)?;
             }
         }
     }
@@ -369,7 +369,7 @@ pub fn preparar(db: &Connection, path: &str) -> Result<()> {
 }
 
 /// `omoi trades add`: the project has this trade even if not detected.
-pub fn anadir(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+pub fn add(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
     in_savepoint(db, || {
         for t in trades {
             db.execute(
@@ -382,7 +382,7 @@ pub fn anadir(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
 }
 
 /// `omoi trades remove`: the project doesn't have this trade even if detected.
-pub fn quitar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+pub fn remove(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
     in_savepoint(db, || {
         for t in trades {
             db.execute(
@@ -395,7 +395,7 @@ pub fn quitar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
 }
 
 /// `omoi trades set`: exactly these, and detection stops adding.
-pub fn fijar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
+pub fn set(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
     in_savepoint(db, || {
         db.execute("DELETE FROM project_trade WHERE project_id = ?1", [project])?;
         for t in trades {
@@ -406,17 +406,17 @@ pub fn fijar(db: &Connection, project: i64, trades: &[String]) -> Result<()> {
 }
 
 /// `omoi trades auto`: what was set by hand is forgotten and detection runs again.
-pub fn automatico(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
+pub fn auto(db: &Connection, project: i64, path: &str) -> Result<Vec<String>> {
     in_savepoint(db, || {
         db.execute("DELETE FROM project_trade WHERE project_id = ?1", [project])?;
         db.execute("DELETE FROM project_trade_seen WHERE project_id = ?1", [project])?;
         Ok(())
     })?;
-    al_dia(db, project, path)
+    refresh(db, project, path)
 }
 
 /// How many memories of each trade there are.
-pub fn memorias_por_oficio(db: &Connection) -> Result<HashMap<String, i64>> {
+pub fn memories_per_trade(db: &Connection) -> Result<HashMap<String, i64>> {
     let mut q = db.prepare(
         "SELECT substr(t.value, 7), count(*) FROM memory o, json_each(o.tags) t
          WHERE o.project_id = 0 AND o.space_id IS NULL AND instr(o.tags, '\"trade:') > 0 AND t.value LIKE 'trade:%'
@@ -682,11 +682,11 @@ fn from_package_json(text: Option<String>, v: &mut BTreeSet<String>) {
 
 /// A project's trades by its files: the root and one level of subfolders (without dependencies,
 /// build output or hidden ones), without walking the tree. Deterministic: the same files give the same result.
-pub fn detectar(root: &Path) -> Vec<String> {
+pub fn detect(root: &Path) -> Vec<String> {
     walk(root).trades()
 }
 
-/// Like [`detectar`], with what was detected last time in this project if its folders haven't changed
+/// Like [`detect`], with what was detected last time in this project if its folders haven't changed
 /// ([`Walk::signature`]): this way only folders are listed, and the start of their files is read when
 /// one changes (on OneDrive or a network folder, reading them on every start is slow).
 fn detect_cached(db: &Connection, project: i64, root: &Path) -> Vec<String> {
@@ -819,17 +819,17 @@ fn inspect(dir: &Path, c: &Folder, is_root: bool, v: &mut BTreeSet<String>, grad
 
 /// Something in the text of a trade memory that looks like a project's or a client's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Fuga {
+pub struct Leak {
     /// `project` (a project's name), `space` (a space: a client), `path` (absolute path),
     /// `repository` (URL of a known repository or via SSH) or `domain` (a domain that only appears in
     /// a client's memories, or one's git server).
     #[serde(rename = "type")]
-    pub tipo: &'static str,
+    pub kind: &'static str,
     pub text: String,
     /// Where it is: `title`, `content`, `paths`, `tag`, `key`, `data` or `answer` (empty if unknown).
     /// A key that names a project («kumi-ruta») is fixed in a moment if it is known to be the key.
     #[serde(rename = "field", skip_serializing_if = "str::is_empty")]
-    pub campo: &'static str,
+    pub field: &'static str,
 }
 
 /// Project names so generic that naming them doesn't say whose it is (and the trade names).
@@ -936,7 +936,7 @@ fn variants(n: &str) -> Vec<String> {
 /// (`topic:<key>`) the key counts. Returns what must be looked at of a tag.
 fn free_tag(t: &str) -> Option<&str> {
     use crate::memoria::{OPEN, BLOCKING, STATUS, TOPIC_TAG, RESOLVED};
-    if t.starts_with(PREFIJO) || t.starts_with(PARA) || t.starts_with(crate::revisar::REVIEW_DATE_TAG) || [OPEN, BLOCKING, RESOLVED, STATUS].contains(&t) {
+    if t.starts_with(PREFIX) || t.starts_with(FOR_PREFIX) || t.starts_with(crate::revisar::REVIEW_DATE_TAG) || [OPEN, BLOCKING, RESOLVED, STATUS].contains(&t) {
         return None;
     }
     Some(t.strip_prefix(TOPIC_TAG).unwrap_or(t))
@@ -960,14 +960,14 @@ fn flatten(v: &serde_json::Value, out: &mut Vec<String>) {
 /// Everything looked at in a trade memory, as one text: the pieces given (title,
 /// content, paths…), its tags without the reserved ones ([`free_tag`]), the key and the data
 /// (its keys and its texts).
-pub fn texto_para_fugas(parts: &[&str], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> String {
+pub fn leak_text(parts: &[&str], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> String {
     let fields: Vec<(&'static str, &str)> = parts.iter().map(|p| ("", *p)).collect();
-    campos_para_fugas(&fields, tags, key, data).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
+    leak_fields(&fields, tags, key, data).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
 }
 
-/// The same as [`texto_para_fugas`], field by field (`title`, `content`, `paths`, `tag`, `key`,
+/// The same as [`leak_text`], field by field (`title`, `content`, `paths`, `tag`, `key`,
 /// `data`…), to be able to say where each leak is.
-pub fn campos_para_fugas(parts: &[(&'static str, &str)], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> Vec<(&'static str, String)> {
+pub fn leak_fields(parts: &[(&'static str, &str)], tags: &[String], key: Option<&str>, data: Option<&serde_json::Value>) -> Vec<(&'static str, String)> {
     let mut v: Vec<(&'static str, String)> = parts.iter().map(|(c, p)| (*c, p.to_string())).collect();
     v.extend(tags.iter().filter_map(|t| free_tag(t)).map(|t| ("tag", t.to_string())));
     v.extend(key.map(|k| ("key", k.to_string())));
@@ -980,17 +980,17 @@ pub fn campos_para_fugas(parts: &[(&'static str, &str)], tags: &[String], key: O
     v
 }
 
-/// [`fugas`] of some fields, each leak with the field it appears in (the first one containing it).
-pub fn fugas_en(db: &Connection, fields: &[(&'static str, String)]) -> Result<Vec<Fuga>> {
+/// [`leaks`] of some fields, each leak with the field it appears in (the first one containing it).
+pub fn leaks_in(db: &Connection, fields: &[(&'static str, String)]) -> Result<Vec<Leak>> {
     let text = fields.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
     let normalize = |s: &str| crate::nombres::fold_accents(&s.to_lowercase());
     let normalized: Vec<(&'static str, String)> = fields.iter().map(|(c, t)| (*c, normalize(t))).collect();
-    let mut v = fugas(db, &text)?;
+    let mut v = leaks(db, &text)?;
     for f in &mut v {
         let wanted = normalize(&f.text);
-        // As a word (with boundaries, as `fugas` detects it): «acme» isn't from the field that says «acmeco»;
+        // As a word (with boundaries, as `leaks` detects it): «acme» isn't from the field that says «acmeco»;
         // if it doesn't appear that way in any (a variant detected it), the first one containing it.
-        f.campo = normalized
+        f.field = normalized
             .iter()
             .find(|(_, t)| appears(t, &wanted))
             .or_else(|| normalized.iter().find(|(_, t)| t.contains(&wanted)))
@@ -1002,20 +1002,20 @@ pub fn fugas_en(db: &Connection, fields: &[(&'static str, String)]) -> Result<Ve
 
 /// The leaks that prevent saving. With the leaks permission (`allow_leaks`), only those that are never a
 /// false positive: a personal absolute path or a repository URL.
-pub fn bloquean(leaks: Vec<Fuga>, allow: bool) -> Vec<Fuga> {
-    if allow { leaks.into_iter().filter(|f| f.tipo == "path" || f.tipo == "repository").collect() } else { leaks }
+pub fn blocking_leaks(leaks: Vec<Leak>, allow: bool) -> Vec<Leak> {
+    if allow { leaks.into_iter().filter(|f| f.kind == "path" || f.kind == "repository").collect() } else { leaks }
 }
 
 /// What in the text of a trade memory looks like a project's or a client's: names of
 /// projects and spaces, personal absolute paths, URLs of known repositories (or via SSH) and
 /// domains that only appear in a client's memories (or its git server's). Without repeats. Names
 /// are compared case- and accent-insensitively («balua» is «Balùa»).
-pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
+pub fn leaks(db: &Connection, text: &str) -> Result<Vec<Leak>> {
     let lower = crate::nombres::fold_accents(&text.to_lowercase());
-    let mut v: Vec<Fuga> = Vec::new();
+    let mut v: Vec<Leak> = Vec::new();
     let mut put = |kind: &'static str, text: String| {
-        if !v.iter().any(|f| f.tipo == kind && f.text.eq_ignore_ascii_case(&text)) {
-            v.push(Fuga { tipo: kind, text, campo: "" });
+        if !v.iter().any(|f| f.kind == kind && f.text.eq_ignore_ascii_case(&text)) {
+            v.push(Leak { kind, text, field: "" });
         }
     };
     // Spaces: a client, whatever its name (from 2 letters: «QA», «HP»).
@@ -1115,32 +1115,32 @@ pub fn fugas(db: &Connection, text: &str) -> Result<Vec<Fuga>> {
 
 /// The memories whose history doesn't travel: those a pre-1.8.0 version (unreleased) promoted
 /// from a client to a trade with the same id and recorded in `meta('historial_local:<id>')`. Since
-/// promoting a client's memory creates a new memory ([`crear_de_oficio`]) none is recorded any more; those
+/// promoting a client's memory creates a new memory ([`create_trade_memory`]) none is recorded any more; those
 /// that exist still don't travel and their history is only shown from a general folder
 /// (`memoria::history_in`).
-pub(crate) fn historiales_solo_aqui(db: &Connection) -> Result<HashSet<String>> {
+pub(crate) fn local_only_histories(db: &Connection) -> Result<HashSet<String>> {
     let mut q = db.prepare("SELECT substr(k, 17) FROM meta WHERE k LIKE 'historial_local:%'")?;
     Ok(q.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Whether this memory's history stayed on this machine (see [`historiales_solo_aqui`]).
-pub(crate) fn historial_solo_aqui(db: &Connection, id: &str) -> Result<bool> {
+/// Whether this memory's history stayed on this machine (see [`local_only_histories`]).
+pub(crate) fn history_local_only(db: &Connection, id: &str) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE k = 'historial_local:' || ?1)", [id], |row| row.get(0))?)
 }
 
 /// What an `update` touching the trades asks for (MCP and CLI).
-pub struct PedidoCambio<'a> {
+pub struct ChangeRequest<'a> {
     /// `trade`: the trades («android, web»); `Some("")` stops being a trade one.
     pub trade: Option<&'a str>,
     /// `for`: `client`, `personal` or `both`.
-    pub para: Option<&'a str>,
+    pub for_whom: Option<&'a str>,
     /// What changes (title, content, `replace`, `append`, paths, tags, where it goes).
-    pub cambios: &'a crate::memoria::Changes,
+    pub changes: &'a crate::memoria::Changes,
     /// The new data (`Some(None)`: removed), if changed.
-    pub datos: Option<Option<&'a serde_json::Value>>,
+    pub data: Option<Option<&'a serde_json::Value>>,
     /// The leaks permission (`allow_leaks`): lets through what looks like a false positive, never a
     /// path or a repository.
-    pub permitir_fugas: bool,
+    pub allow_leaks: bool,
 }
 
 /// What to do with the trades in an `update`.
@@ -1149,68 +1149,68 @@ pub struct Plan {
     /// The tags that remain (`None`: unchanged).
     pub tags: Option<Vec<String>>,
     /// It has to be made global (it was a project's or a space's and becomes a trade one).
-    pub hacer_global: bool,
+    pub make_global: bool,
     /// Goes from a client (a space, or a project in one) to a trade: it isn't moved, a new trade
-    /// memory is created ([`crear_de_oficio`]) and the client's stays where it was.
-    pub nueva: bool,
+    /// memory is created ([`create_trade_memory`]) and the client's stays where it was.
+    pub create_new: bool,
 }
 
 /// What an `update` does with the trades: make it a trade one (promote it), stop being one, change who
 /// it is for, or take it out of its trade when moving it to a project or a space. What is new in a trade
-/// memory goes through `fugas` (everything that will remain if it enters a trade: text, paths, tags, key and
+/// memory goes through `leaks` (everything that will remain if it enters a trade: text, paths, tags, key and
 /// data), except what the leaks permission lets through: `Err` with them in `Ok(Err(…))`.
 ///
 /// Promoting a personal memory (of a project without a space) moves it with its id, its history and its
-/// verdicts: all of that belongs to the person. Promoting a client's creates a new memory (`nueva`):
+/// verdicts: all of that belongs to the person. Promoting a client's creates a new memory (`create_new`):
 /// its history and verdicts belong to the client and must not reach the others.
-pub fn al_cambiar(db: &Connection, current: &Memory, p: PedidoCambio) -> Result<std::result::Result<Plan, Vec<Fuga>>> {
+pub fn on_update(db: &Connection, current: &Memory, p: ChangeRequest) -> Result<std::result::Result<Plan, Vec<Leak>>> {
     let normalize = |v: &[String]| -> Vec<String> {
         let mut v: Vec<String> = v.iter().map(|t| t.trim().trim_start_matches('#').to_lowercase()).filter(|t| !t.is_empty()).collect();
         v.sort();
         v.dedup();
         v
     };
-    let c = p.cambios;
+    let c = p.changes;
     let base = normalize(&c.tags.clone().unwrap_or_else(|| current.tags.clone()));
     let to_project = c.space_id.is_some() || c.project.as_deref().is_some_and(|d| !d.is_empty());
     let to_global = c.project.as_deref() == Some("");
-    let was = de_memoria(current);
+    let was = of_memory(current);
     let drop_trade = p.trade.is_some_and(|t| t.trim().is_empty());
     let mut requested = match p.trade.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => lista(t)?,
+        Some(t) => list(t)?,
         None => Vec::new(),
     };
-    for o in de_etiquetas(&base) {
-        let o = nombre(&o)?;
+    for o in from_tags(&base) {
+        let o = valid_name(&o)?;
         if !requested.contains(&o) {
             requested.push(o);
         }
     }
-    let new_for = p.para.map(para).transpose()?;
+    let new_for = p.for_whom.map(parse_for_whom).transpose()?;
     let changed = |tags: Vec<String>| -> Option<Vec<String>> {
         let tags = normalize(&tags);
         (tags != normalize(&current.tags)).then_some(tags)
     };
     if drop_trade || to_project {
-        return Ok(Ok(Plan { tags: changed(sin_oficio(base)), ..Plan::default() }));
+        return Ok(Ok(Plan { tags: changed(without_trade(base)), ..Plan::default() }));
     }
     let enters = !requested.is_empty() && (p.trade.is_some() || current.global() || to_global);
     if !enters && was.is_empty() {
         ensure!(new_for.is_none(), tr!("`for` only applies to a trade memory: give `trade` too", "`for` solo vale en una memoria de oficio: di también `trade`"));
-        return Ok(Ok(Plan { tags: c.tags.as_ref().and_then(|_| changed(sin_oficio(base))), ..Plan::default() }));
+        return Ok(Ok(Plan { tags: c.tags.as_ref().and_then(|_| changed(without_trade(base))), ..Plan::default() }));
     }
     let trades = if enters { requested } else { was.clone() };
-    let final_for = new_for.unwrap_or_else(|| para_de(&current.tags));
+    let final_for = new_for.unwrap_or_else(|| for_whom_of(&current.tags));
     let new_trade = was.is_empty() || trades.iter().any(|o| !was.contains(o));
     let text = if new_trade {
         // Enters a trade (or another one): everything that will remain, as it will remain (after `replace` and `append`).
         let (title, content) = crate::memoria::text_after(current, c)?;
         let paths = c.paths.clone().unwrap_or_else(|| current.paths.clone());
-        let data = match p.datos {
+        let data = match p.data {
             Some(d) => d.cloned(),
             None => crate::memoria::data_of(db, &[current.id.as_str()])?.remove(&current.id),
         };
-        campos_para_fugas(&[("title", &title), ("content", &content), ("paths", &paths.join(" "))], &base, None, data.as_ref())
+        leak_fields(&[("title", &title), ("content", &content), ("paths", &paths.join(" "))], &base, None, data.as_ref())
     } else {
         // It was already of this trade: what's new (what `replace` and `append` put, the title, the content and
         // the paths that come, the tags it didn't have and the new data).
@@ -1221,32 +1221,32 @@ pub fn al_cambiar(db: &Connection, current: &Memory, p: PedidoCambio) -> Result<
         parts.extend(c.paths.iter().flatten().cloned().map(|r| ("paths", r)));
         let had = normalize(&current.tags);
         let new_tags: Vec<String> = base.iter().filter(|t| !had.contains(t)).cloned().collect();
-        campos_para_fugas(&parts.iter().map(|(c, t)| (*c, t.as_str())).collect::<Vec<_>>(), &new_tags, None, p.datos.flatten())
+        leak_fields(&parts.iter().map(|(c, t)| (*c, t.as_str())).collect::<Vec<_>>(), &new_tags, None, p.data.flatten())
     };
-    let f = bloquean(fugas_en(db, &text)?, p.permitir_fugas);
+    let f = blocking_leaks(leaks_in(db, &text)?, p.allow_leaks);
     if !f.is_empty() {
         return Ok(Err(f));
     }
     Ok(Ok(Plan {
-        tags: changed(etiquetas_de_oficio(base, &trades, final_for.as_deref())),
-        hacer_global: !current.global(),
-        nueva: !current.global() && !current.space.is_empty(),
+        tags: changed(trade_tags(base, &trades, final_for.as_deref())),
+        make_global: !current.global(),
+        create_new: !current.global() && !current.space.is_empty(),
     }))
 }
 
 /// Promoting a client's memory to a trade: a NEW trade memory (another id, no history
-/// or verdicts) with the text as it remains after the changes (`c`, which already went through `fugas`), its
+/// or verdicts) with the text as it remains after the changes (`c`, which already went through `leaks`), its
 /// paths, its kind, its data and the plan's tags (`tags`, with the trade). The client's isn't touched:
 /// it stays in its project or its space, with its history, and sync keeps carrying it through
 /// its client's repository (moving it to the general one left the copy on the client's other machines in
 /// conflict, and its history was client text).
-pub fn crear_de_oficio(
+pub fn create_trade_memory(
     db: &mut Connection,
     current: &Memory,
     c: &crate::memoria::Changes,
     tags: Vec<String>,
     source: &str,
-    model: Option<&crate::embeber::Modelo>,
+    model: Option<&crate::embeber::Model>,
 ) -> Result<Memory> {
     let (title, content) = crate::memoria::text_after(current, c)?;
     let data = crate::memoria::data_of(db, &[current.id.as_str()])?.remove(&current.id);
@@ -1270,14 +1270,14 @@ pub fn crear_de_oficio(
 }
 
 /// What the agent is told about the leaks.
-pub const AVISO_FUGAS: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks: each says its `field`, so a key like `acme-route` is renamed, not the text rewritten). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
+pub const LEAKS_NOTICE: &str = "A trade memory reaches every project of that trade, of every client: it must hold only knowledge about the stack itself. This memory (its text, tags, key or data) names what looks like a project or a client (see trade_leaks: each says its `field`, so a key like `acme-route` is renamed, not the text rewritten). Rewrite it without them (generic names, no absolute paths, repository URLs or client domains), or save it in the project instead (without `trade`). Only if they are false positives (a library's name, public documentation), call again with allow_leaks=true; that never lets through an absolute path or a repository URL. (`force` only skips the duplicate check.)";
 
 /// What the agent is told when the trade memory it just promoted says nearly the same
 /// as another of its trade (`duplicate_of`).
-pub const AVISO_DUPLICADA: &str = "This trade memory says nearly the same as another one of its trade (duplicate_of), maybe promoted from another client: propose merging them to the user (`update` the one to keep with `absorb` and the other's id), or `forget` this one.";
+pub const DUPLICATE_NOTICE: &str = "This trade memory says nearly the same as another one of its trade (duplicate_of), maybe promoted from another client: propose merging them to the user (`update` the one to keep with `absorb` and the other's id), or `forget` this one.";
 
 /// What the agent is told when promoting a client's memory.
-pub const AVISO_PROMOVIDA: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";
+pub const PROMOTED_NOTICE: &str = "It came from a client's project, so a NEW trade memory was created (this id, with no history or verdicts): the client's memory stays where it was, with its history. If it now only repeats this one, `forget` it.";
 
 #[cfg(test)]
 mod tests {
@@ -1285,13 +1285,13 @@ mod tests {
 
     #[test]
     fn trade_names() {
-        assert_eq!(nombre(" Android ").unwrap(), "android");
-        assert_eq!(nombre("trade:web").unwrap(), "web");
-        assert_eq!(nombre("c++").unwrap(), "c++");
-        assert!(nombre("").is_err());
-        assert!(nombre("a b").is_err());
-        assert!(nombre("-x").is_err());
-        assert_eq!(lista("android, web android").unwrap(), ["android", "web"]);
+        assert_eq!(valid_name(" Android ").unwrap(), "android");
+        assert_eq!(valid_name("trade:web").unwrap(), "web");
+        assert_eq!(valid_name("c++").unwrap(), "c++");
+        assert!(valid_name("").is_err());
+        assert!(valid_name("a b").is_err());
+        assert!(valid_name("-x").is_err());
+        assert_eq!(list("android, web android").unwrap(), ["android", "web"]);
     }
 
     /// A leak's field is the one that has it as a word: «QA» appears in the content, not in the title
@@ -1302,9 +1302,9 @@ mod tests {
         let db = crate::db::open(&t.join("o.db")).unwrap();
         crate::proyecto::create_space(&db, "QA").unwrap();
         let fields = vec![("title", "Vuelos a Qatar".to_string()), ("content", "Lo vimos en QA ayer.".to_string())];
-        let f = fugas_en(&db, &fields).unwrap();
-        let qa = f.iter().find(|x| x.tipo == "space").unwrap();
-        assert_eq!(qa.campo, "content", "{f:?}");
+        let f = leaks_in(&db, &fields).unwrap();
+        let qa = f.iter().find(|x| x.kind == "space").unwrap();
+        assert_eq!(qa.field, "content", "{f:?}");
     }
 
     #[test]
@@ -1347,43 +1347,43 @@ mod tests {
         write("node_modules/x/Cargo.toml", "");
         write(".hidden/go.mod", "");
         write("web/sub/deep/Cargo.toml", "");
-        assert_eq!(detectar(&root), ["android", "node", "web"]);
+        assert_eq!(detect(&root), ["android", "node", "web"]);
         // Gradle without Android: JVM.
         let t2 = crate::comun::Temporal::nueva("oficios-jvm");
         std::fs::write(t2.join("build.gradle"), "plugins { id 'java' }").unwrap();
-        assert_eq!(detectar(&t2), ["jvm"]);
+        assert_eq!(detect(&t2), ["jvm"]);
         // A WordPress theme and a plugin.
         let t3 = crate::comun::Temporal::nueva("oficios-wp");
         std::fs::write(t3.join("style.css"), "/*\nTheme Name: Acme\n*/").unwrap();
         std::fs::write(t3.join("functions.php"), "<?php").unwrap();
-        assert_eq!(detectar(&t3), ["php", "wordpress"]);
+        assert_eq!(detect(&t3), ["php", "wordpress"]);
         let t4 = crate::comun::Temporal::nueva("oficios-wp-plugin");
         std::fs::write(t4.join("mi-plugin.php"), "<?php\n/**\n * Plugin Name: Mi plugin\n */").unwrap();
-        assert_eq!(detectar(&t4), ["php", "wordpress"]);
+        assert_eq!(detect(&t4), ["php", "wordpress"]);
         // React Native is not web.
         let t5 = crate::comun::Temporal::nueva("oficios-rn");
         std::fs::write(t5.join("package.json"), r#"{"dependencies":{"react":"18","react-native":"0.76"}}"#).unwrap();
-        assert_eq!(detectar(&t5), ["node", "react-native"]);
+        assert_eq!(detect(&t5), ["node", "react-native"]);
         // Electron with React: desktop, not web.
         let t7 = crate::comun::Temporal::nueva("oficios-electron");
         std::fs::write(t7.join("package.json"), r#"{"dependencies":{"react":"18"},"devDependencies":{"Electron":"30"}}"#).unwrap();
         std::fs::write(t7.join("vite.config.ts"), "").unwrap();
-        assert_eq!(detectar(&t7), ["escritorio-node", "node"]);
+        assert_eq!(detect(&t7), ["escritorio-node", "node"]);
         // A Claude Code plugin in Rust (Omoikane), and an Alexa skill.
         let t8 = crate::comun::Temporal::nueva("oficios-plugin");
         std::fs::create_dir_all(t8.join(".claude-plugin")).unwrap();
         std::fs::write(t8.join(".claude-plugin").join("plugin.json"), "{}").unwrap();
         std::fs::write(t8.join("Cargo.toml"), "").unwrap();
-        assert_eq!(detectar(&t8), ["plugin-claude", "rust"]);
+        assert_eq!(detect(&t8), ["plugin-claude", "rust"]);
         let t9 = crate::comun::Temporal::nueva("oficios-alexa");
         std::fs::create_dir_all(t9.join("skill-package")).unwrap();
         std::fs::create_dir_all(t9.join("hooks")).unwrap();
         std::fs::write(t9.join("hooks").join("hooks.json"), "{}").unwrap();
-        assert_eq!(detectar(&t9), ["alexa", "plugin-claude"]);
+        assert_eq!(detect(&t9), ["alexa", "plugin-claude"]);
         // Nothing to detect.
         let t6 = crate::comun::Temporal::nueva("oficios-nada");
         std::fs::write(t6.join("notas.md"), "x").unwrap();
-        assert!(detectar(&t6).is_empty());
+        assert!(detect(&t6).is_empty());
     }
 
     #[test]
@@ -1396,7 +1396,7 @@ mod tests {
         std::fs::write(t.join("m05").join("go.mod"), "").unwrap();
         std::fs::write(t.join("m65").join("Cargo.toml"), "").unwrap();
         for _ in 0..3 {
-            assert_eq!(detectar(&t), ["go"]);
+            assert_eq!(detect(&t), ["go"]);
         }
         let r = walk(&t);
         assert_eq!(r.folders.len(), 1 + MAX_SUBFOLDERS);
