@@ -1,4 +1,4 @@
-//! Los dos motores de EmbeddingGemma (candle y `rapido`, con AVX2 y por el camino genérico) frente a
+//! Los dos motores de EmbeddingGemma (candle y `engine`, con AVX2 y por el camino genérico) frente a
 //! frente: mismo vector, cuánto tardan según la longitud y cuánto cuesta indexar de una en una, por
 //! lotes o una memoria por núcleo.
 //!
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     match a[0].as_str() {
         "carga" => {
             let t = Instant::now();
-            let g = if a[2] == "candle" { Gemma::cargar_candle(dir)? } else { Gemma::cargar_rapido(dir, hilos, omoikane::rapido::simd_disponible())? };
+            let g = if a[2] == "candle" { Gemma::cargar_candle(dir)? } else { Gemma::cargar_rapido(dir, hilos, omoikane::engine::simd_available())? };
             let carga = t.elapsed().as_secs_f64() * 1000.0;
             let t = Instant::now();
             g.vector("How do I undo a cargo yank?", Tipo::Pregunta)?;

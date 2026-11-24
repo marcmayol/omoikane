@@ -4,6 +4,15 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.15.0 (unreleased)
+
+### The code reads in English
+- `src/rapido.rs` is now `src/engine.rs`. It (the f16 matmuls with AVX2/FMA/F16C, blocked attention and the `unsafe` around them) and `src/bpe.rs` (the compiled tokenizer) are now in English, names and comments: they are the parts people asked to review, and Spanish made that hard. `rapido::Rapido` is now `rapido::Engine`, `Capa` is `Layer`, `Mat::por` is `Mat::mul`, `bpe::compilar`/`Bpe::abrir`/`codificar` are `compile`/`open`/`encode`, and every `SAFETY` comment says in English why the pointer access holds. The rest of the code base follows in this version.
+- Same vectors and same tokens as before: the `motor` test, run against the real EmbeddingGemma, still matches candle and `tokenizers`.
+
+### Compatibility
+- Nothing changes in behaviour, data, the database schema (10) or the `tokenizer.omoi` format: only internal names and comments. 1.15.0 reads and writes exactly what 1.0–1.14.1 do.
+
 ## 1.14.1 (2026-11-24)
 
 ### ASCII identifiers

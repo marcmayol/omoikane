@@ -9,7 +9,7 @@
 //! de nada fuera del binario.
 //!
 //! Dos motores dan el mismo vector:
-//! - `rapido` (por defecto): pesos en f16 leídos del fichero mapeado, multiplicaciones propias con
+//! - `engine` (por defecto): pesos en f16 leídos del fichero mapeado, multiplicaciones propias con
 //!   AVX2 (o el camino genérico sin él). Carga en ~0,1 s y ~30 ms por pregunta en 8 hilos.
 //! - candle (`OMOIKANE_GEMMA_RAPIDO=0`, y el que se compara en los tests): pesos en f32 en RAM.
 //!
@@ -104,9 +104,9 @@ impl Tok {
     fn cargar(dir: &Path, compacto: bool) -> Result<Tok> {
         let json = dir.join("tokenizer.json");
         if compacto && std::env::var("OMOIKANE_GEMMA_BPE").as_deref() != Ok("0") {
-            match crate::bpe::Bpe::abrir_o_compilar(&json, &dir.join(crate::bpe::FICHERO)) {
+            match crate::bpe::Bpe::open_or_compile(&json, &dir.join(crate::bpe::FILE)) {
                 Ok(b) => return Ok(Tok::Bpe(b)),
-                Err(e) => eprintln!("omoi: {}: {e:#}; using tokenizer.json", crate::bpe::FICHERO),
+                Err(e) => eprintln!("omoi: {}: {e:#}; using tokenizer.json", crate::bpe::FILE),
             }
         }
         Self::hf(&json)
@@ -121,7 +121,7 @@ impl Tok {
 
     fn ids(&self, texto: &str) -> Result<Vec<u32>> {
         match self {
-            Tok::Bpe(b) => Ok(b.codificar(texto, MAX_TOKENS)),
+            Tok::Bpe(b) => Ok(b.encode(texto, MAX_TOKENS)),
             Tok::Hf(t) => Ok(t.encode(texto, true).map_err(|e| anyhow!("{e}"))?.get_ids().to_vec()),
         }
     }
@@ -156,7 +156,7 @@ struct Candle {
 /// Uno por modelo cargado: lo que ocupe la variante grande da igual.
 #[allow(clippy::large_enum_variant)]
 enum Motor {
-    Rapido(crate::rapido::Rapido, rayon::ThreadPool),
+    Rapido(crate::engine::Engine, rayon::ThreadPool),
     Candle(Candle),
 }
 
@@ -290,7 +290,7 @@ impl Cfg {
     }
 }
 
-/// De dónde saca `rapido` los pesos: `pesos.safetensors` mapeado (el formato compacto, en f16: las
+/// De dónde saca `engine` los pesos: `pesos.safetensors` mapeado (el formato compacto, en f16: las
 /// matrices se usan ahí mismo, sin copiarlas) o tensores ya cargados (sentence-transformers).
 enum Fuente {
     Mapa { mapa: Arc<memmap2::Mmap>, tensores: HashMap<String, (usize, Vec<usize>, safetensors::Dtype)> },
@@ -333,8 +333,8 @@ impl Fuente {
     }
 
     /// Las matrices `ks` una tras otra. Del fichero mapeado en f16, sin copiarlas.
-    fn mat(&mut self, ks: &[String], simd: bool) -> Result<crate::rapido::Mat> {
-        use crate::rapido::Mat;
+    fn mat(&mut self, ks: &[String], simd: bool) -> Result<crate::engine::Mat> {
+        use crate::engine::Mat;
         if let Fuente::Mapa { mapa, tensores } = self
             && ks.iter().all(|k| tensores.get(k).is_some_and(|t| t.2 == safetensors::Dtype::F16 && t.1.len() == 2 && t.0 % 2 == 0))
         {
@@ -347,7 +347,7 @@ impl Fuente {
                 partes.push((unsafe { mapa.as_ptr().add(*ini) } as *const u16, forma[0], mapa.clone() as Arc<dyn Send + Sync>));
             }
             // SAFETY: cada parte son filas·cols f16 del mapa, que va como dueño y no cambia.
-            return Ok(unsafe { Mat::de_partes(partes, cols, simd) });
+            return Ok(unsafe { Mat::from_parts(partes, cols, simd) });
         }
         let mut datos = Vec::new();
         let (mut filas, mut cols) = (0, 0);
@@ -358,17 +358,17 @@ impl Fuente {
             cols = forma[1];
             datos.extend(v);
         }
-        Ok(Mat::de_f32(&datos, filas, cols, simd))
+        Ok(Mat::from_f32(&datos, filas, cols, simd))
     }
 }
 
 impl Gemma {
-    /// Con el motor rápido (`rapido`) si la CPU tiene AVX2/FMA/F16C; si no (CPU antiguas, ARM), con
+    /// Con el motor rápido (`engine`) si la CPU tiene AVX2/FMA/F16C; si no (CPU antiguas, ARM), con
     /// candle: el camino genérico del rápido da el mismo vector pero es más lento que candle (medido:
     /// 56 frente a 42 ms con 16 tokens, el doble con textos largos). `OMOIKANE_GEMMA_RAPIDO=0` fuerza
     /// candle y `=1` el rápido (genérico, si no hay AVX2).
     pub fn cargar(dir: &Path) -> Result<Self> {
-        let simd = crate::rapido::simd_disponible();
+        let simd = crate::engine::simd_available();
         match std::env::var("OMOIKANE_GEMMA_RAPIDO").as_deref() {
             Ok("0") => Self::cargar_candle(dir),
             Ok("1") => Self::cargar_rapido(dir, Self::hilos_por_defecto(), simd),
@@ -434,9 +434,9 @@ impl Gemma {
         Ok(Tabla::Int8 { filas, escalas, ancho })
     }
 
-    /// El motor rápido con `hilos` hilos; `simd` con AVX2/FMA/F16C (`rapido::simd_disponible`).
+    /// El motor rápido con `hilos` hilos; `simd` con AVX2/FMA/F16C (`engine::simd_available`).
     pub fn cargar_rapido(dir: &Path, hilos: usize, simd: bool) -> Result<Self> {
-        use crate::rapido::{Capa as C, Rapido, tabla_rope};
+        use crate::engine::{Engine, Layer, rope_table};
         ensure!(es_modelo(dir), "{}: not an EmbeddingGemma folder", dir.display());
         let cfg = Cfg::leer(dir)?;
         let compacto = !es_sentence_transformers(dir);
@@ -444,17 +444,17 @@ impl Gemma {
         let mut capas = Vec::with_capacity(cfg.locales.len());
         for (i, &local) in cfg.locales.iter().enumerate() {
             let p = |s: &str| format!("layers.{i}.{s}.weight");
-            capas.push(C {
-                ne: f.norma(&p("input_layernorm"))?,
-                nta: f.norma(&p("post_attention_layernorm"))?,
-                nam: f.norma(&p("pre_feedforward_layernorm"))?,
-                ntm: f.norma(&p("post_feedforward_layernorm"))?,
-                nq: f.norma(&p("self_attn.q_norm"))?,
-                nk: f.norma(&p("self_attn.k_norm"))?,
+            capas.push(Layer {
+                norm_in: f.norma(&p("input_layernorm"))?,
+                norm_post_attn: f.norma(&p("post_attention_layernorm"))?,
+                norm_pre_mlp: f.norma(&p("pre_feedforward_layernorm"))?,
+                norm_post_mlp: f.norma(&p("post_feedforward_layernorm"))?,
+                norm_q: f.norma(&p("self_attn.q_norm"))?,
+                norm_k: f.norma(&p("self_attn.k_norm"))?,
                 qkv: f.mat(&[p("self_attn.q_proj"), p("self_attn.k_proj"), p("self_attn.v_proj")], simd)?,
                 o: f.mat(&[p("self_attn.o_proj")], simd)?,
-                gu: f.mat(&[p("mlp.gate_proj"), p("mlp.up_proj")], simd)?,
-                bajar: f.mat(&[p("mlp.down_proj")], simd)?,
+                gate_up: f.mat(&[p("mlp.gate_proj"), p("mlp.up_proj")], simd)?,
+                down: f.mat(&[p("mlp.down_proj")], simd)?,
                 local,
             });
         }
@@ -462,19 +462,19 @@ impl Gemma {
             Fuente::Mapa { .. } => Self::tabla_int8(dir, cfg.ancho)?,
             Fuente::Tensores(t) => Tabla::F32(t.remove("embed_tokens.weight").context("model.safetensors: missing embed_tokens.weight")?.to_dtype(DType::F32)?),
         };
-        let r = Rapido {
-            capas,
-            norma: f.norma("norm.weight")?,
-            densa1: f.mat(&["densa1.weight".into()], simd)?,
-            densa2: f.mat(&["densa2.weight".into()], simd)?,
+        let r = Engine {
+            layers: capas,
+            norm: f.norma("norm.weight")?,
+            dense1: f.mat(&["densa1.weight".into()], simd)?,
+            dense2: f.mat(&["densa2.weight".into()], simd)?,
             eps: cfg.eps as f32,
-            cabezas: cfg.cabezas,
-            cabezas_kv: cfg.cabezas_kv,
-            dim_cabeza: cfg.dim_cabeza,
-            escala: cfg.escala as f32,
-            medio: cfg.ventana / 2,
-            rope_local: tabla_rope(MAX_TOKENS, cfg.dim_cabeza, cfg.base_local),
-            rope_global: tabla_rope(MAX_TOKENS, cfg.dim_cabeza, cfg.base_global),
+            heads: cfg.cabezas,
+            kv_heads: cfg.cabezas_kv,
+            head_dim: cfg.dim_cabeza,
+            scale: cfg.escala as f32,
+            half_window: cfg.ventana / 2,
+            rope_local: rope_table(MAX_TOKENS, cfg.dim_cabeza, cfg.base_local),
+            rope_global: rope_table(MAX_TOKENS, cfg.dim_cabeza, cfg.base_global),
             simd,
         };
         let pool = rayon::ThreadPoolBuilder::new().num_threads(hilos.max(1)).thread_name(|i| format!("gemma-{i}")).build()?;
@@ -547,7 +547,7 @@ impl Gemma {
                 let e = self.escala_tokens as f32;
                 let x = self.tokens.filas_vec(&todos)?.into_iter().map(|v| v * e).collect();
                 let largos: Vec<usize> = ids.iter().map(Vec::len).collect();
-                Ok(r.vectores(x, &largos, pool, ceder))
+                Ok(r.vectors(x, &largos, pool, ceder))
             }
             Motor::Candle(c) => ids
                 .iter()

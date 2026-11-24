@@ -63,18 +63,18 @@ fn motor_y_tokenizer() {
     let json = m.join("tokenizer.json");
     let mut hf = tokenizers::Tokenizer::from_file(&json).unwrap();
     hf.with_truncation(Some(tokenizers::TruncationParams { max_length: omoikane::gemma::MAX_TOKENS, ..Default::default() })).unwrap();
-    omoikane::bpe::compilar(&json, &m.join(omoikane::bpe::FICHERO)).unwrap();
-    let bpe = omoikane::bpe::Bpe::abrir(&json, &m.join(omoikane::bpe::FICHERO)).unwrap();
+    omoikane::bpe::compile(&json, &m.join(omoikane::bpe::FILE)).unwrap();
+    let bpe = omoikane::bpe::Bpe::open(&json, &m.join(omoikane::bpe::FILE)).unwrap();
     for t in &textos {
         for p in ["task: search result | query: ", "title: none | text: ", ""] {
             let s = format!("{p}{t}");
-            assert_eq!(bpe.codificar(&s, omoikane::gemma::MAX_TOKENS), hf.encode(s.as_str(), true).unwrap().get_ids(), "{s:?}");
+            assert_eq!(bpe.encode(&s, omoikane::gemma::MAX_TOKENS), hf.encode(s.as_str(), true).unwrap().get_ids(), "{s:?}");
         }
     }
 
     // Los tres motores, el mismo vector.
     let candle = Gemma::cargar_candle(&m).unwrap();
-    let rapido = Gemma::cargar_rapido(&m, 4, omoikane::rapido::simd_disponible()).unwrap();
+    let rapido = Gemma::cargar_rapido(&m, 4, omoikane::engine::simd_available()).unwrap();
     let generico = Gemma::cargar_rapido(&m, 4, false).unwrap();
     assert!(rapido.tokenizer_compilado() && rapido.es_rapido() && !candle.es_rapido());
     let tipos = [Tipo::Pregunta, Tipo::Documento];

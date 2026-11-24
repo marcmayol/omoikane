@@ -41,6 +41,7 @@ Decidido que no, con el motivo:
 | 1.13.0 | 2026-11-21 | Cada memoria dice en qué se basa (`evidence`: user-said, code-read, tested, doc, inferred); lo que solo dedujo un agente pesa menos y llega marcado; botón Hacer skill en la vista web |
 | 1.14.0 | 2026-11-21 | La memoria contradicha queda en espera hasta que la persona dice cuál vale (sección Contradicciones en la web, `decisions` con `contradiction`); la fecha de revisión dice qué mirar y sale al empezar la sesión |
 | 1.14.1 | 2026-11-24 | Nombres del código solo en ASCII (sin `ñ`), y el compilador lo exige |
+| 1.15.0 | en curso | El código en inglés, nombres y comentarios, para que cualquiera lo pueda revisar (primero el motor de vectores: `engine.rs`, `bpe.rs`) |
 | 1.12.1 | 2026-11-18 | Partir desde Revisar una memoria demasiado larga (botón Partir) |
 | 1.12.0 | 2026-11-18 | Lo que se arregla solo: los estados viejos con otro más nuevo van a la papelera, las decisiones se cierran cuando su tarea está resuelta; menos avisos falsos; página Papelera, botones Ejecutar y Quitar el enlace en la vista web |
 | 1.11.0 | 2026-11-17 | Las memorias de un fichero llegan cuando el agente lo abre (`omoi recall --file-open`), no solo cuando el mensaje lo nombra |

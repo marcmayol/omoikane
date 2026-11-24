@@ -1,6 +1,6 @@
 [package]
 name = "omoikane"
-version = "1.14.1"
+version = "1.15.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -19,7 +19,7 @@ anyhow = "1.0.104"
 candle-core = "0.11.1"
 candle-nn = "0.11.1"
 clap = { version = "4.6.7", features = ["derive"] }
-# Pesos en f16 y los hilos del motor rápido de EmbeddingGemma (`rapido`); ya venían con candle.
+# Pesos en f16 y los hilos del motor rápido de EmbeddingGemma (`engine`); ya venían con candle.
 half = "2.7.1"
 rayon = "1.12.0"
 memmap2 = "0.9.12"
@@ -65,6 +65,6 @@ lto = true
 codegen-units = 1
 strip = true
 
-# Identifiers stay ASCII: anyone can type them on any keyboard (src/bpe.rs and src/rapido.rs had ñ until 1.14.1).
+# Identifiers stay ASCII: anyone can type them on any keyboard (src/bpe.rs and src/engine.rs had ñ until 1.14.1).
 [lints.rust]
 non_ascii_idents = "deny"

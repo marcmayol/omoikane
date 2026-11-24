@@ -97,7 +97,7 @@ pub fn fijar(eleccion: Option<bool>) -> Result<()> {
 /// baja del 40 % al 7,5 %) y cuesta ~450 MB de disco, un servicio residente e indexar cada memoria.
 /// 1.000, calibrado el 2-nov-2026: con 1.000 memorias el modelo ya da (búsqueda: paráfrasis a la
 /// primera 0,08 → 0,36; recall: ruido en preguntas sin respuesta 30 % → 22,5 %; `2-cuando.md`), y desde
-/// el motor propio (`rapido`) cuesta poco más que el disco: carga en ~26 ms, 13 MB de RAM propia,
+/// el motor propio (`engine`) cuesta poco más que el disco: carga en ~26 ms, 13 MB de RAM propia,
 /// indexar ~76-640 ms por memoria una vez. Por debajo de 1.000 la búsqueda también ganaría paráfrasis,
 /// pero el recall no, y la descarga no compensa. `OMOIKANE_SEMANTIC_THRESHOLD` lo cambia.
 ///
@@ -329,7 +329,7 @@ pub fn instalar(desde: Option<&std::path::Path>, aviso: &mut dyn FnMut(&str)) ->
         std::fs::write(temporal.join("NOTICE"), AVISO_LICENCIA)?;
         // El tokenizer compilado (`bpe`), aquí y no en la descarga: los ficheros publicados y sus
         // SHA-256 no cambian. Si fallase, se compila la primera vez que se cargue el modelo.
-        let _ = crate::bpe::compilar(&temporal.join("tokenizer.json"), &temporal.join(crate::bpe::FICHERO));
+        let _ = crate::bpe::compile(&temporal.join("tokenizer.json"), &temporal.join(crate::bpe::FILE));
         // Si otro proceso lo instaló a la vez, vale el suyo.
         if std::fs::rename(&temporal, &destino).is_err() && !gemma::es_modelo(&destino) {
             bail!(tr!("can't move the model into {}", "no se puede mover el modelo a {}", destino.display()));

@@ -4,7 +4,7 @@
 //! `cargo run --release --example bpe_igual -- <carpeta del modelo compacto> <textos.json>`
 //! (`textos.json`: un objeto con listas de textos; lo genera `motor/py/textos.py` de la revisión).
 
-use omoikane::bpe::{Bpe, FICHERO, compilar};
+use omoikane::bpe::{Bpe, FILE, compile};
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
@@ -17,15 +17,15 @@ fn main() -> anyhow::Result<()> {
     let mut hf = tokenizers::Tokenizer::from_file(&json).map_err(|e| anyhow::anyhow!("{e}"))?;
     hf.with_truncation(Some(tokenizers::TruncationParams { max_length: 2048, ..Default::default() })).map_err(|e| anyhow::anyhow!("{e}"))?;
     let carga_hf = t.elapsed();
-    let destino = dir.join(FICHERO);
+    let destino = dir.join(FILE);
     let t = Instant::now();
-    compilar(&json, &destino)?;
+    compile(&json, &destino)?;
     let compilar_t = t.elapsed();
     let mut abrir = Vec::new();
     let mut bpe = None;
     for _ in 0..5 {
         let t = Instant::now();
-        bpe = Some(Bpe::abrir(&json, &destino)?);
+        bpe = Some(Bpe::open(&json, &destino)?);
         abrir.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     let bpe = bpe.unwrap();
@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
                 let a = hf.encode(s.as_str(), true).map_err(|e| anyhow::anyhow!("{e}"))?.get_ids().to_vec();
                 ms_hf += i0.elapsed().as_secs_f64() * 1000.0;
                 let i0 = Instant::now();
-                let b = bpe.codificar(&s, 2048);
+                let b = bpe.encode(&s, 2048);
                 ms_bpe += i0.elapsed().as_secs_f64() * 1000.0;
                 n += 1;
                 toks += a.len();
