@@ -4,6 +4,18 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
+## 1.15.1 (unreleased)
+
+### Leftovers of the English rename
+- The GitHub workflows (`ci`, `compat`, `perf`, `release`) have their comments, step names and error messages in English; the `compat` matrix key `paquete` is now `package`. Job ids, commands and behaviour are the same.
+- Comments that still named things by their old Spanish names now point at the real ones: `sync::foreign_seal`, `sync::goes_to_repo`, `project::change_key`, `project::key_with_space`, `project::merge`, `owner_view::overview`, `okf::signature`, `db::LOCALS`, `db::ensure_locals`, `LINE_READER`, `names::proposals`, the `min_similarity` field of the search fusions, and the tests `engine_and_tokenizer`, `the_work_share_is_trusted` and `trade_memories_do_not_go_through_a_client` (and `tests/backup.rs`, `tests/recipes.rs`).
+- `Cargo.toml` comments are in English.
+- The web view's fonts moved from `assets/fuentes/` to `assets/fonts/`. They are still served at the same `/fuentes/…` URLs, so nothing changes for the page.
+- The test `the_link_to_a_memory` asks for the web view over HTTP/1.0: over HTTP/1.1 the page came chunked, and a chunk header landing inside a multi-byte character made the raw read fail.
+
+### Compatibility
+- Nothing changes in behaviour, data or the database schema (10): only comments, CI text and an asset folder. 1.15.1 reads and writes exactly what 1.0–1.15.0 do, and they read what 1.15.1 writes.
+
 ## 1.15.0 (2026-11-24)
 
 ### The code reads in English

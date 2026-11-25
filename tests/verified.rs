@@ -516,7 +516,9 @@ fn the_link_to_a_memory() {
     let mut page = String::new();
     for _ in 0..100 {
         if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-            s.write_all(format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            // HTTP/1.0, so the page comes whole and not chunked: a chunk header falling inside a
+            // multi-byte character (or a searched string) would break the read or the asserts.
+            s.write_all(format!("GET / HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes()).unwrap();
             s.read_to_string(&mut page).unwrap();
             break;
         }

@@ -1,10 +1,10 @@
 name: perf
 
-# Que el recall y la búsqueda no vayan más lentos que en la última Release: baja su `omoi` (firma de
-# SHA256SUMS con la clave de Omoikane y SHA-256 del paquete, como al actualizarse) y lo mide contra el
-# de este commit en el mismo runner, intercalados, sobre la misma base sintética de 10.000 memorias.
-# Falla si la mediana de alguno pasa a la vez un 25 % y 5 ms por encima, dos veces seguidas. Lo mismo
-# en local: `cargo run --release --example performance` (ver CONTRIBUTING.md).
+# Keeps recall and search no slower than in the latest Release: downloads its `omoi` (SHA256SUMS
+# signature checked with Omoikane's key and the package's SHA-256, as when updating) and measures it
+# against this commit's binary on the same runner, interleaved, over the same synthetic database of
+# 10,000 memories. Fails if either median is both 25 % and 5 ms higher, twice in a row. The same
+# locally: `cargo run --release --example performance` (see CONTRIBUTING.md).
 on:
   push:
     branches: ["**"]
@@ -13,7 +13,7 @@ on:
 
 jobs:
   perf:
-    # Uno solo: compara dos binarios en la misma máquina, y Linux es el runner menos ruidoso.
+    # A single one: it compares two binaries on the same machine, and Linux is the least noisy runner.
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
@@ -26,10 +26,10 @@ jobs:
 
       - run: cargo build --release --locked --bin omoi
 
-      - name: Recall y búsqueda contra la última Release
+      - name: Recall and search against the latest Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # La versión, por gh (con el token del job; la API sin él tiene un límite por IP compartido).
+          # The version, through gh (with the job's token; without it the API has a shared per-IP limit).
           v=$(gh release view --repo marcmayol/omoikane --json tagName --jq .tagName)
           cargo run --release --locked --example performance -- --contra "${v#v}"

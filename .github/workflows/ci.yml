@@ -24,13 +24,13 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      # El modelo int8 (150 MB) para el test de equivalencia: sin él, el test se salta.
+      # The int8 model (150 MB) for the equivalence test: without it, the test is skipped.
       - uses: actions/cache@v4
         id: modelo
         with:
           path: ${{ github.workspace }}/../modelo-int8
           key: modelo-int8-potion-multilingual-128M-v1
-      - name: Descargar el modelo
+      - name: Download the model
         if: steps.modelo.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$OMOI_MODELO_INT8"
@@ -39,9 +39,9 @@ jobs:
               "https://huggingface.co/natzx94/potion-multilingual-128M-int8/resolve/main/$f"
           done
 
-      # Un error de sintaxis en el JavaScript de la vista web la deja muerta y
-      # cargo no lo ve: se sacan los <script> de src/web.html y node los comprueba.
-      - name: Comprobar el JavaScript de la vista web
+      # A syntax error in the web view's JavaScript leaves it dead and cargo does
+      # not see it: the <script> blocks are pulled out of src/web.html and node checks them.
+      - name: Check the web view's JavaScript
         run: |
           mkdir -p "$RUNNER_TEMP/webjs"
           node -e '
@@ -50,14 +50,14 @@ jobs:
             const re = /<script[^>]*>([\s\S]*?)<\/script>/g;
             let m, i = 0;
             while ((m = re.exec(h))) fs.writeFileSync(`${process.argv[1]}/web-${++i}.js`, m[1]);
-            if (!i) { console.error("src/web.html sin <script>"); process.exit(1); }
+            if (!i) { console.error("src/web.html has no <script>"); process.exit(1); }
           ' "$RUNNER_TEMP/webjs"
           for f in "$RUNNER_TEMP"/webjs/web-*.js; do node --check "$f"; done
 
       - run: cargo build --release --locked --all-targets
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: cargo test --release --locked -- --nocapture
-      - name: Probar el binario
+      - name: Smoke-test the binary
         run: |
           export OMOIKANE_DB="$RUNNER_TEMP/humo.db"
           ./target/release/omoi doctor

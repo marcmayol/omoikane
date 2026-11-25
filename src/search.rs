@@ -195,12 +195,12 @@ pub enum Fusion {
     /// The order by words rules; the vector only adds, behind, what the words didn't find.
     Fallback,
     /// Like the fallback, but the last `slots` places are reserved for what only the
-    /// vector finds with at least `desde` similarity: with the plain fallback, words almost always
+    /// vector finds with at least `min_similarity`: with the plain fallback, words almost always
     /// fill the limit and a paraphrase that only the vector sees never got in. It doesn't change the
     /// first places.
     Reserve { slots: usize, min_similarity: f32 },
     /// Score by words (BM25 + coverage, divided by the best's) plus `weight` per
-    /// similarity point above `desde`: the vector reorders, but only when it is really
+    /// similarity point above `min_similarity`: the vector reorders, but only when it is really
     /// similar. What only the vector brings gets in if it passes the minimum similarity, as in the fallback.
     Blend { weight: f64, min_similarity: f32 },
 }
@@ -333,7 +333,7 @@ fn search_base(
         }
     }
     if let Fusion::Reserve { slots, min_similarity: min_sim } = chosen_fusion {
-        // What the vector sees as very similar (whether it came up lower by words or not), if it passes `desde`.
+        // What the vector sees as very similar (whether it came up lower by words or not), if it passes `min_similarity`.
         let vector_close: Vec<SearchResult> = fused.iter().filter(|r| r.similarity.is_some_and(|s| s >= min_sim)).cloned().collect();
         if !vector_close.is_empty() {
             let mut v = rank(db, fused, &SearchOptions { limit: usize::MAX, ..o.clone() }, false)?;

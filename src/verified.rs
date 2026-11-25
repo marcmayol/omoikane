@@ -39,7 +39,7 @@ use sha2::{Digest, Sha256};
 pub const VERIFIED_KEY: &str = "verified";
 
 /// The local mark (in `meta`, which doesn't travel) of another person's verified seal that arrived
-/// through a space's repository (`sync::sello_de_otro`): `sello_ajeno:<id>` with its `by` and `at` on
+/// through a space's repository (`sync::foreign_seal`): `sello_ajeno:<id>` with its `by` and `at` on
 /// two lines. While the memory carries that same seal, here it doesn't count as verified
 /// (`memory::COLUMNS`); the seal stays in the memory, as is, for the others.
 pub const FOREIGN_SEAL_PREFIX: &str = "sello_ajeno:";
@@ -71,7 +71,7 @@ struct Seal {
 // --- Whose seal it is -------------------------------------------------------------------------------
 //
 // Through a space's repository (shared with other people) arrive seals put by another person: their
-// trust, not that of whoever uses this database (`sync::sello_de_otro`). The line's `by` can't tell:
+// trust, not that of whoever uses this database (`sync::foreign_seal`). The line's `by` can't tell:
 // anyone sharing the space can write `"by": "Marc"`. What decides is a signature only this person can
 // compute: an HMAC of the seal with their **seal key**, derived from the key of their general
 // repository (the personal, encrypted one, held only by their machines: it never travels through a
@@ -284,7 +284,7 @@ pub fn after_key_change(db: &Connection) -> Result<(usize, usize)> {
         if mark != format!("{}\n{}", s.by, s.at) {
             continue;
         }
-        // Like `sync::sello_de_otro`: one older than when the person removed it here doesn't come back.
+        // Like `sync::foreign_seal`: one older than when the person removed it here doesn't come back.
         let unverified_after = unverified_at(&tx, &id)?.is_some_and(|d| d > s.at);
         if !unverified_after && is_own_seal(&l, &id, &v) {
             tx.execute("DELETE FROM meta WHERE k = ?1", [&k])?;
@@ -576,7 +576,7 @@ pub(crate) fn remove_on_change(tx: &Transaction, id: &str, before: &Memory) -> R
 /// here at `unverified_at` ([`UNVERIFIED_AT_KEY`]): the date is kept (the more recent of the two, for
 /// next time) and, if `remove_seal`, a seal older than that date is removed. (Through a space's
 /// repository the seal stays in the line for the others and doesn't count here: see
-/// `sync::sello_de_otro`.)
+/// `sync::foreign_seal`.)
 pub(crate) fn drop_old_seal(extra: &mut serde_json::Map<String, serde_json::Value>, unverified_at: &str, remove_seal: bool) {
     if extra.get(UNVERIFIED_AT_KEY).and_then(|x| x.as_str()).is_none_or(|d| d < unverified_at) {
         extra.insert(UNVERIFIED_AT_KEY.into(), unverified_at.into());

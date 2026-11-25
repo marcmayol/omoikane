@@ -7,7 +7,7 @@
 <title>Omoikane</title>
 <link rel="icon" href="/icono.png">
 <style>
-/* Fonts inside the binary (OFL, assets/fuentes): the view works without internet. */
+/* Fonts inside the binary (OFL, assets/fonts): the view works without internet. */
 @font-face { font-family: "IBM Plex Sans"; font-weight: 100 700; font-display: swap; src: url(/fuentes/plex-sans.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(/fuentes/plex-mono-400.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url(/fuentes/plex-mono-600.woff2) format("woff2"); }
@@ -1049,7 +1049,7 @@ function renderReview() {
       <div class="cmd"><code>${esc(x.keep)}</code>${runButton(x.keep)}<button class="btn" data-copia="${esc(x.keep)}">${esc(T.copiar)}</button></div>
       <div class="cmd"><code>${esc(x.accept)}</code>${runButton(x.accept)}<button class="btn" data-copia="${esc(x.accept)}">${esc(T.copiar)}</button></div>
     </div>`).join('')}`;
-  // Duplicated projects or in temporary folders (`nombres::propuestas`): the command that merges them and the
+  // Duplicated projects or in temporary folders (`names::proposals`): the command that merges them and the
   // one that says they aren't the same.
   const dups = !duplicates.length ? '' : `
     <div class="grupo"><h2>${esc(T.dups[0])}</h2><span class="n">${duplicates.length}</span></div>

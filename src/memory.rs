@@ -326,7 +326,7 @@ pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
 /// `INDEXED BY memory_ambito` to join `memory m` by `n` with another table (`memory_fts`,
 /// `memory_vec`) and filter by scope without reading each memory's whole row; nothing if the connection
-/// doesn't have the index (see `db::LOCALES`). It only changes where SQLite reads from, not the output.
+/// doesn't have the index (see `db::LOCALS`). It only changes where SQLite reads from, not the output.
 pub(crate) fn scope_index_hint(db: &Connection) -> &'static str {
     let has_index = db
         .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_ambito')", [], |f| f.get::<_, bool>(0))
@@ -1750,7 +1750,7 @@ pub fn recent(db: &Connection, scope: &Scope, kind: Option<Kind>, limit: usize) 
         v.truncate(limit);
         return Ok(v);
     }
-    // Without a kind, through `memory_reciente` (see `db::LOCALES`), which is already in the requested order: it stops at
+    // Without a kind, through `memory_reciente` (see `db::LOCALS`), which is already in the requested order: it stops at
     // the first `limit` of the scope and only those are read whole.
     let has_index = db
         .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'memory_reciente')", [], |f| f.get::<_, bool>(0))
@@ -2187,7 +2187,7 @@ pub fn context(db: &Connection, scope: &Scope, limit: usize) -> Result<Vec<Memor
 }
 
 /// How many memories are visible from a scope. With the per-project-and-space count kept by the
-/// triggers (`db::LOCALES`), without scanning the table; by counting, on a connection without it.
+/// triggers (`db::LOCALS`), without scanning the table; by counting, on a connection without it.
 pub fn count(db: &Connection, scope: &Scope) -> Result<i64> {
     match db.query_row(&format!("SELECT COALESCE(sum(m.n), 0) FROM memory_cuenta m WHERE {}", scope.sql_without_trades()), [], |f| f.get::<_, i64>(0)) {
         Ok(n) => Ok(n - crate::trades::hidden_count(db, scope)?),

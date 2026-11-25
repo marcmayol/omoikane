@@ -7,7 +7,7 @@
 //!   `versions` (how many previous versions its history keeps) and `links` (the ones it links with `[[…]]`)
 //! - `GET /api/projects` → the projects (`project::list`: key, space, folder and whether it is gone)
 //!   and the spaces (`project::spaces`, with their name), to group and filter by space
-//! - `GET /api/overview?months=…` → the owner view (`owner_view::panorama`): per space, its
+//! - `GET /api/overview?months=…` → the owner view (`owner_view::overview`): per space, its
 //!   projects with their latest `status`, the pinned ones, the open decisions, who wrote what, what
 //!   `review` says, what is paused and what nobody has touched for `months` months (6). Only what
 //!   is visible from the request's project (its space); from the user's folder, everything
@@ -64,15 +64,15 @@ fn json(status: u16, body: String) -> Response<std::io::Cursor<Vec<u8>>> {
 
 const PAGE: &str = include_str!("web.html");
 
-/// What the page loads separately: the icon and its fonts (OFL, in `assets/fuentes`), inside the binary
+/// What the page loads separately: the icon and its fonts (OFL, in `assets/fonts`), inside the binary
 /// because the view has to work without internet.
 const ASSETS: &[(&str, &str, &[u8])] = &[
     ("/icono.png", "image/png", include_bytes!("../assets/icon-64.png")),
-    ("/fuentes/plex-sans.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-sans.woff2")),
-    ("/fuentes/plex-mono-400.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-mono-400.woff2")),
-    ("/fuentes/plex-mono-600.woff2", "font/woff2", include_bytes!("../assets/fuentes/plex-mono-600.woff2")),
-    ("/fuentes/shippori-600.woff2", "font/woff2", include_bytes!("../assets/fuentes/shippori-600.woff2")),
-    ("/fuentes/shippori-600-omoikane.woff2", "font/woff2", include_bytes!("../assets/fuentes/shippori-600-omoikane.woff2")),
+    ("/fuentes/plex-sans.woff2", "font/woff2", include_bytes!("../assets/fonts/plex-sans.woff2")),
+    ("/fuentes/plex-mono-400.woff2", "font/woff2", include_bytes!("../assets/fonts/plex-mono-400.woff2")),
+    ("/fuentes/plex-mono-600.woff2", "font/woff2", include_bytes!("../assets/fonts/plex-mono-600.woff2")),
+    ("/fuentes/shippori-600.woff2", "font/woff2", include_bytes!("../assets/fonts/shippori-600.woff2")),
+    ("/fuentes/shippori-600-omoikane.woff2", "font/woff2", include_bytes!("../assets/fonts/shippori-600-omoikane.woff2")),
 ];
 
 fn asset(content_type: &str, data: &'static [u8]) -> Response<std::io::Cursor<Vec<u8>>> {

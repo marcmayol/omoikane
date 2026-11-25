@@ -1,11 +1,11 @@
 name: compat
 
-# Que la 1.x siga entendiéndose con la 1.0.0: baja el `omoi` 1.0.0 de la
-# Release v1.0.0, comprueba su SHA-256 y corre `cargo test --test compat` contra el de este commit
-# (sync por el mismo repositorio en los dos sentidos, la base y `omoi export`). Si falla, la 1.x ha
-# roto lo que prometió la 1.0. `release.yml` lo llama antes de publicar.
+# Keeps 1.x working with 1.0.0: downloads the 1.0.0 `omoi` from the v1.0.0
+# Release, checks its SHA-256 and runs `cargo test --test compat` against this commit's binary
+# (sync through the same repository in both directions, the database and `omoi export`). If it
+# fails, 1.x has broken what 1.0 promised. `release.yml` calls it before publishing.
 on:
-  # En las ramas; en un tag lo corre release.yml antes de publicar.
+  # On branches; on a tag, release.yml runs it before publishing.
   push:
     branches: ["**"]
   pull_request:
@@ -17,16 +17,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Las sumas, fijas: son las de la Release v1.0.0 (su SHA256SUMS, firmado). Si alguien cambiara
-          # los ficheros de la Release, esto no pasaría.
+          # The checksums are pinned: they are the v1.0.0 Release's (its signed SHA256SUMS). If anyone
+          # changed the Release's files, this would fail.
           - os: ubuntu-latest
-            paquete: omoi-x86_64-unknown-linux-gnu.tar.gz
+            package: omoi-x86_64-unknown-linux-gnu.tar.gz
             sha256: 307044e710693951125d11857ed0c4eed656b650819877002a33c2f93fcc1f99
           - os: windows-latest
-            paquete: omoi-x86_64-pc-windows-msvc.zip
+            package: omoi-x86_64-pc-windows-msvc.zip
             sha256: 33d7b1606d8093a6aa8e6004b15d5a32f61f9bb375ca8b2e9448ca57c57ea929
           - os: macos-latest
-            paquete: omoi-aarch64-apple-darwin.tar.gz
+            package: omoi-aarch64-apple-darwin.tar.gz
             sha256: 9793111b8fdf0e9755e20a7542437ba47cb5027ed4d6fc5386427ee35813e100
     runs-on: ${{ matrix.os }}
     defaults:
@@ -41,22 +41,22 @@ jobs:
         with:
           key: compat
 
-      - name: Bajar omoi 1.0.0
+      - name: Download omoi 1.0.0
         run: |
           d="$RUNNER_TEMP/omoi-1.0.0"
           mkdir -p "$d/bin"
           cd "$d"
           base=https://github.com/marcmayol/omoikane/releases/download/v1.0.0
-          curl -sSfL --retry 3 -o "${{ matrix.paquete }}" "$base/${{ matrix.paquete }}"
+          curl -sSfL --retry 3 -o "${{ matrix.package }}" "$base/${{ matrix.package }}"
           curl -sSfL --retry 3 -o SHA256SUMS "$base/SHA256SUMS"
           suma() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
-          tiene=$(suma "${{ matrix.paquete }}")
-          # La del fichero, contra la fija y contra la de SHA256SUMS de la Release.
-          test "$tiene" = "${{ matrix.sha256 }}" || { echo "SHA-256 distinto: $tiene"; exit 1; }
-          grep -qx "$tiene  ${{ matrix.paquete }}" SHA256SUMS || { echo "no coincide con SHA256SUMS"; exit 1; }
-          case "${{ matrix.paquete }}" in
-            *.zip) 7z x -y -obin "${{ matrix.paquete }}" >/dev/null; bin="$d/bin/omoi.exe" ;;
-            *) tar -xzf "${{ matrix.paquete }}" -C bin; bin="$d/bin/omoi" ;;
+          tiene=$(suma "${{ matrix.package }}")
+          # The file's checksum, against the pinned one and against the Release's SHA256SUMS.
+          test "$tiene" = "${{ matrix.sha256 }}" || { echo "SHA-256 mismatch: $tiene"; exit 1; }
+          grep -qx "$tiene  ${{ matrix.package }}" SHA256SUMS || { echo "does not match SHA256SUMS"; exit 1; }
+          case "${{ matrix.package }}" in
+            *.zip) 7z x -y -obin "${{ matrix.package }}" >/dev/null; bin="$d/bin/omoi.exe" ;;
+            *) tar -xzf "${{ matrix.package }}" -C bin; bin="$d/bin/omoi" ;;
           esac
           "$bin" --version | grep -x "omoi 1.0.0" >/dev/null
           echo "OMOIKANE_COMPAT_BIN=$bin" >> "$GITHUB_ENV"

@@ -20,7 +20,7 @@
 //!   that client's, without the global ones. Never two spaces in the same vault.
 //! - `.obsidian/graph.json` with one colour per kind, only if the vault has none.
 //! - Each memory note carries in its header `base` (the fingerprint of the editable part, as exported) and
-//!   `sig` (the signature of this database, with the OKF key: `okf::firma`), to tell on the way back whether
+//!   `sig` (the signature of this database, with the OKF key: `okf::signature`), to tell on the way back whether
 //!   it was edited and whether it really belongs to that memory.
 
 use crate::memory::{Scope, Changes, Memory, Kind};

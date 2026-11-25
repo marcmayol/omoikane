@@ -11,7 +11,7 @@
 //! - **A project's trade**: what is detected in its files (cheap and deterministic: the root and
 //!   one level of subfolders), plus what the person corrects by hand (`omoi trades add|remove|set`), in
 //!   two local tables that don't travel (`project_trade`, `project_trade_seen`): each machine detects it
-//!   in its folder, and a correction belongs to whoever makes it. Like those in `db::LOCALES`, a 1.0 ignores them.
+//!   in its folder, and a correction belongs to whoever makes it. Like those in `db::LOCALS`, a 1.0 ignores them.
 //!
 //! From a project you see the memories of the trades it has; from a space, those of the trades
 //! of its projects; from the user's folder, all of them (`Scope::sql`, with [`hidden_sql`]).
@@ -22,7 +22,7 @@
 //! data), and it isn't saved except for the false positives the `allow_leaks` permission lets through (never a
 //! path or a repository). Promoting a client's memory to a trade creates a new memory
 //! ([`create_trade_memory`]): its history and verdicts stay with the client. And through sync
-//! they only go through the general repository (they are global: `sync::va_al_repo` no longer lets them go to a space one),
+//! they only go through the general repository (they are global: `sync::goes_to_repo` no longer lets them go to a space one),
 //! and a client repository doesn't bring them (`sync`, with [`has_trade`]).
 
 use crate::memory::{Scope, Memory};

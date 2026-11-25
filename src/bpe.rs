@@ -18,7 +18,7 @@
 //! 4. `<bos>` + pieces + `<eos>`, cut to `max` like its truncation (the first ones and `<eos>` stay).
 //!
 //! If `tokenizer.json` isn't shaped like this, `compile` refuses and `gemma` uses `tokenizers`.
-//! The equivalence is checked against `tokenizers` (test `bpe_igual_que_tokenizers` and
+//! The equivalence is checked against `tokenizers` (test `engine_and_tokenizer` in `tests/engine.rs` and
 //! `examples/bpe_equal.rs`, with thousands of real texts).
 
 use anyhow::{Context, Result, bail, ensure};

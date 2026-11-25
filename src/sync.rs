@@ -813,7 +813,7 @@ fn forgotten_body<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
 ///
 /// Rules so that what comes after 1.0 doesn't break whoever stays on it: a new field is
 /// optional and kept by whoever doesn't understand it (`Extra`); a new type is skipped by whoever doesn't understand it,
-/// who counts it as «from a newer version» and rereads it on updating (`LECTOR`); whatever
+/// who counts it as «from a newer version» and rereads it on updating (`LINE_READER`); whatever
 /// changes the meaning of what already exists raises `min_reader` in `omoikane.format` (or the version of the
 /// `omoi export` format), and then old versions don't write to that repository.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2606,7 +2606,7 @@ pub fn adopt_person(db: &mut Connection, db_path: &Path, new_person: &str) -> Re
 
 /// Whether a project's key is already in the general repository, according to this machine's clone (offline):
 /// this machine or another pushed it. Without a general repository, no. If its keys can't be read, it is taken
-/// as yes (`project::clave_con_espacio` then leaves the key as it was).
+/// as yes (`project::key_with_space` then leaves the key as it was).
 pub(crate) fn in_general_repo(db: &Connection, key: &str) -> bool {
     let Some(path) = db.path().filter(|p| !p.is_empty()) else { return false };
     let r = paths(Path::new(path));
@@ -2617,7 +2617,7 @@ pub(crate) fn in_general_repo(db: &Connection, key: &str) -> bool {
     cipher.keys.values().any(|k| r.clone_dir.join(format!("p-{}", opaque_name(k, &[key.as_bytes()]))).exists())
 }
 
-/// A project's key changed (`project::cambiar_clave`): the `projects` list of the
+/// A project's key changed (`project::change_key`): the `projects` list of the
 /// repositories that name it switches to the new one.
 pub(crate) fn rename_key_in_configs(db_path: &Path, old_key: &str, new_key: &str) -> Result<()> {
     for r in repos(db_path) {

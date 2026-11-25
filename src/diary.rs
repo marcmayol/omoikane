@@ -758,7 +758,7 @@ pub fn before_prune(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// When merging two projects (`project::juntar`): the lines of `from` move to `to`.
+/// When merging two projects (`project::merge`): the lines of `from` move to `to`.
 pub fn move_project(db: &Connection, from: i64, to: i64) -> Result<()> {
     if !has_table(db)? {
         return Ok(());

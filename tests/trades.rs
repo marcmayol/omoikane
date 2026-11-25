@@ -1,7 +1,7 @@
 //! 1.8.0: trades (stacks). A trade memory (`trade: "android"`) is seen by every project of that
 //! trade, of any client, and by no other; each project's trade comes from its files and is
 //! corrected with `omoi trades`; and when saving one, anything that looks like a project's or a client's is flagged.
-//! Sync is in `tests/sync.rs` (`las_memorias_de_oficio_no_pasan_por_un_cliente`).
+//! Sync is in `tests/sync.rs` (`trade_memories_do_not_go_through_a_client`).
 
 mod common;
 

@@ -8,7 +8,7 @@
 //! with a generic mean so it doesn't come out zero.
 //!
 //! Reading the whole vectors is costly (with 100,000 memories, 100 MB and 200 ms per query), so a
-//! **summary** is kept separately (local tables, see `db::LOCALES`): the sum of the vectors for the
+//! **summary** is kept separately (local tables, see `db::LOCALS`): the sum of the vectors for the
 //! mean and an int8 copy of each (a quarter of the size) with how far it is from the real one.
 //! With it the similarity of each memory is bounded and only those that may make it are read whole: the
 //! result is the same as comparing with all the vectors. It is kept up to date by the triggers
@@ -235,7 +235,7 @@ fn write_summary(db: &Connection, r: &Summary) -> Result<()> {
     Ok(())
 }
 
-/// Deletes the summary: it will be fully rebuilt when used. Called by `db::locales` when (re)creating its tables.
+/// Deletes the summary: it will be fully rebuilt when used. Called by `db::ensure_locals` when (re)creating its tables.
 pub(crate) fn forget_summary(db: &Connection) -> Result<()> {
     db.execute("DELETE FROM meta WHERE k = ?1", [SUMMARY_KEY])?;
     db.execute_batch("DELETE FROM vec_bloque; DELETE FROM vec_cambio;")?;
@@ -342,7 +342,7 @@ fn apply_changes(db: &Connection, mut r: Summary) -> Result<Option<Summary>> {
     Ok(Some(r))
 }
 
-/// Whether the connection has what the summary uses (see `db::LOCALES`).
+/// Whether the connection has what the summary uses (see `db::LOCALS`).
 fn has_local_tables(db: &Connection) -> Result<bool> {
     let tables: i64 =
         db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('vec_bloque', 'vec_cambio', 'memory_ambito', 'memory_cuenta')", [], |row| row.get(0))?;

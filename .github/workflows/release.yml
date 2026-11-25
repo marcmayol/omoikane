@@ -1,10 +1,9 @@
 name: release
 
-# Un tag v* compila omoi para cada sistema, comprueba que se sigue entendiendo con la 1.0.0
-# (compat.yml) y que el recall y la búsqueda no van más lentos que en la Release anterior (perf.yml),
-# y publica la Release con los binarios, sus sumas y, como notas, la sección de esa versión de
-# CHANGELOG.md.
-# A mano (workflow_dispatch) solo compila y deja los paquetes como artefactos, para probar.
+# A v* tag builds omoi for each system, checks that it still works with 1.0.0 (compat.yml) and that
+# recall and search are no slower than in the previous Release (perf.yml), and publishes the Release
+# with the binaries, their checksums and, as notes, that version's section of CHANGELOG.md.
+# Run by hand (workflow_dispatch) it only builds and keeps the packages as artifacts, for testing.
 on:
   push:
     tags: ["v*"]
@@ -20,7 +19,7 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, ext: zip }
-          # Ubuntu 22.04: glibc 2.35, para que el binario funcione también en distribuciones no tan nuevas.
+          # Ubuntu 22.04: glibc 2.35, so the binary also runs on not-so-recent distributions.
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, ext: tar.gz }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, ext: tar.gz }
           - { os: macos-latest, target: aarch64-apple-darwin, ext: tar.gz }
@@ -38,7 +37,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }} --bin omoi
-      - name: Empaquetar
+      - name: Package
         run: |
           d=target/${{ matrix.target }}/release
           mkdir paquete
@@ -49,8 +48,8 @@ jobs:
             cp "$d/omoi" paquete/
             tar -czf "omoi-${{ matrix.target }}.tar.gz" -C paquete omoi
           fi
-      - name: Probar el binario empaquetado
-        # El de Intel en un Mac ARM corre con Rosetta; los demás, nativos.
+      - name: Smoke-test the packaged binary
+        # The Intel one runs under Rosetta on an ARM Mac; the rest run natively.
         run: |
           d=target/${{ matrix.target }}/release
           "$d/omoi" --version
@@ -60,12 +59,12 @@ jobs:
           name: omoi-${{ matrix.target }}
           path: omoi-${{ matrix.target }}.${{ matrix.ext }}
 
-  # La 1.x no puede romper lo que prometió la 1.0: si el test de compatibilidad falla, no se publica.
+  # 1.x must not break what 1.0 promised: if the compatibility test fails, nothing is published.
   compat:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/compat.yml
 
-  # Ni una versión con el recall o la búsqueda más lentos que la anterior (perf.yml).
+  # No version with recall or search slower than the previous one (perf.yml).
   perf:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/perf.yml
@@ -76,14 +75,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Notas de la versión
-        # La sección «## <versión>» de CHANGELOG.md, hasta la siguiente «## ». Sin sección, o sin su
-        # apartado de compatibilidad, no hay Release (como sin firma).
+      - name: Release notes
+        # The "## <version>" section of CHANGELOG.md, up to the next "## ". Without that section, or
+        # without its compatibility subsection, there is no Release (as without a signature).
         run: |
           v="${GITHUB_REF_NAME#v}"
           awk -v v="$v" '/^## / { if (dentro) exit; if ($2 == v) { dentro = 1; next } } dentro { print }' CHANGELOG.md > "$RUNNER_TEMP/notas.md"
-          grep -q '[^[:space:]]' "$RUNNER_TEMP/notas.md" || { echo "CHANGELOG.md no tiene la sección «## $v»"; exit 1; }
-          grep -q '^### Compatibility' "$RUNNER_TEMP/notas.md" || { echo "la sección «## $v» de CHANGELOG.md no tiene «### Compatibility»"; exit 1; }
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notas.md" || { echo "CHANGELOG.md has no '## $v' section"; exit 1; }
+          grep -q '^### Compatibility' "$RUNNER_TEMP/notas.md" || { echo "the '## $v' section of CHANGELOG.md has no '### Compatibility'"; exit 1; }
           {
             echo
             echo "### Install"
@@ -94,17 +93,17 @@ jobs:
         with:
           path: paquetes
           merge-multiple: true
-      - name: Sumas, firma y Release
+      - name: Checksums, signature and Release
         env:
           GH_TOKEN: ${{ github.token }}
-          # La clave privada Ed25519 (PEM) con la que omoi comprueba lo que instala al actualizarse solo.
+          # The Ed25519 private key (PEM) that signs what omoi checks before installing a self-update.
           OMOIKANE_FIRMA: ${{ secrets.OMOIKANE_FIRMA }}
         run: |
           cd paquetes
           sha256sum omoi-* > SHA256SUMS
           cat SHA256SUMS
-          # Sin firma no hay Release: omoi se niega a instalar una que no la tenga.
-          test -n "$OMOIKANE_FIRMA" || { echo "falta el secreto OMOIKANE_FIRMA"; exit 1; }
+          # No signature, no Release: omoi refuses to install one without it.
+          test -n "$OMOIKANE_FIRMA" || { echo "the OMOIKANE_FIRMA secret is missing"; exit 1; }
           umask 077
           printf '%s\n' "$OMOIKANE_FIRMA" > "$RUNNER_TEMP/firma.pem"
           openssl pkeyutl -sign -inkey "$RUNNER_TEMP/firma.pem" -rawin -in SHA256SUMS -out SHA256SUMS.sig

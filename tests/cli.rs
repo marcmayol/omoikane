@@ -159,7 +159,7 @@ fn export_jsonl() {
     e.ok(&["remember", "-k", "fact", "-t", "Dos", "dos"]);
     let output = e.ok(&["export"]);
     let lines: Vec<serde_json::Value> = output.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    // Header, the two memories and the end line (the whole format is tested in `copia.rs`).
+    // Header, the two memories and the end line (the whole format is tested in `backup.rs`).
     assert_eq!(lines.len(), 4);
     assert_eq!(lines[0]["type"], "header");
     assert!(lines[1..3].iter().all(|l| l["type"] == "memory" && l["versions"].is_null()));
@@ -1080,7 +1080,7 @@ fn extended_drive_path_is_local() {
 /// commit in the provenance and no `last_seen`, and the hook with that `cwd` failed. What comes from outside
 /// (`project` over MCP) is still not opened. It is simulated with `\\localhost\C$\…` (the administrative share
 /// of the temp folder's drive); if this machine does not allow opening it, the test says so and checks
-/// nothing (the logic is covered by `project::tests::el_recurso_de_trabajo_es_de_confianza`).
+/// nothing (the logic is covered by `project::tests::the_work_share_is_trusted`).
 #[cfg(windows)]
 #[test]
 fn working_folder_can_be_on_the_network() {

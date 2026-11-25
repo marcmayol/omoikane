@@ -506,7 +506,7 @@ fn filter_stamp(l: &mut Line, keys: &crate::verified::SealKeys, s: StampPolicy) 
 /// (`stamps.agent`), none: that would be an agent verifying itself. The removed ones are counted in
 /// `Counts::unverified` (agent) and `Counts::untrusted_verified` (someone else's) to warn. (Sync does
 /// bring the stamps of the person's other computers, through their encrypted repository: see
-/// `sync::sello_de_otro`.)
+/// `sync::foreign_seal`.)
 pub fn import(db: &mut Connection, db_path: &Path, path: &Path, current: &str, model: Option<&Model>, dry_run: bool, stamps: StampPolicy) -> Result<(Counts, SyncSummary)> {
     let keys = crate::verified::seal_keys(db, stamps.trust && !stamps.agent && !dry_run)?;
     let (mut from_agent, mut foreign) = (0, 0);

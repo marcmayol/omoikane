@@ -5,7 +5,7 @@
 //! weights stay in f16, as they come in `pesos.safetensors`, and are read straight from the
 //! memory-mapped file (they take no RAM of the process's own: the disk cache shares it). Each
 //! matmul is blocked (2 rows × 6 tokens in registers, with AVX2/FMA/F16C) and the rows are split
-//! across the threads of a dedicated pool. Speed review (branch rev-velocidad): the vector of a
+//! across the threads of a dedicated pool. In the speed review, the vector of a
 //! 24-token query went from 55 to 30 ms, same vector.
 //!
 //! - **Long texts**: attention is blocked too (6 queries against 2 keys at a time, and the same with
@@ -16,7 +16,7 @@
 //!   a time, bit for bit: every product is summed in the same order.
 //! - **Without AVX2** (old CPUs, ARM): the generic path (`simd = false`) does the same row by row,
 //!   with 8-lane sums the compiler vectorizes (SSE2, NEON). It gives the same vector (cosine
-//!   ≥0.9999 against candle; test `motor`) but is slower than candle, so `Gemma::load` uses candle
+//!   ≥0.9999 against candle; test `engine_and_tokenizer` in `tests/engine.rs`) but is slower than candle, so `Gemma::load` uses candle
 //!   on those CPUs and this path only with `OMOIKANE_GEMMA_RAPIDO=1`.
 
 use rayon::prelude::*;

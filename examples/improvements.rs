@@ -3,7 +3,7 @@
 //!   cargo run --release --example improvements -- busqueda NOTAS TSV...
 //!
 //! NOTAS: folder of Claude Code notes (one .md per note with `description:` in the front matter).
-//! TSV: `tipo<TAB>fichero<TAB>pregunta` (file `-` if it has no answer).
+//! TSV: `<kind><TAB><file><TAB><question>` (file `-` if it has no answer).
 
 use anyhow::{Result, anyhow};
 use omoikane::search::{Fusion, SearchOptions, search_with};

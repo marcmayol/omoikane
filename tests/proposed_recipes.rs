@@ -1,4 +1,4 @@
-//! 1.5: proposing recipes (the `procedure` ones saved by hand are in `recetas.rs`). A sequence of commands that worked and repeats in `MIN_SESSIONS`
+//! 1.5: proposing recipes (the `procedure` ones saved by hand are in `recipes.rs`). A sequence of commands that worked and repeats in `MIN_SESSIONS`
 //! sessions comes out as a candidate once; one already covered by a saved recipe, no.
 
 mod common;

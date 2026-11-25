@@ -1,6 +1,6 @@
 [package]
 name = "omoikane"
-version = "1.15.0"
+version = "1.15.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -15,11 +15,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-# EmbeddingGemma en Rust puro, sin ONNX Runtime: solo CPU, sin dependencias fuera del binario.
+# EmbeddingGemma in pure Rust, without ONNX Runtime: CPU only, no dependencies outside the binary.
 candle-core = "0.11.1"
 candle-nn = "0.11.1"
 clap = { version = "4.6.7", features = ["derive"] }
-# Pesos en f16 y los hilos del motor rápido de EmbeddingGemma (`engine`); ya venían con candle.
+# f16 weights and the threads of EmbeddingGemma's fast engine (`engine`); they already came with candle.
 half = "2.7.1"
 rayon = "1.12.0"
 memmap2 = "0.9.12"
@@ -33,31 +33,31 @@ sqlite-vec = "0.1.9"
 tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std"] }
 ulid = "3.0.0"
-# Nombres de fichero en NFC al exportar e importar bundles OKF: macOS (HFS+) los guarda en NFD.
+# File names in NFC when exporting and importing OKF bundles: macOS (HFS+) stores them in NFD.
 unicode-normalization = "0.1.26"
-# Para descargar el modelo; Rust puro con rustls. Fijada a una versión de hace más de un mes.
-# Con `platform-verifier`, las raíces del sistema (Windows, macOS, Linux) y no solo las de Mozilla:
-# detrás del proxy de una empresa que inspecciona el HTTPS, su certificado raíz está en el sistema.
+# To download the model; pure Rust with rustls. Pinned to a version more than a month old.
+# With `platform-verifier`, the system's roots (Windows, macOS, Linux) and not only Mozilla's:
+# behind a company proxy that inspects HTTPS, its root certificate is in the system store.
 ureq = { version = "=3.4.2", features = ["platform-verifier"] }
 ratatui = "0.30.2"
 crossterm = "0.29"
 tiny_http = "0.12"
-# Sincronización: cifrado determinista por línea (AES-SIV, RFC 5297), nombres opacos de carpeta y el
-# código para unirse a otro equipo.
+# Sync: deterministic per-line encryption (AES-SIV, RFC 5297), opaque folder names and the
+# code for joining another machine.
 aes-siv = "=0.8.0"
 sha2 = "=0.11.1"
 base64 = "=0.22.1"
 getrandom = "=0.3.4"
-# Comprobar la firma Ed25519 de las Releases al actualizarse solo (ya venía con rustls).
+# Checks the Releases' Ed25519 signature when self-updating (it already came with rustls).
 ring = "0.17.14"
 
 [target.'cfg(unix)'.dependencies]
-# Para que `omoi … | head` termine en silencio en vez de reventar con «Broken pipe».
+# So that `omoi … | head` ends quietly instead of blowing up with "Broken pipe".
 libc = "0.2"
 
 [dev-dependencies]
 model2vec-rs = "0.3.0"
-# El cliente MCP de los tests habla con `omoi mcp` como lo haría un agente.
+# The tests' MCP client talks to `omoi mcp` the way an agent would.
 rmcp = { version = "3.8.0", features = ["client", "transport-child-process"] }
 
 [profile.release]

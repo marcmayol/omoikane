@@ -705,7 +705,7 @@ fn remember_neither_judges_nor_names_another_space() {
 }
 
 /// `merge` and `move_to` between projects of different spaces: an error (from which space to which)
-/// unless `forzar`; an empty one does merge (the folder that registered itself on passing through it).
+/// unless `force`; an empty one does merge (the folder that registered itself on passing through it).
 #[test]
 fn merging_across_spaces_requires_force() {
     let Clients { dir, mut db, a_web, a_app, b_web, loose } = clients("fundir-espacios");
