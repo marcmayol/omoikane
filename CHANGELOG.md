@@ -4,7 +4,7 @@ What changes in each version of Omoikane. The release workflow publishes the sec
 
 How it works is in [docs/](docs/).
 
-## 1.15.1 (unreleased)
+## 1.15.1 (2026-11-25)
 
 ### Leftovers of the English rename
 - The GitHub workflows (`ci`, `compat`, `perf`, `release`) have their comments, step names and error messages in English; the `compat` matrix key `paquete` is now `package`. Job ids, commands and behaviour are the same.
